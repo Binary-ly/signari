@@ -121,6 +121,69 @@ func TestOpenLDAPClientInterop(t *testing.T) {
 		}
 	})
 
+	// Filters as a real client encodes them, which a test on our own bytes
+	// cannot see. Each is asked as a bound person, who may read only themselves,
+	// so the entry is alice's or nothing.
+	for filter, found := range map[string]bool{
+		"(cn=Alice*)":                        true,
+		"(cn=*Example)":                      true,
+		"(cn=A*ce*le)":                       true,
+		`(cn=Alice\2a)`:                      false, // a star of its own is a character
+		"(uid~=alice)":                       true,
+		"(uid>=a)":                           true,
+		"(!(shoeSize=12))":                   false, // Undefined stays Undefined through a NOT
+		"(cn:caseExactMatch:=Alice Example)": true,
+	} {
+		t.Run("the filter "+filter, func(t *testing.T) {
+			out, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri, "-D", aliceDN, "-w", alicePW,
+				"-b", "dc=example,dc=test", filter, "uid")
+			if code != 0 {
+				t.Fatalf("ldapsearch exited %d: %s", code, out)
+			}
+			if got := strings.Contains(out, "dn: uid=alice"); got != found {
+				t.Errorf("found alice: %v, want %v:\n%s", got, found, out)
+			}
+		})
+	}
+
+	t.Run("a paged search is understood", func(t *testing.T) {
+		out, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri, "-D", aliceDN, "-w", alicePW,
+			"-E", "pr=10/noprompt", "-b", "dc=example,dc=test", "(uid=alice)", "uid")
+		if code != 0 || !strings.Contains(out, "dn: uid=alice") {
+			t.Fatalf("ldapsearch exited %d: %s", code, out)
+		}
+	})
+
+	t.Run("groups are entries with their members", func(t *testing.T) {
+		out, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri, "-D", aliceDN, "-w", alicePW,
+			"-b", "ou=groups,dc=example,dc=test", "(objectClass=groupOfNames)", "member")
+		if code != 0 {
+			t.Fatalf("ldapsearch exited %d: %s", code, out)
+		}
+		for _, want := range []string{"dn: cn=engineering,ou=groups,dc=example,dc=test", "member: " + aliceDN} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the group does not hold %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("the schema is readable before any bind", func(t *testing.T) {
+		root, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri, "-s", "base", "-b", "", "subschemaSubentry")
+		if code != 0 || !strings.Contains(root, "subschemaSubentry: cn=Subschema") {
+			t.Fatalf("the root DSE answered %d: %s", code, root)
+		}
+		out, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri, "-s", "base", "-b", "cn=Subschema",
+			"(objectClass=subschema)", "+")
+		if code != 0 {
+			t.Fatalf("ldapsearch exited %d: %s", code, out)
+		}
+		for _, want := range []string{"attributeTypes:", "objectClasses:", "inetOrgPerson", "ldapSyntaxes:"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the subschema does not hold %q:\n%s", want, out)
+			}
+		}
+	})
+
 	t.Run("anonymous search is refused", func(t *testing.T) {
 		out, code := run(t, "ldapsearch", "-x", "-LLL", "-H", uri,
 			"-b", "dc=example,dc=test", "(uid=alice)")
@@ -133,7 +196,7 @@ func TestOpenLDAPClientInterop(t *testing.T) {
 func startInteropServer(t *testing.T) string {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	srv := New(Config{BaseDN: "dc=example,dc=test", UserAttr: "uid"}, interopAuth{}, log)
+	srv := New(Config{BaseDN: "dc=example,dc=test", UserAttr: "uid", SearchGroup: "engineering"}, interopAuth{}, log)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -165,6 +228,10 @@ func (interopAuth) Lookup(_ context.Context, u string) (*Identity, error) {
 
 func (interopAuth) List(_ context.Context, _ Query) ([]*Identity, error) {
 	return []*Identity{interopAlice()}, nil
+}
+
+func (interopAuth) Groups(context.Context, Query) ([]*Group, error) {
+	return []*Group{{Name: "engineering", Members: []string{"alice"}}}, nil
 }
 
 func interopAlice() *Identity {

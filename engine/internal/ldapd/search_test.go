@@ -243,6 +243,17 @@ func holds(c *Condition, e *entry) bool {
 		return any("uid", c.Value)
 	case CondMail:
 		return any("mail", c.Value)
+	case CondLoginPrefix, CondMailPrefix:
+		attr := "uid"
+		if c.Op == CondMailPrefix {
+			attr = "mail"
+		}
+		for _, v := range attrValues(e, attr) {
+			if strings.HasPrefix(strings.ToLower(v), strings.ToLower(c.Value)) {
+				return true
+			}
+		}
+		return false
 	case CondName:
 		return any("cn", c.Value)
 	case CondGroup:
@@ -268,6 +279,14 @@ func TestAReductionNeverHidesAnybody(t *testing.T) {
 			switch {
 			case rng.Intn(5) == 0:
 				return &filter{Kind: filterPresent, Attr: attr}
+			case rng.Intn(4) == 0:
+				return &filter{Kind: filterSubstring, Attr: attr, Initial: pick(values)}
+			case rng.Intn(4) == 0:
+				return &filter{Kind: filterApprox, Attr: attr, Value: pick(values)}
+			case rng.Intn(4) == 0:
+				return &filter{Kind: filterGreaterOrEqual, Attr: attr, Value: pick(values)}
+			case rng.Intn(4) == 0:
+				return &filter{Kind: filterExtensible, Attr: attr, Rule: "caseExactMatch", Value: pick(values)}
 			case attr == "objectClass":
 				return &filter{Kind: filterEquality, Attr: attr, Value: pick([]string{"person", "device"})}
 			case attr == "memberOf":
@@ -287,9 +306,18 @@ func TestAReductionNeverHidesAnybody(t *testing.T) {
 		return f
 	}
 
-	matched := 0
+	matched, groups := 0, 0
 	for i := 0; i < 20000; i++ {
 		f := random(4)
+		// The same of a group: a filter that matches one is not reduced to
+		// nobody, or to a condition it does not meet.
+		g := s.groupEntry(&Group{Name: pick(values), Members: []string{pick(values)}})
+		if f.Matches(g) {
+			groups++
+			if c := s.narrowGroups(f); c != nil && (c.Op == CondNone || !holdsOfGroup(c, g)) {
+				t.Fatalf("a filter matches %+v and its reduction %+v does not", g, c)
+			}
+		}
 		id := &Identity{Username: pick(values), Email: pick(values), DisplayName: pick(values),
 			Surname: pick(values), GivenName: pick(values), Active: true}
 		if rng.Intn(2) == 0 {
@@ -304,7 +332,35 @@ func TestAReductionNeverHidesAnybody(t *testing.T) {
 			t.Fatalf("a filter matches %+v and its reduction %+v does not", id, c)
 		}
 	}
-	if matched < 1000 {
-		t.Fatalf("only %d filters matched anybody; this is testing nothing", matched)
+	if matched < 1000 || groups < 500 {
+		t.Fatalf("only %d filters matched anybody and %d a group; this is testing nothing", matched, groups)
 	}
+}
+
+func holdsOfGroup(c *Condition, e *entry) bool {
+	switch c.Op {
+	case CondAnd:
+		for _, child := range c.Of {
+			if !holdsOfGroup(child, e) {
+				return false
+			}
+		}
+		return true
+	case CondOr:
+		for _, child := range c.Of {
+			if holdsOfGroup(child, e) {
+				return true
+			}
+		}
+		return false
+	case CondName:
+		return strings.EqualFold(attrValues(e, "cn")[0], c.Value)
+	case CondMember:
+		for _, m := range attrValues(e, "member") {
+			if strings.EqualFold(m, "uid="+c.Value+","+baseDN) {
+				return true
+			}
+		}
+	}
+	return false
 }

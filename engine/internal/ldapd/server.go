@@ -607,6 +607,9 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 	if req.BaseDN == "" && req.Scope == scopeBaseObject {
 		return s.writeRootDSE(c, messageID, req)
 	}
+	if normalDN(req.BaseDN) == normalDN(subschemaDN) && req.Scope == scopeBaseObject {
+		return s.writeSubschema(c, messageID, req)
+	}
 
 	if !sess.bound && !s.cfg.AllowAnonymousSearch {
 		s.log.Info("ldap anonymous search refused", "base", req.BaseDN,
@@ -786,6 +789,9 @@ func normalDN(dn string) string {
 // more says others match past the position it answers.
 func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after string, limit int) (
 	[]*entry, string, bool, error) {
+	if found, position, more, handled, err := s.groupSearch(ctx, req, after, limit); handled {
+		return found, position, more, err
+	}
 	// A base-object search on a specific user DN is the common shape: an
 	// application binds as a service account and reads one person. So is a
 	// subtree search based on that DN, which reaches the same one entry.
@@ -813,7 +819,10 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after strin
 	if normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN) {
 		return nil, "", false, nil
 	}
-	return s.walk(ctx, req, after, limit)
+	if req.Scope == scopeWholeSubtree {
+		return s.walkAll(ctx, req, after, limit)
+	}
+	return s.walkPeople(ctx, req, after, limit)
 }
 
 // entryFor renders one identity.
@@ -917,8 +926,9 @@ func (s *Server) writeRootDSE(c net.Conn, messageID int64, req *searchRequest) b
 		// No supportedExtension, and specifically no StartTLS: advertising an
 		// extension that is refused is how a client decides to try it, fails,
 		// and falls back to plaintext.
-		"supportedControl": {oidPagedResults},
-		"vendorName":       {"Signari"},
+		"supportedControl":  {oidPagedResults},
+		"subschemaSubentry": {subschemaDN},
+		"vendorName":        {"Signari"},
 	}}
 	if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 		return false

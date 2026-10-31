@@ -211,6 +211,44 @@ func TestAnOutpostTokenReadsOnlyWhatThePersonWhoBoundMay(t *testing.T) {
 	}
 }
 
+// Groups through an outpost are held to the same rule as people (7.02): the
+// token alone reads none, and the person who bound reads them only while the
+// core says they may read the directory.
+func TestAnOutpostReadsGroupsOnlyForWhoMayReadTheDirectory(t *testing.T) {
+	o := newOutpostSearch(t)
+	names := func(out map[string]any) []string {
+		var got []string
+		groups, _ := out["groups"].([]any)
+		for _, g := range groups {
+			m, _ := g.(map[string]any)
+			name, _ := m["name"].(string)
+			got = append(got, name)
+		}
+		return got
+	}
+	if code, _ := o.call(t, "/outpost/groups", map[string]any{"limit": 100}); code != http.StatusUnauthorized {
+		t.Errorf("groups with no bind proof answered %d, want 401", code)
+	}
+	proof := o.bind(t)
+	o.setGroup(t, o.group, true)
+	code, out := o.call(t, "/outpost/groups", map[string]any{"limit": 100, "bind_proof": proof})
+	if got := names(out); code != http.StatusOK || len(got) != 1 || got[0] != o.group {
+		t.Errorf("a member of the search group read %d %q, want %s", code, got, o.group)
+	}
+	narrowed := map[string]any{"limit": 100, "bind_proof": proof,
+		"narrow": map[string]string{"op": ldapd.CondName, "value": "no-such-group"}}
+	if _, out := o.call(t, "/outpost/groups", narrowed); len(names(out)) != 0 {
+		t.Errorf("a condition was not applied: %q", names(out))
+	}
+	if code, _ := o.call(t, "/outpost/groups", map[string]any{"limit": 100, "after": "nope", "bind_proof": proof}); code != http.StatusBadRequest {
+		t.Errorf("a made-up position answered %d, want 400", code)
+	}
+	o.setGroup(t, o.group, false)
+	if _, out := o.call(t, "/outpost/groups", map[string]any{"limit": 100, "bind_proof": proof}); len(names(out)) != 0 {
+		t.Errorf("after leaving the search group the groups were %q", names(out))
+	}
+}
+
 // The journey as an LDAP client meets it: bind to an outpost, which asks a core
 // it reaches over HTTP, and search. The outpost takes the search group from the
 // core, so the two decide with one value.

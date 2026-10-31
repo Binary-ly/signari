@@ -380,30 +380,15 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 			"only an LDAP outpost searches the directory")
 		return
 	}
-	var body struct {
-		ldapd.Query
-		BindProof string `json:"bind_proof"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
-		return
-	}
-	// An outpost pages at most this many at a time; asking for more was asking
-	// the database for the whole directory in one answer.
-	if body.Limit > outpostListLimit {
-		body.Limit = outpostListLimit
-	}
-	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), c.OrgID, s.log)
-	asker := s.outpostAsker(r, c, auth, body.BindProof)
-	if asker == nil {
-		refuseOutpostAsker(w)
+	auth, asker, q, ok := s.outpostDirectoryQuery(w, r, c)
+	if !ok {
 		return
 	}
 	if !c.mayReadDirectory(asker) {
 		writeJSON(w, http.StatusOK, map[string]any{"users": []outpostIdentity{asOutpostIdentity(asker)}})
 		return
 	}
-	found, err := auth.List(r.Context(), body.Query)
+	found, err := auth.List(r.Context(), q)
 	if errors.Is(err, ldapd.ErrBadPosition) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "not a position in the directory")
 		return
@@ -418,4 +403,65 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, asOutpostIdentity(u))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+}
+
+// handleOutpostGroups is handleOutpostList for the group entries (7.02): the
+// directory's groups for those who may read the directory, and none for anyone
+// else, whose own groups are on their own entry.
+func (s *Server) handleOutpostGroups(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.outpostCall(w, r)
+	if !ok {
+		return
+	}
+	if c.Kind != "ldap" {
+		writeError(w, http.StatusForbidden, "wrong_kind",
+			"only an LDAP outpost searches the directory")
+		return
+	}
+	auth, asker, q, ok := s.outpostDirectoryQuery(w, r, c)
+	if !ok {
+		return
+	}
+	if !c.mayReadDirectory(asker) {
+		writeJSON(w, http.StatusOK, map[string]any{"groups": []*ldapd.Group{}})
+		return
+	}
+	found, err := auth.Groups(r.Context(), q)
+	if errors.Is(err, ldapd.ErrBadPosition) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "not a position in the directory")
+		return
+	}
+	if err != nil {
+		s.log.Error("listing the groups for an outpost", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": found})
+}
+
+// outpostDirectoryQuery reads what an outpost asks of the directory, and who is
+// asking: the person whose bind proof it carries.
+func (s *Server) outpostDirectoryQuery(w http.ResponseWriter, r *http.Request, c *outpostCaller) (
+	*LDAPAuthenticator, *ldapd.Identity, ldapd.Query, bool) {
+
+	var body struct {
+		ldapd.Query
+		BindProof string `json:"bind_proof"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
+		return nil, nil, body.Query, false
+	}
+	// An outpost pages at most this many at a time; asking for more was asking
+	// the database for the whole directory in one answer.
+	if body.Limit > outpostListLimit {
+		body.Limit = outpostListLimit
+	}
+	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), c.OrgID, s.log)
+	asker := s.outpostAsker(r, c, auth, body.BindProof)
+	if asker == nil {
+		refuseOutpostAsker(w)
+		return nil, nil, body.Query, false
+	}
+	return auth, asker, body.Query, true
 }

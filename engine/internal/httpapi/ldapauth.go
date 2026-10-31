@@ -382,7 +382,7 @@ func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.I
 		fmt.Fprintf(&where, " AND u.id > $%d::uuid", len(args))
 	}
 	if q.Narrow != nil {
-		condition, err := ldapCondition(q.Narrow, &args, 0)
+		condition, err := ldapCondition(q.Narrow, &args)
 		if err != nil {
 			return nil, err
 		}

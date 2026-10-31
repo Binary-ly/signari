@@ -208,6 +208,28 @@ func (c *Client) List(ctx context.Context, q ldapd.Query) ([]*ldapd.Identity, er
 	return ids, nil
 }
 
+// Groups returns a page of the group entries, for a member of this outpost's
+// search group. A core that predates them answers 404, and that is a directory
+// with no groups rather than a failed search, so a subtree search, which asks
+// for both, keeps working through a rolling upgrade.
+func (c *Client) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd.Group, error) {
+	var out struct {
+		Groups []*ldapd.Group `json:"groups"`
+	}
+	err := c.post(ctx, "/outpost/groups", map[string]any{
+		"limit": q.Limit, "after": q.After, "narrow": q.Narrow, "bind_proof": ldapd.BindProof(ctx),
+	}, &out)
+	switch {
+	case errors.Is(err, ErrRefused):
+		return nil, nil
+	case errors.Is(err, errBadRequest) && q.After != "":
+		return nil, ldapd.ErrBadPosition
+	case err != nil:
+		return nil, err
+	}
+	return out.Groups, nil
+}
+
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {

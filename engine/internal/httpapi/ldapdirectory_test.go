@@ -145,8 +145,13 @@ func TestOnePersonIsOneQueryThroughARealClient(t *testing.T) {
 		if len(res.Entries) != 1 || res.Entries[0].GetAttributeValue("uid") != want {
 			t.Errorf("%s found %d entries, want %s", filter, len(res.Entries), want)
 		}
-		if spent != 1 {
-			t.Errorf("%s took %d statements, want 1", filter, spent)
+		// A common name can be a group's as well, so that one asks twice.
+		limit := int64(1)
+		if strings.HasPrefix(filter, "(cn=") {
+			limit = 2
+		}
+		if spent != limit {
+			t.Errorf("%s took %d statements, want %d", filter, spent, limit)
 		}
 	}
 	// Nothing to ask the database at all.
@@ -156,6 +161,111 @@ func TestOnePersonIsOneQueryThroughARealClient(t *testing.T) {
 	}
 	if spent := f.queries.n.Load() - before; spent != 0 {
 		t.Errorf("a filter nobody can match took %d statements", spent)
+	}
+}
+
+// Groups come from the database through a real client (7.02): their active
+// members only, none that are empty, and none of another organisation's, in one
+// query however many members they hold.
+func TestGroupsComeFromTheDatabase(t *testing.T) {
+	f := newDirectoryFixture(t, 4)
+	other := newDirectoryFixture(t, 1)
+	ctx := context.Background()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addGroup := func(org, name string, people ...string) {
+		t.Helper()
+		var id string
+		if err := f.pool.QueryRow(ctx, `
+			INSERT INTO core.groups (org_id, name, display_name) VALUES ($1::uuid, $2, $2) RETURNING id::text`,
+			org, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		exec(`INSERT INTO core.group_members (group_id, user_id, org_id)
+			SELECT $1::uuid, id, org_id FROM core.users WHERE org_id = $2::uuid AND username = ANY($3)`, id, org, people)
+	}
+	addGroup(f.orgID, "eng", "p1", "p2", "p3")
+	addGroup(f.orgID, "alone", "p4")
+	addGroup(f.orgID, "empty")
+	addGroup(other.orgID, "theirs", "p1")
+	exec(`UPDATE core.users SET status = 'deactivated' WHERE org_id = $1::uuid AND username = 'p3'`, f.orgID)
+	addGroup(f.orgID, "departed", "p3")
+
+	c := f.serve(t)
+	base := "dc=example,dc=test"
+	before := f.queries.n.Load()
+	res, err := c.Search(ldapclient.NewSearchRequest("ou=groups,"+base, ldapclient.ScopeWholeSubtree,
+		ldapclient.NeverDerefAliases, 0, 0, false, "(objectClass=groupOfNames)", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spent := f.queries.n.Load() - before; spent != 1 {
+		t.Errorf("reading the groups took %d statements, want 1", spent)
+	}
+	found := map[string][]string{}
+	for _, e := range res.Entries {
+		found[e.GetAttributeValue("cn")] = e.GetAttributeValues("member")
+	}
+	if len(found) != 2 || len(found["eng"]) != 2 || len(found["alone"]) != 1 {
+		t.Fatalf("found %v; want eng with its two active members and alone with one", found)
+	}
+	for filter, want := range map[string]int{
+		"(cn=ENG)":                     1,
+		"(member=uid=p4," + base + ")": 1,
+		"(member=uid=p3," + base + ")": 0,
+		"(cn=theirs)":                  0,
+	} {
+		res, err := c.Search(ldapclient.NewSearchRequest("ou=groups,"+base, ldapclient.ScopeWholeSubtree,
+			ldapclient.NeverDerefAliases, 0, 0, false, filter, nil, nil))
+		if err != nil || len(res.Entries) != want {
+			t.Errorf("%s answered %v with %+v, want %d", filter, err, res, want)
+		}
+	}
+	if _, err := f.auth.Groups(ctx, ldapd.Query{Limit: 10, After: "nope"}); !errors.Is(err, ldapd.ErrBadPosition) {
+		t.Errorf("a made-up position answered %v", err)
+	}
+	if _, err := f.auth.Groups(ctx, ldapd.Query{Limit: 10, Narrow: &ldapd.Condition{Op: ldapd.CondLogin, Value: "a"}}); err == nil ||
+		!strings.Contains(err.Error(), "directory condition") {
+		t.Errorf("a person's condition asked of a group answered %v", err)
+	}
+}
+
+// The beginning of a name or an address is one query too, by a range on the
+// stored fold. Somebody with an empty username and no address is named by their
+// id, which no index reads the beginning of, and is found all the same (7.04).
+func TestAPrefixIsOneQueryAndHidesNobody(t *testing.T) {
+	f := newDirectoryFixture(t, 120)
+	ctx := context.Background()
+	var nameless string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, user_handle, username)
+		VALUES ($1::uuid, sha256(convert_to($1::text, 'UTF8')), '')
+		RETURNING id::text`, f.orgID).Scan(&nameless); err != nil {
+		t.Fatal(err)
+	}
+	c := f.serve(t)
+	for filter, want := range map[string]int{
+		"(uid=p11*)":                   11, // p11, and p110 to p119
+		"(UID=P11*)":                   11,
+		"(mail=mail11*)":               11,
+		"(uid=" + nameless[:13] + "*)": 1,
+	} {
+		before := f.queries.n.Load()
+		res, err := c.Search(directorySearch(filter))
+		if err != nil {
+			t.Errorf("%s: %v", filter, err)
+			continue
+		}
+		if len(res.Entries) != want {
+			t.Errorf("%s found %d, want %d", filter, len(res.Entries), want)
+		}
+		if spent := f.queries.n.Load() - before; spent != 1 {
+			t.Errorf("%s took %d statements, want 1", filter, spent)
+		}
 	}
 }
 

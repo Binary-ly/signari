@@ -540,6 +540,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /outpost/desktop", s.handleDesktopVerify)
 	mux.HandleFunc("POST /outpost/lookup", s.handleOutpostLookup)
 	mux.HandleFunc("POST /outpost/list", s.handleOutpostList)
+	mux.HandleFunc("POST /outpost/groups", s.handleOutpostGroups)
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
 	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
 	// OpenID AuthZEN Authorization API 1.0.

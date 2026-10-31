@@ -22,10 +22,10 @@ import (
 //
 // # What this is not
 //
-// It is not RFC 4512. There is no subschema subentry, no attribute type
-// definitions published at the root DSE, no matching rules beyond
-// case-insensitive equality, no DIT content or structure rules. Applications
-// that need those need a directory; this is a shim that can now be written to.
+// It is not all of RFC 4512. subschema.go publishes these attributes and
+// classes, and a filter's few matching rules are named in filter.go; there are
+// no DIT content or structure rules. Applications that need those need a
+// directory; this is a shim that can now be written to.
 
 // attrDef is one attribute this directory understands.
 type attrDef struct {
@@ -104,9 +104,14 @@ var schema = []attrDef{
 	// Directory and is provided as an overlay by OpenLDAP. It is published here
 	// because applications that bind to a directory almost always gate on it,
 	// and it is unwritable because it is a VIEW of group membership -- the
-	// writable side of that relationship is a group's `member`, and there is no
-	// group subtree here to write.
+	// writable side of that relationship is where groups are managed, and the
+	// group subtree here is for reading.
 	{Name: "memberOf", Writable: false},
+
+	// Of a group entry, and read-only: membership is managed where groups are,
+	// and a directory-shaped write to it would be a second way in.
+	{Name: "member", Writable: false},
+	{Name: "ou", Writable: false},
 
 	// Structural, and fixed. A client may send it on Add and it must name the
 	// classes this directory implements; it may not be changed afterwards, which

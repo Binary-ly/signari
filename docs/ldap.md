@@ -23,8 +23,8 @@ Since August 2026 it can also be **written to** — `add`, `modify`, `delete` an
 `modify DN` (RFC 4511 §4.6–§4.9) — against an explicit schema. That is **off by
 default** and takes two decisions to turn on. See [Writes](#writes) below.
 
-It is still not a directory. There is no replication, no subschema subentry, no
-DIT structure rules, no aliases, no subordinate entries: the tree is flat and
+It is still not a directory. There is no replication, no DIT structure rules, no
+aliases, no subordinate entries: the tree is flat and
 holds `person` entries. Everything outside that is **refused**, not stubbed,
 because a half-implemented directory is one somebody eventually depends on.
 
@@ -123,8 +123,35 @@ while claiming to be someone else.
 and the timing — the dummy verify runs even when no user was found. Otherwise
 the port is a user-enumeration oracle for anyone who can reach it.
 
-**Unsupported filters match nothing.** Failing open on a filter we cannot parse
-would answer it with the entire directory.
+**A filter this directory cannot evaluate matches nothing, negated or not.** A
+filter is TRUE, FALSE or Undefined, and only TRUE returns an entry; an attribute
+it does not know, a matching rule it does not recognise or a malformed substring
+is Undefined, and stays Undefined through a NOT. Until October 2026 such a filter
+was FALSE, so `(!(shoeSize=12))` returned the entire directory.
+
+**Filters.** Equality, presence, substrings (`(cn=al*)`, at most eight parts,
+none of them overlapping), `>=` and `<=` (the case-folded value in byte order),
+`~=` (as equality, as RFC 4511 says where approximate matching is not supported)
+and extensible matches. An extensible match names its rule, `caseIgnoreMatch` or
+`caseExactMatch` or their IA5 forms, by name; a rule given by OID is not
+recognised. `:dn:` also tries the entry's DN. A value is matched as its BER
+carried it, so a `*` a client escapes is a character. Beginning-of-name searches
+on `uid` and `mail` are asked of the database; other substrings are read a page
+at a time and checked here.
+
+**Groups are entries.** Each group with somebody active in it is a
+`groupOfNames` at `cn=<name>,ou=groups,<base>`, which is where a person's
+`memberOf` has always pointed, with a `member` for each active person. A search
+of `ou=groups`, or a subtree search of the base, finds them, paged like people,
+and whoever may read the directory may read them; anyone else has their groups
+on their own entry. An empty group is not published, since `groupOfNames` must
+have a member and the alternative is a member who is not one. Through an outpost
+they are read from the core the same way.
+
+**The schema is published.** The root DSE names `cn=Subschema` as
+`subschemaSubentry`, and a base search of it, which needs no bind, returns
+`attributeTypes`, `objectClasses` and `ldapSyntaxes`: what this directory really
+holds, single-valued where it is, rather than what the standard allows.
 
 **Everybody can be found, and a short list says so.** A filter on `uid`, `mail`,
 `cn` or `memberOf`, alone or in an AND or OR, is asked of the database, so one
@@ -142,8 +169,8 @@ found by any search.
 **The search base and scope are honoured.** Every person is a direct child of
 the base DN, so a one-level search reaches people only from the base DN, a
 subtree search reaches everyone from the base DN or one person from that
-person's DN, and a search based anywhere else, `ou=groups,…` for instance,
-returns nobody. Until October 2026 any one-level or subtree search under the
+person's DN, and a search based anywhere else returns nobody: `ou=groups,…`
+reaches the groups and no person. Until October 2026 any one-level or subtree search under the
 base returned the whole directory, wherever it was based.
 
 **A critical control is refused.** This server applies no request controls, so
@@ -396,12 +423,7 @@ password-verification oracle and nothing more.
 
 ## Not implemented
 
-Referrals, aliases, every request control but paged results, substring and
-approximate filters, and SASL.
-Substring filters in particular are absent on purpose: they ask the server to do
-open-ended work on behalf of whoever opened the connection.
+Referrals, aliases, every request control but paged results, and SASL.
 
-Group entries are neither readable nor writable. `memberOf` is published on a
-person, but there is no `ou=groups` subtree to search or modify — writing group
-membership means writing the group's `member` attribute, and a subtree that could
-be written and not read would be incoherent.
+Group entries are read-only. Membership is managed where groups are, and a
+directory-shaped write to it would be a second way in.

@@ -33,6 +33,12 @@ const (
 	CondName = "name"
 	// CondGroup is membership of the group named by Value.
 	CondGroup = "group"
+	// CondLoginPrefix and CondMailPrefix are a name or an address beginning
+	// with Value.
+	CondLoginPrefix = "login_prefix"
+	CondMailPrefix  = "mail_prefix"
+	// CondMember is a group that holds the person who signs in as Value.
+	CondMember = "member"
 	// CondNone is nobody at all.
 	CondNone = "none"
 )
@@ -63,15 +69,24 @@ var ErrBadPosition = errors.New("ldapd: that is not a position in the directory"
 // not answered by the database, whose lower() folds more than equalFold here
 // does and would drop an entry Matches keeps.
 func (s *Server) narrow(f *filter) *Condition {
+	return reduced(f, s.personLeaf)
+}
+
+// narrowGroups is narrow for a search of the groups.
+func (s *Server) narrowGroups(f *filter) *Condition {
+	return reduced(f, s.groupLeaf)
+}
+
+func reduced(f *filter, leaf func(*filter) *Condition) *Condition {
 	spent := 0
-	c := s.reduce(f, &spent)
+	c := reduce(f, &spent, leaf)
 	if spent > MaxConditions {
 		return nil
 	}
 	return c
 }
 
-func (s *Server) reduce(f *filter, spent *int) *Condition {
+func reduce(f *filter, spent *int, leaf func(*filter) *Condition) *Condition {
 	*spent++
 	if f == nil || *spent > MaxConditions {
 		return nil
@@ -80,7 +95,7 @@ func (s *Server) reduce(f *filter, spent *int) *Condition {
 	case filterAnd:
 		var of []*Condition
 		for _, child := range f.Children {
-			c := s.reduce(child, spent)
+			c := reduce(child, spent, leaf)
 			if c == nil {
 				continue // a superset of the AND: it only ever narrows further
 			}
@@ -94,7 +109,7 @@ func (s *Server) reduce(f *filter, spent *int) *Condition {
 	case filterOr:
 		var of []*Condition
 		for _, child := range f.Children {
-			c := s.reduce(child, spent)
+			c := reduce(child, spent, leaf)
 			if c == nil {
 				return nil // this arm could match anybody, so the OR could
 			}
@@ -106,8 +121,24 @@ func (s *Server) reduce(f *filter, spent *int) *Condition {
 			return &Condition{Op: CondNone}
 		}
 		return joined(CondOr, of)
+	}
+	return leaf(f)
+}
 
-	case filterEquality:
+// personLeaf is what one assertion says about who could match among people.
+func (s *Server) personLeaf(f *filter) *Condition {
+	switch f.Kind {
+	case filterSubstring:
+		switch {
+		case f.Initial == "":
+		case equalFold(f.Attr, "cn"):
+		case equalFold(f.Attr, s.cfg.UserAttr):
+			return &Condition{Op: CondLoginPrefix, Value: f.Initial}
+		case equalFold(f.Attr, "mail"):
+			return &Condition{Op: CondMailPrefix, Value: f.Initial}
+		}
+
+	case filterEquality, filterApprox:
 		switch {
 		case equalFold(f.Attr, "objectClass"):
 			for _, class := range objectClasses {
@@ -129,6 +160,40 @@ func (s *Server) reduce(f *filter, spent *int) *Condition {
 				return &Condition{Op: CondGroup, Value: name}
 			}
 		}
+	}
+	return nil
+}
+
+// groupLeaf is personLeaf for groups, of which an organisation has few: only
+// what a client actually asks by, and that an assertion about an attribute no
+// group holds cannot be TRUE of one, so `(uid=x)` from the base asks one
+// question and not two.
+func (s *Server) groupLeaf(f *filter) *Condition {
+	exact := f.Kind == filterEquality || f.Kind == filterApprox
+	switch {
+	case f.Attr == "" || (f.Kind == filterExtensible && f.DNAttributes):
+		return nil
+	case equalFold(f.Attr, "objectClass"):
+		if exact {
+			for _, class := range groupClasses {
+				if equalFold(class, f.Value) {
+					return nil
+				}
+			}
+			return &Condition{Op: CondNone}
+		}
+	case equalFold(f.Attr, "cn"):
+		if exact {
+			return &Condition{Op: CondName, Value: f.Value}
+		}
+	case equalFold(f.Attr, "member"):
+		if exact {
+			if login, err := s.usernameFromDN(f.Value); err == nil {
+				return &Condition{Op: CondMember, Value: login}
+			}
+		}
+	default:
+		return &Condition{Op: CondNone}
 	}
 	return nil
 }
@@ -159,38 +224,58 @@ func (s *Server) groupOfDN(dn string) (string, bool) {
 	return name, true
 }
 
-// walk reads people in order, past after, until it has want who match or there
-// are no more. more says another match exists past the last one returned, and
-// last is that entry's position.
-func (s *Server) walk(ctx context.Context, req *searchRequest, after string, want int) (
+// listed is one entry a backend answered, and where it was.
+type listed struct {
+	entry    *entry
+	position string
+}
+
+// walk reads entries in order until it has want that match or there are no
+// more. more says another match exists past the last one returned, and last is
+// that entry's position.
+func walk(req *searchRequest, q Query, want int, read func(Query) ([]listed, error)) (
 	found []*entry, last string, more bool, err error) {
 
-	q := Query{Narrow: s.narrow(req.Filter), After: after, Limit: walkPage(want)}
+	q.Limit = walkPage(want)
 	if q.Narrow != nil && q.Narrow.Op == CondNone {
 		return nil, "", false, nil
 	}
 	for {
-		page, err := s.auth.List(ctx, q)
+		page, err := read(q)
 		if err != nil {
 			return nil, "", false, err
 		}
-		for _, id := range page {
-			e := s.entryFor(id)
-			if !req.Filter.Matches(e) {
+		for _, l := range page {
+			if !req.Filter.Matches(l.entry) {
 				continue
 			}
 			if len(found) == want {
 				return found, last, true, nil
 			}
-			found = append(found, e)
-			last = id.Position
+			found = append(found, l.entry)
+			last = l.position
 		}
 		// Short, or a backend that gave no position to go on from.
-		if len(page) < q.Limit || page[len(page)-1].Position == "" {
+		if len(page) < q.Limit || page[len(page)-1].position == "" {
 			return found, last, false, nil
 		}
-		q.After = page[len(page)-1].Position
+		q.After = page[len(page)-1].position
 	}
+}
+
+func (s *Server) walkPeople(ctx context.Context, req *searchRequest, after string, want int) (
+	[]*entry, string, bool, error) {
+	return walk(req, Query{Narrow: s.narrow(req.Filter), After: after}, want, func(q Query) ([]listed, error) {
+		people, err := s.auth.List(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]listed, len(people))
+		for i, id := range people {
+			out[i] = listed{entry: s.entryFor(id), position: id.Position}
+		}
+		return out, nil
+	})
 }
 
 // walkPage is how many people to ask for at once. One past what is wanted, so

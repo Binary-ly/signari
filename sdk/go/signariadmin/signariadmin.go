@@ -969,6 +969,7 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem struct {
 	Issuer                 string                                                                        `json:"issuer"`
 	Kind                   string                                                                        `json:"kind"`
 	Linked                 int64                                                                         `json:"linked"`
+	LoginDomains           []string                                                                      `json:"login_domains"`
 	MfaACR                 []string                                                                      `json:"mfa_acr"`
 	MfaAMR                 []string                                                                      `json:"mfa_amr"`
 	Name                   string                                                                        `json:"name"`
@@ -1706,6 +1707,7 @@ type PatchOrganizationsOrgIDDirectoriesSlugResponse struct {
 type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	AllowAssertions        *bool     `json:"allow_assertions,omitempty"`
 	Enabled                *bool     `json:"enabled,omitempty"`
+	LoginDomains           *[]string `json:"login_domains,omitempty"`
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`
 	RequireVerifiedEmail   *bool     `json:"require_verified_email,omitempty"`

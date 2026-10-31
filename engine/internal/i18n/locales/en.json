@@ -18,6 +18,7 @@
   "login.submit": "Sign in",
   "login.staysignedin": "Stay signed in on this device, even after the browser is closed",
   "login.emailcode": "Email me a code instead",
+  "login.sso": "Continue with single sign-on",
   "login.accounts": "Choose an account you are signed in with",
   "login.pending": "This account is waiting for an administrator to approve it. You will get an email when you can sign in.",
   "accounts.title": "Choose an account",

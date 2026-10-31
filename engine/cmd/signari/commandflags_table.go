@@ -90,6 +90,7 @@ var commandFlags = map[string][]string{
 	"idp attribute-map":               {"attribute", "claim", "max-length", "overwrite", "remove", "slug"},
 	"idp check":                       {"slug"},
 	"idp disable":                     {"slug"},
+	"idp domains":                     {"domains", "slug"},
 	"idp enable":                      {"slug"},
 	"idp link":                        {"email", "slug", "subject"},
 	"idp links":                       {"o", "slug"},

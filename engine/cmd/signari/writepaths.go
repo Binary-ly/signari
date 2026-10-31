@@ -2031,6 +2031,25 @@ func idpTrustMFA(ctx context.Context, conn *pgx.Conn, slug, amr, acr string) err
 	return nil
 }
 
+// idpDomainsSet says which address domains a provider signs in.
+func idpDomainsSet(ctx context.Context, conn *pgx.Conn, slug, domains string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	list := splitList(domains)
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{LoginDomains: &list}); err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Printf("%s: nobody is sent here by their address\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: signs in addresses at %s\n", slug, strings.Join(list, ", "))
+	fmt.Println("\n  A local password in these domains goes on working, for the account that has to")
+	fmt.Println("  survive an outage at the provider.")
+	return nil
+}
+
 // idpChange applies a setting to the provider of that slug, in its own
 // organisation, as the Admin API does.
 func idpChange(ctx context.Context, conn *pgx.Conn, slug string, c store.IdentityProviderChange) error {

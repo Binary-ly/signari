@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -59,12 +61,80 @@ type IdentityProviderChange struct {
 	// MFAAMR and MFAACR are the upstream amr and acr values that count as
 	// multi-factor; empty trusts none.
 	MFAAMR, MFAACR *[]string
+	// LoginDomains are the address domains sent to this provider to sign in; empty
+	// sends nobody by address.
+	LoginDomains *[]string
 }
 
 // Empty reports whether the change names nothing.
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
-		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil
+		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil
+}
+
+// loginDomain is a domain as an address holds one.
+var loginDomain = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+// checkLoginDomains folds the domains and refuses what could not route anybody, or
+// routes them somewhere arbitrary: a domain two providers claim would send a person to
+// whichever a query found first.
+func checkLoginDomains(ctx context.Context, q outpostDB, orgID, slug, kind string, domains []string) ([]string, error) {
+	if len(domains) == 0 {
+		return []string{}, nil
+	}
+	if kind == "assertion" {
+		return nil, idpInvalid{fmt.Sprintf("%s is an assertion issuer, which signs nobody in", slug)}
+	}
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if !loginDomain.MatchString(d) {
+			return nil, idpInvalid{fmt.Sprintf("%q is not a domain", d)}
+		}
+		out = append(out, d)
+	}
+	var taken string
+	err := q.QueryRow(ctx, `SELECT slug FROM core.identity_providers
+		WHERE org_id = $1::uuid AND slug <> $2 AND login_domains && $3::text[] LIMIT 1`, orgID, slug, out).Scan(&taken)
+	if err == nil {
+		return nil, idpInvalid{fmt.Sprintf("%s already signs in one of those domains", taken)}
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ProviderForDomain names the enabled provider that signs in an address domain,
+// "" for none.
+func ProviderForDomain(ctx context.Context, q rowQuerier, orgID, domain string) (slug, kind string, err error) {
+	err = q.QueryRow(ctx, `SELECT slug, kind FROM core.identity_providers
+		WHERE org_id = $1::uuid AND enabled AND kind <> 'assertion' AND $2 = ANY(login_domains)`,
+		orgID, strings.ToLower(domain)).Scan(&slug, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	return slug, kind, err
+}
+
+// SignInProvider names an enabled provider of the organisation a person can sign in
+// through, "" for none, so a hint cannot name another tenant's.
+func SignInProvider(ctx context.Context, q rowQuerier, orgID, slug string) (found, kind string, err error) {
+	err = q.QueryRow(ctx, `SELECT slug, kind FROM core.identity_providers
+		WHERE org_id = $1::uuid AND slug = $2 AND enabled AND kind <> 'assertion'`, orgID, slug).Scan(&found, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	return found, kind, err
+}
+
+// RoutesByDomain reports whether any enabled provider of the organisation signs in by
+// address, which is what puts the single sign-on button on the page.
+func RoutesByDomain(ctx context.Context, q rowQuerier, orgID string) (bool, error) {
+	var any bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.identity_providers
+		WHERE org_id = $1::uuid AND enabled AND cardinality(login_domains) > 0)`, orgID).Scan(&any)
+	return any, err
 }
 
 // ChangeIdentityProvider applies a change to the organisation's provider of
@@ -102,6 +172,14 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		return idpInvalid{fmt.Sprintf("%s is a %s provider, whose email_verified is believed or not as that "+
 			"provider is known to behave; only a generic OIDC provider's or a SAML upstream's is set here", slug, kind)}
 	}
+	var domains any
+	if c.LoginDomains != nil {
+		checked, err := checkLoginDomains(ctx, q, orgID, slug, kind, *c.LoginDomains)
+		if err != nil {
+			return err
+		}
+		domains = checked
+	}
 	_, err := q.Exec(ctx, `
 		UPDATE core.identity_providers
 		   SET enabled                  = COALESCE($3::boolean, enabled),
@@ -110,9 +188,10 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		       require_verified_email   = COALESCE($6::boolean, require_verified_email),
 		       mfa_amr                  = COALESCE($7::text[], mfa_amr),
 		       mfa_acr                  = COALESCE($8::text[], mfa_acr),
+		       login_domains            = COALESCE($9::text[], login_domains),
 		       updated_at               = now()
 		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, c.Enabled, c.AllowAssertions, c.TrustEmailVerification,
-		c.RequireVerifiedEmail, amr, acr)
+		c.RequireVerifiedEmail, amr, acr, domains)
 	return err
 }
 
@@ -189,7 +268,7 @@ type IdentityProviderRow struct {
 	ID, Slug, Name, Kind, Issuer                                  string
 	Enabled, AllowSignup, AllowLinking                            bool
 	AllowAssertions, TrustEmailVerification, RequireVerifiedEmail bool
-	MFAAMR, MFAACR                                                []string
+	MFAAMR, MFAACR, LoginDomains                                  []string
 	Linked                                                        int
 	AttributeMap                                                  []IdPAttributeMapping
 }
@@ -206,7 +285,8 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 	rows, err := q.Query(ctx, `
 		SELECT p.id::text, p.slug, p.display_name, p.kind, COALESCE(p.issuer, ''), p.enabled, p.allow_signup,
 		       p.allow_linking, p.allow_jwt_bearer, p.trust_email_verification, p.require_verified_email,
-		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id)
+		       p.mfa_amr, p.mfa_acr, (SELECT count(*) FROM core.federated_identities f WHERE f.provider_id = p.id),
+		       p.login_domains
 		  FROM core.identity_providers p WHERE p.org_id = $1::uuid ORDER BY p.slug`, orgID)
 	if err != nil {
 		return nil, err
@@ -216,7 +296,7 @@ func IdentityProviders(ctx context.Context, q Querier, orgID string) ([]Identity
 		var p IdentityProviderRow
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.Kind, &p.Issuer, &p.Enabled, &p.AllowSignup,
 			&p.AllowLinking, &p.AllowAssertions, &p.TrustEmailVerification, &p.RequireVerifiedEmail, &p.MFAAMR,
-			&p.MFAACR, &p.Linked); err != nil {
+			&p.MFAACR, &p.Linked, &p.LoginDomains); err != nil {
 			rows.Close()
 			return nil, err
 		}

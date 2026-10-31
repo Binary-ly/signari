@@ -489,6 +489,12 @@
           ],
           "type": "string"
         },
+        "login_domains": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "mfa_acr": {
           "items": {
             "type": "string"

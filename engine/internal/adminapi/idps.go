@@ -33,6 +33,7 @@ type identityProviderView struct {
 	RequireVerifiedEmail   bool             `json:"require_verified_email"`
 	MFAAMR                 []string         `json:"mfa_amr"`
 	MFAACR                 []string         `json:"mfa_acr"`
+	LoginDomains           []string         `json:"login_domains"`
 	Linked                 int              `json:"linked"`
 	AttributeMap           []map[string]any `json:"attribute_map"`
 }
@@ -46,6 +47,7 @@ type patchIdentityProviderRequest struct {
 	RequireVerifiedEmail   *bool     `json:"require_verified_email"`
 	MFAAMR                 *[]string `json:"mfa_amr"`
 	MFAACR                 *[]string `json:"mfa_acr"`
+	LoginDomains           *[]string `json:"login_domains"`
 }
 
 type idpAttributeMapRequest struct {
@@ -209,7 +211,7 @@ func (s *Server) listIdentityProviders(w http.ResponseWriter, r *http.Request) {
 			Enabled: p.Enabled, AllowSignup: p.AllowSignup, AllowLinking: p.AllowLinking,
 			AllowAssertions: p.AllowAssertions, TrustEmailVerification: p.TrustEmailVerification,
 			RequireVerifiedEmail: p.RequireVerifiedEmail, MFAAMR: p.MFAAMR, MFAACR: p.MFAACR, Linked: p.Linked,
-			AttributeMap: maps})
+			LoginDomains: p.LoginDomains, AttributeMap: maps})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
@@ -231,6 +233,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		l := cleanList(*req.MFAACR, false)
 		change.MFAACR = &l
 	}
+	change.LoginDomains = req.LoginDomains
 	if change.Empty() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return

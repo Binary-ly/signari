@@ -48,6 +48,7 @@ type IdentityProvider struct {
 	RequireVerifiedEmail   *bool         `yaml:"require_verified_email,omitempty"`
 	MFAAMR                 *[]string     `yaml:"mfa_amr,omitempty"`
 	MFAACR                 *[]string     `yaml:"mfa_acr,omitempty"`
+	LoginDomains           *[]string     `yaml:"login_domains,omitempty"`
 	AttributeMap           *[]IdPMapping `yaml:"attribute_map,omitempty"`
 }
 
@@ -118,7 +119,7 @@ func (w IdentityProvider) spec() store.IdentityProviderSpec {
 func (w IdentityProvider) change() store.IdentityProviderChange {
 	return store.IdentityProviderChange{Enabled: w.Enabled, AllowAssertions: w.AllowAssertions,
 		TrustEmailVerification: w.TrustEmailVerification, RequireVerifiedEmail: w.RequireVerifiedEmail,
-		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR}
+		MFAAMR: w.MFAAMR, MFAACR: w.MFAACR, LoginDomains: w.LoginDomains}
 }
 
 type idpSection struct{}
@@ -297,6 +298,7 @@ func (idpSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, pr
 			c.note(w.RequireVerifiedEmail != nil && h.RequireVerifiedEmail != *w.RequireVerifiedEmail,
 				"require_verified_email")
 			c.note(w.MFAAMR != nil && !sameSet(h.MFAAMR, *w.MFAAMR), "mfa_amr")
+			c.note(w.LoginDomains != nil && !sameSet(h.LoginDomains, *w.LoginDomains), "login_domains")
 			c.note(w.MFAACR != nil && !sameSet(h.MFAACR, *w.MFAACR), "mfa_acr")
 			if w.AttributeMap != nil {
 				have := map[string]IdPMapping{}
@@ -468,6 +470,10 @@ func (idpSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 		if len(h.MFAAMR) > 0 {
 			amr := sortedCopy(h.MFAAMR)
 			w.MFAAMR = &amr
+		}
+		if len(h.LoginDomains) > 0 {
+			domains := sortedCopy(h.LoginDomains)
+			w.LoginDomains = &domains
 		}
 		if len(h.MFAACR) > 0 {
 			acr := sortedCopy(h.MFAACR)

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0211 idp_login_domains
+
+Compatible with the release before: its binary may still serve this schema.
+
+The address domains a provider signs in (8.20), so somebody at corp.example reaches the company's identity provider without being shown a password box first. A routing hint and nothing more: it decides where a person is sent, never who they are, and a local password in the same domain goes on working, or the one account that survives an outage at the provider could not sign in.
+
 ## 0210 client_require_state
 
 Compatible with the release before: its binary may still serve this schema.

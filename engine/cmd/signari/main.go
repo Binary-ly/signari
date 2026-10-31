@@ -272,6 +272,7 @@ federation in:
   idp unlink                detach an upstream subject from its person
   idp links                 a provider's subjects and the people they act as
   idp trust-mfa             which upstream amr and acr values count as multi-factor
+  idp domains               the address domains a provider signs in
   idp verified-email        whether to believe a provider's email_verified, and require it
   idp attribute-map         route a provider's claim into a local attribute
   idp apple-secret          mint the client secret Apple requires
@@ -1708,6 +1709,8 @@ func run(args []string) (err error) {
 			emailRequired = requireVerified
 		}
 		return idpVerifiedEmail(ctx, conn, *slug, emailTrust, emailRequired)
+	case "idp domains":
+		return idpDomainsSet(ctx, conn, *slug, *signupDomains)
 	case "idp trust-mfa":
 		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
 	case "idp disable":

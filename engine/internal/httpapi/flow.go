@@ -314,6 +314,18 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					Disposition: oauth.DispositionRedirect})
 			return
 		}
+		// Only with no session at all: one short of what is asked needs a factor
+		// here, which the provider cannot supply.
+		if sid == "" {
+			slug, kind, herr := s.homeRealm(ctx, c.OrgID, query)
+			if herr != nil {
+				s.log.Error("finding a home realm", "err", herr, "correlation_id", correlationID(ctx))
+			}
+			if slug != "" {
+				http.Redirect(w, r, providerStart(slug, kind, r.URL.RawQuery), http.StatusSeeOther)
+				return
+			}
+		}
 		s.renderLogin(w, r, r.URL.RawQuery, loginMsg)
 		return
 	}
@@ -1810,6 +1822,15 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	authzQuery := r.PostForm.Get("authz")
 	identifier := r.PostForm.Get("username")
 	password := r.PostForm.Get("password")
+
+	// The single sign-on button (8.20): before any credential is looked up, since
+	// none was offered. An address no provider signs in is told so.
+	if r.PostForm.Get("sso") != "" {
+		if !s.routeByAddress(w, r, s.loginOrg(ctx, authzQuery), identifier, authzQuery) {
+			s.renderLogin(w, r, authzQuery, "Single sign-on is not set up for that address.")
+		}
+		return
+	}
 
 	// The challenge is checked BEFORE the credential lookup, so a solved
 	// challenge is a precondition for spending an Argon2 evaluation rather than

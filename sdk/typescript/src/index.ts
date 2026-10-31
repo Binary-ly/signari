@@ -2079,6 +2079,7 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItem {
   issuer: string
   kind: string
   linked: number
+  login_domains: string[]
   mfa_acr: string[]
   mfa_amr: string[]
   name: string
@@ -2816,6 +2817,7 @@ export interface PatchOrganizationsOrgIDDirectoriesSlugResponse {
 export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   allow_assertions?: boolean
   enabled?: boolean
+  login_domains?: string[]
   mfa_acr?: string[]
   mfa_amr?: string[]
   require_verified_email?: boolean

@@ -990,6 +990,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"StaySignedIn": s.persistentOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// An emailed code in place of the password, where the sign-in flow takes one.
 		"EmailCode": s.emailSignInOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		// Single sign-on by address, where a provider signs in a domain.
+		"SingleSignOn": s.singleSignOnOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// Other accounts this browser is signed in with, to choose instead.
 		"Accounts": s.holdsAccounts(r, s.loginOrg(r.Context(), authzQuery)),
 		// Only when this request actually needs one. In adaptive mode a person

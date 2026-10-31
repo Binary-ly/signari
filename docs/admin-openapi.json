@@ -11049,6 +11049,12 @@
                           "linked": {
                             "type": "integer"
                           },
+                          "login_domains": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
                           "mfa_acr": {
                             "items": {
                               "type": "string"
@@ -11088,6 +11094,7 @@
                           "require_verified_email",
                           "mfa_amr",
                           "mfa_acr",
+                          "login_domains",
                           "linked",
                           "attribute_map"
                         ],
@@ -11375,6 +11382,12 @@
                   },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "login_domains": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   "mfa_acr": {
                     "items": {

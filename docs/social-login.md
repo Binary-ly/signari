@@ -51,11 +51,40 @@ value only for a provider that sets it when, and only when, it checked a second
 factor itself. `github` and a `saml` upstream send no ID token to read these
 from, and the command refuses to set a list on either.
 
+`signari idp attribute-map` reads a claim by name, then by a dotted path into nested
+objects, so `realm.team` finds `{"realm":{"team":"Platform"}}`. A SAML upstream's
+attributes are mapped the same way, by the attribute's name. One with several values
+maps onto nothing, since nothing here could say which was meant.
+
 The same settings, with taking a provider out of service, its assertions,
 whether its `email_verified` is believed and its attribute mapping, are
 `PATCH /admin/organizations/{orgID}/identity-providers/{slug}` and its
 `attribute-map` in the [Admin API](admin-api.md#organisations), for a console or
 automation that has no shell.
+
+## Sending people to their own provider
+
+Three things take somebody past the password box, straight to their provider:
+
+- `idp_hint=<slug>` on an authorization request, for an application that knows which
+  provider it wants. A slug that is not an enabled provider of the client's
+  organisation is ignored, and the sign-in page is shown.
+- `login_hint=ada@corp.example` on an authorization request, when a provider signs in
+  that domain.
+- A **Continue with single sign-on** button on the sign-in page, when any provider in
+  the organisation signs in a domain. The person types their address and presses it.
+
+```sh
+signari idp domains -slug corp -domains corp.example,corp.test
+```
+
+`PATCH .../identity-providers/{slug}` takes the same list as `login_domains`, as does a
+configuration file. A domain belongs to one provider in an organisation. This chooses a
+route and nothing else: the provider still authenticates the person, and every linking
+rule applies when they come back. A local password in the same domain goes on working
+through the ordinary form, so the account that must survive an outage at the provider
+can still sign in. Both hints apply only with no session at all: somebody short of a
+second factor needs it here, and the provider cannot supply it.
 
 ## When somebody signs out at the provider
 

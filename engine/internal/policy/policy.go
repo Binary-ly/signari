@@ -86,6 +86,9 @@ type Conditions struct {
 	Groups []string `yaml:"groups"`
 	// AnyGroup: the user must be in at least one.
 	AnyGroup []string `yaml:"any_group"`
+	// ApplicationRoles: the user must hold at least one of these roles in the
+	// application being signed in to, a relation on application:<client>.
+	ApplicationRoles []string `yaml:"application_roles"`
 	// UserAttributes: the user must hold each of these, as the directory has
 	// it: one of the values listed, or any value when none are. Only attributes
 	// declared and not personal; storing a policy that names another is refused.
@@ -163,7 +166,9 @@ type Request struct {
 	// Attributes are the user's attributes that are not personal, read when a
 	// rule asks (File.AttributeNames).
 	Attributes map[string]string `yaml:"attributes"`
-	MFA        bool              `yaml:"mfa"`
+	// ApplicationRoles are their roles in Client, read when a rule asks.
+	ApplicationRoles []string `yaml:"application_roles"`
+	MFA              bool     `yaml:"mfa"`
 	// AMR is what the session ACTUALLY proved, in RFC 8176 terms. A test case
 	// sets it directly, which is how factor conditions are covered by the
 	// file's own tests without a phone.
@@ -304,7 +309,8 @@ func (f *File) validate() error {
 }
 
 func (c Conditions) isEmpty() bool {
-	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && len(c.UserAttributes) == 0 && !c.MFA &&
+	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && len(c.UserAttributes) == 0 &&
+		len(c.ApplicationRoles) == 0 && !c.MFA &&
 		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
 		!c.DeviceManaged && !c.DeviceCompliant &&
@@ -426,6 +432,11 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		if !any {
 			return false
 		}
+	}
+	if len(c.ApplicationRoles) > 0 && !slices.ContainsFunc(c.ApplicationRoles, func(role string) bool {
+		return contains(req.ApplicationRoles, role)
+	}) {
+		return false
 	}
 	for name, allowed := range c.UserAttributes {
 		v, held := req.Attributes[name]
@@ -559,6 +570,16 @@ func (f *File) UsesImpossibleTravel() bool {
 func (f *File) UsesCountries() bool {
 	for _, r := range f.Policies {
 		if len(r.Require.FromCountries) > 0 || len(r.Require.NotFromCountries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesApplicationRoles reports whether any rule asks about a role.
+func (f *File) UsesApplicationRoles() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.ApplicationRoles) > 0 {
 			return true
 		}
 	}

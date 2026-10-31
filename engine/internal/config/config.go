@@ -150,6 +150,9 @@ type Client struct {
 	IDTokenAlg *string `yaml:"id_token_signed_response_alg"`
 	// AccessTokenAlg signs its access tokens alone, "" going back to the above.
 	AccessTokenAlg *string `yaml:"access_token_signed_response_alg"`
+	// RolesClaim is the claim its tokens carry a person's roles in the application
+	// under, "" for none; absent leaves it.
+	RolesClaim *string `yaml:"roles_claim"`
 	// RequirePAR and FirstParty are the switches; each absent leaves it.
 	RequirePAR   *bool `yaml:"require_pushed_authorization_requests"`
 	RequireState *bool `yaml:"require_state"`
@@ -165,7 +168,7 @@ type Client struct {
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
-		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RequirePAR: c.RequirePAR,
+		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RolesClaim: c.RolesClaim, RequirePAR: c.RequirePAR,
 		RequireState: c.RequireState, FirstParty: c.FirstParty,
 		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
 }

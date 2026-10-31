@@ -197,6 +197,14 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 				Message: "Access could not be checked. Please try again."}
 		}
 	}
+	if _, person := store.CanonicalUUID(userID); person && f.UsesApplicationRoles() {
+		var err error
+		if req.ApplicationRoles, err = store.ApplicationRoles(ctx, q, orgID, userID, clientID); err != nil {
+			s.log.Error("reading roles for a policy decision", "err", err)
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
+	}
 	if r != nil {
 		req.IP = clientIP(r)
 

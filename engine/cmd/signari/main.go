@@ -221,6 +221,7 @@ clients:
   client set-issuer-alias          mint the client's tokens under a legacy issuer
   client set-admin-api             let the client obtain tokens for the Admin API
   client set-first-party           skip the consent screen for a client that is yours
+  client set-roles-claim           the claim a client's tokens carry a person's roles in it under
   client set-acr                   the assurance every sign-in to the client must reach
   client set-grants                set which grant types a client may use
   client set-exchange              grant RFC 8693 token exchange, for itself and audiences
@@ -1417,6 +1418,12 @@ func run(args []string) (err error) {
 				false: "state is the client's own choice"}[*requireState])
 	case "client set-admin-api":
 		return clientSetAdminAPI(ctx, conn, *clientID, *adminAPI)
+	case "client set-roles-claim":
+		said := "its tokens carry no roles"
+		if *upstreamClaim != "" {
+			said = "its tokens carry a person's roles in " + *upstreamClaim
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RolesClaim: upstreamClaim}, said)
 	case "client set-first-party":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
 			map[bool]string{true: "first-party: the consent screen is skipped",

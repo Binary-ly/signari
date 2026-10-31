@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0229 application_roles
+
+Compatible with the release before: its binary may still serve this schema.
+
+A role in an application (11.10). A role is a relation on application:&lt;client_id&gt;, granted as any other relation is, to a person or a group, with an expiry if it wants one. What was missing is the application hearing about it: roles_claim names the claim a client's tokens carry them in. NULL carries none, as every client did.
+
 ## 0228 generic_oauth2
 
 Not compatible with the release before: stop it before migrating.

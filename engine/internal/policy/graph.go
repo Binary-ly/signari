@@ -233,6 +233,9 @@ func describeConditions(c Conditions) []string {
 	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
 		out = append(out, "the attribute "+name)
 	}
+	if len(c.ApplicationRoles) > 0 {
+		out = append(out, "a role of "+strings.Join(c.ApplicationRoles, ", "))
+	}
 	if len(c.FromCountries) > 0 {
 		out = append(out, "from "+strings.Join(c.FromCountries, ", "))
 	}

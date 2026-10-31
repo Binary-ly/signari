@@ -176,6 +176,22 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Roles in the application, read fresh for the same reason, under the claim the
+	// client named. A failure to read them is logged and leaves them out, as above.
+	var roleOrg, rolesClaim string
+	if err := s.db.QueryRow(ctx, `
+		SELECT u.org_id::text, COALESCE(c.roles_claim, '')
+		  FROM core.users u JOIN core.clients c ON c.org_id = u.org_id
+		 WHERE u.id = $1::uuid AND c.client_id = $2`, claims.Subject, claims.ClientID).
+		Scan(&roleOrg, &rolesClaim); err == nil && rolesClaim != "" {
+		roles, rerr := store.ApplicationRoles(ctx, s.db, roleOrg, claims.Subject, claims.ClientID)
+		if rerr != nil {
+			s.log.Error("loading roles for userinfo", "err", rerr)
+		} else if _, taken := out[rolesClaim]; !taken && len(roles) > 0 {
+			out[rolesClaim] = roles
+		}
+	}
+
 	// Operator-defined claims, resolved LAST and merged without overwriting.
 	//
 	// The order is the safety property. A mapper cannot replace `sub`, `email`

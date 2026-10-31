@@ -561,6 +561,7 @@ Answers:
 | `require_pushed_authorization` | boolean |  |
 | `require_state` | boolean |  |
 | `response_types` | list of string |  |
+| `roles_claim` | string or null |  |
 | `scopes` | list of string | always |
 | `tls_bound_tokens` | boolean |  |
 | `tls_san_dns` | string or null |  |
@@ -618,6 +619,7 @@ Takes:
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization_requests` | boolean |  |
 | `require_state` | boolean |  |
+| `roles_claim` | string |  |
 | `scopes` | list of string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_certificate` | string |  |
@@ -650,6 +652,7 @@ Answers:
 | `require_pkce` | boolean | always |
 | `require_pushed_authorization_requests` | boolean |  |
 | `require_state` | boolean |  |
+| `roles_claim` | string |  |
 
 ## clients / group-release
 

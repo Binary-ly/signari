@@ -292,6 +292,36 @@ back short, or empty, with a `next_token`. The token resumes after the last
 candidate *evaluated*, not the last one returned, so following tokens to the end
 visits every candidate exactly once.
 
+## Roles in an application
+
+A role in an application is a relation on `application:<client_id>`, granted like any
+other, to a person or a group, with an expiry if it wants one:
+
+```sh
+signari authz grant -org <uuid> -principal user:alice@example.com -relation admin -object application:web-app
+signari authz grant -org <uuid> -principal group:finance -relation auditor -object application:web-app
+
+signari client set-roles-claim -client-id web-app -claim roles
+```
+
+The client's ID tokens, access tokens and userinfo then carry `"roles": ["admin"]`, read
+for each token, so a role taken away is gone from the next one. Somebody with no role
+gets no claim, not an empty one. The name is yours, and refused if it is one a relying
+party reads for something else (`sub`, `acr` and the like). A claim mapper that took the
+same name for this client keeps it.
+
+To refuse a sign-in without one, say so in the [access policy](policy.md):
+
+```yaml
+- name: staff-only
+  when: {client: web-app}
+  require:
+    application_roles: [admin, auditor]   # any of these
+```
+
+That holds at every grant the policy is asked about, so a role taken away stops a refresh
+too.
+
 ## Things the wire format gets wrong elsewhere
 
 **A denial is `200 {"decision": false}`.** Not 403. The HTTP status says whether

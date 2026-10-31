@@ -847,6 +847,12 @@
                       },
                       "type": "array"
                     },
+                    "roles_claim": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "scopes": {
                       "items": {
                         "type": "string"
@@ -1110,6 +1116,9 @@
                   "require_state": {
                     "type": "boolean"
                   },
+                  "roles_claim": {
+                    "type": "string"
+                  },
                   "scopes": {
                     "items": {
                       "type": "string"
@@ -1213,6 +1222,9 @@
                     },
                     "require_state": {
                       "type": "boolean"
+                    },
+                    "roles_claim": {
+                      "type": "string"
                     }
                   },
                   "required": [

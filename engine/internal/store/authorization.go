@@ -563,6 +563,40 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	return f, rows.Err()
 }
 
+// ApplicationObject is the object type a role in an application is a relation on.
+const ApplicationObject = "application"
+
+// ApplicationRoles lists the roles a person holds in an application, sorted: the
+// relations on application:<client>, held directly or through a group, and live.
+// Read for each token and each decision, as groups are: a role taken away is gone
+// from the next one.
+func ApplicationRoles(ctx context.Context, q Querier, orgID, userID, clientID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT r.relation
+		  FROM core.relations r
+		  JOIN core.users u ON u.id = $2::uuid AND u.org_id = r.org_id
+		 WHERE r.org_id = $1::uuid AND r.object_type = $4 AND r.object_id = $3
+		   AND (r.expires_at IS NULL OR r.expires_at > now())
+		   AND ((r.subject_type = 'user' AND lower(r.subject_id) IN (u.id::text, u.email_fold, u.username_fold))
+		     OR (r.subject_type = 'group' AND r.subject_id IN (
+		           SELECT g.name FROM core.group_members m JOIN core.groups g ON g.id = m.group_id
+		            WHERE m.user_id = u.id AND g.org_id = u.org_id)))
+		 ORDER BY r.relation`, orgID, userID, clientID, ApplicationObject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		out = append(out, role)
+	}
+	return out, rows.Err()
+}
+
 // PlainAttributes reads a person's attributes that are not personal, for a
 // decision. Read each time and never cached, as every other fact about who
 // somebody is: a cost centre that changed has changed by the next request.

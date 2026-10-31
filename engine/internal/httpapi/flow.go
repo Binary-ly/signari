@@ -607,7 +607,32 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	s.deliverAuthzResponse(w, r, req.RedirectURI, req.ResponseMode, out)
 }
 
-// mintHybridIDToken issues the front-channel id_token for a hybrid response.
+// withRoles adds a person's roles in the application to a token's claims, when the
+// client names a claim for them. A mapper that took the same name keeps it, as it would
+// against anything else: it was set by an operator, on purpose, for this client.
+func withRoles(ctx context.Context, q store.Querier, c *clients.Client, userID, orgID string,
+	claims map[string]any) (map[string]any, error) {
+	if c.RolesClaim == "" || userID == "" {
+		return claims, nil
+	}
+	if _, taken := claims[c.RolesClaim]; taken {
+		return claims, nil
+	}
+	roles, err := store.ApplicationRoles(ctx, q, orgID, userID, c.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the roles in %s: %w", c.ClientID, err)
+	}
+	if len(roles) == 0 {
+		return claims, nil
+	}
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	claims[c.RolesClaim] = roles
+	return claims, nil
+}
+
+// mintHybridIDTokenissues the front-channel id_token for a hybrid response.
 //
 // It carries c_hash and NOT at_hash: no access token exists at this point, and
 // none will ever cross the front channel. Profile claims are left out for the
@@ -1209,6 +1234,9 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		}
 		accessExtra = mapped
 	}
+	if accessExtra, err = withRoles(ctx, tx, c, userID, orgID, accessExtra); err != nil {
+		return nil, nil, err
+	}
 
 	// How this person signed in, for a resource server deciding whether that is
 	// enough, as the ID token says it to the client. A token with no session says
@@ -1315,6 +1343,9 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			claims.Extra = mapped
 		}
 
+		if claims.Extra, err = withRoles(ctx, tx, c, userID, orgID, claims.Extra); err != nil {
+			return nil, nil, err
+		}
 		idt, err := signer.SignIDToken(claims)
 		if err != nil {
 			return nil, nil, err

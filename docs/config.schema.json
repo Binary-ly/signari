@@ -150,6 +150,9 @@
         "require_state": {
           "type": "boolean"
         },
+        "roles_claim": {
+          "type": "string"
+        },
         "scopes": {
           "items": {
             "type": "string"

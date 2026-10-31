@@ -28,6 +28,7 @@ func TestEveryConditionIsDrawn(t *testing.T) {
 		DeviceManaged:      true,
 		DeviceCompliant:    true,
 		UserAttributes:     map[string][]string{"cost_centre": {"4100"}},
+		ApplicationRoles:   []string{"admin"},
 		FromCountries:      []string{"GB"},
 		NotFromCountries:   []string{"FR"},
 		MaxRecentFailures:  5,

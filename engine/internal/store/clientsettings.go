@@ -34,6 +34,9 @@ type ClientSettings struct {
 	// AccessTokenAlg signs the client's access tokens alone, for a resource server
 	// that takes something else; "" goes back to IDTokenAlg. The same rules.
 	AccessTokenAlg *string
+	// RolesClaim names the claim the client's tokens carry a person's roles in
+	// the application under; "" carries none.
+	RolesClaim *string
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
@@ -64,6 +67,11 @@ const (
 
 // ClientACRs are the floors a client may be given, the schema's own CHECK.
 var ClientACRs = []string{"1", "2", "3", "4"}
+
+// protocolClaimNames are what no setting may name, the CHECK on clients.roles_claim
+// and on claim_mappers: a relying party reads them to decide who and how strongly.
+var protocolClaimNames = []string{"iss", "sub", "aud", "exp", "iat", "nbf", "jti", "azp", "nonce", "auth_time", "acr",
+	"amr", "sid", "at_hash", "c_hash", "s_hash", "client_id", "scope", "cnf"}
 
 // ClientAlgorithms are the JWS algorithms a client may be set to sign with,
 // the schema's own CHECK. No symmetric algorithm, ever.
@@ -155,6 +163,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.RolesClaim; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET roles_claim = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
 	if v := s.RequirePAR; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_pushed_authorization = $2,
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
@@ -240,6 +254,10 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if v := s.RolesClaim; v != nil && (len(*v) > 128 || slices.Contains(protocolClaimNames, *v)) {
+		return fmt.Errorf("%w: %q is part of the token's own structure, or too long to be a claim's name, so "+
+			"roles cannot be carried in it", ErrInvalidClientSetting, *v)
+	}
 	if d := s.ConsentLifetime; d != nil && *d != 0 &&
 		(*d < MinConsentLifetime || *d > MaxConsentLifetime || *d%time.Second != 0) {
 		return fmt.Errorf("%w: a consent lifetime must be whole seconds from %s to %s, or 0 for "+
@@ -271,6 +289,7 @@ type ClientSettingsView struct {
 	RefreshReuseGrace time.Duration
 	IDTokenAlg        string
 	AccessTokenAlg    string
+	RolesClaim        string
 	RequirePAR        bool
 	RequireState      bool
 	FirstParty        bool
@@ -287,10 +306,10 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var v ClientSettingsView
 	var access, refresh, grace, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
-		       COALESCE(access_token_signed_alg, ''), require_pushed_authorization, first_party,
-		       COALESCE(issuer_alias, ''), minimum_acr, COALESCE(consent_lifetime_s, 0), require_state
+		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), require_pushed_authorization,
+		       first_party, COALESCE(issuer_alias, ''), minimum_acr, COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RequirePAR, &v.FirstParty,
+		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.RequirePAR, &v.FirstParty,
 			&v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound

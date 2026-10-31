@@ -73,6 +73,14 @@ func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal
 	if claims == nil || err != nil {
 		return nil, errTokenRejected
 	}
+	// Whatever the client calls them, a role binding is held by the person.
+	claims.Subject, err = store.PersonNamedBy(ctx, s.db, claims.ClientID, claims.Subject)
+	if errors.Is(err, store.ErrNoPairwiseSubject) {
+		return nil, errTokenRejected
+	}
+	if err != nil {
+		return nil, rejectedOr(err)
+	}
 	// Exactly the Admin API's audience: tokens.AudienceAccepted's rule, the
 	// client's own id or the issuer, would make every application's token an
 	// administrator's.

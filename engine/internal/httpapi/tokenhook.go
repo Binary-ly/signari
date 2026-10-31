@@ -66,8 +66,18 @@ func signAccessToken(ctx context.Context, signer *tokens.Signer, c tokens.Access
 // issueAccessToken signs an access token and answers what the client is given: the
 // token itself, or for a client set to opaque, a handle that stands for it. Through q,
 // so a handle stored in a grant's transaction goes with it if the grant is undone.
-func issueAccessToken(ctx context.Context, q store.Execer, client *clients.Client, signer *tokens.Signer,
+//
+// The subject, and whoever is acting for them, are put as the client knows them here,
+// so no grant can forget to. A delegation further down the chain keeps what it said.
+func issueAccessToken(ctx context.Context, q store.SubjectDB, client *clients.Client, signer *tokens.Signer,
 	c tokens.AccessTokenClaims) (string, error) {
+	var err error
+	if c.Subject, err = subjectFor(ctx, q, client, c.Subject); err != nil {
+		return "", err
+	}
+	if c.Act, err = actorFor(ctx, q, client, c.Act); err != nil {
+		return "", err
+	}
 	signed, err := signAccessToken(ctx, signer, c)
 	if err != nil || client.AccessFormat != "opaque" {
 		return signed, err
@@ -75,10 +85,36 @@ func issueAccessToken(ctx context.Context, q store.Execer, client *clients.Clien
 	return store.NewOpaqueToken(ctx, q, client.OrgID, client.ClientID, signed, time.Unix(c.Expiry, 0))
 }
 
+// subjectFor is what a client calls a subject: the person's id, or for a client set to
+// pairwise, what its sector knows them by. A client's own token is left naming the client.
+func subjectFor(ctx context.Context, q store.SubjectDB, client *clients.Client, subject string) (string, error) {
+	if client.SubjectType != "pairwise" || subject == client.ClientID {
+		return subject, nil
+	}
+	return store.PairwiseSubject(ctx, q, client.OrgID, client.Sector, subject)
+}
+
+// actorFor is an actor claim as a client knows it. A copy, because one actor goes into
+// both of a grant's tokens.
+func actorFor(ctx context.Context, q store.SubjectDB, client *clients.Client, act *tokens.Actor) (*tokens.Actor, error) {
+	if act == nil {
+		return nil, nil
+	}
+	subject, err := subjectFor(ctx, q, client, act.Subject)
+	if err != nil {
+		return nil, err
+	}
+	named := *act
+	named.Subject = subject
+	return &named, nil
+}
+
 // verifyPresented verifies what a caller presented as an access token, whichever form
 // a client was given it in. Every path that takes one comes through here, so a client
 // set to opaque has its tokens taken everywhere a JWT is. A handle that opens nothing
-// goes to the verifier as it came, and is refused there like anything else.
+// goes to the verifier as it came, and is refused there like anything else. A pairwise
+// subject is read back here too, so whatever takes a token sees the person, and one
+// whose person has gone is no token at all.
 func (s *Server) verifyPresented(ctx context.Context, issuers []string, raw string) (*tokens.AccessTokenClaims, error) {
 	return s.verifyPresentedIn(ctx, s.db, issuers, raw)
 }
@@ -97,7 +133,18 @@ func (s *Server) verifyPresentedIn(ctx context.Context, q interface {
 			s.log.Error("reading an opaque access token", "err", err)
 		}
 	}
-	return tokens.VerifyAccessTokenAny(s.cfg.Keys, issuers, raw)
+	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, issuers, raw)
+	if err != nil {
+		return nil, err
+	}
+	person, err := store.PersonNamedBy(ctx, q, claims.ClientID, claims.Subject)
+	if err != nil {
+		return nil, err
+	}
+	if person != claims.Subject {
+		claims.Pairwise, claims.Subject = claims.Subject, person
+	}
+	return claims, nil
 }
 
 // consultTokenHook asks the token_issue provider about an issuance this engine

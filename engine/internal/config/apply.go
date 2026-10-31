@@ -110,6 +110,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		}
 		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
 		cl.AccessTokenAlg, cl.RolesClaim, cl.AccessTokenFormat = &st.AccessTokenAlg, &st.RolesClaim, &st.AccessTokenFormat
+		cl.SubjectType, cl.Sector = &st.SubjectType, &st.Sector
 		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
 		cl.RequireState = &st.RequireState
 		cl.MinimumACR = &st.MinimumACR
@@ -433,6 +434,12 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.AccessTokenFormat, have.AccessTokenFormat; w != nil && h != nil && *w != *h {
 		d = append(d, "access_token_format")
+	}
+	if w, h := want.SubjectType, have.SubjectType; w != nil && h != nil && *w != *h {
+		d = append(d, "subject_type")
+	}
+	if w, h := want.Sector, have.Sector; w != nil && h != nil && *w != *h {
+		d = append(d, "sector")
 	}
 	if w, h := want.RequirePAR, have.RequirePAR; w != nil && h != nil && *w != *h {
 		d = append(d, "require_pushed_authorization_requests")

@@ -134,7 +134,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out := map[string]any{"sub": claims.Subject}
+	out := map[string]any{"sub": claims.Presented()}
 
 	// Claims are released strictly by granted scope. `profile` and `email` are
 	// separate grants and must not leak into each other.

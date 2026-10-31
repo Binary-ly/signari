@@ -862,6 +862,12 @@
                       },
                       "type": "array"
                     },
+                    "sector": {
+                      "type": "string"
+                    },
+                    "subject_type": {
+                      "type": "string"
+                    },
                     "tls_bound_tokens": {
                       "type": "boolean"
                     },
@@ -1131,6 +1137,12 @@
                     },
                     "type": "array"
                   },
+                  "sector": {
+                    "type": "string"
+                  },
+                  "subject_type": {
+                    "type": "string"
+                  },
                   "tls_bound_tokens": {
                     "type": "boolean"
                   },
@@ -1233,6 +1245,12 @@
                       "type": "boolean"
                     },
                     "roles_claim": {
+                      "type": "string"
+                    },
+                    "sector": {
+                      "type": "string"
+                    },
+                    "subject_type": {
                       "type": "string"
                     }
                   },

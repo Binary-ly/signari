@@ -276,6 +276,16 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		subjectSession = subject.SessionID
 	}
 
+	// A Txn-Token names its subject by the one id the deployment's own workloads
+	// share, and replacement carries it on. A client set to pairwise is set up
+	// never to see that id, so it does not get one naming a person.
+	if _, person := store.CanonicalUUID(out.Subject); person && c.SubjectType == "pairwise" {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "a client with pairwise subjects cannot be given a Txn-Token naming a person",
+			Status:      http.StatusBadRequest})
+		return
+	}
+
 	// The token names its subject to this workload, so the questions every
 	// other grant asks are asked here: is the subject in this workload's
 	// organisation, and, for a person, does the access policy let them reach

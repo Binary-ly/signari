@@ -423,7 +423,7 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		TokenType: introspectedTokenType(claims.Cnf),
 		Expiry:    claims.Expiry,
 		IssuedAt:  claims.IssuedAt,
-		Subject:   claims.Subject,
+		Subject:   claims.Presented(),
 		Audience:  claims.Audience,
 		Issuer:    s.cfg.Issuer,
 		JTI:       claims.JTI,
@@ -454,6 +454,11 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 			return inactive
 		}
 	}
+	subject, err := subjectFor(ctx, s.db, c, st.UserID)
+	if err != nil {
+		s.log.Error("introspecting refresh token", "err", err)
+		return inactive
+	}
 
 	return &introspectionResponse{
 		Active:    true,
@@ -461,7 +466,7 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 		ClientID:  st.ClientID,
 		TokenType: "refresh_token",
 		Expiry:    st.ExpiresAt.Unix(),
-		Subject:   st.UserID,
+		Subject:   subject,
 		Issuer:    s.cfg.Issuer,
 		SessionID: st.SID,
 	}

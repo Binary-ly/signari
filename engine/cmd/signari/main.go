@@ -223,6 +223,7 @@ clients:
   client set-first-party           skip the consent screen for a client that is yours
   client set-roles-claim           the claim a client's tokens carry a person's roles in it under
   client set-token-format          a client's access tokens as JWTs, or opaque handles to introspect
+  client set-subject-type          name people to a client by their id, or by one only its sector knows
   client set-acr                   the assurance every sign-in to the client must reach
   client set-grants                set which grant types a client may use
   client set-exchange              grant RFC 8693 token exchange, for itself and audiences
@@ -512,6 +513,10 @@ func run(args []string) (err error) {
 		"empty goes back to what signs its ID tokens")
 	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
 		"resource server introspects")
+	subjectType := fs.String("subject-type", "public", "`client set-subject-type`: public, or pairwise for a "+
+		"subject that means nothing outside the client's sector")
+	sector := fs.String("sector", "", "`client set-subject-type`: the host name of the clients that share a "+
+		"pairwise subject (default: the one it has, or the host of its redirect URIs when they have only one)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
@@ -1424,6 +1429,10 @@ func run(args []string) (err error) {
 	case "client set-token-format":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{AccessTokenFormat: tokenFormat},
 			"its access tokens are "+*tokenFormat+" from the next one issued")
+	case "client set-subject-type":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{SubjectType: subjectType, Sector: sector},
+			"its tokens name people as "+*subjectType+" subjects from the next one issued, and it will not "+
+				"recognise anybody it knew by the old ones")
 	case "client set-roles-claim":
 		said := "its tokens carry no roles"
 		if *upstreamClaim != "" {

@@ -488,12 +488,17 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 		return requestingParty{}, s.claimTokenNeedInfo(ctx, t,
 			"the pushed claim_token has expired; fetch a fresh ID token")
 	}
-	ref, err := store.RequestingPartyRef(ctx, s.db, claims.Subject)
+	person, err := store.PersonNamedBy(ctx, s.db, aud, claims.Subject)
 	if err != nil {
 		return requestingParty{}, uma.InvalidGrant(
 			"the pushed claim_token names a subject this server does not know")
 	}
-	return requestingParty{userID: claims.Subject, ref: ref}, nil
+	ref, err := store.RequestingPartyRef(ctx, s.db, person)
+	if err != nil {
+		return requestingParty{}, uma.InvalidGrant(
+			"the pushed claim_token names a subject this server does not know")
+	}
+	return requestingParty{userID: person, ref: ref}, nil
 }
 
 // claimTokenNeedInfo answers a RECOVERABLE claim-token fault.

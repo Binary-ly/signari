@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0232 pairwise_subjects
+
+Compatible with the release before: its binary may still serve this schema.
+
+A subject that means nothing outside the application it was given to (9.07). A person's id is the same in every token, so two applications can tell they have the same customer by comparing notes. A client set to pairwise names a person by an identifier of its own sector instead: applications that share a sector share it, and nobody else can link them. The identifiers are random and stored, as a SAML persistent NameID is, so there is no salt to keep, an erased person takes theirs with them, and a token's subject reads back to the person without trying every sector.
+
 ## 0231 opaque_access_tokens
 
 Compatible with the release before: its binary may still serve this schema.

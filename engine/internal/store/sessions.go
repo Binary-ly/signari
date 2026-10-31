@@ -111,6 +111,13 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 			continue
 		}
 		seen[key] = true
+		// The receiver is told as it knows them, here because signing has no database.
+		if n.Subject != "" {
+			var err error
+			if n.Subject, err = ClientSubject(ctx, tx, n.ClientID, n.Subject); err != nil {
+				return nil, err
+			}
+		}
 		payload, err := json.Marshal(n)
 		if err != nil {
 			return nil, err

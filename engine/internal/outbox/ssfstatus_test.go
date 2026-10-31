@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/ssf"
+	"signari.dev/engine/internal/store"
 )
 
 // ssfStream registers a push stream with the given status for a fresh client,
@@ -60,6 +61,62 @@ func queueSSF(t *testing.T, pool *pgxpool.Pool, payload map[string]string) int64
 		t.Fatal(err)
 	}
 	return id
+}
+
+// A stream is one client's, so a pushed event names the person as that client does.
+// Queued as the person's id, because the queueing statements have no client to ask about.
+func TestAPushedEventNamesThePersonAsItsClientDoes(t *testing.T) {
+	pool := drainTestPool(t)
+	ctx := context.Background()
+	got := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if parts := strings.Split(string(body), "."); len(parts) == 3 {
+			raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
+			got <- string(raw)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+
+	streamID, clientID := ssfStream(t, pool, "enabled")
+	var org, person string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, email, user_handle)
+		SELECT org_id, 's'||substr(gen_random_uuid()::text,1,8)||'@example.test',
+		       sha256(gen_random_uuid()::text::bytea) || sha256(gen_random_uuid()::text::bytea)
+		FROM core.clients WHERE client_id = $1 RETURNING org_id::text, id::text`, clientID).Scan(&org, &person); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, person)
+	})
+	if _, err := pool.Exec(ctx, `UPDATE core.clients SET subject_type = 'pairwise', sector = 'push.example'
+		WHERE client_id = $1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := store.PairwiseSubject(ctx, pool, org, "push.example", person)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queueSSF(t, pool, map[string]string{"stream_id": streamID, "client_id": clientID, "endpoint": srv.URL,
+		"event": ssf.EventSessionRevoked, "subject": person, "sid": "sid-1", "reason": "test"})
+	w := drainWorker(t, pool, 500)
+	for round := 0; round < 30; round++ {
+		if _, err := w.DrainSSF(ctx); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-got:
+			if !strings.Contains(event, sub) || strings.Contains(event, person) {
+				t.Errorf("the event says %s, want the subject %q", event, sub)
+			}
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	t.Fatal("nothing was pushed")
 }
 
 // A paused stream delivers its stream-updated notice and holds everything else,

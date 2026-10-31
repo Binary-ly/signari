@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -221,6 +222,35 @@ func TestEachInstancesTokensAreAcceptedFromItsOwnApplicationsOnly(t *testing.T) 
 	// Nor its issuer with this one's keys.
 	if rec := call(t, a.s, http.MethodGet, "/admin/clients?limit=1", a.sign(t, fromOther), nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("another instance's issuer signed with this one's key answered %d", rec.Code)
+	}
+}
+
+// A role binding is held by the person, whatever their application calls them, and a
+// token standing for nobody is no token.
+func TestAPairwiseTokenActsWithThePersonsRoles(t *testing.T) {
+	a := newAdminTokens(t)
+	ctx := context.Background()
+	person := newDriftUser(t, a.s)
+	a.grant(t, store.RoleBinding{UserID: person, Role: "user-manager"})
+	sub, err := store.PairwiseSubject(ctx, a.s.db, a.org, "admin.example", person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(sub, store.PairwisePrefix) {
+		t.Fatalf("the subject is %q", sub)
+	}
+	token := a.sign(t, a.claims(sub, a.session(t, person, "pwd", "otp")))
+	target := newDriftUser(t, a.s)
+	if rec := call(t, a.s, http.MethodPatch, "/admin/users/"+target, token,
+		map[string]any{"display_name": "set by a pairwise token"}); rec.Code != http.StatusOK {
+		t.Fatalf("a user manager under a pairwise subject: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := a.s.db.Exec(ctx, `DELETE FROM core.pairwise_subjects WHERE subject = $1`, sub); err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, a.s, http.MethodPatch, "/admin/users/"+target, token,
+		map[string]any{"display_name": "x"}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a token standing for nobody: %d", rec.Code)
 	}
 }
 

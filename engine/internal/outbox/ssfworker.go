@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ssf"
+	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
 
@@ -143,7 +144,12 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 		token, err = ssf.MintVerification(tokens.NewSigner(key), as.issuer, p.ClientID, jti,
 			p.StreamID, p.State, time.Now())
 	default:
-		event := ssf.EventFor(p.Event, as.issuer, p.Subject, p.Reason, p.Claims, time.Now())
+		// A stream is one client's, so the event names the person as that client does.
+		subject, serr := store.ClientSubject(ctx, w.db, p.ClientID, p.Subject)
+		if serr != nil {
+			return serr
+		}
+		event := ssf.EventFor(p.Event, as.issuer, subject, p.Reason, p.Claims, time.Now())
 		token, err = ssf.Mint(tokens.NewSigner(key), as.issuer, p.ClientID, jti, event, time.Now())
 	}
 	if err != nil {

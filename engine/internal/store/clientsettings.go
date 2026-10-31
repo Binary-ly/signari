@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -40,6 +43,12 @@ type ClientSettings struct {
 	// AccessTokenFormat is jwt, or opaque for a handle a resource server
 	// introspects. A token already issued stays what it is.
 	AccessTokenFormat *string
+	// SubjectType is public, or pairwise for a subject that means nothing outside
+	// the client's sector. Changing it changes what the client calls everybody.
+	SubjectType *string
+	// Sector is who shares a pairwise subject. "" keeps the one it has, or takes
+	// the host of the client's redirect URIs when they have only one.
+	Sector *string
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
@@ -178,6 +187,11 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if s.SubjectType != nil || s.Sector != nil {
+		if err := setSubjectType(ctx, tx, clientID, s); err != nil {
+			return err
+		}
+	}
 	if v := s.RequirePAR; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_pushed_authorization = $2,
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
@@ -266,6 +280,12 @@ func CheckClientSettings(s ClientSettings) error {
 	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
 		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
 	}
+	if v := s.SubjectType; v != nil && *v != "public" && *v != "pairwise" {
+		return fmt.Errorf("%w: a subject is public or pairwise, not %q", ErrInvalidClientSetting, *v)
+	}
+	if v := s.Sector; v != nil && *v != "" && !sectorShape.MatchString(strings.ToLower(*v)) {
+		return fmt.Errorf("%w: a sector is a host name, not %q", ErrInvalidClientSetting, *v)
+	}
 	if v := s.RolesClaim; v != nil && (len(*v) > 128 || slices.Contains(protocolClaimNames, *v)) {
 		return fmt.Errorf("%w: %q is part of the token's own structure, or too long to be a claim's name, so "+
 			"roles cannot be carried in it", ErrInvalidClientSetting, *v)
@@ -294,6 +314,72 @@ func clientUpdated(tag pgconn.CommandTag, err error) error {
 	return nil
 }
 
+// sectorShape is a host name, the shape a sector has to have to be read as one.
+var sectorShape = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$`)
+
+// setSubjectType stores how a client names people. The sector is stored and not worked
+// out as it is needed, because a change to a redirect URI must not change what the client
+// calls everybody it already knows.
+func setSubjectType(ctx context.Context, tx pgx.Tx, clientID string, s ClientSettings) error {
+	var kind, sector string
+	err := tx.QueryRow(ctx, `SELECT subject_type, sector FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&kind, &sector)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrClientNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if s.SubjectType != nil {
+		kind = *s.SubjectType
+	}
+	if s.Sector != nil && *s.Sector != "" {
+		sector = strings.ToLower(*s.Sector)
+	}
+	if kind == "pairwise" && sector == "" {
+		if sector, err = sectorOfRedirects(ctx, tx, clientID); err != nil {
+			return err
+		}
+	}
+	return clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET subject_type = $2, sector = $3, updated_at = now()
+		WHERE client_id = $1`, clientID, kind, sector))
+}
+
+// sectorOfRedirects is the one host a client's redirect URIs have. Several say nothing
+// of which is the sector, and a loopback or a custom scheme says nothing of whose it is:
+// every native application on a machine would share one.
+func sectorOfRedirects(ctx context.Context, tx pgx.Tx, clientID string) (string, error) {
+	rows, err := tx.Query(ctx, `SELECT redirect_uri FROM core.client_redirect_uris WHERE client_id = $1`, clientID)
+	if err != nil {
+		return "", err
+	}
+	uris, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return "", err
+	}
+	hosts := map[string]bool{}
+	for _, uri := range uris {
+		u, err := url.Parse(uri)
+		if err != nil {
+			continue
+		}
+		host := strings.ToLower(u.Hostname())
+		if ip := net.ParseIP(host); host == "" || host == "localhost" || (ip != nil && ip.IsLoopback()) {
+			return "", fmt.Errorf("%w: %s says nothing of whose this client is: name its sector",
+				ErrInvalidClientSetting, uri)
+		}
+		hosts[host] = true
+	}
+	if len(hosts) != 1 {
+		return "", fmt.Errorf("%w: this client's redirect URIs have %d hosts, so they cannot say what its sector "+
+			"is: name it", ErrInvalidClientSetting, len(hosts))
+	}
+	for host := range hosts {
+		return host, nil
+	}
+	return "", nil
+}
+
 // ClientSettingsView is what SetClientSettings writes, read back.
 type ClientSettingsView struct {
 	AccessTokenTTL    time.Duration
@@ -303,6 +389,8 @@ type ClientSettingsView struct {
 	AccessTokenAlg    string
 	RolesClaim        string
 	AccessTokenFormat string
+	SubjectType       string
+	Sector            string
 	RequirePAR        bool
 	RequireState      bool
 	FirstParty        bool
@@ -320,11 +408,12 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var access, refresh, grace, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
 		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), access_token_format,
+		       subject_type, sector,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
 		       COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
-			&v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
+			&v.SubjectType, &v.Sector, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

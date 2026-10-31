@@ -1712,6 +1712,8 @@ export interface GetClientsClientIDResponse {
   response_types?: string[]
   roles_claim?: string | null
   scopes: string[]
+  sector?: string
+  subject_type?: string
   tls_bound_tokens?: boolean
   tls_san_dns?: string | null
   tls_san_email?: string | null
@@ -2830,6 +2832,8 @@ export interface PatchClientsClientIDRequest {
   require_state?: boolean
   roles_claim?: string
   scopes?: string[]
+  sector?: string
+  subject_type?: string
   tls_bound_tokens?: boolean
   tls_certificate?: string
   tls_san_dns?: string
@@ -2862,6 +2866,8 @@ export interface PatchClientsClientIDResponse {
   require_pushed_authorization_requests?: boolean
   require_state?: boolean
   roles_claim?: string
+  sector?: string
+  subject_type?: string
 }
 
 /** A JSON object of the Admin API. */

@@ -51,7 +51,7 @@ var notConfiguration = map[string]string{
 		"membership is: the model they are checked against is configuration, the tuples are not",
 
 	"auth_locations": person, "duo_enrollments": person, "email_changes": person, "email_otp_credentials": person,
-	"federated_identities": person, "group_members": person, "passkey_links": person,
+	"federated_identities": person, "group_members": person, "pairwise_subjects": person, "passkey_links": person,
 	"password_credentials": person, "password_history": person, "prompt_responses": person,
 	"recovery_codes": person, "saml_name_ids": person, "sms_otp_credentials": person,
 	"totp_credentials": person, "totp_enrolments": person, "trusted_devices": person,
@@ -60,8 +60,7 @@ var notConfiguration = map[string]string{
 	"attestation_challenges": running, "audit_events": running, "authorization_codes": running,
 	"device_authorizations": running, "duo_challenges": running, "email_sign_in_codes": running,
 	"email_verifications": running, "event_deliveries": running, "federated_logins": running,
-	"impersonations": running, "invitations": running, "opaque_access_tokens": running,
-	"preauthorized_codes": running,
+	"impersonations": running, "invitations": running, "opaque_access_tokens": running, "preauthorized_codes": running,
 	"pushed_requests": running, "rac_sessions": running, "recovery_code_failures": running,
 	"recovery_requests": running, "refresh_token_families": running, "saml_logout_progress": running,
 	"saml_seen_requests": running, "saml_session_participants": running, "sessions": running,

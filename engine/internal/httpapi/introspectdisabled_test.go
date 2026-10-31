@@ -147,7 +147,8 @@ func TestASessionlessTokenEndsWithItsPersonAndUserinfoWithItsClient(t *testing.T
 // token rather than honouring it.
 func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 	exempt := map[string]string{
-		"handleRevoke": "revocation ends the token; it does not act on its authority",
+		"handleRevoke":      "revocation ends the token; it does not act on its authority",
+		"verifyPresentedIn": "the one way a token is read, and every caller is one of the places checked here",
 	}
 	var files []string
 	for _, root := range []string{"..", "../../cmd"} {

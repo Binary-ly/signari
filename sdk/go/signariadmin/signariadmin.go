@@ -560,6 +560,8 @@ type GetClientsClientIDResponse struct {
 	ResponseTypes                         []string       `json:"response_types,omitempty"`
 	RolesClaim                            *string        `json:"roles_claim,omitempty"`
 	Scopes                                []string       `json:"scopes"`
+	Sector                                string         `json:"sector,omitempty"`
+	SubjectType                           string         `json:"subject_type,omitempty"`
 	TlsBoundTokens                        bool           `json:"tls_bound_tokens,omitempty"`
 	TlsSanDns                             *string        `json:"tls_san_dns,omitempty"`
 	TlsSanEmail                           *string        `json:"tls_san_email,omitempty"`
@@ -1678,6 +1680,8 @@ type PatchClientsClientIDRequest struct {
 	RequireState                          *bool           `json:"require_state,omitempty"`
 	RolesClaim                            *string         `json:"roles_claim,omitempty"`
 	Scopes                                *[]string       `json:"scopes,omitempty"`
+	Sector                                *string         `json:"sector,omitempty"`
+	SubjectType                           *string         `json:"subject_type,omitempty"`
 	TlsBoundTokens                        *bool           `json:"tls_bound_tokens,omitempty"`
 	TlsCertificate                        *string         `json:"tls_certificate,omitempty"`
 	TlsSanDns                             *string         `json:"tls_san_dns,omitempty"`
@@ -1710,6 +1714,8 @@ type PatchClientsClientIDResponse struct {
 	RequirePushedAuthorizationRequests bool     `json:"require_pushed_authorization_requests,omitempty"`
 	RequireState                       bool     `json:"require_state,omitempty"`
 	RolesClaim                         string   `json:"roles_claim,omitempty"`
+	Sector                             string   `json:"sector,omitempty"`
+	SubjectType                        string   `json:"subject_type,omitempty"`
 }
 
 // PatchClientsClientIDSSFStreamRequest is a JSON object of the Admin API.

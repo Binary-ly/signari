@@ -225,13 +225,22 @@ func (s *Server) pollFetchAndMint(ctx context.Context, streamID, audience string
 			// event whichever way it arrives. EventTime is the queue time (when the
 			// session was revoked), not now (when the SET is minted) -- for poll the
 			// two can be far apart, and a receiver orders by when things happened.
-			event := ssf.EventFor(e.EventType, s.cfg.Issuer, e.Subject, e.Reason, e.Claims, e.QueuedAt)
+			// A stream is one client's, so the event names the person as that client does.
+			subject, serr := store.ClientSubject(ctx, tx, audience, e.Subject)
+			if serr != nil {
+				return nil, false, serr
+			}
+			event := ssf.EventFor(e.EventType, s.cfg.Issuer, subject, e.Reason, e.Claims, e.QueuedAt)
 			jws, merr = ssf.Mint(signer, s.cfg.Issuer, audience, e.JTI, event, time.Now())
 		}
 		if merr != nil {
 			return nil, false, merr
 		}
 		out[e.JTI] = jws
+	}
+	// For a pairwise subject made above: the queue is only read.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
 	}
 	return out, more, nil
 }

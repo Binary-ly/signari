@@ -350,7 +350,7 @@ func Build(cfg Config) (*Metadata, error) {
 			// unusable for the caching every relying party does.
 			"urn:ietf:params:oauth:grant-type:jwt-bearer"},
 
-		SubjectTypesSupported:   []string{"public"},
+		SubjectTypesSupported:   []string{"public", "pairwise"},
 		AcrValuesSupported:      []string{oauth.ACRSingleFactor, oauth.ACRMultiFactor, oauth.ACRPapeMultiFactor, oauth.ACRPhishingResistant, oauth.ACRPhishingResistantHardware},
 		IDTokenSigningAlgValues: algNames,
 		// private_key_jwt is advertised because it is implemented AND enforced --

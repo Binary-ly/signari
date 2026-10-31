@@ -252,7 +252,15 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 			return
 		}
-		if holder != wantSubject {
+		// The request names them as this client knows them.
+		named, err := subjectFor(ctx, s.db, c, holder)
+		if err != nil {
+			s.log.Error("reading how this client knows them", "err", err)
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+			return
+		}
+		if named != wantSubject {
 			live, somebodyElse = false, true
 			loginMsg = "This application is asking for somebody else. Sign in as them to go on."
 		}
@@ -667,9 +675,13 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
 		return "", err
 	}
+	subject, err := subjectFor(ctx, s.db, c, userID)
+	if err != nil {
+		return "", err
+	}
 	return tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
 		Issuer:          issuer,
-		Subject:         userID,
+		Subject:         subject,
 		Audience:        c.ClientID,
 		Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
 		IssuedAt:        now.Unix(),
@@ -1303,9 +1315,17 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		if sid == "" {
 			return nil, nil, fmt.Errorf("loading session context: %w", pgx.ErrNoRows)
 		}
+		subject, err := subjectFor(ctx, tx, c, userID)
+		if err != nil {
+			return nil, nil, err
+		}
+		actor, err := actorFor(ctx, tx, c, act)
+		if err != nil {
+			return nil, nil, err
+		}
 		claims := tokens.IDTokenClaims{
 			Issuer:          issuer,
-			Subject:         userID,
+			Subject:         subject,
 			Audience:        c.ClientID,
 			Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
 			IssuedAt:        now.Unix(),
@@ -1316,7 +1336,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			SessionID:       sid,
 			AuthorizedParty: c.ClientID,
 			AccessTokenHash: atHash,
-			Actor:           act,
+			Actor:           actor,
 		}
 		if err := s.addProfileClaims(ctx, tx, &claims, userID, scopes); err != nil {
 			return nil, nil, err

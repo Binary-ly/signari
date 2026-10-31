@@ -114,6 +114,7 @@ var exportSections = []exportSection{
 	{table: "saml_session_participants", by: "sessions",
 		where: "t.sid IN (SELECT sid FROM core.sessions WHERE user_id = $1::uuid)"},
 	{table: "saml_name_ids", by: "user_id"},
+	{table: "pairwise_subjects", by: "user_id"},
 	{table: "saml_logout_progress", by: "user_id"},
 	{table: "auth_locations", by: "user_id"},
 	{table: "impersonations", by: "subject_id"},

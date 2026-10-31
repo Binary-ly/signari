@@ -568,6 +568,8 @@ Answers:
 | `response_types` | list of string |  |
 | `roles_claim` | string or null |  |
 | `scopes` | list of string | always |
+| `sector` | string |  |
+| `subject_type` | string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_san_dns` | string or null |  |
 | `tls_san_email` | string or null |  |
@@ -627,6 +629,8 @@ Takes:
 | `require_state` | boolean |  |
 | `roles_claim` | string |  |
 | `scopes` | list of string |  |
+| `sector` | string |  |
+| `subject_type` | string |  |
 | `tls_bound_tokens` | boolean |  |
 | `tls_certificate` | string |  |
 | `tls_san_dns` | string |  |
@@ -660,6 +664,8 @@ Answers:
 | `require_pushed_authorization_requests` | boolean |  |
 | `require_state` | boolean |  |
 | `roles_claim` | string |  |
+| `sector` | string |  |
+| `subject_type` | string |  |
 
 ## clients / group-release
 

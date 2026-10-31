@@ -352,8 +352,12 @@ type Confirmation struct {
 }
 
 type AccessTokenClaims struct {
-	Issuer   string   `json:"iss"`
-	Subject  string   `json:"sub"`
+	Issuer  string `json:"iss"`
+	Subject string `json:"sub"`
+	// Pairwise is what Subject said on the wire when it stood for a person to one
+	// sector. The engine verifies a token and reads Subject back to the person, so
+	// everything inside it sees one id, and what it hands back says Presented.
+	Pairwise string   `json:"-"`
 	Audience []string `json:"aud"`
 	Expiry   int64    `json:"exp"`
 	IssuedAt int64    `json:"iat"`
@@ -453,6 +457,15 @@ type AccessTokenClaims struct {
 	// mapped claim that could rewrite `scope` or `cnf` would be granting itself
 	// access at systems this deployment does not operate.
 	Extra map[string]any `json:"-"`
+}
+
+// Presented is the subject as the token's client knows it, for anything said back
+// to the outside about a token: Subject once the engine has read it back.
+func (c AccessTokenClaims) Presented() string {
+	if c.Pairwise != "" {
+		return c.Pairwise
+	}
+	return c.Subject
 }
 
 // MarshalJSON emits the fixed claims, then any operator-defined ones that do

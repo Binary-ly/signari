@@ -38,6 +38,7 @@ var commandFlags = map[string][]string{
 	"client set-first-party":          {"client-id", "first-party"},
 	"client set-roles-claim":          {"claim", "client-id"},
 	"client set-token-format":         {"client-id", "token-format"},
+	"client set-subject-type":         {"client-id", "sector", "subject-type"},
 	"client set-grants":               {"client-id", "grant-types"},
 	"client set-hybrid":               {"client-id", "review-by"},
 	"client set-issuer-alias":         {"alias", "client-id"},

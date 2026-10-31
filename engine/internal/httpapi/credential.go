@@ -315,7 +315,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		} else {
 			seenKeys[fp] = true
 		}
-		cred, ierr := s.issueCredential(ctx, orgID, claims.Subject, cfg, key, issuedAt)
+		cred, ierr := s.issueCredential(ctx, orgID, claims, cfg, key, issuedAt)
 		if ierr != nil {
 			s.log.Error("issuing a credential", "err", ierr,
 				"correlation_id", correlationID(ctx))
@@ -367,14 +367,16 @@ func (s *Server) validateCredentialProof(ctx context.Context,
 	return key.JWK, key.Attested, nil
 }
 
-// issueCredential mints one SD-JWT VC.
-func (s *Server) issueCredential(ctx context.Context, orgID, userID string,
+// issueCredential mints one SD-JWT VC, naming the person as the token's client does:
+// a credential is presented to verifiers this deployment never meets.
+func (s *Server) issueCredential(ctx context.Context, orgID string, claims *tokens.AccessTokenClaims,
 	cfg oid4vci.Configuration, holderKey *jose.JSONWebKey, now time.Time) (string, error) {
 
-	subject, err := store.CredentialSubject(ctx, s.db, userID)
+	subject, err := store.CredentialSubject(ctx, s.db, claims.Subject)
 	if err != nil {
 		return "", err
 	}
+	subject["sub"] = claims.Presented()
 	issuer := oid4vci.Issuer{
 		CredentialIssuer: s.credentialIssuerID(),
 		Sign: func(payload []byte, typ string) (string, error) {

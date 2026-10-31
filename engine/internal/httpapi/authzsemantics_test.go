@@ -36,7 +36,7 @@ func TestTheBatchLoopHasNoContinuePastTheShortCircuit(t *testing.T) {
 	}
 	body := string(src)
 
-	start := strings.Index(body, "for _, e := range batch.Evaluations {")
+	start := strings.Index(body, "for _, merged := range entries {")
 	if start < 0 {
 		t.Fatal("the evaluations loop was not found; this test needs updating " +
 			"alongside whatever replaced it")

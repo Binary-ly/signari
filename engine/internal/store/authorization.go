@@ -107,6 +107,53 @@ func HoldsAny(ctx context.Context, q Querier, orgID, subjectType, subjectID stri
 	return "", rows.Err()
 }
 
+// Tuple is one relation a subject holds on an object.
+type Tuple struct {
+	SubjectType, SubjectID, Relation, ObjectType, ObjectID string
+}
+
+// TuplesAmong reads every live relation among these subjects and objects, each a
+// (type, id) pair, for a batch of questions to answer from one statement.
+func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects [][2]string,
+	relations []string) (map[Tuple]bool, error) {
+
+	out := map[Tuple]bool{}
+	if len(subjects) == 0 || len(objects) == 0 || len(relations) == 0 {
+		return out, nil
+	}
+	split := func(pairs [][2]string) (types, ids []string) {
+		for _, p := range pairs {
+			types, ids = append(types, p[0]), append(ids, p[1])
+		}
+		return types, ids
+	}
+	subjectTypes, subjectIDs := split(subjects)
+	objectTypes, objectIDs := split(objects)
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT r.subject_type, r.subject_id, r.relation, r.object_type, r.object_id
+		  FROM core.relations r
+		  JOIN unnest($2::text[], $3::text[]) AS s(styp, sid)
+		    ON r.subject_type = s.styp AND r.subject_id = s.sid
+		  JOIN unnest($4::text[], $5::text[]) AS o(otyp, oid)
+		    ON r.object_type = o.otyp AND r.object_id = o.oid
+		 WHERE r.org_id = $1::uuid
+		   AND r.relation = ANY ($6::text[])
+		   AND (r.expires_at IS NULL OR r.expires_at > now())`,
+		orgID, subjectTypes, subjectIDs, objectTypes, objectIDs, relations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t Tuple
+		if err := rows.Scan(&t.SubjectType, &t.SubjectID, &t.Relation, &t.ObjectType, &t.ObjectID); err != nil {
+			return nil, err
+		}
+		out[t] = true
+	}
+	return out, rows.Err()
+}
+
 // ObjectsWith returns the objects of a type on which the subject holds any of
 // these relations. For the resource-search endpoint.
 func ObjectsWith(ctx context.Context, q Querier, orgID, subjectType, subjectID string,
@@ -307,36 +354,21 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	// can lie about is a comment.
 	f.Now = time.Now()
 
+	// Groups and account state, from our directory. A deactivated user whose
+	// relations were never cleaned up still holds them; this is what stops the
+	// tuples outliving the account.
 	rows, err := q.Query(ctx, `
-		SELECT COALESCE(array_agg(g.name) FILTER (WHERE g.name IS NOT NULL), '{}')
-		  FROM core.group_members m
-		  JOIN core.groups g ON g.id = m.group_id
-		 WHERE m.user_id = $1::uuid AND g.org_id = $2::uuid`, userID, orgID)
+		SELECT u.status = 'active', u.email_verified_at IS NOT NULL,
+		       COALESCE((SELECT array_agg(g.name)
+		                   FROM core.group_members m
+		                   JOIN core.groups g ON g.id = m.group_id
+		                  WHERE m.user_id = u.id AND g.org_id = u.org_id), '{}')
+		  FROM core.users u WHERE u.id = $1::uuid AND u.org_id = $2::uuid`, userID, orgID)
 	if err != nil {
 		return f, err
 	}
 	if rows.Next() {
-		if err := rows.Scan(&f.Groups); err != nil {
-			rows.Close()
-			return f, err
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return f, err
-	}
-
-	// Account state, from our directory. A deactivated user whose relations were
-	// never cleaned up still holds them; this is what stops the tuples outliving
-	// the account.
-	rows, err = q.Query(ctx, `
-		SELECT status = 'active', email_verified_at IS NOT NULL
-		  FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid`, userID, orgID)
-	if err != nil {
-		return f, err
-	}
-	if rows.Next() {
-		if err := rows.Scan(&f.Active, &f.EmailVerified); err != nil {
+		if err := rows.Scan(&f.Active, &f.EmailVerified, &f.Groups); err != nil {
 			rows.Close()
 			return f, err
 		}

@@ -2467,6 +2467,11 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		// Needed to unseal personal user attributes for operator-defined claims.
 		srv.SetRootKey(root)
 		srv.SetDPoPNonces(os.Getenv("SIGNARI_DPOP_NONCE") == "1")
+		decisionLog, err := httpapi.ParseDecisionLogRate(os.Getenv("SIGNARI_AUTHZ_DECISION_LOG"))
+		if err != nil {
+			return err
+		}
+		srv.SetDecisionLogRate(decisionLog)
 		srv.SetFactorFailureLimit(failureLimit)
 		srv.SetSMSPolicy(smsPolicy)
 		srv.SetSMSVerifier(smsVerifier)

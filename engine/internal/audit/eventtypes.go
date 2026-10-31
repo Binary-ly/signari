@@ -67,6 +67,7 @@ var EventTypes = []string{
 	"admin.user_updated",
 	"admin.webauthn_policy_set",
 	"audit.archived", "audit.checkpoint", "audit.head_signed",
+	"authz.decision",
 	"ciba.approved", "ciba.denied", "ciba.requested", "ciba.step_up_required",
 	"ciba.unknown_subject",
 	"config.applied",

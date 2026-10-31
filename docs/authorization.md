@@ -214,6 +214,11 @@ that reads it rather than swept up later, so temporary access is temporary
 without anyone having to remember it. Granting the same tuple again replaces the
 expiry, and without `-expires-in` removes it.
 
+A grant to an address or a username means the person who held it. When they
+change it, the grant moves to their id, so the access stays with them and whoever
+takes the old name up next starts with nothing. Deleting a person, or a group,
+takes their grants with them.
+
 The Admin API stores the model and grants and revokes relations the same way,
 under `/admin/organizations/{orgID}/authorization-model` and
 `/admin/organizations/{orgID}/relations`; see [admin-api.md](admin-api.md).
@@ -323,6 +328,28 @@ batch is a denial of service with a JSON array in front of it.
 
 One malformed entry does not fail the batch — the others are answerable, and
 refusing all of them hides which one was wrong.
+
+A batch reads the model, each subject and the relations it could turn on once,
+so a hundred questions about one person cost five statements rather than six
+hundred. Nothing read for a request outlives it, so a grant revoked is refused
+on the next one. A provider veto is still one call per allowed entry.
+
+## Recording decisions
+
+Changes are always recorded: `admin.relation_granted`, `admin.relation_revoked`,
+and `admin.cli_command` for the same thing from the command line. A decision is a
+different matter, because one can be asked for thousands of times a second and
+each recorded one is a link in the audit chain. So `SIGNARI_AUTHZ_DECISION_LOG`
+sets the share of evaluations recorded, as `authz.decision` events that reach the
+trail and any sink streaming it. `0.01` records one in a hundred; absent or `0`
+records none. Searches are left out, since a search is a walk over candidates.
+
+Each record has the decision, the action, the resource and the subject's type.
+The trail outlives an erasure, so a person appears only as their id in
+`subject_id`, never as the address the caller may have asked about them with, and
+an address nobody here holds is left out altogether. A subject of another type,
+such as `service:billing`, is named. A resource of type `user` is left out of a
+decision the same way, and a relation's own records follow the same rule.
 
 ## No model means nothing is permitted
 

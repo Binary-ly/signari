@@ -463,6 +463,7 @@ unless a destination is set; see [audit-streaming.md](audit-streaming.md).
 | `SIGNARI_AUDIT_SYSLOG_ADDR` | `host:port` of a syslog collector (TCP). Ignored if a webhook URL is also set |
 | `SIGNARI_AUDIT_SYSLOG_TLS` | `1` to wrap the syslog connection in TLS |
 | `SIGNARI_AUDIT_SYSLOG_HOSTNAME` | Hostname stamped into each RFC 5424 line (default `signari`) |
+| `SIGNARI_AUTHZ_DECISION_LOG` | The share of authorization evaluations recorded, from `0` to `1`, as `authz.decision` events. Absent, none are. Anything else stops the start. See [authorization.md](authorization.md#recording-decisions) |
 
 ## Authenticator models (FIDO metadata)
 

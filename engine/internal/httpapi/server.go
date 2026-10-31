@@ -173,6 +173,9 @@ type Server struct {
 	// dpopNonces makes every DPoP proof carry a nonce from this server.
 	dpopNonces bool
 
+	// decisionLogRate is the share of authorization decisions recorded.
+	decisionLogRate float64
+
 	// factorFailureLimit is how many consecutive wrong codes switch a second
 	// factor off. Zero -- a Server built as a literal -- means the NIST ceiling;
 	// read through failureLimit().

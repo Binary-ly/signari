@@ -78,6 +78,10 @@ their sessions. The answer is `204`, and the trail records
 an administrator of this deployment. Refusing the DELETE instead would leave a
 departed administrator signed in.
 
+A DELETE of a person or group that is not there answers `404`, as RFC 7644 §3.6
+requires of a resource already deleted, so a retried deprovisioning learns it is
+done. Until October 2026 it answered `204`, as if somebody had just been removed.
+
 ## Deactivation ends sessions
 
 A deactivated account with a live session is still a signed-in person. Every

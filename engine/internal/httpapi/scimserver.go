@@ -401,10 +401,12 @@ func (s *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request,
 	u, err := store.DeleteSCIMUser(ctx, s.db, src, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Already gone is the outcome the upstream wanted. 204 rather than
-			// 404 so a retried deprovisioning does not look like a failure
-			// forever.
-			w.WriteHeader(http.StatusNoContent)
+			// RFC 7644 §3.6 (specs/rfc7644.txt:2641-2644): a service provider
+			// "MUST return a 404 (Not Found) error code for all operations
+			// associated with the previously deleted resource". A retried
+			// deprovisioning learns it is done from that; this answered 204,
+			// which told a client that had the wrong id it had deleted somebody.
+			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
 		}
 		s.log.Error("deleting a SCIM user", "err", err)

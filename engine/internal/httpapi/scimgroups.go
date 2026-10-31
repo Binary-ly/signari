@@ -235,10 +235,8 @@ func (s *Server) handleSCIMGroup(w http.ResponseWriter, r *http.Request) {
 		g, derr := store.DeleteSCIMGroup(ctx, s.db, src, id)
 		if derr != nil {
 			if errors.Is(derr, pgx.ErrNoRows) {
-				// Already gone is the outcome the upstream wanted. 204 rather
-				// than 404, so a retried deprovisioning does not look like a
-				// permanent failure.
-				w.WriteHeader(http.StatusNoContent)
+				// A 404, as RFC 7644 §3.6 requires; see scimDeleteUser.
+				writeSCIMError(w, http.StatusNotFound, "no such group")
 				return
 			}
 			s.log.Error("deleting a SCIM group", "err", derr)

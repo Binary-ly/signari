@@ -3,6 +3,8 @@ package policy
 import (
 	"fmt"
 	"html"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -227,6 +229,9 @@ func describeConditions(c Conditions) []string {
 	}
 	if c.DeviceCompliant {
 		out = append(out, "a managed and compliant device")
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
+		out = append(out, "the attribute "+name)
 	}
 	return out
 }

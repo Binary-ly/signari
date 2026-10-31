@@ -414,9 +414,12 @@ func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []stri
 }
 
 // SaveModel stores and compiles an organisation's authorization model.
-func SaveModel(ctx context.Context, e Execer, orgID, source string,
+func SaveModel(ctx context.Context, e outpostDB, orgID, source string,
 	m *authzen.Model, by string) error {
 
+	if err := checkConditionAttributes(ctx, e, orgID, m.AttributeNames()); err != nil {
+		return err
+	}
 	compiled, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -506,13 +509,17 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 		       COALESCE((SELECT array_agg(g.name)
 		                   FROM core.group_members m
 		                   JOIN core.groups g ON g.id = m.group_id
-		                  WHERE m.user_id = u.id AND g.org_id = u.org_id), '{}')
+		                  WHERE m.user_id = u.id AND g.org_id = u.org_id), '{}'),
+		       COALESCE((SELECT jsonb_object_agg(s.name, a.value)
+		                   FROM core.user_attributes a
+		                   JOIN core.user_attribute_schema s ON s.id = a.attribute_id
+		                  WHERE a.user_id = u.id AND NOT s.personal), '{}')
 		  FROM core.users u WHERE u.id = $1::uuid AND u.org_id = $2::uuid`, userID, orgID)
 	if err != nil {
 		return f, err
 	}
 	if rows.Next() {
-		if err := rows.Scan(&f.Active, &f.EmailVerified, &f.Groups); err != nil {
+		if err := rows.Scan(&f.Active, &f.EmailVerified, &f.Groups, &f.Attributes); err != nil {
 			rows.Close()
 			return f, err
 		}
@@ -554,6 +561,30 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 		f.MFA = oauth.IsMultiFactor(amr)
 	}
 	return f, rows.Err()
+}
+
+// PlainAttributes reads a person's attributes that are not personal, for a
+// decision. Read each time and never cached, as every other fact about who
+// somebody is: a cost centre that changed has changed by the next request.
+func PlainAttributes(ctx context.Context, q Querier, userID string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.name, a.value
+		  FROM core.user_attributes a
+		  JOIN core.user_attribute_schema s ON s.id = a.attribute_id
+		 WHERE a.user_id = $1::uuid AND NOT s.personal`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, err
+		}
+		out[name] = value
+	}
+	return out, rows.Err()
 }
 
 // ResolveSubject maps an AuthZEN subject to one of our users.

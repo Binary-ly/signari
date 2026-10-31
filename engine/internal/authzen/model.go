@@ -2,7 +2,9 @@ package authzen
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +84,11 @@ type Condition struct {
 	SubjectActive bool `yaml:"subject_active" json:"subject_active,omitempty"`
 	// EmailVerified requires a verified address.
 	EmailVerified bool `yaml:"email_verified" json:"email_verified,omitempty"`
+	// UserAttributes requires the subject to hold each of these attributes, as
+	// our directory has it: one of the values listed, or any value when none are.
+	// Only an attribute declared and not personal: a sealed value would be
+	// opened for every decision, and a rule on it would outlive an erasure.
+	UserAttributes map[string][]string `yaml:"user_attributes" json:"user_attributes,omitempty"`
 
 	// Time restricts the action to a window, by OUR clock. Not the caller's:
 	// a time restriction an application can lie about is a comment.
@@ -140,7 +147,39 @@ func (c Condition) isEmpty() bool {
 	return !c.MFA && !c.DeviceManaged && !c.DeviceCompliant &&
 		len(c.AnyGroup) == 0 && c.MaxRisk == 0 && !c.SubjectActive &&
 		!c.EmailVerified && c.Time == nil && c.Asserted == nil &&
-		len(c.Policies) == 0
+		len(c.Policies) == 0 && len(c.UserAttributes) == 0
+}
+
+// AttributeNames lists the attributes the model's conditions read, sorted, for
+// whoever stores it to check against the organisation's declarations.
+func (m *Model) AttributeNames() []string {
+	seen := map[string]bool{}
+	add := func(c Condition) {
+		for name := range c.UserAttributes {
+			seen[name] = true
+		}
+	}
+	for _, t := range m.Types {
+		for _, c := range t.Require {
+			add(c)
+		}
+	}
+	for _, c := range m.Policies {
+		add(c)
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// missingAttribute names the first attribute required that the subject does not
+// hold as required, in a fixed order so a refusal says the same thing each time.
+func missingAttribute(required map[string][]string, held map[string]string) (string, bool) {
+	for _, name := range slices.Sorted(maps.Keys(required)) {
+		v, present := held[name]
+		if !present || (len(required[name]) > 0 && !slices.Contains(required[name], v)) {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // unpopulated names what c requires of facts the decision point never has.
@@ -181,6 +220,9 @@ func (c Condition) Summary() string {
 	}
 	if len(c.AnyGroup) > 0 {
 		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
+		parts = append(parts, "the attribute "+name)
 	}
 	return strings.Join(parts, " and ")
 }
@@ -254,6 +296,8 @@ type ModelTest struct {
 	Risk            int      `yaml:"risk" json:"risk,omitempty"`
 	Active          *bool    `yaml:"active" json:"active,omitempty"`
 	EmailVerified   bool     `yaml:"email_verified" json:"email_verified,omitempty"`
+	// Attributes are what the directory would hold for the subject.
+	Attributes map[string]string `yaml:"attributes" json:"attributes,omitempty"`
 	// At pins the clock, as RFC 3339. A time-window rule whose tests only pass
 	// between nine and five is a test nobody can run in CI.
 	At string `yaml:"at" json:"at,omitempty"`
@@ -665,7 +709,7 @@ func (m *Model) RunTests() error {
 				f := Facts{
 					MFA: tc.MFA, Groups: tc.Groups, DeviceManaged: tc.DeviceManaged,
 					DeviceCompliant: tc.DeviceCompliant, Risk: tc.Risk,
-					EmailVerified: tc.EmailVerified,
+					EmailVerified: tc.EmailVerified, Attributes: tc.Attributes,
 					ResourceProps: tc.ResourceProps, IP: tc.IP,
 				}
 				// A test that does not say defaults to active, because that is
@@ -711,6 +755,8 @@ type Facts struct {
 	// Active and EmailVerified come from our directory.
 	Active        bool
 	EmailVerified bool
+	// Attributes are the subject's attributes that are not personal.
+	Attributes map[string]string
 	// Now is the evaluation time. A field rather than a call to time.Now so a
 	// model's own tests can pin it -- a time window whose tests only pass
 	// between nine and five is a test nobody can run.
@@ -760,6 +806,9 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 	if c.EmailVerified && !f.EmailVerified {
 		return false
 	}
+	if _, missing := missingAttribute(c.UserAttributes, f.Attributes); missing {
+		return false
+	}
 	if c.Time != nil && !c.Time.contains(f.Now) {
 		return false
 	}
@@ -793,6 +842,11 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 		}
 	}
 	return true
+}
+
+func (c Condition) hasMissingAttribute(f Facts) bool {
+	_, missing := missingAttribute(c.UserAttributes, f.Attributes)
+	return missing
 }
 
 // contains reports whether t falls inside the window.
@@ -920,6 +974,9 @@ func (c Condition) Unmet(f Facts) string {
 		return "an active account"
 	case c.EmailVerified && !f.EmailVerified:
 		return "a verified email address"
+	case c.hasMissingAttribute(f):
+		name, _ := missingAttribute(c.UserAttributes, f.Attributes)
+		return "the attribute " + name
 	case c.Time != nil && !c.Time.contains(f.Now):
 		return "the action to be taken inside its permitted hours"
 	case c.Asserted != nil:

@@ -24,7 +24,9 @@ package policy
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -81,6 +83,10 @@ type Conditions struct {
 	Groups []string `yaml:"groups"`
 	// AnyGroup: the user must be in at least one.
 	AnyGroup []string `yaml:"any_group"`
+	// UserAttributes: the user must hold each of these, as the directory has
+	// it: one of the values listed, or any value when none are. Only attributes
+	// declared and not personal; storing a policy that names another is refused.
+	UserAttributes map[string][]string `yaml:"user_attributes"`
 	// MFA requires a multi-factor authentication context.
 	MFA bool `yaml:"mfa"`
 	// FromNetworks limits the request to these CIDR ranges.
@@ -137,7 +143,10 @@ type Request struct {
 	Client string   `yaml:"client"`
 	Scope  string   `yaml:"scope"`
 	Groups []string `yaml:"groups"`
-	MFA    bool     `yaml:"mfa"`
+	// Attributes are the user's attributes that are not personal, read when a
+	// rule asks (File.AttributeNames).
+	Attributes map[string]string `yaml:"attributes"`
+	MFA        bool              `yaml:"mfa"`
 	// AMR is what the session ACTUALLY proved, in RFC 8176 terms. A test case
 	// sets it directly, which is how factor conditions are covered by the
 	// file's own tests without a phone.
@@ -255,7 +264,7 @@ func (f *File) validate() error {
 }
 
 func (c Conditions) isEmpty() bool {
-	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA &&
+	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && len(c.UserAttributes) == 0 && !c.MFA &&
 		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
 		!c.DeviceManaged && !c.DeviceCompliant
@@ -377,6 +386,12 @@ func (c Conditions) satisfiedBy(req Request) bool {
 			return false
 		}
 	}
+	for name, allowed := range c.UserAttributes {
+		v, held := req.Attributes[name]
+		if !held || (len(allowed) > 0 && !contains(allowed, v)) {
+			return false
+		}
+	}
 	if c.PhishingResistant && !hasPhishingResistantFactor(req.AMR) {
 		return false
 	}
@@ -473,6 +488,19 @@ func (f *File) UsesImpossibleTravel() bool {
 		}
 	}
 	return false
+}
+
+// AttributeNames lists the attributes the rules read, sorted, so nothing is read
+// for a policy that asks about none, and whoever stores the policy can check
+// them against the organisation's declarations.
+func (f *File) AttributeNames() []string {
+	seen := map[string]bool{}
+	for _, r := range f.Policies {
+		for name := range r.Require.UserAttributes {
+			seen[name] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // UsesDevicePosture reports whether any rule asks about the device.

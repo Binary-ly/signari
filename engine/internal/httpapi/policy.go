@@ -189,6 +189,14 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa, AMR: amr,
 		Refresh: r == nil && !unobserved, Unobserved: unobserved,
 	}
+	if _, person := store.CanonicalUUID(userID); person && len(f.AttributeNames()) > 0 {
+		var err error
+		if req.Attributes, err = store.PlainAttributes(ctx, q, userID); err != nil {
+			s.log.Error("reading attributes for a policy decision", "err", err)
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
+	}
 	if r != nil {
 		req.IP = clientIP(r)
 

@@ -86,6 +86,24 @@ requests the earlier rules had just approved, and denied them. Default-deny was
 inexpressible. **The file's own tests caught it**, which is the mechanism this
 package is about, applied to itself.
 
+**A rule can ask about a person's attributes**, as the directory has them when the
+decision is made, by a value or by holding one at all:
+
+```yaml
+- name: finance-from-its-own-cost-centres
+  when: {client: ledger}
+  require:
+    user_attributes:
+      cost_centre: ["4100", "4200"]   # one of these
+      employee_number: []             # any value at all
+```
+
+Only an attribute the organisation has declared and not as `personal`. Storing a
+policy that names another is refused, because an undeclared name is a typo nobody
+could meet, and a personal value is sealed under its subject's key and would be
+opened for every decision. A test case gives a person's attributes with `attributes:`.
+It is about who somebody is, so it is checked at a refresh too.
+
 **Unknown fields are an error.** `any_groups` is not a field; `any_group` is.
 Silently ignoring the typo leaves a rule that appears to restrict and demands
 nothing — the most dangerous possible mistake in a file like this.

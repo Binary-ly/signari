@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,12 +32,47 @@ func (e invalidDocument) Error() string        { return e.err.Error() }
 func (e invalidDocument) Unwrap() error        { return e.err }
 func (e invalidDocument) Is(target error) bool { return target == ErrInvalidDocument }
 
+// checkConditionAttributes refuses a condition on an attribute it could never
+// be met by, or should never read. Here and not at Parse, which reads a file with
+// no database. An undeclared name is a typo that would deny everybody from the
+// moment it was stored. A personal one is sealed under its subject's key: reading
+// it would open it for every decision, and the rule would go on saying something
+// about a person after their erasure.
+func checkConditionAttributes(ctx context.Context, q outpostDB, orgID string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	var plain []string
+	var personal []string
+	if err := q.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(name) FILTER (WHERE NOT personal), '{}'),
+		       COALESCE(array_agg(name) FILTER (WHERE personal), '{}')
+		  FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = ANY($2)`,
+		orgID, names).Scan(&plain, &personal); err != nil {
+		return err
+	}
+	for _, name := range names {
+		switch {
+		case slices.Contains(personal, name):
+			return invalidDocument{fmt.Errorf("a condition may not read the attribute %s, which is personal: "+
+				"it is sealed under its subject's key", name)}
+		case !slices.Contains(plain, name):
+			return invalidDocument{fmt.Errorf("a condition reads the attribute %s, which this organisation has "+
+				"not declared, so nobody could meet it", name)}
+		}
+	}
+	return nil
+}
+
 // ApplyAccessPolicy makes doc the organisation's access policy, read on the
 // next decision.
-func ApplyAccessPolicy(ctx context.Context, q Execer, orgID string, doc []byte) (*policy.File, error) {
+func ApplyAccessPolicy(ctx context.Context, q outpostDB, orgID string, doc []byte) (*policy.File, error) {
 	f, err := policy.Parse(doc)
 	if err != nil {
 		return nil, invalidDocument{err}
+	}
+	if err := checkConditionAttributes(ctx, q, orgID, f.AttributeNames()); err != nil {
+		return nil, err
 	}
 	if _, err := q.Exec(ctx, `
 		INSERT INTO core.access_policies (org_id, document, applied_at)

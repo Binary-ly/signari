@@ -143,6 +143,8 @@ require:
     subject_active: true
     email_verified: true
     any_group: [finance]
+    user_attributes:           # declared and not personal, as policy.md says
+      cost_centre: ["4100", "4200"]
     time:
       days: [mon, tue, wed, thu, fri]
       from: "09:00"

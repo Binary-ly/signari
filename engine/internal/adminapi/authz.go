@@ -142,6 +142,9 @@ func (s *Server) putAuthzModel(w http.ResponseWriter, r *http.Request) {
 		return
 	case writeOrgRefusal(w, err):
 		return
+	case errors.Is(err, store.ErrInvalidDocument):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_model", "detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("storing the authorization model", "org_id", orgID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

@@ -25,6 +25,7 @@ func TestEveryConditionIsDrawn(t *testing.T) {
 		NoImpossibleTravel: true,
 		DeviceManaged:      true,
 		DeviceCompliant:    true,
+		UserAttributes:     map[string][]string{"cost_centre": {"4100"}},
 	}
 
 	// Anything left at its zero value means this test was not updated when the

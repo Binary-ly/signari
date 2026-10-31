@@ -37,6 +37,13 @@ implementation.
 | `NotBefore` / `NotOnOrAfter` | otherwise it is a permanent credential |
 | assertion ID | a valid assertion must work **once** |
 
+An assertion's audience and timing say who it is for and when. What says it may be
+presented here is a bearer `SubjectConfirmation` naming this ACS as its `Recipient`,
+with a `NotOnOrAfter` that has not passed. Every confirmation is tried, since an
+assertion may carry one per recipient, and one that fits is required: an assertion
+whose only confirmation names another service provider's ACS is refused, as is one
+with no `Recipient` at all.
+
 ## No email matching, at any setting
 
 An external identity is matched on `(provider, subject)`. Never on email.

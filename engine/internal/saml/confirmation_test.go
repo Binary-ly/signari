@@ -6,6 +6,33 @@ import (
 	"time"
 )
 
+func TestARequestedClassIsARung(t *testing.T) {
+	const password, unknown = AuthnContextPassword, "urn:example:retina-scan"
+	for _, tc := range []struct {
+		name       string
+		classes    []string
+		comparison string
+		rung       int
+		reachable  bool
+	}{
+		{"nothing asked", nil, "", 0, true},
+		{"a password", []string{password}, "", 1, true},
+		{"a second factor", []string{AuthnContextMFA}, "", 2, true},
+		{"minimum is a floor", []string{AuthnContextMFA}, "minimum", 2, true},
+		{"any of them will do", []string{AuthnContextMFA, password}, "exact", 1, true},
+		{"one known is enough", []string{unknown, AuthnContextMFA}, "", 2, true},
+		{"nothing known", []string{unknown}, "", 0, false},
+		{"better than a password", []string{password}, "better", 2, true},
+		{"better than a second factor", []string{AuthnContextMFA}, "better", 3, false},
+		{"maximum forces nothing", []string{AuthnContextMFA}, "maximum", 0, true},
+		{"nothing known, whatever the comparison", []string{unknown}, "maximum", 0, false},
+	} {
+		if rung, reachable := RequestedRung(tc.classes, tc.comparison); rung != tc.rung || reachable != tc.reachable {
+			t.Errorf("%s: rung %d reachable %t, want %d %t", tc.name, rung, reachable, tc.rung, tc.reachable)
+		}
+	}
+}
+
 // Audience and timing say who an assertion is for and when, and neither says where it
 // may be presented. Each of these is correctly signed for this audience, so only the
 // confirmation stops it.

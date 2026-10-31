@@ -3434,6 +3434,16 @@ func parkLogin(dest string) string {
 	return "/login?authz=" + url.QueryEscape(url.Values{"return": {dest}}.Encode())
 }
 
+// samlStepUpQuery is what a SAML request's demand for a second factor looks like to
+// the sign-in flow, which reads it as an authorization request's: the flow has one
+// condition for this, and SAML has no parked query of its own to answer it from.
+const samlStepUpQuery = "acr_values=2"
+
+// parkLoginForMFA parks like parkLogin and says a second factor is wanted.
+func parkLoginForMFA(dest string) string {
+	return "/login?authz=" + url.QueryEscape(url.Values{"return": {dest}, "acr_values": {"2"}}.Encode())
+}
+
 // parkedReturn extracts a local return path, refusing anything that could leave
 // this origin.
 //

@@ -93,6 +93,49 @@ type Validated struct {
 	ForceAuthn   bool
 	IsPassive    bool
 	RequestedACR []string
+	// ACRComparison is the request's Comparison, empty when it gave none.
+	ACRComparison string
+}
+
+// classRungs places the classes this directory can speak to on the acr ladder (see
+// oauth.Assurance): what a password reaches, and what a second factor does.
+var classRungs = map[string]int{
+	AuthnContextUnspecified:                           1,
+	AuthnContextPassword:                              1,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:Password": 1,
+	AuthnContextMFA:                                   2,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract": 2,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken":           2,
+	"http://schemas.microsoft.com/claims/multipleauthn":              2,
+}
+
+// RequestedRung is the rung a session must reach to answer a RequestedAuthnContext,
+// 0 for no demand, and whether one can be reached at all. Any class in the list will
+// do, so the lowest recognised one decides; none recognised is a demand this directory
+// cannot meet and must not pretend to.
+//
+// exact and minimum are both a floor. An assertion states what was done, and a stronger
+// sign-in refused for being stronger helps nobody. better is the rung above, which past
+// a second factor no class here can name. maximum forces nothing.
+func RequestedRung(classes []string, comparison string) (rung int, reachable bool) {
+	if len(classes) == 0 {
+		return 0, true
+	}
+	for _, c := range classes {
+		if r, ok := classRungs[c]; ok && (rung == 0 || r < rung) {
+			rung = r
+		}
+	}
+	switch {
+	case rung == 0:
+		return 0, false
+	case comparison == "maximum":
+		return 0, true
+	case comparison == "better":
+		rung++
+		return rung, rung <= 2
+	}
+	return rung, true
 }
 
 // clockSkew is what we tolerate on IssueInstant in either direction. Real
@@ -183,6 +226,8 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 		ForceAuthn:   r.ForceAuthn == "true" || r.ForceAuthn == "1",
 		IsPassive:    r.IsPassive == "true" || r.IsPassive == "1",
 		RequestedACR: r.RequestedAuthnContext.ClassRefs,
+
+		ACRComparison: r.RequestedAuthnContext.Comparison,
 	}, nil
 }
 

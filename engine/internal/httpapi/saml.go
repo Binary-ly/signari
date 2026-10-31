@@ -230,6 +230,33 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		}
 		needsAuth = !fresh
 	}
+	// What the service provider asked of the sign-in, held to the session as an
+	// authorization request's acr_values are, per request: a password session must
+	// not answer a demand for a second factor because it was live.
+	rung, reachable := saml.RequestedRung(validated.RequestedACR, validated.ACRComparison)
+	if !reachable {
+		s.postSAMLStatus(w, r, validated, provider, saml.StatusNoAuthnContext,
+			"no authentication context this directory offers meets the request", relayState)
+		return
+	}
+	if ok && !needsAuth && rung >= 2 {
+		met, merr := s.samlSessionReaches(ctx, sid, userID, orgID)
+		if merr != nil {
+			s.log.Error("checking a session against a SAML authentication context", "err", merr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+		switch met {
+		case samlContextMet:
+		case samlContextUnreachable:
+			// Signing in again would bring the same session back here for ever.
+			s.postSAMLStatus(w, r, validated, provider, saml.StatusNoAuthnContext,
+				"this account cannot reach the requested authentication context", relayState)
+			return
+		default:
+			needsAuth = true
+		}
+	}
 	if needsAuth {
 		if validated.IsPassive {
 			// The service provider asked us not to interact with the user, and we
@@ -239,6 +266,10 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
+		if rung >= 2 {
+			http.Redirect(w, r, parkLoginForMFA(back), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
 	}
@@ -582,6 +613,36 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 // It then claimed MFA for a single hardware key, so a passkey used without user
 // verification -- one factor -- satisfied a service provider's step-up. Now the
 // one predicate every MFA decision uses (oauth.IsMultiFactor).
+type samlContextState int
+
+const (
+	// samlContextShort is a session a second factor at sign-in would lift.
+	samlContextShort samlContextState = iota
+	samlContextMet
+	// samlContextUnreachable is one signing in again cannot lift.
+	samlContextUnreachable
+)
+
+// samlSessionReaches holds a live session to a demand for a second factor, as the
+// authorization endpoint holds one to acr_values=2.
+func (s *Server) samlSessionReaches(ctx context.Context, sid, userID, orgID string) (samlContextState, error) {
+	var amr []string
+	if err := s.db.QueryRow(ctx, `SELECT amr FROM core.sessions WHERE sid = $1`, sid).Scan(&amr); err != nil {
+		return samlContextShort, err
+	}
+	if oauth.IsMultiFactor(amr) {
+		return samlContextMet, nil
+	}
+	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
+	if err != nil {
+		return samlContextShort, err
+	}
+	if !enrolled || s.stepUpNeverAsked(ctx, orgID, userID, samlStepUpQuery) {
+		return samlContextUnreachable, nil
+	}
+	return samlContextShort, nil
+}
+
 func samlAuthnContext(amr []string) string {
 	if oauth.IsMultiFactor(amr) {
 		return saml.AuthnContextMFA

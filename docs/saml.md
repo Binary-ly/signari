@@ -495,6 +495,27 @@ The envelope was checked for leakage too: no `Assertion`, `Issuer`, `NameID` or
 `SignatureValue` appears in the clear, and each encryption uses a fresh session
 key and IV.
 
+## What a service provider asks of the sign-in
+
+`RequestedAuthnContext` is held to the session on every request, as `acr_values` is
+for an application, because a password session must not answer a demand for a second
+factor just because it was already live.
+
+| Asked for | Means here |
+|---|---|
+| `PasswordProtectedTransport`, `Password`, `unspecified` | A password |
+| Signari's multi-factor class, `MobileTwoFactorContract`, `TimeSyncToken`, or the `multipleauthn` claim | A second factor |
+
+Any class in the list will do, so the weakest one recognised decides. `exact` and
+`minimum` are both a floor: the assertion states what was really done, and refusing a
+stronger sign-in for being stronger helps nobody. `better` is the rung above, and
+`maximum` forces nothing.
+
+A session short of it is sent to sign in, asked for the second factor. If that cannot
+succeed, because the account has none or the flow never asks, or if no class in the
+list is one this directory knows, the service provider gets `NoAuthnContext` rather
+than a person sent round a sign-in page for ever. With `IsPassive` it gets `NoPassive`.
+
 ## Not yet built
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we

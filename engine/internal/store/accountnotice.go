@@ -44,6 +44,10 @@ const (
 	// address (5.16). LinkID names the email_sign_in_codes row; the code is
 	// minted as it is sent, so it never sits in the outbox.
 	NoticeSignInCode = "sign_in_code"
+	// NoticeRecovery: somebody asked to reset this account (0.13). The reset is
+	// started as this is delivered, so its links never sit in the outbox and the
+	// request answers before anything is sent.
+	NoticeRecovery = "recovery"
 	// NoticeInvitation: an invitation's link, mailed to the address it is
 	// bound to (5.18). There is no account yet, so UserID is empty; LinkID
 	// names the invitation, and the token is minted as the mail goes out.
@@ -78,6 +82,10 @@ func ApproveUser(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
 type AccountNotice struct {
 	UserID string `json:"user_id"`
 	Notice string `json:"notice"`
+	// OrgID and CorrelationID are the organisation a NoticeRecovery is in and the
+	// request that asked, which its audit entry is tied to.
+	OrgID         string `json:"org_id,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// Factor is the kind concerned, as the Admin API names it.
 	Factor string `json:"factor,omitempty"`
 	// LinkID is the passkey link a NoticePasskeyLink carries. Its id, never

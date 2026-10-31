@@ -61,6 +61,7 @@ func TestAPendingSelfSignUpCannotSignInUntilApproved(t *testing.T) {
 		t.Error("a wrong password was told the account is pending")
 	}
 	b.post("/recover", b.get("/recover"), url.Values{"identifier": {email}, "username": {email}, "email": {email}})
+	deliverRecoveries(t, j.srv, j.pool, userID)
 	var requests int
 	if err := j.pool.QueryRow(ctx, `SELECT count(*) FROM core.recovery_requests WHERE user_id = $1::uuid`, userID).Scan(&requests); err != nil {
 		t.Fatal(err)

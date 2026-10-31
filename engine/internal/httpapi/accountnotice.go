@@ -40,6 +40,8 @@ func (s *Server) DeliverAccountNotice(ctx context.Context, n store.AccountNotice
 		return s.deliverPasskeyLink(ctx, n)
 	case store.NoticeSignInCode:
 		return s.deliverSignInCode(ctx, n)
+	case store.NoticeRecovery:
+		return s.deliverRecovery(ctx, n)
 	case store.NoticePasswordChanged:
 		key = "password.changed"
 	case store.NoticePasswordSet:

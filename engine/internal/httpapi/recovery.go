@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/oauth"
@@ -167,11 +169,35 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 		if !hour {
 			continue
 		}
-		if err := s.beginRecoveryFor(ctx, c.userID, c.orgID); err != nil && first == nil {
+		// Queued, so the page has answered before anything is sent. Mailing in
+		// the request made an account's answer wait on SMTP and a stranger's not,
+		// which told them apart however alike the page was.
+		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			return store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: c.userID, OrgID: c.orgID,
+				Notice: store.NoticeRecovery, CorrelationID: correlationID(ctx)})
+		})
+		if err != nil && first == nil {
 			first = err
 		}
 	}
 	return first
+}
+
+// deliverRecovery starts the reset a NoticeRecovery asks for, and sends its link.
+// Made here and not when asked, so the tokens never sit in the outbox; a delivery
+// tried again starts another, which supersedes the one that was not sent.
+func (s *Server) deliverRecovery(ctx context.Context, n store.AccountNotice) error {
+	var active bool
+	err := s.db.QueryRow(ctx, `SELECT status = 'active' FROM core.users WHERE id = $1::uuid`, n.UserID).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
+		// Gone or deactivated since it was asked for: nothing to send, and
+		// trying again changes nothing.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.beginRecoveryFor(ctx, n.UserID, n.OrgID, n.CorrelationID)
 }
 
 // allowRecovery charges one request to a bucket and reports whether it was
@@ -187,7 +213,7 @@ func (s *Server) allowRecovery(ctx context.Context, key string, limit int, windo
 }
 
 // beginRecoveryFor starts recovery for one account.
-func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID string) error {
+func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID, correlation string) error {
 	token, tokenHash, err := newRecoveryToken()
 	if err != nil {
 		return err
@@ -214,7 +240,7 @@ func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID string) err
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "account.recovery_requested", OrgID: orgID, SubjectID: userID,
-		CorrelationID: correlationID(ctx),
+		CorrelationID: correlation,
 		Detail:        map[string]any{"effective_at": req.EffectiveAt.UTC().Format(time.RFC3339)},
 	}); err != nil {
 		return err

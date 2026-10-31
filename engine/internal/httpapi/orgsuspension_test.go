@@ -111,6 +111,7 @@ func TestASuspendedOrganisationSignsNobodyIn(t *testing.T) {
 	if err := f.srv.beginRecovery(ctx, f.email); err != nil {
 		t.Fatal(err)
 	}
+	deliverRecoveries(t, f.srv, f.pool, f.userID)
 	var resets int
 	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM core.recovery_requests WHERE user_id = $1::uuid`,
 		f.userID).Scan(&resets)

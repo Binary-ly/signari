@@ -223,6 +223,7 @@ func TestRecoveryReachesEveryAccountTheAddressHolds(t *testing.T) {
 	if err := tl.f.srv.beginRecovery(ctx, tl.f.email); err != nil {
 		t.Fatal(err)
 	}
+	deliverRecoveries(t, tl.f.srv, tl.f.pool, tl.f.userID, tl.otherUser)
 	var n int
 	if err := tl.f.pool.QueryRow(ctx, `
 		SELECT count(DISTINCT user_id) FROM core.recovery_requests

@@ -516,16 +516,16 @@ flows:
     on: authentication
     stages:
       - password
-      - {stage: mfa, when: not device_managed}
+      - {stage: mfa, when: not kerberos_available}
       - session
     tests:
-      - {name: managed, given: {device_managed: true}, expect: [password, session]}
+      - {name: managed, given: {kerberos_available: true}, expect: [password, session]}
       - {name: unmanaged, given: {}, expect: [password, mfa, session]}
 `
-	// device_managed, which no sign-in evaluates yet. This used risk_elevated
+	// kerberos_available, which no sign-in evaluates yet. This used risk_elevated
 	// until 4.10 answered it.
 	if _, err := flow.Parse([]byte(doc)); err == nil {
-		t.Fatal("Parse accepted a flow branching on device_managed, which no sign-in evaluates")
+		t.Fatal("Parse accepted a flow branching on kerberos_available, which no sign-in evaluates")
 	}
 	// Straight into the table, as a document applied before the rule was.
 	if _, err := f.pool.Exec(ctx, `
@@ -545,7 +545,7 @@ flows:
 		t.Fatalf("the organisation is served %v, want the built-in default-sign-in", flowNameOf(fl))
 	}
 	first := buf.String()
-	if !strings.Contains(first, "device_managed") || !strings.Contains(first, "built-in") {
+	if !strings.Contains(first, "kerberos_available") || !strings.Contains(first, "built-in") {
 		t.Fatalf("the refusal was not logged naming the condition and what is served instead:\n%s", first)
 	}
 

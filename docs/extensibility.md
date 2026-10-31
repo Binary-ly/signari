@@ -237,6 +237,31 @@ values.
 
 On any other hook a list is refused rather than ignored.
 
+## The `flow_condition` hook
+
+Not a veto: this one lets a [sign-in flow](flows.md#conditions) branch on what only your
+service knows, and the flow file says what each answer leads to: a condition adds a stage,
+as every condition does, so what the service decides is who is asked for more. It is asked
+when a sign-in reaches a stage guarded by a condition it answers, once in a request however
+many it asks, so a sign-in cannot disagree with itself, and not at all for a flow that names
+none of them. A sign-in that goes on to a second factor is a second request, and asks again.
+Told `subject`, `org_id`, `amr` and `client_ip`.
+
+```json
+←  {"decision": true,
+    "facts": {"device_managed": true, "device_compliant": false, "network_trusted": true,
+              "risk_elevated": false}}
+```
+
+`decision` answers `provider_condition`. `facts` answers the conditions named the same, and a
+fact left out reads false. `risk_elevated` joins this engine's own signals, so either can
+raise it. **A `fail_closed` provider that does not answer refuses the sign-in**, with the
+reason `flow_provider_down`, because a guess would be running a different flow from the one
+applied. A `fail_open` one reads every condition false.
+
+With no provider registered every condition it answers reads false, and `signari doctor` warns
+about any flow that asks. A `when:` written with `not` therefore asks for more, not less.
+
 ## Constraints on a provider URL
 
 - **https only.** Refused at registration and again in the database.
@@ -254,5 +279,5 @@ On any other hook a list is refused rather than ignored.
 
 `signari provider list` reports, per hook, whether any decision point actually
 consults it — so registering a provider for a hook nothing calls tells you at
-that moment rather than leaving a control that silently never fires. All eight hooks
+that moment rather than leaving a control that silently never fires. All nine hooks
 are consulted.

@@ -255,6 +255,9 @@ const (
 	// CondInvited: the sign-up carries an invitation that is still good
 	// (5.24), so a flow can ask less of invited people than of anybody.
 	CondInvited Condition = "invited"
+	// CondProviderCondition -- the operator's flow_condition provider said so. What
+	// it means is between the operator's service and the operator's file.
+	CondProviderCondition Condition = "provider_condition"
 )
 
 var allConditions = []Condition{
@@ -265,8 +268,12 @@ var allConditions = []Condition{
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
 	CondFederatedSource, CondEmailVerificationPending,
 	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
-	CondProvedByEmail, CondInvited,
+	CondProvedByEmail, CondInvited, CondProviderCondition,
 }
+
+// ProviderConditions are the conditions the flow_condition hook answers, for doctor to
+// say when nothing does.
+var ProviderConditions = []Condition{CondProviderCondition, CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted}
 
 // answered is which conditions each journey this engine drives can evaluate.
 //
@@ -290,7 +297,7 @@ var answered = map[Designation][]Condition{
 		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
 		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated, CondEmailVerificationPending,
 		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
-		CondProvedByEmail,
+		CondProvedByEmail, CondProviderCondition, CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted,
 	},
 	// No account exists yet, so nothing is pending for it: false is the
 	// answer, not the absence of one.
@@ -522,6 +529,25 @@ func checkAnswered(on Designation, stage StageName, expr string) error {
 	return fmt.Errorf("`when: %s`: a flow `on: %s` cannot evaluate %s yet, so it would "+
 		"always read false and %s would never run (or, negated, always run). Remove it; "+
 		"what `on: %s` evaluates: %s", expr, on, name, stage, on, strings.Join(names, ", "))
+}
+
+// AsksProvider reports whether a flow branches on anything only the flow_condition
+// hook can answer.
+func (fl *Flow) AsksProvider() bool {
+	asks := func(expr string) bool {
+		return slices.Contains(ProviderConditions, Condition(conditionName(expr)))
+	}
+	for _, step := range fl.Stages {
+		if asks(step.When) {
+			return true
+		}
+		for _, branch := range step.OneOf {
+			if asks(branch.When) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isCondition(s string) bool {

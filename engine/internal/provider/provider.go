@@ -124,10 +124,15 @@ const (
 	// HookSAMLAssertion is asked as an assertion is built, and may refuse or add
 	// attributes from the operator's list.
 	HookSAMLAssertion Hook = "saml_assertion"
+
+	// HookFlowCondition answers the `when:` conditions of a sign-in flow that only the
+	// operator's own service knows. It does not decide a sign-in: the flow does, and
+	// the file says what each answer leads to.
+	HookFlowCondition Hook = "flow_condition"
 )
 
 var allHooks = []Hook{HookAuthorize, HookTokenIssue, HookPasswordVerify, HookAuthenticate, HookUserCreate,
-	HookClientAccess, HookUserinfo, HookSAMLAssertion}
+	HookClientAccess, HookUserinfo, HookSAMLAssertion, HookFlowCondition}
 
 // Contributes reports whether a hook's provider may add to what is said, bounded by
 // the operator's list. The others only ever answer yes or no, or a list would be a
@@ -201,6 +206,10 @@ func (h Hook) Called() bool {
 		return true
 	case HookSAMLAssertion:
 		// httpapi.issueSAMLAssertion, once the attributes are read.
+		return true
+	case HookFlowCondition:
+		// httpapi.signInConditions, when a walk reaches a stage guarded by a
+		// condition it answers.
 		return true
 	}
 	return false

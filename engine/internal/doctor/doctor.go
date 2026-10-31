@@ -1013,6 +1013,21 @@ func checkSignInFlows(ctx context.Context, conn interface {
 	// only password, written when the walker passed every such stage, now
 	// refuses everybody who signs in with a passkey or through a provider.
 	for _, a := range loaded {
+		// And a condition only a provider answers, with no provider to: it reads
+		// false, which guards nothing and looks like a guard.
+		if a.fl.AsksProvider() {
+			var n int
+			if err := conn.QueryRow(ctx, `SELECT count(*) FROM core.providers
+				WHERE org_id = $1::uuid AND hook = 'flow_condition' AND enabled`, a.orgID).Scan(&n); err != nil {
+				return err
+			}
+			if n == 0 {
+				r.add(Warning, "flows", fmt.Sprintf("the sign-in flow %q applied to %s branches on a "+
+					"condition only a flow_condition provider answers, and it has none, so it reads false",
+					a.fl.Name, a.slug),
+					"register one with `signari provider add -hook flow_condition`, or take the condition out")
+			}
+		}
 		for _, use := range []struct {
 			stage flow.StageName
 			query string

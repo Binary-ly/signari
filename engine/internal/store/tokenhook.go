@@ -144,6 +144,47 @@ type GateHookResponse struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// FlowConditionResponse is what the flow_condition hook answers: `decision` for
+// provider_condition, and facts for the conditions the language names that only the
+// operator's own service can know. A fact not said is false.
+type FlowConditionResponse struct {
+	Decision bool            `json:"decision"`
+	Facts    map[string]bool `json:"facts,omitempty"`
+}
+
+// FlowConditionResult is what a walk acts on. Down means no answer came from a provider
+// registered fail_closed, which is for the walk to refuse: a `false` here would be a
+// guess, and which way it goes would be the file's and not the provider's mode's.
+type FlowConditionResult struct {
+	FlowConditionResponse
+	Down bool
+}
+
+// ConsultFlowCondition asks the flow_condition provider about a sign-in in progress. No
+// provider is the zero result, every condition false, as for any condition nobody can
+// answer: each guards an additional stage, so false invents nothing.
+func ConsultFlowCondition(ctx context.Context, q providerReader, root *keys.RootKey,
+	client func(time.Duration) *http.Client, log *slog.Logger, orgID string,
+	req AuthenticateHookRequest) (FlowConditionResult, error) {
+
+	p, err := LoadProvider(ctx, q, root, orgID, provider.HookFlowCondition)
+	if err != nil || p == nil {
+		return FlowConditionResult{}, err
+	}
+	var answer FlowConditionResponse
+	if callErr := p.Call(ctx, client(p.Timeout), req, &answer); callErr != nil {
+		if p.Decide(callErr) {
+			log.Warn("a provider did not answer; every condition it answers reads false because it is "+
+				"registered fail_open", "provider", p.Name, "err", callErr)
+			return FlowConditionResult{}, nil
+		}
+		log.Error("a provider did not answer; refusing the sign-in because it is registered fail_closed",
+			"provider", p.Name, "err", callErr)
+		return FlowConditionResult{Down: true}, nil
+	}
+	return FlowConditionResult{FlowConditionResponse: answer}, nil
+}
+
 // ConsultHook asks the operator's provider for a hook about something this engine has
 // already said yes to, by the rule at the top of this file: a yes can be taken back,
 // and what is added is bounded by the operator's list, which for a hook that does not

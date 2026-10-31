@@ -54,6 +54,7 @@ func TestTheHookContractsMatchTheTypesOnTheWire(t *testing.T) {
 		{provider.HookClientAccess, reflect.TypeOf(authzen.Request{}), reflect.TypeOf(GateHookResponse{})},
 		{provider.HookUserinfo, reflect.TypeOf(UserinfoHookRequest{}), reflect.TypeOf(TokenHookResponse{})},
 		{provider.HookSAMLAssertion, reflect.TypeOf(SAMLAssertionHookRequest{}), reflect.TypeOf(TokenHookResponse{})},
+		{provider.HookFlowCondition, reflect.TypeOf(AuthenticateHookRequest{}), reflect.TypeOf(FlowConditionResponse{})},
 	} {
 		contract, ok := provider.ContractFor(c.hook)
 		if !ok {
@@ -66,7 +67,7 @@ func TestTheHookContractsMatchTheTypesOnTheWire(t *testing.T) {
 			t.Errorf("%s: the contract's answer names %v, the engine reads %v", c.hook, got, want)
 		}
 	}
-	if len(provider.AllHooks()) != 8 {
+	if len(provider.AllHooks()) != 9 {
 		t.Error("a hook was added: name its request and answer here")
 	}
 }

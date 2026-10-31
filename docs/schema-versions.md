@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0235 flow_condition_hook
+
+Not compatible with the release before: stop it before migrating.
+
+A sign-in flow that branches on what only the operator's own service knows (10.02). A `when:` is one of a closed list, so a flow can be walked and proved, and that stays true: `provider_condition` is one more name on the list, and what answers it is a hook. It can also say what the language has always named and nothing could answer: whether the device is managed and compliant, whether the network is trusted.
+
 ## 0234 more_hooks
 
 Not compatible with the release before: stop it before migrating.

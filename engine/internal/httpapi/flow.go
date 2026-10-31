@@ -2023,6 +2023,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 
 // handleLoginPost verifies credentials and creates a session.
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withFlowAnswerMemo(r.Context()))
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "malformed form", http.StatusBadRequest)

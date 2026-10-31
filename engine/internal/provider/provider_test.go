@@ -88,9 +88,10 @@ func TestCalledMatchesWhatIsWired(t *testing.T) {
 	//     the device and CIBA approvals.
 	//   - HookUserinfo: httpapi.handleUserinfo.
 	//   - HookSAMLAssertion: httpapi.issueSAMLAssertion.
+	//   - HookFlowCondition: httpapi.signInConditions.
 	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true, HookPasswordVerify: true,
 		HookAuthenticate: true, HookUserCreate: true, HookClientAccess: true, HookUserinfo: true,
-		HookSAMLAssertion: true}
+		HookSAMLAssertion: true, HookFlowCondition: true}
 
 	for _, h := range allHooks {
 		if h.Called() != wired[h] {

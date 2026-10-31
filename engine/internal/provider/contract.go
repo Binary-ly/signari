@@ -128,6 +128,15 @@ func Contracts() []Contract {
 					"claims": anyObjectSchema()}),
 				Sample: map[string]any{"subject": "provider-test", "entity_id": "provider-test",
 					"org_id": "provider-test"}})
+		case HookFlowCondition:
+			out = append(out, Contract{Hook: h, Verdict: "decision",
+				Request: objectSchema([]string{"subject", "org_id", "amr"}, map[string]any{
+					"subject": stringSchema(), "org_id": stringSchema(), "client_ip": stringSchema(),
+					"amr": map[string]any{"type": "array", "items": stringSchema()}}),
+				Response: objectSchema([]string{"decision"}, map[string]any{
+					"decision": map[string]any{"type": "boolean"}, "facts": anyObjectSchema()}),
+				Sample: map[string]any{"subject": "provider-test", "org_id": "provider-test",
+					"amr": []string{"pwd"}}})
 		default:
 			panic(fmt.Sprintf("the %q hook has no contract", h))
 		}

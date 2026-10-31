@@ -93,7 +93,7 @@ flows:
       - {name: calm, given: {}, expect: [password, prompt, session]}
 `
 	mustParse(t, fmt.Sprintf(doc, "risk_elevated", "risk_elevated"))
-	parseErr(t, fmt.Sprintf(doc, "device_managed", "device_managed"), "cannot evaluate device_managed yet")
+	parseErr(t, fmt.Sprintf(doc, "kerberos_available", "kerberos_available"), "cannot evaluate kerberos_available yet")
 }
 
 // A sign-in settles the captcha at the form, so the walk reads

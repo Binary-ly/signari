@@ -425,6 +425,50 @@
         ],
         "type": "object"
       }
+    },
+    {
+      "hook": "flow_condition",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "amr": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "client_ip": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "org_id",
+          "amr"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "decision": {
+            "type": "boolean"
+          },
+          "facts": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
     }
   ],
   "version": "1"

@@ -374,7 +374,7 @@ A `when:` is one condition, optionally negated with `not`. There is no `and` or
 `network_trusted`, `client_requires_mfa`, `kerberos_available`,
 `migration_pending`, `federated_source`, `email_verification_pending`,
 `proved_by_password`, `proved_by_passkey`, `proved_by_kerberos`,
-`proved_by_federated`, `proved_by_email`, `invited`
+`proved_by_federated`, `proved_by_email`, `invited`, `provider_condition`
 
 The list is closed, and a condition outside it is refused at parse. That is what
 makes a typo an error rather than a stage that silently never runs. It is also
@@ -383,23 +383,28 @@ so "every path" is a set that can be walked.
 
 **A flow may branch only on what its journey evaluates.** A condition the
 engine cannot answer would read false every time, so a step-up written as
-`{stage: mfa, when: device_managed}` would pass its own tests (which set the
+`{stage: mfa, when: user_is_new}` would pass its own tests (which set the
 condition true) and never ask anybody for anything. Such a flow is refused when
 it is parsed, naming the condition: by `signari flow test`, by `signari flow
 apply` and by the engine's load alike.
 
 | `on:` | conditions it evaluates |
 |---|---|
-| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the five `proved_by_*`; `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
+| `authentication` | `user_has_second_factor`, `user_has_passkey`, `password_change_required`, `prompts_pending`, `client_requires_mfa`, `risk_elevated`, `email_verification_pending`, and the five `proved_by_*`; `provider_condition`, `device_managed`, `device_compliant` and `network_trusted`, which your own service answers through the [`flow_condition` hook](extensibility.md#the-flow_condition-hook); `captcha_required` only as the condition of the `captcha` stage, because a sign-in settles the challenge at the form before the flow is walked |
 | `enrolment` | `captcha_required`, `invited` (the sign-up carries an invitation that is still good), `prompts_pending` (always false: there is no account yet to have one) |
 | `recovery` | `captcha_required` |
 | `unenrolment` | the five `proved_by_*`: which way the person signed in to reach the page |
 
-The rest of the list (`user_is_new`, `consent_required`,
-`device_managed`, `device_compliant`, `network_trusted`, `kerberos_available`,
+The rest of the list (`user_is_new`, `consent_required`, `kerberos_available`,
 `migration_pending`, `federated_source`) is part of the language, so a file
 naming one is understood rather than mistaken for a typo, and no journey
 evaluates it yet.
+
+What a provider answers reads false when no provider is registered, or when one
+registered `fail_open` does not answer, and `signari doctor` warns about a flow that
+asks with nobody to answer. One registered `fail_closed` that does not answer refuses
+the sign-in. A flow's own `tests` set these like any other condition, so both branches
+can be tested in CI with no service running.
 
 `risk_elevated` holds when the sign-in could not have followed the person's
 last one (impossible travel), or comes from a country they have never signed in

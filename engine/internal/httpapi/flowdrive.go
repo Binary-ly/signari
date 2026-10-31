@@ -248,6 +248,9 @@ type signInFacts struct {
 	promptsOnce bool
 	prompts     []prompts.Prompt
 
+	providerAsked bool
+	provider      store.FlowConditionResult
+
 	// known memoises every answer, and carries the ones the caller decided
 	// before the walk began.
 	known map[string]bool
@@ -332,13 +335,58 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 		return clientRequiresMFA(f.authzQuery) || f.authzClientFloorIsMFA()
 	},
 	flow.CondRiskElevated: func(f *signInFacts) bool {
-		return f.s.riskElevated(f.ctx, f.db, f.userID, f.ip)
+		return f.s.riskElevated(f.ctx, f.db, f.userID, f.ip) || f.providerAnswer().Facts["risk_elevated"]
 	},
+	// What only the operator's own service knows.
+	flow.CondProviderCondition: func(f *signInFacts) bool { return f.providerAnswer().Decision },
+	flow.CondDeviceManaged:     func(f *signInFacts) bool { return f.providerAnswer().Facts["device_managed"] },
+	flow.CondDeviceCompliant:   func(f *signInFacts) bool { return f.providerAnswer().Facts["device_compliant"] },
+	flow.CondNetworkTrusted:    func(f *signInFacts) bool { return f.providerAnswer().Facts["network_trusted"] },
 	// Read through the walk's handle, so the transaction that just took the
 	// right code answers false and the walk goes on.
 	flow.CondEmailVerificationPending: func(f *signInFacts) bool {
 		return f.accountObligations().EmailPending
 	},
+}
+
+// providerAnswer asks the flow_condition provider once, however many conditions it
+// answers. A row that will not load counts as a provider that is down: somebody
+// registered it, and a walk that guessed would be running a different flow.
+func (f *signInFacts) providerAnswer() store.FlowConditionResult {
+	if f.providerAsked {
+		return f.provider
+	}
+	f.providerAsked = true
+	memo, _ := f.ctx.Value(flowAnswerKey{}).(*flowAnswerMemo)
+	if memo != nil && memo.asked {
+		f.provider = memo.answer
+		return f.provider
+	}
+	res, err := store.ConsultFlowCondition(f.ctx, f.db, f.s.root, f.s.outboundClient, f.s.log, f.orgID,
+		store.AuthenticateHookRequest{Subject: f.userID, OrgID: f.orgID, AMR: f.amr, ClientIP: f.ip})
+	if err != nil {
+		f.s.log.Error("consulting the flow_condition provider", "err", err)
+		res.Down = true
+	}
+	if memo != nil {
+		memo.asked, memo.answer = true, res
+	}
+	f.provider = res
+	return res
+}
+
+type flowAnswerKey struct{}
+
+// flowAnswerMemo is one sign-in's answer. A password sign-in asks the flow twice in one
+// request, once to see whether a second factor is due and once for real, and a service
+// that answered differently would have the two disagree about the same sign-in.
+type flowAnswerMemo struct {
+	asked  bool
+	answer store.FlowConditionResult
+}
+
+func withFlowAnswerMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, flowAnswerKey{}, &flowAnswerMemo{})
 }
 
 // accountObligations reads, once, the two things the built-in flow asks of
@@ -476,6 +524,17 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// than guess, because the guess would be a session.
 			s.log.Error("the sign-in flow ended without a terminal stage",
 				"flow", fl.Name, "correlation_id", correlationID(ctx))
+			return decisionDeny
+		}
+		// A condition the walk just needed has no answer, from a provider that
+		// said what that means.
+		if facts.provider.Down {
+			_ = tx.Rollback(ctx)
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"reason": "flow_provider_down", "flow": fl.Name},
+			})
 			return decisionDeny
 		}
 

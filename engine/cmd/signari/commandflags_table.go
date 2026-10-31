@@ -205,6 +205,7 @@ var commandFlags = map[string][]string{
 	"saml add-sp":                     {"acs", "entity-id", "name", "nameid-format", "org", "slo", "slo-binding", "sp-cert", "sp-encryption-cert", "sp-key-transport", "want-signed-requests"},
 	"saml attribute-release":          {"attribute", "claim", "entity-id", "remove"},
 	"saml group-release":              {"attribute-name", "entity-id", "only", "remove"},
+	"saml idp-initiated":              {"entity-id", "relay-state", "remove"},
 	"saml list":                       {"o"},
 	"saml nameid":                     {"attribute", "entity-id"},
 	"saml signing":                    {"assertion-lifetime", "entity-id", "sign-assertions", "sign-responses", "signature-alg"},

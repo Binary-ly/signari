@@ -282,6 +282,7 @@ federation in:
   saml list                 show registered SAML service providers
   saml signing              what a service provider is sent signed, and how long it lasts
   saml nameid               take a service provider's NameID from an attribute
+  saml idp-initiated        let a sign-in to a service provider start from the portal
   saml attribute-release    which local attribute a SAML attribute carries
   saml group-release        which groups a service provider is told of
   scim-source add           register an inbound SCIM source and mint its token
@@ -792,6 +793,8 @@ func run(args []string) (err error) {
 	racKeyFile := fs.String("private-key-file", "", "a file holding a PEM private key, for an ssh connection (rac add)")
 	racPassphraseFile := fs.String("passphrase-file", "", "a file holding that key's passphrase (rac add)")
 	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
+	samlRelayState := fs.String("relay-state", "",
+		"what goes with a response nobody asked for, usually the page to land on (saml idp-initiated)")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
 	reason := fs.String("reason", "",
 		"why an audit checkpoint is being declared, or why a stream's status changed (ssf set-status)")
@@ -1742,6 +1745,14 @@ func run(args []string) (err error) {
 		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
 	case "saml nameid":
 		return samlNameID(ctx, conn, *entityID, *localAttribute)
+	case "saml idp-initiated":
+		var relayState *string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "relay-state" {
+				relayState = samlRelayState
+			}
+		})
+		return samlIdPInitiated(ctx, conn, *entityID, !*removeMember, relayState)
 	case "saml group-release":
 		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
@@ -3893,7 +3904,7 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
 		return err
 	}
 	rows, err := conn.Query(ctx, `
-		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated,
 		       COALESCE(string_agg(a.url, ', ' ORDER BY a.url), '(none)')
 		FROM core.saml_providers p
 		LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
@@ -3905,20 +3916,20 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
 	defer rows.Close()
 
 	if out.text() {
-		fmt.Printf("%-38s %-12s %-8s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "ACS")
+		fmt.Printf("%-38s %-12s %-8s %-7s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "PORTAL", "ACS")
 	}
 	var n int
 	for rows.Next() {
 		var entity, name, nameID, acs string
-		var enabled bool
-		if err := rows.Scan(&entity, &name, &nameID, &enabled, &acs); err != nil {
+		var enabled, idpInitiated bool
+		if err := rows.Scan(&entity, &name, &nameID, &enabled, &idpInitiated, &acs); err != nil {
 			return err
 		}
 		n++
 		out.add(map[string]any{"entity_id": entity, "name": name, "name_id_format": nameID, "enabled": enabled,
-			"acs": acs})
+			"idp_initiated": idpInitiated, "acs": acs})
 		if out.text() {
-			fmt.Printf("%-38s %-12s %-8t %s\n", truncateMiddle(entity, 38), nameID, enabled, acs)
+			fmt.Printf("%-38s %-12s %-8t %-7t %s\n", truncateMiddle(entity, 38), nameID, enabled, idpInitiated, acs)
 		}
 	}
 	if err := rows.Err(); err != nil {

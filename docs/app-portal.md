@@ -100,6 +100,11 @@ An application with no launch URL is still listed, marked as unlaunchable.
 Hiding it would hide the mistake; the person best placed to notice is the
 administrator, and they will not see it if the portal quietly omits it.
 
+A SAML service provider has a tile once `signari saml idp-initiated` opts it in. It
+is asked of the policy by its entity ID, and it starts the sign-in here, because that
+is what a provider with no sign-in page of its own needs; see
+[saml.md](saml.md#a-sign-in-that-starts-here).
+
 ## What never appears
 
 - disabled clients — a tile that refuses whoever clicks it

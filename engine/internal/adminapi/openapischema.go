@@ -569,11 +569,12 @@ var opSchemas = map[string]opSchema{
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "entity_id", "name",
 			"name_id_format", "name_id_attribute", "signature_alg", "enabled", "sign_assertions", "sign_responses",
 			"want_signed_requests", "encrypted", "has_signing_cert", "lifetime_s", "acs_urls", "slo_urls", "attribute_release",
-			"group_release"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
+			"group_release", "idp_initiated", "default_relay_state"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
 			"name_id_format": str(), "name_id_attribute": str(), "signature_alg": str(), "enabled": boolean(), "sign_assertions": boolean(),
 			"sign_responses": boolean(), "want_signed_requests": boolean(), "encrypted": boolean(),
 			"has_signing_cert": boolean(), "lifetime_s": integer(), "acs_urls": arrayOf(str()),
-			"slo_urls": arrayOf(str()), "attribute_release": mapOf(str()),
+			"slo_urls": arrayOf(str()), "attribute_release": mapOf(str()), "idp_initiated": boolean(),
+			"default_relay_state": str(),
 			"group_release": nullable(object([]string{"attribute_name", "only"}, map[string]jsonSchema{
 				"attribute_name": str(), "only": arrayOf(str())}))}))})},
 	"POST /admin/organizations/{orgID}/saml-providers": {http.StatusCreated, typeOf[addSAMLProviderRequest](), object(

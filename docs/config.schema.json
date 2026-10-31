@@ -848,11 +848,17 @@
           },
           "type": "array"
         },
+        "default_relay_state": {
+          "type": "string"
+        },
         "enabled": {
           "type": "boolean"
         },
         "entity_id": {
           "type": "string"
+        },
+        "idp_initiated": {
+          "type": "boolean"
         },
         "name": {
           "type": "string"

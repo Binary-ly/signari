@@ -2778,6 +2778,31 @@ var racReservedParameters = map[string]string{
 // set them, so every connection ran with guacd's defaults. Empty clears them.
 // guacd refuses a name it does not take for the protocol at the next connect,
 // by name, which is where the protocol's own list is known.
+// samlIdPInitiated says whether a sign-in to a provider can start here.
+func samlIdPInitiated(ctx context.Context, conn *pgx.Conn, entityID string, enabled bool, relayState *string) error {
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if errors.Is(err, store.ErrSAMLProviderUnknown) {
+		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+	}
+	if err != nil {
+		return err
+	}
+	if err := store.SetSAMLIdPInitiated(ctx, conn, orgID, providerID, &enabled, relayState); err != nil {
+		return err
+	}
+	if !enabled {
+		fmt.Printf("%s: a sign-in can no longer start here\n", entityID)
+		return nil
+	}
+	fmt.Printf("%s: a sign-in can start at <issuer>/saml/init/%s, and it is on the portal\n"+
+		"\n  The provider must take a response it did not ask for. Most refuse one until told to.\n",
+		entityID, providerID)
+	return nil
+}
+
 // racLimits says how many may hold a connection, and for how long; 0 for no limit.
 // What is not given is kept.
 func racLimits(ctx context.Context, conn *pgx.Conn, orgID, slug string, maxConnections *int, maxDuration *time.Duration) error {

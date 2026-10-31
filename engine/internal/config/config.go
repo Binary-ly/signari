@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
@@ -180,6 +181,10 @@ type SAMLProvider struct {
 	ACSURLs  []string `yaml:"acs_urls"`
 	NameID   string   `yaml:"name_id_format"`
 	Enabled  *bool    `yaml:"enabled"`
+	// IdPInitiated lets a sign-in to it start from the portal and DefaultRelayState
+	// is what goes with that response, each left as it is when absent.
+	IdPInitiated      *bool   `yaml:"idp_initiated,omitempty"`
+	DefaultRelayState *string `yaml:"default_relay_state,omitempty"`
 }
 
 // RADIUSClient is a network device permitted to ask.
@@ -305,6 +310,9 @@ func (f *File) Validate() error {
 		seenSP[p.EntityID] = true
 		if len(p.ACSURLs) == 0 {
 			add("saml_providers[%s]: at least one acs_url is required", p.EntityID)
+		}
+		if p.DefaultRelayState != nil && len(*p.DefaultRelayState) > saml.MaxRelayState {
+			add("saml_providers[%s]: default_relay_state is at most %d bytes", p.EntityID, saml.MaxRelayState)
 		}
 		for _, u := range p.ACSURLs {
 			if !strings.HasPrefix(u, "https://") {

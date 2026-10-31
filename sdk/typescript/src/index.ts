@@ -2333,12 +2333,14 @@ export interface GetOrganizationsOrgIDSAMLProvidersResponse {
 export interface GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem {
   acs_urls: string[]
   attribute_release: Record<string, unknown>
+  default_relay_state: string
   enabled: boolean
   encrypted: boolean
   entity_id: string
   group_release: GetOrganizationsOrgIDSAMLProvidersResponseProvidersItemGroupRelease | null
   has_signing_cert: boolean
   id: string
+  idp_initiated: boolean
   lifetime_s: number
   name: string
   name_id_attribute: string
@@ -2921,6 +2923,8 @@ export interface PatchOrganizationsOrgIDRADIUSClientsDeviceIDResponse {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest {
+  default_relay_state?: string
+  idp_initiated?: boolean
   lifetime_s?: number
   name_id_attribute?: string
   sign_assertions?: boolean

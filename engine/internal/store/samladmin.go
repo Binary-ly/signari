@@ -254,6 +254,28 @@ func RemoveSAMLAttributeRelease(ctx context.Context, q outpostDB, orgID, provide
 	return nil
 }
 
+// SetSAMLIdPInitiated says whether a sign-in to a provider can start here, and what
+// goes with it; nil leaves either as it is. An unsolicited response refers to no request,
+// so a provider that has not been set up to take one refuses it, and each opts in.
+func SetSAMLIdPInitiated(ctx context.Context, q outpostDB, orgID, providerID string, enabled *bool,
+	relayState *string) error {
+	if relayState != nil && len(*relayState) > saml.MaxRelayState {
+		return samlInvalid{fmt.Sprintf("a RelayState is at most %d bytes, and this is %d", saml.MaxRelayState,
+			len(*relayState))}
+	}
+	tag, err := q.Exec(ctx, `UPDATE core.saml_providers
+		   SET idp_initiated = COALESCE($3::boolean, idp_initiated),
+		       default_relay_state = COALESCE($4::text, default_relay_state)
+		 WHERE id::text = $2 AND org_id = $1::uuid`, orgID, providerID, enabled, relayState)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSAMLProviderUnknown
+	}
+	return nil
+}
+
 // SAMLSigningChange is what `saml signing` changes; a nil flag, a zero
 // lifetime and an empty algorithm leave theirs alone, since writing both
 // flags every time turned Response signing off again when only the lifetime
@@ -383,6 +405,8 @@ type SAMLProviderRow struct {
 	NameIDAttribute                                string
 	Enabled, SignAssertions, SignResponses         bool
 	WantSignedRequests, Encrypted, HasSigningCert  bool
+	IdPInitiated                                   bool
+	DefaultRelayState                              string
 	LifetimeSeconds                                int
 	ACSURLs, SLOURLs                               []string
 	Attributes                                     map[string]string
@@ -400,7 +424,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a WHERE a.provider_id = p.id), '{}'),
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
-		       COALESCE(p.name_id_attribute, '')
+		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -414,7 +438,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		if err := rows.Scan(&p.ID, &p.EntityID, &p.Name, &p.NameIDFormat, &p.SignatureAlg, &p.Enabled,
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
 			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
-			&p.OnlyGroups, &p.NameIDAttribute); err != nil {
+			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

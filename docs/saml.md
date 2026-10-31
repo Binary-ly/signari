@@ -538,6 +538,36 @@ succeed, because the account has none or the flow never asks, or if no class in 
 list is one this directory knows, the service provider gets `NoAuthnContext` rather
 than a person sent round a sign-in page for ever. With `IsPassive` it gets `NoPassive`.
 
+## A sign-in that starts here
+
+Some applications have no sign-in page of their own to send anybody from, and some
+people start from the [portal](app-portal.md). For those a service provider can be
+opted in:
+
+```
+signari saml idp-initiated -entity-id https://app.example.com -relay-state /dashboard
+```
+
+It then has a tile on the portal, and `/saml/init/{id}` sends the person there. The
+command prints the URL. `-remove` stops it, and it is off until set.
+
+The response answers no request, so it has no `InResponseTo`, and the provider has to be
+set up to take one. Most refuse it until they are, which is why this is per provider
+and not a setting of the deployment. A provider that requires signed requests has no
+request here to check: opting it in is the operator's statement that it may be sent a
+response without one.
+
+Nothing about the sign-in comes from the URL except which provider. The assertion goes
+to the provider's default URL, and the `RelayState` is the one set here, never one from
+the link, so a link can start a sign-in and cannot choose where the person lands inside
+the application. The person signs in first if they have not, and a provider that does not
+exist, belongs to another organisation or has not opted in all read the same.
+
+The [access policy](policy.md) is held to it as to any assertion, by the entity
+ID, and the portal asks the same question: a provider refused shows as refused, with
+the policy's message, and opening its link directly says the same thing here, not at the
+provider, which was not expecting anything.
+
 ## Not yet built
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we

@@ -30,11 +30,10 @@ import (
 // RelayState, and refusing to emit anything before the request is validated.
 
 const (
-	// maxRelayState is the value SAML itself specifies: 80 bytes. It is enforced
-	// because RelayState comes back to us from the browser and goes into an HTML
-	// form, and an unbounded attacker-controlled string in a page we render is a
-	// place to put a payload.
-	maxRelayState = 80
+	// maxRelayState is enforced because RelayState comes back to us from the
+	// browser and goes into an HTML form, and an unbounded attacker-controlled
+	// string in a page we render is a place to put a payload.
+	maxRelayState = saml.MaxRelayState
 
 	// samlRequestTTL is how long a seen request id is remembered for replay
 	// detection. Comfortably longer than the assertion lifetime, so a replay

@@ -116,23 +116,25 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	}
 
 	rows, err = tx.Query(ctx, `
-		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state,
 		       COALESCE(array_agg(a.url) FILTER (WHERE a.url IS NOT NULL), '{}')
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
 		 WHERE p.org_id = $1::uuid
-		 GROUP BY p.entity_id, p.display_name, p.name_id_format, p.enabled`, orgID)
+		 GROUP BY p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var p SAMLProvider
-		var enabled bool
-		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &p.ACSURLs); err != nil {
+		var enabled, idpInitiated bool
+		var relayState string
+		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &idpInitiated, &relayState,
+			&p.ACSURLs); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		p.Enabled = &enabled
+		p.Enabled, p.IdPInitiated, p.DefaultRelayState = &enabled, &idpInitiated, &relayState
 		c.samlProviders[p.EntityID] = p
 	}
 	rows.Close()
@@ -454,6 +456,13 @@ func samlDiff(have, want SAMLProvider) string {
 	if want.Enabled != nil && have.Enabled != nil && *have.Enabled != *want.Enabled {
 		d = append(d, "enabled")
 	}
+	if want.IdPInitiated != nil && have.IdPInitiated != nil && *have.IdPInitiated != *want.IdPInitiated {
+		d = append(d, "idp_initiated")
+	}
+	if want.DefaultRelayState != nil && have.DefaultRelayState != nil &&
+		*have.DefaultRelayState != *want.DefaultRelayState {
+		d = append(d, "default_relay_state")
+	}
 	return strings.Join(d, ", ")
 }
 
@@ -632,16 +641,19 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		var id string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO core.saml_providers (org_id, entity_id, display_name,
-			                                 name_id_format, enabled)
+			                                 name_id_format, enabled, idp_initiated, default_relay_state)
 			VALUES ($1::uuid, $2, COALESCE(NULLIF($3, ''), $2),
-			        COALESCE(NULLIF($4, ''), 'persistent'), COALESCE($5::boolean, true))
+			        COALESCE(NULLIF($4, ''), 'persistent'), COALESCE($5::boolean, true),
+			        COALESCE($6::boolean, false), COALESCE($7::text, ''))
 			ON CONFLICT (org_id, entity_id) DO UPDATE SET
 				display_name = COALESCE(NULLIF($3, ''), core.saml_providers.display_name),
 				name_id_format = COALESCE(NULLIF($4, ''), core.saml_providers.name_id_format),
 				enabled = COALESCE($5::boolean, core.saml_providers.enabled),
+				idp_initiated = COALESCE($6::boolean, core.saml_providers.idp_initiated),
+				default_relay_state = COALESCE($7::text, core.saml_providers.default_relay_state),
 				updated_at = now()
 			RETURNING id::text`,
-			orgID, sp.EntityID, sp.Name, sp.NameID, sp.Enabled).Scan(&id); err != nil {
+			orgID, sp.EntityID, sp.Name, sp.NameID, sp.Enabled, sp.IdPInitiated, sp.DefaultRelayState).Scan(&id); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "saml_providers_entity_id_key" {
 				return fmt.Errorf("saml provider %q is registered by another organisation; "+

@@ -97,6 +97,15 @@ func (s *Server) loadSAMLProvider(ctx context.Context, entityID string) (*saml.P
 	return p, err
 }
 
+// loadSAMLProviderByID is the same by the provider's own id.
+func (s *Server) loadSAMLProviderByID(ctx context.Context, id string) (*saml.Provider, error) {
+	p, err := store.LoadSAMLProviderByID(ctx, s.db, id)
+	if err == nil && !s.ownedBy(ctx, s.db, p.OrgID, "saml service provider") {
+		return nil, store.ErrSAMLProviderUnknown
+	}
+	return p, err
+}
+
 // serves reports whether an object of instanceID is this server's. A Server
 // that was not told its instance -- a test's -- serves every one.
 func (s *Server) serves(instanceID string) bool {

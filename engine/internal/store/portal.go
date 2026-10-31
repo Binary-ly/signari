@@ -27,6 +27,34 @@ type PortalApp struct {
 	LogoURI   string
 }
 
+// PortalSAML is a service provider a sign-in can start from here.
+type PortalSAML struct{ ID, EntityID, DisplayName string }
+
+// ListPortalSAML returns the service providers that could appear on a portal. One
+// with nowhere to send an assertion is left out and not shown as a mistake: it took
+// an operator opting it in, and the failure is theirs to see, not the person's.
+func ListPortalSAML(ctx context.Context, db *pgxpool.Pool, orgID string) ([]PortalSAML, error) {
+	rows, err := db.Query(ctx, `
+		SELECT id::text, entity_id, display_name
+		FROM core.saml_providers p
+		WHERE org_id = $1::uuid AND enabled AND idp_initiated
+		  AND EXISTS (SELECT 1 FROM core.saml_acs_urls a WHERE a.provider_id = p.id)
+		ORDER BY display_name, entity_id`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PortalSAML
+	for rows.Next() {
+		var a PortalSAML
+		if err := rows.Scan(&a.ID, &a.EntityID, &a.DisplayName); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // ListPortalCandidates returns the applications that could appear on a portal,
 // before any policy is applied.
 //

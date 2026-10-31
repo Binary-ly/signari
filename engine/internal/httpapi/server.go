@@ -665,6 +665,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)
 	mux.HandleFunc("GET /saml/sso", s.handleSAMLSSO)
 	mux.HandleFunc("POST /saml/sso", s.handleSAMLSSO)
+	mux.HandleFunc("GET "+pathSAMLInit+"{id}", s.handleSAMLInit)
 	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
 

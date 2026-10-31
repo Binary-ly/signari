@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -67,7 +68,15 @@ type Provider struct {
 	SPEncryptionCert string
 	LifetimeSeconds  int
 	Enabled          bool
+
+	// IdPInitiated lets a sign-in to this provider start here, with no request
+	// from it, and DefaultRelayState is what goes with that response.
+	IdPInitiated      bool
+	DefaultRelayState string
 }
+
+// MaxRelayState is the value SAML itself specifies: 80 bytes.
+const MaxRelayState = 80
 
 type ACSURL struct {
 	URL       string
@@ -231,6 +240,28 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 
 		ACRComparison: r.RequestedAuthnContext.Comparison,
 	}, nil
+}
+
+// ErrNotIdPInitiated is a provider that has not opted in to a sign-in starting here.
+var ErrNotIdPInitiated = errors.New("this application takes no sign-in started here")
+
+// Unsolicited is the validated shape of a sign-in nobody asked for: what the provider
+// is registered with, there being no request to read anything from. So the response
+// goes to its default URL and references no request, which is what makes it unsolicited
+// to the provider, and which is why it opts in.
+func Unsolicited(p *Provider, now time.Time) (*Validated, error) {
+	if !p.Enabled {
+		return nil, fmt.Errorf("service provider %q is disabled", p.EntityID)
+	}
+	if !p.IdPInitiated {
+		return nil, ErrNotIdPInitiated
+	}
+	acs, binding, err := resolveACS(&AuthnRequest{}, p)
+	if err != nil {
+		return nil, err
+	}
+	return &Validated{Issuer: p.EntityID, IssueInstant: now, ACSURL: acs, Binding: binding,
+		NameIDFormat: p.NameIDFormat}, nil
 }
 
 // resolveACS decides where the assertion may be delivered.

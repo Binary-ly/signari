@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0219 saml_idp_initiated
+
+Compatible with the release before: its binary may still serve this schema.
+
+A sign-in the identity provider starts (8.02), for an application that has no sign-in page of its own to send anybody from, or whose people start from the portal. An unsolicited response answers no request, so a service provider has to expect one, and each is opted in: idp_initiated is false until an operator says otherwise.
+
 ## 0218 rac_sessions_open
 
 Compatible with the release before: its binary may still serve this schema.

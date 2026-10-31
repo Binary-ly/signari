@@ -77,6 +77,22 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// A service provider that takes a sign-in started here, asked of the policy by
+	// its entity id as the assertion will be.
+	providers, err := store.ListPortalSAML(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Error("listing portal SAML applications", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	for _, a := range providers {
+		if d := s.checkAccessPolicy(ctx, r, orgID, a.EntityID, userID, "openid", mfa, amr); d != nil {
+			blocked = append(blocked, tile{Name: a.DisplayName, Blocked: true, Reason: d.Message})
+			continue
+		}
+		open = append(open, tile{Name: a.DisplayName, LaunchURL: pathSAMLInit + a.ID})
+	}
+
 	s.renderPage(w, r, "portal", map[string]any{
 		"Open": open, "Blocked": blocked,
 		"Empty": len(open) == 0 && len(blocked) == 0,

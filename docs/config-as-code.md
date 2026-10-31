@@ -49,6 +49,8 @@ saml_providers:
     name: Intranet
     acs_urls: [https://intranet.example.com/_trust/]
     name_id_format: emailAddress
+    idp_initiated: true       # a sign-in can start from the portal; see saml.md
+    default_relay_state: /sites/home
 
 radius_clients:
   - name: office-ap

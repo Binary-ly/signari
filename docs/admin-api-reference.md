@@ -2864,6 +2864,8 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `default_relay_state` | string |  |
+| `idp_initiated` | boolean |  |
 | `lifetime_s` | integer |  |
 | `name_id_attribute` | string |  |
 | `sign_assertions` | boolean |  |

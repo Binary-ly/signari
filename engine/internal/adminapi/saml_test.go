@@ -100,6 +100,22 @@ func TestASAMLProviderIsConfiguredThroughTheAPI(t *testing.T) {
 		t.Errorf("changing only the lifetime: %d %s", rec.Code, rec.Body.String())
 	}
 
+	// A sign-in started from the portal is opted in here, and what goes with it is
+	// held to what SAML carries; either alone leaves the other as it was.
+	if e := errorOf(http.MethodPatch, provider, map[string]any{"default_relay_state": strings.Repeat("x", 81)},
+		http.StatusBadRequest); e != "invalid_saml_provider" {
+		t.Errorf("a RelayState SAML would not carry answered %q", e)
+	}
+	for _, body := range []map[string]any{{"idp_initiated": true}, {"default_relay_state": "/home"}} {
+		if rec := call(t, s, http.MethodPatch, provider, testToken, body); rec.Code != http.StatusOK {
+			t.Fatalf("%v: %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if list := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(list.Body.String(),
+		`"idp_initiated":true,"default_relay_state":"/home"`) {
+		t.Errorf("the listing does not say so: %s", list.Body.String())
+	}
+
 	release := provider + "/attribute-release"
 	const claim = "http://schemas.xmlsoap.org/claims/Department"
 	if e := errorOf(http.MethodPut, release, map[string]string{"saml_attribute": claim, "attribute": "cost_centre"},

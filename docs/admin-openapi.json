@@ -16827,6 +16827,9 @@
                             },
                             "type": "object"
                           },
+                          "default_relay_state": {
+                            "type": "string"
+                          },
                           "enabled": {
                             "type": "boolean"
                           },
@@ -16864,6 +16867,9 @@
                           "id": {
                             "format": "uuid",
                             "type": "string"
+                          },
+                          "idp_initiated": {
+                            "type": "boolean"
                           },
                           "lifetime_s": {
                             "type": "integer"
@@ -16913,7 +16919,9 @@
                           "acs_urls",
                           "slo_urls",
                           "attribute_release",
-                          "group_release"
+                          "group_release",
+                          "idp_initiated",
+                          "default_relay_state"
                         ],
                         "type": "object"
                       },
@@ -17154,6 +17162,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "default_relay_state": {
+                    "type": "string"
+                  },
+                  "idp_initiated": {
+                    "type": "boolean"
+                  },
                   "lifetime_s": {
                     "type": "integer"
                   },

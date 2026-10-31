@@ -28,19 +28,29 @@ var ErrSAMLProviderUnknown = errors.New("no service provider registered with tha
 
 // LoadSAMLProvider fetches a provider and everything needed to answer it.
 func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "entity_id = $1", entityID)
+}
+
+// LoadSAMLProviderByID is the same by the provider's own id.
+func LoadSAMLProviderByID(ctx context.Context, db *pgxpool.Pool, id string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "id::text = $1", id)
+}
+
+func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) (*saml.Provider, error) {
 	p := &saml.Provider{}
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, entity_id, display_name, name_id_format,
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
 		       sp_key_transport, signature_alg,
-		       lifetime_seconds, enabled, COALESCE(name_id_attribute, '')
+		       lifetime_seconds, enabled, COALESCE(name_id_attribute, ''),
+		       idp_initiated, default_relay_state
 		FROM core.saml_providers
-		WHERE entity_id = $1`, entityID).Scan(
+		WHERE `+where, key).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
 		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg,
-		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute)
+		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSAMLProviderUnknown

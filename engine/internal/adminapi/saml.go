@@ -32,6 +32,8 @@ type samlProviderView struct {
 	SLOURLs            []string          `json:"slo_urls"`
 	Attributes         map[string]string `json:"attribute_release"`
 	GroupRelease       any               `json:"group_release"`
+	IdPInitiated       bool              `json:"idp_initiated"`
+	DefaultRelayState  string            `json:"default_relay_state"`
 }
 
 type addSAMLProviderRequest struct {
@@ -57,6 +59,10 @@ type patchSAMLProviderRequest struct {
 	// NameIDAttribute is where the NameID comes from: a declared attribute no
 	// person can edit, or username. Empty returns it to the format alone.
 	NameIDAttribute *string `json:"name_id_attribute"`
+	// IdPInitiated lets a sign-in to this provider start from the portal, and
+	// DefaultRelayState is what goes with that response.
+	IdPInitiated      *bool   `json:"idp_initiated"`
+	DefaultRelayState *string `json:"default_relay_state"`
 }
 
 type samlAttributeRequest struct {
@@ -91,7 +97,8 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignatureAlg:    p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
-			SLOURLs: p.SLOURLs, Attributes: p.Attributes}
+			SLOURLs: p.SLOURLs, Attributes: p.Attributes, IdPInitiated: p.IdPInitiated,
+			DefaultRelayState: p.DefaultRelayState}
 		if v.Attributes == nil {
 			v.Attributes = map[string]string{}
 		}
@@ -157,7 +164,7 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" &&
-		req.NameIDAttribute == nil {
+		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
 	}
@@ -187,6 +194,17 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			detail["name_id_attribute"] = *req.NameIDAttribute
+		}
+		if req.IdPInitiated != nil || req.DefaultRelayState != nil {
+			if err := store.SetSAMLIdPInitiated(ctx, tx, orgID, providerID, req.IdPInitiated, req.DefaultRelayState); err != nil {
+				return err
+			}
+			if req.IdPInitiated != nil {
+				detail["idp_initiated"] = *req.IdPInitiated
+			}
+			if req.DefaultRelayState != nil {
+				detail["default_relay_state"] = *req.DefaultRelayState
+			}
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_signing_set", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

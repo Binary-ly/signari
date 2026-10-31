@@ -181,6 +181,7 @@ var cliAPI = map[string]string{
 	"saml attribute-release": "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release",
 	"saml signing":           "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml nameid":            "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml idp-initiated":     "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml group-release":     "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release",
 
 	// Provisioning and directories.

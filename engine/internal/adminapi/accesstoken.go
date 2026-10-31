@@ -57,6 +57,13 @@ func (s *Server) resolveAccessToken(ctx context.Context, raw string) (*Principal
 	var claims *tokens.AccessTokenClaims
 	var from accessIssuer
 	var err error
+	if strings.HasPrefix(raw, store.OpaqueTokenPrefix) {
+		signed, oerr := store.OpenOpaqueToken(ctx, s.db, raw)
+		if oerr != nil {
+			return nil, errTokenRejected
+		}
+		raw = signed
+	}
 	for _, ai := range s.accessIssuers {
 		if claims, err = tokens.VerifyAccessTokenAny(ai.keys, []string{ai.issuer}, raw); err == nil {
 			from = ai

@@ -77,6 +77,8 @@ type Stats struct {
 	// RevocationsPurged are denylist rows dropped because the token they name
 	// has expired anyway.
 	RevocationsPurged int64
+	// OpaqueTokensPurged are handles dropped past their expiry.
+	OpaqueTokensPurged int64
 	// RecoveriesPurged are password-reset requests dropped after expiry.
 	RecoveriesPurged int64
 	// DeviceCodesPurged are abandoned RFC 8628 device authorizations.
@@ -167,6 +169,10 @@ func RunOnce(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (Stats, er
 	// expired token is refused by its exp claim regardless.
 	if st.RevocationsPurged, err = store.PurgeExpiredRevocations(ctx, tx); err != nil {
 		return st, fmt.Errorf("purging expired revocations: %w", err)
+	}
+	// Handles past their expiry, which refuse anyway.
+	if st.OpaqueTokensPurged, err = store.PurgeExpiredOpaqueTokens(ctx, tx); err != nil {
+		return st, fmt.Errorf("purging expired opaque tokens: %w", err)
 	}
 	// Device authorizations that were never completed. Each holds two code
 	// hashes; an abandoned television login should not leave them behind.
@@ -442,6 +448,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("sessions_swept", int64(s.SessionsSwept))
 	add("codes_purged", s.CodesPurged)
 	add("revocations_purged", s.RevocationsPurged)
+	add("opaque_tokens_purged", s.OpaqueTokensPurged)
 	add("recoveries_purged", s.RecoveriesPurged)
 	add("device_codes_purged", s.DeviceCodesPurged)
 	add("logout_chains_swept", s.LogoutChainsSwept)

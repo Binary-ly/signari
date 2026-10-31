@@ -266,7 +266,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	if !ok {
 		return
 	}
-	rpt, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
+	rpt, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
 		Subject:  rptSubject,
 		Audience: []string{t.ResourceServer},

@@ -183,7 +183,8 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				switch n := n.(type) {
 				case *ast.AssignStmt:
-					if len(n.Rhs) == 1 && isCall(n.Rhs[0], "tokens", "VerifyAccessTokenAny") {
+					if len(n.Rhs) == 1 && (isCall(n.Rhs[0], "tokens", "VerifyAccessTokenAny") ||
+						isCall(n.Rhs[0], "s", "verifyPresented") || isCall(n.Rhs[0], "s", "verifyPresentedIn")) {
 						if id, ok := n.Lhs[0].(*ast.Ident); ok {
 							verified = append(verified, id.Name)
 						}
@@ -213,7 +214,7 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 		}
 	}
 	if sites < 7 {
-		t.Fatalf("found %d calls to tokens.VerifyAccessTokenAny; there were 7 when this "+
+		t.Fatalf("found %d calls that verify an access token; there were 7 when this "+
 			"was written, so this test is no longer finding them", sites)
 	}
 }

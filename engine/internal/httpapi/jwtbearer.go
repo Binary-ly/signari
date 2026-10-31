@@ -298,7 +298,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	jkt := dpopThumbprintFrom(ctx)
 
 	now := time.Now()
-	at, err := signAccessToken(ctx, tokens.NewSigner(key), tokens.AccessTokenClaims{
+	at, err := issueAccessToken(ctx, tx, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  userID,
 		Audience: []string{c.ClientID},

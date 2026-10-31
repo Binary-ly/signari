@@ -522,6 +522,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_format` | string |  |
 | `access_token_signed_alg` | string or null |  |
 | `access_token_ttl_s` | integer |  |
 | `admin_api` | boolean |  |
@@ -586,6 +587,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_format` | string |  |
 | `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
 | `admin_api` | boolean |  |
@@ -637,6 +639,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `access_token_format` | string |  |
 | `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
 | `client_id` | string | always |

@@ -94,6 +94,9 @@
     "Client": {
       "additionalProperties": false,
       "properties": {
+        "access_token_format": {
+          "type": "string"
+        },
         "access_token_signed_response_alg": {
           "type": "string"
         },

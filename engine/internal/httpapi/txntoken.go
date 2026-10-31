@@ -175,8 +175,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// AN INITIAL REQUEST, from an access token at the edge. The type has
 		// already been checked against section 11.2 above, so this branch is
 		// reached only for types we accept.
-		subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx),
-			req.SubjectToken)
+		subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), req.SubjectToken)
 		if err != nil {
 			s.log.Info("txn-token: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))

@@ -222,6 +222,7 @@ clients:
   client set-admin-api             let the client obtain tokens for the Admin API
   client set-first-party           skip the consent screen for a client that is yours
   client set-roles-claim           the claim a client's tokens carry a person's roles in it under
+  client set-token-format          a client's access tokens as JWTs, or opaque handles to introspect
   client set-acr                   the assurance every sign-in to the client must reach
   client set-grants                set which grant types a client may use
   client set-exchange              grant RFC 8693 token exchange, for itself and audiences
@@ -509,6 +510,8 @@ func run(args []string) (err error) {
 		"(default: the size of the key it replaces)")
 	clientAccessAlg := fs.String("access-alg", "", "`client set-alg`: what signs the client's access tokens alone; "+
 		"empty goes back to what signs its ID tokens")
+	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
+		"resource server introspects")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
@@ -1418,6 +1421,9 @@ func run(args []string) (err error) {
 				false: "state is the client's own choice"}[*requireState])
 	case "client set-admin-api":
 		return clientSetAdminAPI(ctx, conn, *clientID, *adminAPI)
+	case "client set-token-format":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{AccessTokenFormat: tokenFormat},
+			"its access tokens are "+*tokenFormat+" from the next one issued")
 	case "client set-roles-claim":
 		said := "its tokens carry no roles"
 		if *upstreamClaim != "" {

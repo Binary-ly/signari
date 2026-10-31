@@ -2,11 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -56,6 +61,43 @@ func signAccessToken(ctx context.Context, signer *tokens.Signer, c tokens.Access
 		c.Extra = merged
 	}
 	return signer.SignJSON(c, tokens.TypAccessToken)
+}
+
+// issueAccessToken signs an access token and answers what the client is given: the
+// token itself, or for a client set to opaque, a handle that stands for it. Through q,
+// so a handle stored in a grant's transaction goes with it if the grant is undone.
+func issueAccessToken(ctx context.Context, q store.Execer, client *clients.Client, signer *tokens.Signer,
+	c tokens.AccessTokenClaims) (string, error) {
+	signed, err := signAccessToken(ctx, signer, c)
+	if err != nil || client.AccessFormat != "opaque" {
+		return signed, err
+	}
+	return store.NewOpaqueToken(ctx, q, client.OrgID, client.ClientID, signed, time.Unix(c.Expiry, 0))
+}
+
+// verifyPresented verifies what a caller presented as an access token, whichever form
+// a client was given it in. Every path that takes one comes through here, so a client
+// set to opaque has its tokens taken everywhere a JWT is. A handle that opens nothing
+// goes to the verifier as it came, and is refused there like anything else.
+func (s *Server) verifyPresented(ctx context.Context, issuers []string, raw string) (*tokens.AccessTokenClaims, error) {
+	return s.verifyPresentedIn(ctx, s.db, issuers, raw)
+}
+
+// verifyPresentedIn is verifyPresented reading through q, for a caller holding a
+// transaction, where a second connection from the pool is how a pool deadlocks.
+func (s *Server) verifyPresentedIn(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, issuers []string, raw string) (*tokens.AccessTokenClaims, error) {
+	if strings.HasPrefix(raw, store.OpaqueTokenPrefix) {
+		signed, err := store.OpenOpaqueToken(ctx, q, raw)
+		switch {
+		case err == nil:
+			raw = signed
+		case !errors.Is(err, store.ErrNoOpaqueToken):
+			s.log.Error("reading an opaque access token", "err", err)
+		}
+	}
+	return tokens.VerifyAccessTokenAny(s.cfg.Keys, issuers, raw)
 }
 
 // consultTokenHook asks the token_issue provider about an issuance this engine

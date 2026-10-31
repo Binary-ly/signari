@@ -92,6 +92,8 @@ var columnClass = map[string]string{
 	"recovery_requests.cancel_hash":                 "oneWay",
 	"recovery_requests.token_hash":                  "oneWay",
 	"refresh_tokens.successor_hash":                 "oneWay",
+	"opaque_access_tokens.sealed":                   "oneWay", // under a key from the handle, which is not stored
+	"opaque_access_tokens.token_hash":               "oneWay",
 	"refresh_tokens.successor_sealed":               "oneWay", // under a key from the token it replaced, which nothing holds
 	"refresh_tokens.token_hash":                     "oneWay",
 	"registration_tokens.token_hash":                "oneWay",
@@ -112,6 +114,7 @@ var columnClass = map[string]string{
 	"clients.client_secret_hash": "oneWay",
 
 	// Public or non-secret material.
+	"clients.access_token_format":        "public",
 	"clients.access_token_signed_alg":    "public",
 	"clients.tls_thumbprint":             "public",
 	"credential_proof_roots.certificate": "public",

@@ -1258,7 +1258,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		accessAuthTime = authTime.Unix()
 	}
 
-	at, err := signAccessToken(ctx, accessSigner, tokens.AccessTokenClaims{
+	at, err := issueAccessToken(ctx, tx, c, accessSigner, tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  audience,
@@ -1623,7 +1623,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	// consequence; this path simply never called it.
 	ccJKT := dpopThumbprintFrom(r.Context())
 
-	at, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
+	at, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  c.ClientID,
 		Audience: audience,
@@ -3281,7 +3281,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	// Verified first. Everything downstream reasons about what this token
 	// actually says, not what the request claims about it.
-	subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), ex.SubjectToken)
+	subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.SubjectToken)
 	if err != nil {
 		s.log.Info("token exchange: subject token rejected", "err", err,
 			"caller", c.ClientID, "correlation_id", correlationID(ctx))
@@ -3360,7 +3360,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// audit trail that the credential no longer supports.
 	actorSubject := ""
 	if ex.ActorToken != "" {
-		actor, aerr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), ex.ActorToken)
+		actor, aerr := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.ActorToken)
 		if aerr != nil {
 			s.log.Info("token exchange: actor token rejected", "err", aerr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
@@ -3534,7 +3534,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if subject.Expiry > 0 && subject.Expiry < expiry {
 		expiry = subject.Expiry
 	}
-	at, err := signAccessToken(hookCtx, tokens.NewSigner(key), tokens.AccessTokenClaims{
+	at, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
 		Audience: audience,

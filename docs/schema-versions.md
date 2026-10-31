@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0231 opaque_access_tokens
+
+Compatible with the release before: its binary may still serve this schema.
+
+Access tokens that say nothing to whoever holds them (9.16). A client set to opaque gets a random handle, which a resource server takes to the introspection endpoint, instead of a JWT anybody can read. The handle is a reference: this table holds the signed token it stands for, sealed under a key only the handle gives, so every path that verifies a token goes on verifying the same one, revocation by jti holds, and a read of the row gives nobody a working token. token_hash is the handle's, which is not stored either.
+
 ## 0230 claim_sources
 
 Not compatible with the release before: stop it before migrating.

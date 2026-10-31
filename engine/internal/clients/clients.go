@@ -138,7 +138,10 @@ type Client struct {
 	AccessAlg string
 	// RolesClaim is the claim its tokens carry a person's roles in the application
 	// under, empty for none.
-	RolesClaim   string
+	RolesClaim string
+	// AccessFormat is what the client is given as an access token: jwt, or opaque
+	// for a handle a resource server introspects.
+	AccessFormat string
 	RedirectURIs []string
 
 	// ClaimsRedirectURIs is UMA 2.0 §3.3.2's separate list.
@@ -247,7 +250,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce,
 		       id_token_signed_alg, COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''),
-		       refresh_token_ttl_s, first_party,
+		       access_token_format, refresh_token_ttl_s, first_party,
 		       -- The alias only while it is still claimed: past its retirement a
 		       -- token minted under it carries an issuer this deployment no longer
 		       -- accepts, so the client gets the instance's own.
@@ -273,7 +276,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
 			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
-			&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.RefreshTTL, &c.FirstParty, &alias,
+			&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.AccessFormat, &c.RefreshTTL, &c.FirstParty, &alias,
 			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
 			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
 			&c.TLSThumbprint, &c.TLSBoundTokens,

@@ -140,7 +140,7 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 // What ends a token is read now, as userinfo reads it (ADR-007).
 func (s *Server) proxyClaimsFromToken(r *http.Request, raw string) (proxyClaims, string) {
 	ctx := r.Context()
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(ctx), raw)
+	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
 	if err != nil {
 		return proxyClaims{}, "the access token did not verify"
 	}

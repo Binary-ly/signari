@@ -1666,6 +1666,7 @@ export interface GetClientsResponseClientsItem {
 
 /** A JSON object of the Admin API. */
 export interface GetClientsClientIDResponse {
+  access_token_format?: string
   access_token_signed_alg?: string | null
   access_token_ttl_s?: number
   admin_api?: boolean
@@ -2789,6 +2790,7 @@ export interface GetUsersUserIDSessionsResponseSessionsItem {
 
 /** A JSON object of the Admin API. */
 export interface PatchClientsClientIDRequest {
+  access_token_format?: string
   access_token_signed_response_alg?: string
   access_token_ttl_s?: number
   admin_api?: boolean
@@ -2839,6 +2841,7 @@ export interface PatchClientsClientIDRequest {
 
 /** A JSON object of the Admin API. */
 export interface PatchClientsClientIDResponse {
+  access_token_format?: string
   access_token_signed_response_alg?: string
   access_token_ttl_s?: number
   client_id: string

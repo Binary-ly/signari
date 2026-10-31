@@ -37,6 +37,9 @@ type ClientSettings struct {
 	// RolesClaim names the claim the client's tokens carry a person's roles in
 	// the application under; "" carries none.
 	RolesClaim *string
+	// AccessTokenFormat is jwt, or opaque for a handle a resource server
+	// introspects. A token already issued stays what it is.
+	AccessTokenFormat *string
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
@@ -169,6 +172,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if v := s.AccessTokenFormat; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET access_token_format = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
 	if v := s.RequirePAR; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_pushed_authorization = $2,
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
@@ -254,6 +263,9 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
+		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
+	}
 	if v := s.RolesClaim; v != nil && (len(*v) > 128 || slices.Contains(protocolClaimNames, *v)) {
 		return fmt.Errorf("%w: %q is part of the token's own structure, or too long to be a claim's name, so "+
 			"roles cannot be carried in it", ErrInvalidClientSetting, *v)
@@ -290,6 +302,7 @@ type ClientSettingsView struct {
 	IDTokenAlg        string
 	AccessTokenAlg    string
 	RolesClaim        string
+	AccessTokenFormat string
 	RequirePAR        bool
 	RequireState      bool
 	FirstParty        bool
@@ -306,11 +319,12 @@ func ClientSettingsOf(ctx context.Context, q interface {
 	var v ClientSettingsView
 	var access, refresh, grace, consent int
 	err := q.QueryRow(ctx, `SELECT access_token_ttl_s, refresh_token_ttl_s, refresh_reuse_grace_s, id_token_signed_alg,
-		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), require_pushed_authorization,
-		       first_party, COALESCE(issuer_alias, ''), minimum_acr, COALESCE(consent_lifetime_s, 0), require_state
+		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), access_token_format,
+		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
+		       COALESCE(consent_lifetime_s, 0), require_state
 		FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.RequirePAR, &v.FirstParty,
-			&v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
+		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
+			&v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

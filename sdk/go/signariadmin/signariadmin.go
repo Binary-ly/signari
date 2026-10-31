@@ -514,6 +514,7 @@ type GetClientsResponseClientsItem struct {
 
 // GetClientsClientIDResponse is a JSON object of the Admin API.
 type GetClientsClientIDResponse struct {
+	AccessTokenFormat                     string         `json:"access_token_format,omitempty"`
 	AccessTokenSignedAlg                  *string        `json:"access_token_signed_alg,omitempty"`
 	AccessTokenTTLS                       int64          `json:"access_token_ttl_s,omitempty"`
 	AdminAPI                              bool           `json:"admin_api,omitempty"`
@@ -1637,6 +1638,7 @@ type GetUsersUserIDSessionsResponseSessionsItem struct {
 
 // PatchClientsClientIDRequest is a JSON object of the Admin API.
 type PatchClientsClientIDRequest struct {
+	AccessTokenFormat                     *string         `json:"access_token_format,omitempty"`
 	AccessTokenSignedResponseAlg          *string         `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                       *int64          `json:"access_token_ttl_s,omitempty"`
 	AdminAPI                              *bool           `json:"admin_api,omitempty"`
@@ -1687,6 +1689,7 @@ type PatchClientsClientIDRequest struct {
 
 // PatchClientsClientIDResponse is a JSON object of the Admin API.
 type PatchClientsClientIDResponse struct {
+	AccessTokenFormat                  string   `json:"access_token_format,omitempty"`
 	AccessTokenSignedResponseAlg       string   `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                    int64    `json:"access_token_ttl_s,omitempty"`
 	ClientID                           string   `json:"client_id"`

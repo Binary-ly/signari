@@ -195,8 +195,9 @@ func CommitArchive(ctx context.Context, tx pgx.Tx, a *Archive, declaredBy string
 // archive's last hash and last entry, or nothing when none has been made.
 func archiveAnchor(ctx context.Context, tx pgx.Tx) (lastHash []byte, through int64, err error) {
 	var detail map[string]any
-	err = tx.QueryRow(ctx, `SELECT detail FROM core.audit_events WHERE event_type = $1
-		ORDER BY id DESC LIMIT 1`, ArchiveEvent).Scan(&detail)
+	// A literal, for the partial index, as in HeadToSign.
+	err = tx.QueryRow(ctx, `SELECT detail FROM core.audit_events WHERE event_type = '`+ArchiveEvent+`'
+		ORDER BY id DESC LIMIT 1`).Scan(&detail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, nil
 	}

@@ -61,8 +61,10 @@ func HeadToSign(ctx context.Context, tx pgx.Tx, issuer string, now time.Time,
 
 	var headID int64
 	var headAt time.Time
-	err := tx.QueryRow(ctx, `SELECT id, occurred_at FROM core.audit_events WHERE event_type = $1
-		ORDER BY id DESC LIMIT 1`, HeadEvent).Scan(&headID, &headAt)
+	// The event as a literal, or the planner cannot prove the partial index under
+	// this applies, and the trail is read to find one row.
+	err := tx.QueryRow(ctx, `SELECT id, occurred_at FROM core.audit_events WHERE event_type = '`+HeadEvent+`'
+		ORDER BY id DESC LIMIT 1`).Scan(&headID, &headAt)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}

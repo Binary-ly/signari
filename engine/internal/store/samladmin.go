@@ -254,7 +254,7 @@ func SAMLProviderByEntity(ctx context.Context, q interface {
 // SAMLOnOrgEndpoint reports whether a provider answers at its organisation's endpoints.
 func SAMLOnOrgEndpoint(ctx context.Context, q rowQuerier, id string) (bool, error) {
 	var on bool
-	err := q.QueryRow(ctx, `SELECT org_endpoint FROM core.saml_providers WHERE id::text = $1`, id).Scan(&on)
+	err := q.QueryRow(ctx, `SELECT org_endpoint FROM core.saml_providers WHERE id = $1::uuid`, ExactUUIDOrNil(id)).Scan(&on)
 	return on, err
 }
 

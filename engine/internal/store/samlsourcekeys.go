@@ -123,7 +123,7 @@ func RetireSAMLSourceKey(ctx context.Context, q samlSourceKeysDB, orgID, slug, i
 		return fmt.Errorf("%w: this is the last %s key, and %q is held to using one; turn that off first",
 			ErrSAMLSourceKey, purpose, slug)
 	}
-	_, err = q.Exec(ctx, `UPDATE core.saml_source_keys SET retired_at = now() WHERE id::text = $1`, id)
+	_, err = q.Exec(ctx, `UPDATE core.saml_source_keys SET retired_at = now() WHERE id = $1::uuid`, ExactUUIDOrNil(id))
 	return err
 }
 

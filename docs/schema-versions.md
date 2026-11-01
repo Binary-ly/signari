@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0257 sweeps_have_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a janitor pass and a sign-in stand on at scale (0.74). A million sessions and five million audit events showed retention reading every session on every pass and the audit head reading the trail, and running a real pass past the planner showed five more sweeps with no index, on tables only empty because nothing had been seeded into them. Each only grows, and a pass runs every minute for as long as the deployment lives. The first organisation of an instance was read and sorted twice per sign-in, a cost in the number of tenants. Partial where the sweep only wants rows already finished with, so that a live row costs no write to any of these.
+
 ## 0256 credential_wallet_initiated
 
 Compatible with the release before: its binary may still serve this schema.

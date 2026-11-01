@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Tenant provisioning.
@@ -222,7 +223,7 @@ func (s *Server) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(ctx, `SELECT `+organizationColumns+` FROM core.organizations
-		WHERE $1 = '' OR id::text = $1 ORDER BY created_at, id`, p.OrgID)
+		WHERE $1 = '' OR id = NULLIF($1, '')::uuid ORDER BY created_at, id`, p.OrgID)
 	if err != nil {
 		s.log.Error("listing organisations", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -256,7 +257,7 @@ func (s *Server) getOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	var o organization
 	err := s.db.QueryRow(ctx, `SELECT `+organizationColumns+` FROM core.organizations
-		WHERE id::text = $1`, orgID).
+		WHERE id = $1::uuid`, store.ExactUUIDOrNil(orgID)).
 		Scan(&o.ID, &o.InstanceID, &o.Slug, &o.DisplayName, &o.Status, &o.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
@@ -315,15 +316,15 @@ func (s *Server) patchOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	var was string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT status FROM core.organizations WHERE id::text = $1 FOR UPDATE`,
-			orgID).Scan(&was); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status FROM core.organizations WHERE id = $1::uuid FOR UPDATE`,
+			store.ExactUUIDOrNil(orgID)).Scan(&was); err != nil {
 			return err
 		}
 		if was == *req.Status {
 			return nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE core.organizations SET status = $2, updated_at = now()
-			WHERE id::text = $1`, orgID, *req.Status); err != nil {
+			WHERE id = $1::uuid`, store.ExactUUIDOrNil(orgID), *req.Status); err != nil {
 			return err
 		}
 		typ := "admin.organization_suspended"

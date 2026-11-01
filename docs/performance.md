@@ -95,6 +95,42 @@ office behind one gateway. Removed. What remains:
 | failures per address | one source guessing at many accounts |
 | failures per account | many sources guessing at one account |
 
+## A million people
+
+The same laptop, busy with other work, the database on it over loopback: 1,000,000 people in
+1,000 organisations, 1,000,000 sessions and 5,000,000 audit events, 2.6 GB, against a database
+of one person in the same 1,000 organisations, measured before the fixes below. Four workers,
+median of two runs, milliseconds.
+
+```
+                     one person             1,000,000 people
+                     p50      p99           p50      p99
+discovery            0.36     1.05          0.38     1.68
+client credentials   1.20     3.61          1.33     5.88
+introspection        1.41     4.31          1.66     6.88
+sign-in              44.5     97.2          46.9     96.7
+refresh              4.56     20.2          3.05     11.3
+userinfo             1.50     6.52          1.12     5.45
+```
+
+The size of the directory does not show in these. That is the result, and what it took to be
+able to say so is below. Everything was found by counting the rows read by sequential scan
+during the run, rather than by the clock:
+
+- **On every sign-in.** An organisation's budgets were read through the text of its key, which
+  no index serves, and the instance's first organisation was read and sorted twice. Neither
+  shows at one organisation, and both grow with the number of tenants.
+- **On every janitor pass.** Retention read every session, and the audit head read the trail,
+  3.4 s at five million events, every minute for the life of the deployment.
+
+The second list was longer than the seed could show. Five more sweeps had no index, on tables
+that were only cheap because nothing had been put in them. So the tests now run a real pass and
+a real sign-in past the planner and ask of each statement whether any index could serve it,
+rather than keeping a list of statements somebody remembered.
+
+This is one node on one machine, so read it for the shape. What a network between the engine and
+its database does to a sign-in, which makes many round trips, is not in these numbers.
+
 ## A hundred thousand people
 
 One client over loopback on the same laptop, busy with other work at the time, against one

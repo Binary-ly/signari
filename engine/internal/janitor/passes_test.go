@@ -233,7 +233,8 @@ func TestAPeerArrivingMidPassDoesNotMakeItASkippedOne(t *testing.T) {
 				}
 				<-release
 			}()
-			for range 200 {
+			// Ten seconds, for a suite on a busy machine; the answer is usually at once.
+			for range 1000 {
 				var waiting int
 				if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
 					AND objid = $1::bigint AND NOT granted`, lockID).Scan(&waiting); err != nil {

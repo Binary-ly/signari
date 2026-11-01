@@ -39,7 +39,7 @@ func LoadOrgSAMLProvider(ctx context.Context, db *pgxpool.Pool, orgID, entityID 
 
 // LoadSAMLProviderByID is the same by the provider's own id.
 func LoadSAMLProviderByID(ctx context.Context, db *pgxpool.Pool, id string) (*saml.Provider, error) {
-	return loadSAMLProvider(ctx, db, "id::text = $1", id)
+	return loadSAMLProvider(ctx, db, "id = $1::uuid", ExactUUIDOrNil(id))
 }
 
 // OrgBySlug finds the organisation a path names in an instance, or

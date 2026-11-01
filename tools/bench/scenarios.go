@@ -328,7 +328,9 @@ func do(hc *http.Client, req *http.Request) ([]byte, error) {
 		return nil, shedError{fmt.Sprintf("%s answered 429: %s", req.URL.Path, trim(body))}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d: %s", req.URL.Path, resp.StatusCode, trim(body))
+		// A bearer refusal says why in its challenge and has no body at all.
+		return nil, fmt.Errorf("%s answered %d: %s %s", req.URL.Path, resp.StatusCode,
+			resp.Header.Get("WWW-Authenticate"), trim(body))
 	}
 	return body, nil
 }

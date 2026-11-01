@@ -31,8 +31,8 @@ func exportOrgCmd(ctx context.Context, conn *pgx.Conn, orgID, out string) error 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations WHERE id::text = $1)`,
-		orgID).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations WHERE id = $1::uuid)`,
+		store.ExactUUIDOrNil(orgID)).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {

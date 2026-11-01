@@ -206,7 +206,7 @@ func (w *Worker) deliverSSF(ctx context.Context, p ssfPending) error {
 func (w *Worker) streamStatus(ctx context.Context, streamID string) (string, error) {
 	var status string
 	err := w.db.QueryRow(ctx,
-		`SELECT status FROM core.ssf_streams WHERE id::text = $1`, streamID).Scan(&status)
+		`SELECT status FROM core.ssf_streams WHERE id = $1::uuid`, store.ExactUUIDOrNil(streamID)).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

@@ -1133,12 +1133,8 @@ func (s *Server) captchaWidget(data map[string]any) map[string]any {
 // per-tenant discovery needs per-tenant issuers, which is a larger decision than
 // this function.
 func (s *Server) firstOrgID(ctx context.Context) string {
-	var id string
-	if err := s.db.QueryRow(ctx, `
-		SELECT o.id::text FROM core.organizations o
-		JOIN core.instances i ON i.id = o.instance_id
-		WHERE i.issuer = $1
-		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&id); err != nil {
+	id, err := s.defaultOrg(ctx)
+	if err != nil {
 		return ""
 	}
 	return id

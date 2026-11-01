@@ -77,12 +77,14 @@ func (s *Server) findLoginOrg(ctx context.Context, authzQuery string) string {
 	}
 	// The only organisation of this instance (6.12): another instance's are
 	// another issuer's, and counting them made a page of a one-organisation
-	// instance ask whose it was.
+	// instance ask whose it was. Two are enough to know it is not one, and this is
+	// a page anybody can load, so it does not count the tenants to find that out.
 	var n int
 	var only string
-	if err := s.db.QueryRow(ctx,
-		`SELECT count(*), COALESCE(min(id::text), '') FROM core.organizations
-		  WHERE $1::text = '' OR instance_id::text = $1`, s.instanceID).Scan(&n, &only); err != nil {
+	if err := s.db.QueryRow(ctx, `
+		SELECT count(*), COALESCE(min(o.id::text), '') FROM (
+			SELECT id FROM core.organizations
+			 WHERE $1::text = '' OR instance_id = NULLIF($1, '')::uuid LIMIT 2) o`, s.instanceID).Scan(&n, &only); err != nil {
 		s.log.Error("counting organisations for the sign-in page", "err", err)
 		return ""
 	}

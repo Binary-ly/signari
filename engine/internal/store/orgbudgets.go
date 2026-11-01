@@ -60,7 +60,7 @@ func BudgetsOf(ctx context.Context, q interface {
 }, orgID string) (OrgBudgets, error) {
 	var b OrgBudgets
 	err := q.QueryRow(ctx, `SELECT token_budget_per_minute, signin_budget_per_minute
-		FROM core.organizations WHERE id::text = $1`, orgID).Scan(&b.TokensPerMinute, &b.SignInsPerMinute)
+		FROM core.organizations WHERE id = $1::uuid`, ExactUUIDOrNil(orgID)).Scan(&b.TokensPerMinute, &b.SignInsPerMinute)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return b, ErrOrganizationUnknown
 	}
@@ -79,7 +79,7 @@ func SetBudgets(ctx context.Context, q interface {
 	var id string
 	err := q.QueryRow(ctx, `UPDATE core.organizations
 		SET token_budget_per_minute = $2, signin_budget_per_minute = $3, updated_at = now()
-		WHERE id::text = $1 RETURNING id::text`, orgID, b.TokensPerMinute, b.SignInsPerMinute).Scan(&id)
+		WHERE id = $1::uuid RETURNING id::text`, ExactUUIDOrNil(orgID), b.TokensPerMinute, b.SignInsPerMinute).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrOrganizationUnknown
 	}

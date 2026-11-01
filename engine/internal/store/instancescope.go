@@ -35,6 +35,6 @@ func OrgInInstance(ctx context.Context, q interface {
 	}
 	var in bool
 	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations
-		WHERE id::text = $1 AND instance_id::text = $2)`, orgID, instanceID).Scan(&in)
+		WHERE id = $1::uuid AND instance_id::text = $2)`, ExactUUIDOrNil(orgID), instanceID).Scan(&in)
 	return in, err
 }

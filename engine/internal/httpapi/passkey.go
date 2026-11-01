@@ -888,13 +888,18 @@ func (s *Server) userByHandle(ctx context.Context, handle []byte) (*passkeys.Use
 // left explicit here rather than silently guessing wrong later.
 func (s *Server) defaultOrg(ctx context.Context) (string, error) {
 	var orgID string
-	err := s.db.QueryRow(ctx, `
-		SELECT o.id::text FROM core.organizations o
-		JOIN core.instances i ON i.id = o.instance_id
-		WHERE i.issuer = $1
-		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&orgID)
+	err := s.db.QueryRow(ctx, firstOrgOfIssuer, s.cfg.Issuer).Scan(&orgID)
 	return orgID, err
 }
+
+// firstOrgOfIssuer stands on (instance_id, created_at), or it reads and sorts every
+// organisation of the instance, on every sign-in (0.74). The instance is found first
+// because a join would lose the index's order: through one, the plan seeks the
+// index and sorts what it read all the same.
+const firstOrgOfIssuer = `
+	SELECT o.id::text FROM core.organizations o
+	WHERE o.instance_id = (SELECT i.id FROM core.instances i WHERE i.issuer = $1)
+	ORDER BY o.created_at LIMIT 1`
 
 // passkeyLabel names a passkey for a notice: the nickname the user gave it,
 // and the resolved device model in parentheses when a FIDO metadata source is

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0258 relation_subject_sets
+
+Compatible with the release before: its binary may still serve this schema.
+
+Relations held by a set of subjects (11.02). `team:eng#member` as a subject means everybody who holds `member` on team:eng, and an evaluation has to find those on an object among however many people hold the relation there themselves. Partial, because they are few and an object's own viewers may be a great many, and only a request that has one pays anything for looking. An older binary reads such a row as a subject nobody is.
+
 ## 0257 sweeps_have_indexes
 
 Compatible with the release before: its binary may still serve this schema.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
@@ -147,6 +148,16 @@ func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects
 		    ON r.object_type = o.otyp AND r.object_id = o.oid
 		 WHERE r.org_id = $1::uuid
 		   AND r.relation = ANY ($6::text[])
+		   AND (r.expires_at IS NULL OR r.expires_at > now())
+		UNION
+		-- Whoever these subjects are, a set on one of the objects may have them, and
+		-- only a walk can say. Read here so that a batch with none pays nothing.
+		SELECT r.subject_type, r.subject_id, r.relation, r.object_type, r.object_id
+		  FROM core.relations r
+		  JOIN unnest($4::text[], $5::text[]) AS o(otyp, oid)
+		    ON r.object_type = o.otyp AND r.object_id = o.oid
+		 WHERE r.org_id = $1::uuid AND r.subject_id LIKE '%#%'
+		   AND r.relation = ANY ($6::text[])
 		   AND (r.expires_at IS NULL OR r.expires_at > now())`,
 		orgID, subjectTypes, subjectIDs, objectTypes, objectIDs, relations)
 	if err != nil {
@@ -173,6 +184,12 @@ type Explanation struct {
 	Held, Via string
 	// Groups are the groups of theirs that were considered.
 	Groups []string
+	// Path is how a relation held through something else was reached, from the
+	// object, and empty for one held directly.
+	Path []string
+	// Refused says what took back a relation the subject holds: an `except` they
+	// are in, or an `also` they are not.
+	Refused string
 }
 
 // Explain walks a question the way a decision does: the subject as asked about,
@@ -211,11 +228,47 @@ func Explain(ctx context.Context, q Querier, orgID string, model *authzen.Model,
 			if tuples[Tuple{SubjectType: s[0], SubjectID: s[1], Relation: relation,
 				ObjectType: objectType, ObjectID: objectID}] {
 				e.Held, e.Via = relation, authzen.Ref(s[0], s[1])
-				return e, true, nil
 			}
 		}
 	}
-	return e, true, nil
+	if e.Held == "" {
+		if e.Held, e.Path, err = WalkRelations(ctx, q, orgID, model, subjects, e.Relations, objectType, objectID); err != nil {
+			return e, true, err
+		}
+		if len(e.Path) > 0 {
+			e.Via = e.Path[len(e.Path)-1]
+		}
+	}
+	if e.Held != "" {
+		e.Refused, err = NarrowingRefusal(ctx, q, orgID, model, subjects, action, objectType, objectID)
+	}
+	return e, true, err
+}
+
+// NarrowingRefusal reads an action's `also` and `except` for subjects who hold a
+// relation granting it, and says why that is not enough, or nothing when it is.
+func NarrowingRefusal(ctx context.Context, q Querier, orgID string, model *authzen.Model, subjects [][2]string,
+	action, objectType, objectID string) (string, error) {
+
+	if except := model.ExceptFor(objectType, action); len(except) > 0 {
+		held, _, err := WalkRelations(ctx, q, orgID, model, subjects, except, objectType, objectID)
+		if err != nil {
+			return "", err
+		}
+		if held != "" {
+			return "the subject also holds " + held + ", which this action excepts", nil
+		}
+	}
+	if also := model.AlsoFor(objectType, action); len(also) > 0 {
+		held, _, err := WalkRelations(ctx, q, orgID, model, subjects, also, objectType, objectID)
+		if err != nil {
+			return "", err
+		}
+		if held == "" {
+			return "this action also needs one of " + strings.Join(also, ", "), nil
+		}
+	}
+	return "", nil
 }
 
 // RelationRow is one live relation, as `signari authz list` shows it.

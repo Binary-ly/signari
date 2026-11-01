@@ -891,6 +891,8 @@ type GetOrganizationsOrgIDAuthorizationExplainResponse struct {
 	Defined   bool     `json:"defined"`
 	Groups    []string `json:"groups"`
 	OrgID     string   `json:"org_id"`
+	Path      []string `json:"path"`
+	Refused   string   `json:"refused"`
 	Relation  string   `json:"relation"`
 	Relations []string `json:"relations"`
 	Requires  string   `json:"requires"`

@@ -8088,6 +8088,15 @@
                       "format": "uuid",
                       "type": "string"
                     },
+                    "path": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "refused": {
+                      "type": "string"
+                    },
                     "relation": {
                       "type": "string"
                     },
@@ -8112,7 +8121,9 @@
                     "via",
                     "relations",
                     "groups",
-                    "requires"
+                    "requires",
+                    "path",
+                    "refused"
                   ],
                   "type": "object"
                 }

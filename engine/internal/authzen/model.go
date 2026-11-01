@@ -65,6 +65,89 @@ type Type struct {
 	// factor" is a fact about the SESSION, and only whoever authenticated the
 	// session knows it.
 	Require map[string]Condition `yaml:"require" json:"require,omitempty"`
+	// Also and Except narrow an action by what else the subject holds. Also asks
+	// for one of its relations on top of the permission, and Except refuses anybody
+	// holding one of its, whatever else they hold: a deny list is an except.
+	Also   map[string][]string `yaml:"also" json:"also,omitempty"`
+	Except map[string][]string `yaml:"except" json:"except,omitempty"`
+}
+
+// Rewrite is `parent->viewer` among the relations implying another: whoever holds
+// viewer on whatever is the parent of this object holds this relation here. Through
+// is a relation on this type and its subject is the other object, so `viewer` is
+// looked for on that object's own type.
+type Rewrite struct{ Through, Relation string }
+
+func parseRewrite(entry string) (Rewrite, bool) {
+	through, relation, ok := strings.Cut(entry, "->")
+	return Rewrite{through, relation}, ok
+}
+
+// RewritesOf answers the ways a relation is held through another object, itself
+// and only itself: a walk arrives at each of Expand's relations in turn.
+func (t Type) RewritesOf(rel string) []Rewrite {
+	var out []Rewrite
+	for _, entry := range t.Relations[rel] {
+		if r, ok := parseRewrite(entry); ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Walks reports whether answering this action can take more than the object's own
+// relations: a relation held through another object, or anything else asked of the
+// subject. Without one, one read of the relations settles it.
+func (m *Model) Walks(objectType, action string) bool {
+	t, ok := m.Types[objectType]
+	if !ok {
+		return false
+	}
+	if len(t.Also[action]) > 0 || len(t.Except[action]) > 0 {
+		return true
+	}
+	relations, _ := m.RelationsFor(objectType, action)
+	for _, r := range relations {
+		if len(t.RewritesOf(r)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// AlsoFor and ExceptFor answer an action's narrowing, each relation with what implies it.
+func (m *Model) AlsoFor(objectType, action string) []string {
+	return m.Types[objectType].expandAll(m.Types[objectType].Also[action])
+}
+
+// ExceptFor is AlsoFor's other half.
+func (m *Model) ExceptFor(objectType, action string) []string {
+	return m.Types[objectType].expandAll(m.Types[objectType].Except[action])
+}
+
+func (t Type) expandAll(names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range names {
+		for _, r := range t.Expand(name) {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// declaresRelation reports whether any type in the model has this relation.
+func (m *Model) declaresRelation(rel string) bool {
+	for _, t := range m.Types {
+		if _, ok := t.Relations[rel]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 type Condition struct {
@@ -321,9 +404,36 @@ func (m *Model) validate() error {
 					"digits, _ or -", name, rel)
 			}
 			for _, from := range implies {
+				if rw, ok := parseRewrite(from); ok {
+					if _, ok := t.Relations[rw.Through]; !ok {
+						return fmt.Errorf("%s.%s goes through %q, which is not a "+
+							"relation on %s", name, rel, rw.Through, name)
+					}
+					if !m.declaresRelation(rw.Relation) {
+						return fmt.Errorf("%s.%s looks for %q on another object, and no "+
+							"type has that relation", name, rel, rw.Relation)
+					}
+					continue
+				}
 				if _, ok := t.Relations[from]; !ok {
 					return fmt.Errorf("%s.%s is implied by %q, which is not a "+
 						"relation on %s", name, rel, from, name)
+				}
+			}
+		}
+		for kind, narrowing := range map[string]map[string][]string{"also": t.Also, "except": t.Except} {
+			for act, relations := range narrowing {
+				if _, ok := t.Permissions[act]; !ok {
+					// As for `require`: a rule on an action nobody defined never
+					// runs, and reads as a restriction in force.
+					return fmt.Errorf("%s: `%s` names %q, which is not a permission "+
+						"on %s", name, kind, act, name)
+				}
+				for _, rel := range relations {
+					if _, ok := t.Relations[rel]; !ok {
+						return fmt.Errorf("%s: `%s` of %s names %q, which is not a "+
+							"relation on %s", name, kind, act, rel, name)
+					}
 				}
 			}
 		}
@@ -472,6 +582,11 @@ func (t Type) cycle() string {
 		colour[rel] = grey
 		path = append(path, rel)
 		for _, next := range t.Relations[rel] {
+			// Through another object is another object: only the data can make
+			// that a cycle, so a walk bounds it and this cannot.
+			if _, across := parseRewrite(next); across {
+				continue
+			}
 			switch colour[next] {
 			case grey:
 				return strings.Join(append(path, next), " -> ")
@@ -511,6 +626,9 @@ func (t Type) Expand(rel string) []string {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, from := range t.Relations[cur] {
+			if _, across := parseRewrite(from); across {
+				continue
+			}
 			if !seen[from] {
 				seen[from] = true
 				queue = append(queue, from)
@@ -660,12 +778,17 @@ func (m *Model) RunTests() error {
 		for _, r := range tc.Relations {
 			held[r] = true
 		}
-		granted := false
-		for _, r := range wanted {
-			if held[r] {
-				granted = true
-				break
+		holdsAny := func(relations []string) bool {
+			for _, r := range relations {
+				if held[r] {
+					return true
+				}
 			}
+			return false
+		}
+		granted := holdsAny(wanted) && !holdsAny(m.ExceptFor(objType, tc.Action))
+		if also := m.AlsoFor(objType, tc.Action); len(also) > 0 && !holdsAny(also) {
+			granted = false
 		}
 		if granted {
 			if c, has := m.ConditionFor(objType, tc.Action); has {

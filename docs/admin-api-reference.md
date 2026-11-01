@@ -244,6 +244,8 @@ Answers:
 | `defined` | boolean | always |
 | `groups` | list of string | always |
 | `org_id` | string | always |
+| `path` | list of string | always |
+| `refused` | string | always |
 | `relation` | string | always |
 | `relations` | list of string | always |
 | `requires` | string | always |

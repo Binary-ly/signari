@@ -2133,6 +2133,8 @@ export interface GetOrganizationsOrgIDAuthorizationExplainResponse {
   defined: boolean
   groups: string[]
   org_id: string
+  path: string[]
+  refused: string
   relation: string
   relations: string[]
   requires: string

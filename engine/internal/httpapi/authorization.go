@@ -242,6 +242,8 @@ type evaluation struct {
 
 	// tuples is what readAhead found, and nil until it has run.
 	tuples map[store.Tuple]bool
+	// sets are the objects it found a subject set on, as type and id.
+	sets map[[2]string]bool
 }
 
 // evaluatedSubject is what our records say about a subject, by the id it was
@@ -315,8 +317,23 @@ func (e *evaluation) readAhead(ctx context.Context, reqs []authzen.Request) erro
 		objects = append(objects, [2]string{req.Resource.Type, req.Resource.ID})
 		relations = append(relations, wanted...)
 	}
-	e.tuples, err = store.TuplesAmong(ctx, e.s.db, e.orgID, subjects, objects, relations)
-	return err
+	if e.tuples, err = store.TuplesAmong(ctx, e.s.db, e.orgID, subjects, objects, relations); err != nil {
+		return err
+	}
+	e.sets = map[[2]string]bool{}
+	for t := range e.tuples {
+		if strings.Contains(t.SubjectID, "#") {
+			e.sets[[2]string{t.ObjectType, t.ObjectID}] = true
+		}
+	}
+	return nil
+}
+
+// walks says whether a subject with no relation of their own on this object could
+// still hold one. With nothing read ahead that is not known, so it is looked for.
+func (e *evaluation) walks(model *authzen.Model, req authzen.Request) bool {
+	return e.tuples == nil || model.Walks(req.Resource.Type, req.Action.Name) ||
+		e.sets[[2]string{req.Resource.Type, req.Resource.ID}]
 }
 
 // holds is store.HoldsAny, from what readAhead found when it has run.
@@ -415,6 +432,19 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 			return authzen.Response{}, err
 		}
 	}
+	subjects := [][2]string{{req.Subject.Type, req.Subject.ID}}
+	if userID != "" {
+		subjects = append(subjects, [2]string{req.Subject.Type, userID})
+	}
+	for _, g := range facts.Groups {
+		subjects = append(subjects, [2]string{"group", g})
+	}
+	if held == "" && e.walks(model, req) {
+		if held, _, err = store.WalkRelations(ctx, e.s.db, e.orgID, model, subjects, relations,
+			req.Resource.Type, req.Resource.ID); err != nil {
+			return authzen.Response{}, err
+		}
+	}
 	if held == "" {
 		return authzen.Response{
 			Decision: false,
@@ -422,6 +452,17 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 				"the subject holds none of "+joinNames(relations)+" on "+
 					authzen.Ref(req.Resource.Type, req.Resource.ID),
 				"You do not have access to this."),
+		}, nil
+	}
+	why, err := store.NarrowingRefusal(ctx, e.s.db, e.orgID, model, subjects, req.Action.Name,
+		req.Resource.Type, req.Resource.ID)
+	if err != nil {
+		return authzen.Response{}, err
+	}
+	if why != "" {
+		return authzen.Response{
+			Decision: false,
+			Context:  authzen.Reasons(why, "You do not have access to this."),
 		}, nil
 	}
 
@@ -630,8 +671,17 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
+	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
+	if werr != nil {
+		s.log.Error("reading whether a search can start from a row", "err", werr)
+		authzError(w, http.StatusInternalServerError, "the search could not be run")
+		return
+	}
 	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
 		func(after string, n int) ([]string, bool, error) {
+			if everything {
+				return store.ObjectsOfType(ctx, s.db, orgID, req.Resource.Type, n, after)
+			}
 			return store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
 				req.Subject.ID, relations, req.Resource.Type, facts.Groups, n, after)
 		},
@@ -717,6 +767,18 @@ func (s *Server) decidedPage(ctx context.Context, orgID string, limit int, after
 	}
 }
 
+// searchesEverything says a search's candidates cannot come from rows naming what it
+// starts from: a document held through its folder has none naming the person, so
+// every candidate is taken and decided. decidedPage bounds what one page reads, so a
+// search of this kind is slower, and is the same answer a decision would give.
+func (s *Server) searchesEverything(ctx context.Context, orgID string, model *authzen.Model,
+	objectType, action string) (bool, error) {
+	if model.Walks(objectType, action) {
+		return true, nil
+	}
+	return store.AnySubjectSets(ctx, s.db, orgID)
+}
+
 // handleAuthzSearchSubject answers "who may act on this".
 func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -751,8 +813,17 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
+	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
+	if werr != nil {
+		s.log.Error("reading whether a search can start from a row", "err", werr)
+		authzError(w, http.StatusInternalServerError, "the search could not be run")
+		return
+	}
 	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
 		func(after string, n int) ([]string, bool, error) {
+			if everything {
+				return store.PeopleInRelations(ctx, s.db, orgID, n, after)
+			}
 			return store.SubjectsWith(ctx, s.db, orgID, relations,
 				req.Resource.Type, req.Resource.ID, n, after)
 		},

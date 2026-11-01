@@ -94,9 +94,9 @@ func (s *Server) explainAuthz(w http.ResponseWriter, r *http.Request) {
 	if c, has := model.ConditionFor(otyp, action); has {
 		requires = c.Condition.Summary()
 	}
-	s.writeList(w, r, map[string]any{"org_id": orgID, "allowed": e.Held != "", "defined": defined,
+	s.writeList(w, r, map[string]any{"org_id": orgID, "allowed": e.Held != "" && e.Refused == "", "defined": defined,
 		"relation": e.Held, "via": e.Via, "relations": nonNilStrings(e.Relations), "groups": nonNilStrings(e.Groups),
-		"requires": requires})
+		"requires": requires, "path": nonNilStrings(e.Path), "refused": e.Refused})
 }
 
 func (s *Server) putAuthzModel(w http.ResponseWriter, r *http.Request) {

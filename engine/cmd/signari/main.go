@@ -8598,7 +8598,14 @@ func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, obj
 		}
 		return nil
 	}
+	if e.Refused != "" {
+		fmt.Printf("DENIED  %s may not %s %s\n  holds %s, but %s\n", subject, action, object, e.Held, e.Refused)
+		return nil
+	}
 	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s, held by %s\n", subject, action, object, e.Held, e.Via)
+	if len(e.Path) > 1 {
+		fmt.Printf("  through: %s\n", strings.Join(e.Path, " <- "))
+	}
 	if c, has := m.ConditionFor(otyp, action); has {
 		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
 			"the session and cannot be checked from here\n", c.Condition.Summary())

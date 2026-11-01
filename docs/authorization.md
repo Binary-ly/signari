@@ -79,7 +79,82 @@ Refused at parse time, each because it would otherwise load and be quietly wrong
 | A permission granted to a relation that does not exist | Grants to nobody, reads like it grants to somebody |
 | A condition on an action that does not exist | Never runs, reads as a restriction that is in force |
 | A relation cycle | Refused rather than bounded: a bound turns a broken model into a slow one instead of a rejected one |
+| `parent->viewer` through a relation the type does not have, or to one no type has | Would read as an inheritance and carry nothing |
+| `also` or `except` on an action that does not exist, or naming a relation that does not | Same as a condition: never runs, reads as in force |
 | A misspelled key | `permisions:` silently dropped leaves a type granting nothing, which at a glance looks exactly like one granting everything |
+
+## Relations held through something else
+
+A relation does not have to name the person. Four things the model and the rows can
+say, which a document in a folder, a team and a deny list all need:
+
+```yaml
+types:
+  folder:
+    relations:
+      owner: []
+      viewer: [owner]
+  document:
+    relations:
+      parent: []                      # its subject is the folder
+      owner: []
+      banned: []
+      viewer: [owner, parent->viewer] # a viewer of the parent is a viewer here
+      cleared: []
+    permissions:
+      read:   [viewer]
+      delete: [owner]
+    except:
+      read: [banned]                  # whatever else they hold
+    also:
+      delete: [cleared]               # on top of the permission
+  team:
+    relations:
+      member: []
+```
+
+```sh
+signari authz grant -org <uuid> -principal folder:reports -relation parent -object document:42
+signari authz grant -org <uuid> -principal team:eng#member -relation viewer -object document:42
+signari authz check -org <uuid> -principal user:alice@example.com -action read -object document:42
+```
+
+**`parent->viewer`** means whoever holds `viewer` on the document's parent holds it
+here. The row with relation `parent` names the folder as its subject, and `viewer` is
+looked for on the folder's own type, so a hierarchy is rows and not model.
+
+**`team:eng#member`** as a subject is everybody who holds `member` on `team:eng`.
+`group:finance#member` is a directory group's members, read from the groups the person
+is in, as `group:finance` always was.
+
+**`also`** asks for one of its relations on top of the permission, and **`except`**
+refuses anybody holding one of its, whatever else they hold. Either can be reached
+through something else in the same way, and a model's own tests see them both.
+
+A direct grant is answered as it always was, in one read, and a batch of a hundred is
+still five statements. Only somebody with no row of their own costs a walk, and only
+where the model has a rewrite or the object has a set on it. The walk reads one
+statement a level with the whole level in it, so its cost is the depth of the graph
+and not the number of paths through it, and it visits nothing twice, which makes a
+folder that is its own parent an answer rather than a hang: only the data can make
+that loop, so the model cannot refuse one. An expired link carries nothing, at any
+depth.
+
+**Past sixteen levels, or two thousand rows in one, is an error and not a no.** The
+question was not answered, so the caller is told the decision could not be made, as
+for any other failure, rather than told something false about the graph.
+
+A search has to agree with a decision, and a document held through its folder has no
+row naming the person. So where a model walks, or an organisation has any set at all,
+a search takes every candidate and decides each. It is the same answer and slower,
+bounded per page as every search is. `authz check` and `authorization/explain` show
+the way a relation was reached:
+
+```
+ALLOWED user:bo may read document:42
+  via relation: viewer, held by folder:a#owner
+  through: document:42#viewer <- folder:reports#viewer <- folder:a#owner
+```
 
 ## Conformance review against the Final spec, August 2026
 

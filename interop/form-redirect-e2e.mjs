@@ -1,4 +1,6 @@
-// Does a person in a REAL browser get from the sign-in page to the application?
+// Does a person in a REAL browser get from the sign-in page to where they were going?
+// That is an application, or a service provider over the SAML POST binding, or a
+// relying party over form_post or WS-Federation: the start URL says which.
 //
 // Every other test here speaks HTTP, and an HTTP client follows a redirect
 // because it was told to. A browser follows it only if the page's Content
@@ -152,6 +154,16 @@ try {
   console.log(`  ${arrived ? "PASS" : "FAIL"}  ${arrived
     ? `the browser reached ${ARRIVAL}`
     : `the browser stopped at ${await here()}, short of ${ARRIVAL}`}`);
+
+  // With AFTER set, somewhere to go once arrived, pressing what that page offers:
+  // a sign-out, whose frames a test can only see from the other side.
+  if (arrived && process.env.AFTER) {
+    await S("Page.navigate", { url: process.env.AFTER });
+    await sleep(1000);
+    await evalJS(`document.querySelector('form button')?.click()`);
+    await sleep(2500);
+    console.log(`  then      ${await here()}`);
+  }
   ws.close();
 } catch (err) {
   console.log(`  FAIL  ${err.message}`);

@@ -145,28 +145,19 @@ func (s *Server) postAuthzResponse(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Never cached. The page contains a single-use code and, in a hybrid
-	// response, a signed assertion about who just signed in.
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
-		"form-action "+formActionOrigin(redirectURI)+"; frame-ancestors 'none'")
-	w.Header().Set("X-Frame-Options", "DENY")
-	s.renderBare(w, r, "formpost", map[string]any{
+	// Never cached: renderBare sees to that, and the page contains a single-use
+	// code and, in a hybrid response, a signed assertion about who just signed in.
+	//
+	// No `form-action`, here or on the other bridges. It would have to name the
+	// relying party's origin, and Chrome applies it to every redirect the form
+	// starts: a callback that goes on to another origin of the relying party's own,
+	// as a gateway in front of an application does, is stopped with the code already
+	// delivered and the person stranded here. The fields are escaped and nothing but
+	// the page's one script runs, so what the directive would add is small.
+	s.renderBare(w, r, "formpost", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"Action": redirectURI, "Fields": fields, "Nonce": nonce,
 	})
-}
-
-// formActionOrigin narrows form-action to where this form actually posts.
-//
-// Without it the policy would have to allow any target, which on a page that
-// carries a code and an assertion is the one thing worth constraining.
-func formActionOrigin(redirectURI string) string {
-	u, err := url.Parse(redirectURI)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "'self'"
-	}
-	return u.Scheme + "://" + u.Host
 }
 
 // newCSPNonce mints a per-response nonce for an inline script.

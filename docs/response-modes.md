@@ -69,8 +69,11 @@ An HTML page that posts itself to the redirect URI.
 
 The auto-submit script runs under a **per-response CSP nonce**, not
 `'unsafe-inline'` — the page carries a code and a signed assertion, and
-`'unsafe-inline'` would let anything injected into it run too. `form-action` is
-narrowed to the redirect URI's own origin.
+`'unsafe-inline'` would let anything injected into it run too. There is no
+`form-action`: browsers apply it to every redirect a form starts, so naming the
+redirect URI's origin would stop a callback from redirecting anywhere else of the
+application's own, as a gateway in front of an application does, with the code
+already delivered.
 
 There is a real `<noscript>` button rather than an apology, so a browser with
 script disabled still completes the sign-in one click later.
@@ -116,9 +119,9 @@ behaviour change; the behaviour was already correct.
   A hybrid implementation that merely *declines* to put a token in the fragment
   is one refactor away from doing it; this one has nowhere to put it.
 - **form_post CSP is a per-response nonce**, not `'unsafe-inline'`, with
-  `form-action` narrowed to the redirect origin and `default-src 'none'` — so even
-  with a code and a signed assertion on the page, there is no injection point and
-  no exfiltration channel (CSS background loads fall back to `default-src 'none'`).
+  `default-src 'none'` — so even with a code and a signed assertion on the page,
+  nothing but the page's own script runs and nothing else loads (CSS background
+  loads fall back to `default-src 'none'`). The fields are escaped.
 - **`query` + id_token is refused** (OIDC MUST); unknown modes are refused rather
   than silently treated as query.
 

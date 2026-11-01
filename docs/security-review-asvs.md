@@ -1027,17 +1027,24 @@ who can act as you.
 
 All six now call `htmlPageHeaders`.
 
-### The one page that must NOT use the helper, and why that is written down
+### The pages that must NOT use the helper, and why that is written down
 
-`postSAMLResponse` renders the auto-submitting form that delivers an assertion to
-a service provider's ACS URL — **on another origin**. `htmlPageHeaders` sets
-`form-action 'self'`, which would block exactly that delivery.
+Four pages exist to leave this origin: the SAML POST binding, `form_post`,
+WS-Federation and front-channel logout. `htmlPageHeaders` sets `form-action 'self'`
+and no `script-src`, which would stop each from doing the one thing it is for.
 
-The bulk edit initially caught this page too. It did not break, because the line
-after it overwrote the policy with the framing-only one — correct entirely by the
-order of two statements. That has been replaced with the headers written out in
-full and a comment saying why the helper is wrong here, because "it works because
-these two lines are in this order" is a thing somebody tidies up.
+So they do not use it, and `renderBare` takes their policy as a parameter. It used
+to call the helper itself, after each caller had set its own policy, and so
+replaced all four: from 22 August to 2 November 2026 those pages rendered forms no
+browser would submit and frames none would load, and every test passed, because
+every test read the markup. The SAML page had also lost its auto-submit when it
+moved into a template, and `<noscript>` hid its button from anybody with scripting
+on. A parameter leaves nothing to overwrite.
+
+The three that post carry no `form-action` at all. Naming the relying party's
+origin would be stopped the moment its callback redirected anywhere else of its own.
+`TestABridgePageIsAllowedToDoItsOneJob` reads each page as a browser does: its
+script has to be one its policy lets run.
 
 ### A redirect after a form is sent as a page
 

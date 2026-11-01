@@ -105,21 +105,16 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request,
 	targets []frontChannelTarget, continueTo string) {
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	// This page must not itself be framed: a logout page inside somebody else's
-	// frame is a way to sign a user out without their knowledge.
-	w.Header().Set("X-Frame-Options", "DENY")
-	// frame-src is deliberately broad because the frames ARE the point, and the
-	// URLs are registered rather than caller-supplied. Everything else is denied:
-	// no script, no styles from elsewhere, and no form submission.
-	setCSP(w, "default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
-		"frame-ancestors 'none'")
-
 	if continueTo == "" {
 		continueTo = "/"
 	}
-	s.renderBare(w, r, "fclogout", map[string]any{
+	// This page must not itself be framed: a logout page inside somebody else's
+	// frame is a way to sign a user out without their knowledge. frame-src is
+	// deliberately broad because the frames ARE the point, and the URLs are
+	// registered rather than caller-supplied. Everything else is denied: no script,
+	// no styles from elsewhere, and no form submission.
+	s.renderBare(w, r, "fclogout", "default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"Targets":    targets,
 		"ContinueTo": continueTo,
 		// Seconds before the page moves on regardless. A relying party that never

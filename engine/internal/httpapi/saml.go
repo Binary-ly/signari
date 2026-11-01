@@ -716,33 +716,22 @@ func samlAuthnContext(amr []string) string {
 // language the request asked for; see postAuthzResponse.
 func (s *Server) postSAMLResponse(w http.ResponseWriter, r *http.Request,
 	acs, doc, relayState string) {
-	// NOT htmlPageHeaders, and this is the one HTML response here that must not
-	// use it.
-	//
-	// That helper sets `form-action 'self'`, which is right for every page whose
-	// form posts back to us and wrong for this one: this form posts the assertion
-	// to the service provider's ACS URL, on another origin, so `form-action
-	// 'self'` would block the delivery that is the entire purpose of the page.
-	// The page also auto-submits from an inline `onload`, which the absence of
-	// `default-src` and `script-src` here permits.
-	//
-	// So the policy is deliberately just the framing rule. Written out rather
-	// than layered over the helper: calling the helper and then overwriting its
-	// policy works only because of the order of two lines, and the next person to
-	// tidy that is one edit away from breaking SAML sign-in for every relying
-	// party.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	// The page contains an assertion, so it must not be framed: a framed
-	// auto-submitting form is how an assertion gets delivered without the user
-	// realising anything happened.
-	w.Header().Set("X-Frame-Options", "DENY")
-	setCSP(w, "frame-ancestors 'none'")
-
-	s.renderBare(w, r, "saml", map[string]any{
+	nonce, err := newCSPNonce()
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// `form-action` is left out, which is right for this page and wrong for almost
+	// every other: this form posts the assertion to the service provider's ACS URL,
+	// on another origin, which is the entire purpose of the page. The script is the
+	// page's one line, by nonce, and frame-ancestors matters because an assertion
+	// in a framed auto-submitting form is delivered without the person realising.
+	s.renderBare(w, r, "saml", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"ACS":        acs,
 		"Response":   base64Std(doc),
 		"RelayState": relayState,
+		"Nonce":      nonce,
 	})
 }
 

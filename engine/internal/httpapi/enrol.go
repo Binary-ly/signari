@@ -594,12 +594,20 @@ func (s *Server) pageSet() *pages.Set {
 // and a stylesheet on it is one more thing that can fail to load and stall a
 // redirect.
 //
-// They still get the security headers -- htmlPageHeaders -- because they still
-// carry an assertion and an error message.
+// They still get every header a page does, because they carry an assertion, and
+// the policy is the caller's by parameter because each exists to do what the
+// ordinary policy forbids: run a script, post to another origin, frame one. This
+// used to call htmlPageHeaders, after each caller had set its own policy, and so
+// replaced all four. Every one of those pages then rendered a form no browser would
+// submit, or frames none would load, for as long as nobody tried one in a browser.
+// A parameter leaves nothing to overwrite.
 func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
-	name string, data map[string]any) {
+	name, policy string, data map[string]any) {
 
-	htmlPageHeaders(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	setCSP(w, policy)
 	if err := s.pageSet().ExecuteIn(w, s.langFor(r), name, data); err != nil {
 		s.log.Error("rendering a bridge page", "page", name, "err", err)
 	}

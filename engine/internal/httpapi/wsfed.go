@@ -450,12 +450,9 @@ func (s *Server) wsFedPost(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
-		"form-action "+formActionOrigin(dest)+"; frame-ancestors 'none'")
-	w.Header().Set("X-Frame-Options", "DENY")
-	s.renderBare(w, r, "wsfed", map[string]any{
+	// No `form-action`, for the reason postAuthzResponse gives.
+	s.renderBare(w, r, "wsfed", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"Action": dest, "WResult": wresult, "WCtx": wctx, "Nonce": nonce,
 	})
 }

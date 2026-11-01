@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
@@ -173,6 +174,61 @@ func TestAWalletAsksForACredentialAndTheHolderApprovesIt(t *testing.T) {
 	}
 	if issued, _ := out["credentials"].([]any); len(issued) != 1 {
 		t.Errorf("no credential came back: %v", out)
+	}
+}
+
+// Appendix A.1.1: the same journey, ending in a JWT, and the metadata saying so in
+// the shape that format requires.
+func TestAWalletIsIssuedAJWTCredential(t *testing.T) {
+	c := newCredentialFlow(t)
+	ctx := context.Background()
+	if _, err := store.DefineCredential(ctx, c.f.pool, c.f.orgID, store.CredentialSpec{ConfigID: "OpenCredential",
+		Format: oid4vci.FormatJWTVC, VCT: "EmployeeCredential", Always: []string{"email"}, Lifetime: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	q := c.request(detailsFor("OpenCredential"), "")
+	body := c.redeem(t, c.approve(q, c.authorize(q)))
+	status, out := c.credential(t, body["access_token"].(string), `"credential_identifier":"OpenCredential"`)
+	if status != http.StatusOK {
+		t.Fatalf("the credential was refused: %d %v", status, out)
+	}
+	issued, _ := out["credentials"].([]any)
+	if len(issued) != 1 {
+		t.Fatalf("no credential: %v", out)
+	}
+	raw, _ := issued[0].(map[string]any)["credential"].(string)
+	claims := claimsOfJWT(t, raw)
+	if strings.Contains(raw, "~") {
+		t.Errorf("disclosures on a JWT: %s", raw)
+	}
+	vc, _ := claims["vc"].(map[string]any)
+	subject, _ := vc["credentialSubject"].(map[string]any)
+	if subject["email"] != c.f.email || !strings.HasPrefix(claims["sub"].(string), "did:jwk:") {
+		t.Errorf("claims %v", claims)
+	}
+
+	rec := httptest.NewRecorder()
+	c.f.srv.handleCredentialIssuerMetadata(rec, httptest.NewRequest(http.MethodGet, "/.well-known/openid-credential-issuer", nil))
+	var meta map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	supported, _ := meta["credential_configurations_supported"].(map[string]any)
+	entry, _ := supported["OpenCredential"].(map[string]any)
+	definition, _ := entry["credential_definition"].(map[string]any)
+	types, _ := definition["type"].([]any)
+	if entry["format"] != oid4vci.FormatJWTVC || len(types) != 2 || types[1] != "EmployeeCredential" {
+		t.Errorf("the metadata says %v", entry)
+	}
+	if _, has := entry["vct"]; has {
+		t.Errorf("vct, which this format does not have: %v", entry)
+	}
+	if methods, _ := entry["cryptographic_binding_methods_supported"].([]any); len(methods) != 1 || methods[0] != "did:jwk" {
+		t.Errorf("the key is bound by %v", entry["cryptographic_binding_methods_supported"])
+	}
+	closed, _ := supported["ClosedCredential"].(map[string]any)
+	if closed["vct"] == nil || closed["credential_definition"] != nil {
+		t.Errorf("an SD-JWT configuration beside it changed: %v", closed)
 	}
 }
 

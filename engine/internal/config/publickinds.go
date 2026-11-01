@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/store"
 )
 
@@ -361,7 +363,9 @@ func (externalFactorSection) export(ctx context.Context, tx pgx.Tx, orgID string
 // Credential is a verifiable credential this issuer offers (OID4VCI), written
 // whole as `signari credential define` writes it.
 type Credential struct {
-	ConfigID        string   `yaml:"config_id"`
+	ConfigID string `yaml:"config_id"`
+	// Format is dc+sd-jwt, which absent means, or jwt_vc_json.
+	Format          string   `yaml:"format,omitempty"`
 	VCT             string   `yaml:"vct"`
 	DisplayName     string   `yaml:"display_name,omitempty"`
 	AlwaysClaims    []string `yaml:"always_claims,omitempty"`
@@ -378,7 +382,7 @@ type Credential struct {
 }
 
 func (c Credential) spec() store.CredentialSpec {
-	return store.CredentialSpec{ConfigID: c.ConfigID, VCT: c.VCT, DisplayName: c.DisplayName, Always: c.AlwaysClaims,
+	return store.CredentialSpec{ConfigID: c.ConfigID, VCT: c.VCT, Format: c.Format, DisplayName: c.DisplayName, Always: c.AlwaysClaims,
 		Selective: c.SelectiveClaims, Lifetime: c.Lifetime, RequireKeyAttestation: c.RequireKeyAttestation,
 		Deferred: c.Deferred, WalletInitiated: c.WalletInitiated}
 }
@@ -407,6 +411,7 @@ func (credentialSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 	}
 	type held = struct {
 		VCT, DisplayName  string
+		Format            string
 		Always, Selective []string
 		Lifetime          time.Duration
 		Require, Deferred bool
@@ -414,13 +419,14 @@ func (credentialSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 	}
 	byID := map[string]held{}
 	for id, c := range have {
-		byID[id] = held{c.VCT, c.DisplayName, c.AlwaysClaims, c.SelectiveClaims, c.Lifetime, c.RequireKeyAttestation,
+		byID[id] = held{c.VCT, c.DisplayName, c.Format, c.AlwaysClaims, c.SelectiveClaims, c.Lifetime, c.RequireKeyAttestation,
 			c.Deferred, c.WalletInitiated}
 	}
 	planKeyed(p, "credential_configuration", keyBy(f.Credentials, func(c Credential) string { return c.ConfigID }),
 		byID, prune, func(h held, w Credential) string {
 			var c changed
 			c.note(h.VCT != w.VCT, "vct")
+			c.note(h.Format != cmp.Or(w.Format, oid4vci.FormatSDJWTVC), "format")
 			c.note(h.DisplayName != w.DisplayName, "display_name")
 			c.note(!sameSet(h.Always, w.AlwaysClaims) || !sameSet(h.Selective, w.SelectiveClaims), "claims")
 			c.note(h.Lifetime != w.Lifetime, "lifetime")
@@ -456,7 +462,11 @@ func (credentialSection) export(ctx context.Context, tx pgx.Tx, orgID string, f 
 	for _, id := range sortedKeys(have) {
 		c := have[id]
 		require, deferred, walletInitiated := c.RequireKeyAttestation, c.Deferred, c.WalletInitiated
-		f.Credentials = append(f.Credentials, Credential{ConfigID: id, VCT: c.VCT, DisplayName: c.DisplayName,
+		format := c.Format
+		if format == oid4vci.FormatSDJWTVC {
+			format = ""
+		}
+		f.Credentials = append(f.Credentials, Credential{ConfigID: id, VCT: c.VCT, Format: format, DisplayName: c.DisplayName,
 			AlwaysClaims: c.AlwaysClaims, SelectiveClaims: c.SelectiveClaims, Lifetime: c.Lifetime,
 			RequireKeyAttestation: &require, Deferred: &deferred, WalletInitiated: &walletInitiated})
 	}

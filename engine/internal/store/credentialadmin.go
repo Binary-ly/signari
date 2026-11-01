@@ -45,6 +45,9 @@ func refuseCredential(format string, a ...any) error {
 type CredentialSpec struct {
 	ConfigID, VCT, DisplayName string
 	Always, Selective          []string
+	// Format is the credential format; empty is an SD-JWT VC. VCT is the type in
+	// either: `vct`, or the second entry of `credential_definition.type`.
+	Format string
 	// Lifetime is how long an issued credential is valid; zero puts no exp
 	// in it.
 	Lifetime time.Duration
@@ -55,6 +58,14 @@ type CredentialSpec struct {
 	Deferred *bool
 	// WalletInitiated nil keeps a configuration's setting, for the same reason.
 	WalletInitiated *bool
+}
+
+// format is what the configuration is signed as.
+func (c CredentialSpec) format() string {
+	if c.Format == "" {
+		return oid4vci.FormatSDJWTVC
+	}
+	return c.Format
 }
 
 // Validate refuses a configuration that would assert nothing, or something
@@ -68,6 +79,14 @@ func (c CredentialSpec) Validate() error {
 		return refuseCredential("a credential configuration needs its vct, the credential type identifier; " +
 			"SD-JWT VC section 3.2.2.1 requires a collision-resistant name, so use a URL you control, such as " +
 			"https://example.com/identity_credential")
+	case c.format() != oid4vci.FormatSDJWTVC && c.format() != oid4vci.FormatJWTVC:
+		return refuseCredential("%q is not a credential format this issuer signs: %s or %s", c.Format,
+			oid4vci.FormatSDJWTVC, oid4vci.FormatJWTVC)
+	case c.format() == oid4vci.FormatJWTVC && len(c.Selective) > 0:
+		return refuseCredential("a %s credential is disclosed whole, so it cannot have selective claims",
+			oid4vci.FormatJWTVC)
+	case c.format() == oid4vci.FormatJWTVC && strings.TrimSpace(c.VCT) == "VerifiableCredential":
+		return refuseCredential("VerifiableCredential is every credential's first type, and this one needs its own")
 	case len(c.Always)+len(c.Selective) == 0:
 		return refuseCredential("a credential carrying no claims asserts nothing; available: %s",
 			strings.Join(CredentialClaims, ", "))
@@ -91,10 +110,8 @@ func (c CredentialSpec) Validate() error {
 
 // DefineCredential stores a validated configuration, replacing one of the
 // same identifier, and answers whether it requires an attested key. The
-// format is written from the constant issuance checks rather than left to the
-// column default: the one format implemented is then a fact this states, and
-// a second format is a field here and a value that constant's check admits
-// (2.30).
+// format is written rather than left to the column default, so redefining a
+// configuration as another format moves it (2.30).
 func DefineCredential(ctx context.Context, q outpostDB, orgID string, c CredentialSpec) (bool, error) {
 	if err := c.Validate(); err != nil {
 		return false, err
@@ -120,7 +137,7 @@ func DefineCredential(ctx context.Context, q outpostDB, orgID string, c Credenti
 		    wallet_initiated = COALESCE($11::boolean, credential_configurations.wallet_initiated)
 		RETURNING require_key_attestation`,
 		orgID, strings.TrimSpace(c.ConfigID), strings.TrimSpace(c.VCT), nonNil(c.Always), nonNil(c.Selective),
-		interval, c.DisplayName, c.RequireKeyAttestation, oid4vci.FormatSDJWTVC, c.Deferred,
+		interval, c.DisplayName, c.RequireKeyAttestation, c.format(), c.Deferred,
 		c.WalletInitiated).Scan(&required); err != nil {
 		return false, fmt.Errorf("defining the credential: %w", err)
 	}

@@ -3193,6 +3193,7 @@ type PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest struct {
 	Always                *[]string `json:"always,omitempty"`
 	Deferred              *bool     `json:"deferred,omitempty"`
 	DisplayName           *string   `json:"display_name,omitempty"`
+	Format                *string   `json:"format,omitempty"`
 	LifetimeS             *int64    `json:"lifetime_s,omitempty"`
 	RequireKeyAttestation *bool     `json:"require_key_attestation,omitempty"`
 	Selective             *[]string `json:"selective,omitempty"`

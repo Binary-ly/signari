@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0263 jwt_vc_json
+
+Not compatible with the release before: stop it before migrating.
+
+A second credential format (12.05): a W3C Verifiable Credential signed as a JWT, which OID4VCI Appendix A.1.1 names `jwt_vc_json`. Nothing else in the row changes, and `vct` holds the credential's type, the second entry of `credential_definition.type`. The check that admitted one format is replaced, so this is not additive: a release before this one reading a `jwt_vc_json` row refuses to issue it and says the format is not implemented.
+
 ## 0262 kerberos_trust_and_accounts
 
 Compatible with the release before: its binary may still serve this schema.

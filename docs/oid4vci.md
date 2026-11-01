@@ -492,10 +492,36 @@ identifier from a token that was given none is refused:
 {"credential_identifier": "Employee", "proofs": {"jwt": ["..."]}}
 ```
 
+## A W3C credential as a JWT
+
+For a verifier that reads W3C Verifiable Credentials rather than SD-JWT VCs:
+
+```sh
+signari credential define -org <uuid> \
+  -credential-configuration DegreeCredential -credential-format jwt_vc_json \
+  -vct UniversityDegreeCredential -always email,given_name -valid-for 8760h
+```
+
+`jwt_vc_json` is Appendix A.1.1. `-vct` is the credential's own type, and the metadata
+gives `credential_definition.type` as `["VerifiableCredential", "UniversityDegreeCredential"]`
+with no `vct`. The credential is a JWT with a `vc` claim, shaped as the appendix's
+example is, and nothing in it is processed as JSON-LD.
+
+The holder's key is bound as a `did:jwk`, in `sub` and `credentialSubject.id`, so
+`cryptographic_binding_methods_supported` says `did:jwk` and there is no `cnf`. The
+person the credential is about is not named by an identifier of ours, only by the
+claims you list.
+
+It is disclosed whole: this format has no way to show one claim and hide another, so a
+configuration of it naming `-selective` is refused. Use `dc+sd-jwt`, the default, when a
+holder should choose. Everything else here applies to both: key proofs, attestation,
+deferred issuance, wallet-initiated requests and the notification endpoint.
+
 ## What is still not built
 
-- **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
-  only SD-JWT VC, so adding it is a migration rather than a rewrite.
+- **ISO mdoc** (`mso_mdoc`), which needs COSE, and **`ldp_vc`**, which needs JSON-LD
+  canonicalization. The `format` column has a CHECK constraint listing what is
+  signed, so adding one is a migration rather than a rewrite.
 - **Credential response encryption** (§10) and encrypted requests.
 - A credential requested by **`scope`** (§5.1.2). A wallet asks with
   authorization details, and the metadata names no scope for it to use instead.

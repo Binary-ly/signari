@@ -158,7 +158,7 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari credential define` | Define a credential this issuer mints (SD-JWT VC). `-require-key-attestation` issues it only to a key a trusted attester vouches for, and advertises `key_attestations_required`; `-wallet-initiated` lets anybody signed in ask for it from a wallet, with no offer naming them. Left out, a redefinition keeps each setting |
+| `signari credential define` | Define a credential this issuer mints: an SD-JWT VC, or with `-credential-format jwt_vc_json` a W3C credential signed as a JWT, disclosed whole, whose `-vct` is its type. `-require-key-attestation` issues it only to a key a trusted attester vouches for, and advertises `key_attestations_required`; `-wallet-initiated` lets anybody signed in ask for it from a wallet, with no offer naming them. Left out, a redefinition keeps each setting |
 | `signari credential list` | Show the credential configurations published |
 | `signari credential requests` | `-org <id>`: what wallets have asked for of a `-deferred` credential, waiting on a decision. See [oid4vci.md](oid4vci.md#a-credential-somebody-has-to-look-at-first) |
 | `signari credential decide` | `-org <id> -request <id> -decision approve\|deny`: answer one. The wallet learns it the next time it asks, and a decision stands |

@@ -51,7 +51,7 @@ var commandFlags = map[string][]string{
 	"client set-pkce":                 {"client-id", "require-pkce"},
 	"client set-tls":                  {"client-id", "sp-cert", "tls-bound-tokens", "tls-san-dns", "tls-san-email", "tls-san-ip", "tls-san-uri", "tls-subject-dn"},
 	"credential decide":               {"decision", "org", "request"},
-	"credential define":               {"always", "brand-name", "credential-configuration", "deferred", "org", "require-key-attestation", "selective", "valid-for", "vct", "wallet-initiated"},
+	"credential define":               {"always", "brand-name", "credential-configuration", "credential-format", "deferred", "org", "require-key-attestation", "selective", "valid-for", "vct", "wallet-initiated"},
 	"credential list":                 {"o"},
 	"credential requests":             {"o", "org"},
 	"credential offer":                {"authorization-code", "by-reference", "client-id", "credential-configuration", "credential-issuer", "email", "issuer", "offer-expires", "org", "tx-code", "tx-code-length"},

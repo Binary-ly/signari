@@ -49,6 +49,8 @@ type decideCredentialRequest struct {
 
 // putCredentialConfigurationRequest is `credential define`.
 type putCredentialConfigurationRequest struct {
+	// Format is dc+sd-jwt, which absent means, or jwt_vc_json.
+	Format          string   `json:"format"`
 	VCT             string   `json:"vct"`
 	Always          []string `json:"always"`
 	Selective       []string `json:"selective"`
@@ -128,7 +130,7 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 			"detail": "lifetime_s is zero for no exp claim, or a number of seconds"})
 		return
 	}
-	spec := store.CredentialSpec{ConfigID: configID, VCT: strings.TrimSpace(req.VCT),
+	spec := store.CredentialSpec{ConfigID: configID, VCT: strings.TrimSpace(req.VCT), Format: strings.TrimSpace(req.Format),
 		DisplayName: strings.TrimSpace(req.DisplayName), Always: cleanList(req.Always, false),
 		Selective: cleanList(req.Selective, false), Lifetime: time.Duration(req.LifetimeSeconds) * time.Second,
 		RequireKeyAttestation: req.RequireKeyAttestation, Deferred: req.Deferred, WalletInitiated: req.WalletInitiated}

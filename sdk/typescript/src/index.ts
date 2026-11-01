@@ -4453,6 +4453,7 @@ export interface PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest {
   always?: string[]
   deferred?: boolean
   display_name?: string
+  format?: string
   lifetime_s?: number
   require_key_attestation?: boolean
   selective?: string[]

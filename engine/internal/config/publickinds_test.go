@@ -58,6 +58,75 @@ func testCA(t *testing.T) string {
 // the clients that may ask for them, a client's other grants kept, another
 // organisation's client refused; attesters by their public keys, a private
 // one refused; credentials and proof roots; all carried by an export.
+func TestACredentialFormatIsKeptAndItsRulesAreRead(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
+	f, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: degree, format: jwt_vc_json, " +
+		"vct: DegreeCredential, always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildPlan(ctx, tx, org, f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, f, p); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, f, false); err != nil || !again.Empty() {
+		t.Errorf("applied again it plans\n%s (%v)", again, err)
+	}
+	out, err := Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Credentials) != 1 || out.Credentials[0].Format != "jwt_vc_json" {
+		t.Errorf("the export says %+v", out.Credentials)
+	}
+
+	// The default stays out of the file, and a file that does not say keeps meaning it.
+	plain, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: id, vct: https://example.test/id, " +
+		"always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = BuildPlan(ctx, tx, org, plain, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, plain, p); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, plain, false); err != nil || !again.Empty() {
+		t.Errorf("a file naming no format plans a change: %s (%v)", again, err)
+	}
+
+	// Moving a credential from one format to the other is a change a plan shows.
+	moved, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: id, format: jwt_vc_json, " +
+		"vct: https://example.test/id, always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err = BuildPlan(ctx, tx, org, moved, false); err != nil || p.Empty() {
+		t.Errorf("a new format plans nothing (%v)", err)
+	}
+
+	for why, entry := range map[string]string{
+		"a format nobody signs":    "format: mso_mdoc, vct: T, always_claims: [email]",
+		"selective claims":         "format: jwt_vc_json, vct: T, selective_claims: [email]",
+		"the base type as its own": "format: jwt_vc_json, vct: VerifiableCredential, always_claims: [email]",
+	} {
+		if _, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: x, " + entry + "}\n")); err == nil {
+			t.Errorf("%s parsed", why)
+		}
+	}
+}
+
 // One file can register a service and name it in the flow, which needs the first
 // applied before the second, and comes back from an export as it went in.
 func TestAFileRegistersAServiceAndTheFlowThatAsksIt(t *testing.T) {

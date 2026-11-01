@@ -888,6 +888,7 @@ func run(args []string) (err error) {
 	grantTypes := fs.String("grant-types", "",
 		"comma-separated grant types this client may use, replacing what it has: "+
 			strings.Join(knownGrantTypes, ", "))
+	credFormat := fs.String("credential-format", "", "dc+sd-jwt, the default, or jwt_vc_json, a W3C credential disclosed whole (credential define)")
 	credVCT := fs.String("vct", "", "SD-JWT VC type identifier, a collision-resistant name (credential define)")
 	credAlways := fs.String("always", "",
 		"comma-separated claims every verifier sees, whatever the holder chooses")
@@ -1768,7 +1769,7 @@ func run(args []string) (err error) {
 		if given["wallet-initiated"] {
 			walletInitiated = credWalletInitiated
 		}
-		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
+		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credFormat, *credVCT,
 			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred, walletInitiated)
 	case "credential list":
 		return credentialList(ctx, conn, *outputFormat)
@@ -9372,7 +9373,7 @@ func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
 // requireAttestation is nil when -require-key-attestation was not given, which
 // keeps an existing configuration's setting: redefining the claims must not
 // quietly drop a requirement somebody set.
-func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
+func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, format, vct,
 	always, selective string, lifetime time.Duration, displayName string,
 	requireAttestation, deferred, walletInitiated *bool) error {
 
@@ -9396,7 +9397,7 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	}
 	// The claims list, and a claim both always visible and selective, are
 	// checked in store.CredentialSpec, as the Admin API checks them.
-	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, VCT: vct,
+	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, Format: format, VCT: vct,
 		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
 		RequireKeyAttestation: requireAttestation, Deferred: deferred, WalletInitiated: walletInitiated})
 	if err != nil {

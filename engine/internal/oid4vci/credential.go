@@ -17,8 +17,12 @@ import (
 // authorization server for OID4VCI, issuing the access token a credential
 // endpoint would accept. This mints the credential itself.
 
-// FormatSDJWTVC is the only credential format implemented.
-const FormatSDJWTVC = "dc+sd-jwt"
+// The credential formats implemented: an SD-JWT VC, and a W3C Verifiable Credential
+// signed as a JWT (jwtvc.go).
+const (
+	FormatSDJWTVC = "dc+sd-jwt"
+	FormatJWTVC   = "jwt_vc_json"
+)
 
 // MaxProofsPerRequest bounds how many credentials one request may mint.
 //
@@ -185,16 +189,20 @@ type Issuer struct {
 	Sign func(payload []byte, typ string) (string, error)
 }
 
-// Issue returns the combined SD-JWT VC serialisation.
+// Issue returns the credential in the configuration's format: the combined SD-JWT VC
+// serialisation, or a JWT.
 func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 	holderKey *jose.JSONWebKey, now time.Time) (string, error) {
 
-	if cfg.Format != FormatSDJWTVC {
+	if cfg.Format != FormatSDJWTVC && cfg.Format != FormatJWTVC {
 		return "", fmt.Errorf("credential format %q is not implemented", cfg.Format)
 	}
 	if holderKey == nil {
 		return "", fmt.Errorf("no holder key: an unbound credential is a bearer " +
 			"token, which is what binding exists to prevent")
+	}
+	if cfg.Format == FormatJWTVC {
+		return i.issueJWTVC(cfg, subject, holderKey, now)
 	}
 
 	// RFC 9901 §10.1: the time claims in a batch MUST be rounded or randomized,

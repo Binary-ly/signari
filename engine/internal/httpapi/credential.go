@@ -667,7 +667,6 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 		}
 		entry := map[string]any{
 			"format": c.Format,
-			"vct":    c.VCT,
 			// §8.2: "The proofs parameter MUST be present if the
 			// proof_types_supported parameter is present" — so declaring this is
 			// what makes a key proof mandatory, which is the point.
@@ -692,6 +691,14 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 			// Key needs to know which form to present, and the only other place
 			// that could be inferred from is a failed request.
 			"cryptographic_binding_methods_supported": []string{"jwk"},
+		}
+		if c.Format == oid4vci.FormatJWTVC {
+			// Appendix A.1.1.2, where credential_definition is REQUIRED, and a key
+			// bound as the credential's subject rather than in `cnf`.
+			entry["credential_definition"] = map[string]any{"type": oid4vci.VCTypes(c)}
+			entry["cryptographic_binding_methods_supported"] = []string{"did:jwk"}
+		} else {
+			entry["vct"] = c.VCT
 		}
 		if c.DisplayName != "" {
 			entry["display"] = []map[string]any{{"name": c.DisplayName, "locale": "en-US"}}

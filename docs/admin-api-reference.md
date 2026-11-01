@@ -836,6 +836,7 @@ Takes:
 | `always` | list of string |  |
 | `deferred` | boolean |  |
 | `display_name` | string |  |
+| `format` | string |  |
 | `lifetime_s` | integer |  |
 | `require_key_attestation` | boolean |  |
 | `selective` | list of string |  |

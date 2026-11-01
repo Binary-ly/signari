@@ -9137,6 +9137,9 @@
                   "display_name": {
                     "type": "string"
                   },
+                  "format": {
+                    "type": "string"
+                  },
                   "lifetime_s": {
                     "type": "integer"
                   },

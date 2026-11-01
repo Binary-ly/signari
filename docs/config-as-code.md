@@ -167,6 +167,7 @@ external_factors:             # services an external_factor stage may ask
 
 credential_configurations:    # what this issuer offers wallets (OID4VCI)
   - config_id: employee
+    # format: jwt_vc_json     # left out: dc+sd-jwt; see oid4vci.md
     vct: https://example.com/employee
     always_claims: [sub]
     selective_claims: [email]

@@ -97,6 +97,7 @@ var exportSections = []exportSection{
 	{table: "sms_otp_credentials", by: "user_id"},
 	{table: "duo_enrollments", by: "user_id"},
 	{table: "duo_challenges", by: "user_id"},
+	{table: "external_factor_challenges", by: "user_id"},
 	{table: "recovery_codes", by: "user_id"},
 	{table: "recovery_code_failures", by: "user_id"},
 	{table: "recovery_requests", by: "user_id"},

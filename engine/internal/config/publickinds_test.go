@@ -58,6 +58,58 @@ func testCA(t *testing.T) string {
 // the clients that may ask for them, a client's other grants kept, another
 // organisation's client refused; attesters by their public keys, a private
 // one refused; credentials and proof roots; all carried by an export.
+// One file can register a service and name it in the flow, which needs the first
+// applied before the second, and comes back from an export as it went in.
+func TestAFileRegistersAServiceAndTheFlowThatAsksIt(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
+	factor := func(amr string) string {
+		return "external_factors:\n  - name: push\n    url: https://factor.example/ask\n" +
+			"    issuer: https://factor.example\n    amr: [" + amr + "]\n    jwks: " + testJWKS(t, false) + "\n"
+	}
+	flowDoc := "sign_in_flow: |\n  version: 1\n  flows:\n    - name: asked\n      on: authentication\n" +
+		"      stages:\n        - password\n        - {stage: external_factor, factor: push}\n        - session\n" +
+		"      tests:\n        - name: asked\n          given: {}\n          expect: [password, external_factor, session]\n"
+	file := factor("otp") + flowDoc
+	f, err := Parse([]byte("version: 1\n" + file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildPlan(ctx, tx, org, f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, f, p); err != nil {
+		t.Fatalf("the service and the flow in one file: %v", err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, f, false); err != nil || !again.Empty() {
+		t.Errorf("applied again it plans\n%s (%v)", again, err)
+	}
+	out, err := Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ExternalFactors) != 1 || out.ExternalFactors[0].URL != "https://factor.example/ask" ||
+		!slices.Equal(out.ExternalFactors[0].AMR, []string{"otp"}) || out.ExternalFactors[0].JWKS == nil {
+		t.Errorf("the export says %+v", out.ExternalFactors)
+	}
+
+	public := factor("otp")
+	for why, raw := range map[string]string{
+		"an amr saying how somebody arrived": factor("pwd"),
+		"a private key":                      public[:strings.Index(public, "    jwks: ")] + "    jwks: " + testJWKS(t, true) + "\n",
+	} {
+		if _, err := Parse([]byte("version: 1\n" + raw)); err == nil {
+			t.Errorf("%s parsed", why)
+		}
+	}
+}
+
 func TestThePublicKindsAreDeclaredAndRoundTrip(t *testing.T) {
 	ctx, pool, _ := applyFixture(t)
 	tx, err := pool.Begin(ctx)

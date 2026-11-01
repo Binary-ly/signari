@@ -26,7 +26,7 @@ var declaredBy = map[string]string{
 	"client_authorization_detail_types": "authorization_detail_type", "client_attesters": "client_attester",
 	"credential_configurations": "credential_configuration", "credential_proof_roots": "credential_proof_root",
 	"directory_sources": "directory_source", "directory_group_map": "directory_source", "duo_integrations": "duo",
-	"migration_sources": "migration_source", "outposts": "outpost", "scim_sources": "scim_source",
+	"migration_sources": "migration_source", "outposts": "outpost", "scim_sources": "scim_source", "external_factors": "external_factor",
 	"ssf_streams": "ssf_stream", "ssf_sources": "ssf_source", "authorization_models": "authorization_model",
 }
 
@@ -62,7 +62,7 @@ var notConfiguration = map[string]string{
 	"attestation_challenges": running, "audit_events": running, "authorization_codes": running,
 	"credential_notifications": running, "credential_offers": running, "credential_requests": running,
 	"device_authorizations": running, "duo_challenges": running, "email_sign_in_codes": running,
-	"email_verifications": running, "event_deliveries": running, "federated_logins": running,
+	"external_factor_challenges": running, "email_verifications": running, "event_deliveries": running, "federated_logins": running,
 	"impersonations": running, "invitations": running, "opaque_access_tokens": running, "preauthorized_codes": running,
 	"pushed_requests": running, "rac_sessions": running, "recovery_code_failures": running,
 	"recovery_requests": running, "refresh_token_families": running, "saml_logout_progress": running,

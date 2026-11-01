@@ -1205,6 +1205,29 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/external-factors/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/external-factors/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				return `{"url":"https://factor.example/ask","issuer":"https://factor.example","amr":["otp"],"jwks":` +
+					string(publicJWKS(t)) + `}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/external-factors/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.SetExternalFactor(context.Background(), s.db, org, store.ExternalFactor{
+					Name: "drift", URL: "https://factor.example/ask", Issuer: "https://factor.example",
+					JWKS: publicJWKS(t), AMR: []string{"otp"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/external-factors/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attesters/{name}", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/attesters/drift"

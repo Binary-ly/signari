@@ -170,7 +170,7 @@ Proving — establish the subject:
 Not proving:
 
 `identify`, `captcha`, `consent`, `prompt`, `password_change`, `enrol_mfa`,
-`verify_email`, `create_user`, `invitation`
+`verify_email`, `create_user`, `invitation`, `external_factor`
 
 Terminal — a flow ends in exactly one, and it must be last:
 
@@ -190,7 +190,7 @@ stage.
 
 | `on:` | stages it runs |
 |---|---|
-| `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated`, `email_otp` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the emailed code's page, the authorization endpoint |
+| `authentication` | `mfa`, `enrol_mfa`, `verify_email`, `external_factor`, `prompt`, `password_change` and the terminals, which the sign-in acts on; `identify`, `captcha`, `password`, `passkey`, `kerberos`, `federated`, `email_otp` and `consent`, which the route that reached the walk settles before it: the sign-in form, the passkey ceremony, the Negotiate exchange, a provider's callback, the emailed code's page, the authorization endpoint |
 | `enrolment` | `captcha`, `prompt`, `invitation`, `create_user`, `deny`, `done`, `redirect` |
 | `recovery` | `captcha`, `identify`, `email_otp`, `mfa`, `password_change`, `deny`, `done`, `session`, `redirect` |
 | `unenrolment` | `password`, `passkey`, `kerberos`, `federated`, `email_otp`, settled by the recent sign-in that reached `/account/delete`, each only by its own proof; `deny`; `done`, where the account is erased |
@@ -338,6 +338,15 @@ the top of this page let a passkey holder in on a password. A flow written
 before then that names only `password` now refuses passkey, Kerberos and
 provider sign-ins; add them as `one_of` alternatives to keep admitting them.
 `signari flow paths` shows every journey a file admits.
+
+### Asking a service of your own
+
+`{stage: external_factor, factor: push}` sends the browser to a service you
+registered and believes the answer it signs: signed challenge out, JWS back from
+a public key you registered, `amr` from a set you declared. It is asked of
+somebody already proved, so it follows a proving stage rather than replacing one,
+and `factor` is required. [external-factors.md](external-factors.md) is the
+contract.
 
 ### Signing in with an emailed code
 
@@ -598,6 +607,8 @@ question is decidable at all — with arbitrary expressions and a general graph 
 becomes satisfiability, and the honest options at that point are to solve it or
 to stop claiming the guarantee.
 
-
 ## See also
+
+- [External factors](external-factors.md), a stage answered by a service you run
+- [Prompts](prompts.md), the questions a `prompt` stage asks
 

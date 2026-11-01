@@ -151,6 +151,13 @@ func (fl *Flow) checkOrder() error {
 	proven := false
 	for i, st := range fl.Stages {
 		for _, name := range st.stageNames() {
+			// Refused for what it says rather than what it risks: the challenge
+			// names who is being asked, so the file cannot mean this order.
+			if name == StageExternalFactor && !proven {
+				return fmt.Errorf("step %d is %s, whose challenge names the person it asks about, "+
+					"and nothing before it has proved who that is. Move it after a stage that "+
+					"proves the subject (%s)", i+1, name, stageList(provingStages))
+			}
 			if !mutatingStages[name] {
 				continue
 			}

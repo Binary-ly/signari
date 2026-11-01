@@ -158,6 +158,13 @@ client_attesters:             # attestation-based client authentication
   - name: android
     jwks: {keys: [{kty: EC, crv: P-256, x: "...", y: "...", kid: a1}]}   # public keys only
 
+external_factors:             # services an external_factor stage may ask
+  - name: push
+    url: https://push.example.com/ask
+    issuer: https://push.example.com
+    amr: [otp]                # the most it may claim to have proved
+    jwks: {keys: [{kty: EC, crv: P-256, x: "...", y: "...", kid: p1}]}   # public keys only
+
 credential_configurations:    # what this issuer offers wallets (OID4VCI)
   - config_id: employee
     vct: https://example.com/employee

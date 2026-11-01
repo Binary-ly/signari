@@ -83,6 +83,7 @@ var columnClass = map[string]string{
 	"authorization_codes.code_hash":                 "oneWay",
 	"clients.registration_token_hash":               "oneWay",
 	"credential_nonces.nonce_hash":                  "oneWay",
+	"external_factor_challenges.nonce_hash":         "oneWay",
 	"device_authorizations.device_code_hash":        "oneWay",
 	"device_authorizations.user_code_hash":          "oneWay",
 	"email_otp_credentials.code_hash":               "oneWay",

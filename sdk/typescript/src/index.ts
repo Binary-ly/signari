@@ -192,6 +192,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDEventSubscriptionsNameResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/event-subscriptions/${encodeURIComponent(name)}`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/external-factors/{name}: Forget a service, refused while
+  // the sign-in flow names it. Needs organizations:write.
+  deleteOrganizationsOrgIDExternalFactorsName(orgID: string, name: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDExternalFactorsNameResponse>> {
+    return this.call<DeleteOrganizationsOrgIDExternalFactorsNameResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/external-factors/${encodeURIComponent(name)}`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map: Stop a provider's
   // claim reaching an attribute. Needs organizations:write.
   deleteOrganizationsOrgIDIdentityProvidersSlugAttributeMap(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse>> {
@@ -555,6 +561,12 @@ export class SignariAdmin {
   // delivered, and how the deliveries are going. Needs config:read.
   getOrganizationsOrgIDEventSubscriptions(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDEventSubscriptionsResponse>> {
     return this.call<GetOrganizationsOrgIDEventSubscriptionsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/event-subscriptions`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/external-factors: The services an external_factor stage may
+  // ask. Needs config:read.
+  getOrganizationsOrgIDExternalFactors(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDExternalFactorsResponse>> {
+    return this.call<GetOrganizationsOrgIDExternalFactorsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/external-factors`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/identity-providers: The providers people sign in through and
@@ -1274,6 +1286,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDDuoResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/duo`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/external-factors/{name}: Register a service, or replace what
+  // is registered under its name. Needs organizations:write.
+  putOrganizationsOrgIDExternalFactorsName(orgID: string, name: string, body: PutOrganizationsOrgIDExternalFactorsNameRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDExternalFactorsNameResponse>> {
+    return this.call<PutOrganizationsOrgIDExternalFactorsNameResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/external-factors/${encodeURIComponent(name)}`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map: Route a provider's
   // claim into a declared attribute. Needs organizations:write.
   putOrganizationsOrgIDIdentityProvidersSlugAttributeMap(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse>> {
@@ -1521,6 +1539,12 @@ export interface DeleteOrganizationsOrgIDDirectoriesSlugGroupMapResponse {
 export interface DeleteOrganizationsOrgIDEventSubscriptionsNameResponse {
   config_version: number
   name: string
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDExternalFactorsNameResponse {
+  config_version: number
   removed: boolean
 }
 
@@ -2285,6 +2309,22 @@ export interface GetOrganizationsOrgIDEventSubscriptionsResponseSubscriptionsIte
   id: string
   name: string
   outstanding: number
+  url: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDExternalFactorsResponse {
+  external_factors: GetOrganizationsOrgIDExternalFactorsResponseExternalFactorsItem[]
+  org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDExternalFactorsResponseExternalFactorsItem {
+  amr: string[]
+  created_at: string
+  issuer: string
+  keys: number
+  name: string
   url: string
 }
 
@@ -4476,6 +4516,21 @@ export interface PutOrganizationsOrgIDDuoResponse {
   config_version: number
   fail_open: boolean
   org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDExternalFactorsNameRequest {
+  amr?: string[]
+  issuer?: string
+  jwks?: unknown
+  url?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDExternalFactorsNameResponse {
+  config_version: number
+  keys: number
+  name: string
 }
 
 /** A JSON object of the Admin API. */

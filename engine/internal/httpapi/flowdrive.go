@@ -431,8 +431,10 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 		f.s.log.Error("reading prompts", "err", err)
 		return nil
 	}
-	f.prompts = ps
-	return ps
+	f.prompts = slices.DeleteFunc(ps, func(p prompts.Prompt) bool {
+		return flow.Marked(f.amr, flow.StagePrompt, p.Slug)
+	})
+	return f.prompts
 }
 
 // signInReader is what signInState reads through: the open transaction during
@@ -610,6 +612,16 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			}
 			_ = tx.Rollback(ctx)
 			s.beginVerifyEmail(w, r, userID, orgID, amr, authzQuery)
+			return decisionHandled
+
+		case flow.StageExternalFactor:
+			// Passed by the mark the answer left, which is this service's alone: an
+			// `otp` from an authenticator app does not say that it was asked.
+			if flow.Marked(amr, stage, c.Factor()) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginExternalFactor(w, r, userID, orgID, c.Factor(), amr, authzQuery)
 			return decisionHandled
 
 		case flow.StageMFA:
@@ -790,7 +802,14 @@ var signInSettledStages = map[flow.StageName]string{
 //
 // It names a route, not a strength: whether a sign-in is multi-factor is
 // oauth.IsMultiFactor's question alone.
+//
+// An emailed code is read from the front of amr, because `otp` means an
+// authenticator app anywhere else and a security key after a code would
+// otherwise read as a passkey.
 func primaryProof(amr []string) flow.StageName {
+	if len(amr) > 0 && amr[0] == oauth.AMROTP {
+		return flow.StageEmailOTP
+	}
 	for _, r := range routeMarkers {
 		for _, v := range r.values {
 			if slices.Contains(amr, v) {

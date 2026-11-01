@@ -29,6 +29,7 @@ refused with `412` when the configuration moved since the version it names.
 | [directories](#directories) | 7 |
 | [duo](#duo) | 2 |
 | [event-subscriptions](#event-subscriptions) | 6 |
+| [external-factors](#external-factors) | 3 |
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
@@ -1235,6 +1236,57 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `event_id` | string | always |
+| `name` | string | always |
+
+## external-factors
+
+### `GET /admin/organizations/{orgID}/external-factors`
+
+The services an external_factor stage may ask. Needs config:read.
+
+Go `GetOrganizationsOrgIDExternalFactors`, TypeScript `getOrganizationsOrgIDExternalFactors`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `external_factors` | list of object | always |
+| `org_id` | string | always |
+
+### `DELETE /admin/organizations/{orgID}/external-factors/{name}`
+
+Forget a service, refused while the sign-in flow names it. Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDExternalFactorsName`, TypeScript `deleteOrganizationsOrgIDExternalFactorsName`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `removed` | boolean | always |
+
+### `PUT /admin/organizations/{orgID}/external-factors/{name}`
+
+Register a service, or replace what is registered under its name. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDExternalFactorsName`, TypeScript `putOrganizationsOrgIDExternalFactorsName`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `amr` | list of string |  |
+| `issuer` | string |  |
+| `jwks` | any |  |
+| `url` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `keys` | integer | always |
 | `name` | string | always |
 
 ## groups

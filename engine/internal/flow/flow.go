@@ -117,6 +117,9 @@ type Step struct {
 	// Provider pins a federated stage to one identity provider, by slug. See
 	// PinnedProviders.
 	Provider string `yaml:"provider,omitempty"`
+	// Factor names the registered service an external_factor stage asks, and
+	// only that stage takes one.
+	Factor string `yaml:"factor,omitempty"`
 	// OneOf is a set of branches of which exactly one runs. The engine takes the
 	// first whose condition holds; the last branch must be unconditional, so
 	// that "exactly one" is a fact rather than a hope.
@@ -144,6 +147,8 @@ type Branch struct {
 	When string `yaml:"when,omitempty"`
 	// Provider pins a federated branch, as on Step.
 	Provider string `yaml:"provider,omitempty"`
+	// Factor names an external_factor branch's service, as on Step.
+	Factor string `yaml:"factor,omitempty"`
 }
 
 // TestCase is a case the file makes about itself.
@@ -174,7 +179,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 		s.Stage = StageName(name)
 		return nil
 	}
-	if err := checkKeys(n, "stage", "when", "one_of", "to", "provider"); err != nil {
+	if err := checkKeys(n, "stage", "when", "one_of", "to", "provider", "factor"); err != nil {
 		return err
 	}
 	// A named type, so decoding the mapping does not re-enter this method.
@@ -189,7 +194,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 
 // UnmarshalYAML exists on Branch only to reject unknown keys. See checkKeys.
 func (b *Branch) UnmarshalYAML(n *yaml.Node) error {
-	if err := checkKeys(n, "stage", "when", "provider"); err != nil {
+	if err := checkKeys(n, "stage", "when", "provider", "factor"); err != nil {
 		return err
 	}
 	type raw Branch
@@ -310,6 +315,9 @@ func (fl *Flow) validate() error {
 			if err := checkPin(st.Stage, st.Provider); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
+			if err := checkFactor(st.Stage, st.Factor); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
 			if err := checkCondition(st.When); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
@@ -322,6 +330,9 @@ func (fl *Flow) validate() error {
 			}
 			for j, b := range st.OneOf {
 				if err := checkPin(b.Stage, b.Provider); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
+				if err := checkFactor(b.Stage, b.Factor); err != nil {
 					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
 				}
 				if err := checkAnswered(fl.On, b.Stage, b.When); err != nil {
@@ -411,6 +422,35 @@ func checkPin(stage StageName, provider string) error {
 		return fmt.Errorf("`provider` is for a federated stage, and %s takes none", stage)
 	}
 	return nil
+}
+
+// checkFactor is checkPin for a factor, except that the stage cannot go without
+// one: there is no "any service" to ask.
+func checkFactor(stage StageName, factor string) error {
+	switch {
+	case stage == StageExternalFactor && factor == "":
+		return fmt.Errorf("`factor` names the registered service this stage asks, and it has none")
+	case stage != StageExternalFactor && factor != "":
+		return fmt.Errorf("`factor` is for an external_factor stage, and %s takes none", stage)
+	}
+	return nil
+}
+
+// Factors are the registered services this flow can ask.
+func (fl *Flow) Factors() []string {
+	var names []string
+	add := func(stage StageName, factor string) {
+		if stage == StageExternalFactor && !slices.Contains(names, factor) {
+			names = append(names, factor)
+		}
+	}
+	for _, st := range fl.Stages {
+		add(st.Stage, st.Factor)
+		for _, b := range st.OneOf {
+			add(b.Stage, b.Factor)
+		}
+	}
+	return names
 }
 
 // PinnedProviders are the providers a federated sign-in under this flow must come

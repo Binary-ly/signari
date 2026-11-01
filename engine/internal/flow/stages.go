@@ -58,6 +58,13 @@ const (
 	// migrated away from. Proving: it is a password check, just not ours.
 	StageDelegated StageName = "delegated"
 
+	// StageExternalFactor sends the browser to a service the operator registered
+	// and believes the answer it signs (internal/extfactor). Not proving, though
+	// it proves something: the walk reaches it with a subject already proved,
+	// which is how the challenge can name who is being asked, so a flow still
+	// needs one of the stages above.
+	StageExternalFactor StageName = "external_factor"
+
 	// StageConsent asks the person to approve what a client is requesting.
 	StageConsent StageName = "consent"
 
@@ -114,7 +121,7 @@ const (
 var allStages = []StageName{
 	StageIdentify, StageCaptcha,
 	StagePassword, StagePasskey, StageMFA, StageEmailOTP, StageSMSOTP,
-	StageCertificate, StageKerberos, StageFederated, StageDelegated,
+	StageCertificate, StageKerberos, StageFederated, StageDelegated, StageExternalFactor,
 	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageVerifyEmail, StageCreateUser,
 	StageInvitation,
 	StageSession, StageDeny, StageDone, StageRedirect,
@@ -332,7 +339,7 @@ var drivable = map[Designation][]StageName{
 	Authentication: {
 		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
 		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
-		StageConsent, StageEnrolMFA, StageVerifyEmail, StageEmailOTP,
+		StageConsent, StageEnrolMFA, StageVerifyEmail, StageEmailOTP, StageExternalFactor,
 	},
 	Enrolment: {StageCaptcha, StagePrompt, StageInvitation, StageCreateUser, StageDeny, StageDone, StageRedirect},
 	Recovery: {

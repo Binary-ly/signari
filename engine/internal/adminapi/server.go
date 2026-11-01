@@ -310,6 +310,11 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/uma/requests", ScopeConfigRead, s.listUMARequests)
 	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve", ScopeOrganizationsWrite, s.approveUMA)
 	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny", ScopeOrganizationsWrite, s.denyUMA)
+	// The services an external_factor stage asks (externalfactors.go).
+	route("GET /admin/organizations/{orgID}/external-factors", ScopeConfigRead, s.listExternalFactors)
+	route("PUT /admin/organizations/{orgID}/external-factors/{name}", ScopeOrganizationsWrite, s.putExternalFactor)
+	route("DELETE /admin/organizations/{orgID}/external-factors/{name}", ScopeOrganizationsWrite, s.deleteExternalFactor)
+
 	// Trusted Client Attesters, `signari attester` (attesters.go).
 	route("GET /admin/organizations/{orgID}/attesters", ScopeConfigRead, s.listAttesters)
 	route("PUT /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.putAttester)

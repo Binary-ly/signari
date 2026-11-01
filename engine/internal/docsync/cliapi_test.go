@@ -295,6 +295,11 @@ var cliAPI = map[string]string{
 	"attester add":         "PUT /admin/organizations/{orgID}/attesters/{name}",
 	"attester list":        reads,
 
+	// The services an external_factor stage asks.
+	"external-factor add":    "PUT /admin/organizations/{orgID}/external-factors/{name}",
+	"external-factor list":   reads,
+	"external-factor remove": "DELETE /admin/organizations/{orgID}/external-factors/{name}",
+
 	// Who this instance speaks for in a federation.
 	"federation subordinates":       reads,
 	"federation add-subordinate":    "PUT /admin/instances/{instanceID}/federation/subordinates",

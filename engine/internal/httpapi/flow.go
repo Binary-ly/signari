@@ -19,6 +19,7 @@ import (
 	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/delegated"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
@@ -2460,6 +2461,10 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	case decisionSession:
 		// Fall through.
 	}
+
+	// The walk's own marks stop here, the one place a session comes into
+	// existence.
+	amr = flow.Unmarked(amr)
 
 	// The operator's provider, about a sign-in every step has passed, here for every
 	// way in as the status check above is. It can only take this back.

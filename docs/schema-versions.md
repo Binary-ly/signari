@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0261 external_factors
+
+Compatible with the release before: its binary may still serve this schema.
+
+A sign-in stage an operator plugs a service of their own into (10.03). The service is registered with where to send the browser, the issuer it signs as, its public keys and the amr it may claim, and a challenge is one nonce waiting to come back, spent once. The keys are held by value rather than fetched, so that an answer is believed because of a key an operator put here and a change of keys is a change to the configuration. An older binary reads none of this: it refuses a stored flow naming a stage it does not know and keeps the flow it had.
+
 ## 0260 uma_persisted_claims
 
 Compatible with the release before: its binary may still serve this schema.

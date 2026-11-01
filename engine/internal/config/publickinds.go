@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -254,6 +255,105 @@ func (attesterSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *F
 			return err
 		}
 		f.Attesters = append(f.Attesters, Attester{Name: name, JWKS: set, Description: have[name].Description})
+	}
+	return nil
+}
+
+// ExternalFactor is a service an external_factor stage may ask: where the
+// browser goes, who its answers are signed as, what it may claim to have proved,
+// and its public key set as JSON Web Keys.
+type ExternalFactor struct {
+	Name   string         `yaml:"name"`
+	URL    string         `yaml:"url"`
+	Issuer string         `yaml:"issuer"`
+	AMR    []string       `yaml:"amr"`
+	JWKS   map[string]any `yaml:"jwks"`
+}
+
+func (e ExternalFactor) stored() store.ExternalFactor {
+	b, _ := json.Marshal(e.JWKS)
+	return store.ExternalFactor{Name: e.Name, URL: e.URL, Issuer: e.Issuer, AMR: e.AMR, JWKS: b}
+}
+
+// externalFactorSection comes before the sign-in flow, which is refused for
+// naming a factor nobody registered.
+type externalFactorSection struct{}
+
+func (externalFactorSection) kind() string { return "external_factor" }
+func (externalFactorSection) first() bool  { return false }
+
+func (externalFactorSection) validate(f *File, add func(string, ...any)) {
+	once := seen(add, "external_factors")
+	for i, e := range f.ExternalFactors {
+		if !once(i, e.Name) {
+			continue
+		}
+		if _, err := store.CheckExternalFactor(e.stored()); err != nil {
+			add("external_factors[%s]: %v", e.Name, err)
+		}
+	}
+}
+
+func externalFactorsByName(ctx context.Context, tx pgx.Tx, orgID string) (map[string]store.ExternalFactor, error) {
+	held, err := store.ExternalFactors(ctx, tx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	return keyBy(held, func(f store.ExternalFactor) string { return f.Name }), nil
+}
+
+func (externalFactorSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, p *Plan) error {
+	have, err := externalFactorsByName(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
+	var failed error
+	planKeyed(p, "external_factor", keyBy(f.ExternalFactors, func(e ExternalFactor) string { return e.Name }), have, prune,
+		func(h store.ExternalFactor, w ExternalFactor) string {
+			var c changed
+			held, err := canonical(h.JWKS)
+			if err != nil && failed == nil {
+				failed = err
+			}
+			want, _ := canonical(w.stored().JWKS)
+			c.note(held != want, "jwks")
+			c.note(h.URL != w.URL, "url")
+			c.note(h.Issuer != w.Issuer, "issuer")
+			c.note(!slices.Equal(h.AMR, w.AMR), "amr")
+			return c.String()
+		}, "a flow naming it stops every sign-in that reaches the stage")
+	return failed
+}
+
+func (externalFactorSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
+	for _, e := range f.ExternalFactors {
+		if c, ok := p.planned("external_factor", e.Name); !ok || c.Action == "delete" {
+			continue
+		}
+		if _, err := store.SetExternalFactor(ctx, tx, orgID, e.stored()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (externalFactorSection) remove(ctx context.Context, tx pgx.Tx, orgID, name string) error {
+	_, err := store.RemoveExternalFactor(ctx, tx, orgID, name)
+	return err
+}
+
+func (externalFactorSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) error {
+	have, err := store.ExternalFactors(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
+	for _, h := range have {
+		var set map[string]any
+		if err := json.Unmarshal(h.JWKS, &set); err != nil {
+			return err
+		}
+		f.ExternalFactors = append(f.ExternalFactors, ExternalFactor{Name: h.Name, URL: h.URL, Issuer: h.Issuer,
+			AMR: h.AMR, JWKS: set})
 	}
 	return nil
 }

@@ -140,6 +140,8 @@ type Stats struct {
 	RateWindowsPurged int64
 	// DuoChallengesSwept are Duo prompts the user abandoned.
 	DuoChallengesSwept int64
+	// FactorChallengesSwept are external factors nobody came back from.
+	FactorChallengesSwept int64
 	// PollEventsPurged are SETs queued for a poll stream whose receiver stopped
 	// collecting them, dropped after a long retention.
 	PollEventsPurged int64
@@ -254,6 +256,8 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		// Duo prompts nobody finished. Each row holds a live challenge state, so
 		// keeping them past expiry stores flow state for a flow nobody will finish.
 		{"Duo challenges", sweepBatch, &st.DuoChallengesSwept, store.PurgeExpiredDuoChallenges},
+		// The same for an external factor: a nonce nobody came back with.
+		{"external factor challenges", sweepBatch, &st.FactorChallengesSwept, store.SweepExpiredFactorChallenges},
 		// Inbound SAML: requests nobody answered, and the record of assertions
 		// already spent. Both are bounded by the assertion lifetime, so this is
 		// housekeeping rather than a security control -- but a table that only grows
@@ -534,6 +538,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)
 	add("duo_challenges_swept", s.DuoChallengesSwept)
+	add("factor_challenges_swept", s.FactorChallengesSwept)
 	add("impersonations_expired", s.ImpersonationsExpired)
 	for _, table := range store.RetentionTables {
 		add(table+"_deleted", int64(s.Retained[table]))

@@ -384,6 +384,31 @@
       },
       "type": "object"
     },
+    "ExternalFactor": {
+      "additionalProperties": false,
+      "properties": {
+        "amr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Field": {
       "additionalProperties": false,
       "properties": {
@@ -1456,6 +1481,12 @@
     "event_subscriptions": {
       "items": {
         "$ref": "#/$defs/Subscription"
+      },
+      "type": "array"
+    },
+    "external_factors": {
+      "items": {
+        "$ref": "#/$defs/ExternalFactor"
       },
       "type": "array"
     },

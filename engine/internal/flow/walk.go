@@ -2,6 +2,7 @@ package flow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -31,6 +32,42 @@ func (fl *Flow) Plan(st State) []StageName {
 type Cursor struct {
 	fl *Flow
 	i  int
+	// factor is what the stage Next last returned names.
+	factor string
+}
+
+// Factor is the service the stage Next last returned asks, for an
+// external_factor stage.
+func (c *Cursor) Factor() string { return c.factor }
+
+// markPrefix starts a mark. The colon keeps it from being any amr value a
+// sign-in records or a service may be registered to claim.
+const markPrefix = "walk:"
+
+// Mark records in the amr a sign-in carries between requests that a stage has
+// finished, for a stage that leaves nothing in the database to read that from.
+//
+// A walk starts again from the top after every stage that takes over the
+// response, and passes each stage by looking at what it left behind. Most leave a
+// row or an amr value. An external factor's `otp` does not say that this service
+// was asked, and a notice asked on every sign-in has an answer from last week; a
+// mark says it happened in this sign-in.
+func Mark(amr []string, stage StageName, name string) []string {
+	return append(slices.Clone(amr), markPrefix+string(stage)+"/"+name)
+}
+
+// Marked reports whether a sign-in carries a stage's mark.
+func Marked(amr []string, stage StageName, name string) bool {
+	return slices.Contains(amr, markPrefix+string(stage)+"/"+name)
+}
+
+// Unmarked is amr without its marks, as it goes on a session. They are this
+// engine's bookkeeping between requests, and nothing a relying party agreed to
+// read.
+func Unmarked(amr []string) []string {
+	return slices.DeleteFunc(slices.Clone(amr), func(v string) bool {
+		return strings.HasPrefix(v, markPrefix)
+	})
 }
 
 // Cursor starts at the beginning of a flow.
@@ -76,6 +113,7 @@ func (c *Cursor) Next(ev Evaluator) (StageName, bool) {
 			// which is the property safety.go relies on.
 			for _, b := range step.OneOf {
 				if holds(ev, b.When) {
+					c.factor = b.Factor
 					return b.Stage, true
 				}
 			}
@@ -87,6 +125,7 @@ func (c *Cursor) Next(ev Evaluator) (StageName, bool) {
 		}
 
 		if holds(ev, step.When) {
+			c.factor = step.Factor
 			return step.Stage, true
 		}
 	}

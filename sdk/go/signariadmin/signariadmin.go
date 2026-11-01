@@ -282,6 +282,12 @@ type DeleteOrganizationsOrgIDEventSubscriptionsNameResponse struct {
 	Removed       bool   `json:"removed"`
 }
 
+// DeleteOrganizationsOrgIDExternalFactorsNameResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDExternalFactorsNameResponse struct {
+	ConfigVersion int64 `json:"config_version"`
+	Removed       bool  `json:"removed"`
+}
+
 // DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMapResponse struct {
 	Attribute     string `json:"attribute"`
@@ -1044,6 +1050,22 @@ type GetOrganizationsOrgIDEventSubscriptionsResponseSubscriptionsItem struct {
 	Name           string   `json:"name"`
 	Outstanding    int64    `json:"outstanding"`
 	URL            string   `json:"url"`
+}
+
+// GetOrganizationsOrgIDExternalFactorsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDExternalFactorsResponse struct {
+	ExternalFactors []GetOrganizationsOrgIDExternalFactorsResponseExternalFactorsItem `json:"external_factors"`
+	OrgID           string                                                            `json:"org_id"`
+}
+
+// GetOrganizationsOrgIDExternalFactorsResponseExternalFactorsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDExternalFactorsResponseExternalFactorsItem struct {
+	AMR       []string `json:"amr"`
+	CreatedAt string   `json:"created_at"`
+	Issuer    string   `json:"issuer"`
+	Keys      int64    `json:"keys"`
+	Name      string   `json:"name"`
+	URL       string   `json:"url"`
 }
 
 // GetOrganizationsOrgIDIdentityProvidersResponse is a JSON object of the Admin API.
@@ -3236,6 +3258,21 @@ type PutOrganizationsOrgIDDuoResponse struct {
 	OrgID         string `json:"org_id"`
 }
 
+// PutOrganizationsOrgIDExternalFactorsNameRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDExternalFactorsNameRequest struct {
+	AMR    *[]string       `json:"amr,omitempty"`
+	Issuer *string         `json:"issuer,omitempty"`
+	JWKS   json.RawMessage `json:"jwks,omitempty"`
+	URL    *string         `json:"url,omitempty"`
+}
+
+// PutOrganizationsOrgIDExternalFactorsNameResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDExternalFactorsNameResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Keys          int64  `json:"keys"`
+	Name          string `json:"name"`
+}
+
 // PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDIdentityProvidersSlugAttributeMapRequest struct {
 	Attribute *string `json:"attribute,omitempty"`
@@ -3829,6 +3866,18 @@ func (c *Client) DeleteOrganizationsOrgIDDirectoriesSlugGroupMap(ctx context.Con
 func (c *Client) DeleteOrganizationsOrgIDEventSubscriptionsName(ctx context.Context, orgID string, name string, opts ...Option) (*DeleteOrganizationsOrgIDEventSubscriptionsNameResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDEventSubscriptionsNameResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/event-subscriptions/"+url.PathEscape(name), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDExternalFactorsName is DELETE
+// /admin/organizations/{orgID}/external-factors/{name}: Forget a service, refused while the
+// sign-in flow names it. Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDExternalFactorsName(ctx context.Context, orgID string, name string, opts ...Option) (*DeleteOrganizationsOrgIDExternalFactorsNameResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDExternalFactorsNameResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/external-factors/"+url.PathEscape(name), nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4529,6 +4578,17 @@ func (c *Client) GetOrganizationsOrgIDDuo(ctx context.Context, orgID string, opt
 func (c *Client) GetOrganizationsOrgIDEventSubscriptions(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDEventSubscriptionsResponse, int64, error) {
 	var out GetOrganizationsOrgIDEventSubscriptionsResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/event-subscriptions", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDExternalFactors is GET /admin/organizations/{orgID}/external-factors: The
+// services an external_factor stage may ask. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDExternalFactors(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDExternalFactorsResponse, int64, error) {
+	var out GetOrganizationsOrgIDExternalFactorsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/external-factors", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5888,6 +5948,18 @@ func (c *Client) PutOrganizationsOrgIDDirectoriesSlugGroupMap(ctx context.Contex
 func (c *Client) PutOrganizationsOrgIDDuo(ctx context.Context, orgID string, body PutOrganizationsOrgIDDuoRequest, opts ...Option) (*PutOrganizationsOrgIDDuoResponse, int64, error) {
 	var out PutOrganizationsOrgIDDuoResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/duo", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDExternalFactorsName is PUT
+// /admin/organizations/{orgID}/external-factors/{name}: Register a service, or replace what is
+// registered under its name. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDExternalFactorsName(ctx context.Context, orgID string, name string, body PutOrganizationsOrgIDExternalFactorsNameRequest, opts ...Option) (*PutOrganizationsOrgIDExternalFactorsNameResponse, int64, error) {
+	var out PutOrganizationsOrgIDExternalFactorsNameResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/external-factors/"+url.PathEscape(name), body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

@@ -56,6 +56,7 @@ var sections = []section{
 	signupSection{},
 	mapperSection{},
 	accessPolicySection,
+	externalFactorSection{},
 	signInFlowSection,
 	promptSection{},
 	registrationSection{},

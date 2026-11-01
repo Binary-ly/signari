@@ -105,6 +105,16 @@ func ApplySignInFlow(ctx context.Context, q outpostDB, orgID string, doc []byte)
 					"does not have enabled", pin)}
 			}
 		}
+		// The same for a factor: naming one nobody registered refuses everybody
+		// who reaches that stage.
+		for _, name := range fl.Factors() {
+			if _, err := LoadExternalFactor(ctx, q, orgID, name); errors.Is(err, ErrNoExternalFactor) {
+				return nil, invalidDocument{fmt.Errorf("the flow names external factor %q, which this "+
+					"organisation has not registered", name)}
+			} else if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if _, err := q.Exec(ctx, `
 		INSERT INTO core.sign_in_flows (org_id, document)

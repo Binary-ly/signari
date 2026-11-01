@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/store"
@@ -204,6 +205,9 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Back into the funnel. Any remaining prompt is picked up by the same check,
-	// so several in sequence need no special handling.
-	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)
+	// so several in sequence need no special handling. The mark is what lets a
+	// `once: false` notice end: it is outstanding on every sign-in, answered or
+	// not, so the walk would ask it again for ever.
+	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID,
+		flow.Mark(pending.AMR, flow.StagePrompt, p.Slug), pending.Authz)
 }

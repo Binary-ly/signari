@@ -35,6 +35,7 @@ command or an environment variable exists in code and not on its page.
 | | |
 |---|---|
 | [flows.md](flows.md) | The sequence somebody is asked for, as a file you can test in CI |
+| [external-factors.md](external-factors.md) | A sign-in stage answered by a service you run, believed because it signed the answer |
 | [prompts.md](prompts.md) | Terms acceptance, extra fields, notices |
 | [signup.md](signup.md) | Invitations and self-service sign-up |
 | [password-policy.md](password-policy.md) | One gate, called by every path that sets a password |

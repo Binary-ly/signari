@@ -904,6 +904,13 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/attesters/{name}": {http.StatusOK, typeOf[putAttesterRequest](), object(
 		[]string{"name", "keys", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "keys": integer()}))},
 	"DELETE /admin/organizations/{orgID}/attesters/{name}": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/external-factors": {http.StatusOK, nil, object([]string{"org_id", "external_factors"},
+		map[string]jsonSchema{"org_id": uuidStr(), "external_factors": arrayOf(object(
+			[]string{"name", "url", "issuer", "amr", "keys", "created_at"}, map[string]jsonSchema{"name": str(),
+				"url": str(), "issuer": str(), "amr": arrayOf(str()), "keys": integer(), "created_at": dateTime()}))})},
+	"PUT /admin/organizations/{orgID}/external-factors/{name}": {http.StatusOK, typeOf[putExternalFactorRequest](), object(
+		[]string{"name", "keys", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "keys": integer()}))},
+	"DELETE /admin/organizations/{orgID}/external-factors/{name}": {http.StatusOK, nil, removedSchema},
 	"GET /admin/organizations/{orgID}/authorization-detail-types": {http.StatusOK, nil, object(
 		[]string{"org_id", "authorization_detail_types"}, map[string]jsonSchema{"org_id": uuidStr(),
 			"authorization_detail_types": arrayOf(object([]string{"type", "fields", "required", "description", "clients"},

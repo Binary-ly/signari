@@ -79,6 +79,9 @@ type File struct {
 	Credentials []Credential `yaml:"credential_configurations,omitempty"`
 	ProofRoots  []ProofRoot  `yaml:"credential_proof_roots,omitempty"`
 
+	// The services an external_factor stage may ask (publickinds.go).
+	ExternalFactors []ExternalFactor `yaml:"external_factors,omitempty"`
+
 	// The kinds holding a secret, which the file names by reference or the
 	// engine mints (secrets.go).
 	Providers         []Provider         `yaml:"providers,omitempty"`

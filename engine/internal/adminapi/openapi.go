@@ -200,6 +200,11 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/attesters/{name}":    "Trust an attester's public keys, or replace them.",
 	"DELETE /admin/organizations/{orgID}/attesters/{name}": "Stop trusting an attester.",
 
+	// The services an external_factor stage asks (10.03).
+	"GET /admin/organizations/{orgID}/external-factors":           "The services an external_factor stage may ask.",
+	"PUT /admin/organizations/{orgID}/external-factors/{name}":    "Register a service, or replace what is registered under its name.",
+	"DELETE /admin/organizations/{orgID}/external-factors/{name}": "Forget a service, refused while the sign-in flow names it.",
+
 	// OID4VCI issuance (6.07).
 	"GET /admin/organizations/{orgID}/credential-configurations":            "The credentials the organisation issues.",
 	"PUT /admin/organizations/{orgID}/credential-configurations/{configID}": "Define a credential, or redefine it.",

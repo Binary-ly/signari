@@ -102,7 +102,7 @@ var twoWordCommands = map[string]bool{
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
-	"provider": true, "migration-source": true, "restore": true,
+	"provider": true, "migration-source": true, "restore": true, "external-factor": true,
 	"erase":    true,
 	"prompt":   true,
 	"attester": true,
@@ -255,6 +255,9 @@ verifiable credentials:
   credential roots         the CAs x5c key proofs may verify to
   attester add             trust a Client Attester's public keys
   attester list            the trusted Client Attesters
+  external-factor add      register a service an external_factor stage may ask
+  external-factor list     the registered services
+  external-factor remove   forget one, refused while the sign-in flow names it
 
 keys and audit:
   keys list         show signing keys, their state and when each may advance
@@ -574,6 +577,7 @@ func run(args []string) (err error) {
 	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
 	ssfCritical := fs.String("critical-subject-members", "",
 		"comma-separated subject member names this transmitter marks Critical (SSF 1.0 section 3.6)")
+	factorAMR := fs.String("amr", "", "comma-separated amr values an external factor may claim (external-factor add)")
 	attesterJWKS := fs.String("attester-jwks", "", "path to a JWKS file holding the client attester's PUBLIC keys")
 	duoSecret := fs.String("duo-secret", "", "Duo secret key (40 characters)")
 	duoAPIHost := fs.String("duo-api-host", "", "api-XXXXXXXX.duosecurity.com")
@@ -2035,6 +2039,12 @@ func run(args []string) (err error) {
 		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS, *rarDesc)
 	case "attester list":
 		return attesterList(ctx, conn, *outputFormat)
+	case "external-factor add":
+		return externalFactorAdd(ctx, conn, *orgID, *name, *subURL, *issuer, *jwksPath, *factorAMR)
+	case "external-factor list":
+		return externalFactorList(ctx, conn, *orgID, *outputFormat)
+	case "external-factor remove":
+		return externalFactorRemove(ctx, conn, *orgID, *name)
 	case "scim-source add":
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":

@@ -18120,11 +18120,20 @@
                         "format": "date-time",
                         "type": "string"
                       },
+                      "metadata_url": {
+                        "type": "string"
+                      },
                       "name": {
                         "type": "string"
                       },
                       "resource": {
                         "type": "string"
+                      },
+                      "scopes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
                       }
                     },
                     "required": [
@@ -18210,6 +18219,12 @@
                   },
                   "resource": {
                     "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"

@@ -614,6 +614,7 @@ func (s *Server) mux() *http.ServeMux {
 	// RFC 9728. Signari is a protected resource for its own /oauth2/userinfo,
 	// and this document is where MCP's discovery flow begins.
 	mux.HandleFunc("GET "+protectedResourcePath, s.handleProtectedResourceMetadata)
+	mux.HandleFunc("GET "+store.ResourceMetadataPath+"{id}", s.handleResourceMetadata)
 	// OpenID Federation 1.0 §9. Registered only when this instance has a
 	// federation key set loaded: a path that answers with an improvised or
 	// unsigned Entity Configuration would put a statement into a federation

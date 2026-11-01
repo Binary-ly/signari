@@ -1288,9 +1288,11 @@ type GetOrganizationsOrgIDRelationsResponseRelationsItem struct {
 
 // GetOrganizationsOrgIDResourceServersResponseItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDResourceServersResponseItem struct {
-	CreatedAt string `json:"created_at,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Resource  string `json:"resource"`
+	CreatedAt   string   `json:"created_at,omitempty"`
+	MetadataURL string   `json:"metadata_url,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Resource    string   `json:"resource"`
+	Scopes      []string `json:"scopes,omitempty"`
 }
 
 // GetOrganizationsOrgIDRoleBindingsResponse is a JSON object of the Admin API.
@@ -3369,8 +3371,9 @@ type PutOrganizationsOrgIDRelationsResponse struct {
 
 // PutOrganizationsOrgIDResourceServersRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDResourceServersRequest struct {
-	Name     *string `json:"name,omitempty"`
-	Resource *string `json:"resource,omitempty"`
+	Name     *string   `json:"name,omitempty"`
+	Resource *string   `json:"resource,omitempty"`
+	Scopes   *[]string `json:"scopes,omitempty"`
 }
 
 // PutOrganizationsOrgIDResourceServersResponse is a JSON object of the Admin API.

@@ -214,7 +214,7 @@ var commandFlags = map[string][]string{
 	"registration enable":             {"allow-confidential", "max-clients", "open", "org", "scopes"},
 	"registration revoke":             {"name", "org", "token-id"},
 	"registration token":              {"expires-in", "name", "org", "uses"},
-	"resource add":                    {"name", "org", "resource"},
+	"resource add":                    {"name", "org", "resource", "scopes"},
 	"resource list":                   {"o", "org"},
 	"resource remove":                 {"org", "resource"},
 	"restore finalize":                {"confirm"},

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"signari.dev/engine/internal/dpop"
+	"signari.dev/engine/internal/store"
 )
 
 // OAuth 2.0 Protected Resource Metadata (RFC 9728).
@@ -77,6 +78,37 @@ func (s *Server) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
+	writeJSONBody(w, md)
+}
+
+// handleResourceMetadata serves the document of a resource an organisation registered
+// (12.15), so that an MCP server need only point its 401 here. Its `resource` is that
+// server's identifier and not ours, which is what a client compares with where it was
+// sent away from. Unauthenticated, as metadata is, under a handle that is the only way
+// to it.
+func (s *Server) handleResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	found, err := store.ResourceMetadata(ctx, s.db, r.PathValue("id"), s.instanceID)
+	if err != nil {
+		s.log.Error("serving a resource's metadata", "err", err, "correlation_id", correlationID(ctx))
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if found == nil {
+		http.NotFound(w, r)
+		return
+	}
+	md := map[string]any{"resource": found.Resource,
+		"authorization_servers":    []string{strings.TrimRight(s.cfg.Issuer, "/")},
+		"bearer_methods_supported": []string{"header"}}
+	if found.Name != "" {
+		md["resource_name"] = found.Name
+	}
+	if len(found.Scopes) > 0 {
+		md["scopes_supported"] = found.Scopes
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSONBody(w, md)
 }
 

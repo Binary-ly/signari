@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0249 resource_metadata
+
+Compatible with the release before: its binary may still serve this schema.
+
+A registered resource publishes where to get a token for it (12.15). An MCP server had to publish its own RFC 9728 document to be found; now it can point its 401 at one this deployment serves for it, under a handle that says nothing about the organisation. An older binary ignores both columns.
+
 ## 0248 ssf_source_poll
 
 Compatible with the release before: its binary may still serve this schema.

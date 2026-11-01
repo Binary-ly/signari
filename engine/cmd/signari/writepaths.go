@@ -3582,11 +3582,15 @@ func registrationRevoke(ctx context.Context, conn *pgx.Conn, orgID, name, tokenI
 // resourceAdd registers a resource server an organisation's tokens may be
 // audienced to (1.87). Until one is, every `resource` a client asks for is
 // refused with invalid_target.
-func resourceAdd(ctx context.Context, conn *pgx.Conn, orgID, resource, name string) error {
+func resourceAdd(ctx context.Context, conn *pgx.Conn, orgID, resource, name, scopes string) error {
 	if orgID == "" || resource == "" {
 		return fmt.Errorf("resource add needs -org and -resource")
 	}
-	if err := store.SetResourceServer(ctx, conn, orgID, resource, name); err != nil {
+	var offered []string
+	if scopes != "" {
+		offered = splitList(scopes)
+	}
+	if err := store.SetResourceServer(ctx, conn, orgID, resource, name, offered); err != nil {
 		return err
 	}
 	fmt.Printf("registered %s: clients of this organisation may now ask for tokens audienced to it\n", resource)
@@ -3611,9 +3615,9 @@ func resourceList(ctx context.Context, conn *pgx.Conn, orgID, format string) err
 		return nil
 	}
 	for _, r := range rs {
-		out.add(map[string]any{"resource": r.Resource, "name": r.Name})
+		out.add(map[string]any{"resource": r.Resource, "name": r.Name, "scopes": r.Scopes, "metadata_url": r.MetadataURL})
 		if out.text() {
-			fmt.Printf("%s  %s\n", r.Resource, r.Name)
+			fmt.Printf("%s  %s\n  metadata %s\n", r.Resource, r.Name, r.MetadataURL)
 		}
 	}
 	return out.flush()

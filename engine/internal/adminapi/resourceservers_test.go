@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store"
 )
 
 // The resource servers an organisation's tokens may be audienced to (1.87),
@@ -37,6 +40,35 @@ func TestResourceServersAreRegisteredListedAndRemoved(t *testing.T) {
 	if len(listed) != 1 || listed[0].Resource != "https://api.example.test" || listed[0].Name != "Billing" {
 		t.Errorf("listed %+v, want the one registered", listed)
 	}
+
+	// What its metadata offers: said once and kept by a rename.
+	if code, body := do(http.MethodPut, base, `{"resource":"https://api.example.test","scopes":["two words"]}`); code != http.StatusBadRequest {
+		t.Errorf("a scope that cannot be one answered %d %s", code, body)
+	}
+	if code, body := do(http.MethodPut, base, `{"resource":"https://api.example.test","name":"Billing","scopes":["read","write"]}`); code != http.StatusOK {
+		t.Fatalf("PUT with scopes answered %d %s", code, body)
+	}
+	if code, body := do(http.MethodPut, base, `{"resource":"https://api.example.test","name":"Bills"}`); code != http.StatusOK {
+		t.Fatalf("a rename answered %d %s", code, body)
+	}
+	_, body = do(http.MethodGet, base, "")
+	if !strings.Contains(body, `"name":"Bills"`) || !strings.Contains(body, `"scopes":["read","write"]`) {
+		t.Errorf("a rename left %s", body)
+	}
+	var published []struct {
+		MetadataURL string `json:"metadata_url"`
+	}
+	if err := json.Unmarshal([]byte(body), &published); err != nil || len(published) != 1 ||
+		!strings.Contains(published[0].MetadataURL, store.ResourceMetadataPath) {
+		t.Errorf("no metadata URL in %s (%v)", body, err)
+	}
+	if code, body := do(http.MethodPut, base, `{"resource":"https://api.example.test","name":"Bills","scopes":[]}`); code != http.StatusOK {
+		t.Fatalf("clearing the scopes answered %d %s", code, body)
+	}
+	if _, body := do(http.MethodGet, base, ""); !strings.Contains(body, `"scopes":[]`) {
+		t.Errorf("clearing the scopes left %s", body)
+	}
+
 	if code, body := do(http.MethodDelete, base+"?resource=https://api.example.test", ""); code != http.StatusOK {
 		t.Errorf("DELETE answered %d %s", code, body)
 	}

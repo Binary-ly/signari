@@ -623,7 +623,7 @@ func run(args []string) (err error) {
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
-		"comma-separated admin token scopes, e.g. users:write,clients:write")
+		"comma-separated admin token scopes, e.g. users:write,clients:write, or what a resource's metadata offers (resource add)")
 	roleName := fs.String("role", "", "an administrative role: org-owner, user-manager, app-manager or auditor")
 	tokensPerMinute := fs.Int("tokens-per-minute", 0,
 		"`instance org-budgets`: tokens the organisation's clients may be issued a minute (0 restores the default)")
@@ -1748,7 +1748,7 @@ func run(args []string) (err error) {
 	case "credential untrust-root":
 		return credentialUntrustRoot(ctx, conn, *orgID, *name)
 	case "resource add":
-		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name)
+		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name, *tokenScopes)
 	case "resource list":
 		return resourceList(ctx, conn, *orgID, *outputFormat)
 	case "resource remove":

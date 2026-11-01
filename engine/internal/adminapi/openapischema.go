@@ -330,7 +330,8 @@ var opSchemas = map[string]opSchema{
 				"methods": arrayOf(str()), "name": str()}))}))})},
 	// A bare array, unlike every other list, kept for the callers it has.
 	"GET /admin/organizations/{orgID}/resource-servers": {http.StatusOK, nil, arrayOf(object([]string{"resource"},
-		map[string]jsonSchema{"resource": str(), "name": str(), "created_at": dateTime()}))},
+		map[string]jsonSchema{"resource": str(), "name": str(), "created_at": dateTime(), "scopes": arrayOf(str()),
+			"metadata_url": str()}))},
 	"GET /admin/organizations/{orgID}/scopes": {http.StatusOK, nil, object([]string{"scopes", "standard"}, map[string]jsonSchema{
 		"standard": arrayOf(str()),
 		"scopes": arrayOf(object([]string{"name", "advertise"}, map[string]jsonSchema{

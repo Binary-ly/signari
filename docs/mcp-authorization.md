@@ -107,10 +107,29 @@ and on **MCP servers** acting as resource servers — token audience validation 
 the MCP server, no token passthrough, the `resource` parameter on every request.
 Those belong to whoever writes the MCP server, not to the authorization server.
 
-An MCP server is registered as a resource with `signari resource add`, which is
-what lets a client's `resource` for it become the token's audience; one that is
-not registered is refused. What Signari could add and has not: publishing
-protected-resource metadata *on behalf of* the MCP servers it has registered.
-Today an MCP server integrating with Signari publishes its own RFC 9728 document
-and names Signari as its authorization server, which works and is what the
-specification describes.
+## Registering an MCP server
+
+An MCP server is registered as a resource, which is what lets a client's `resource`
+for it become the token's audience; one that is not registered is refused.
+
+```sh
+signari resource add -org <uuid> -resource https://mcp.acme.example/sse -name Tools \
+    -scopes tools.read,tools.run
+signari resource list -org <uuid>
+```
+
+`resource list` gives each one a metadata URL on this deployment. That document is
+RFC 9728's, with the server's own identifier as `resource`, this deployment as its
+authorization server, and the `-scopes` and `-name` you gave. So an MCP server need
+publish nothing of its own. Name the URL in the 401:
+
+```
+WWW-Authenticate: Bearer resource_metadata="https://id.acme.example/.well-known/oauth-protected-resource/resources/<id>"
+```
+
+A server that would rather publish its own document can, and names this deployment
+as its authorization server. The `-scopes` are only an offer: they decide nothing,
+and leaving them out of a later `resource add` keeps them. The address is public
+and unauthenticated, as metadata is, and the id in it is the only way to it, so it
+does not list what an organisation has registered. It is served for five minutes
+at a time, so a removal can take that long to reach a client that has cached it.

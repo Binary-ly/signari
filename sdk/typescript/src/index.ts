@@ -2501,8 +2501,10 @@ export interface GetOrganizationsOrgIDRelationsResponseRelationsItem {
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDResourceServersResponseItem {
   created_at?: string
+  metadata_url?: string
   name?: string
   resource: string
+  scopes?: string[]
 }
 
 /** A JSON object of the Admin API. */
@@ -4583,6 +4585,7 @@ export interface PutOrganizationsOrgIDRelationsResponse {
 export interface PutOrganizationsOrgIDResourceServersRequest {
   name?: string
   resource?: string
+  scopes?: string[]
 }
 
 /** A JSON object of the Admin API. */

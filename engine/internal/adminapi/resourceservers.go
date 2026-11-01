@@ -20,8 +20,9 @@ import (
 // organisation may be issued.
 
 type resourceServerRequest struct {
-	Resource string `json:"resource"`
-	Name     string `json:"name"`
+	Resource string   `json:"resource"`
+	Name     string   `json:"name"`
+	Scopes   []string `json:"scopes"`
 }
 
 func (s *Server) listResourceServers(w http.ResponseWriter, r *http.Request) {
@@ -60,12 +61,12 @@ func (s *Server) putResourceServer(w http.ResponseWriter, r *http.Request) {
 		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
-		if err := store.SetResourceServer(ctx, tx, orgID, req.Resource, req.Name); err != nil {
+		if err := store.SetResourceServer(ctx, tx, orgID, req.Resource, req.Name, req.Scopes); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.resource_server_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
-			Detail: map[string]any{"resource": req.Resource, "name": req.Name},
+			Detail: map[string]any{"resource": req.Resource, "name": req.Name, "scopes": req.Scopes},
 		})
 	})
 	switch {
@@ -73,7 +74,7 @@ func (s *Server) putResourceServer(w http.ResponseWriter, r *http.Request) {
 		return
 	case writeOrgRefusal(w, err):
 		return
-	case errors.Is(err, store.ErrResourceIsAdminAPI):
+	case errors.Is(err, store.ErrResourceIsAdminAPI), errors.Is(err, store.ErrResourceScope):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_resource", "detail": err.Error()})
 		return
 	case err != nil:

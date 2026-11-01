@@ -229,6 +229,8 @@ func (attributeSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *
 type Resource struct {
 	Resource string `yaml:"resource"`
 	Name     string `yaml:"name"`
+	// Scopes is what its published metadata offers. Absent leaves it as it is.
+	Scopes []string `yaml:"scopes,omitempty"`
 }
 
 type resourceSection struct{}
@@ -260,6 +262,9 @@ func (resourceSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fil
 			if h.Name != w.Name {
 				return "name"
 			}
+			if w.Scopes != nil && !slices.Equal(h.Scopes, w.Scopes) {
+				return "scopes"
+			}
 			return ""
 		}, "a token asking for it is refused from the next request")
 	return nil
@@ -270,7 +275,7 @@ func (resourceSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 		if c, ok := p.planned("resource", r.Resource); !ok || c.Action == "delete" {
 			continue
 		}
-		if err := store.SetResourceServer(ctx, tx, orgID, r.Resource, r.Name); err != nil {
+		if err := store.SetResourceServer(ctx, tx, orgID, r.Resource, r.Name, r.Scopes); err != nil {
 			return err
 		}
 	}
@@ -287,7 +292,7 @@ func (resourceSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *F
 		return err
 	}
 	for _, r := range have {
-		f.Resources = append(f.Resources, Resource{Resource: r.Resource, Name: r.Name})
+		f.Resources = append(f.Resources, Resource{Resource: r.Resource, Name: r.Name, Scopes: r.Scopes})
 	}
 	sort.Slice(f.Resources, func(i, j int) bool { return f.Resources[i].Resource < f.Resources[j].Resource })
 	return nil

@@ -3008,8 +3008,10 @@ Answers a list, each:
 | Field | Type | |
 |---|---|---|
 | `created_at` | string |  |
+| `metadata_url` | string |  |
 | `name` | string |  |
 | `resource` | string | always |
+| `scopes` | list of string |  |
 
 ### `PUT /admin/organizations/{orgID}/resource-servers`
 
@@ -3023,6 +3025,7 @@ Takes:
 |---|---|---|
 | `name` | string |  |
 | `resource` | string |  |
+| `scopes` | list of string |  |
 
 Answers:
 

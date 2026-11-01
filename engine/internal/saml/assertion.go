@@ -278,6 +278,11 @@ func buildAssertion(id string, in ResponseInput, now, notBefore, notOnOrAfter ti
 // a *rsa.PrivateKey, because the library's key-store interface did, and
 // refused every key that would not hand over its private material.
 func signElement(el *etree.Element, signer crypto.Signer, certDER []byte) (*etree.Element, error) {
+	return signElementBy(el, "ID", signer, certDER)
+}
+
+// signElementBy signs el, its Reference naming the attribute that carries its id.
+func signElementBy(el *etree.Element, idAttribute string, signer crypto.Signer, certDER []byte) (*etree.Element, error) {
 	method, err := SignatureMethod(signer)
 	if err != nil {
 		return nil, err
@@ -286,7 +291,7 @@ func signElement(el *etree.Element, signer crypto.Signer, certDER []byte) (*etre
 	if err != nil {
 		return nil, err
 	}
-	ctx.IdAttribute = "ID"
+	ctx.IdAttribute = idAttribute
 	// The `ds:` prefix, rather than making xmldsig the default namespace.
 	// Both are correct XML and mean exactly the same thing, but a good deal of
 	// service-provider software matches element names as strings rather than

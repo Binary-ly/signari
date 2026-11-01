@@ -42,7 +42,7 @@ func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) 
 		SELECT id::text, org_id::text, entity_id, display_name, name_id_format,
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
-		       sp_key_transport, signature_alg,
+		       sp_key_transport, signature_alg, wsfed_saml_version,
 		       lifetime_seconds, enabled, COALESCE(name_id_attribute, ''),
 		       idp_initiated, default_relay_state,
 		       (SELECT o.instance_id::text FROM core.organizations o WHERE o.id = core.saml_providers.org_id),
@@ -58,7 +58,7 @@ func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) 
 		WHERE `+where, key).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
-		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg,
+		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg, &p.WSFedSAMLVersion,
 		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
 		&p.InstanceID, &p.HasAccessPolicy, &p.HasAssertionHook, &p.ReleasesGroups, &p.ReleasesAttributes,
 		&p.ACSURLs)
@@ -141,6 +141,18 @@ func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgI
 		ON CONFLICT (sid, provider_id) DO NOTHING`,
 		sid, providerID, orgID, sessionIndex, nameID, nameIDFormat)
 	return err
+}
+
+// SessionHoldsReplyURL reports whether a URL is a reply URL of an application this
+// session was given a token for, which is all a WS-Federation sign-out naming no realm
+// can be held to.
+func SessionHoldsReplyURL(ctx context.Context, q rowQuerier, sid, replyURL string) (bool, error) {
+	var held bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.saml_session_participants p
+		                 JOIN core.saml_acs_urls u ON u.provider_id = p.provider_id
+		                WHERE p.sid = $1 AND u.url = $2)`, sid, replyURL).Scan(&held)
+	return held, err
 }
 
 // NameIDFromAttribute reads a person's NameID from what a provider names. Refused

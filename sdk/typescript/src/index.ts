@@ -2494,6 +2494,7 @@ export interface GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem {
   signature_alg: string
   slo_urls: string[]
   want_signed_requests: boolean
+  wsfed_saml_version: string
 }
 
 /** A JSON object of the Admin API. */
@@ -3093,6 +3094,7 @@ export interface PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest {
   sign_responses?: boolean
   signature_alg?: string
   soap_logout_url?: string
+  wsfed_saml_version?: string
 }
 
 /** A JSON object of the Admin API. */

@@ -2842,6 +2842,13 @@ func splitFields(s string) []string {
 }
 
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	s.endSession(w, r, "")
+}
+
+// endSession signs a person out and takes them on. registered is a landing the
+// caller has held to a registration of its own, as WS-Federation holds a wreply to its
+// reply URLs; without one, the request's post_logout_redirect_uri is held to a client's.
+func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered string) {
 	ctx := r.Context()
 
 	// Confirmed, hinted, or nothing to do -- otherwise ask first.
@@ -2907,7 +2914,9 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// An unvalidated post-logout redirect is an open redirector reached from a
 	// link that looks like a sign-out, which is a good phishing pretext.
 	target := q.Get("post_logout_redirect_uri")
-	if target != "" {
+	if registered != "" {
+		target = registered
+	} else if target != "" {
 		// Scoped to the CLIENT, not global. The previous query asked only whether
 		// SOME client had registered this URI, so any client's registered
 		// post-logout URI worked for every other client -- a redirect reachable
@@ -2939,6 +2948,8 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 				target = u.String()
 			}
 		}
+	}
+	if target != "" {
 		// The post-logout target is now VALIDATED, so it is safe to hand to the
 		// SAML chain as the place to land once propagation finishes. The provider
 		// the person came through, when it asks to be told, is the last stop before

@@ -297,6 +297,7 @@ federation in:
   saml nameid               take a service provider's NameID from an attribute
   saml idp-initiated        let a sign-in to a service provider start from the portal
   saml soap-logout          tell a service provider of a logout with no browser
+  saml wsfed-token          which SAML a WS-Federation application's token is in
   saml attribute-release    which local attribute a SAML attribute carries
   saml group-release        which groups a service provider is told of
   scim-source add           register an inbound SCIM source and mint its token
@@ -707,6 +708,7 @@ func run(args []string) (err error) {
 	outpostRADIUSClients := fs.String("radius-clients", "",
 		"`outpost run`: a file of `name network secret` lines, the devices a RADIUS outpost answers")
 	subURL := fs.String("url", "", "https endpoint events are POSTed to, or a provider's end_session_endpoint")
+	samlVersion := fs.String("saml-version", "", "`saml wsfed-token`: 2.0, or 1.1 for a relying party that reads nothing newer")
 	resourceURI := fs.String("resource", "", "an RFC 8707 resource indicator: the absolute URI a resource server is known by")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
@@ -1867,6 +1869,8 @@ func run(args []string) (err error) {
 		return samlNameID(ctx, conn, *entityID, *localAttribute)
 	case "saml soap-logout":
 		return samlSOAPLogout(ctx, conn, *entityID, *subURL)
+	case "saml wsfed-token":
+		return samlWSFedToken(ctx, conn, *entityID, *samlVersion)
 	case "saml idp-initiated":
 		var relayState *string
 		fs.Visit(func(f *flag.Flag) {
@@ -4050,7 +4054,7 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
 		return err
 	}
 	rows, err := conn.Query(ctx, `
-		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated,
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.wsfed_saml_version,
 		       COALESCE(string_agg(a.url, ', ' ORDER BY a.url), '(none)')
 		FROM core.saml_providers p
 		LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
@@ -4062,20 +4066,20 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
 	defer rows.Close()
 
 	if out.text() {
-		fmt.Printf("%-38s %-12s %-8s %-7s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "PORTAL", "ACS")
+		fmt.Printf("%-38s %-12s %-8s %-7s %-6s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "PORTAL", "WSFED", "ACS")
 	}
 	var n int
 	for rows.Next() {
-		var entity, name, nameID, acs string
+		var entity, name, nameID, wsfed, acs string
 		var enabled, idpInitiated bool
-		if err := rows.Scan(&entity, &name, &nameID, &enabled, &idpInitiated, &acs); err != nil {
+		if err := rows.Scan(&entity, &name, &nameID, &enabled, &idpInitiated, &wsfed, &acs); err != nil {
 			return err
 		}
 		n++
 		out.add(map[string]any{"entity_id": entity, "name": name, "name_id_format": nameID, "enabled": enabled,
-			"idp_initiated": idpInitiated, "acs": acs})
+			"idp_initiated": idpInitiated, "wsfed_saml_version": wsfed, "acs": acs})
 		if out.text() {
-			fmt.Printf("%-38s %-12s %-8t %-7t %s\n", truncateMiddle(entity, 38), nameID, enabled, idpInitiated, acs)
+			fmt.Printf("%-38s %-12s %-8t %-7t %-6s %s\n", truncateMiddle(entity, 38), nameID, enabled, idpInitiated, wsfed, acs)
 		}
 	}
 	if err := rows.Err(); err != nil {

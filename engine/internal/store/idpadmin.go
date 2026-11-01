@@ -180,6 +180,19 @@ func SignInProvider(ctx context.Context, q rowQuerier, orgID, slug string) (foun
 	return found, kind, err
 }
 
+// ProviderCalled finds an enabled provider of the organisation by the name it goes by
+// itself, an issuer or a SAML entity id, "" for none.
+func ProviderCalled(ctx context.Context, q rowQuerier, orgID, name string) (slug, kind string, err error) {
+	err = q.QueryRow(ctx, `SELECT p.slug, p.kind FROM core.identity_providers p
+		LEFT JOIN core.saml_sources s ON s.provider_id = p.id
+		WHERE p.org_id = $1::uuid AND p.enabled AND p.kind <> 'assertion' AND (p.issuer = $2 OR s.entity_id = $2)
+		ORDER BY p.slug LIMIT 1`, orgID, name).Scan(&slug, &kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	return slug, kind, err
+}
+
 // RoutesByDomain reports whether any enabled provider of the organisation signs in by
 // address, which is what puts the single sign-on button on the page.
 func RoutesByDomain(ctx context.Context, q rowQuerier, orgID string) (bool, error) {

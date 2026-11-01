@@ -439,6 +439,8 @@ type SAMLProviderRow struct {
 	// MetadataURL is where it was read from, and MetadataReadAt when last.
 	MetadataURL    string
 	MetadataReadAt *time.Time
+	// WSFedSAMLVersion is the SAML its WS-Federation token is in.
+	WSFedSAMLVersion string
 }
 
 // SAMLProviders lists an organisation's service providers by entity id.
@@ -451,7 +453,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
 		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state,
-		       COALESCE(p.metadata_url, ''), p.metadata_read_at
+		       COALESCE(p.metadata_url, ''), p.metadata_read_at, p.wsfed_saml_version
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -466,10 +468,35 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
 			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
 			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
-			&p.MetadataURL, &p.MetadataReadAt); err != nil {
+			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// SetSAMLWSFedVersion says which SAML a provider's WS-Federation token is in. 1.1 is
+// refused to a provider with an encryption certificate, which it could only be sent
+// in the clear.
+func SetSAMLWSFedVersion(ctx context.Context, q outpostDB, orgID, providerID, version string) error {
+	if version != saml.WSFedSAML2 && version != saml.WSFedSAML11 {
+		return samlInvalid{fmt.Sprintf("a WS-Federation token is SAML %s or %s, not %q", saml.WSFedSAML2,
+			saml.WSFedSAML11, version)}
+	}
+	var encrypted bool
+	err := q.QueryRow(ctx, `SELECT sp_encryption_cert IS NOT NULL FROM core.saml_providers
+		WHERE id::text = $1 AND org_id = $2::uuid`, providerID, orgID).Scan(&encrypted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrSAMLProviderUnknown
+	}
+	if err != nil {
+		return err
+	}
+	if encrypted && version == saml.WSFedSAML11 {
+		return samlInvalid{"this provider has an encryption certificate, and a SAML 1.1 token is not encrypted here"}
+	}
+	_, err = q.Exec(ctx, `UPDATE core.saml_providers SET wsfed_saml_version = $3
+		WHERE id::text = $1 AND org_id = $2::uuid`, providerID, orgID, version)
+	return err
 }

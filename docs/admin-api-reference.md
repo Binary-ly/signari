@@ -3090,6 +3090,7 @@ Takes:
 | `sign_responses` | boolean |  |
 | `signature_alg` | string |  |
 | `soap_logout_url` | string |  |
+| `wsfed_saml_version` | string |  |
 
 Answers:
 

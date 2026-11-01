@@ -195,6 +195,7 @@ var cliAPI = map[string]string{
 	"saml signing":           "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml nameid":            "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml soap-logout":       "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml wsfed-token":       "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml idp-initiated":     "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
 	"saml group-release":     "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release",
 

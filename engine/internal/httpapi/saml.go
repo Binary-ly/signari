@@ -91,7 +91,11 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
+	writeMetadata(w, r, doc)
+}
 
+// writeMetadata serves a metadata document, of either protocol.
+func writeMetadata(w http.ResponseWriter, r *http.Request, doc string) {
 	// charset stated on the wire, not only in the XML declaration.
 	//
 	// ASVS 5.0.0 V4.1.1 names `*/+xml` among the types whose Content-Type must
@@ -558,7 +562,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	}
 
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
-	doc, err = saml.BuildResponse(saml.ResponseInput{
+	input := saml.ResponseInput{
 		Issuer:      s.samlEntityID(),
 		Destination: v.ACSURL,
 		InResponse:  v.RequestID,
@@ -585,7 +589,19 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 			AuthnContext: samlAuthnContext(session.AMR),
 			Attributes:   attrs,
 		},
-	}, key.KID(), key.Signer(), certDER)
+	}
+	build := saml.BuildResponse
+	if v.WSFed {
+		// The assertion goes out alone, with no Response around it. What a provider
+		// chose about signing is a choice between the two, and here there is one:
+		// left unsigned because a Response signature stood in for it, the token
+		// reaches the application with a signature on nothing.
+		input.UnsignedAssertion, input.SignResponse = false, false
+		if p.WSFedSAMLVersion == saml.WSFedSAML11 {
+			build = saml.BuildSAML11Assertion
+		}
+	}
+	doc, err = build(input, key.KID(), key.Signer(), certDER)
 	if err != nil {
 		return "", "", err
 	}

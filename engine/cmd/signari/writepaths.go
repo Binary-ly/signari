@@ -2043,6 +2043,25 @@ func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, entityID, url string) e
 	return nil
 }
 
+// samlWSFedToken says which SAML a WS-Federation application's token is in.
+func samlWSFedToken(ctx context.Context, conn *pgx.Conn, entityID, version string) error {
+	if entityID == "" || version == "" {
+		return fmt.Errorf("give -entity-id and -saml-version")
+	}
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
+	}
+	if err := store.SetSAMLWSFedVersion(ctx, conn, orgID, providerID, version); err != nil {
+		return err
+	}
+	fmt.Printf("%s: its WS-Federation token is SAML %s\n", entityID, version)
+	return nil
+}
+
 // samlGroupRelease says which groups a service provider is told about.
 //
 // An allow-list, matching `client group release` for OIDC clients and for the

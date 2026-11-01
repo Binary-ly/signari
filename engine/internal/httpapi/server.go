@@ -576,6 +576,7 @@ func (s *Server) mux() *http.ServeMux {
 	}
 	mux.HandleFunc("GET /wsfed", s.handleWSFed)
 	mux.HandleFunc("POST /wsfed", s.handleWSFed)
+	mux.HandleFunc("GET /FederationMetadata/2007-06/FederationMetadata.xml", s.handleWSFedMetadata)
 	mux.HandleFunc("GET /outpost/hello", s.handleOutpostHello)
 	mux.HandleFunc("POST /outpost/authenticate", s.handleOutpostAuthenticate)
 	mux.HandleFunc("POST /outpost/desktop", s.handleDesktopVerify)

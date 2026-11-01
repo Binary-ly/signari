@@ -100,6 +100,17 @@ func TestASAMLProviderIsConfiguredThroughTheAPI(t *testing.T) {
 		t.Errorf("changing only the lifetime: %d %s", rec.Code, rec.Body.String())
 	}
 
+	// Which SAML its WS-Federation token is in, alone and held to what there is.
+	if e := errorOf(http.MethodPatch, provider, map[string]any{"wsfed_saml_version": "3.0"}, http.StatusBadRequest); e != "invalid_saml_provider" {
+		t.Errorf("a version there is none of answered %q", e)
+	}
+	if rec := call(t, s, http.MethodPatch, provider, testToken, map[string]any{"wsfed_saml_version": "1.1"}); rec.Code != http.StatusOK {
+		t.Fatalf("moving it to 1.1: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(rec.Body.String(), `"wsfed_saml_version":"1.1"`) {
+		t.Errorf("the list says %s", rec.Body.String())
+	}
+
 	// A sign-in started from the portal is opted in here, and what goes with it is
 	// held to what SAML carries; either alone leaves the other as it was.
 	if e := errorOf(http.MethodPatch, provider, map[string]any{"default_relay_state": strings.Repeat("x", 81)},

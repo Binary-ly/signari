@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0243 wsfed_saml_version
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which SAML a WS-Federation application takes its token in (8.09). SAML 2.0 is what every one has had and stays the default; 1.1 is for the relying parties that were built against ADFS's default and read nothing else. A SAML 2.0 service provider never reads this. An older binary ignores it, and goes on issuing 2.0.
+
 ## 0242 migration_source_kerberos
 
 Not compatible with the release before: stop it before migrating.

@@ -1306,6 +1306,7 @@ type GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem struct {
 	SignatureAlg       string                                                               `json:"signature_alg"`
 	SloURLs            []string                                                             `json:"slo_urls"`
 	WantSignedRequests bool                                                                 `json:"want_signed_requests"`
+	WsfedSAMLVersion   string                                                               `json:"wsfed_saml_version"`
 }
 
 // GetOrganizationsOrgIDSAMLProvidersResponseProvidersItemGroupRelease is a JSON object of the Admin API.
@@ -1905,6 +1906,7 @@ type PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest struct {
 	SignResponses     *bool   `json:"sign_responses,omitempty"`
 	SignatureAlg      *string `json:"signature_alg,omitempty"`
 	SoapLogoutURL     *string `json:"soap_logout_url,omitempty"`
+	WsfedSAMLVersion  *string `json:"wsfed_saml_version,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDResponse is a JSON object of the Admin API.

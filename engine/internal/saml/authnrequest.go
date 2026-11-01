@@ -57,6 +57,9 @@ type Provider struct {
 	SPSigningCert           string
 	// SPKeyTransport names the RSA key transport algorithm for encryption.
 	SPKeyTransport string
+	// WSFedSAMLVersion is the SAML its WS-Federation token is in, WSFedSAML2 or
+	// WSFedSAML11.
+	WSFedSAMLVersion string
 	// SignatureAlg is what this provider is signed with: SignatureAlgRSASHA256
 	// or SignatureAlgECDSASHA256.
 	SignatureAlg string
@@ -115,6 +118,8 @@ type Validated struct {
 	RequestedACR []string
 	// ACRComparison is the request's Comparison, empty when it gave none.
 	ACRComparison string
+	// WSFed is a token for a WS-Federation answer, which carries the assertion alone.
+	WSFed bool
 }
 
 // classRungs places the classes this directory can speak to on the acr ladder (see

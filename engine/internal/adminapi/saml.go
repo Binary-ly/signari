@@ -39,6 +39,8 @@ type samlProviderView struct {
 	// empty and null for a provider typed in by hand.
 	MetadataURL    string     `json:"metadata_url"`
 	MetadataReadAt *time.Time `json:"metadata_read_at"`
+	// WSFedSAMLVersion is the SAML its WS-Federation token is in.
+	WSFedSAMLVersion string `json:"wsfed_saml_version"`
 }
 
 type addSAMLProviderRequest struct {
@@ -80,6 +82,9 @@ type patchSAMLProviderRequest struct {
 	// SOAPLogoutURL is where it is told of a logout with no browser, empty for
 	// nowhere, as `signari saml soap-logout` sets it.
 	SOAPLogoutURL *string `json:"soap_logout_url"`
+	// WSFedSAMLVersion is the SAML its WS-Federation token is in, as
+	// `signari saml wsfed-token` sets it.
+	WSFedSAMLVersion *string `json:"wsfed_saml_version"`
 }
 
 type samlAttributeRequest struct {
@@ -115,7 +120,8 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
 			SLOURLs: p.SLOURLs, Attributes: p.Attributes, IdPInitiated: p.IdPInitiated,
-			DefaultRelayState: p.DefaultRelayState, MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt}
+			DefaultRelayState: p.DefaultRelayState, MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
+			WSFedSAMLVersion: p.WSFedSAMLVersion}
 		if v.Attributes == nil {
 			v.Attributes = map[string]string{}
 		}
@@ -209,7 +215,8 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" &&
-		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil && req.SOAPLogoutURL == nil {
+		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil && req.SOAPLogoutURL == nil &&
+		req.WSFedSAMLVersion == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
 	}
@@ -256,6 +263,12 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			detail["soap_logout_url"] = *req.SOAPLogoutURL
+		}
+		if req.WSFedSAMLVersion != nil {
+			if err := store.SetSAMLWSFedVersion(ctx, tx, orgID, providerID, *req.WSFedSAMLVersion); err != nil {
+				return err
+			}
+			detail["wsfed_saml_version"] = *req.WSFedSAMLVersion
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_signing_set", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

@@ -73,6 +73,20 @@ func (s *Server) homeRealm(ctx context.Context, orgID string, query url.Values) 
 	return "", "", nil
 }
 
+// wsFedHomeRealm finds where a WS-Federation request's whr points: a provider of the
+// realm's organisation by its slug, by the name it goes by itself, which is the URL or
+// URN the parameter usually carries, or by a domain it signs in. Nothing here by any of
+// them is ignored, as idp_hint is.
+func (s *Server) wsFedHomeRealm(ctx context.Context, orgID, whr string) (slug, kind string, err error) {
+	if slug, kind, err = store.SignInProvider(ctx, s.db, orgID, whr); slug != "" || err != nil {
+		return slug, kind, err
+	}
+	if slug, kind, err = store.ProviderCalled(ctx, s.db, orgID, whr); slug != "" || err != nil {
+		return slug, kind, err
+	}
+	return store.ProviderForDomain(ctx, s.db, orgID, whr)
+}
+
 // singleSignOnOffered reports whether the page should offer sign-in by address. An
 // error shows the page without it: the other ways in still work.
 func (s *Server) singleSignOnOffered(ctx context.Context, orgID string) bool {

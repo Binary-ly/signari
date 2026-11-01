@@ -18332,6 +18332,9 @@
                           },
                           "want_signed_requests": {
                             "type": "boolean"
+                          },
+                          "wsfed_saml_version": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -18355,7 +18358,8 @@
                           "idp_initiated",
                           "default_relay_state",
                           "metadata_url",
-                          "metadata_read_at"
+                          "metadata_read_at",
+                          "wsfed_saml_version"
                         ],
                         "type": "object"
                       },
@@ -18633,6 +18637,9 @@
                     "type": "string"
                   },
                   "soap_logout_url": {
+                    "type": "string"
+                  },
+                  "wsfed_saml_version": {
                     "type": "string"
                   }
                 },

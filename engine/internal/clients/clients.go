@@ -129,11 +129,15 @@ type Client struct {
 
 	// TokenBudget is the organisation's budget of tokens a minute, nil for the
 	// deployment's default. HasClaimMappers and HasTokenHook say whether a token
-	// has any more to ask: most deployments have neither, and each was a statement
-	// on every token.
-	TokenBudget     *int
-	HasClaimMappers bool
-	HasTokenHook    bool
+	// has any more to ask, and HasAccessPolicy and HasClientAccessHook whether a
+	// person reaching this client has: most deployments have none of them, and
+	// each was a statement on every token or every authorization. Read with the
+	// client, so on the request as anything security-negative is, not cached.
+	TokenBudget         *int
+	HasClaimMappers     bool
+	HasTokenHook        bool
+	HasAccessPolicy     bool
+	HasClientAccessHook bool
 
 	// AllowHybrid permits response_type "code id_token" for this client.
 	//
@@ -292,7 +296,9 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       -- nothing further of a deployment that has none of it.
 		       (SELECT o.token_budget_per_minute FROM core.organizations o WHERE o.id = core.clients.org_id),
 		       EXISTS (SELECT 1 FROM core.claim_mappers m WHERE m.org_id = core.clients.org_id),
-		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'token_issue')
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'token_issue'),
+		       EXISTS (SELECT 1 FROM core.access_policies a WHERE a.org_id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'client_access')
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -308,7 +314,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
 			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
-			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook)
+			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
+			&c.HasAccessPolicy, &c.HasClientAccessHook)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

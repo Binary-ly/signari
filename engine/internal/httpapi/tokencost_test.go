@@ -159,7 +159,40 @@ func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("refreshing: %d %v", status, body)
 	}
-	underLimit(t, "refreshing", spent.take(), 13)
+	underLimit(t, "refreshing", spent.take(), 11)
+}
+
+// A browser with a session coming back to /authorize, which is most of what the
+// endpoint serves once people are signed in: every application they open. Begin
+// and commit counted, in a deployment with a root key, an instance, no provider
+// and no policy, and for an application the person has agreed to.
+func TestAResumedAuthorizationAsksTheDatabaseLittle(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO core.consents (user_id, client_id, scopes)
+		VALUES ($1::uuid, $2, ARRAY['openid'])`, f.userID, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	cookie := f.signInAndReturnCookie(t)
+	spent := traced(t, f.srv)
+
+	req := httptest.NewRequest(http.MethodGet, oidc.PathAuthorize+"?"+f.plainAuthz(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if redirected(t, rec).Get("code") == "" {
+		t.Fatalf("no code: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	underLimit(t, "a resumed authorization", spent.take(), 8)
 }
 
 // These two are what a resource server calls on every request it serves, so a

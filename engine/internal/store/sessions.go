@@ -331,19 +331,31 @@ func ListUserSessions(ctx context.Context, q interface {
 	return out, rows.Err()
 }
 
-// ResolveSessionCookie finds the session a browser's cookie names, among the
+// BrowserSession is the session a browser's cookie names, with what the pages
+// after it ask of one, so that they need not each go back for it.
+type BrowserSession struct {
+	SID, UserID, OrgID string
+	// Live is whether it can be used. A session that cannot is still described:
+	// to a page it is not the same as there being none.
+	Live     bool
+	AuthTime time.Time
+	AMR      []string
+}
+
+// ResolveBrowserSession finds the session a browser's cookie names, among the
 // sessions of instanceID's organisations (6.12): another instance's session is
 // no session here, as its cookie is never sent here by a browser that was not
-// handed it by someone else.
-func ResolveSessionCookie(ctx context.Context, q interface {
+// handed it by someone else. No such session is the zero value and no error.
+func ResolveBrowserSession(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, cookieHash []byte, instanceID string) (sid string, live bool, err error) {
+}, cookieHash []byte, instanceID string) (BrowserSession, error) {
 	// A browser presenting its cookie is a use of the session, recorded in the
 	// same statement (see sessionlifetime.go): liveness is decided from the
 	// row as it was, and the deadline moves for a live one only.
-	err = q.QueryRow(ctx, `
+	var found BrowserSession
+	err := q.QueryRow(ctx, `
 		WITH found AS (
-			SELECT s.sid,
+			SELECT s.sid, s.user_id, s.org_id, s.auth_time, s.amr,
 			       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
 			       AND `+OrgInService("u.org_id")+` AS live
 			FROM core.sessions s
@@ -353,14 +365,24 @@ func ResolveSessionCookie(ctx context.Context, q interface {
 			UPDATE core.sessions t SET `+touchSet+`
 			  FROM core.organizations o, found f
 			 WHERE t.sid = f.sid AND f.live AND o.id = t.org_id AND `+touchDue+`)
-		SELECT sid, live FROM found`, cookieHash, instanceID).Scan(&sid, &live)
+		SELECT sid, user_id::text, org_id::text, auth_time, amr, live FROM found`, cookieHash, instanceID).
+		Scan(&found.SID, &found.UserID, &found.OrgID, &found.AuthTime, &found.AMR, &found.Live)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return BrowserSession{}, nil
 	}
 	if err != nil {
-		return "", false, err
+		return BrowserSession{}, err
 	}
-	return sid, live, nil
+	return found, nil
+}
+
+// ResolveSessionCookie is ResolveBrowserSession for a caller that wants only
+// which session it is and whether it can be used.
+func ResolveSessionCookie(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, cookieHash []byte, instanceID string) (sid string, live bool, err error) {
+	found, err := ResolveBrowserSession(ctx, q, cookieHash, instanceID)
+	return found.SID, found.Live, err
 }
 
 // TouchSessionClient records that a relying party saw this session, so logout can

@@ -65,6 +65,28 @@ func redirected(t *testing.T, rec *httptest.ResponseRecorder) url.Values {
 	return loc.Query()
 }
 
+// max_age, against when the session actually signed in: older than asked for is
+// a sign-in, however live the session is.
+func TestMaxAgeIsMeasuredFromTheSessionsSignIn(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET first_party = true
+		WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	cookie := f.signInAndReturnCookie(t)
+	if _, err := f.pool.Exec(ctx, `UPDATE core.sessions SET auth_time = now() - interval '1 hour'
+		WHERE user_id = $1::uuid`, f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if redirected(t, f.authorizeWith(t, cookie, url.Values{"max_age": {"7200"}})).Get("code") == "" {
+		t.Error("a session younger than max_age got no code")
+	}
+	if rec := f.authorizeWith(t, cookie, url.Values{"max_age": {"60"}}); strings.Contains(rec.Header().Get("Location"), "code=") {
+		t.Error("a code came back for a session older than max_age")
+	}
+}
+
 func TestALoginHintFillsInTheSignInBox(t *testing.T) {
 	f := newSignInFixture(t)
 	page := f.authorizeWith(t, "", url.Values{"login_hint": {`ada"><script>alert(1)</script>@corp.example`}}).Body.String()
@@ -90,6 +112,15 @@ func TestALoginHintFillsInTheSignInBox(t *testing.T) {
 
 func TestAnIDTokenHintHoldsTheSessionToThePersonItNames(t *testing.T) {
 	f := newSignInFixture(t)
+	// A second person in the organisation, so that who holds the session is a
+	// question with more than one answer.
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.users (org_id, email, user_handle)
+		VALUES ($1::uuid, 'o' || substr(gen_random_uuid()::text, 1, 8) || '@example.test',
+		        decode(md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text) ||
+		               md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text), 'hex'))`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
 	cookie := f.signInAndReturnCookie(t)
 	body := f.redeemPlain(t, f.authorizePlain(t, cookie))
 	hint, _ := body["id_token"].(string)

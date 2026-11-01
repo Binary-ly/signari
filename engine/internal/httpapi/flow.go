@@ -227,14 +227,13 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sid := ""
-	live := false
+	var session store.BrowserSession
 	if cookie := sessionCookie(r); cookie != "" {
 		var err error
 		// The cookie is a bearer secret; the sid it maps to is the public
 		// identifier. Never treat the cookie value as the sid.
-		sid, live, err = store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		session, err = store.ResolveBrowserSession(ctx, s.db, store.HashToken(cookie), s.instanceID)
+		if err != nil {
 			s.log.Error("checking session", "err", err)
 			s.writeAuthzError(w, r, req,
 				&oauth.AuthzError{Code: "server_error", Description: "could not verify session",
@@ -242,6 +241,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	sid, live := session.SID, session.Live
 
 	// A live session is NOT automatically sufficient. This is where a step-up
 	// requirement becomes real: acr_values, max_age and prompt=login are each a
@@ -258,15 +258,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// and never answered with a code for the wrong one.
 	somebodyElse := false
 	if live && wantSubject != "" {
-		var holder string
-		if err := s.db.QueryRow(ctx, `SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&holder); err != nil {
-			s.log.Error("reading whose session this is", "err", err)
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
-				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
-			return
-		}
 		// The request names them as this client knows them.
-		named, err := subjectFor(ctx, s.db, c, holder)
+		named, err := subjectFor(ctx, s.db, c, session.UserID)
 		if err != nil {
 			s.log.Error("reading how this client knows them", "err", err)
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
@@ -279,20 +272,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if live {
-		var authTime time.Time
-		var amr []string
-		if err := s.db.QueryRow(ctx,
-			`SELECT auth_time, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&authTime, &amr); err != nil {
-			s.log.Error("loading session context for step-up", "err", err)
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
-				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
-			return
-		}
-		reason, detail := oauth.SessionSufficient(amr, authTime, time.Now(),
+		reason, detail := oauth.SessionSufficient(session.AMR, session.AuthTime, time.Now(),
 			req.ACRValues, req.MaxAge, req.Prompt)
 		// The client's own floor, whatever the request asks for: acr_values is
 		// the relying party's to send, and a user can remove it from the URL.
-		if reason == oauth.StepUpNone && !meetsClientFloor(c, amr) {
+		if reason == oauth.StepUpNone && !meetsClientFloor(c, session.AMR) {
 			reason, detail = oauth.StepUpNeedStronger, "this application requires multi-factor authentication"
 			if oauth.RequiredRung("", c.MinimumACR) >= 3 {
 				detail = "this application requires a sign-in with a passkey or security key"
@@ -328,17 +312,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			// Only StepUpNeedStronger. A max_age or prompt=login step-up IS
 			// satisfiable by signing in again, so those must still show the form.
 			if reason == oauth.StepUpNeedStronger {
-				var subject, sessionOrg string
-				if err := s.db.QueryRow(ctx,
-					`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
-					Scan(&subject, &sessionOrg); err != nil {
-					s.log.Error("loading the session subject for a step-up check", "err", err)
-				} else if need := oauth.RequiredRung(req.ACRValues, c.MinimumACR); need >= 3 {
+				if need := oauth.RequiredRung(req.ACRValues, c.MinimumACR); need >= 3 {
 					// Only a passkey or a security key reaches these rungs, and at
 					// "4" only one bound to its device: without one, every sign-in
 					// lands back here, so the requirement is refused instead. With
 					// one, the form says which sign-in it wants.
-					held, kerr := store.HasWebAuthnKey(ctx, s.db, subject, need == 4)
+					held, kerr := store.HasWebAuthnKey(ctx, s.db, session.UserID, need == 4)
 					switch {
 					case kerr != nil:
 						s.log.Error("checking for a key at a step-up", "err", kerr)
@@ -351,7 +330,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					loginMsg = "This application asks you to sign in with a passkey or security key."
-				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, subject); ferr != nil {
+				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, session.UserID); ferr != nil {
 					// Failing open here shows the form, which is the previous
 					// behaviour: a database error must not turn into a refusal.
 					s.log.Error("checking second factor for a step-up", "err", ferr)
@@ -364,7 +343,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 							"requested authentication context cannot be reached",
 						Disposition: oauth.DispositionRedirect})
 					return
-				} else if s.stepUpNeverAsked(ctx, sessionOrg, subject, r.URL.RawQuery) {
+				} else if s.stepUpNeverAsked(ctx, session.OrgID, session.UserID, r.URL.RawQuery) {
 					// The same loop by another road: a factor is enrolled, and
 					// the sign-in flow never asks a password sign-in for it.
 					s.log.Info("step-up is unsatisfiable: the sign-in flow asks for no second factor",
@@ -414,20 +393,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Consent is checked AFTER authentication and step-up, and BEFORE any code is
 	// issued. Asking first would show a stranger which clients exist and what
 	// they request; issuing first would make the question decorative.
-	var userID, sessionOrg string
-	if err := s.db.QueryRow(ctx,
-		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&userID, &sessionOrg); err != nil {
-		s.log.Error("loading session user for consent", "err", err)
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
-			Description: "could not verify session", Disposition: oauth.DispositionRedirect})
-		return
-	}
+	//
 	// A session is a sign-in to one organisation, and is no sign-in at all for
 	// another's application. Nothing compared the two, so somebody who could
 	// sign in anywhere -- an organisation with open signup or federation --
 	// opened another tenant's client and was issued its tokens.
-	if sessionOrg != c.OrgID {
+	if session.OrgID != c.OrgID {
 		s.log.Info("a session from another organisation asked for this client",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
@@ -445,24 +416,25 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Evaluated AFTER authentication and step-up (so `mfa` reflects what actually
 	// happened) and BEFORE consent -- there is no point asking somebody to
 	// approve scopes for an application they are not permitted to reach.
-	mfa, amr := sessionFactors(ctx, s.db, sid)
-	if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, userID,
-		req.Scope, mfa, amr); pd != nil {
-		s.log.Info("access refused by policy", "client_id", c.ClientID,
-			"rule", pd.Rule, "correlation_id", correlationID(ctx))
-		// Rendered to the person, not redirected to the client. A policy refusal
-		// is about who they are, and the message names what to do next; bouncing
-		// it back as `access_denied` would leave them looking at an application
-		// error page that cannot explain anything.
-		s.renderAuthzFailure(w, r, pd.Message)
-		return
+	if c.HasAccessPolicy {
+		if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, session.UserID,
+			req.Scope, oauth.IsMultiFactor(session.AMR), session.AMR); pd != nil {
+			s.log.Info("access refused by policy", "client_id", c.ClientID,
+				"rule", pd.Rule, "correlation_id", correlationID(ctx))
+			// Rendered to the person, not redirected to the client. A policy refusal
+			// is about who they are, and the message names what to do next; bouncing
+			// it back as `access_denied` would leave them looking at an application
+			// error page that cannot explain anything.
+			s.renderAuthzFailure(w, r, pd.Message)
+			return
+		}
 	}
-	if s.clientAccessRefused(ctx, c.OrgID, c.ClientID, userID) {
+	if c.HasClientAccessHook && s.clientAccessRefused(ctx, c.OrgID, c.ClientID, session.UserID) {
 		s.renderAuthzFailure(w, r, clientAccessRefusal)
 		return
 	}
 
-	decision, ask, err := s.needsConsent(r, c, userID, req)
+	decision, ask, err := s.needsConsent(r, c, session.UserID, req)
 	if err != nil {
 		s.log.Error("checking consent", "err", err)
 		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
@@ -482,7 +454,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.issueCodeAndRedirect(w, r, req, c, sid)
+	s.issueCodeAndRedirect(w, r, req, c, session)
 }
 
 // startCreateAccount answers prompt=create. Where this client's organisation
@@ -526,23 +498,14 @@ func consentRequiredReason(req oauth.AuthzRequest) string {
 
 // issueCodeAndRedirect mints an authorization code for a live session.
 func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
-	req oauth.AuthzRequest, c *clients.Client, sid string) {
+	req oauth.AuthzRequest, c *clients.Client, session store.BrowserSession) {
 
 	ctx := r.Context()
 
-	var orgID, userID string
-	err := s.db.QueryRow(ctx,
-		`SELECT org_id::text, user_id::text FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&orgID, &userID)
-	if err != nil {
-		s.log.Error("loading session", "err", err)
-		http.Error(w, "session lookup failed", http.StatusInternalServerError)
-		return
-	}
 	// Every code is minted here, whichever page led to it (the authorization
 	// endpoint, the consent form), so the organisation is checked here as well
 	// as where the request is first read.
-	if orgID != c.OrgID {
+	if session.OrgID != c.OrgID {
 		s.log.Warn("refused a code for a session from another organisation",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		s.renderAuthzFailure(w, r, "You are signed in to a different organisation. "+
@@ -556,10 +519,6 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// The rung this request asked for and the session reaches, above the
-	// session's own, for the ID token to report. Read before the transaction,
-	// which a second connection must not overlap.
-	_, sessionAMR := sessionFactors(ctx, s.db, sid)
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -576,7 +535,9 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		Nonce:               req.Nonce,
 		Scopes:              splitScopes(req.Scope),
 		ExpiresAt:           time.Now().Add(codeTTL),
-		ACR:                 oauth.SatisfiedACR(sessionAMR, req.ACRValues),
+		// The rung this request asked for and the session reaches, above the
+		// session's own, for the ID token to report.
+		ACR: oauth.SatisfiedACR(session.AMR, req.ACRValues),
 	}
 	// RFC 9396 §7 requires the token response to return the details "as granted
 	// by the resource owner", so they are carried on the code rather than
@@ -603,19 +564,19 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 			return
 		}
 	}
-	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash,
+	if err := store.IssueCode(ctx, tx, session.OrgID, c.ClientID, session.SID, session.UserID, grant, hash,
 		req.Resources, details); err != nil {
 		s.log.Error("issuing code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := s.noteChallengeReuse(ctx, tx, orgID, c.ClientID, userID, req.CodeChallenge); err != nil {
+	if err := s.noteChallengeReuse(ctx, tx, session.OrgID, c.ClientID, session.UserID, req.CodeChallenge); err != nil {
 		s.log.Error("noting a PKCE challenge", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	// Record that this relying party saw the session, so logout can enumerate it.
-	if err := store.TouchSessionClient(ctx, tx, sid, c.ClientID); err != nil {
+	if err := store.TouchSessionClient(ctx, tx, session.SID, c.ClientID); err != nil {
 		s.log.Error("recording session client", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -635,7 +596,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	// issued. Doing it inside the transaction would mean hashing a code that a
 	// rollback could still take away.
 	if oauth.NormaliseResponseType(req.ResponseType) == "code id_token" {
-		idt, ierr := s.mintHybridIDToken(ctx, c, sid, code, req.Nonce, s.issuerFor(c))
+		idt, ierr := s.mintHybridIDToken(ctx, c, session.SID, code, req.Nonce, s.issuerFor(c))
 		if ierr != nil {
 			s.log.Error("minting the hybrid id_token", "err", ierr, "client", c.ClientID)
 			// The code is already issued and valid. Failing the whole response
@@ -1957,21 +1918,23 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			Status:      http.StatusBadRequest})
 		return
 	}
-	mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
-	if pd := s.checkAccessPolicyIn(ctx, tx, nil, grant.OrgID, c.ClientID, grant.UserID,
-		strings.Join(scopes, " "), mfa, amr); pd != nil {
-		// Released before the refusal is recorded on a connection of its own;
-		// nothing here is committed on a refusal anyway.
-		_ = tx.Rollback(ctx)
-		s.auditDetached(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: grant.OrgID, SubjectID: grant.UserID,
-			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
-			Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "refresh"},
-		})
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the access policy no longer allows this grant: " + pd.Message,
-			Status:      http.StatusBadRequest})
-		return
+	if c.HasAccessPolicy {
+		mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
+		if pd := s.checkAccessPolicyIn(ctx, tx, nil, grant.OrgID, c.ClientID, grant.UserID,
+			strings.Join(scopes, " "), mfa, amr); pd != nil {
+			// Released before the refusal is recorded on a connection of its own;
+			// nothing here is committed on a refusal anyway.
+			_ = tx.Rollback(ctx)
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: grant.OrgID, SubjectID: grant.UserID,
+				ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "refresh"},
+			})
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the access policy no longer allows this grant: " + pd.Message,
+				Status:      http.StatusBadRequest})
+			return
+		}
 	}
 
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)

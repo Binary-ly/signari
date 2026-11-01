@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,34 @@ func TestANewDenyRuleAppliesOnTheNextRequest(t *testing.T) {
 
 	removePolicy(t, f.srv, f.pool, f.orgID)
 	if !f.decision(t) {
+		t.Fatal("a removed policy was still refusing")
+	}
+}
+
+// The same at /authorize, with a session that was good a moment ago. Whether there
+// is a policy at all comes with the client, so this is what says it is asked for on
+// each request and is not something the client remembers.
+func TestAnAuthorizationAnswersToThePolicyInForceNow(t *testing.T) {
+	f := newSignInFixture(t)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE core.clients SET first_party = true
+		WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	cookie := f.signInAndReturnCookie(t)
+	coded := func() bool {
+		t.Helper()
+		rec := f.authorizePlain(t, cookie)
+		return strings.Contains(rec.Header().Get("Location"), "code=")
+	}
+	if !coded() {
+		t.Fatal("no code with no policy")
+	}
+	applyPolicy(t, f.srv, f.pool, f.orgID, denyClient(f.clientID))
+	if coded() {
+		t.Fatal("a code came back past a deny rule written since the last request")
+	}
+	removePolicy(t, f.srv, f.pool, f.orgID)
+	if !coded() {
 		t.Fatal("a removed policy was still refusing")
 	}
 }

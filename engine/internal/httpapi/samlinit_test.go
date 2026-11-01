@@ -20,8 +20,9 @@ import (
 func (rf *realmFixture) providerID(t *testing.T, entity string) string {
 	t.Helper()
 	var id string
-	if err := rf.f.pool.QueryRow(context.Background(), `SELECT id::text FROM core.saml_providers WHERE entity_id = $1`,
-		entity).Scan(&id); err != nil {
+	// Two organisations can hold one entity, and this fixture's is the one it means.
+	if err := rf.f.pool.QueryRow(context.Background(), `SELECT id::text FROM core.saml_providers WHERE entity_id = $1
+		ORDER BY org_id = $2::uuid DESC LIMIT 1`, entity, rf.f.orgID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

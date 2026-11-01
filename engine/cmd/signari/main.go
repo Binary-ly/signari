@@ -620,6 +620,7 @@ func run(args []string) (err error) {
 	providerHook := fs.String("hook", "", "which decision it extends ("+providerHookList()+")")
 	providerMode := fs.String("mode", "", "what happens when it cannot be reached: fail_closed or fail_open. REQUIRED -- there is no default")
 	providerTimeout := fs.Duration("provider-timeout", 2*time.Second, "how long to wait for it (max 5s)")
+	providerPosition := fs.Int("position", 0, "when a provider is asked among its hook's, lowest first")
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
@@ -1613,18 +1614,18 @@ func run(args []string) (err error) {
 	case "ssf set-status":
 		return ssfSetStatus(ctx, conn, *orgID, *clientID, *streamStatus, *reason)
 	case "provider add":
-		return providerAdd(ctx, conn, *orgID, *providerHook, *providerURL,
-			*providerMode, *providerTimeout)
+		return providerAdd(ctx, conn, *orgID, *providerHook, *name, *providerURL,
+			*providerMode, *providerTimeout, *providerPosition)
 	case "provider list":
 		return providerList(ctx, conn, *orgID, *outputFormat)
 	case "provider remove":
-		return providerRemove(ctx, conn, *orgID, *providerHook)
+		return providerRemove(ctx, conn, *orgID, *providerHook, *name)
 	case "provider rotate":
-		return providerRotate(ctx, conn, *orgID, *providerHook)
+		return providerRotate(ctx, conn, *orgID, *providerHook, *name)
 	case "provider test":
-		return providerTest(ctx, conn, *orgID, *providerHook)
+		return providerTest(ctx, conn, *orgID, *providerHook, *name)
 	case "provider claims":
-		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *providerClaims)
+		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *name, *providerClaims)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius disable-client":

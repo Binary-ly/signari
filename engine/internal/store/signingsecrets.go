@@ -34,7 +34,7 @@ func CheckSigningSecret(secret string) error {
 // SetProviderSecret replaces a hook's provider's signing secret with one the
 // operator holds. The old one stops verifying at once, as on a rotation.
 func SetProviderSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgID string,
-	hook provider.Hook, secret string) error {
+	hook provider.Hook, name, secret string) error {
 	if err := CheckSigningSecret(secret); err != nil {
 		return err
 	}
@@ -45,14 +45,14 @@ func SetProviderSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgID
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `
-		UPDATE core.providers SET token_wrapped = $3, wrap_key_ref = $4, updated_at = now()
-		 WHERE org_id = $1::uuid AND hook = $2`, orgID, string(hook), sealed, root.Ref())
+	id, err := whichProvider(ctx, tx, orgID, hook, name)
 	if err != nil {
-		return fmt.Errorf("setting the %s provider's secret: %w", hook, err)
+		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return providerNotRegistered{hook}
+	if _, err := tx.Exec(ctx, `
+		UPDATE core.providers SET token_wrapped = $2, wrap_key_ref = $3, updated_at = now()
+		 WHERE id = $1::uuid`, id, sealed, root.Ref()); err != nil {
+		return fmt.Errorf("setting the %s provider's secret: %w", hook, err)
 	}
 	return nil
 }
@@ -61,10 +61,10 @@ func SetProviderSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey, orgID
 // registered before there were secrets, so a plan can say whether the one a
 // file names differs. Never shown.
 func ProviderSecret(ctx context.Context, q providerReader, root *keys.RootKey, orgID string,
-	hook provider.Hook) (string, error) {
+	hook provider.Hook, name string) (string, error) {
 	var sealed []byte
-	if err := q.QueryRow(ctx, `SELECT token_wrapped FROM core.providers WHERE org_id = $1::uuid AND hook = $2`,
-		orgID, string(hook)).Scan(&sealed); err != nil {
+	if err := q.QueryRow(ctx, `SELECT token_wrapped FROM core.providers
+		WHERE org_id = $1::uuid AND hook = $2 AND name = $3`, orgID, string(hook), name).Scan(&sealed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", providerNotRegistered{hook}
 		}

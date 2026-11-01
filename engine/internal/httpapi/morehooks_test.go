@@ -326,13 +326,13 @@ func TestAHookThatAddsNothingHasNoList(t *testing.T) {
 	ctx := context.Background()
 	registerHook(t, f.srv, f.pool, f.orgID, provider.HookAuthenticate)
 	registerHook(t, f.srv, f.pool, f.orgID, provider.HookUserinfo)
-	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookAuthenticate, []string{"tier"}); !errors.Is(err, store.ErrHookAddsNothing) {
+	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookAuthenticate, "", []string{"tier"}); !errors.Is(err, store.ErrHookAddsNothing) {
 		t.Errorf("a list for authenticate: %v", err)
 	}
-	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookAuthenticate, nil); err != nil {
+	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookAuthenticate, "", nil); err != nil {
 		t.Errorf("clearing a list that is not there: %v", err)
 	}
-	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookUserinfo, []string{"tier"}); err != nil {
+	if err := store.SetProviderClaims(ctx, f.pool, f.orgID, provider.HookUserinfo, "", []string{"tier"}); err != nil {
 		t.Errorf("a list for userinfo: %v", err)
 	}
 }

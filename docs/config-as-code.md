@@ -224,8 +224,9 @@ authorization_model: |        # the relation model, as `signari authz model` tak
       relations: {owner: [], viewer: [owner]}
       permissions: {read: [viewer]}
 
-providers:                    # your own service consulted at a hook, one per hook
+providers:                    # your own service consulted at a hook
   - hook: token_issue         # or any other hook in extensibility.md
+    # name: fraud             # and position: 1, to put a second on a hook; each can refuse
     url: https://hooks.example.com/claims
     mode: fail_open           # or fail_closed; never assumed
     timeout: 2s               # the default; at most 5s

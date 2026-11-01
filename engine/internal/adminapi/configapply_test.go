@@ -198,7 +198,7 @@ func TestTheAPIRefusesASecretReferenceAndAnswersAMintedSecretOnce(t *testing.T) 
 		len(got.Minted) != 1 || got.Minted[0].Name != "authorize" {
 		t.Fatalf("the apply answered %d %s", rec.Code, rec.Body.String())
 	}
-	secret, err := store.ProviderSecret(context.Background(), s.db, s.root, org, "authorize")
+	secret, err := store.ProviderSecret(context.Background(), s.db, s.root, org, "authorize", "provider-authorize")
 	if err != nil || secret != got.Minted[0].Secret {
 		t.Errorf("the provider holds another secret than the one answered (%v)", err)
 	}

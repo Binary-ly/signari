@@ -82,7 +82,7 @@ func TestAProviderSecretIsSealedKeptAndRotated(t *testing.T) {
 		t.Error("re-registering replaced the secret the provider holds")
 	}
 
-	rotated, err := RotateProviderSecret(ctx, tx, root, orgID, provider.HookAuthorize)
+	rotated, err := RotateProviderSecret(ctx, tx, root, orgID, provider.HookAuthorize, "")
 	if err != nil || rotated == "" || rotated == first {
 		t.Fatalf("rotation gave %q, %v", rotated, err)
 	}
@@ -94,7 +94,7 @@ func TestAProviderSecretIsSealedKeptAndRotated(t *testing.T) {
 	if _, err := load(nil); err == nil {
 		t.Error("a sealed secret loaded with no root key")
 	}
-	if _, err := RotateProviderSecret(ctx, tx, root, orgID, provider.HookTokenIssue); err == nil {
+	if _, err := RotateProviderSecret(ctx, tx, root, orgID, provider.HookTokenIssue, ""); err == nil {
 		t.Error("rotating a hook with no provider succeeded")
 	}
 }

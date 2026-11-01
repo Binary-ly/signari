@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0250 providers_per_hook
+
+Not compatible with the release before: stop it before migrating.
+
+Several providers on a hook, each able to refuse (10.06). One provider per hook was the safe answer to "which wins?", and a veto has no such question: everybody has to agree, so an organisation's fraud check and its compliance check can both stand on a sign-in. Two hooks keep one, because their answer is not a veto: a password has one verdict and a flow condition one value. A claim stays disjoint by the writer, so no two providers can set the same thing. Not compatible with the previous release, whose registration names the constraint dropped here.
+
 ## 0249 resource_metadata
 
 Compatible with the release before: its binary may still serve this schema.

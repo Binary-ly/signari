@@ -24,8 +24,8 @@ func providerHookList() string {
 	return strings.Join(out, ", ")
 }
 
-func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode string,
-	timeout time.Duration) error {
+func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, name, url, mode string,
+	timeout time.Duration, position int) error {
 
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
@@ -44,12 +44,16 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 			"hook that fails closed locks everybody out because a directory was slow")
 	}
 
+	if name == "" {
+		name = provider.Hook(hook).DefaultName()
+	}
 	p := provider.Provider{
-		Name:    "provider-" + hook,
-		Hook:    provider.Hook(hook),
-		URL:     url,
-		Mode:    provider.Mode(mode),
-		Timeout: timeout,
+		Name:     name,
+		Hook:     provider.Hook(hook),
+		Position: position,
+		URL:      url,
+		Mode:     provider.Mode(mode),
+		Timeout:  timeout,
 	}
 	if err := p.Validate(); err != nil {
 		return err
@@ -73,7 +77,7 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 		return err
 	}
 
-	fmt.Printf("\n  registered %s provider %s\n", hook, id)
+	fmt.Printf("\n  registered %s provider %s (%s)\n", hook, name, id)
 	fmt.Printf("    endpoint : %s\n", url)
 	fmt.Printf("    on failure: %s\n\n", mode)
 	if secret != "" {
@@ -102,7 +106,7 @@ func providerAdd(ctx context.Context, conn *pgx.Conn, orgID, hook, url, mode str
 // not by the first person signing in. It goes through the same call a decision
 // does, so the signature and the outbound guard apply, and exits non-zero on
 // anything a real decision would count as unreachable or as no answer.
-func providerTest(ctx context.Context, conn *pgx.Conn, orgID, hook string) error {
+func providerTest(ctx context.Context, conn *pgx.Conn, orgID, hook, name string) error {
 	if orgID == "" || hook == "" {
 		return fmt.Errorf("-org and -hook are both required")
 	}
@@ -115,9 +119,18 @@ func providerTest(ctx context.Context, conn *pgx.Conn, orgID, hook string) error
 	if err != nil {
 		return err
 	}
-	p, err := store.LoadProvider(ctx, conn, root, orgID, h)
+	found, err := store.LoadProviders(ctx, conn, root, orgID, h)
 	if err != nil {
 		return err
+	}
+	var p *provider.Provider
+	for _, candidate := range found {
+		if name == "" && len(found) > 1 {
+			return store.ErrProviderAmbiguous
+		}
+		if name == "" || candidate.Name == name {
+			p = candidate
+		}
 	}
 	if p == nil {
 		return fmt.Errorf("no enabled provider is registered for %s in this organisation", hook)
@@ -154,7 +167,7 @@ func printProviderSecret(secret string) {
 // providerRotate replaces a provider's signing secret. The old one stops
 // verifying at once, so the provider must be given the new one in the same
 // change; a provider registered before secrets existed gets its first.
-func providerRotate(ctx context.Context, conn *pgx.Conn, orgID, hook string) error {
+func providerRotate(ctx context.Context, conn *pgx.Conn, orgID, hook, name string) error {
 	if orgID == "" || hook == "" {
 		return fmt.Errorf("-org and -hook are required")
 	}
@@ -167,7 +180,7 @@ func providerRotate(ctx context.Context, conn *pgx.Conn, orgID, hook string) err
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	secret, err := store.RotateProviderSecret(ctx, tx, root, orgID, provider.Hook(hook))
+	secret, err := store.RotateProviderSecret(ctx, tx, root, orgID, provider.Hook(hook), name)
 	if err != nil {
 		return err
 	}
@@ -193,7 +206,8 @@ func providerList(ctx context.Context, conn *pgx.Conn, orgID, format string) err
 	}
 	if !out.text() {
 		for _, r := range rows {
-			out.add(map[string]any{"hook": r.Hook, "url": r.URL, "mode": r.Mode, "timeout": r.Timeout.String(),
+			out.add(map[string]any{"hook": r.Hook, "name": r.Name, "position": r.Position, "url": r.URL,
+				"mode": r.Mode, "timeout": r.Timeout.String(),
 				"signed": r.Signed, "enabled": r.Enabled, "called": provider.Hook(r.Hook).Called() && r.Enabled})
 		}
 		return out.flush()
@@ -202,7 +216,7 @@ func providerList(ctx context.Context, conn *pgx.Conn, orgID, format string) err
 		fmt.Printf("\n  no extension providers registered for this organisation\n\n")
 		return nil
 	}
-	fmt.Printf("\n  %-12s %-44s %-12s %-8s %-8s %s\n", "HOOK", "ENDPOINT", "ON FAILURE", "TIMEOUT", "SIGNED", "CALLED")
+	fmt.Printf("\n  %-12s %-24s %-44s %-12s %-8s %-8s %s\n", "HOOK", "NAME", "ENDPOINT", "ON FAILURE", "TIMEOUT", "SIGNED", "CALLED")
 	for _, r := range rows {
 		called := "yes"
 		if !provider.Hook(r.Hook).Called() {
@@ -215,14 +229,14 @@ func providerList(ctx context.Context, conn *pgx.Conn, orgID, format string) err
 		if !r.Signed {
 			signed = "NO"
 		}
-		fmt.Printf("  %-12s %-44s %-12s %-8s %-8s %s\n",
-			r.Hook, r.URL, r.Mode, r.Timeout, signed, called)
+		fmt.Printf("  %-12s %-24s %-44s %-12s %-8s %-8s %s\n",
+			r.Hook, r.Name, r.URL, r.Mode, r.Timeout, signed, called)
 	}
 	fmt.Println()
 	return nil
 }
 
-func providerRemove(ctx context.Context, conn *pgx.Conn, orgID, hook string) error {
+func providerRemove(ctx context.Context, conn *pgx.Conn, orgID, hook, name string) error {
 	if orgID == "" || hook == "" {
 		return fmt.Errorf("-org and -hook are required")
 	}
@@ -232,7 +246,7 @@ func providerRemove(ctx context.Context, conn *pgx.Conn, orgID, hook string) err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	removed, err := store.DeleteProvider(ctx, tx, orgID, provider.Hook(hook))
+	removed, err := store.DeleteProvider(ctx, tx, orgID, provider.Hook(hook), name)
 	if err != nil {
 		return err
 	}
@@ -243,6 +257,6 @@ func providerRemove(ctx context.Context, conn *pgx.Conn, orgID, hook string) err
 		fmt.Printf("\n  no %s provider was registered for this organisation\n\n", hook)
 		return nil
 	}
-	fmt.Printf("\n  removed the %s provider. Decisions are now made locally only.\n\n", hook)
+	fmt.Printf("\n  removed the %s provider. It is no longer asked.\n\n", hook)
 	return nil
 }

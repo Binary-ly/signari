@@ -522,7 +522,7 @@ func parseVendorAttribute(s string) (radius.VendorAttribute, error) {
 // this engine signed, and a resource server has no way to tell it apart from a
 // claim the engine decided. The database also refuses protocol claims here, so
 // no list can grant `sub`, `iss` or `exp`.
-func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, claims string) error {
+func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, name, claims string) error {
 	if orgID == "" || hook == "" {
 		return fmt.Errorf("give -org and -hook")
 	}
@@ -533,7 +533,7 @@ func providerClaimsSet(ctx context.Context, conn *pgx.Conn, orgID, hook, claims 
 		}
 	}
 
-	switch err := store.SetProviderClaims(ctx, conn, orgID, provider.Hook(hook), list); {
+	switch err := store.SetProviderClaims(ctx, conn, orgID, provider.Hook(hook), name, list); {
 	case errors.Is(err, store.ErrProtocolClaim):
 		return fmt.Errorf("a hook may not be allowed to set a protocol claim " +
 			"(sub, iss, aud, exp, iat, nbf, jti, nonce, azp, scope, client_id, " +

@@ -742,6 +742,12 @@
           ],
           "type": "string"
         },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
         "secret": {
           "$ref": "#/$defs/SecretRef"
         },

@@ -238,7 +238,7 @@ type evaluation struct {
 	subjects  map[[2]string]*evaluatedSubject
 
 	providerRead bool
-	provider     *provider.Provider
+	providers    []*provider.Provider
 
 	// tuples is what readAhead found, and nil until it has run.
 	tuples map[store.Tuple]bool
@@ -340,16 +340,16 @@ func (e *evaluation) holds(ctx context.Context, subjectType, subjectID string, r
 	return "", nil
 }
 
-func (e *evaluation) authorizeProvider(ctx context.Context) (*provider.Provider, error) {
+func (e *evaluation) authorizeProviders(ctx context.Context) ([]*provider.Provider, error) {
 	if e.providerRead {
-		return e.provider, nil
+		return e.providers, nil
 	}
-	p, err := store.LoadProvider(ctx, e.s.db, e.s.root, e.orgID, provider.HookAuthorize)
+	ps, err := store.LoadProviders(ctx, e.s.db, e.s.root, e.orgID, provider.HookAuthorize)
 	if err != nil {
 		return nil, err
 	}
-	e.provider, e.providerRead = p, true
-	return p, nil
+	e.providers, e.providerRead = ps, true
+	return ps, nil
 }
 
 // decide is the single evaluation path. Every endpoint uses it, so a batch, a
@@ -455,12 +455,14 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 	// Failing the request rather than silently allowing: the operator registered
 	// something, and quietly ignoring it is the "a written policy governs
 	// nothing" bug.
-	p, err := e.authorizeProvider(ctx)
+	ps, err := e.authorizeProviders(ctx)
 	if err != nil {
 		return authzen.Response{}, err
 	}
-	if resp, vetoed := e.s.consultAuthorizeProvider(ctx, p, req, held); vetoed {
-		return resp, nil
+	for _, p := range ps {
+		if resp, vetoed := e.s.consultAuthorizeProvider(ctx, p, req, held); vetoed {
+			return resp, nil
+		}
 	}
 
 	return authzen.Response{

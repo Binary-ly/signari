@@ -95,13 +95,13 @@ event_subscriptions:
 		!strings.Contains(p.String(), "a signing secret is minted and shown once") {
 		t.Errorf("the plan does not say where each secret comes from:\n%s", p)
 	}
-	if held, err := store.ProviderSecret(ctx, tx, root, org, "token_issue"); err != nil || held != p.Minted[0].Secret {
+	if held, err := store.ProviderSecret(ctx, tx, root, org, "token_issue", "provider-token_issue"); err != nil || held != p.Minted[0].Secret {
 		t.Errorf("the provider holds %q (%v), not the secret reported", held, err)
 	}
 	if held, err := store.SubscriptionSecret(ctx, tx, root, org, "siem"); err != nil || held != env["SIEM_SECRET"] {
 		t.Errorf("the subscription holds %q (%v), not the one the file names", held, err)
 	}
-	if held, err := store.ProviderSecret(ctx, tx, root, org, "authorize"); err != nil || held != env["PDP_SECRET"] {
+	if held, err := store.ProviderSecret(ctx, tx, root, org, "authorize", "provider-authorize"); err != nil || held != env["PDP_SECRET"] {
 		t.Errorf("the authorize provider holds %q (%v), not the one the file names", held, err)
 	}
 	var minted bool
@@ -123,7 +123,7 @@ event_subscriptions:
 	if held, _ := store.SubscriptionSecret(ctx, tx, root, org, "siem"); held != env["SIEM_SECRET"] {
 		t.Error("the subscription kept the secret the file no longer names")
 	}
-	if held, _ := store.ProviderSecret(ctx, tx, root, org, "authorize"); held != env["PDP_SECRET"] {
+	if held, _ := store.ProviderSecret(ctx, tx, root, org, "authorize", "provider-authorize"); held != env["PDP_SECRET"] {
 		t.Error("the authorize provider kept the secret the file no longer names")
 	}
 

@@ -2571,6 +2571,8 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `mode` | string |  |
+| `name` | string |  |
+| `position` | integer |  |
 | `timeout_ms` | integer |  |
 | `url` | string |  |
 
@@ -2582,6 +2584,7 @@ Answers:
 | `config_version` | integer | always |
 | `hook` | string | always |
 | `id` | string | always |
+| `name` | string | always |
 | `secret` | string | always |
 
 ### `PUT /admin/organizations/{orgID}/providers/{hook}/claims`

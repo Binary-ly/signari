@@ -270,10 +270,38 @@ about any flow that asks. A `when:` written with `not` therefore asks for more, 
   whole DNS-rebinding technique.
 - **Timeout capped at 5 seconds.** A provider call happens while somebody is
   waiting, and a configured value cannot remove the bound.
-- **One provider per hook per organisation**, enforced by the schema. Two
-  providers answering the same question raises "which wins?", and an engine that
-  answers it by whichever row sorts first has made a policy decision nobody asked
-  for.
+- **Several providers on a hook compose as AND.** See below. `password_verify` and
+  `flow_condition` keep one, by the schema, because their answer is a value and not
+  a veto: "which wins?" has no good answer for them.
+
+## Several providers on one hook
+
+An organisation's fraud check and its compliance check can both stand on a sign-in:
+
+```sh
+signari provider add -org <uuid> -hook token_issue -name fraud -position 1 \
+    -provider-url https://fraud.acme.example/hook -mode fail_closed
+signari provider add -org <uuid> -hook token_issue -name compliance -position 2 \
+    -provider-url https://compliance.acme.example/hook -mode fail_open
+signari provider claims -org <uuid> -hook token_issue -name fraud -claims risk
+```
+
+- **Everybody has to agree.** They are asked by `-position`, then by name, and the
+  first refusal ends it, so a provider further down is not asked about what is
+  already refused. Order changes who is asked, never the outcome, so put the cheap
+  one first.
+- **Each by its own mode.** One going away refuses or carries on as that one was
+  registered.
+- **A claim has one source.** `provider claims` refuses a claim another provider on
+  the hook may add (`409 claim_taken`), so what a token says never depends on who
+  was asked last.
+- **A change names which.** `-name` tells them apart on `provider remove`, `rotate`,
+  `test` and `claims`, and on the Admin API as `?name=`. With several and no name the
+  change is refused (`409 name_required`), never applied to whichever came first.
+  With one, nobody has to say.
+
+A provider registered without `-name` is called `provider-<hook>`, as every provider
+was before there could be two.
 
 ## What is not built yet
 

@@ -1164,6 +1164,8 @@ type GetOrganizationsOrgIDProvidersResponseProvidersItem struct {
 	Hook          string   `json:"hook"`
 	ID            string   `json:"id"`
 	Mode          string   `json:"mode"`
+	Name          string   `json:"name"`
+	Position      int64    `json:"position"`
 	Signed        bool     `json:"signed"`
 	TimeoutMs     int64    `json:"timeout_ms"`
 	URL           string   `json:"url"`
@@ -3281,6 +3283,8 @@ type PutOrganizationsOrgIDPromptsSlugResponse struct {
 // PutOrganizationsOrgIDProvidersHookRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDProvidersHookRequest struct {
 	Mode      *string `json:"mode,omitempty"`
+	Name      *string `json:"name,omitempty"`
+	Position  *int64  `json:"position,omitempty"`
 	TimeoutMs *int64  `json:"timeout_ms,omitempty"`
 	URL       *string `json:"url,omitempty"`
 }
@@ -3291,6 +3295,7 @@ type PutOrganizationsOrgIDProvidersHookResponse struct {
 	ConfigVersion int64  `json:"config_version"`
 	Hook          string `json:"hook"`
 	ID            string `json:"id"`
+	Name          string `json:"name"`
 	Secret        string `json:"secret"`
 }
 

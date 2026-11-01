@@ -21,7 +21,9 @@ import (
 
 type providerView struct {
 	ID            string   `json:"id"`
+	Name          string   `json:"name"`
 	Hook          string   `json:"hook"`
+	Position      int      `json:"position"`
 	URL           string   `json:"url"`
 	Mode          string   `json:"mode"`
 	TimeoutMS     int      `json:"timeout_ms"`
@@ -31,12 +33,14 @@ type providerView struct {
 	AllowedClaims []string `json:"allowed_claims"`
 }
 
-// putProviderRequest registers or replaces the provider for the hook the path
+// putProviderRequest registers or replaces a provider of the hook the path
 // names. Mode has no default, as on the command line: an authorization hook
 // that fails open stops enforcing exactly when something is wrong, and a
 // claims hook that fails closed locks everybody out because a directory was
-// slow.
+// slow. Name tells a hook's providers apart, and position says who is asked first.
 type putProviderRequest struct {
+	Name      string `json:"name"`
+	Position  int    `json:"position"`
 	URL       string `json:"url"`
 	Mode      string `json:"mode"`
 	TimeoutMS int    `json:"timeout_ms"`
@@ -65,7 +69,7 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]providerView, 0, len(got))
 	for _, p := range got {
-		out = append(out, providerView{ID: p.ID, Hook: p.Hook, URL: p.URL, Mode: p.Mode,
+		out = append(out, providerView{ID: p.ID, Name: p.Name, Hook: p.Hook, Position: p.Position, URL: p.URL, Mode: p.Mode,
 			TimeoutMS: int(p.Timeout / time.Millisecond), Enabled: p.Enabled, Signed: p.Signed,
 			Called: provider.Hook(p.Hook).Called(), AllowedClaims: p.AllowedClaims})
 	}
@@ -102,8 +106,11 @@ func (s *Server) putProvider(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutMS != 0 {
 		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
 	}
-	p := provider.Provider{Name: "provider-" + hook, Hook: provider.Hook(hook), URL: strings.TrimSpace(req.URL),
-		Mode: provider.Mode(req.Mode), Timeout: timeout}
+	p := provider.Provider{Name: strings.TrimSpace(req.Name), Hook: provider.Hook(hook), Position: req.Position,
+		URL: strings.TrimSpace(req.URL), Mode: provider.Mode(req.Mode), Timeout: timeout}
+	if p.Name == "" {
+		p.Name = p.Hook.DefaultName()
+	}
 	// Checked before anything is written, so a refusal names the request and
 	// not the write: an unknown hook, a missing mode, a timeout above the
 	// ceiling, a URL the outbound dialer would refuse.
@@ -129,13 +136,17 @@ func (s *Server) putProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		// Never the secret.
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.provider_set", AdminTokenID: TokenIDFrom(ctx),
-			OrgID: orgID, Detail: map[string]any{"provider": id, "hook": hook, "url": p.URL, "mode": req.Mode,
-				"timeout_ms": int(timeout / time.Millisecond), "secret_minted": secret != ""}})
+			OrgID: orgID, Detail: map[string]any{"provider": id, "name": p.Name, "hook": hook, "url": p.URL,
+				"mode": req.Mode, "position": p.Position, "timeout_ms": int(timeout / time.Millisecond),
+				"secret_minted": secret != ""}})
 	})
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
 	case writeOrgRefusal(w, err):
+		return
+	case errors.Is(err, store.ErrProviderTaken):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "provider_taken", "detail": err.Error()})
 		return
 	case err != nil:
 		s.log.Error("registering a provider", "org_id", orgID, "hook", hook, "err", err)
@@ -146,7 +157,7 @@ func (s *Server) putProvider(w http.ResponseWriter, r *http.Request) {
 	// secret is empty when a registration was replaced: the provider keeps the
 	// one it holds, so changing a timeout does not break a provider that checks
 	// signatures.
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "hook": hook, "secret": secret,
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "name": p.Name, "hook": hook, "secret": secret,
 		"called": p.Hook.Called(), "config_version": version})
 }
 
@@ -171,10 +182,10 @@ func (s *Server) putProviderClaims(w http.ResponseWriter, r *http.Request) {
 
 // changeProvider removes, rotates the secret of, or sets the claims a token
 // hook may add for the provider the path names, as `signari provider
-// remove|rotate|claims` does.
+// remove|rotate|claims` does. A hook with several takes ?name= to say which.
 func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action string, claims []string) {
 	ctx := r.Context()
-	orgID, hook := r.PathValue("orgID"), provider.Hook(r.PathValue("hook"))
+	orgID, hook, name := r.PathValue("orgID"), provider.Hook(r.PathValue("hook")), r.URL.Query().Get("name")
 	if !hook.Known() {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "provider_not_found",
 			"detail": "no hook of that name is consulted"})
@@ -194,7 +205,7 @@ func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action s
 		}
 		switch action {
 		case "remove":
-			removed, err := store.DeleteProvider(ctx, tx, orgID, hook)
+			removed, err := store.DeleteProvider(ctx, tx, orgID, hook, name)
 			if err != nil {
 				return err
 			}
@@ -203,22 +214,22 @@ func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action s
 			}
 			out["removed"] = true
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.provider_removed", AdminTokenID: TokenIDFrom(ctx),
-				OrgID: orgID, Detail: map[string]any{"hook": string(hook)}})
+				OrgID: orgID, Detail: map[string]any{"hook": string(hook), "name": name}})
 		case "rotate":
-			secret, err := store.RotateProviderSecret(ctx, tx, s.root, orgID, hook)
+			secret, err := store.RotateProviderSecret(ctx, tx, s.root, orgID, hook, name)
 			if err != nil {
 				return err
 			}
 			out["secret"] = secret
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.provider_secret_rotated",
-				AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, Detail: map[string]any{"hook": string(hook)}})
+				AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, Detail: map[string]any{"hook": string(hook), "name": name}})
 		default:
-			if err := store.SetProviderClaims(ctx, tx, orgID, hook, claims); err != nil {
+			if err := store.SetProviderClaims(ctx, tx, orgID, hook, name, claims); err != nil {
 				return err
 			}
 			out["allowed_claims"] = claims
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.provider_claims_set", AdminTokenID: TokenIDFrom(ctx),
-				OrgID: orgID, Detail: map[string]any{"hook": string(hook), "allowed_claims": claims}})
+				OrgID: orgID, Detail: map[string]any{"hook": string(hook), "name": name, "allowed_claims": claims}})
 		}
 	})
 	switch {
@@ -234,6 +245,12 @@ func (s *Server) changeProvider(w http.ResponseWriter, r *http.Request, action s
 		return
 	case errors.Is(err, store.ErrHookAddsNothing):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hook_adds_nothing", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrProviderAmbiguous):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "name_required", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrProviderClaim):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "claim_taken", "detail": err.Error()})
 		return
 	case err != nil:
 		s.log.Error("changing a provider", "org_id", orgID, "hook", hook, "action", action, "err", err)

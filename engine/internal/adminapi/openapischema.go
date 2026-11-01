@@ -822,13 +822,14 @@ var opSchemas = map[string]opSchema{
 	"POST /admin/organizations/{orgID}/outposts/{name}/rotate": {http.StatusOK, nil, object(
 		[]string{"name", "token", "config_version"}, withVersion(map[string]jsonSchema{"name": str(), "token": str()}))},
 	"GET /admin/organizations/{orgID}/providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
-		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "hook", "url", "mode",
-			"timeout_ms", "enabled", "signed", "called", "allowed_claims"}, map[string]jsonSchema{
-			"id": uuidStr(), "hook": str(), "url": str(), "mode": str(), "timeout_ms": integer(), "enabled": boolean(),
-			"signed": boolean(), "called": boolean(), "allowed_claims": arrayOf(str())}))})},
+		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "name", "hook", "position",
+			"url", "mode", "timeout_ms", "enabled", "signed", "called", "allowed_claims"}, map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "hook": str(), "position": integer(), "url": str(), "mode": str(),
+			"timeout_ms": integer(), "enabled": boolean(), "signed": boolean(), "called": boolean(),
+			"allowed_claims": arrayOf(str())}))})},
 	"PUT /admin/organizations/{orgID}/providers/{hook}": {http.StatusOK, typeOf[putProviderRequest](), object(
-		[]string{"id", "hook", "secret", "called", "config_version"}, withVersion(map[string]jsonSchema{
-			"id": uuidStr(), "hook": str(), "secret": str(), "called": boolean()}))},
+		[]string{"id", "name", "hook", "secret", "called", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "name": str(), "hook": str(), "secret": str(), "called": boolean()}))},
 	"DELETE /admin/organizations/{orgID}/providers/{hook}": {http.StatusOK, nil, object(
 		[]string{"hook", "removed", "config_version"}, withVersion(map[string]jsonSchema{"hook": str(), "removed": boolean()}))},
 	"POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret": {http.StatusOK, nil, object(

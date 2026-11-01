@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -141,6 +142,15 @@ func (h Hook) Contributes() bool {
 	return h == HookTokenIssue || h == HookUserinfo || h == HookSAMLAssertion
 }
 
+// Composes reports whether a hook may have several providers. Each of them can refuse,
+// so they compose as AND and the order they are asked in changes who is asked and
+// nothing else. A password has one verdict and a flow condition one value, so "which
+// wins?" has no good answer for those two. migrations/core/0250 says the same.
+func (h Hook) Composes() bool { return h != HookPasswordVerify && h != HookFlowCondition }
+
+// DefaultName is what a hook's provider is called when nobody needed to tell two apart.
+func (h Hook) DefaultName() string { return "provider-" + string(h) }
+
 // AllHooks returns every defined hook, for the CLI's help text and listings.
 func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
 
@@ -228,10 +238,13 @@ func Uncalled() []Hook {
 
 // Provider is one registered extension.
 type Provider struct {
-	// Name identifies it in logs, audit events and `signari doctor`.
+	// Name identifies it in logs, audit events and `signari doctor`, and among a
+	// hook's providers.
 	Name string
 	// Hook is which decision it extends.
 	Hook Hook
+	// Position is when it is asked among a hook's providers, lowest first.
+	Position int
 	// URL is the endpoint. Must be https and must not resolve into the private
 	// network -- checked at registration AND again at dial time, because DNS can
 	// change between the two.
@@ -305,6 +318,9 @@ const maxTimeout = 5 * time.Second
 func (p Provider) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("a provider needs a name; it is what names it in the audit trail")
+	}
+	if strings.ContainsAny(p.Name, "/ \t\r\n") {
+		return fmt.Errorf("provider name %q has a space or a slash in it, and a name is one word", p.Name)
 	}
 	if !p.Hook.Known() {
 		return fmt.Errorf("%q is not a hook this engine calls (%s)", p.Hook, hookList())

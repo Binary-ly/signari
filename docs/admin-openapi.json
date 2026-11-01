@@ -15085,6 +15085,12 @@
                           "mode": {
                             "type": "string"
                           },
+                          "name": {
+                            "type": "string"
+                          },
+                          "position": {
+                            "type": "integer"
+                          },
                           "signed": {
                             "type": "boolean"
                           },
@@ -15097,7 +15103,9 @@
                         },
                         "required": [
                           "id",
+                          "name",
                           "hook",
+                          "position",
                           "url",
                           "mode",
                           "timeout_ms",
@@ -15308,6 +15316,12 @@
                   "mode": {
                     "type": "string"
                   },
+                  "name": {
+                    "type": "string"
+                  },
+                  "position": {
+                    "type": "integer"
+                  },
                   "timeout_ms": {
                     "type": "integer"
                   },
@@ -15341,12 +15355,16 @@
                       "format": "uuid",
                       "type": "string"
                     },
+                    "name": {
+                      "type": "string"
+                    },
                     "secret": {
                       "type": "string"
                     }
                   },
                   "required": [
                     "id",
+                    "name",
                     "hook",
                     "secret",
                     "called",

@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,11 @@ import (
 // Provider is the operator's own service, consulted at a hook (ADR-011).
 type Provider struct {
 	Hook string `yaml:"hook"`
-	URL  string `yaml:"url"`
+	// Name tells a hook's providers apart; absent for the only one.
+	Name string `yaml:"name,omitempty"`
+	// Position is when it is asked among them, lowest first.
+	Position int    `yaml:"position,omitempty"`
+	URL      string `yaml:"url"`
 	// Mode is fail_closed or fail_open, never assumed: an authorization hook
 	// that fails open stops enforcing exactly when something is wrong.
 	Mode string `yaml:"mode"`
@@ -39,8 +44,26 @@ const defaultProviderTimeout = 2 * time.Second
 // registration is the provider as store.SaveProvider takes it, named as the
 // command and the route name one.
 func (w Provider) registration(timeout time.Duration) provider.Provider {
-	return provider.Provider{Name: "provider-" + w.Hook, Hook: provider.Hook(w.Hook), URL: w.URL,
+	return provider.Provider{Name: w.name(), Hook: provider.Hook(w.Hook), Position: w.Position, URL: w.URL,
 		Mode: provider.Mode(w.Mode), Timeout: timeout}
+}
+
+func (w Provider) name() string {
+	if w.Name != "" {
+		return w.Name
+	}
+	return provider.Hook(w.Hook).DefaultName()
+}
+
+// key is how a plan names a provider: its hook, as it always has been, and its name
+// too when that is not the one everybody gets.
+func (w Provider) key() string { return providerKey(w.Hook, w.name()) }
+
+func providerKey(hook, name string) string {
+	if name == provider.Hook(hook).DefaultName() {
+		return hook
+	}
+	return hook + "/" + name
 }
 
 func (w Provider) where() string { return fmt.Sprintf("providers[%s].secret", w.Hook) }
@@ -53,7 +76,7 @@ func (providerSection) first() bool  { return false }
 func (providerSection) validate(f *File, add func(string, ...any)) {
 	once := seen(add, "providers")
 	for i, w := range f.Providers {
-		if !once(i, w.Hook) {
+		if !once(i, w.key()) {
 			continue
 		}
 		timeout := defaultProviderTimeout
@@ -102,18 +125,19 @@ func (providerSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fil
 		}
 	}
 	var compared error
-	planKeyed(p, "provider", keyBy(f.Providers, func(w Provider) string { return w.Hook }),
-		keyBy(have, func(r store.ProviderRow) string { return r.Hook }), prune,
+	planKeyed(p, "provider", keyBy(f.Providers, Provider.key),
+		keyBy(have, func(r store.ProviderRow) string { return providerKey(r.Hook, r.Name) }), prune,
 		func(h store.ProviderRow, w Provider) string {
 			var c changed
 			c.note(h.URL != w.URL, "url")
 			c.note(h.Mode != w.Mode, "mode")
+			c.note(h.Position != w.Position, "position")
 			c.note(w.Timeout != nil && h.Timeout != *w.Timeout, "timeout")
 			c.note(w.Claims != nil && !sameSet(h.AllowedClaims, *w.Claims), "claims")
 			if w.Secret != nil && compared == nil {
-				if compared = p.needsRoot("provider", w.Hook, "comparing the secret the file names"); compared == nil {
+				if compared = p.needsRoot("provider", w.key(), "comparing the secret the file names"); compared == nil {
 					var held string
-					held, compared = store.ProviderSecret(ctx, tx, p.opts.Root, orgID, provider.Hook(w.Hook))
+					held, compared = store.ProviderSecret(ctx, tx, p.opts.Root, orgID, provider.Hook(w.Hook), w.name())
 					c.note(held != w.Secret.value, "secret")
 				}
 			}
@@ -122,7 +146,7 @@ func (providerSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *Fil
 	if compared != nil {
 		return compared
 	}
-	return describeSecrets(p, "provider", f.Providers, func(w Provider) (string, *SecretRef) { return w.Hook, w.Secret },
+	return describeSecrets(p, "provider", f.Providers, func(w Provider) (string, *SecretRef) { return w.key(), w.Secret },
 		func(c Change) bool { return true })
 }
 
@@ -160,13 +184,13 @@ func (providerSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 	if err != nil {
 		return err
 	}
-	held := keyBy(have, func(r store.ProviderRow) string { return r.Hook })
+	held := keyBy(have, func(r store.ProviderRow) string { return providerKey(r.Hook, r.Name) })
 	for _, w := range f.Providers {
-		if c, ok := p.planned("provider", w.Hook); !ok || c.Action == "delete" {
+		if c, ok := p.planned("provider", w.key()); !ok || c.Action == "delete" {
 			continue
 		}
 		timeout := defaultProviderTimeout
-		if h, ok := held[w.Hook]; ok {
+		if h, ok := held[w.key()]; ok {
 			timeout = h.Timeout
 		}
 		if w.Timeout != nil {
@@ -177,25 +201,29 @@ func (providerSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *Fi
 			return err
 		}
 		if w.Claims != nil {
-			if err := store.SetProviderClaims(ctx, tx, orgID, provider.Hook(w.Hook), *w.Claims); err != nil {
+			if err := store.SetProviderClaims(ctx, tx, orgID, provider.Hook(w.Hook), w.name(), *w.Claims); err != nil {
 				return err
 			}
 		}
 		switch {
 		case w.Secret != nil:
-			if err := store.SetProviderSecret(ctx, tx, p.opts.Root, orgID, provider.Hook(w.Hook),
+			if err := store.SetProviderSecret(ctx, tx, p.opts.Root, orgID, provider.Hook(w.Hook), w.name(),
 				w.Secret.value); err != nil {
 				return err
 			}
 		case minted != "":
-			p.Minted = append(p.Minted, Minted{Kind: "provider", Name: w.Hook, Secret: minted})
+			p.Minted = append(p.Minted, Minted{Kind: "provider", Name: w.key(), Secret: minted})
 		}
 	}
 	return nil
 }
 
-func (providerSection) remove(ctx context.Context, tx pgx.Tx, orgID, name string) error {
-	_, err := store.DeleteProvider(ctx, tx, orgID, provider.Hook(name))
+func (providerSection) remove(ctx context.Context, tx pgx.Tx, orgID, key string) error {
+	hook, name, named := strings.Cut(key, "/")
+	if !named {
+		name = provider.Hook(hook).DefaultName()
+	}
+	_, err := store.DeleteProvider(ctx, tx, orgID, provider.Hook(hook), name)
 	return err
 }
 
@@ -207,7 +235,10 @@ func (providerSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *F
 		return err
 	}
 	for _, h := range have {
-		w := Provider{Hook: h.Hook, URL: h.URL, Mode: h.Mode, Timeout: &h.Timeout}
+		w := Provider{Hook: h.Hook, Position: h.Position, URL: h.URL, Mode: h.Mode, Timeout: &h.Timeout}
+		if h.Name != provider.Hook(h.Hook).DefaultName() {
+			w.Name = h.Name
+		}
 		if len(h.AllowedClaims) > 0 {
 			claims := sortedCopy(h.AllowedClaims)
 			w.Claims = &claims

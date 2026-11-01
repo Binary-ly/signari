@@ -2376,6 +2376,8 @@ export interface GetOrganizationsOrgIDProvidersResponseProvidersItem {
   hook: string
   id: string
   mode: string
+  name: string
+  position: number
   signed: boolean
   timeout_ms: number
   url: string
@@ -4493,6 +4495,8 @@ export interface PutOrganizationsOrgIDPromptsSlugResponse {
 /** A JSON object of the Admin API. */
 export interface PutOrganizationsOrgIDProvidersHookRequest {
   mode?: string
+  name?: string
+  position?: number
   timeout_ms?: number
   url?: string
 }
@@ -4503,6 +4507,7 @@ export interface PutOrganizationsOrgIDProvidersHookResponse {
   config_version: number
   hook: string
   id: string
+  name: string
   secret: string
 }
 

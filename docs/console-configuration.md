@@ -13,6 +13,8 @@ reports are exactly the ones that go unnoticed for months.
 | Groups | membership, and who the group is released to |
 | Provisioning | whether SCIM is writing, and who is still active downstream |
 | Admin tokens | scopes, expiry, last use — for this organisation only |
+| Relations | who holds what on what, directly and in force. A relation held through a parent or a team has no row of its own, and the screen says so |
+| Authorization model | the file in force, as it was written. None means nothing is permitted, which is worth seeing before an application reports it |
 
 ## Read-only, on purpose
 

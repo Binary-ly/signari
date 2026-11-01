@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -328,6 +330,185 @@ func (r *scopeResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 func (r *scopeResource) ImportState(ctx context.Context, req resource.ImportStateRequest,
 	resp *resource.ImportStateResponse) {
 	importPair(ctx, req, resp, "org_id", "name")
+}
+
+// --- signari_relation ------------------------------------------------------
+
+func NewRelationResource() resource.Resource { return &relationResource{} }
+
+type relationResource struct{ data *providerData }
+
+type relationModel struct {
+	ID            types.String `tfsdk:"id"`
+	OrgID         types.String `tfsdk:"org_id"`
+	Subject       types.String `tfsdk:"subject"`
+	Relation      types.String `tfsdk:"relation"`
+	Object        types.String `tfsdk:"object"`
+	ExpiresAt     types.String `tfsdk:"expires_at"`
+	ConfigVersion types.Int64  `tfsdk:"config_version"`
+}
+
+func (r *relationResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_relation"
+}
+
+func (r *relationResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "A subject holding a relation on an object, for a grant that belongs in " +
+			"version control: a service account, a team. Relations an application writes as its " +
+			"own objects come and go are not this. Imported as `<org_id>|<subject>|<relation>|<object>`.",
+		Attributes: map[string]schema.Attribute{
+			"id":     idAttribute("relation, `<org_id>|<subject>|<relation>|<object>`,"),
+			"org_id": replacing("The organisation."),
+			"subject": replacing("Who holds it, as `type:id`: `user:ada@example.com`, `group:finance`, " +
+				"or a set of subjects, `team:eng#member`."),
+			"relation": replacing("The relation."),
+			"object":   replacing("What it is held on, as `type:id`."),
+			"expires_at": schema.StringAttribute{Optional: true,
+				MarkdownDescription: "When it ends, RFC 3339. Left out, it does not."},
+			"config_version": versionAttribute(),
+		},
+	}
+}
+
+func (r *relationResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if d := configured(req.ProviderData, &resp.Diagnostics); d != nil {
+		r.data = d
+	}
+}
+
+func relationsPath(org string) string { return organizationPath(org) + "/relations" }
+
+func relationQuery(m relationModel) string {
+	return url.Values{"subject": {m.Subject.ValueString()}, "relation": {m.Relation.ValueString()},
+		"object": {m.Object.ValueString()}}.Encode()
+}
+
+func (r *relationResource) readRelation(ctx context.Context, m *relationModel) (bool, error) {
+	var page struct {
+		Relations []struct {
+			Subject   string  `json:"subject"`
+			Relation  string  `json:"relation"`
+			Object    string  `json:"object"`
+			ExpiresAt *string `json:"expires_at"`
+		} `json:"relations"`
+	}
+	version, err := r.data.client.Get(ctx, relationsPath(m.OrgID.ValueString())+"?"+relationQuery(*m), &page)
+	if err != nil {
+		return !errors.Is(err, signari.ErrNotFound), err
+	}
+	for _, row := range page.Relations {
+		if row.Subject == m.Subject.ValueString() && row.Relation == m.Relation.ValueString() &&
+			row.Object == m.Object.ValueString() {
+			// What was written stays in state when it is the same moment, because
+			// the server answers it in its own zone and a plan would read a change.
+			if row.ExpiresAt == nil {
+				m.ExpiresAt = types.StringNull()
+			} else if !sameInstant(*row.ExpiresAt, m.ExpiresAt.ValueString()) {
+				m.ExpiresAt = types.StringValue(*row.ExpiresAt)
+			}
+			m.ID = types.StringValue(strings.Join([]string{m.OrgID.ValueString(), row.Subject, row.Relation,
+				row.Object}, "|"))
+			m.ConfigVersion = types.Int64Value(version)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sameInstant reports whether two RFC 3339 times are one moment.
+func sameInstant(a, b string) bool {
+	x, xerr := time.Parse(time.RFC3339, a)
+	y, yerr := time.Parse(time.RFC3339, b)
+	return xerr == nil && yerr == nil && x.Equal(y)
+}
+
+func (r *relationResource) put(ctx context.Context, m relationModel, read int64) error {
+	body := map[string]any{"subject": m.Subject.ValueString(), "relation": m.Relation.ValueString(),
+		"object": m.Object.ValueString()}
+	if !m.ExpiresAt.IsNull() {
+		body["expires_at"] = m.ExpiresAt.ValueString()
+	}
+	_, err := r.data.change(ctx, http.MethodPut, relationsPath(m.OrgID.ValueString()), body, read)
+	return err
+}
+
+func (r *relationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan relationModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := r.put(ctx, plan, 0); err != nil {
+		failed(&resp.Diagnostics, "granting the relation", err)
+		return
+	}
+	if _, err := r.readRelation(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("reading the relation back", err.Error())
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+func (r *relationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state relationModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	found, err := r.readRelation(ctx, &state)
+	if err != nil && found {
+		resp.Diagnostics.AddError("reading the relation", err.Error())
+		return
+	}
+	// One that ran out is gone from the listing, so the next plan grants it again:
+	// what the configuration says is what is wanted, and it should say otherwise.
+	if !found {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, state)...)
+}
+
+func (r *relationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state relationModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := r.put(ctx, plan, state.ConfigVersion.ValueInt64()); err != nil {
+		failed(&resp.Diagnostics, "changing the relation", err)
+		return
+	}
+	if _, err := r.readRelation(ctx, &plan); err != nil {
+		resp.Diagnostics.AddError("reading the relation back", err.Error())
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+}
+
+func (r *relationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state relationModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := r.data.remove(ctx, relationsPath(state.OrgID.ValueString())+"?"+relationQuery(state),
+		state.ConfigVersion.ValueInt64()); err != nil {
+		failed(&resp.Diagnostics, "revoking the relation", err)
+	}
+}
+
+func (r *relationResource) ImportState(ctx context.Context, req resource.ImportStateRequest,
+	resp *resource.ImportStateResponse) {
+	parts := strings.Split(req.ID, "|")
+	if len(parts) != 4 || slices.Contains(parts, "") {
+		resp.Diagnostics.AddError("not an import id this takes", "import one as <org_id>|<subject>|<relation>|<object>")
+		return
+	}
+	for i, name := range []string{"org_id", "subject", "relation", "object"} {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(name), parts[i])...)
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
 // --- signari_proxy_host ----------------------------------------------------

@@ -54,6 +54,7 @@ resource "signari_group_member" "ada_engineering" {
 | `signari_client_group_release` | `only_groups` (left out, every group) | `client_id` | the client id |
 | `signari_scope` | `display_name`, `description`, `advertise` | `org_id`, `name` | `<org_id>/<name>` |
 | `signari_proxy_host` | `enabled` | `org_id`, `host` (in lower case) | `<org_id>/<host>` |
+| `signari_relation` | `expires_at` | `org_id`, `subject`, `relation`, `object` | `<org_id>\|<subject>\|<relation>\|<object>` |
 | `signari_organization_configuration` | `document`, `prune` | `org_id` | the organisation id |
 | `signari_admin_token` | nothing | every attribute | the id (its `secret` is then empty) |
 

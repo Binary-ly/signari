@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0259 authorization_views
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the console reads of authorization (11.14): who holds what on what, and the model that says what it means. A person asking why somebody can see something had the command line. Only the live relations, because a decision reads no others, so a row here is a row in force. The compiled model stays behind: the source is what an operator wrote and what a review reads.
+
 ## 0258 relation_subject_sets
 
 Compatible with the release before: its binary may still serve this schema.

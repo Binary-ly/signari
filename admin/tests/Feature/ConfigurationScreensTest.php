@@ -45,6 +45,8 @@ class ConfigurationScreensTest extends TestCase
         '/admin/admin-tokens',
         '/admin/radius-clients',
         '/admin/access-policies',
+        '/admin/relations',
+        '/admin/authorization-models',
     ];
 
     protected function tearDown(): void
@@ -157,6 +159,52 @@ class ConfigurationScreensTest extends TestCase
             ->get('/admin/saml-providers')
             ->assertOk()
             ->assertDontSee($entityId);
+    }
+
+    /**
+     * Who holds what is a tenant's business like anything else, and a grant that
+     * ran out is not shown as one in force: a decision would not read it.
+     */
+    public function test_relations_and_the_model_are_scoped_and_live(): void
+    {
+        $org = $this->plantOrganisation();
+        $other = $this->plantOrganisation();
+        $tag = Str::lower(Str::random(8));
+        $grant = function (string $orgId, string $subject, ?string $expires) use ($tag): void {
+            $this->maintenance()->insert(
+                'INSERT INTO core.relations (org_id, subject_type, subject_id, relation, object_type, object_id, expires_at)
+                 VALUES (?::uuid, ?, ?, ?, ?, ?, ?::timestamptz)',
+                [$orgId, 'user', "{$subject}-{$tag}", 'viewer', 'document', '42', $expires]
+            );
+        };
+        $grant($org, 'holds-it', null);
+        $grant($org, 'held-it', '2020-01-01T00:00:00Z');
+        $grant($other, 'elsewhere', null);
+        foreach ([$org => "own-model-{$tag}", $other => "other-model-{$tag}"] as $orgId => $source) {
+            $this->maintenance()->insert(
+                'INSERT INTO core.authorization_models (org_id, source, compiled) VALUES (?::uuid, ?, ?::jsonb)',
+                [$orgId, $source, '{}']
+            );
+        }
+
+        try {
+            $operator = $this->actingAs($this->operatorFor($org));
+            $operator->get('/admin/relations')
+                ->assertOk()
+                ->assertSee("user:holds-it-{$tag}")
+                ->assertDontSee("held-it-{$tag}")
+                ->assertDontSee("elsewhere-{$tag}");
+
+            $operator->get('/admin/authorization-models')
+                ->assertOk()
+                ->assertSee("own-model-{$tag}")
+                ->assertDontSee("other-model-{$tag}");
+        } finally {
+            foreach ([$org, $other] as $orgId) {
+                $this->maintenance()->delete('DELETE FROM core.relations WHERE org_id = ?::uuid', [$orgId]);
+                $this->maintenance()->delete('DELETE FROM core.authorization_models WHERE org_id = ?::uuid', [$orgId]);
+            }
+        }
     }
 
     /**

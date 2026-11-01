@@ -34,6 +34,10 @@ type addKerberosRealmRequest struct {
 	// Keytab is the file, base64.
 	Keytab     string `json:"keytab"`
 	StripRealm bool   `json:"strip_realm"`
+	// TrustedRealms are the other realms whose people may sign in here.
+	TrustedRealms []string `json:"trusted_realms,omitempty"`
+	// CreateAccounts makes an account for a good ticket with none.
+	CreateAccounts bool `json:"create_accounts,omitempty"`
 }
 
 func (s *Server) addKerberosRealm(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +67,8 @@ func (s *Server) addKerberosRealm(w http.ResponseWriter, r *http.Request) {
 		}
 		var err error
 		realm, err = store.AddKerberosRealm(ctx, tx, s.root, orgID, store.KerberosRealmSpec{Realm: req.Realm, Host: req.Host,
-			ServicePrincipal: req.ServicePrincipal, Keytab: keytab, StripRealm: req.StripRealm})
+			ServicePrincipal: req.ServicePrincipal, Keytab: keytab, StripRealm: req.StripRealm,
+			TrustedRealms: req.TrustedRealms, CreateAccounts: req.CreateAccounts})
 		if err != nil {
 			return err
 		}
@@ -75,7 +80,8 @@ func (s *Server) addKerberosRealm(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": realm.ID, "realm": realm.Realm, "host": realm.Host,
-		"service_principal": realm.ServicePrincipal, "strip_realm": realm.StripRealm, "created_at": realm.CreatedAt,
+		"service_principal": realm.ServicePrincipal, "strip_realm": realm.StripRealm,
+		"trusted_realms": realm.TrustedRealms, "create_accounts": realm.CreateAccounts, "created_at": realm.CreatedAt,
 		"config_version": version})
 }
 

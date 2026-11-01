@@ -1138,12 +1138,14 @@ type GetOrganizationsOrgIDKerberosRealmsResponse struct {
 
 // GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem struct {
-	CreatedAt        string `json:"created_at"`
-	Host             string `json:"host"`
-	ID               string `json:"id"`
-	Realm            string `json:"realm"`
-	ServicePrincipal string `json:"service_principal"`
-	StripRealm       bool   `json:"strip_realm"`
+	CreateAccounts   bool     `json:"create_accounts"`
+	CreatedAt        string   `json:"created_at"`
+	Host             string   `json:"host"`
+	ID               string   `json:"id"`
+	Realm            string   `json:"realm"`
+	ServicePrincipal string   `json:"service_principal"`
+	StripRealm       bool     `json:"strip_realm"`
+	TrustedRealms    []string `json:"trusted_realms"`
 }
 
 // GetOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
@@ -2558,22 +2560,26 @@ type PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse struct {
 
 // PostOrganizationsOrgIDKerberosRealmsRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDKerberosRealmsRequest struct {
-	Host             *string `json:"host,omitempty"`
-	Keytab           *string `json:"keytab,omitempty"`
-	Realm            *string `json:"realm,omitempty"`
-	ServicePrincipal *string `json:"service_principal,omitempty"`
-	StripRealm       *bool   `json:"strip_realm,omitempty"`
+	CreateAccounts   *bool     `json:"create_accounts,omitempty"`
+	Host             *string   `json:"host,omitempty"`
+	Keytab           *string   `json:"keytab,omitempty"`
+	Realm            *string   `json:"realm,omitempty"`
+	ServicePrincipal *string   `json:"service_principal,omitempty"`
+	StripRealm       *bool     `json:"strip_realm,omitempty"`
+	TrustedRealms    *[]string `json:"trusted_realms,omitempty"`
 }
 
 // PostOrganizationsOrgIDKerberosRealmsResponse is a JSON object of the Admin API.
 type PostOrganizationsOrgIDKerberosRealmsResponse struct {
-	ConfigVersion    int64  `json:"config_version"`
-	CreatedAt        string `json:"created_at"`
-	Host             string `json:"host"`
-	ID               string `json:"id"`
-	Realm            string `json:"realm"`
-	ServicePrincipal string `json:"service_principal"`
-	StripRealm       bool   `json:"strip_realm"`
+	ConfigVersion    int64    `json:"config_version"`
+	CreateAccounts   bool     `json:"create_accounts"`
+	CreatedAt        string   `json:"created_at"`
+	Host             string   `json:"host"`
+	ID               string   `json:"id"`
+	Realm            string   `json:"realm"`
+	ServicePrincipal string   `json:"service_principal"`
+	StripRealm       bool     `json:"strip_realm"`
+	TrustedRealms    []string `json:"trusted_realms"`
 }
 
 // PostOrganizationsOrgIDMigrationSourceTestRequest is a JSON object of the Admin API.

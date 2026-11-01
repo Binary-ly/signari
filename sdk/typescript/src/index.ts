@@ -2398,12 +2398,14 @@ export interface GetOrganizationsOrgIDKerberosRealmsResponse {
 
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem {
+  create_accounts: boolean
   created_at: string
   host: string
   id: string
   realm: string
   service_principal: string
   strip_realm: boolean
+  trusted_realms: string[]
 }
 
 /** A JSON object of the Admin API. */
@@ -3818,22 +3820,26 @@ export interface PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse {
 
 /** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDKerberosRealmsRequest {
+  create_accounts?: boolean
   host?: string
   keytab?: string
   realm?: string
   service_principal?: string
   strip_realm?: boolean
+  trusted_realms?: string[]
 }
 
 /** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDKerberosRealmsResponse {
   config_version: number
+  create_accounts: boolean
   created_at: string
   host: string
   id: string
   realm: string
   service_principal: string
   strip_realm: boolean
+  trusted_realms: string[]
 }
 
 /** A JSON object of the Admin API. */

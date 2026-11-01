@@ -1,14 +1,17 @@
 package httpapi
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jcmturner/goidentity/v6"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/kerberos"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 )
 
@@ -53,7 +56,8 @@ func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
 	}
 	config, kt, orgID := s.krbConfig, s.krbKeytab, ""
 	if realm != nil {
-		config = kerberos.Config{Realm: realm.Realm, ServicePrincipal: realm.ServicePrincipal, StripRealm: realm.StripRealm}
+		config = kerberos.Config{Realm: realm.Realm, ServicePrincipal: realm.ServicePrincipal, StripRealm: realm.StripRealm,
+			TrustedRealms: realm.TrustedRealms, CreateAccounts: realm.CreateAccounts}
 		orgID = realm.OrgID
 		if kt, err = kerberos.ParseKeytab(realm.Keytab, "the keytab of realm "+realm.Realm); err != nil {
 			s.log.Error("reading a realm's keytab", "err", err, "correlation_id", correlationID(ctx))
@@ -110,20 +114,22 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request, con
 	// From here it is an ordinary sign-in. The session, the policy, the audit
 	// entry and the amr are the same as every other route, because a second
 	// notion of "signed in" is how one of them ends up missing a check.
-	s.completeKerberosSignIn(w, r, username, orgID)
+	s.completeKerberosSignIn(w, r, username, orgID, config.CreateAccounts)
 }
 
 // completeKerberosSignIn establishes a session for an already-validated ticket.
 //
-// # No account is created
+// # No account is created, unless the realm says so
 //
 // A valid ticket proves the realm knows this principal. It does not decide that
 // the principal should have an account HERE, and creating one on the strength of
 // a ticket means every principal in the realm is a user the moment they visit.
 //
-// Accounts come from the directory sync, which is a deliberate act by an
-// administrator. An unmatched principal is refused and told to ask for one.
-func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, username, orgID string) {
+// So accounts come from the directory sync, which is a deliberate act by an
+// administrator, and an unmatched principal is refused and told to ask for one. A
+// realm can opt out of that by saying everybody it knows is welcome, which is then
+// the operator's decision and still the user_create provider's to refuse.
+func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, username, orgID string, create bool) {
 	ctx := r.Context()
 	if orgID == "" {
 		var err error
@@ -146,11 +152,28 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, 
 		 WHERE org_id = $1::uuid AND (email_fold = lower($2) OR username_fold = lower($2))
 		   AND status = 'active'`,
 		orgID, username).Scan(&userID)
+	var vetoed string
+	if errors.Is(err, pgx.ErrNoRows) && create {
+		var refused bool
+		if vetoed, refused = s.userCreateRefused(ctx, tx, orgID, username, "kerberos"); !refused {
+			userID, err = store.CreateUserFromKerberos(ctx, tx, orgID, username)
+		}
+		if err == nil && userID != "" {
+			if aerr := audit.Write(ctx, tx, audit.Event{
+				Type: "kerberos.user_created", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
+			}); aerr != nil {
+				s.log.Error("recording an account made for a ticket", "err", aerr)
+			}
+		}
+	}
 	if err != nil {
 		s.log.Info("kerberos principal has no account", "correlation_id", correlationID(ctx))
 		// Released before the refusal is recorded: the record is a second
 		// connection, and taking one while holding this deadlocks the pool.
 		_ = tx.Rollback(ctx)
+		if vetoed != "" {
+			s.recordHookRefusal(ctx, provider.HookUserCreate, orgID, "", "", vetoed)
+		}
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID,
 			CorrelationID: correlationID(ctx),

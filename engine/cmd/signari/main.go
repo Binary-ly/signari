@@ -701,6 +701,8 @@ func run(args []string) (err error) {
 		"administrative principal kadmin authenticates as, e.g. signari/admin@EXAMPLE.COM")
 	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
 	krbStripRealm := fs.Bool("strip-realm", false, "`kerberos add-realm`: match people by the name before the @")
+	krbTrust := fs.String("trust-realms", "", "`kerberos add-realm`: comma-separated other realms whose people may sign in")
+	krbCreate := fs.Bool("create-accounts", false, "`kerberos add-realm`: make an account for a good ticket with none")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
 	targetDomain := fs.String("target-domain", "",
@@ -1896,7 +1898,11 @@ func run(args []string) (err error) {
 	case "kerberos sync":
 		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply)
 	case "kerberos add-realm":
-		return kerberosAddRealm(ctx, conn, *orgID, *krbRealm, *racHost, *krbSPN, *keytabPath, *krbStripRealm)
+		var trusted []string
+		if *krbTrust != "" {
+			trusted = strings.Split(*krbTrust, ",")
+		}
+		return kerberosAddRealm(ctx, conn, *orgID, *krbRealm, *racHost, *krbSPN, *keytabPath, *krbStripRealm, trusted, *krbCreate)
 	case "kerberos list-realms":
 		return kerberosListRealms(ctx, conn, *orgID, *outputFormat)
 	case "kerberos remove-realm":

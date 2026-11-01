@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0262 kerberos_trust_and_accounts
+
+Compatible with the release before: its binary may still serve this schema.
+
+Two opt-ins on a Kerberos realm (8.12), both off, so a realm registered before this behaves as it did. Trusted realms are the others whose people may sign in: a ticket from one is refused unless it is named here, whatever trust the KDCs have between them. Creating accounts lets a principal with a good ticket and no account have one, asked of the user_create hook first. An older binary reads neither, and so refuses a trusted realm's tickets and creates nothing, as it always did.
+
 ## 0261 external_factors
 
 Compatible with the release before: its binary may still serve this schema.

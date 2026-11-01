@@ -209,8 +209,10 @@ password, a passkey, a provider, a one-time code. Told `subject`, `org_id`, `amr
 
 ## The `user_create` hook
 
-Asked before an account is made by somebody signing themselves up or arriving from an
-identity provider. Told `org_id`, `email` and `source`, `signup` or `federation`. It is not
+Asked before an account is made by somebody signing themselves up, arriving from an
+identity provider, or arriving with a Kerberos ticket at a realm that creates accounts.
+Told `org_id`, `email` and `source`, `signup`, `federation` or `kerberos`. For a realm that
+strips itself off, `email` holds the bare name. It is not
 asked about what an operator does: an invitation, the Admin API, `signari user create`,
 SCIM, a directory sync or an import.
 

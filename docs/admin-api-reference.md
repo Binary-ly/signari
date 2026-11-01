@@ -2294,23 +2294,27 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `create_accounts` | boolean |  |
 | `host` | string |  |
 | `keytab` | string |  |
 | `realm` | string |  |
 | `service_principal` | string |  |
 | `strip_realm` | boolean |  |
+| `trusted_realms` | list of string |  |
 
 Answers:
 
 | Field | Type | |
 |---|---|---|
 | `config_version` | integer | always |
+| `create_accounts` | boolean | always |
 | `created_at` | string | always |
 | `host` | string | always |
 | `id` | string | always |
 | `realm` | string | always |
 | `service_principal` | string | always |
 | `strip_realm` | boolean | always |
+| `trusted_realms` | list of string | always |
 
 ### `DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}`
 

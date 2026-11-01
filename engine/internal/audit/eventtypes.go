@@ -82,7 +82,7 @@ var EventTypes = []string{
 	"federation.account_linked", "federation.account_unlinked", "federation.backchannel_logout",
 	"federation.groups_synced", "federation.refused", "federation.token_read", "federation.user_created",
 	"impersonation.ended", "impersonation.refused", "impersonation.started",
-	"keys.rotated",
+	"kerberos.user_created", "keys.rotated",
 	"ldap.entry_created", "ldap.entry_deleted", "ldap.entry_modified", "ldap.entry_renamed",
 	"ldap.password_set", "ldap.write_refused",
 	"login.failed", "login.succeeded",

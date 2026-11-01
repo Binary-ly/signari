@@ -2137,7 +2137,8 @@ func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, org, entityID, url stri
 // kerberosAddRealm gives an organisation a realm of its own: the host its people's
 // browsers ask for tickets to, and the keytab that opens them, sealed here. The file
 // can be deleted once this has run.
-func kerberosAddRealm(ctx context.Context, conn *pgx.Conn, orgID, realm, host, spn, keytabPath string, strip bool) error {
+func kerberosAddRealm(ctx context.Context, conn *pgx.Conn, orgID, realm, host, spn, keytabPath string, strip bool,
+	trusted []string, create bool) error {
 	if orgID == "" || realm == "" || host == "" || spn == "" || keytabPath == "" {
 		return fmt.Errorf("give -org, -realm, -host, -spn and -keytab")
 	}
@@ -2150,11 +2151,18 @@ func kerberosAddRealm(ctx context.Context, conn *pgx.Conn, orgID, realm, host, s
 		return err
 	}
 	added, err := store.AddKerberosRealm(ctx, conn, root, orgID, store.KerberosRealmSpec{Realm: realm, Host: host,
-		ServicePrincipal: spn, Keytab: raw, StripRealm: strip})
+		ServicePrincipal: spn, Keytab: raw, StripRealm: strip, TrustedRealms: trusted, CreateAccounts: create})
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%s: signs in at %s, as %s\n", added.Realm, added.Host, added.ServicePrincipal)
+	if len(added.TrustedRealms) > 0 {
+		fmt.Printf("  trusting %s: its people sign in as name@realm, never as a name of this one\n",
+			strings.Join(added.TrustedRealms, ", "))
+	}
+	if added.CreateAccounts {
+		fmt.Println("  making an account for anybody with a good ticket: every principal it trusts can now arrive")
+	}
 	return nil
 }
 
@@ -2172,13 +2180,16 @@ func kerberosListRealms(ctx context.Context, conn *pgx.Conn, orgID, format strin
 		return err
 	}
 	if out.text() {
-		fmt.Printf("%-24s %-32s %-6s %s\n", "REALM", "HOST", "STRIP", "SERVICE PRINCIPAL")
+		fmt.Printf("%-24s %-32s %-6s %-7s %s\n", "REALM", "HOST", "STRIP", "CREATE", "SERVICE PRINCIPAL")
 	}
 	for _, r := range realms {
 		out.add(map[string]any{"realm": r.Realm, "host": r.Host, "service_principal": r.ServicePrincipal,
-			"strip_realm": r.StripRealm})
+			"strip_realm": r.StripRealm, "trusted_realms": r.TrustedRealms, "create_accounts": r.CreateAccounts})
 		if out.text() {
-			fmt.Printf("%-24s %-32s %-6t %s\n", r.Realm, r.Host, r.StripRealm, r.ServicePrincipal)
+			fmt.Printf("%-24s %-32s %-6t %-7t %s\n", r.Realm, r.Host, r.StripRealm, r.CreateAccounts, r.ServicePrincipal)
+			if len(r.TrustedRealms) > 0 {
+				fmt.Printf("  trusting %s\n", strings.Join(r.TrustedRealms, ", "))
+			}
 		}
 	}
 	if len(realms) == 0 && out.text() {

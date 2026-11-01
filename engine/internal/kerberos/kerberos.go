@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -53,6 +54,12 @@ type Config struct {
 	Realm string
 	// StripRealm removes @REALM when mapping a principal to a username.
 	StripRealm bool
+	// TrustedRealms are the other realms whose principals may sign in. A trust
+	// between KDCs says a ticket is genuine, not that its holder is welcome here,
+	// so nothing but this list admits one.
+	TrustedRealms []string
+	// CreateAccounts makes an account for a principal with a good ticket and none.
+	CreateAccounts bool
 }
 
 // Keytab loads and validates the keytab file.
@@ -201,10 +208,11 @@ func (c Config) UsernameFor(principal string) (string, error) {
 		return "", fmt.Errorf("the principal carries no realm; refusing rather than " +
 			"guessing which realm it came from")
 	}
-	if c.Realm != "" && !strings.EqualFold(realm, c.Realm) {
+	home := c.Realm == "" || strings.EqualFold(realm, c.Realm)
+	if !home && !slices.ContainsFunc(c.TrustedRealms, func(t string) bool { return strings.EqualFold(t, realm) }) {
 		return "", fmt.Errorf("the principal is from realm %q, not %q. A ticket from "+
-			"another realm is not a user of this one, even where a trust exists",
-			realm, c.Realm)
+			"another realm is not a user of this one, even where a trust exists, unless "+
+			"this one names it", realm, c.Realm)
 	}
 	if strings.Contains(name, "/") {
 		return "", fmt.Errorf("the principal has an instance component. Those are " +
@@ -213,7 +221,9 @@ func (c Config) UsernameFor(principal string) (string, error) {
 			"sign in as the person who shares it")
 	}
 
-	if c.StripRealm {
+	// Only the home realm's. alice@PARTNER is not alice@HOME, and stripping both
+	// would hand the second's account to the first.
+	if c.StripRealm && home {
 		return name, nil
 	}
 	// Lower-cased: realms are upper case by convention and email addresses are

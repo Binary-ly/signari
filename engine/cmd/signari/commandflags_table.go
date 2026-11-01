@@ -149,7 +149,7 @@ var commandFlags = map[string][]string{
 	"invite list":                     {"o", "org"},
 	"invite revoke":                   {"invitation", "org"},
 	"janitor once":                    {},
-	"kerberos add-realm":              {"host", "keytab", "org", "realm", "spn", "strip-realm"},
+	"kerberos add-realm":              {"create-accounts", "host", "keytab", "org", "realm", "spn", "strip-realm", "trust-realms"},
 	"kerberos check":                  {"keytab", "realm", "spn"},
 	"kerberos list-realms":            {"o", "org"},
 	"kerberos principals":             {"admin-principal", "keytab", "realm"},

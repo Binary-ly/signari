@@ -37,6 +37,8 @@ type KerberosRealm struct {
 	Host             string    `json:"host"`
 	ServicePrincipal string    `json:"service_principal"`
 	StripRealm       bool      `json:"strip_realm"`
+	TrustedRealms    []string  `json:"trusted_realms"`
+	CreateAccounts   bool      `json:"create_accounts"`
 	CreatedAt        time.Time `json:"created_at"`
 	// Keytab is the file, opened, when the realm was read to be used.
 	Keytab []byte `json:"-"`
@@ -47,6 +49,8 @@ type KerberosRealmSpec struct {
 	Realm, Host, ServicePrincipal string
 	Keytab                        []byte
 	StripRealm                    bool
+	TrustedRealms                 []string
+	CreateAccounts                bool
 }
 
 type kerberosRealmDB interface {
@@ -64,9 +68,16 @@ func AddKerberosRealm(ctx context.Context, q kerberosRealmDB, root *keys.RootKey
 	}
 	r := KerberosRealm{OrgID: orgID, Realm: strings.ToUpper(strings.TrimSpace(spec.Realm)),
 		Host: strings.ToLower(strings.TrimSpace(spec.Host)), ServicePrincipal: strings.TrimSpace(spec.ServicePrincipal),
-		StripRealm: spec.StripRealm}
+		StripRealm: spec.StripRealm, TrustedRealms: []string{}, CreateAccounts: spec.CreateAccounts}
 	if r.Realm == "" || r.Host == "" || r.ServicePrincipal == "" {
 		return r, fmt.Errorf("%w: a realm, a host and a service principal are all required", ErrKerberosRealm)
+	}
+	for _, t := range spec.TrustedRealms {
+		t = strings.ToUpper(strings.TrimSpace(t))
+		if t == "" || t == r.Realm || strings.ContainsAny(t, "@/ ") {
+			return r, fmt.Errorf("%w: %q is not another realm to trust", ErrKerberosRealm, t)
+		}
+		r.TrustedRealms = append(r.TrustedRealms, t)
 	}
 	if strings.ContainsAny(r.Host, "/:@ ") {
 		return r, fmt.Errorf("%w: the host is a name alone, as a browser sends it, not %q", ErrKerberosRealm, r.Host)
@@ -84,9 +95,11 @@ func AddKerberosRealm(ctx context.Context, q kerberosRealmDB, root *keys.RootKey
 		return r, fmt.Errorf("sealing the keytab: %w", err)
 	}
 	err = q.QueryRow(ctx, `
-		INSERT INTO core.kerberos_realms (org_id, realm, host, service_principal, keytab_sealed, strip_realm)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING id::text, created_at`,
-		orgID, r.Realm, r.Host, r.ServicePrincipal, sealed, r.StripRealm).Scan(&r.ID, &r.CreatedAt)
+		INSERT INTO core.kerberos_realms (org_id, realm, host, service_principal, keytab_sealed, strip_realm,
+		                                  trusted_realms, create_accounts)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8) RETURNING id::text, created_at`,
+		orgID, r.Realm, r.Host, r.ServicePrincipal, sealed, r.StripRealm, r.TrustedRealms, r.CreateAccounts).
+		Scan(&r.ID, &r.CreatedAt)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return r, ErrKerberosRealmTaken
@@ -96,7 +109,8 @@ func AddKerberosRealm(ctx context.Context, q kerberosRealmDB, root *keys.RootKey
 
 // KerberosRealms lists an organisation's realms, without their keytabs.
 func KerberosRealms(ctx context.Context, q kerberosRealmDB, orgID string) ([]KerberosRealm, error) {
-	rows, err := q.Query(ctx, `SELECT id::text, org_id::text, realm, host, service_principal, strip_realm, created_at
+	rows, err := q.Query(ctx, `SELECT id::text, org_id::text, realm, host, service_principal, strip_realm,
+		trusted_realms, create_accounts, created_at
 		FROM core.kerberos_realms WHERE org_id = $1::uuid ORDER BY realm`, orgID)
 	if err != nil {
 		return nil, err
@@ -105,12 +119,43 @@ func KerberosRealms(ctx context.Context, q kerberosRealmDB, orgID string) ([]Ker
 	out := []KerberosRealm{}
 	for rows.Next() {
 		var r KerberosRealm
-		if err := rows.Scan(&r.ID, &r.OrgID, &r.Realm, &r.Host, &r.ServicePrincipal, &r.StripRealm, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.OrgID, &r.Realm, &r.Host, &r.ServicePrincipal, &r.StripRealm,
+			&r.TrustedRealms, &r.CreateAccounts, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ErrKerberosNameTaken is a principal whose name an account already holds that is
+// not one to sign in to: deactivated, locked, or waiting for approval.
+var ErrKerberosNameTaken = errors.New("an account already holds this name")
+
+// CreateUserFromKerberos makes an account for a principal a realm opted to admit,
+// by the address it maps to, or its name where the realm strips itself off.
+//
+// DO NOTHING, and the conflict reported rather than the row returned: this runs
+// because no ACTIVE account matched, and one that is deactivated must stay that way
+// however good the ticket.
+func CreateUserFromKerberos(ctx context.Context, tx pgx.Tx, orgID, name string) (string, error) {
+	email, username := name, ""
+	if !strings.Contains(name, "@") {
+		email, username = "", name
+	}
+	var userID string
+	// No password credential, for the reason CreateUserFromExternal gives.
+	err := tx.QueryRow(ctx, `
+		INSERT INTO core.users (org_id, email, username, user_handle, status)
+		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''),
+		        decode(md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text)||
+		               md5(gen_random_uuid()::text)||md5(gen_random_uuid()::text),'hex'),
+		        'active')
+		ON CONFLICT DO NOTHING RETURNING id::text`, orgID, email, username).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrKerberosNameTaken
+	}
+	return userID, err
 }
 
 // RemoveKerberosRealm forgets a realm and its keytab.
@@ -127,7 +172,8 @@ func RemoveKerberosRealm(ctx context.Context, q kerberosRealmDB, orgID, realm st
 func openKerberosRealm(row pgx.Row, root *keys.RootKey) (*KerberosRealm, error) {
 	var r KerberosRealm
 	var sealed []byte
-	err := row.Scan(&r.ID, &r.OrgID, &r.Realm, &r.Host, &r.ServicePrincipal, &r.StripRealm, &sealed)
+	err := row.Scan(&r.ID, &r.OrgID, &r.Realm, &r.Host, &r.ServicePrincipal, &r.StripRealm,
+		&r.TrustedRealms, &r.CreateAccounts, &sealed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -148,7 +194,8 @@ func openKerberosRealm(row pgx.Row, root *keys.RootKey) (*KerberosRealm, error) 
 // effect on commit, and a cached keytab would go on opening tickets.
 func KerberosRealmForHost(ctx context.Context, q rowQuerier, root *keys.RootKey, instanceID, host string) (*KerberosRealm, error) {
 	return openKerberosRealm(q.QueryRow(ctx, `
-		SELECT k.id::text, k.org_id::text, k.realm, k.host, k.service_principal, k.strip_realm, k.keytab_sealed
+		SELECT k.id::text, k.org_id::text, k.realm, k.host, k.service_principal, k.strip_realm,
+		       k.trusted_realms, k.create_accounts, k.keytab_sealed
 		  FROM core.kerberos_realms k
 		 WHERE k.host = $1 AND `+InInstance("k.org_id", "$2"), host, instanceID), root)
 }
@@ -157,6 +204,7 @@ func KerberosRealmForHost(ctx context.Context, q rowQuerier, root *keys.RootKey,
 // when it has none.
 func KerberosRealmOfOrg(ctx context.Context, q rowQuerier, root *keys.RootKey, orgID, realm string) (*KerberosRealm, error) {
 	return openKerberosRealm(q.QueryRow(ctx, `
-		SELECT id::text, org_id::text, realm, host, service_principal, strip_realm, keytab_sealed
+		SELECT id::text, org_id::text, realm, host, service_principal, strip_realm,
+		       trusted_realms, create_accounts, keytab_sealed
 		  FROM core.kerberos_realms WHERE org_id = $1::uuid AND realm = $2`, orgID, strings.ToUpper(realm)), root)
 }

@@ -14066,6 +14066,9 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "create_accounts": {
+                            "type": "boolean"
+                          },
                           "created_at": {
                             "format": "date-time",
                             "type": "string"
@@ -14085,6 +14088,12 @@
                           },
                           "strip_realm": {
                             "type": "boolean"
+                          },
+                          "trusted_realms": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
                           }
                         },
                         "required": [
@@ -14093,6 +14102,8 @@
                           "host",
                           "service_principal",
                           "strip_realm",
+                          "trusted_realms",
+                          "create_accounts",
                           "created_at"
                         ],
                         "type": "object"
@@ -14176,6 +14187,9 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "create_accounts": {
+                    "type": "boolean"
+                  },
                   "host": {
                     "type": "string"
                   },
@@ -14190,6 +14204,12 @@
                   },
                   "strip_realm": {
                     "type": "boolean"
+                  },
+                  "trusted_realms": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
                   }
                 },
                 "type": "object"
@@ -14207,6 +14227,9 @@
                   "properties": {
                     "config_version": {
                       "type": "integer"
+                    },
+                    "create_accounts": {
+                      "type": "boolean"
                     },
                     "created_at": {
                       "format": "date-time",
@@ -14227,6 +14250,12 @@
                     },
                     "strip_realm": {
                       "type": "boolean"
+                    },
+                    "trusted_realms": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     }
                   },
                   "required": [
@@ -14235,6 +14264,8 @@
                     "host",
                     "service_principal",
                     "strip_realm",
+                    "trusted_realms",
+                    "create_accounts",
                     "created_at",
                     "config_version"
                   ],

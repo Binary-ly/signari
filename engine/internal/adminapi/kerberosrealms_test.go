@@ -88,13 +88,24 @@ func TestAKerberosRealmIsKeptThroughTheAPI(t *testing.T) {
 		http.StatusBadRequest, "no key for")
 	refused("a keytab of another realm", good(func(b map[string]any) { b["realm"] = "OTHER.TEST" }),
 		http.StatusBadRequest, "no key for")
+	refused("trusting itself", good(func(b map[string]any) { b["trusted_realms"] = []string{"example.com"} }),
+		http.StatusBadRequest, "not another realm")
+	refused("a principal for a realm", good(func(b map[string]any) { b["trusted_realms"] = []string{"a@PARTNER.TEST"} }),
+		http.StatusBadRequest, "not another realm")
 
-	rec := call(t, s, http.MethodPost, base, testToken, good(func(map[string]any) {}))
+	rec := call(t, s, http.MethodPost, base, testToken, good(func(b map[string]any) {
+		b["trusted_realms"] = []string{"partner.test"}
+		b["create_accounts"] = true
+	}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("registering: %d %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"realm":"EXAMPLE.COM"`) {
 		t.Errorf("the realm is not in its one spelling: %s", rec.Body.String())
+	}
+	listed := call(t, s, http.MethodGet, base, testToken, nil).Body.String()
+	if !strings.Contains(listed, `"trusted_realms":["PARTNER.TEST"]`) || !strings.Contains(listed, `"create_accounts":true`) {
+		t.Errorf("the realm's opt-ins read back as %s", listed)
 	}
 
 	// A host answers for one realm, whichever organisation asks.

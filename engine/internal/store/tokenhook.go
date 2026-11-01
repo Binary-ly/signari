@@ -115,8 +115,8 @@ type AuthenticateHookRequest struct {
 	ClientIP string   `json:"client_ip,omitempty"`
 }
 
-// UserCreateHookRequest is what the user_create hook is told. Source is `signup` or
-// `federation`.
+// UserCreateHookRequest is what the user_create hook is told. Source is `signup`, `federation` or
+// `kerberos`.
 type UserCreateHookRequest struct {
 	OrgID  string `json:"org_id"`
 	Email  string `json:"email"`

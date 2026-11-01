@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0254 federation_subordinates
+
+Compatible with the release before: its binary may still serve this schema.
+
+Entities this one speaks for (12.11). A deployment could join a federation and could not be the thing others join: it had nobody to vouch for and no endpoint to do it at. So an instance keeps its Immediate Subordinates, each with the keys it was told out of band, because a Subordinate Statement's whole worth is that those keys did not come from the subordinate's own say-so at the moment of asking. An older binary ignores the table and publishes nothing from it.
+
 ## 0253 credential_deferred
 
 Compatible with the release before: its binary may still serve this schema.

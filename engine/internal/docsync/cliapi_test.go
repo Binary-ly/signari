@@ -295,6 +295,11 @@ var cliAPI = map[string]string{
 	"attester add":         "PUT /admin/organizations/{orgID}/attesters/{name}",
 	"attester list":        reads,
 
+	// Who this instance speaks for in a federation.
+	"federation subordinates":       reads,
+	"federation add-subordinate":    "PUT /admin/instances/{instanceID}/federation/subordinates",
+	"federation remove-subordinate": "DELETE /admin/instances/{instanceID}/federation/subordinates",
+
 	// Network access.
 	"radius add-client":     "POST /admin/organizations/{orgID}/radius-clients",
 	"radius authorize":      "PUT /admin/groups/{groupID}/radius",

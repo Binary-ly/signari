@@ -370,6 +370,9 @@ authorization and federation:
   federation enable    join an OpenID Federation: generate an Entity Statement key
                        and publish /.well-known/openid-federation
   federation show      print the Entity Configuration this instance publishes
+  federation add-subordinate     speak for an entity, with the keys it gave you
+  federation subordinates        who this instance speaks for
+  federation remove-subordinate  stop speaking for one
   trust-mark issue     issue an OpenID Federation Trust Mark to an entity
   trust-mark revoke    withdraw a Trust Mark this entity issued
   trust-mark list      Trust Marks this entity issues and holds
@@ -553,7 +556,7 @@ func run(args []string) (err error) {
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
 	insecure := fs.Bool("insecure", false, "skip certificate verification (internal CA or self-signed only)")
-	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID")
+	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID, or a federation subordinate's Entity Identifier")
 	metadataSource := fs.String("metadata", "", "a SAML partner's metadata: a file, or an https URL")
 	metadataSigner := fs.String("metadata-signer", "", "path to the certificate that metadata must be signed with (PEM)")
 	metadataUnsigned := fs.Bool("metadata-unsigned", false,
@@ -725,6 +728,10 @@ func run(args []string) (err error) {
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
+	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate gave you, as a JWK Set (federation add-subordinate)")
+	fedPolicyFile := fs.String("metadata-policy-file", "", "what this entity requires of a subordinate's metadata (federation add-subordinate)")
+	fedMaxPath := fs.Int("max-path-length", 0, "how many Intermediates may stand below a subordinate (federation add-subordinate)")
+	fedIntermediate := fs.Bool("intermediate", false, "the subordinate has subordinates of its own (federation add-subordinate)")
 	authorityHints := fs.String("authority-hints", "",
 		"comma-separated Entity Identifiers of this entity's Immediate Superiors "+
 			"(federation enable). Leave empty only for a Trust Anchor with no superiors")
@@ -1773,6 +1780,18 @@ func run(args []string) (err error) {
 			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL, *credByReference)
 	case "federation show":
 		return federationShow(ctx, conn)
+	case "federation add-subordinate":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var maxPath *int
+		if given["max-path-length"] {
+			maxPath = fedMaxPath
+		}
+		return federationAddSubordinate(ctx, conn, *entityID, *fedJWKSFile, *fedPolicyFile, maxPath, *fedIntermediate)
+	case "federation subordinates":
+		return federationSubordinates(ctx, conn, *outputFormat)
+	case "federation remove-subordinate":
+		return federationRemoveSubordinate(ctx, conn, *entityID)
 	case "trust-mark issue":
 		return trustMarkIssue(ctx, conn, *tmType, *tmSubject, *tmLogo, *tmRef,
 			*tmDelegation, *tmLifetime)
@@ -8889,8 +8908,92 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 
 	url, _ := oidfed.ConfigurationURL(issuer)
 	fmt.Printf("federation enabled\n  entity id : %s\n  published : %s\n", issuer, url)
-	fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
+	if len(hintList) == 0 {
+		fmt.Println("  superiors : none, so this entity is a Trust Anchor")
+	} else {
+		fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
+	}
 	fmt.Println("  restart `signari serve` to register the endpoint")
+	return nil
+}
+
+// federationAddSubordinate speaks for an entity (12.11). Its keys come from a file and not
+// from asking it: a Subordinate Statement is worth what the operator checked out of band.
+func federationAddSubordinate(ctx context.Context, conn *pgx.Conn, entityID, jwksFile, policyFile string,
+	maxPath *int, intermediate bool) error {
+	if entityID == "" || jwksFile == "" {
+		return fmt.Errorf("-entity-id and -jwks-file are required; take the keys from the entity itself, by a " +
+			"way that is not the address you are about to vouch for")
+	}
+	jwks, err := os.ReadFile(jwksFile)
+	if err != nil {
+		return err
+	}
+	sub := store.Subordinate{EntityID: entityID, JWKS: jwks, MaxPathLength: maxPath, Intermediate: intermediate}
+	if policyFile != "" {
+		if sub.MetadataPolicy, err = os.ReadFile(policyFile); err != nil {
+			return err
+		}
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := sub.Validate(issuer); err != nil {
+		return err
+	}
+	if err := store.SetSubordinate(ctx, conn, instanceID, sub); err != nil {
+		return err
+	}
+	fmt.Printf("%s speaks for %s from the next request\n", issuer, entityID)
+	return nil
+}
+
+// federationSubordinates lists who this instance speaks for.
+func federationSubordinates(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	rows, err := store.Subordinates(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && out.text() {
+		fmt.Println("this instance speaks for nobody")
+		return nil
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"entity_id": r.EntityID, "intermediate": r.Intermediate, "max_path_length": r.MaxPathLength,
+			"metadata_policy": len(r.MetadataPolicy) > 0})
+		if out.text() {
+			kind := "leaf"
+			if r.Intermediate {
+				kind = "intermediate"
+			}
+			fmt.Printf("%s  %s\n", r.EntityID, kind)
+		}
+	}
+	return out.flush()
+}
+
+// federationRemoveSubordinate stops speaking for an entity.
+func federationRemoveSubordinate(ctx context.Context, conn *pgx.Conn, entityID string) error {
+	if entityID == "" {
+		return fmt.Errorf("-entity-id is required")
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := store.RemoveSubordinate(ctx, conn, instanceID, entityID); err != nil {
+		return err
+	}
+	fmt.Printf("no longer speaking for %s; a statement already fetched lasts until it expires\n", entityID)
 	return nil
 }
 

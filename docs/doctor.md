@@ -101,7 +101,6 @@ reasons to block a release tonight.
 | providers | an enabled extension provider with no signing secret | warning — it is called without `Signari-Signature` and cannot tell this engine's calls from anybody's; `provider rotate` gives it one |
 | saml | logout URL registered but no SP certificate | warning — every logout from it is refused |
 | federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
-| federation | OpenID Federation configuration with no `authority_hints` | critical — a Trust Anchor this engine cannot be, so nothing is published |
 | flows | a stored sign-in flow that does not load | critical — the organisation runs the last flow that did, or the built-in one |
 | flows | a sign-in flow that refuses a passkey sign-in where people hold passkeys, or a provider sign-in where a provider is enabled | warning — a sign-in's proving stage must be the proof presented, so a flow naming only `password` refuses both; see [flows](flows.md#a-sign-ins-proving-stage-is-the-proof-presented) |
 | authorization | a stored model that does not load | critical — the engine evaluates the stored copy, so that organisation's decisions are failing |

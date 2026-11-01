@@ -196,6 +196,13 @@ func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSe
 		fedEntity["federation_trust_mark_endpoint"] = base + trustMarkPath
 	}
 
+	if s.federationSuperior(ctx, cfg) {
+		base := strings.TrimRight(s.cfg.Issuer, "/")
+		fedEntity["federation_fetch_endpoint"] = base + federationFetchPath
+		fedEntity["federation_list_endpoint"] = base + federationListPath
+		fedEntity["federation_resolve_endpoint"] = base + federationResolvePath
+	}
+
 	md := map[string]any{"federation_entity": fedEntity}
 
 	// The OIDC half, from the same builder discovery uses -- oidc.Build, not a

@@ -139,6 +139,12 @@ export class SignariAdmin {
     return this.call<DeleteInstancesInstanceIDBrandResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/brand`, undefined, opts)
   }
 
+  // DELETE /admin/instances/{instanceID}/federation/subordinates: Stop speaking for an entity.
+  // Needs organizations:write.
+  deleteInstancesInstanceIDFederationSubordinates(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDFederationSubordinatesResponse>> {
+    return this.call<DeleteInstancesInstanceIDFederationSubordinatesResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/federation/subordinates`, undefined, opts)
+  }
+
   // DELETE /admin/instances/{instanceID}/held-trust-marks: Stop publishing a Trust Mark the
   // instance holds. Needs organizations:write.
   deleteInstancesInstanceIDHeldTrustMarks(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDHeldTrustMarksResponse>> {
@@ -409,9 +415,15 @@ export class SignariAdmin {
   }
 
   // GET /admin/instances/{instanceID}/federation: Whether the instance is a federation entity, and
-  // what it publishes. Needs config:read.
+  // whatit publishes. Needs config:read.
   getInstancesInstanceIDFederation(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDFederationResponse>> {
     return this.call<GetInstancesInstanceIDFederationResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/federation`, undefined, opts)
+  }
+
+  // GET /admin/instances/{instanceID}/federation/subordinates: The entities the instance speaks
+  // for in its federation. Needs config:read.
+  getInstancesInstanceIDFederationSubordinates(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDFederationSubordinatesResponse>> {
+    return this.call<GetInstancesInstanceIDFederationSubordinatesResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/federation/subordinates`, undefined, opts)
   }
 
   // GET /admin/instances/{instanceID}/issuer-aliases: Legacy issuers the instance also claims, and
@@ -1178,6 +1190,12 @@ export class SignariAdmin {
     return this.call<PutInstancesInstanceIDFederationResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/federation`, body, opts)
   }
 
+  // PUT /admin/instances/{instanceID}/federation/subordinates: Speak for an entity, with the keys
+  // it gave you. Needs organizations:write.
+  putInstancesInstanceIDFederationSubordinates(instanceID: string, body: PutInstancesInstanceIDFederationSubordinatesRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDFederationSubordinatesResponse>> {
+    return this.call<PutInstancesInstanceIDFederationSubordinatesResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/federation/subordinates`, body, opts)
+  }
+
   // PUT /admin/instances/{instanceID}/held-trust-marks: Publish a Trust Mark another issuer
   // granted the instance. Needs organizations:write.
   putInstancesInstanceIDHeldTrustMarks(instanceID: string, body: PutInstancesInstanceIDHeldTrustMarksRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDHeldTrustMarksResponse>> {
@@ -1446,6 +1464,14 @@ export interface DeleteGroupsGroupIDRADIUSResponse {
 /** A JSON object of the Admin API. */
 export interface DeleteInstancesInstanceIDBrandResponse {
   config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteInstancesInstanceIDFederationSubordinatesResponse {
+  config_version: number
+  entity_id: string
+  instance_id: string
   removed: boolean
 }
 
@@ -1904,6 +1930,21 @@ export interface GetInstancesInstanceIDFederationResponse {
   lifetime_s: number
   organization_name: string
   trust_anchor_hints: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDFederationSubordinatesResponse {
+  instance_id: string
+  subordinates: GetInstancesInstanceIDFederationSubordinatesResponseSubordinatesItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDFederationSubordinatesResponseSubordinatesItem {
+  entity_id: string
+  intermediate: boolean
+  jwks: Record<string, unknown>
+  max_path_length: number | null
+  metadata_policy?: Record<string, unknown>
 }
 
 /** A JSON object of the Admin API. */
@@ -4220,6 +4261,22 @@ export interface PutInstancesInstanceIDFederationResponse {
   generated_key: string
   instance_id: string
   restart_required: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDFederationSubordinatesRequest {
+  entity_id?: string
+  intermediate?: boolean
+  jwks?: unknown
+  max_path_length?: number
+  metadata_policy?: unknown
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDFederationSubordinatesResponse {
+  config_version: number
+  entity_id: string
+  instance_id: string
 }
 
 /** A JSON object of the Admin API. */

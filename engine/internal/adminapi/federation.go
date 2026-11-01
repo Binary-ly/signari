@@ -33,7 +33,7 @@ type federationView struct {
 }
 
 // putFederationRequest is `federation enable`'s flags. A list left out keeps
-// what is set, and an empty one clears it; authority_hints are required.
+// what is set, and an empty one clears it; no authority_hints makes a Trust Anchor.
 type putFederationRequest struct {
 	AuthorityHints   []string  `json:"authority_hints"`
 	OrganizationName string    `json:"organization_name"`
@@ -178,6 +178,117 @@ func (s *Server) putFederation(w http.ResponseWriter, r *http.Request) {
 	// the next request.
 	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "entity_id": entityID,
 		"generated_key": generated, "restart_required": generated != "", "config_version": version})
+}
+
+// subordinateView is an entity this instance speaks for.
+type subordinateView struct {
+	EntityID       string          `json:"entity_id"`
+	JWKS           json.RawMessage `json:"jwks"`
+	MetadataPolicy json.RawMessage `json:"metadata_policy,omitempty"`
+	MaxPathLength  *int            `json:"max_path_length"`
+	Intermediate   bool            `json:"intermediate"`
+}
+
+// putSubordinateRequest is `federation add-subordinate`.
+type putSubordinateRequest struct {
+	EntityID       string          `json:"entity_id"`
+	JWKS           json.RawMessage `json:"jwks"`
+	MetadataPolicy json.RawMessage `json:"metadata_policy"`
+	MaxPathLength  *int            `json:"max_path_length"`
+	Intermediate   bool            `json:"intermediate"`
+}
+
+func (s *Server) listSubordinates(w http.ResponseWriter, r *http.Request) {
+	instanceID, _, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	got, err := store.Subordinates(r.Context(), s.db, instanceID)
+	if err != nil {
+		s.log.Error("listing subordinates", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	out := make([]subordinateView, 0, len(got))
+	for _, sub := range got {
+		out = append(out, subordinateView{EntityID: sub.EntityID, JWKS: sub.JWKS, MetadataPolicy: sub.MetadataPolicy,
+			MaxPathLength: sub.MaxPathLength, Intermediate: sub.Intermediate})
+	}
+	s.writeList(w, r, map[string]any{"instance_id": instanceID, "subordinates": out})
+}
+
+// putSubordinate speaks for an entity, as `signari federation add-subordinate` does.
+func (s *Server) putSubordinate(w http.ResponseWriter, r *http.Request) {
+	instanceID, entityID, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	var req putSubordinateRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	sub := store.Subordinate{EntityID: strings.TrimSpace(req.EntityID), JWKS: req.JWKS,
+		MetadataPolicy: req.MetadataPolicy, MaxPathLength: req.MaxPathLength, Intermediate: req.Intermediate}
+	if err := sub.Validate(entityID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_subordinate", "detail": err.Error()})
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := store.SetSubordinate(ctx, tx, instanceID, sub); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.federation_subordinate_set", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "entity_id": sub.EntityID,
+				"intermediate": sub.Intermediate, "max_path_length": sub.MaxPathLength}})
+	})
+	if s.writeFederationFailure(w, err, instanceID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "entity_id": sub.EntityID,
+		"config_version": version})
+}
+
+// deleteSubordinate stops speaking for the entity ?entity_id= names. A statement already
+// fetched lasts until it expires: nothing can reach it.
+func (s *Server) deleteSubordinate(w http.ResponseWriter, r *http.Request) {
+	instanceID, _, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	entity := r.URL.Query().Get("entity_id")
+	if entity == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request",
+			"detail": "name the subordinate with ?entity_id="})
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := store.RemoveSubordinate(ctx, tx, instanceID, entity); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.federation_subordinate_removed", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "entity_id": entity}})
+	})
+	if errors.Is(err, store.ErrSubordinateUnknown) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subordinate_not_found"})
+		return
+	}
+	if s.writeFederationFailure(w, err, instanceID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "entity_id": entity, "removed": true,
+		"config_version": version})
 }
 
 func (s *Server) listTrustMarks(w http.ResponseWriter, r *http.Request) {

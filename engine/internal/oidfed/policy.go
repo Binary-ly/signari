@@ -818,7 +818,7 @@ func metadataPolicyOf(st Statement) (Policy, error) {
 		return nil, err
 	}
 	var claims struct {
-		MetadataPolicy map[string]map[string]map[string]json.RawMessage `json:"metadata_policy"`
+		MetadataPolicy rawPolicy `json:"metadata_policy"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("the metadata_policy of the statement issued by %s "+
@@ -827,8 +827,29 @@ func metadataPolicyOf(st Statement) (Policy, error) {
 	if claims.MetadataPolicy == nil {
 		return nil, nil
 	}
+	return claims.MetadataPolicy.decode()
+}
+
+// rawPolicy is a metadata_policy as it is written.
+type rawPolicy map[string]map[string]map[string]json.RawMessage
+
+// CheckMetadataPolicy refuses a policy no resolver could apply, for an entity about to sign
+// one: a statement carrying it would break the chain of everybody below.
+func CheckMetadataPolicy(raw json.RawMessage) error {
+	var written rawPolicy
+	if err := json.Unmarshal(raw, &written); err != nil {
+		return err
+	}
+	p, err := written.decode()
+	if err != nil {
+		return err
+	}
+	return validatePolicy(p, nil)
+}
+
+func (written rawPolicy) decode() (Policy, error) {
 	p := Policy{}
-	for entityType, params := range claims.MetadataPolicy {
+	for entityType, params := range written {
 		tp := TypePolicy{}
 		for param, ops := range params {
 			pp := ParamPolicy{}

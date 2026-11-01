@@ -34,10 +34,9 @@ func refuse(format string, args ...any) error { return federationRefused{fmt.Err
 // federation was never enabled for it.
 var ErrNoFederationKey = errors.New("this instance has no active federation signing key; enable federation first")
 
-// FederationChange is what `federation enable` sets. AuthorityHints are
-// required: with none this entity would be a Trust Anchor, which MUST publish
-// a federation_fetch_endpoint (specs/oidfed.html:3451-3462), and this engine
-// serves none. A nil pointer keeps what is set; an empty list clears it.
+// FederationChange is what `federation enable` sets. No AuthorityHints makes
+// this entity a Trust Anchor. A nil pointer keeps what is set; an empty list
+// clears it.
 type FederationChange struct {
 	AuthorityHints   []string
 	OrganizationName string
@@ -49,11 +48,6 @@ type FederationChange struct {
 
 // Validate refuses a change before anything is loaded or written.
 func (c FederationChange) Validate() error {
-	if len(c.AuthorityHints) == 0 {
-		return refuse("give the authority hints, the Trust Anchor or Intermediate above this " +
-			"entity: with none it would be a Trust Anchor, which MUST publish a " +
-			"federation_fetch_endpoint, and this engine does not serve one")
-	}
 	for _, h := range c.AuthorityHints {
 		if err := oidfed.ValidateEntityID(h); err != nil {
 			return refuse("authority hint %q: %w", h, err)
@@ -133,7 +127,7 @@ func EnableFederation(ctx context.Context, tx pgx.Tx, root *keys.RootKey, instan
 			organization_name = EXCLUDED.organization_name,
 			homepage_uri      = EXCLUDED.homepage_uri,
 			updated_at        = now()`,
-		instanceID, c.AuthorityHints, c.OrganizationName, c.HomepageURI); err != nil {
+		instanceID, nilIfNone(c.AuthorityHints), c.OrganizationName, c.HomepageURI); err != nil {
 		return "", fmt.Errorf("saving the federation configuration: %w", err)
 	}
 	// An empty list is written as NULL: the schema refuses `[]` for the hints,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -67,6 +68,32 @@ func (r *Resolver) maxDepth() int {
 func (r *Resolver) Resolve(ctx context.Context, entityID string, now time.Time) (*ChainResult, error) {
 	res, _, err := r.resolveWithChain(ctx, entityID, now)
 	return res, err
+}
+
+// ResolveChain is Resolve, also returning the statements, subject first, for whoever
+// has to show the chain as well as the verdict (§8.3).
+func (r *Resolver) ResolveChain(ctx context.Context, entityID string, now time.Time) (*ChainResult, []Statement, error) {
+	return r.resolveWithChain(ctx, entityID, now)
+}
+
+// EntityTypesOf lists the Entity Types an Entity Configuration declares metadata for.
+func EntityTypesOf(st Statement) ([]string, error) {
+	payload, err := claimsOf(st)
+	if err != nil {
+		return nil, err
+	}
+	var claims struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(claims.Metadata))
+	for entityType := range claims.Metadata {
+		out = append(out, entityType)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // resolveWithChain is Resolve, also returning the statements.

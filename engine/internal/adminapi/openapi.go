@@ -243,7 +243,11 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
 
 	// OpenID Federation and Trust Marks (6.07).
-	"GET /admin/instances/{instanceID}/federation":              "Whether the instance is a federation entity, and what it publishes.",
+	"GET /admin/instances/{instanceID}/federation/subordinates":    "The entities the instance speaks for in its federation.",
+	"PUT /admin/instances/{instanceID}/federation/subordinates":    "Speak for an entity, with the keys it gave you.",
+	"DELETE /admin/instances/{instanceID}/federation/subordinates": "Stop speaking for an entity.",
+
+	"GET /admin/instances/{instanceID}/federation":              "Whether the instance is a federation entity, and whatit publishes.",
 	"PUT /admin/instances/{instanceID}/federation":              "Make the instance a federation entity, or change what it publishes.",
 	"GET /admin/instances/{instanceID}/trust-marks":             "The Trust Marks the instance issued and the ones it holds.",
 	"POST /admin/instances/{instanceID}/trust-marks":            "Issue a Trust Mark, signed with the federation key.",

@@ -629,6 +629,10 @@ func (s *Server) mux() *http.ServeMux {
 		mux.HandleFunc("POST "+trustMarkStatusPath, s.handleTrustMarkStatus)
 		mux.HandleFunc("GET "+trustMarkListPath, s.handleTrustMarkList)
 		mux.HandleFunc("GET "+trustMarkPath, s.handleTrustMark)
+		// §8.1 to §8.3, for the entities this one speaks for.
+		mux.HandleFunc("GET "+federationFetchPath, s.handleFederationFetch)
+		mux.HandleFunc("GET "+federationListPath, s.handleFederationList)
+		mux.HandleFunc("GET "+federationResolvePath, s.handleFederationResolve)
 	}
 	// UMA 2.0. The permission endpoint authenticates the resource server; the
 	// grant is dispatched from the token endpoint; the claims interaction

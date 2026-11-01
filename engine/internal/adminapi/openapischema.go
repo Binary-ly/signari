@@ -738,6 +738,17 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/ssf-sources/poll": {http.StatusOK, typeOf[sourcePollRequest](), object(
 		[]string{"issuer", "poll_url", "config_version"}, withVersion(map[string]jsonSchema{"issuer": str(),
 			"poll_url": str()}))},
+	"GET /admin/instances/{instanceID}/federation/subordinates": {http.StatusOK, nil,
+		object([]string{"instance_id", "subordinates"}, map[string]jsonSchema{"instance_id": uuidStr(),
+			"subordinates": arrayOf(object([]string{"entity_id", "jwks", "max_path_length", "intermediate"},
+				map[string]jsonSchema{"entity_id": str(), "jwks": openObject(), "metadata_policy": openObject(),
+					"max_path_length": nullable(integer()), "intermediate": boolean()}))})},
+	"PUT /admin/instances/{instanceID}/federation/subordinates": {http.StatusOK, typeOf[putSubordinateRequest](),
+		object([]string{"instance_id", "entity_id", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "entity_id": str()}))},
+	"DELETE /admin/instances/{instanceID}/federation/subordinates": {http.StatusOK, nil,
+		object([]string{"instance_id", "entity_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "entity_id": str(), "removed": boolean()}))},
 	"GET /admin/instances/{instanceID}/federation": {http.StatusOK, nil, object([]string{"instance_id", "entity_id",
 		"enabled", "authority_hints", "trust_anchor_hints", "organization_name", "homepage_uri", "contacts",
 		"lifetime_s"}, map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(), "enabled": boolean(),

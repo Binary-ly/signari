@@ -49,9 +49,6 @@ func TestFederationAndTrustMarksAreManagedThroughTheAPI(t *testing.T) {
 	if e := errorOf(testToken, http.MethodPost, base+"/trust-marks", issue, http.StatusConflict); e != "federation_not_enabled" {
 		t.Errorf("issuing before federation was enabled answered %q", e)
 	}
-	if e := errorOf(testToken, http.MethodPut, base+"/federation", map[string]any{}, http.StatusBadRequest); e != "invalid_federation" {
-		t.Errorf("no authority hints answered %q", e)
-	}
 
 	rec := call(t, s, http.MethodPut, base+"/federation", testToken, map[string]any{
 		"authority_hints": []string{"https://anchor.example.test"}, "trust_anchor_hints": []string{"https://anchor.example.test"}})

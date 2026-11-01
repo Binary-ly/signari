@@ -3636,7 +3636,7 @@
             ]
           }
         ],
-        "summary": "Whether the instance is a federation entity, and what it publishes."
+        "summary": "Whether the instance is a federation entity, and whatit publishes."
       },
       "put": {
         "operationId": "put_instances_instanceID_federation",
@@ -3785,6 +3785,345 @@
           }
         ],
         "summary": "Make the instance a federation entity, or change what it publishes."
+      }
+    },
+    "/admin/instances/{instanceID}/federation/subordinates": {
+      "delete": {
+        "operationId": "delete_instances_instanceID_federation_subordinates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "instanceID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "instance_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "instance_id",
+                    "entity_id",
+                    "removed",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Stop speaking for an entity."
+      },
+      "get": {
+        "operationId": "get_instances_instanceID_federation_subordinates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "instanceID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "instance_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "subordinates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "entity_id": {
+                            "type": "string"
+                          },
+                          "intermediate": {
+                            "type": "boolean"
+                          },
+                          "jwks": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          },
+                          "max_path_length": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "metadata_policy": {
+                            "additionalProperties": true,
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "entity_id",
+                          "jwks",
+                          "max_path_length",
+                          "intermediate"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "instance_id",
+                    "subordinates"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "The entities the instance speaks for in its federation."
+      },
+      "put": {
+        "operationId": "put_instances_instanceID_federation_subordinates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "instanceID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "entity_id": {
+                    "type": "string"
+                  },
+                  "intermediate": {
+                    "type": "boolean"
+                  },
+                  "jwks": {},
+                  "max_path_length": {
+                    "type": "integer"
+                  },
+                  "metadata_policy": {}
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "entity_id": {
+                      "type": "string"
+                    },
+                    "instance_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "instance_id",
+                    "entity_id",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Speak for an entity, with the keys it gave you."
       }
     },
     "/admin/instances/{instanceID}/held-trust-marks": {

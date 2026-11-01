@@ -50,6 +50,12 @@ const Typ = "entity-statement+jwt"
 // MediaType is what the configuration endpoint serves.
 const MediaType = "application/entity-statement+jwt"
 
+// ResolveResponseTyp and ResolveResponseMediaType are §8.3.2's, for the same reason.
+const (
+	ResolveResponseTyp       = "resolve-response+jwt"
+	ResolveResponseMediaType = "application/resolve-response+jwt"
+)
+
 // WellKnownPath is appended to the Entity Identifier, §9.
 const WellKnownPath = "/.well-known/openid-federation"
 
@@ -155,15 +161,14 @@ func Build(p Params, now time.Time) (*EntityConfiguration, error) {
 	}
 	// No authority_hints makes this entity a Trust Anchor, and "Intermediate
 	// Entities and Trust Anchors MUST publish a federation_fetch_endpoint"
-	// (federation_entity metadata, specs/oidfed.html:3451-3462). This engine
-	// serves none, so it published Trust Anchor statements a conformant
-	// resolver cannot use to fetch a single Subordinate Statement. Refused
-	// until the fetch endpoint exists (12.11).
+	// (federation_entity metadata, specs/oidfed.html:3451-3462). A Trust Anchor
+	// without one is a statement no conformant resolver can use.
 	if len(p.AuthorityHints) == 0 {
-		return nil, fmt.Errorf("an entity with no authority_hints is a Trust Anchor, and " +
-			"a Trust Anchor MUST publish a federation_fetch_endpoint, which this engine " +
-			"does not serve; name the Trust Anchor or Intermediate above this entity in " +
-			"authority_hints")
+		entity, _ := p.Metadata["federation_entity"].(map[string]any)
+		if _, has := entity["federation_fetch_endpoint"]; !has {
+			return nil, fmt.Errorf("an entity with no authority_hints is a Trust Anchor, and " +
+				"a Trust Anchor MUST publish a federation_fetch_endpoint")
+		}
 	}
 	if p.TrustAnchorHints != nil && len(p.TrustAnchorHints) == 0 {
 		return nil, fmt.Errorf("trust_anchor_hints must not be the empty array " +

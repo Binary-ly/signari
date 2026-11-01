@@ -90,7 +90,7 @@ command or an environment variable exists in code and not on its page.
 | | |
 |---|---|
 | [oid4vci.md](oid4vci.md) | The authorization server's half of credential issuance |
-| [openid-federation.md](openid-federation.md) | The Entity Configuration and metadata policy |
+| [openid-federation.md](openid-federation.md) | The Entity Configuration, metadata policy, and being a Trust Anchor or Intermediate |
 | [trust-marks.md](trust-marks.md) | Signed conformance statements |
 | [uma.md](uma.md) | User-Managed Access 2.0 |
 

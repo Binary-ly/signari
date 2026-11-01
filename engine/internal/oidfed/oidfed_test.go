@@ -42,9 +42,9 @@ func TestTheHintClaimsAreNeverTheEmptyArray(t *testing.T) {
 	})
 
 	// nil means a Trust Anchor, which MUST publish a federation_fetch_endpoint
-	// (specs/oidfed.html:3451-3462). This engine serves none, so it is refused
-	// rather than published as an anchor nobody can resolve through (2.37).
-	t.Run("nil, a Trust Anchor, is refused until a fetch endpoint exists", func(t *testing.T) {
+	// (specs/oidfed.html:3451-3462), so one without is refused rather than
+	// published as an anchor nobody can resolve through (2.37).
+	t.Run("nil, a Trust Anchor, is refused with no fetch endpoint", func(t *testing.T) {
 		p := good()
 		p.AuthorityHints = nil
 		_, err := Build(p, time.Now())

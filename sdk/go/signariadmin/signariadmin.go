@@ -225,6 +225,14 @@ type DeleteInstancesInstanceIDBrandResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteInstancesInstanceIDFederationSubordinatesResponse is a JSON object of the Admin API.
+type DeleteInstancesInstanceIDFederationSubordinatesResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	EntityID      string `json:"entity_id"`
+	InstanceID    string `json:"instance_id"`
+	Removed       bool   `json:"removed"`
+}
+
 // DeleteInstancesInstanceIDHeldTrustMarksResponse is a JSON object of the Admin API.
 type DeleteInstancesInstanceIDHeldTrustMarksResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -680,6 +688,21 @@ type GetInstancesInstanceIDFederationResponse struct {
 	LifetimeS        int64    `json:"lifetime_s"`
 	OrganizationName string   `json:"organization_name"`
 	TrustAnchorHints []string `json:"trust_anchor_hints"`
+}
+
+// GetInstancesInstanceIDFederationSubordinatesResponse is a JSON object of the Admin API.
+type GetInstancesInstanceIDFederationSubordinatesResponse struct {
+	InstanceID   string                                                                 `json:"instance_id"`
+	Subordinates []GetInstancesInstanceIDFederationSubordinatesResponseSubordinatesItem `json:"subordinates"`
+}
+
+// GetInstancesInstanceIDFederationSubordinatesResponseSubordinatesItem is a JSON object of the Admin API.
+type GetInstancesInstanceIDFederationSubordinatesResponseSubordinatesItem struct {
+	EntityID       string         `json:"entity_id"`
+	Intermediate   bool           `json:"intermediate"`
+	JWKS           map[string]any `json:"jwks"`
+	MaxPathLength  *int64         `json:"max_path_length"`
+	MetadataPolicy map[string]any `json:"metadata_policy,omitempty"`
 }
 
 // GetInstancesInstanceIDIssuerAliasesResponse is a JSON object of the Admin API.
@@ -2998,6 +3021,22 @@ type PutInstancesInstanceIDFederationResponse struct {
 	RestartRequired bool   `json:"restart_required"`
 }
 
+// PutInstancesInstanceIDFederationSubordinatesRequest is a JSON object of the Admin API.
+type PutInstancesInstanceIDFederationSubordinatesRequest struct {
+	EntityID       *string         `json:"entity_id,omitempty"`
+	Intermediate   *bool           `json:"intermediate,omitempty"`
+	JWKS           json.RawMessage `json:"jwks,omitempty"`
+	MaxPathLength  *int64          `json:"max_path_length,omitempty"`
+	MetadataPolicy json.RawMessage `json:"metadata_policy,omitempty"`
+}
+
+// PutInstancesInstanceIDFederationSubordinatesResponse is a JSON object of the Admin API.
+type PutInstancesInstanceIDFederationSubordinatesResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	EntityID      string `json:"entity_id"`
+	InstanceID    string `json:"instance_id"`
+}
+
 // PutInstancesInstanceIDHeldTrustMarksRequest is a JSON object of the Admin API.
 type PutInstancesInstanceIDHeldTrustMarksRequest struct {
 	TrustMark *string `json:"trust_mark,omitempty"`
@@ -3685,6 +3724,18 @@ func (c *Client) DeleteInstancesInstanceIDBrand(ctx context.Context, instanceID 
 	return &out, v, nil
 }
 
+// DeleteInstancesInstanceIDFederationSubordinates is DELETE
+// /admin/instances/{instanceID}/federation/subordinates: Stop speaking for an entity. Needs
+// organizations:write.
+func (c *Client) DeleteInstancesInstanceIDFederationSubordinates(ctx context.Context, instanceID string, opts ...Option) (*DeleteInstancesInstanceIDFederationSubordinatesResponse, int64, error) {
+	var out DeleteInstancesInstanceIDFederationSubordinatesResponse
+	v, err := c.call(ctx, "DELETE", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/subordinates", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteInstancesInstanceIDHeldTrustMarks is DELETE
 // /admin/instances/{instanceID}/held-trust-marks: Stop publishing a Trust Mark the instance holds.
 // Needs organizations:write.
@@ -4209,10 +4260,22 @@ func (c *Client) GetInstancesInstanceIDBrand(ctx context.Context, instanceID str
 }
 
 // GetInstancesInstanceIDFederation is GET /admin/instances/{instanceID}/federation: Whether the
-// instance is a federation entity, and what it publishes. Needs config:read.
+// instance is a federation entity, and whatit publishes. Needs config:read.
 func (c *Client) GetInstancesInstanceIDFederation(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDFederationResponse, int64, error) {
 	var out GetInstancesInstanceIDFederationResponse
 	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/federation", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetInstancesInstanceIDFederationSubordinates is GET
+// /admin/instances/{instanceID}/federation/subordinates: The entities the instance speaks for in
+// its federation. Needs config:read.
+func (c *Client) GetInstancesInstanceIDFederationSubordinates(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDFederationSubordinatesResponse, int64, error) {
+	var out GetInstancesInstanceIDFederationSubordinatesResponse
+	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/subordinates", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5660,6 +5723,18 @@ func (c *Client) PutInstancesInstanceIDBrand(ctx context.Context, instanceID str
 func (c *Client) PutInstancesInstanceIDFederation(ctx context.Context, instanceID string, body PutInstancesInstanceIDFederationRequest, opts ...Option) (*PutInstancesInstanceIDFederationResponse, int64, error) {
 	var out PutInstancesInstanceIDFederationResponse
 	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/federation", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutInstancesInstanceIDFederationSubordinates is PUT
+// /admin/instances/{instanceID}/federation/subordinates: Speak for an entity, with the keys it
+// gave you. Needs organizations:write.
+func (c *Client) PutInstancesInstanceIDFederationSubordinates(ctx context.Context, instanceID string, body PutInstancesInstanceIDFederationSubordinatesRequest, opts ...Option) (*PutInstancesInstanceIDFederationSubordinatesResponse, int64, error) {
+	var out PutInstancesInstanceIDFederationSubordinatesResponse
+	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/subordinates", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

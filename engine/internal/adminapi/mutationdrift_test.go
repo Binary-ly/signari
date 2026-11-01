@@ -899,6 +899,27 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/instances/{instanceID}/federation/subordinates", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/subordinates"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"entity_id":"https://leaf.example.test","jwks":{"keys":[` + driftJWK + `]}}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/federation/subordinates", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				if err := store.SetSubordinate(context.Background(), s.db, id, store.Subordinate{
+					EntityID: "https://leaf.example.test", JWKS: []byte(`{"keys":[` + driftJWK + `]}`)}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/federation/subordinates?entity_id=https://leaf.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return `` },
+		},
+		{
 			name: "POST /admin/instances/{instanceID}/trust-marks", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-marks"

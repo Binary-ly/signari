@@ -52,6 +52,7 @@ var globalNameKeys = map[string]string{
 // second column, so a statement comparing both selects one organisation's row
 // and one comparing the first alone does not.
 var globalPairKeys = map[string]struct{ with, reason string }{
+	"federation_subordinates.entity_id": {"instance_id", "a federation entity is an instance, and no organisation holds what it says"},
 	"ssf_sources.issuer": {"audience", "unique with lower(audience) across organisations " +
 		"since migration 0138: two tenants can trust one transmitter, and the audience is " +
 		"what it writes to say whose an event is; SourceFor refuses a token whose several " +

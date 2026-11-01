@@ -597,6 +597,9 @@ func (s *Server) Routes() http.Handler {
 		// deployment-wide tokens only.
 		route("GET /admin/instances/{instanceID}/federation", ScopeConfigRead, s.getFederation)
 		route("PUT /admin/instances/{instanceID}/federation", ScopeOrganizationsWrite, s.putFederation)
+		route("GET /admin/instances/{instanceID}/federation/subordinates", ScopeConfigRead, s.listSubordinates)
+		route("PUT /admin/instances/{instanceID}/federation/subordinates", ScopeOrganizationsWrite, s.putSubordinate)
+		route("DELETE /admin/instances/{instanceID}/federation/subordinates", ScopeOrganizationsWrite, s.deleteSubordinate)
 		route("GET /admin/instances/{instanceID}/trust-marks", ScopeConfigRead, s.listTrustMarks)
 		route("POST /admin/instances/{instanceID}/trust-marks", ScopeOrganizationsWrite, s.issueTrustMark)
 		route("POST /admin/instances/{instanceID}/trust-marks/revoke", ScopeOrganizationsWrite, s.revokeTrustMark)

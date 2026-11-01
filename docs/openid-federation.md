@@ -14,14 +14,12 @@ building and validation (§10), metadata policy (§6) and constraints (§6.2). A
 **Trust Marks** (§7): issuing, delegation, validation, and the three Trust Mark
 Issuer endpoints of §8.4–§8.6 — see [trust-marks.md](trust-marks.md).
 
-**Not implemented.** The remaining §8 endpoints — fetch, subordinate listing,
-resolve. Signari can be a **Leaf Entity** and a **Trust Mark Issuer**. It cannot
-yet be an Intermediate or a Trust Anchor *for others*, because it cannot serve
-Subordinate Statements.
+Signari can be a **Leaf Entity**, a **Trust Mark Issuer**, an **Intermediate** and a
+**Trust Anchor**. Fetch, subordinate listing and resolve are in
+[Speaking for other entities](#speaking-for-other-entities).
 
-Nothing advertises what is missing. The `federation_entity` metadata contains no
-`federation_fetch_endpoint`, because that endpoint does not exist — the same rule
-this repository applies to OIDC discovery. The three trust-mark endpoints are
+Nothing advertises what does not apply. A Leaf Entity's `federation_entity` metadata
+contains no `federation_fetch_endpoint`, which §5.1.1 forbids it. The three trust-mark endpoints are
 advertised only once this entity has actually issued a Trust Mark.
 
 ## Enabling it
@@ -33,17 +31,11 @@ advertised only once this entity has actually issued a Trust Mark.
 Then restart `signari serve`; the endpoint is registered at startup only when a
 federation key exists.
 
-`-authority-hints` names this entity's **Immediate Superiors**, and it is
-**required**. §3.1.2 makes the claim REQUIRED for any entity with a superior above
-it, forbids the empty array, and forbids the claim entirely for a Trust Anchor
-with no superiors, so omitting it would make this entity a Trust Anchor. Trust
-Anchors "MUST publish a federation_fetch_endpoint" (the `federation_entity`
-metadata), and this engine serves none, so it cannot be one: the command refuses,
-and an Entity Configuration with no `authority_hints` is not published even if
-one was stored earlier. The same goes for `trust-mark issuers` and `trust-mark
-owners`, which set claims only a Trust Anchor publishes; both still clear them.
-Until October 2026 omitting the flag published a Trust Anchor that no resolver
-could fetch a Subordinate Statement from.
+`-authority-hints` names this entity's **Immediate Superiors**. §3.1.2 makes the
+claim REQUIRED for any entity with a superior above it, forbids the empty array,
+and forbids the claim entirely for a Trust Anchor with no superiors, so leaving it
+out makes this entity a **Trust Anchor** (see below). `trust-mark issuers` and
+`trust-mark owners` set claims only a Trust Anchor publishes.
 
 Three more settings go into the Entity Configuration, and each is kept when its
 flag is not given, so a re-run to change the name does not wipe them:
@@ -437,13 +429,38 @@ every test here, and that is a property of the operator set rather than a gap in
 the tests. The direction still matters for the additional operators §6.1.3.2
 permits, whose merges need not be commutative.
 
+## Speaking for other entities
+
+An entity with no superior is a Trust Anchor, and one with a superior becomes an
+Intermediate by speaking for somebody:
+
+```sh
+signari federation enable                 # no -authority-hints: a Trust Anchor
+signari federation add-subordinate -entity-id https://rp.example \
+    -jwks-file rp-federation-keys.json \
+    [-metadata-policy-file policy.json] [-max-path-length 1] [-intermediate]
+signari federation subordinates
+signari federation remove-subordinate -entity-id https://rp.example
+```
+
+**Take the keys from the entity by some way other than its own address.** A
+Subordinate Statement says "these are that entity's keys", and it is worth what you
+checked to say so. Asking the entity at the moment of adding it would vouch for
+whoever answered, so the keys are a file. A private key is refused, since the keys
+are published to everybody who asks, and so is a policy no resolver could apply,
+which would break the chain of everybody below.
+
+Three endpoints serve it, and are published in the `federation_entity` metadata only
+by a Trust Anchor or an entity with subordinates, as §5.1.1 requires:
+
+| | |
+|---|---|
+| `GET /federation/fetch?sub=` | §8.1: a Subordinate Statement, signed with the Federation Entity Key and made at each request, so that a removal or a change of keys holds from the next one. `not_found` for an entity it does not speak for, `invalid_request` for itself. A statement already fetched lasts until it expires, which is the lifetime of this entity's own configuration |
+| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters. `entity_type`, `trust_marked` and `trust_mark_type` are refused with `unsupported_parameter`, since it does not hold those facts, and a list ignoring them would look filtered and be wrong |
+| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. **Only for chains ending at this entity**, the one anchor whose keys it holds; any other is `invalid_trust_anchor`. It carries no `trust_marks`: §8.3 says the set MUST include only verified ones, and it verifies none yet |
+
 ## Where it goes next
 
-- **The §8 endpoints** we would serve as an Intermediate: fetch and subordinate
-  listing. Signari cannot yet issue Subordinate Statements, so it cannot vouch
-  for another entity's keys — which is a different thing from vouching for its
-  conformance, and that second one is now covered by
-  [trust marks](trust-marks.md).
 - **The resolve endpoint** (§8.3), which would let others reuse chains we have
   already validated.
 

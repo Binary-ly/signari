@@ -35,7 +35,7 @@ refused with `412` when the configuration moved since the version it names.
 | [identity-providers](#identity-providers) | 13 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
-| [instances / federation](#instances--federation) | 2 |
+| [instances / federation](#instances--federation) | 5 |
 | [instances / held-trust-marks](#instances--held-trust-marks) | 2 |
 | [instances / issuer-aliases](#instances--issuer-aliases) | 3 |
 | [instances / keys](#instances--keys) | 3 |
@@ -1791,7 +1791,7 @@ Answers:
 
 ### `GET /admin/instances/{instanceID}/federation`
 
-Whether the instance is a federation entity, and what it publishes. Needs config:read.
+Whether the instance is a federation entity, and whatit publishes. Needs config:read.
 
 Go `GetInstancesInstanceIDFederation`, TypeScript `getInstancesInstanceIDFederation`.
 
@@ -1835,6 +1835,58 @@ Answers:
 | `generated_key` | string | always |
 | `instance_id` | string | always |
 | `restart_required` | boolean | always |
+
+### `DELETE /admin/instances/{instanceID}/federation/subordinates`
+
+Stop speaking for an entity. Needs organizations:write.
+
+Go `DeleteInstancesInstanceIDFederationSubordinates`, TypeScript `deleteInstancesInstanceIDFederationSubordinates`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `entity_id` | string | always |
+| `instance_id` | string | always |
+| `removed` | boolean | always |
+
+### `GET /admin/instances/{instanceID}/federation/subordinates`
+
+The entities the instance speaks for in its federation. Needs config:read.
+
+Go `GetInstancesInstanceIDFederationSubordinates`, TypeScript `getInstancesInstanceIDFederationSubordinates`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `instance_id` | string | always |
+| `subordinates` | list of object | always |
+
+### `PUT /admin/instances/{instanceID}/federation/subordinates`
+
+Speak for an entity, with the keys it gave you. Needs organizations:write.
+
+Go `PutInstancesInstanceIDFederationSubordinates`, TypeScript `putInstancesInstanceIDFederationSubordinates`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `entity_id` | string |  |
+| `intermediate` | boolean |  |
+| `jwks` | any |  |
+| `max_path_length` | integer |  |
+| `metadata_policy` | any |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `entity_id` | string | always |
+| `instance_id` | string | always |
 
 ## instances / held-trust-marks
 

@@ -175,6 +175,21 @@ func SAMLSourceSigner(ctx context.Context, q claimReader, root *keys.RootKey, pr
 	return live[0], nil
 }
 
+// SAMLSourceDecrypters are the keys an assertion from an upstream may be encrypted
+// to. All that are live, since an upstream takes up a new certificate in its own
+// time.
+func SAMLSourceDecrypters(ctx context.Context, q claimReader, root *keys.RootKey, providerID string) ([]crypto.Decrypter, error) {
+	live, err := liveSAMLSourceKeys(ctx, q, root, providerID, saml.SPKeyEncryption, 16)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]crypto.Decrypter, len(live))
+	for i, k := range live {
+		out[i] = k
+	}
+	return out, nil
+}
+
 func liveSAMLSourceKeys(ctx context.Context, q claimReader, root *keys.RootKey, providerID, purpose string, limit int) ([]saml.SPKey, error) {
 	if root == nil {
 		return nil, errors.New("a key is sealed under the root key, and none is configured")

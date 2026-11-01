@@ -57,6 +57,11 @@ type InboundProvider struct {
 	// RequestSigner when the request is built.
 	SignRequests  bool
 	RequestSigner crypto.Signer
+
+	// Decrypters are the keys an assertion from this upstream may be encrypted
+	// to, and RequireEncryption refuses one that is not.
+	Decrypters        []crypto.Decrypter
+	RequireEncryption bool
 }
 
 // AuthnRequestOut is a request to send to an upstream provider.
@@ -232,34 +237,17 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	// returning the honest subject. Harmless in itself, and a malformed document
 	// accepted is where the next bug starts. So the guard earns its place by
 	// refusing, not by preventing takeover.
-	if all := doc.FindElements("//Assertion"); refuseMultipleAssertions && len(all) > 1 {
+	all, sealed := doc.FindElements("//Assertion"), doc.FindElements("//EncryptedAssertion")
+	if refuseMultipleAssertions && len(all)+len(sealed) > 1 {
 		return nil, fmt.Errorf("the response contains %d assertions; exactly one is "+
 			"accepted, because choosing between them is the attacker's decision to make",
-			len(all))
+			len(all)+len(sealed))
+	}
+	if p.RequireEncryption && len(sealed) == 0 {
+		return nil, fmt.Errorf("this provider is held to encrypting its assertions, and this one is not")
 	}
 
-	assertion := root.FindElement("./Assertion")
-	if assertion == nil {
-		if root.FindElement("./EncryptedAssertion") != nil {
-			return nil, fmt.Errorf("the assertion is encrypted, which this provider is " +
-				"not configured to decrypt")
-		}
-		return nil, fmt.Errorf("no assertion in the response")
-	}
-	assertionID := assertion.SelectAttrValue("ID", "")
-	if assertionID == "" {
-		return nil, fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
-	}
-
-	// The signature may cover the Response or the Assertion. Both are legal, and
-	// an attacker gets to choose, so whichever is present must actually protect
-	// the assertion we go on to read.
-	//
-	// verifyInbound returns THE ASSERTION INSIDE THE VERIFIED ELEMENT, and
-	// everything below reads from that. Re-finding the assertion in the original
-	// tree would reintroduce exactly the gap between "what was verified" and
-	// "what was read" that this whole file is about.
-	assertion, err := verifyInbound(doc, p.CertPEM, root, assertion, assertionID)
+	assertion, assertionID, err := readAssertion(doc, root, p)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +279,22 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 		NotOnOrAfter: notOnOrAfter,
 	}
 
-	if nameID := assertion.FindElement("./Subject/NameID"); nameID != nil {
+	nameID := assertion.FindElement("./Subject/NameID")
+	if encrypted := assertion.FindElement("./Subject/EncryptedID"); nameID == nil && encrypted != nil {
+		// Inside the assertion that was verified, so the signature covers this
+		// ciphertext whichever element carried it.
+		if len(p.Decrypters) == 0 {
+			return nil, fmt.Errorf("the NameID is encrypted, which this provider is not configured to decrypt")
+		}
+		plain, err := open(encrypted, p.Decrypters, true)
+		if err != nil {
+			return nil, err
+		}
+		if _, nameID, err = decrypted(plain, "NameID", encrypted); err != nil {
+			return nil, err
+		}
+	}
+	if nameID != nil {
 		out.Subject = strings.TrimSpace(nameID.Text())
 		out.SubjectFormat = nameID.SelectAttrValue("Format", "")
 	}
@@ -337,6 +340,79 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	}
 
 	return out, nil
+}
+
+// readAssertion finds the response's one assertion, decrypting it if it has to,
+// and returns it verified.
+//
+// The signature may cover the Response or the Assertion. Both are legal, and an
+// attacker gets to choose, so whichever is present must actually protect the
+// assertion we go on to read.
+//
+// What this returns is THE ASSERTION INSIDE THE VERIFIED ELEMENT, and everything
+// after reads from that. Re-finding the assertion in the original tree would
+// reintroduce exactly the gap between "what was verified" and "what was read" that
+// this whole file is about.
+func readAssertion(doc *etree.Document, root *etree.Element, p *InboundProvider) (*etree.Element, string, error) {
+	assertion := root.FindElement("./Assertion")
+	if assertion != nil {
+		id := assertion.SelectAttrValue("ID", "")
+		if id == "" {
+			return nil, "", fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
+		}
+		verified, err := verifyInbound(doc, p.CertPEM, root, assertion, id)
+		return verified, id, err
+	}
+	sealed := root.FindElement("./EncryptedAssertion")
+	if sealed == nil {
+		return nil, "", fmt.Errorf("no assertion in the response")
+	}
+	if len(p.Decrypters) == 0 {
+		return nil, "", fmt.Errorf("the assertion is encrypted, which this provider is " +
+			"not configured to decrypt")
+	}
+
+	// A signature over the response covers the ciphertext, and is checked before
+	// a byte of it is decrypted: that is what makes the decryption safe to attempt.
+	// Taken from the verified element, for the reason above.
+	covered := root.FindElement("./Signature") != nil
+	if covered {
+		id := root.SelectAttrValue("ID", "")
+		if id == "" {
+			return nil, "", fmt.Errorf("the response is signed but has no ID")
+		}
+		verified, err := verifySignedElement(doc, root, p.CertPEM, "Response", id)
+		if err != nil {
+			return nil, "", err
+		}
+		if sealed = verified.FindElement("./EncryptedAssertion"); sealed == nil {
+			return nil, "", fmt.Errorf("the signed response contains no assertion")
+		}
+	}
+	plain, err := open(sealed, p.Decrypters, covered)
+	if err != nil {
+		return nil, "", err
+	}
+	inner, assertion, err := decrypted(plain, "Assertion", sealed)
+	if err != nil {
+		return nil, "", err
+	}
+	if n := len(inner.FindElements("//Assertion")); refuseMultipleAssertions && n != 1 {
+		return nil, "", fmt.Errorf("the encrypted assertion holds %d assertions", n)
+	}
+	id := assertion.SelectAttrValue("ID", "")
+	if id == "" {
+		return nil, "", fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
+	}
+	if assertion.FindElement("./Signature") != nil {
+		verified, err := verifySignedElement(inner, assertion, p.CertPEM, "Assertion", id)
+		return verified, id, err
+	}
+	if covered {
+		return assertion, id, nil
+	}
+	return nil, "", fmt.Errorf("neither the response nor the assertion is signed: encrypting an " +
+		"assertion to a public key says nothing about who wrote it")
 }
 
 // verifyInbound checks the signature wherever it legitimately sits.

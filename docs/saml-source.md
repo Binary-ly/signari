@@ -158,11 +158,43 @@ query as it is sent, so it verifies however the upstream's URL was written, and 
 signing is with RSA-SHA256, which is what a provider that insists on signed requests
 can be counted on to take.
 
+## Encrypted assertions
+
+An upstream that encrypts needs a key to encrypt to:
+
+```sh
+signari idp saml-key -slug corp -purpose encryption
+signari idp saml-use -slug corp -require-encryption=true
+```
+
+The certificate is in the metadata with `use="encryption"` and the algorithms taken
+here. Any live key opens an assertion, so an upstream can move to a new certificate
+in its own time, and until `-require-encryption` is on a plain assertion is still
+taken, which is how a change of this kind is rolled out without an outage.
+`EncryptedAssertion` and `EncryptedID` are both read.
+
+| | |
+|---|---|
+| Key transport | RSA-OAEP, as `rsa-oaep-mgf1p` or `rsa-oaep`, with SHA-1 or SHA-256 |
+| Refused outright | RSA PKCS#1 v1.5. It is an oracle on the key itself, and no signature over one document changes what the key does for whoever sends it another |
+| Data | AES-128-GCM and AES-256-GCM |
+| Only behind a signature | AES-128-CBC and AES-256-CBC |
+
+CBC is what this deployment refuses to send and takes on one condition. The attack
+on it needs a receiver that decrypts what an attacker has altered and lets it be
+seen what became of it, and nothing can alter what a verified signature covers. So
+a signature over the ciphertext, which means on the response, is checked before a
+byte is decrypted, and CBC with no such signature is refused and says so. An
+encrypted NameID sits inside the assertion, whose signature is checked first in any
+case. Encrypting to a public key says nothing about who wrote the assertion, so one
+that is signed by nothing is refused as a plain one would be.
+
+What decrypts is a document from outside like any other: the same scan for DTDs and
+entities, one `Assertion` and nothing else, and every check of the assertion after
+that. A second assertion, whether inside the ciphertext or beside it, is refused.
+
 ## Not yet
 
-- **Encrypted assertions.** Refused with a message saying so, rather than
-  silently ignored. The decryption side of `internal/saml/encrypt.go` exists for
-  the outbound direction; wiring it here is the next piece.
 - **SAML single logout as a source.** Sessions here end normally; the upstream
   is not notified.
 

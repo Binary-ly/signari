@@ -71,6 +71,8 @@ type respOpts struct {
 	omitConditions bool
 	omitAudience   bool
 	email          string
+	// sealNameID stands something else in for the NameID, before anything is signed.
+	sealNameID func(*etree.Element) *etree.Element
 }
 
 func (u *upstream) response(t *testing.T, o respOpts) []byte {
@@ -124,6 +126,11 @@ func (u *upstream) response(t *testing.T, o respOpts) []byte {
 	nid := sub.CreateElement("saml:NameID")
 	nid.CreateAttr("Format", o.nameIDFormat)
 	nid.SetText(o.nameID)
+	if o.sealNameID != nil {
+		sealed := o.sealNameID(nid)
+		sub.RemoveChild(nid)
+		sub.AddChild(sealed)
+	}
 	confirmations := o.confirmations
 	if confirmations == nil {
 		confirmations = []confirmation{{method: bearerMethod, recipient: o.destination}}

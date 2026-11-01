@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -21,6 +22,9 @@ type samlUpstream struct {
 	f          *signInFixture
 	slug       string
 	providerID string
+	// What the upstream signs its responses with.
+	signer  saml.SPKey
+	certDER []byte
 }
 
 func newSAMLUpstream(t *testing.T) *samlUpstream {
@@ -31,11 +35,16 @@ func newSAMLUpstream(t *testing.T) *samlUpstream {
 		t.Fatal(err)
 	}
 	f.srv.SetRootKey(root)
-	_, certPEM, err := saml.NewSPKey("https://upstream.test", saml.SPKeySigning)
+	pkcs8, certPEM, err := saml.NewSPKey("https://upstream.test", saml.SPKeySigning)
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := &samlUpstream{f: f, slug: fmt.Sprintf("src-%d", time.Now().UnixNano())}
+	signer, err := saml.ParseSPKey(pkcs8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode([]byte(certPEM))
+	u := &samlUpstream{f: f, slug: fmt.Sprintf("src-%d", time.Now().UnixNano()), signer: signer, certDER: block.Bytes}
 	if err := f.pool.QueryRow(context.Background(), `WITH ip AS (
 		  INSERT INTO core.identity_providers (org_id, slug, display_name, kind, client_id, scopes)
 		  VALUES ($1::uuid, $2, 'Upstream', 'saml', '', '{}') RETURNING id
@@ -127,6 +136,86 @@ func TestAnUpstreamIsSentRequestsSignedByTheKeyItsMetadataPublishes(t *testing.T
 	}
 	if err := store.RetireSAMLSourceKey(ctx, pool, u.f.orgID, u.slug, newer.ID); err != nil {
 		t.Errorf("a key nothing is held to was kept: %v", err)
+	}
+}
+
+// post carries a response from the upstream to the real ACS, encrypted to encryptTo
+// when it is given, and says whether a session came of it.
+func (u *samlUpstream) post(t *testing.T, encryptTo string) bool {
+	t.Helper()
+	doc, err := saml.BuildResponse(saml.ResponseInput{Issuer: "https://upstream.test/idp",
+		Destination: u.f.srv.cfg.Issuer + "/saml/source/" + u.slug + "/acs", Audience: u.f.srv.cfg.Issuer,
+		Lifetime: 2 * time.Minute, Now: time.Now(), EncryptionCert: encryptTo,
+		Subject: saml.Subject{NameID: "ada-at-upstream", NameIDFormat: saml.NameIDFormatPersistent, AuthnInstant: time.Now()}},
+		"k1", u.signer, u.certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"SAMLResponse": {base64.StdEncoding.EncodeToString([]byte(doc))}}
+	r := httptest.NewRequest(http.MethodPost, "/saml/source/"+u.slug+"/acs", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	u.f.srv.Routes().ServeHTTP(rec, r)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == SessionCookieName && c.Value != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// From the key's making to a person signed in through it, by the real ACS: an
+// upstream encrypting to the certificate in the metadata gets its assertion read, and
+// one held to encrypting gets a plain one refused.
+func TestAnEncryptedAssertionSignsAPersonIn(t *testing.T) {
+	u := newSAMLUpstream(t)
+	ctx, pool, root := context.Background(), u.f.pool, u.f.srv.root
+	on := true
+	if _, err := pool.Exec(ctx, `UPDATE core.saml_sources SET allow_unsolicited = true WHERE provider_id = $1::uuid`, u.providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO core.federated_identities (provider_id, user_id, org_id, subject)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, 'ada-at-upstream')`, u.providerID, u.f.userID, u.f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	key, err := store.AddSAMLSourceKey(ctx, pool, root, u.f.orgID, u.slug, saml.SPKeyEncryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := u.get("/metadata").Body.String()
+	block, _ := pem.Decode([]byte(key.Certificate))
+	if !strings.Contains(metadata, `<KeyDescriptor use="encryption">`) || !strings.Contains(metadata, saml.CertificateB64(block.Bytes)) ||
+		!strings.Contains(metadata, `<EncryptionMethod Algorithm="http://www.w3.org/2009/xmlenc11#aes256-gcm"/>`) {
+		t.Fatalf("metadata does not offer the key: %s", metadata)
+	}
+
+	if !u.post(t, "") {
+		t.Fatal("a plain assertion was refused from an upstream nothing holds to encrypting")
+	}
+	if !u.post(t, key.Certificate) {
+		t.Fatal("an encrypted assertion did not sign the person in")
+	}
+	if err := store.SetSAMLSourceKeyUse(ctx, pool, u.f.orgID, u.slug, nil, &on); err != nil {
+		t.Fatal(err)
+	}
+	if u.post(t, "") {
+		t.Error("a plain assertion was taken from an upstream held to encrypting")
+	}
+	if !u.post(t, key.Certificate) {
+		t.Error("an encrypted one was refused")
+	}
+	stray, err := store.AddSAMLSourceKey(ctx, pool, root, u.f.orgID, u.slug, saml.SPKeyEncryption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetireSAMLSourceKey(ctx, pool, u.f.orgID, u.slug, key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if u.post(t, key.Certificate) {
+		t.Error("an assertion encrypted to a retired key was read")
+	}
+	if !u.post(t, stray.Certificate) {
+		t.Error("the key that replaced it does not work")
 	}
 }
 

@@ -50,7 +50,7 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 		       p.allow_signup, p.allow_linking, p.require_verified_email,
 		       p.trust_email_verification,
 		       x.entity_id, x.sso_url, x.cert_pem, x.name_id_format,
-		       x.force_authn, x.allow_unsolicited, x.skew_seconds, x.sign_requests
+		       x.force_authn, x.allow_unsolicited, x.skew_seconds, x.sign_requests, x.require_encryption
 		FROM core.identity_providers p
 		JOIN core.saml_sources x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'saml' AND p.enabled`, slug).
@@ -59,7 +59,8 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 			&s.Policy.RequireVerifiedEmail, &s.Policy.TrustsEmailVerification,
 			&s.Provider.EntityID, &s.Provider.SSOURL, &s.Provider.CertPEM,
 			&s.Provider.NameIDFormat, &s.Provider.ForceAuthn,
-			&s.Provider.AllowUnsolicited, &s.Provider.SkewSeconds, &s.Provider.SignRequests)
+			&s.Provider.AllowUnsolicited, &s.Provider.SkewSeconds, &s.Provider.SignRequests,
+			&s.Provider.RequireEncryption)
 	if err != nil {
 		return nil, err
 	}

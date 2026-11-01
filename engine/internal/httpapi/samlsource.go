@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"net/http"
@@ -127,6 +128,15 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		returnPath = pending.ReturnPath
 	}
 
+	// Read when it has to be: a sealed key opened on every sign-in through an
+	// upstream that does not encrypt would be a statement for nothing.
+	if bytes.Contains(raw, []byte("Encrypted")) {
+		if src.Provider.Decrypters, err = store.SAMLSourceDecrypters(ctx, s.db, s.root, src.ProviderID); err != nil {
+			s.log.Error("reading the keys an upstream encrypts to", "slug", slug, "err", err)
+			s.federationError(w, r, "That sign-in method is not configured correctly.")
+			return
+		}
+	}
 	assertion, err := saml.ConsumeResponse(raw, src.Provider, saml.ConsumeOptions{
 		ExpectedInResponseTo: expectedID,
 		Destination:          src.Provider.ACSURL,
@@ -255,10 +265,17 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
+		var methods strings.Builder
+		if k.Purpose == saml.SPKeyEncryption {
+			for _, alg := range saml.EncryptionMethods {
+				methods.WriteString(`
+      <EncryptionMethod Algorithm="` + alg + `"/>`)
+			}
+		}
 		descriptors.WriteString(`
     <KeyDescriptor use="` + k.Purpose + `">
       <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>` +
-			saml.CertificateB64(certs[0].Raw) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+			saml.CertificateB64(certs[0].Raw) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>` + methods.String() + `
     </KeyDescriptor>`)
 	}
 

@@ -1462,7 +1462,12 @@ type GetOrganizationsOrgIDSSFSourcesResponseSourcesItem struct {
 	ID              string   `json:"id"`
 	Issuer          string   `json:"issuer"`
 	JWKSURI         string   `json:"jwks_uri"`
+	LastPollError   string   `json:"last_poll_error"`
+	LastPolledAt    *string  `json:"last_polled_at"`
 	Name            string   `json:"name"`
+	PollClientID    string   `json:"poll_client_id"`
+	PollHasSecret   bool     `json:"poll_has_secret"`
+	PollURL         string   `json:"poll_url"`
 }
 
 // GetOrganizationsOrgIDSSFStreamsResponse is a JSON object of the Admin API.
@@ -3476,6 +3481,21 @@ type PutOrganizationsOrgIDSSFSourcesResponse struct {
 	ConfigVersion int64  `json:"config_version"`
 	Issuer        string `json:"issuer"`
 	Name          string `json:"name"`
+}
+
+// PutOrganizationsOrgIDSSFSourcesPollRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDSSFSourcesPollRequest struct {
+	ClientID *string `json:"client_id,omitempty"`
+	Issuer   *string `json:"issuer,omitempty"`
+	PollURL  *string `json:"poll_url,omitempty"`
+	Secret   *string `json:"secret,omitempty"`
+}
+
+// PutOrganizationsOrgIDSSFSourcesPollResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDSSFSourcesPollResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Issuer        string `json:"issuer"`
+	PollURL       string `json:"poll_url"`
 }
 
 // PutOrganizationsOrgIDUMARequest is a JSON object of the Admin API.
@@ -5946,6 +5966,17 @@ func (c *Client) PutOrganizationsOrgIDSignup(ctx context.Context, orgID string, 
 func (c *Client) PutOrganizationsOrgIDSSFSources(ctx context.Context, orgID string, body PutOrganizationsOrgIDSSFSourcesRequest, opts ...Option) (*PutOrganizationsOrgIDSSFSourcesResponse, int64, error) {
 	var out PutOrganizationsOrgIDSSFSourcesResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/ssf-sources", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDSSFSourcesPoll is PUT /admin/organizations/{orgID}/ssf-sources/poll: Pull a
+// transmitter's events rather than wait for them, or stop. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDSSFSourcesPoll(ctx context.Context, orgID string, body PutOrganizationsOrgIDSSFSourcesPollRequest, opts ...Option) (*PutOrganizationsOrgIDSSFSourcesPollResponse, int64, error) {
+	var out PutOrganizationsOrgIDSSFSourcesPollResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/ssf-sources/poll", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

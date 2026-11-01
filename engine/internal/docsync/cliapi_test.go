@@ -238,6 +238,7 @@ var cliAPI = map[string]string{
 	"ssf add-stream":   "POST /admin/organizations/{orgID}/ssf-streams",
 	"ssf set-status":   "PATCH /admin/clients/{clientID}/ssf-stream",
 	"ssf add-source":   "PUT /admin/organizations/{orgID}/ssf-sources",
+	"ssf poll-source":  "PUT /admin/organizations/{orgID}/ssf-sources/poll",
 	"ssf list":         reads,
 	"ssf received":     reads,
 	"events subscribe": "POST /admin/organizations/{orgID}/event-subscriptions",

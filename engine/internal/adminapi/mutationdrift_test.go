@@ -854,6 +854,22 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/ssf-sources/poll", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.AddSource(context.Background(), s.db, org, "drift", "https://transmitter.example.test",
+					"https://transmitter.example.test/jwks", "https://receiver.example.test/poll/"+org,
+					[]string{ssf.EventSessionRevoked}, nil); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/ssf-sources/poll"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"issuer":"https://transmitter.example.test",` +
+					`"poll_url":"https://transmitter.example.test/ssf/poll","secret":"drift-credential"}`
+			},
+		},
+		{
 			name: "PUT /admin/instances/{instanceID}/federation", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				id := newDriftInstance(t, s)

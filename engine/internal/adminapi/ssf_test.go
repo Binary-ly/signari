@@ -118,4 +118,58 @@ func TestSharedSignalsAreConfiguredThroughTheAPI(t *testing.T) {
 		`"issuer":"https://transmitter.example.test"`) {
 		t.Errorf("the sources read %s", got.Body.String())
 	}
+
+	// Pulled rather than pushed (12.04): the credential goes one way.
+	poll := func(issuer, url, clientID, secret string) map[string]any {
+		return map[string]any{"issuer": issuer, "poll_url": url, "client_id": clientID, "secret": secret}
+	}
+	const issuer, queue = "https://transmitter.example.test", "https://transmitter.example.test/ssf/poll"
+	if e := errorOf(http.MethodPut, base+"/ssf-sources/poll", poll(issuer, "http://transmitter.example.test/q", "c", "x"),
+		http.StatusBadRequest); e != "invalid_source" {
+		t.Errorf("a plaintext queue answered %q", e)
+	}
+	if e := errorOf(http.MethodPut, base+"/ssf-sources/poll", poll(issuer, queue, "c", ""),
+		http.StatusBadRequest); e != "invalid_source" {
+		t.Errorf("a queue with no credential answered %q", e)
+	}
+	if e := errorOf(http.MethodPut, base+"/ssf-sources/poll", poll(issuer, "", "c", "x"),
+		http.StatusBadRequest); e != "invalid_source" {
+		t.Errorf("a credential with no queue answered %q", e)
+	}
+	if e := errorOf(http.MethodPut, base+"/ssf-sources/poll", poll("https://nobody.example.test", queue, "c", "x"),
+		http.StatusNotFound); e != "source_not_found" {
+		t.Errorf("an unknown issuer answered %q", e)
+	}
+	// Issuers are unique with an audience, so another organisation's is not this one's.
+	otherPoll := strings.TrimSuffix(other, "/ssf-sources") + "/ssf-sources/poll"
+	if e := errorOf(http.MethodPut, otherPoll, poll(issuer, queue, "c", "x"), http.StatusNotFound); e != "source_not_found" {
+		t.Errorf("another organisation's source answered %q", e)
+	}
+	if rec := call(t, s, http.MethodPut, base+"/ssf-sources/poll", testToken,
+		poll(issuer, queue, "rx", "the-poll-credential")); rec.Code != http.StatusOK {
+		t.Fatalf("polling a source: %d %s", rec.Code, rec.Body.String())
+	}
+	listed := call(t, s, http.MethodGet, base+"/ssf-sources", testToken, nil).Body.String()
+	if strings.Contains(listed, "the-poll-credential") {
+		t.Fatalf("the credential was read back: %s", listed)
+	}
+	for _, want := range []string{`"poll_url":"` + queue + `"`, `"poll_client_id":"rx"`, `"poll_has_secret":true`} {
+		if !strings.Contains(listed, want) {
+			t.Errorf("the sources read %s, without %s", listed, want)
+		}
+	}
+	// Replacing what a transmitter may send leaves how it is reached.
+	if rec := call(t, s, http.MethodPut, base+"/ssf-sources", testToken, source); rec.Code != http.StatusOK {
+		t.Fatalf("replacing a polled source: %d %s", rec.Code, rec.Body.String())
+	}
+	if listed := call(t, s, http.MethodGet, base+"/ssf-sources", testToken, nil).Body.String(); !strings.Contains(listed, `"poll_has_secret":true`) {
+		t.Errorf("replacing the source lost its polling: %s", listed)
+	}
+	if rec := call(t, s, http.MethodPut, base+"/ssf-sources/poll", testToken, poll(issuer, "", "", "")); rec.Code != http.StatusOK {
+		t.Fatalf("stopping: %d %s", rec.Code, rec.Body.String())
+	}
+	if listed := call(t, s, http.MethodGet, base+"/ssf-sources", testToken, nil).Body.String(); !strings.Contains(listed, `"poll_url":""`) ||
+		!strings.Contains(listed, `"poll_has_secret":false`) {
+		t.Errorf("stopping left %s", listed)
+	}
 }

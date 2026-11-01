@@ -22462,7 +22462,26 @@
                           "jwks_uri": {
                             "type": "string"
                           },
+                          "last_poll_error": {
+                            "type": "string"
+                          },
+                          "last_polled_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "name": {
+                            "type": "string"
+                          },
+                          "poll_client_id": {
+                            "type": "string"
+                          },
+                          "poll_has_secret": {
+                            "type": "boolean"
+                          },
+                          "poll_url": {
                             "type": "string"
                           }
                         },
@@ -22474,7 +22493,12 @@
                           "audience",
                           "events",
                           "critical_members",
-                          "enabled"
+                          "enabled",
+                          "poll_url",
+                          "poll_client_id",
+                          "poll_has_secret",
+                          "last_polled_at",
+                          "last_poll_error"
                         ],
                         "type": "object"
                       },
@@ -22666,6 +22690,132 @@
           }
         ],
         "summary": "Accept events from a transmitter, or replace what it may send."
+      }
+    },
+    "/admin/organizations/{orgID}/ssf-sources/poll": {
+      "put": {
+        "operationId": "put_organizations_orgID_ssf_sources_poll",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "client_id": {
+                    "type": "string"
+                  },
+                  "issuer": {
+                    "type": "string"
+                  },
+                  "poll_url": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "issuer": {
+                      "type": "string"
+                    },
+                    "poll_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "issuer",
+                    "poll_url",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Pull a transmitter's events rather than wait for them, or stop."
       }
     },
     "/admin/organizations/{orgID}/ssf-streams": {

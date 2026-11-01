@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ssf"
 )
 
@@ -136,12 +137,19 @@ type Source struct {
 	ID, Name, Issuer, JWKSURI, Audience string
 	Events, CriticalMembers             []string
 	Enabled                             bool
+	// PollURL is where its events are pulled from, and empty when it pushes them.
+	PollURL, PollClientID string
+	PollHasSecret         bool
+	LastPolledAt          *time.Time
+	LastPollError         string
 }
 
 // Sources lists an organisation's transmitters by name.
 func Sources(ctx context.Context, q Querier, orgID string) ([]Source, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id::text, display_name, issuer, jwks_uri, audience, allowed_events, critical_subject_members, enabled
+		SELECT id::text, display_name, issuer, jwks_uri, audience, allowed_events, critical_subject_members, enabled,
+		       COALESCE(poll_url, ''), COALESCE(poll_client_id, ''), poll_secret_sealed IS NOT NULL,
+		       last_polled_at, COALESCE(last_poll_error, '')
 		  FROM core.ssf_sources WHERE org_id = $1::uuid ORDER BY display_name, issuer`, orgID)
 	if err != nil {
 		return nil, err
@@ -151,12 +159,92 @@ func Sources(ctx context.Context, q Querier, orgID string) ([]Source, error) {
 	for rows.Next() {
 		var s Source
 		if err := rows.Scan(&s.ID, &s.Name, &s.Issuer, &s.JWKSURI, &s.Audience, &s.Events, &s.CriticalMembers,
-			&s.Enabled); err != nil {
+			&s.Enabled, &s.PollURL, &s.PollClientID, &s.PollHasSecret, &s.LastPolledAt, &s.LastPollError); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// sealContextSSFPoll binds a transmitter's poll credential to what it is for.
+const sealContextSSFPoll = "ssf_source_poll"
+
+// ErrSourceUnknown is a poll set on an issuer the organisation does not accept events from.
+var ErrSourceUnknown = errors.New("this organisation has no source with that issuer")
+
+// SetSourcePoll pulls a transmitter's events from url, as clientID with secret, or with
+// secret as a bearer token when clientID is empty. An empty url stops polling and forgets
+// the credential. Due at once, so whoever sets it sees it work or fail within a turn.
+func SetSourcePoll(ctx context.Context, e Execer, root *keys.RootKey, orgID, issuer, url, clientID, secret string) error {
+	var sealed []byte
+	if secret != "" {
+		var err error
+		if sealed, err = root.Seal([]byte(secret), sealContextSSFPoll); err != nil {
+			return err
+		}
+	}
+	tag, err := e.Exec(ctx, `
+		UPDATE core.ssf_sources
+		   SET poll_url = NULLIF($3, ''), poll_client_id = NULLIF($4, ''), poll_secret_sealed = $5,
+		       next_poll_at = now(), last_poll_error = NULL
+		 WHERE org_id = $1::uuid AND issuer = $2`, orgID, issuer, url, clientID, sealed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSourceUnknown
+	}
+	return nil
+}
+
+// DueSSFPoll is one source to pull now.
+type DueSSFPoll struct {
+	ID, URL, ClientID, Secret string
+}
+
+// ClaimSSFPoll moves the most overdue polled source's next turn on and names it, in one
+// statement, so no two nodes take one. Moved before the poll rather than after: a node that
+// dies part-way costs a turn. Nil when nothing is due in instanceID.
+func ClaimSSFPoll(ctx context.Context, q rowQuerier, root *keys.RootKey, instanceID string, every time.Duration) (*DueSSFPoll, error) {
+	var due DueSSFPoll
+	var clientID *string
+	var sealed []byte
+	err := q.QueryRow(ctx, `
+		UPDATE core.ssf_sources d
+		   SET next_poll_at = now() + make_interval(secs => $2)
+		 WHERE d.id = (SELECT s.id FROM core.ssf_sources s
+		                WHERE s.next_poll_at <= now() AND s.enabled AND s.poll_url IS NOT NULL
+		                  AND `+InInstance("s.org_id", "$1")+`
+		                ORDER BY s.next_poll_at LIMIT 1
+		                  FOR UPDATE OF s SKIP LOCKED)
+		RETURNING d.id::text, d.poll_url, d.poll_client_id, d.poll_secret_sealed`,
+		instanceID, every.Seconds()).Scan(&due.ID, &due.URL, &clientID, &sealed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if clientID != nil {
+		due.ClientID = *clientID
+	}
+	if sealed != nil {
+		secret, err := root.Open(sealed, sealContextSSFPoll)
+		if err != nil {
+			return nil, fmt.Errorf("opening the poll credential of source %s: %w", due.ID, err)
+		}
+		due.Secret = string(secret)
+	}
+	return &due, nil
+}
+
+// RecordSSFPoll says how a turn went, for an operator asking why nothing has arrived.
+func RecordSSFPoll(ctx context.Context, e Execer, sourceID, problem string) error {
+	_, err := e.Exec(ctx, `
+		UPDATE core.ssf_sources SET last_polled_at = now(), last_poll_error = NULLIF($2, '')
+		 WHERE id = $1::uuid`, sourceID, problem)
+	return err
 }
 
 // ErrReplayed means this jti has already been seen from this source.

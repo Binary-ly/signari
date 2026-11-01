@@ -387,6 +387,7 @@ func (s *Server) Routes() http.Handler {
 	// add-source` (ssf.go).
 	route("GET /admin/organizations/{orgID}/ssf-sources", ScopeConfigRead, s.listSources)
 	route("PUT /admin/organizations/{orgID}/ssf-sources", ScopeOrganizationsWrite, s.putSource)
+	route("PUT /admin/organizations/{orgID}/ssf-sources/poll", ScopeOrganizationsWrite, s.setSourcePoll)
 	// Fine-grained authorization, `signari authz` (authz.go).
 	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
 	route("GET /admin/organizations/{orgID}/authorization/explain", ScopeConfigRead, s.explainAuthz)

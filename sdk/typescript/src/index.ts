@@ -1357,6 +1357,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDSSFSourcesResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/ssf-sources`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/ssf-sources/poll: Pull a transmitter's events rather than
+  // wait for them, or stop. Needs organizations:write.
+  putOrganizationsOrgIDSSFSourcesPoll(orgID: string, body: PutOrganizationsOrgIDSSFSourcesPollRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDSSFSourcesPollResponse>> {
+    return this.call<PutOrganizationsOrgIDSSFSourcesPollResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/ssf-sources/poll`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/uma: Offer or stop offering resource-owner intervention.
   // Needs organizations:write.
   putOrganizationsOrgIDUMA(orgID: string, body: PutOrganizationsOrgIDUMARequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDUMAResponse>> {
@@ -2668,7 +2674,12 @@ export interface GetOrganizationsOrgIDSSFSourcesResponseSourcesItem {
   id: string
   issuer: string
   jwks_uri: string
+  last_poll_error: string
+  last_polled_at: string | null
   name: string
+  poll_client_id: string
+  poll_has_secret: boolean
+  poll_url: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4682,6 +4693,21 @@ export interface PutOrganizationsOrgIDSSFSourcesResponse {
   config_version: number
   issuer: string
   name: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDSSFSourcesPollRequest {
+  client_id?: string
+  issuer?: string
+  poll_url?: string
+  secret?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDSSFSourcesPollResponse {
+  config_version: number
+  issuer: string
+  poll_url: string
 }
 
 /** A JSON object of the Admin API. */

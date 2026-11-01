@@ -384,6 +384,7 @@
   "reason.breached": "Your password has appeared in a known data breach since you chose it, so it needs to be changed before you continue.",
   "reason.migratedbreach": "The password you brought from your previous provider appears in a known data breach, so it needs to be changed before you continue.",
   "reason.administrator": "An administrator has asked you to choose a new password.",
+  "reason.upstreamcompromise": "A service you sign in with has reported that your account may have been compromised, so your password needs to be changed before you continue.",
 
   "scope.profile": "See your name and username",
   "scope.email": "See your email address",

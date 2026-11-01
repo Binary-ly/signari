@@ -312,6 +312,8 @@ var summaries = map[string]string{
 	"GET /admin/organizations/{orgID}/ssf-sources":  "The transmitters whose events the organisation acts on.",
 	"PUT /admin/organizations/{orgID}/ssf-sources":  "Accept events from a transmitter, or replace what it may send.",
 
+	"PUT /admin/organizations/{orgID}/ssf-sources/poll": "Pull a transmitter's events rather than wait for them, or stop.",
+
 	// Fine-grained authorization (6.07).
 	"GET /admin/organizations/{orgID}/authorization-model":   "The organisation's authorization model as written; none permits nothing.",
 	"PUT /admin/organizations/{orgID}/authorization-model":   "Store a model once its own tests pass.",

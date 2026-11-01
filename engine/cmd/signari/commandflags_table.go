@@ -252,6 +252,7 @@ var commandFlags = map[string][]string{
 	"ssf add-source":                  {"critical-subject-members", "events", "name", "org", "source-audience", "source-issuer", "source-jwks"},
 	"ssf add-stream":                  {"client-id", "endpoint", "events", "org", "poll", "receiver-token"},
 	"ssf list":                        {"o"},
+	"ssf poll-source":                 {"client-id", "org", "remove", "source-issuer", "url"},
 	"ssf received":                    {"o", "org"},
 	"ssf set-status":                  {"client-id", "org", "reason", "status"},
 	"theme check":                     {"theme-dir"},

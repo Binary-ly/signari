@@ -47,6 +47,13 @@ const (
 	EventAccountDisabled   = "https://schemas.openid.net/secevent/risc/event-type/account-disabled"
 	EventAccountEnabled    = "https://schemas.openid.net/secevent/risc/event-type/account-enabled"
 
+	// EventAccountPurged, EventCredentialChangeRequired and EventCredentialCompromise
+	// are the RISC events a receiver acts on besides those two. Received here and not
+	// sent, so they are not in SupportedEvents.
+	EventAccountPurged            = "https://schemas.openid.net/secevent/risc/event-type/account-purged"
+	EventCredentialChangeRequired = "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"
+	EventCredentialCompromise     = "https://schemas.openid.net/secevent/risc/event-type/credential-compromise"
+
 	// StreamUpdated is SSF 1.0 §8.1.5's notice that the transmitter changed a
 	// stream's status. Not in SupportedEvents: a receiver does not subscribe to
 	// it, it is sent on every stream ("MAY send a Stream Updated event even if

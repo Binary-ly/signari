@@ -324,14 +324,52 @@ Stated here so the gaps are visible rather than discovered:
   HTTP. Streams here are created by the operator instead, which is a deliberate
   choice about who may subscribe to events rather than a missing endpoint. See
   [ssf-caep.md](ssf-caep.md).
-- **RISC events** — the risk-and-incident event family. CAEP is implemented; RISC
-  shares the SET envelope, so this is event modelling rather than new plumbing.
 - **The legacy Apple SSE CAEP profile**, which predates the final specification.
+- **RISC's other events**, such as `identifier-changed` and the recovery family.
+  They are recorded with `no handler` rather than acted on.
 
-- **Polling an upstream transmitter.** RFC 8936 poll delivery is implemented on
-  the *transmitter* side — a firewalled receiver can pull queued events from us
-  and acknowledge them (`POST /ssf/poll`). This receiver takes pushed events at
-  `POST /ssf/receive` and does not pull from anyone else's queue.
+## What an account event does
+
+A source has to list each of these in `-events` before it is believed.
+
+| Event | Here |
+|---|---|
+| `risc/event-type/account-disabled`, `account-purged` | The person's sessions end. The account stays: it is this organisation's to close, and a transmitter's word on one identity is not a verdict on all of them. |
+| `risc/event-type/account-credential-change-required`, `credential-compromise` | The sessions end and the next sign-in with a password here is held until it is changed, because the password that leaked may be this one. A federated person with no password here is signed out only. |
+| `risc/event-type/account-enabled` | Recorded. A session that ended stays ended. |
+
+## Pulling events from a transmitter
+
+Some transmitters only offer a queue, and a receiver behind a firewall cannot be
+pushed to at all. So a source can be polled, by RFC 8936, instead of or as well as
+accepting pushes:
+
+```sh
+signari ssf add-source -org <uuid> -name Upstream -source-issuer https://idp.example.com \
+  -source-jwks https://idp.example.com/jwks -source-audience https://id.example.com \
+  -events https://schemas.openid.net/secevent/caep/event-type/session-revoked
+signari ssf poll-source -org <uuid> -source-issuer https://idp.example.com \
+  -url https://idp.example.com/ssf/poll -client-id our-client < credential-file
+```
+
+Every thirty seconds, one node takes the source and asks for what is queued. The
+token is verified and acted on exactly as a pushed one is. Then:
+
+- What was acted on is acknowledged in the next request, so a node that stops
+  between the two is sent it again, and the replay guard answers that.
+- What was refused is reported in `setErrs`, so it does not come back.
+- What could not be judged stays queued. When the source's keys cannot be fetched
+  the token has told us nothing, and calling it invalid would lose it. A pushed token
+  in that state is answered 500 for the same reason.
+
+A polled token must carry the issuer of the source that was polled. One transmitter's
+credential buys no say over another's people, whichever keys verify.
+
+`signari ssf received` starts with how the last turn went, and the Admin API has the
+same in `last_polled_at` and `last_poll_error`. Pulled with a `-client-id`, the
+credential goes as HTTP Basic, which is what this engine's own `POST /ssf/poll` wants;
+with none it is a bearer token. `signari ssf poll-source -remove` stops and forgets it.
+Disabling a source stops its turns too.
 
 ## Second pass: §3 Subject Identifiers, and a wire-format defect (21 August 2026)
 

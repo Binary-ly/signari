@@ -21,6 +21,12 @@ import (
 // ErrNotVerified means the token failed a check before anything was acted on.
 var ErrNotVerified = fmt.Errorf("the security event token did not verify")
 
+// ErrKeysUnavailable means the source's keys could not be fetched, which says nothing
+// about the token. Answered as ours to retry and not as a refusal: a transmitter told a
+// session-revoked event was invalid has no reason to send it again, and the outage was
+// never its event's fault.
+var ErrKeysUnavailable = fmt.Errorf("the source's keys could not be fetched")
+
 // ReceivedEvent is a verified event, ready to act on.
 type ReceivedEvent struct {
 	JTI string
@@ -314,7 +320,7 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 
 	keys, err := f.Keys(ctx, src.JWKSURI, h.KeyID)
 	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrNotVerified, err)
+		return out, fmt.Errorf("%w: %w: %v", ErrNotVerified, ErrKeysUnavailable, err)
 	}
 	var payload []byte
 	var verified bool

@@ -343,6 +343,7 @@ federation out:
   ssf list                show Shared Signals receivers
   ssf set-status          enable, pause or disable a receiver's stream
   ssf add-source          accept Shared Signals from a transmitter
+  ssf poll-source         pull a transmitter's events (RFC 8936) rather than wait for them
   ssf received            what transmitters sent, most recent first
   events subscribe        subscribe a URL to an organisation's events
   events list             the organisation's event subscriptions
@@ -1588,6 +1589,8 @@ func run(args []string) (err error) {
 	case "ssf add-source":
 		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
 			*srcAudience, *ssfEvents, *ssfCritical)
+	case "ssf poll-source":
+		return ssfPollSource(ctx, conn, *orgID, *srcIssuer, *subURL, *clientID, *removeMember)
 	case "ssf received":
 		return ssfReceived(ctx, conn, *orgID, *outputFormat)
 	case "ssf add-stream":
@@ -2760,6 +2763,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	janitor.SetHeadSigner(auditHeadSigner(set, issuer, headInterval))
 	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
 	go (&directory.Scheduler{DB: workerPool, Root: root, Interval: time.Minute, Log: log}).Run(workerCtx)
+	for _, srv := range servers {
+		go srv.RunSSFPolls(workerCtx)
+	}
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
 	// destination is configured. Forwarding authentication events off the box is a
@@ -8708,6 +8714,44 @@ func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
 	return nil
 }
 
+// ssfPollSource pulls a source's events from its transmitter (12.04), or with -remove
+// stops. The credential comes on standard input, so it is not in a process list.
+func ssfPollSource(ctx context.Context, conn *pgx.Conn, orgID, issuer, url, clientID string, remove bool) error {
+	switch {
+	case orgID == "" || issuer == "":
+		return fmt.Errorf("-org and -source-issuer are required")
+	case remove && (url != "" || clientID != ""):
+		return fmt.Errorf("-remove stops polling, so it takes no -url or -client-id")
+	case remove:
+		if err := store.SetSourcePoll(ctx, conn, nil, orgID, issuer, "", "", ""); err != nil {
+			return err
+		}
+		fmt.Printf("no longer polling %s\n", issuer)
+		return nil
+	case url == "":
+		return fmt.Errorf("-url is required: where the transmitter serves its queue")
+	}
+	if err := safedial.CheckURL(url); err != nil {
+		return fmt.Errorf("-url: %w", err)
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	secret, err := readSecretLine(os.Stdin, "Credential the transmitter issued: ")
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return fmt.Errorf("give the credential on standard input: a transmitter's queue is about real people")
+	}
+	if err := store.SetSourcePoll(ctx, conn, root, orgID, issuer, url, clientID, secret); err != nil {
+		return err
+	}
+	fmt.Printf("polling %s every 30 seconds, starting now; `signari ssf received` shows how it goes\n", url)
+	return nil
+}
+
 // ssfReceived shows what sources have sent, and what was done about it.
 func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
 	out, err := newOutput(format)
@@ -8720,6 +8764,24 @@ func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID, format string) erro
 	rows, err := store.RecentReceived(ctx, conn, orgID, 50)
 	if err != nil {
 		return err
+	}
+	// Nothing received from a polled source has two causes, and only this line says which.
+	sources, err := store.Sources(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if out.text() {
+		for _, src := range sources {
+			switch {
+			case src.PollURL == "":
+			case src.LastPollError != "":
+				fmt.Printf("polling %s: %s\n", src.PollURL, src.LastPollError)
+			case src.LastPolledAt == nil:
+				fmt.Printf("polling %s: no turn yet\n", src.PollURL)
+			default:
+				fmt.Printf("polling %s: last turn %s\n", src.PollURL, src.LastPolledAt.Format("2006-01-02 15:04:05"))
+			}
+		}
 	}
 	if !out.text() {
 		for _, r := range rows {

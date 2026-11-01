@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0248 ssf_source_poll
+
+Compatible with the release before: its binary may still serve this schema.
+
+Pulling a transmitter's events rather than waiting to be sent them (12.04). RFC 8936's other half: this deployment has been able to be polled, and could not poll. A receiver behind a firewall, or a transmitter that only offers polling, had no way to meet. The credential is the transmitter's to give, so it is sealed under the root key; a client id means it is sent as Basic and none means a bearer token. An older binary ignores the columns and polls nothing.
+
 ## 0247 proxy_host_cookie
 
 Compatible with the release before: its binary may still serve this schema.

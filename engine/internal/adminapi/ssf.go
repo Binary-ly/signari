@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -52,6 +53,21 @@ type sourceView struct {
 	Events          []string `json:"events"`
 	CriticalMembers []string `json:"critical_members"`
 	Enabled         bool     `json:"enabled"`
+	// What a polled source's turns are doing. The secret is never read back.
+	PollURL       string     `json:"poll_url"`
+	PollClientID  string     `json:"poll_client_id"`
+	PollHasSecret bool       `json:"poll_has_secret"`
+	LastPolledAt  *time.Time `json:"last_polled_at"`
+	LastPollError string     `json:"last_poll_error"`
+}
+
+// sourcePollRequest pulls a transmitter's events from poll_url, or stops when it is empty.
+// A client_id sends the secret as Basic, and none as a bearer token.
+type sourcePollRequest struct {
+	Issuer   string `json:"issuer"`
+	PollURL  string `json:"poll_url"`
+	ClientID string `json:"client_id"`
+	Secret   string `json:"secret"`
 }
 
 // putSourceRequest registers or replaces a transmitter, keyed by issuer.
@@ -242,7 +258,9 @@ func (s *Server) listSources(w http.ResponseWriter, r *http.Request) {
 	out := make([]sourceView, 0, len(got))
 	for _, src := range got {
 		out = append(out, sourceView{ID: src.ID, Name: src.Name, Issuer: src.Issuer, JWKSURI: src.JWKSURI,
-			Audience: src.Audience, Events: src.Events, CriticalMembers: src.CriticalMembers, Enabled: src.Enabled})
+			Audience: src.Audience, Events: src.Events, CriticalMembers: src.CriticalMembers, Enabled: src.Enabled,
+			PollURL: src.PollURL, PollClientID: src.PollClientID, PollHasSecret: src.PollHasSecret,
+			LastPolledAt: src.LastPolledAt, LastPollError: src.LastPollError})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "sources": out})
 }
@@ -317,4 +335,74 @@ func (s *Server) putSource(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{"name": req.Name, "issuer": req.Issuer, "config_version": version})
+}
+
+// setSourcePoll starts or stops pulling a source's events, as `signari ssf poll-source`
+// does. Apart from putSource because the secret goes one way: replacing what is accepted
+// from a transmitter should not need it again.
+func (s *Server) setSourcePoll(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	var req sourcePollRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	req.Issuer, req.PollURL = strings.TrimSpace(req.Issuer), strings.TrimSpace(req.PollURL)
+	req.ClientID = strings.TrimSpace(req.ClientID)
+	refuse := func(detail string) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_source", "detail": detail})
+	}
+	switch {
+	case req.Issuer == "":
+		refuse("give the issuer of a source the organisation accepts")
+		return
+	case req.PollURL == "" && (req.ClientID != "" || req.Secret != ""):
+		refuse("a credential with no poll_url would be kept for nothing")
+		return
+	case req.PollURL != "" && req.Secret == "":
+		refuse("give the secret: a transmitter's queue is about real people, and one that hands it over unasked is not one to trust")
+		return
+	}
+	// A poll's answers are acted on, and its credential goes with the request.
+	if req.PollURL != "" {
+		if err := safedial.CheckURL(req.PollURL); err != nil {
+			refuse("the poll_url: " + err.Error())
+			return
+		}
+	}
+	if narrowedTokenRefused(w, r, "accept events that can sign anybody in the organisation out") {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if err := store.SetSourcePoll(ctx, tx, s.root, orgID, req.Issuer, req.PollURL, req.ClientID,
+			req.Secret); err != nil {
+			return err
+		}
+		// Never the secret.
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.ssf_source_poll_set", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"issuer": req.Issuer, "poll_url": req.PollURL,
+				"client_id": req.ClientID}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
+		return
+	case errors.Is(err, store.ErrSourceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source_not_found"})
+		return
+	case err != nil:
+		s.log.Error("setting a source's polling", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"issuer": req.Issuer, "poll_url": req.PollURL, "config_version": version})
 }

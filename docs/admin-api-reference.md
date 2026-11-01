@@ -66,7 +66,7 @@ refused with `412` when the configuration moved since the version it names.
 | [settings](#settings) | 2 |
 | [sign-in-flow](#sign-in-flow) | 2 |
 | [signup](#signup) | 3 |
-| [ssf-sources](#ssf-sources) | 2 |
+| [ssf-sources](#ssf-sources) | 3 |
 | [ssf-streams](#ssf-streams) | 2 |
 | [subjects](#subjects) | 2 |
 | [system](#system) | 1 |
@@ -3751,6 +3751,29 @@ Answers:
 | `config_version` | integer | always |
 | `issuer` | string | always |
 | `name` | string | always |
+
+### `PUT /admin/organizations/{orgID}/ssf-sources/poll`
+
+Pull a transmitter's events rather than wait for them, or stop. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDSSFSourcesPoll`, TypeScript `putOrganizationsOrgIDSSFSourcesPoll`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `client_id` | string |  |
+| `issuer` | string |  |
+| `poll_url` | string |  |
+| `secret` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `issuer` | string | always |
+| `poll_url` | string | always |
 
 ## ssf-streams
 

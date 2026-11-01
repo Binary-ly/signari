@@ -138,6 +138,10 @@ credential_proof_roots:
 	if p := apply(issuer, strings.Replace(material, "720h", "24h", 1), false); !strings.Contains(p.String(), "lifetime") {
 		t.Errorf("a new lifetime was planned as\n%s", p)
 	}
+	opened := strings.Replace(material, "lifetime: 720h", "lifetime: 24h, wallet_initiated: true", 1)
+	if p := apply(issuer, opened, false); !strings.Contains(p.String(), "wallet_initiated") {
+		t.Errorf("opening a credential was planned as\n%s", p)
+	}
 	exported, err := Export(ctx, tx, issuer)
 	if err != nil {
 		t.Fatal(err)

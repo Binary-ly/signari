@@ -175,6 +175,21 @@ func TestCredentialIssuanceIsConfiguredThroughTheAPI(t *testing.T) {
 		t.Errorf("the redemption reads user %s, client %s, tx %v", stored.UserID, stored.ClientID, stored.RequiresTxCode)
 	}
 
+	// An offer the holder signs in to take up names a state and no code, and its
+	// client needs that grant rather than the pre-authorized one.
+	if _, err := s.db.Exec(ctx, `UPDATE core.clients SET grant_types = grant_types || ARRAY['authorization_code']
+		WHERE client_id = $1 AND NOT grant_types @> ARRAY['authorization_code']`, client); err != nil {
+		t.Fatal(err)
+	}
+	signingIn := answer(http.MethodPost, offers, map[string]any{"client_id": client,
+		"credential_configurations": []string{config}, "authorization_code": true}, http.StatusCreated)
+	inner, _ := signingIn["offer"].(map[string]any)
+	granted, _ := inner["grants"].(map[string]any)
+	byCode, _ := granted["authorization_code"].(map[string]any)
+	if state, _ := byCode["issuer_state"].(string); state == "" || granted[oid4vci.GrantType] != nil {
+		t.Errorf("the offer's grants are %v", granted)
+	}
+
 	// Another organisation's wallet client, registered for the grant, so the
 	// organisation is the only thing refusing it.
 	_, elsewhere, _, _ := newDriftWallet(t, s)
@@ -205,8 +220,8 @@ func TestCredentialIssuanceIsConfiguredThroughTheAPI(t *testing.T) {
 	}
 	var n int
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM core.preauthorized_codes WHERE user_id = $1::uuid`, userID).
-		Scan(&n); err != nil || n != 1 {
-		t.Errorf("the person has %d offers after one was made and the rest refused (%v)", n, err)
+		Scan(&n); err != nil || n != 2 {
+		t.Errorf("the person has %d offers after two were made and the rest refused (%v)", n, err)
 	}
 }
 

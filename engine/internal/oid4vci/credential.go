@@ -91,6 +91,9 @@ type Configuration struct {
 	RequireKeyAttestation bool
 	// Deferred holds a request for somebody to decide on (§9).
 	Deferred bool
+	// WalletInitiated lets anybody signed in ask for this at the authorization
+	// endpoint, with no offer naming them.
+	WalletInitiated bool
 }
 
 // ValidateRequest applies §8.2's parameter rules.
@@ -101,17 +104,16 @@ func (r CredentialRequest) Validate() ([]string, error) {
 	// §8.2: `credential_identifier` is "REQUIRED when an Authorization Details
 	// of type openid_credential was returned from the Token Response. It MUST
 	// NOT be used otherwise", and when it is used "the credential_configuration_id
-	// MUST NOT be present". We do not issue those authorization details yet, so
-	// the identifier form cannot be correct here -- and accepting it would mean
-	// resolving an identifier we never handed out.
-	if r.CredentialIdentifier != "" {
-		return nil, fmt.Errorf("credential_identifier is only usable when the " +
-			"token response returned authorization_details of type " +
-			"openid_credential, which this issuer does not yet do; send " +
-			"credential_configuration_id instead")
+	// MUST NOT be present". Which of the two a request owes depends on its token,
+	// so that half is the endpoint's. That it sends one is here.
+	identifier := strings.TrimSpace(r.CredentialIdentifier) != ""
+	configuration := strings.TrimSpace(r.ConfigurationID) != ""
+	if identifier && configuration {
+		return nil, fmt.Errorf("credential_identifier and credential_configuration_id " +
+			"may not be sent together")
 	}
-	if strings.TrimSpace(r.ConfigurationID) == "" {
-		return nil, fmt.Errorf("credential_configuration_id is required")
+	if !identifier && !configuration {
+		return nil, fmt.Errorf("credential_configuration_id or credential_identifier is required")
 	}
 
 	// §8.3 makes encrypting the response mandatory once the client asks. We do

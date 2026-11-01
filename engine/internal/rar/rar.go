@@ -75,6 +75,41 @@ type Detail struct {
 	Datatypes  []string `json:"datatypes,omitempty"`
 	Identifier string   `json:"identifier,omitempty"`
 	Privileges []string `json:"privileges,omitempty"`
+
+	// CredentialConfigurationID names what a detail of CredentialType asks for.
+	CredentialConfigurationID string `json:"credential_configuration_id,omitempty"`
+	// CredentialIdentifiers is what a token response adds to one (OID4VCI §6.2),
+	// and never read from a request.
+	CredentialIdentifiers []string `json:"credential_identifiers,omitempty"`
+}
+
+// CredentialType is the type OID4VCI §5.1.1 defines, asking for a credential.
+const CredentialType = "openid_credential"
+
+// CredentialConfigurations names what these details ask to have issued.
+func CredentialConfigurations(details []Detail) []string {
+	var out []string
+	for _, d := range details {
+		if d.Type == CredentialType {
+			out = append(out, d.CredentialConfigurationID)
+		}
+	}
+	return out
+}
+
+// WithCredentialIdentifiers answers details as OID4VCI §6.2 returns them, each
+// with the identifiers a wallet then asks with. One dataset to a configuration
+// here, so its id is the identifier: §6.2 lets several exist, and this issuer
+// makes one credential from a person's record.
+func WithCredentialIdentifiers(details []Detail) []Detail {
+	out := make([]Detail, len(details))
+	copy(out, details)
+	for i := range out {
+		if out[i].Type == CredentialType {
+			out[i].CredentialIdentifiers = []string{out[i].CredentialConfigurationID}
+		}
+	}
+	return out
 }
 
 // TypeSpec is what a deployment has registered about one authorization details
@@ -205,7 +240,27 @@ func decodeDetail(obj map[string]json.RawMessage) (Detail, error) {
 	_ = json.Unmarshal(obj[FieldDatatypes], &d.Datatypes)
 	_ = json.Unmarshal(obj[FieldPrivileges], &d.Privileges)
 	_ = json.Unmarshal(obj[FieldIdentifier], &d.Identifier)
+	if d.Type == CredentialType {
+		_ = json.Unmarshal(obj[fieldCredentialConfiguration], &d.CredentialConfigurationID)
+	}
 	return d, nil
+}
+
+const fieldCredentialConfiguration = "credential_configuration_id"
+
+// checkCredentialDetail is §5.1.1, which replaces the unknown-field rule for this
+// one type: it "is never considered invalid due to unknown fields". So a `claims`
+// asking for part of a credential is not refused, and not honoured either: a
+// credential holds what its configuration says, and the holder chooses what to
+// disclose of it.
+func checkCredentialDetail(d Detail, obj map[string]json.RawMessage) error {
+	if strings.TrimSpace(d.CredentialConfigurationID) == "" {
+		return fmt.Errorf("%s is required, and a string", fieldCredentialConfiguration)
+	}
+	if present(obj, FieldLocations) {
+		return checkFieldType(FieldLocations, obj[FieldLocations])
+	}
+	return nil
 }
 
 // Validate applies §5 against the registered types.
@@ -227,6 +282,12 @@ func Validate(details []Detail, objs []map[string]json.RawMessage, reg Registry)
 			return fail("authorization_details[%d] has type %q, which this server "+
 				"does not know; registered types are %s",
 				i, d.Type, strings.Join(reg.Types(), ", "))
+		}
+		if d.Type == CredentialType {
+			if err := checkCredentialDetail(d, obj); err != nil {
+				return fail("authorization_details[%d] of type %q: %v", i, d.Type, err)
+			}
+			continue
 		}
 
 		for _, name := range sortedNames(obj) {

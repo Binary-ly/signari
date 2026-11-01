@@ -158,7 +158,7 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari credential define` | Define a credential this issuer mints (SD-JWT VC). `-require-key-attestation` issues it only to a key a trusted attester vouches for, and advertises `key_attestations_required`; left out, a redefinition keeps the setting |
+| `signari credential define` | Define a credential this issuer mints (SD-JWT VC). `-require-key-attestation` issues it only to a key a trusted attester vouches for, and advertises `key_attestations_required`; `-wallet-initiated` lets anybody signed in ask for it from a wallet, with no offer naming them. Left out, a redefinition keeps each setting |
 | `signari credential list` | Show the credential configurations published |
 | `signari credential requests` | `-org <id>`: what wallets have asked for of a `-deferred` credential, waiting on a decision. See [oid4vci.md](oid4vci.md#a-credential-somebody-has-to-look-at-first) |
 | `signari credential decide` | `-org <id> -request <id> -decision approve\|deny`: answer one. The wallet learns it the next time it asks, and a decision stands |
@@ -166,7 +166,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari credential trust-root` | `-org <id> -name <n> -root-cert <ca.pem>`: trust a CA for OID4VCI key proofs that carry an `x5c` chain. One certificate, a CA, unexpired; a file holding a private key is refused. The same name replaces. With none registered, every `x5c` proof is refused. See [oid4vci.md](oid4vci.md) |
 | `signari credential roots` | List the CAs `x5c` key proofs may verify to |
 | `signari credential untrust-root` | `-org <id> -name <n>`: withdraw one; chains to it are refused from the next credential request |
-| `signari credential offer` | Mint an OID4VCI Credential Offer. `-by-reference` keeps it here and prints a short address, for a QR code. See [oid4vci.md](oid4vci.md) |
+| `signari credential offer` | Mint an OID4VCI Credential Offer. `-by-reference` keeps it here and prints a short address, for a QR code. `-authorization-code` has the holder sign in to take it up, rather than handing the wallet a code. See [oid4vci.md](oid4vci.md) |
 
 ## Keys and audit
 

@@ -950,6 +950,7 @@ type GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurationsItem str
 	RequireKeyAttestation bool     `json:"require_key_attestation"`
 	Selective             []string `json:"selective"`
 	Vct                   string   `json:"vct"`
+	WalletInitiated       bool     `json:"wallet_initiated"`
 }
 
 // GetOrganizationsOrgIDCredentialProofRootsResponse is a JSON object of the Admin API.
@@ -2893,6 +2894,7 @@ type PostUsersResponse struct {
 
 // PostUsersUserIDCredentialOffersRequest is a JSON object of the Admin API.
 type PostUsersUserIDCredentialOffersRequest struct {
+	AuthorizationCode        *bool     `json:"authorization_code,omitempty"`
 	ByReference              *bool     `json:"by_reference,omitempty"`
 	ClientID                 *string   `json:"client_id,omitempty"`
 	CredentialConfigurations *[]string `json:"credential_configurations,omitempty"`
@@ -3165,6 +3167,7 @@ type PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest struct {
 	RequireKeyAttestation *bool     `json:"require_key_attestation,omitempty"`
 	Selective             *[]string `json:"selective,omitempty"`
 	Vct                   *string   `json:"vct,omitempty"`
+	WalletInitiated       *bool     `json:"wallet_initiated,omitempty"`
 }
 
 // PutOrganizationsOrgIDCredentialConfigurationsConfigIDResponse is a JSON object of the Admin API.

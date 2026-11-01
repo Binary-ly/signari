@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0256 credential_wallet_initiated
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet can ask for a credential at the authorization endpoint (12.06). Until now issuance began with an operator's offer, so who could have what was decided before anybody asked. A request an authorization server receives is the wallet's own idea, so a configuration says whether anybody signed in here may ask for it, and it is off: the claims come from the person's record, but whether they hold this credential at all is the issuer's to say. An offer for the authorization code grant keeps its issuer_state on core.preauthorized_codes, under a hash no pre-authorized code can match, so a state is never a bearer code. An older binary reads neither.
+
 ## 0255 bulk_writes_stay_linear
 
 Not compatible with the release before: stop it before migrating.

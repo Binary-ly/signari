@@ -9001,6 +9001,9 @@
                           },
                           "vct": {
                             "type": "string"
+                          },
+                          "wallet_initiated": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -9012,7 +9015,8 @@
                           "lifetime_s",
                           "display_name",
                           "require_key_attestation",
-                          "deferred"
+                          "deferred",
+                          "wallet_initiated"
                         ],
                         "type": "object"
                       },
@@ -9136,6 +9140,9 @@
                   },
                   "vct": {
                     "type": "string"
+                  },
+                  "wallet_initiated": {
+                    "type": "boolean"
                   }
                 },
                 "type": "object"
@@ -26762,6 +26769,9 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "authorization_code": {
+                    "type": "boolean"
+                  },
                   "by_reference": {
                     "type": "boolean"
                   },

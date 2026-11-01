@@ -30,6 +30,7 @@ type credentialConfigurationView struct {
 	DisplayName           string   `json:"display_name"`
 	RequireKeyAttestation bool     `json:"require_key_attestation"`
 	Deferred              bool     `json:"deferred"`
+	WalletInitiated       bool     `json:"wallet_initiated"`
 }
 
 // credentialRequestView is a wallet's request waiting on a decision.
@@ -57,6 +58,8 @@ type putCredentialConfigurationRequest struct {
 	RequireKeyAttestation *bool `json:"require_key_attestation"`
 	// Deferred holds each request for a decision, and absent keeps the setting.
 	Deferred *bool `json:"deferred"`
+	// WalletInitiated lets anybody signed in ask for it, and absent keeps the setting.
+	WalletInitiated *bool `json:"wallet_initiated"`
 }
 
 type putProofRootRequest struct {
@@ -74,6 +77,8 @@ type credentialOfferRequest struct {
 	ExpiresInSeconds int64  `json:"expires_in_s"`
 	// ByReference keeps the offer here, for offer_uri to be short enough for a QR code.
 	ByReference bool `json:"by_reference"`
+	// AuthorizationCode has the holder sign in to take the offer up.
+	AuthorizationCode bool `json:"authorization_code"`
 }
 
 const credentialRefusal = "change what the organisation issues as credentials or which key proofs it trusts"
@@ -96,7 +101,7 @@ func (s *Server) listCredentialConfigurations(w http.ResponseWriter, r *http.Req
 		out = append(out, credentialConfigurationView{ID: c.ID, Format: c.Format, VCT: c.VCT,
 			Always: nonNilStrings(c.AlwaysClaims), Selective: nonNilStrings(c.SelectiveClaims),
 			LifetimeSeconds: int64(c.Lifetime.Seconds()), DisplayName: c.DisplayName,
-			RequireKeyAttestation: c.RequireKeyAttestation, Deferred: c.Deferred})
+			RequireKeyAttestation: c.RequireKeyAttestation, Deferred: c.Deferred, WalletInitiated: c.WalletInitiated})
 	}
 	slices.SortFunc(out, func(a, b credentialConfigurationView) int { return strings.Compare(a.ID, b.ID) })
 	s.writeList(w, r, map[string]any{"org_id": orgID, "configurations": out})
@@ -126,7 +131,7 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 	spec := store.CredentialSpec{ConfigID: configID, VCT: strings.TrimSpace(req.VCT),
 		DisplayName: strings.TrimSpace(req.DisplayName), Always: cleanList(req.Always, false),
 		Selective: cleanList(req.Selective, false), Lifetime: time.Duration(req.LifetimeSeconds) * time.Second,
-		RequireKeyAttestation: req.RequireKeyAttestation, Deferred: req.Deferred}
+		RequireKeyAttestation: req.RequireKeyAttestation, Deferred: req.Deferred, WalletInitiated: req.WalletInitiated}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_credential", "detail": err.Error()})
 		return
@@ -150,7 +155,8 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_defined", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"configuration": configID, "vct": spec.VCT,
 				"always": spec.Always, "selective": spec.Selective, "lifetime_s": req.LifetimeSeconds,
-				"require_key_attestation": required, "deferred": req.Deferred}})
+				"require_key_attestation": required, "deferred": req.Deferred,
+				"wallet_initiated": req.WalletInitiated}})
 	})
 	if s.writeCredentialFailure(w, err, orgID) {
 		return
@@ -387,7 +393,7 @@ func (s *Server) offerCredential(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if minted, err = store.MintCredentialOffer(ctx, tx, orgID, store.OfferSpec{UserID: userID,
 			ClientID: clientID, CredentialIssuer: issuer, ConfigIDs: configs,
-			TxCode: req.TxCode, TxLength: length, TTL: ttl}); err != nil {
+			TxCode: req.TxCode, TxLength: length, TTL: ttl, AuthorizationCode: req.AuthorizationCode}); err != nil {
 			return err
 		}
 		blob, err := json.Marshal(minted.Offer)
@@ -405,7 +411,8 @@ func (s *Server) offerCredential(w http.ResponseWriter, r *http.Request) {
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_offered", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, SubjectID: userID, Detail: map[string]any{"client_id": clientID,
 				"configurations": minted.Offer.ConfigurationIDs, "credential_issuer": issuer,
-				"tx_code": req.TxCode, "expires_in_s": int64(ttl.Seconds()), "by_reference": req.ByReference}})
+				"tx_code": req.TxCode, "expires_in_s": int64(ttl.Seconds()), "by_reference": req.ByReference,
+				"authorization_code": req.AuthorizationCode}})
 	})
 	if s.writeCredentialFailure(w, err, orgID) {
 		return

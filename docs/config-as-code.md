@@ -164,6 +164,7 @@ credential_configurations:    # what this issuer offers wallets (OID4VCI)
     always_claims: [sub]
     selective_claims: [email]
     lifetime: 720h            # left out: no expiry
+    wallet_initiated: true    # anybody signed in may ask; left out keeps the setting
 
 credential_proof_roots:       # CAs a wallet's key attestation must chain to
   - name: wallet-ca

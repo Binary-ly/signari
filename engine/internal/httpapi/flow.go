@@ -433,6 +433,20 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, clientAccessRefusal)
 		return
 	}
+	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
+		open, oerr := store.CredentialOpenTo(ctx, s.db, wanted)
+		if oerr != nil {
+			s.log.Error("reading whether a credential is open to a person", "err", oerr,
+				"correlation_id", correlationID(ctx))
+			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+				Description: "unavailable", Disposition: oauth.DispositionRedirect})
+			return
+		}
+		if !open {
+			s.writeAuthzError(w, r, req, credentialNotOpen())
+			return
+		}
+	}
 
 	decision, ask, err := s.needsConsent(r, c, session.UserID, req)
 	if err != nil {
@@ -561,6 +575,21 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		if !spent {
 			_ = tx.Rollback(ctx)
 			s.renderAuthzFailure(w, r, errPushedRequestSpent.Error())
+			return
+		}
+	}
+	// Asked again, because an offer can have been spent or lapsed while the consent
+	// screen stood, and spent here for the same reason as the pushed request.
+	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
+		spent, serr := store.SpendCredentialOffer(ctx, tx, wanted)
+		if serr != nil {
+			s.log.Error("spending a credential offer", "err", serr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !spent {
+			_ = tx.Rollback(ctx)
+			s.writeAuthzError(w, r, req, credentialNotOpen())
 			return
 		}
 	}
@@ -1173,7 +1202,10 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	if len(resources) > 0 {
 		audience = resources
 	}
-	if issuanceAudienceFrom(ctx) {
+	// Details of a credential are what the token is for, on every token of the
+	// grant, so that a refresh stays good for issuance and nothing else.
+	credentials := len(rar.CredentialConfigurations(details)) > 0
+	if issuanceAudienceFrom(ctx) || credentials {
 		audience = []string{s.credentialAudience()}
 	}
 
@@ -1233,8 +1265,15 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// §9: the RS is the party that has to ENFORCE these, and it never sees the
 	// token response §7 sends to the client. Filtered per §9.1 so one resource
 	// server does not learn what was granted for another.
+	//
+	// Not those of a credential, whose locations name the Credential Issuer and
+	// whose audience is its endpoint: the endpoint reads them from this claim.
 	var detailClaim json.RawMessage
-	if forAudience := rar.FilterByAudience(details, audience); len(forAudience) > 0 {
+	forAudience := rar.FilterByAudience(details, audience)
+	if credentials {
+		forAudience = details
+	}
+	if len(forAudience) > 0 {
 		encoded, derr := json.Marshal(forAudience)
 		if derr != nil {
 			return nil, nil, fmt.Errorf("encoding authorization_details for the access token: %w", derr)
@@ -1396,7 +1435,7 @@ func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g
 	if err != nil {
 		return resp, err
 	}
-	resp.AuthorizationDetails = granted
+	resp.AuthorizationDetails = rar.WithCredentialIdentifiers(granted)
 	return resp, nil
 }
 
@@ -1431,7 +1470,7 @@ func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client
 	if err != nil {
 		return resp, rtHash, err
 	}
-	resp.AuthorizationDetails = granted
+	resp.AuthorizationDetails = rar.WithCredentialIdentifiers(granted)
 	return resp, rtHash, nil
 }
 

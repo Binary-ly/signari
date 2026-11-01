@@ -11,14 +11,12 @@ OID4VCI separates two roles:
 - The **Authorization Server** issues the access token that credential endpoint
   will accept.
 
-Signari is the second. Its entire contribution to OID4VCI is the **Pre-Authorized
-Code grant** and the **Credential Offer** that carries it.
-
-Nothing here mints a credential, and nothing advertises that it can. An
-implementation that published a `credential_endpoint` it could not serve would be
-the same mistake as advertising a federation fetch endpoint that 404s — and this
-repository's rule is that an endpoint enters a metadata document only once it
-works.
+Signari began as the second, with the **Pre-Authorized Code grant** and the
+**Credential Offer** that carries it, and is now both: see
+[the Credential Issuer half](#the-credential-issuer-half). An implementation that
+published a `credential_endpoint` it could not serve would be the same mistake as
+advertising a federation fetch endpoint that 404s, so an endpoint enters a metadata
+document only once it works.
 
 ## Why this grant needs more care than it looks
 
@@ -220,8 +218,9 @@ token that does not enable the requested one with an RFC 6750 error. So:
 The redemption records the access token it minted on the offer (migration 0133),
 in the minting transaction. That is the binding, rather than an
 `authorization_details` claim: returning `openid_credential` details obliges the
-wallet to use the `credential_identifiers` that come with them (§6.2), which is
-the request form listed under what is still not built.
+wallet to use the `credential_identifiers` that come with them (§6.2), and an
+offer's wallet already knows the configuration ids. A token from the
+[authorization code flow](#a-wallet-that-asks-first) carries the claim instead.
 
 The audience runs the other way too. A redeemed token's `aud` is the credential
 endpoint and nothing else, because nobody signed in to get it, so userinfo refuses
@@ -424,14 +423,85 @@ most an hour. §9 requires a token valid for the issuance, and an offer's code i
 spent, so a wallet cannot get another. A request nobody decides in that time is swept.
 This suits a person at a counter, and not a review that takes days.
 
+## A wallet that asks first
+
+Everything above starts with an offer. The authorization code flow (§3.3) can
+start with the wallet: it sends the holder to the authorization endpoint with
+details of type `openid_credential`, they sign in and approve what they are
+shown, and the token response names what they were granted.
+
+```
+GET /oauth2/authorize?response_type=code&client_id=wallet&code_challenge=...
+    &code_challenge_method=S256&redirect_uri=https://wallet.example/cb
+    &authorization_details=[{"type":"openid_credential",
+                             "credential_configuration_id":"Employee"}]
+```
+
+`scope` can be left out, as the specification's own example does, and then no ID
+token comes back. The client has to be allowed the type, as for any other detail:
+
+```sh
+signari rar register -org <uuid> -type openid_credential -fields locations
+signari rar allow -client-id wallet -type openid_credential
+```
+
+**Who may ask.** A wallet can ask for anything the metadata lists, and the claims
+coming from the person's own record does not make holding the credential theirs to
+decide. So a configuration is closed until it says otherwise:
+
+```sh
+signari credential define -org <uuid> -credential-configuration Employee ... -wallet-initiated
+```
+
+That opens it to anybody who can sign in here. Asking for one that is closed
+answers `access_denied`, and says nothing about whether somebody else was offered
+it.
+
+**An offer to sign in with.** `credential offer -authorization-code` (or
+`authorization_code` at the Admin API) makes an offer of a closed credential that
+the holder signs in to take up. It carries an `issuer_state` and no code:
+
+```json
+{"credential_issuer": "https://id.example.com",
+ "credential_configuration_ids": ["Employee"],
+ "grants": {"authorization_code": {"issuer_state": "..."}}}
+```
+
+§5.1.3 warns that a state "could have been injected by an attacker", so it decides
+nothing about who is signing in. It counts only for the person the offer names,
+through the client it names, for what it names, once. For anybody else it is as
+good as absent. The offer is spent when the code is issued, not when the consent
+screen is drawn, so looking twice costs nothing and of two racing one gets a code.
+
+A state is kept in the column a pre-authorized code is, under a hash no code can
+match, because a code is a bearer secret and a state travels through a browser's
+address bar. Presented as a code it is unknown, to this release and to the last.
+
+**The token** is good at the credential endpoint and nowhere else, and a refresh
+of the grant is the same. So details of this type are asked for alone: another
+detail beside them would be approved on the screen and carried by a token no
+resource server accepts. It says what it was granted in its own signed
+`authorization_details` claim, and needs no offer behind it. The token response
+returns those details with `credential_identifiers`, here the configuration's id,
+since each configuration makes one credential from one person's record.
+
+A wallet then asks by identifier. §8.2 lets it use nothing else, and in turn an
+identifier from a token that was given none is refused:
+
+```json
+{"credential_identifier": "Employee", "proofs": {"jwt": ["..."]}}
+```
+
 ## What is still not built
 
 - **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
   only SD-JWT VC, so adding it is a migration rather than a rewrite.
 - **Credential response encryption** (§10) and encrypted requests.
-- The **authorization code flow** variant (`issuer_state`), and with it
-  `openid_credential` authorization details and `credential_identifier`
-  requests.
+- A credential requested by **`scope`** (§5.1.2). A wallet asks with
+  authorization details, and the metadata names no scope for it to use instead.
+- The **`claims`** of an authorization detail (§5.1.1) are accepted and not
+  honoured: a credential holds what its configuration says, and the holder
+  chooses what to disclose of it.
 
 ## `x5c` key proofs — built
 

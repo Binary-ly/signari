@@ -53,6 +53,8 @@ type CredentialSpec struct {
 	RequireKeyAttestation *bool
 	// Deferred nil keeps a configuration's setting, for the same reason.
 	Deferred *bool
+	// WalletInitiated nil keeps a configuration's setting, for the same reason.
+	WalletInitiated *bool
 }
 
 // Validate refuses a configuration that would assert nothing, or something
@@ -105,19 +107,21 @@ func DefineCredential(ctx context.Context, q outpostDB, orgID string, c Credenti
 	if err := q.QueryRow(ctx, `
 		INSERT INTO core.credential_configurations
 			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name,
-			 require_key_attestation, format, deferred)
+			 require_key_attestation, format, deferred, wallet_initiated)
 		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false), $9,
-		        COALESCE($10::boolean, false))
+		        COALESCE($10::boolean, false), COALESCE($11::boolean, false))
 		ON CONFLICT (org_id, config_id) DO UPDATE
 		SET format = EXCLUDED.format, vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
 		    selective_claims = EXCLUDED.selective_claims,
 		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name,
 		    require_key_attestation = COALESCE($8::boolean,
 		        credential_configurations.require_key_attestation),
-		    deferred = COALESCE($10::boolean, credential_configurations.deferred)
+		    deferred = COALESCE($10::boolean, credential_configurations.deferred),
+		    wallet_initiated = COALESCE($11::boolean, credential_configurations.wallet_initiated)
 		RETURNING require_key_attestation`,
 		orgID, strings.TrimSpace(c.ConfigID), strings.TrimSpace(c.VCT), nonNil(c.Always), nonNil(c.Selective),
-		interval, c.DisplayName, c.RequireKeyAttestation, oid4vci.FormatSDJWTVC, c.Deferred).Scan(&required); err != nil {
+		interval, c.DisplayName, c.RequireKeyAttestation, oid4vci.FormatSDJWTVC, c.Deferred,
+		c.WalletInitiated).Scan(&required); err != nil {
 		return false, fmt.Errorf("defining the credential: %w", err)
 	}
 	return required, nil
@@ -239,11 +243,22 @@ type OfferSpec struct {
 	TxCode           bool
 	TxLength         int
 	TTL              time.Duration
+	// AuthorizationCode has the holder sign in to take the offer up, rather than
+	// handing the wallet a code that stands in for doing so.
+	AuthorizationCode bool
+}
+
+// grant is the grant the wallet client has to be registered for.
+func (s OfferSpec) grant() string {
+	if s.AuthorizationCode {
+		return "authorization_code"
+	}
+	return oid4vci.GrantType
 }
 
 // ErrOfferClientCannotRedeem is a wallet client not registered for the
-// pre-authorized code grant, so the offer could not be redeemed.
-var ErrOfferClientCannotRedeem = errors.New("the client is not registered for the pre-authorized code grant")
+// grant an offer carries, so the offer could not be redeemed.
+var ErrOfferClientCannotRedeem = errors.New("the client is not registered for the offer's grant")
 
 // MintedOffer is an offer made: the offer itself, which carries the
 // pre-authorized code, and the transaction code, empty when none guards it.
@@ -288,6 +303,9 @@ func MintCredentialOffer(ctx context.Context, q offerDB, orgID string, s OfferSp
 		return nil, refuseCredential("an offer lasts between a moment and an hour; section 3.5 says a "+
 			"pre-authorized code MUST be short lived, and it is redeemed within seconds of being scanned "+
 			"(got %s)", s.TTL)
+	case s.AuthorizationCode && s.TxCode:
+		return nil, refuseCredential("a transaction code guards a pre-authorized code; an offer for the " +
+			"authorization code grant has the holder sign in instead, and section 4.1.1 gives it no tx_code")
 	}
 	if err := oid4vci.ValidateIssuer(s.CredentialIssuer); err != nil {
 		return nil, refuseCredential("%v", err)
@@ -306,9 +324,9 @@ func MintCredentialOffer(ctx context.Context, q offerDB, orgID string, s OfferSp
 		return nil, refuseCredential("client %q belongs to another organisation than the holder; a token "+
 			"minted for it would cross a tenant boundary", s.ClientID)
 	}
-	if !slices.Contains(grants, oid4vci.GrantType) {
-		return nil, fmt.Errorf("%w: %s is not, so this offer could not be redeemed", ErrOfferClientCannotRedeem,
-			s.ClientID)
+	if !slices.Contains(grants, s.grant()) {
+		return nil, fmt.Errorf("%w: %s is not registered for %s, so this offer could not be redeemed",
+			ErrOfferClientCannotRedeem, s.ClientID, s.grant())
 	}
 	var inOrg bool
 	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid)`,
@@ -350,6 +368,17 @@ func MintCredentialOffer(ctx context.Context, q offerDB, orgID string, s OfferSp
 	code, codeHash, err := NewPreAuthCode()
 	if err != nil {
 		return nil, err
+	}
+	if s.AuthorizationCode {
+		offer, err := oid4vci.BuildAuthorizationCodeOffer(s.CredentialIssuer, s.ConfigIDs, code)
+		if err != nil {
+			return nil, refuseCredential("%v", err)
+		}
+		if err := NewPreAuthorizedCode(ctx, q, orgID, s.UserID, s.ClientID, issuerStateHash(code), s.ConfigIDs,
+			nil, nil, s.TTL); err != nil {
+			return nil, err
+		}
+		return &MintedOffer{Offer: offer}, nil
 	}
 	var tx *oid4vci.TxCode
 	var txPlain string

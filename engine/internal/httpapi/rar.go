@@ -58,5 +58,8 @@ func (s *Server) parseAuthorizationDetails(ctx context.Context, c *clients.Clien
 			Disposition: oauth.DispositionRedirect,
 		}
 	}
+	if cerr := s.credentialDetailsRefused(ctx, c, details); cerr != nil {
+		return nil, cerr
+	}
 	return details, nil
 }

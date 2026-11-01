@@ -198,6 +198,15 @@ transfer — any amount, any account — with no screen at all. Details now alwa
 prompt, checked *before* the first-party exemption, since a trusted relationship
 cannot vouch for a transaction that did not exist when it was established.
 
+**And then Allow went round for ever.** Having answered, the browser went back to
+the authorization endpoint, which takes no prior decision for details, so it
+showed the same screen. A rich request could not end in a code in a browser, and
+the review above never saw it, because its tests issued their codes directly. The
+answer now carries on in the same request, with the approval in the context:
+anything that could say so in a URL, a client could write there. A request may
+also carry details and no scope at all, which RFC 9396 and OID4VCI's own example
+both do, and which used to be refused as an invalid scope.
+
 ## Mutation results
 
 Every fix was reverted in turn to check the new tests can actually fail:

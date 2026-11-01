@@ -837,6 +837,7 @@ Takes:
 | `require_key_attestation` | boolean |  |
 | `selective` | list of string |  |
 | `vct` | string |  |
+| `wallet_initiated` | boolean |  |
 
 Answers:
 
@@ -4342,6 +4343,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `authorization_code` | boolean |  |
 | `by_reference` | boolean |  |
 | `client_id` | string |  |
 | `credential_configurations` | list of string |  |

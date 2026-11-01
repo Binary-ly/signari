@@ -17,6 +17,7 @@ import (
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oid4vci"
+	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -238,16 +239,50 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What this token may be exchanged for: the configurations of the offer that
-	// minted it (migration 0133). Any other token audienced here -- a sign-in
-	// token from an unrelated client -- used to mint any configuration for its
-	// subject. §8.3.1.1 answers a token that "does not contain an Access Token
-	// that enables issuance of a requested Credential" with an RFC 6750 error.
-	issuable, ierr := store.IssuableConfigurations(ctx, s.db, claims.JTI, claims.Subject)
-	if ierr != nil {
-		s.log.Error("reading what a token may be exchanged for", "err", ierr)
+	// A token that says what it was granted is asked of by identifier, and only
+	// that one is (§8.2). It says so itself, signed, and needs no offer behind it:
+	// the person signed in and approved what it names.
+	granted, derr := decodeDetailClaim(claims.AuthorizationDetails)
+	if derr != nil {
+		s.log.Error("reading the details of a credential token", "err", derr)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
+	}
+	asked := rar.CredentialConfigurations(granted)
+	wanted := req.ConfigurationID
+	var issuable []string
+	if len(asked) > 0 {
+		if req.CredentialIdentifier == "" {
+			writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
+				"the token response returned credential_identifiers, so a request sends "+
+					"credential_identifier and not credential_configuration_id (section 8.2)")
+			return
+		}
+		if !slices.Contains(asked, req.CredentialIdentifier) {
+			// §8.3.1.2 (specs/oid4vci.txt:1917).
+			writeCredentialError(w, http.StatusBadRequest, "unknown_credential_identifier",
+				"this token was given no such credential identifier")
+			return
+		}
+		wanted, issuable = req.CredentialIdentifier, asked
+	} else {
+		if req.CredentialIdentifier != "" {
+			writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
+				"credential_identifier is for a token response that returned credential_identifiers, "+
+					"and this one did not; send credential_configuration_id (section 8.2)")
+			return
+		}
+		// What this token may be exchanged for: the configurations of the offer that
+		// minted it (migration 0133). Any other token audienced here -- a sign-in
+		// token from an unrelated client -- used to mint any configuration for its
+		// subject. §8.3.1.1 answers a token that "does not contain an Access Token
+		// that enables issuance of a requested Credential" with an RFC 6750 error.
+		var ierr error
+		if issuable, ierr = store.IssuableConfigurations(ctx, s.db, claims.JTI, claims.Subject); ierr != nil {
+			s.log.Error("reading what a token may be exchanged for", "err", ierr)
+			writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
 	}
 	if len(issuable) == 0 {
 		s.log.Info("credential endpoint refused a token no offer minted",
@@ -257,11 +292,11 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if !slices.Contains(issuable, req.ConfigurationID) {
+	if !slices.Contains(issuable, wanted) {
 		// The token is good for issuance, of something else: RFC 6750 §3.1's
 		// insufficient_scope, which is a 403.
 		s.log.Info("credential endpoint refused a configuration the offer did not name",
-			"requested", req.ConfigurationID, "offered", issuable,
+			"requested", wanted, "offered", issuable,
 			"correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="insufficient_scope", `+
 			`error_description="This access token does not authorize issuing that credential"`)
@@ -295,12 +330,12 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	cfg, known := configs[req.ConfigurationID]
+	cfg, known := configs[wanted]
 	if !known {
 		// §8.3.1.2's code (specs/oid4vci.txt:1914). Reached when the offer names
 		// a configuration that has since been removed.
 		writeCredentialError(w, http.StatusBadRequest, "unknown_credential_configuration",
-			"this issuer does not offer the credential configuration "+req.ConfigurationID)
+			"this issuer does not offer the credential configuration "+wanted)
 		return
 	}
 

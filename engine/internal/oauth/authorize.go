@@ -34,6 +34,10 @@ type AuthzRequest struct {
 	// registered types. Carried on the request rather than re-parsed downstream,
 	// so exactly one place decides what was asked for.
 	AuthorizationDetails []rar.Detail
+	// IssuerState is OID4VCI §5.1.3's `issuer_state`, handed back from an offer, and
+	// proves nothing about who sent it: it could have been injected, so it only
+	// counts for the person the offer named.
+	IssuerState string
 
 	// DPoPJKT is RFC 9449 §10's `dpop_jkt`: the JWK Thumbprint of the key the
 	// issued code may be redeemed with.
@@ -98,6 +102,7 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		// unparsed text so nothing downstream has to fetch it from the query
 		// again and risk reading a different value than the one validated.
 		RawAuthorizationDetails: q.Get(rar.Param),
+		IssuerState:             q.Get("issuer_state"),
 		RequestObject:           q.Get("request"),
 		RequestURI:              q.Get("request_uri"),
 	}
@@ -292,11 +297,14 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 
 	// 7. Scope.
+	//
+	// Authorization details alone are a request: RFC 9396 asks for permissions
+	// without a scope, and OID4VCI §5.1.1's example sends nothing else.
 	scopes := strings.Fields(req.Scope)
-	if len(scopes) == 0 {
+	if len(scopes) == 0 && req.RawAuthorizationDetails == "" {
 		return redirectErr("invalid_scope", "at least the openid scope is required")
 	}
-	if !containsStr(scopes, "openid") {
+	if len(scopes) > 0 && !containsStr(scopes, "openid") {
 		return redirectErr("invalid_scope", "the openid scope is required")
 	}
 	if bad := c.UnknownScopes(scopes); len(bad) > 0 {

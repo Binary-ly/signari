@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"strings"
 
 	"net/http"
@@ -83,6 +84,9 @@ func describeDetails(details []rar.Detail) []detailItem {
 				item.Rows = append(item.Rows, detailRow{label, strings.Join(vals, ", ")})
 			}
 		}
+		if d.CredentialConfigurationID != "" {
+			item.Rows = append(item.Rows, detailRow{"Credential", d.CredentialConfigurationID})
+		}
 		add("Actions", d.Actions)
 		add("Resources", d.Locations)
 		add("Data", d.Datatypes)
@@ -132,8 +136,9 @@ func (s *Server) needsConsent(r *http.Request, c *clients.Client, userID string,
 	// relationship is trusted, which cannot be true of a transaction that did not
 	// exist when the relationship was established.
 	//
-	// So details are the one thing here that no prior decision can pre-approve.
-	if len(req.AuthorizationDetails) > 0 {
+	// So details are the one thing here that no prior decision can pre-approve:
+	// only the decision being carried out, on the request it was made on.
+	if len(req.AuthorizationDetails) > 0 && !detailsApprovedIn(r.Context()) {
 		d, err := store.CheckConsent(r.Context(), s.db, userID, c.ClientID, requested)
 		if err != nil {
 			return d, false, err
@@ -199,6 +204,9 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 	// user grants access they never saw.
 	w.Header().Set("X-Frame-Options", "DENY")
 
+	if len(details) > 0 {
+		authzQuery = withDetailsShown(authzQuery)
+	}
 	s.renderPage(w, r, "consent", map[string]any{
 		"Client": c.DisplayName, "ClientID": c.ClientID,
 		"Scopes": items, "Details": describeDetails(details), "Authz": authzQuery,
@@ -225,7 +233,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authzQuery := r.PostForm.Get("authz")
+	authzQuery, detailsShown := takeDetailsShown(r.PostForm.Get("authz"))
 
 	// The client is read from the parked authorization query, NOT from a
 	// separate form field.
@@ -265,8 +273,9 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Details are something to approve with no scope beside them.
 	scopes := r.PostForm["scope"]
-	if len(scopes) == 0 {
+	if len(scopes) == 0 && !detailsShown {
 		s.denyToClient(w, r, authzQuery)
 		return
 	}
@@ -278,10 +287,12 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := store.RecordConsent(ctx, tx, userID, clientID, scopes); err != nil {
-		s.log.Error("recording consent", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	if len(scopes) > 0 {
+		if err := store.RecordConsent(ctx, tx, userID, clientID, scopes); err != nil {
+			s.log.Error("recording consent", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "oauth.consent_granted", OrgID: orgID, SubjectID: userID, ClientID: clientID,
@@ -307,8 +318,60 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 	//
 	// Found by the conformance suite (oidcc-refresh-token, which sends
 	// prompt=consent), and the same defect that made prompt=login loop.
-	http.Redirect(w, r, oidc.PathAuthorize+"?"+s.answerPrompts(ctx, authzQuery, oauth.PromptConsent),
-		http.StatusSeeOther)
+	resume := s.answerPrompts(ctx, authzQuery, oauth.PromptConsent)
+	if detailsShown {
+		s.resumeApproved(w, r, resume)
+		return
+	}
+	http.Redirect(w, r, oidc.PathAuthorize+"?"+resume, http.StatusSeeOther)
+}
+
+// detailsShownParam goes on the request a consent form carries when it showed
+// authorization details, which is how the answer knows there were any: a pushed
+// request parks its handle and not its contents. It decides nothing by being
+// there, however it got there, because only a person's Allow reads it, on a form
+// that carries a CSRF token, and that form is about this request.
+const detailsShownParam = "details_shown"
+
+func withDetailsShown(authzQuery string) string {
+	q := parseQuery(authzQuery)
+	q.Set(detailsShownParam, "1")
+	return q.Encode()
+}
+
+// takeDetailsShown takes the mark off a parked request, which goes on without it.
+func takeDetailsShown(authzQuery string) (string, bool) {
+	q := parseQuery(authzQuery)
+	if q.Get(detailsShownParam) == "" {
+		return authzQuery, false
+	}
+	q.Del(detailsShownParam)
+	return q.Encode(), true
+}
+
+type detailsApprovedKey struct{}
+
+func detailsApprovedIn(ctx context.Context) bool {
+	approved, _ := ctx.Value(detailsApprovedKey{}).(bool)
+	return approved
+}
+
+// resumeApproved carries on with a request whose details were just approved.
+//
+// In this request and not by a redirect. No prior decision can stand for details
+// (see needsConsent), so a redirect back to the authorization endpoint found no
+// approval to read and showed the same screen, and Allow went round for ever: a
+// rich authorization request could not end in a code in a browser. Anything that
+// could say so in a URL, a client could write there. Everything else the endpoint
+// checks it checks again, this time with the answer in the context.
+func (s *Server) resumeApproved(w http.ResponseWriter, r *http.Request, query string) {
+	resume := r.Clone(context.WithValue(r.Context(), detailsApprovedKey{}, true))
+	resume.Method = http.MethodGet
+	resume.URL.Path = oidc.PathAuthorize
+	resume.URL.RawQuery = query
+	resume.Body = http.NoBody
+	resume.Form, resume.PostForm = nil, nil
+	s.handleAuthorize(w, resume)
 }
 
 // denyToClient returns access_denied to the client's redirect_uri, once

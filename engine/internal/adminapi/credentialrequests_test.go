@@ -40,6 +40,21 @@ func TestACredentialRequestIsDecidedThroughTheAPI(t *testing.T) {
 		t.Error("redefining without saying dropped it")
 	}
 
+	// So too who may ask for it (12.06), which is off until somebody says.
+	open := func() bool {
+		t.Helper()
+		list := call(t, s, http.MethodGet, base+"/credential-configurations", testToken, nil).Body.String()
+		return strings.Contains(list, `"wallet_initiated":true`)
+	}
+	if open() {
+		t.Fatal("a configuration was open to anybody without being set so")
+	}
+	define(map[string]any{"wallet_initiated": true})
+	define(map[string]any{})
+	if !open() {
+		t.Error("redefining without saying closed it")
+	}
+
 	request := func(id string) string {
 		t.Helper()
 		transaction, err := store.NewCredentialRequest(ctx, s.db, org, userID, id, config, []byte(`[]`))

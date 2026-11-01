@@ -534,9 +534,10 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/organizations/{orgID}/credential-configurations": {http.StatusOK, nil,
 		object([]string{"org_id", "configurations"}, map[string]jsonSchema{"org_id": uuidStr(),
 			"configurations": arrayOf(object([]string{"id", "format", "vct", "always", "selective", "lifetime_s",
-				"display_name", "require_key_attestation", "deferred"}, map[string]jsonSchema{"id": str(), "format": str(),
-				"vct": str(), "always": arrayOf(str()), "selective": arrayOf(str()), "lifetime_s": integer(),
-				"display_name": str(), "require_key_attestation": boolean(), "deferred": boolean()}))})},
+				"display_name", "require_key_attestation", "deferred", "wallet_initiated"}, map[string]jsonSchema{
+				"id": str(), "format": str(), "vct": str(), "always": arrayOf(str()), "selective": arrayOf(str()),
+				"lifetime_s": integer(), "display_name": str(), "require_key_attestation": boolean(),
+				"deferred": boolean(), "wallet_initiated": boolean()}))})},
 	"GET /admin/organizations/{orgID}/credential-requests": {http.StatusOK, nil,
 		object([]string{"org_id", "requests"}, map[string]jsonSchema{"org_id": uuidStr(),
 			"requests": arrayOf(object([]string{"id", "user_id", "email", "configuration", "created_at"},

@@ -2192,6 +2192,7 @@ export interface GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurat
   require_key_attestation: boolean
   selective: string[]
   vct: string
+  wallet_initiated: boolean
 }
 
 /** A JSON object of the Admin API. */
@@ -4135,6 +4136,7 @@ export interface PostUsersResponse {
 
 /** A JSON object of the Admin API. */
 export interface PostUsersUserIDCredentialOffersRequest {
+  authorization_code?: boolean
   by_reference?: boolean
   client_id?: string
   credential_configurations?: string[]
@@ -4407,6 +4409,7 @@ export interface PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest {
   require_key_attestation?: boolean
   selective?: string[]
   vct?: string
+  wallet_initiated?: boolean
 }
 
 /** A JSON object of the Admin API. */

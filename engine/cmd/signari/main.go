@@ -909,6 +909,8 @@ func run(args []string) (err error) {
 	credTxLength := fs.Int("tx-code-length", 6, "digits in the generated transaction code")
 	credByReference := fs.Bool("by-reference", false,
 		"`credential offer`: keep the offer here and print a short address to it, for a QR code")
+	credAuthorizationCode := fs.Bool("authorization-code", false,
+		"`credential offer`: have the holder sign in to take the offer up, rather than handing the wallet a code")
 	credTTL := fs.Duration("offer-expires", 5*time.Minute,
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
@@ -939,6 +941,8 @@ func run(args []string) (err error) {
 	credRequireAttestation := fs.Bool("require-key-attestation", false,
 		"issue this credential only to a key a trusted attester vouches for (credential define)")
 	credDeferred := fs.Bool("deferred", false, "hold each request for this credential for a decision (credential define)")
+	credWalletInitiated := fs.Bool("wallet-initiated", false,
+		"let anybody signed in ask for this credential from a wallet, with no offer naming them (credential define)")
 	credRequest := fs.String("request", "", "the id `credential requests` shows (credential decide)")
 	credDecision := fs.String("decision", "", "approve or deny (credential decide)")
 	localeTag := fs.String("locale", "",
@@ -1748,15 +1752,18 @@ func run(args []string) (err error) {
 	case "credential define":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
-		var requireAttestation, deferred *bool
+		var requireAttestation, deferred, walletInitiated *bool
 		if given["require-key-attestation"] {
 			requireAttestation = credRequireAttestation
 		}
 		if given["deferred"] {
 			deferred = credDeferred
 		}
+		if given["wallet-initiated"] {
+			walletInitiated = credWalletInitiated
+		}
 		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
-			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred)
+			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred, walletInitiated)
 	case "credential list":
 		return credentialList(ctx, conn, *outputFormat)
 	case "credential requests":
@@ -1777,7 +1784,7 @@ func run(args []string) (err error) {
 		return resourceRemove(ctx, conn, *orgID, *resourceURI)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
-			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL, *credByReference)
+			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL, *credByReference, *credAuthorizationCode)
 	case "federation show":
 		return federationShow(ctx, conn)
 	case "federation add-subordinate":
@@ -9065,7 +9072,7 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 // token can do is decided HERE.
 func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID,
 	configs, credIssuer, issuer string, wantTxCode bool, txLength int,
-	ttl time.Duration, byReference bool) error {
+	ttl time.Duration, byReference, authorizationCode bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the holder belongs to")
@@ -9124,11 +9131,11 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 	// The client, its grant and the configurations are checked at mint time in
 	// store.MintCredentialOffer, as the Admin API checks them: the person who
 	// finds out otherwise is the holder, standing wherever they scanned it.
-	minted, err := store.MintCredentialOffer(ctx, conn, orgID, store.OfferSpec{UserID: userID,
-		ClientID: clientID, CredentialIssuer: ci, ConfigIDs: ids, TxCode: wantTxCode, TxLength: txLength, TTL: ttl})
+	spec := store.OfferSpec{UserID: userID, ClientID: clientID, CredentialIssuer: ci, ConfigIDs: ids,
+		TxCode: wantTxCode, TxLength: txLength, TTL: ttl, AuthorizationCode: authorizationCode}
+	minted, err := store.MintCredentialOffer(ctx, conn, orgID, spec)
 	if errors.Is(err, store.ErrOfferClientCannotRedeem) {
-		return fmt.Errorf("%w. Add it with:\n  signari client set-grants -client-id %s -grant-types %s",
-			err, clientID, oid4vci.GrantType)
+		return fmt.Errorf("%w. Give the client that grant with `signari client set-grants`", err)
 	}
 	if err != nil {
 		return err
@@ -9344,7 +9351,7 @@ func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
 // quietly drop a requirement somebody set.
 func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	always, selective string, lifetime time.Duration, displayName string,
-	requireAttestation, deferred *bool) error {
+	requireAttestation, deferred, walletInitiated *bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -9368,7 +9375,7 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	// checked in store.CredentialSpec, as the Admin API checks them.
 	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, VCT: vct,
 		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
-		RequireKeyAttestation: requireAttestation, Deferred: deferred})
+		RequireKeyAttestation: requireAttestation, Deferred: deferred, WalletInitiated: walletInitiated})
 	if err != nil {
 		return err
 	}
@@ -9391,6 +9398,9 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if deferred != nil && *deferred {
 		fmt.Printf("  issuance  : each request waits for `signari credential decide`, for as\n")
 		fmt.Printf("              long as the wallet's token lasts\n")
+	}
+	if walletInitiated != nil && *walletInitiated {
+		fmt.Printf("  who       : anybody who signs in here may ask for it from a wallet\n")
 	}
 	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
 	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")

@@ -273,12 +273,14 @@ type Credential struct {
 	RequireKeyAttestation *bool `yaml:"require_key_attestation,omitempty"`
 	// Deferred holds each request for somebody's decision; absent keeps the setting.
 	Deferred *bool `yaml:"deferred,omitempty"`
+	// WalletInitiated lets anybody signed in ask for it; absent keeps the setting.
+	WalletInitiated *bool `yaml:"wallet_initiated,omitempty"`
 }
 
 func (c Credential) spec() store.CredentialSpec {
 	return store.CredentialSpec{ConfigID: c.ConfigID, VCT: c.VCT, DisplayName: c.DisplayName, Always: c.AlwaysClaims,
 		Selective: c.SelectiveClaims, Lifetime: c.Lifetime, RequireKeyAttestation: c.RequireKeyAttestation,
-		Deferred: c.Deferred}
+		Deferred: c.Deferred, WalletInitiated: c.WalletInitiated}
 }
 
 type credentialSection struct{}
@@ -308,10 +310,12 @@ func (credentialSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 		Always, Selective []string
 		Lifetime          time.Duration
 		Require, Deferred bool
+		WalletInitiated   bool
 	}
 	byID := map[string]held{}
 	for id, c := range have {
-		byID[id] = held{c.VCT, c.DisplayName, c.AlwaysClaims, c.SelectiveClaims, c.Lifetime, c.RequireKeyAttestation, c.Deferred}
+		byID[id] = held{c.VCT, c.DisplayName, c.AlwaysClaims, c.SelectiveClaims, c.Lifetime, c.RequireKeyAttestation,
+			c.Deferred, c.WalletInitiated}
 	}
 	planKeyed(p, "credential_configuration", keyBy(f.Credentials, func(c Credential) string { return c.ConfigID }),
 		byID, prune, func(h held, w Credential) string {
@@ -322,6 +326,7 @@ func (credentialSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *F
 			c.note(h.Lifetime != w.Lifetime, "lifetime")
 			c.note(w.RequireKeyAttestation != nil && h.Require != *w.RequireKeyAttestation, "require_key_attestation")
 			c.note(w.Deferred != nil && h.Deferred != *w.Deferred, "deferred")
+			c.note(w.WalletInitiated != nil && h.WalletInitiated != *w.WalletInitiated, "wallet_initiated")
 			return c.String()
 		}, "wallets can no longer be issued it; one already issued stays valid until it expires")
 	return nil
@@ -350,10 +355,10 @@ func (credentialSection) export(ctx context.Context, tx pgx.Tx, orgID string, f 
 	}
 	for _, id := range sortedKeys(have) {
 		c := have[id]
-		require, deferred := c.RequireKeyAttestation, c.Deferred
+		require, deferred, walletInitiated := c.RequireKeyAttestation, c.Deferred, c.WalletInitiated
 		f.Credentials = append(f.Credentials, Credential{ConfigID: id, VCT: c.VCT, DisplayName: c.DisplayName,
 			AlwaysClaims: c.AlwaysClaims, SelectiveClaims: c.SelectiveClaims, Lifetime: c.Lifetime,
-			RequireKeyAttestation: &require, Deferred: &deferred})
+			RequireKeyAttestation: &require, Deferred: &deferred, WalletInitiated: &walletInitiated})
 	}
 	return nil
 }

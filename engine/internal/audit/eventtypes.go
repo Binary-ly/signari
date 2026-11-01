@@ -101,6 +101,7 @@ var EventTypes = []string{
 	"prompt.answered",
 	"provider.refused",
 	"proxy.host_added", "proxy.host_disabled", "proxy.host_disclosure_set", "proxy.host_enabled", "proxy.host_removed",
+	"proxy.host_rules_set",
 	"proxy.session_issued",
 	"rac.session_ended", "rac.session_requested",
 	"restore.finalized",

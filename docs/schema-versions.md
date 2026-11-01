@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0246 proxy_host_rules
+
+Compatible with the release before: its binary may still serve this schema.
+
+What forward authentication does with one path of a protected application (8.26), where the host alone does not say enough. On the host's row because they are the host's, read with it on every request, and replaced together: their order is what they mean. Empty is a host as every host has been, and an older binary ignores the column, which leaves it protecting every path.
+
 ## 0245 saml_org_endpoint
 
 Not compatible with the release before: stop it before migrating.

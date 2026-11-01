@@ -2385,7 +2385,16 @@ export interface GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem {
   enabled: boolean
   host: string
   release_groups: string[]
+  rules: GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem[]
   signed_identity: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem {
+  effect: string
+  methods?: string[]
+  name?: string
+  path: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4499,7 +4508,16 @@ export interface PutOrganizationsOrgIDProxyHostsRequest {
   enabled?: boolean
   host?: string
   release_groups?: string[]
+  rules?: PutOrganizationsOrgIDProxyHostsRequestRulesItem[]
   signed_identity?: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDProxyHostsRequestRulesItem {
+  effect?: string
+  methods?: string[]
+  name?: string
+  path?: string
 }
 
 /** A JSON object of the Admin API. */

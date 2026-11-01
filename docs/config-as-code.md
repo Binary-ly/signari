@@ -58,6 +58,9 @@ radius_clients:
 
 proxy_hosts:                  # applications behind forward auth
   - host: grafana.example.com
+    rules:                    # first match wins; left out keeps what the host has
+      - {effect: public, path: /public/**, methods: [GET, HEAD]}
+      - {effect: deny, path: /metrics}
   - host: wiki.example.com:8443
     enabled: false
 

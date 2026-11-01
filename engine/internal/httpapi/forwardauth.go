@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -78,6 +79,11 @@ type proxyClaims struct {
 func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	rule, answered := s.proxyRule(w, r)
+	if answered {
+		return
+	}
+
 	c, err := r.Cookie(ProxyCookieName)
 	if err != nil || c.Value == "" {
 		// No browser session here, so this may be a program with a token. Only
@@ -89,7 +95,7 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 				s.denyProxy(w, r, reason)
 				return
 			}
-			s.answerProxy(w, r, pc)
+			s.answerProxy(w, r, pc, rule)
 			return
 		}
 		s.denyProxy(w, r, "no proxy session")
@@ -128,7 +134,55 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 		s.denyProxy(w, r, "the session behind this proxy token has ended")
 		return
 	}
-	s.answerProxy(w, r, pc)
+	s.answerProxy(w, r, pc, rule)
+}
+
+// proxyRule holds a request to the rules of its host before anything else, because
+// one of them may say nobody has to be signed in. It answers the rule that goes on to
+// decide, nil for none, or says the request has been answered.
+//
+// A host with rules refuses what they cannot be applied to. Without that, one way of
+// spelling a path that the application reads differently is a way past every rule on it.
+func (s *Server) proxyRule(w http.ResponseWriter, r *http.Request) (*proxyrules.Rule, bool) {
+	ctx := r.Context()
+	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
+	if host == "" || s.db == nil {
+		return nil, false
+	}
+	rules, err := store.ProxyRulesOf(ctx, s.db, s.instanceID, host)
+	if err != nil {
+		s.log.Error("reading the rules of a protected host", "err", err, "correlation_id", correlationID(ctx))
+		s.forbidProxy(w, "the rules of this application could not be read")
+		return nil, true
+	}
+	if len(rules) == 0 {
+		return nil, false
+	}
+	// Not firstHeader, which stops at a comma. A comma is a character of a path, and
+	// /public,/../admin compared up to it is /public.
+	uri := r.Header.Values("X-Forwarded-Uri")
+	if len(uri) != 1 {
+		s.forbidProxy(w, "the proxy must say which path it is asking about (X-Forwarded-Uri)")
+		return nil, true
+	}
+	path, err := proxyrules.Canonical(uri[0])
+	if err != nil {
+		s.forbidProxy(w, err.Error())
+		return nil, true
+	}
+	rule := proxyrules.Match(rules, strings.ToUpper(firstHeader(r, "X-Forwarded-Method")), path)
+	switch {
+	case rule == nil:
+		return nil, false
+	case rule.Effect == proxyrules.EffectPublic:
+		writeProxyIdentity(w, proxyClaims{}, nil, "")
+		w.WriteHeader(http.StatusOK)
+		return nil, true
+	case rule.Effect == proxyrules.EffectDeny:
+		s.forbidProxy(w, "this path is not served")
+		return nil, true
+	}
+	return rule, false
 }
 
 // proxyClaimsFromToken reads who an access token speaks for, and answers why not
@@ -169,12 +223,12 @@ func (s *Server) proxyClaimsFromToken(r *http.Request, raw string) (proxyClaims,
 }
 
 // answerProxy decides whoever pc names against the host, and says who they are.
-func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyClaims) {
+func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyClaims, rule *proxyrules.Rule) {
 	// Authorization, which this endpoint did not do at all. A valid cookie
 	// passed every protected host of every organisation: anybody who could
 	// sign in anywhere in the deployment reached the payroll dashboard of a
 	// tenant they had never heard of.
-	host, reason := s.authorizeProxyHost(r, pc)
+	host, reason := s.authorizeProxyHost(r, pc, rule)
 	if host == nil {
 		s.forbidProxy(w, reason)
 		return
@@ -186,24 +240,28 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 		s.forbidProxy(w, "what this application is told could not be read")
 		return
 	}
+	writeProxyIdentity(w, pc, groups, signed)
+	w.WriteHeader(http.StatusOK)
+}
 
-	// Set by US, from the verified token. Never copied from the request.
-	//
-	// EVERY identity header, every time, empty when there is nothing to say.
-	// The client's own X-Forwarded-Email is on the request the proxy will
-	// forward, and this response is the only thing that can overwrite it: a
-	// proxy that copies a header from the auth response only when the response
-	// carries one leaves the client's value in place whenever this one is
-	// absent. So a person with no address on record could hand the application
-	// any address they liked. There used to be a loop here deleting these from
-	// the response before anything was written -- from an empty map, which is
-	// to say it did nothing.
+// writeProxyIdentity says who is there, from the verified token and never from the
+// request, or on a public path that nobody is.
+//
+// EVERY identity header, every time, empty when there is nothing to say.
+// The client's own X-Forwarded-Email is on the request the proxy will
+// forward, and this response is the only thing that can overwrite it: a
+// proxy that copies a header from the auth response only when the response
+// carries one leaves the client's value in place whenever this one is
+// absent. So a person with no address on record could hand the application
+// any address they liked. There used to be a loop here deleting these from
+// the response before anything was written -- from an empty map, which is
+// to say it did nothing.
+func writeProxyIdentity(w http.ResponseWriter, pc proxyClaims, groups []string, signed string) {
 	w.Header().Set("X-Forwarded-User", pc.Subject)
 	w.Header().Set("X-Forwarded-Sub", pc.Subject)
 	w.Header().Set("X-Forwarded-Email", pc.Email)
 	w.Header().Set("X-Forwarded-Groups", strings.Join(groups, ","))
 	w.Header().Set("X-Forwarded-Jwt", signed)
-	w.WriteHeader(http.StatusOK)
 }
 
 // typProxyIdentity marks the statement an application is given, so it cannot be
@@ -271,7 +329,7 @@ func (s *Server) proxyDisclosure(ctx context.Context, host *store.ProxyHost, pc 
 // reading posture headers relayed by the proxy.
 //
 // It answers the host, or nil and why not.
-func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (*store.ProxyHost, string) {
+func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims, rule *proxyrules.Rule) (*store.ProxyHost, string) {
 	ctx := r.Context()
 	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
 	if host == "" {
@@ -286,14 +344,21 @@ func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims) (*store.Pro
 		return nil, "this application is not one of your organisation's protected hosts"
 	}
 
+	// The host's policy, and on top of it the one a named path has of its own.
+	keys := []string{"proxy:" + host}
+	if rule != nil && rule.Name != "" {
+		keys = append(keys, "proxy:"+host+"#"+rule.Name)
+	}
 	mfa, amr := sessionFactors(ctx, s.db, pc.SID)
-	if pd := s.checkAccessPolicyUnobserved(ctx, pc.OrgID, "proxy:"+host, pc.Subject, "", mfa, amr); pd != nil {
-		s.auditDetached(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: pc.OrgID, SubjectID: pc.Subject,
-			CorrelationID: correlationID(ctx),
-			Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "proxy", "host": host},
-		})
-		return nil, pd.Message
+	for _, key := range keys {
+		if pd := s.checkAccessPolicyUnobserved(ctx, pc.OrgID, key, pc.Subject, "", mfa, amr); pd != nil {
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: pc.OrgID, SubjectID: pc.Subject,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "proxy", "host": host},
+			})
+			return nil, pd.Message
+		}
 	}
 	return registered, ""
 }

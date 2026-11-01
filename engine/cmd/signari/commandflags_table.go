@@ -195,6 +195,7 @@ var commandFlags = map[string][]string{
 	"proxy list":                      {"o"},
 	"proxy release":                   {"groups", "host", "org", "signed-identity"},
 	"proxy remove-host":               {"host", "org"},
+	"proxy rules":                     {"file", "host", "org"},
 	"rac add":                         {"group", "host", "login", "name", "org", "passphrase-file", "password-file", "port", "private-key-file", "protocol", "recording-path", "slug"},
 	"rac disable":                     {"org", "slug"},
 	"rac enable":                      {"org", "slug"},

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,6 +52,78 @@ func TestAHostAnotherOrganisationProtectsIsRefused(t *testing.T) {
 	}
 	if owners != 1 {
 		t.Fatalf("the host is registered by %d organisations", owners)
+	}
+}
+
+// Rules go in as a list, in order, and stay until replaced. Left out they are kept, as
+// everything else on this route is, and an empty list is how they are cleared.
+func TestAHostsRulesAreKeptThroughTheAdminAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := anyOrgID(t, s)
+	host := newDriftProxyHost(t, s, org)
+	path := "/admin/organizations/" + org + "/proxy-hosts"
+	put := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body["host"] = host
+		return call(t, s, http.MethodPut, path, testToken, body)
+	}
+	held := func() []any {
+		t.Helper()
+		var out struct {
+			Hosts []struct {
+				Host  string `json:"host"`
+				Rules []any  `json:"rules"`
+			} `json:"proxy_hosts"`
+		}
+		rec := call(t, s, http.MethodGet, path, testToken, nil)
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range out.Hosts {
+			if h.Host == host {
+				return h.Rules
+			}
+		}
+		t.Fatalf("the list has no %s: %s", host, rec.Body.String())
+		return nil
+	}
+
+	two := []map[string]any{{"effect": "public", "path": "/static/**", "methods": []string{"GET"}},
+		{"effect": "deny", "path": "/internal/**"}}
+	if rec := put(map[string]any{"rules": two}); rec.Code != http.StatusOK {
+		t.Fatalf("setting rules: %d %s", rec.Code, rec.Body.String())
+	}
+	got := held()
+	if len(got) != 2 || got[0].(map[string]any)["effect"] != "public" || got[1].(map[string]any)["effect"] != "deny" {
+		t.Fatalf("held %v", got)
+	}
+
+	if rec := put(map[string]any{"enabled": true}); rec.Code != http.StatusOK {
+		t.Fatalf("changing something else: %d", rec.Code)
+	}
+	if got := held(); len(got) != 2 {
+		t.Errorf("a change that did not name the rules left %v", got)
+	}
+
+	for name, bad := range map[string]map[string]any{
+		"an unknown effect":     {"effect": "allow", "path": "/x"},
+		"a dot segment":         {"effect": "public", "path": "/a/../b"},
+		"a policy on a refusal": {"effect": "deny", "path": "/x", "name": "n"},
+	} {
+		rec := put(map[string]any{"rules": []map[string]any{bad}})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_rules") {
+			t.Errorf("%s answered %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	if got := held(); len(got) != 2 {
+		t.Errorf("a refused list left %v", got)
+	}
+
+	if rec := put(map[string]any{"rules": []map[string]any{}}); rec.Code != http.StatusOK {
+		t.Fatalf("clearing: %d", rec.Code)
+	}
+	if got := held(); len(got) != 0 {
+		t.Errorf("cleared, it holds %v", got)
 	}
 }
 

@@ -401,6 +401,7 @@ outposts and remote access:
   proxy check            prove a forward-auth deployment actually protects the app
   proxy add-host         protect an application with forward auth
   proxy release          the groups a protected application hears of, and a signed identity
+  proxy rules            what happens on one path of a protected application
   proxy list             the protected hosts
   proxy disable-host     stop protecting a host, keeping it
   proxy enable-host      protect a host again
@@ -1640,6 +1641,8 @@ func run(args []string) (err error) {
 		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, true)
 	case "proxy remove-host":
 		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
+	case "proxy rules":
+		return proxyRules(ctx, conn, *orgID, *racHost, *file)
 	case "proxy release":
 		groupsGiven := false
 		fs.Visit(func(f *flag.Flag) { groupsGiven = groupsGiven || f.Name == "groups" })

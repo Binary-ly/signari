@@ -272,6 +272,74 @@ through, and they would arrive here again in a loop.
 Until October 2026 none of this was checked. Anyone who could sign in anywhere
 in the deployment passed every protected host of every organisation.
 
+## Rules for one path
+
+A host protects every path alike until it has rules. They are for what that does not
+fit: a health check that must answer anybody, a metrics path nothing outside should
+reach, a console held to more than the rest.
+
+```
+# rules.txt: the first that matches decides
+public GET,HEAD /static/**
+public *        /health
+deny   *        /metrics
+auth:console *  /console/**
+```
+
+```sh
+signari proxy rules -org <uuid> -host grafana.example.com -file rules.txt
+signari proxy rules -org <uuid> -host grafana.example.com          # show them
+```
+
+The same is `"rules"` on `PUT /admin/organizations/{orgID}/proxy-hosts` and `rules:`
+under `proxy_hosts:` in a [configuration file](config-as-code.md). Each replaces the
+whole list, because the order is what it means, and an empty list clears it.
+
+| Effect | |
+|---|---|
+| `public` | Nobody has to be signed in. The application is told of nobody, even when somebody is: every identity header is sent empty |
+| `deny` | `403` for everybody, signed in or not |
+| `auth` | What every path no rule names gets, written out to take a path back from a wider rule after it, or with `:name` to hold it to more |
+
+A path is matched whole. `*` stands for anything within one segment, and `**`, alone in
+a segment, for any number of them, none included: `/static/**` matches `/static`,
+`/static/` and `/static/js/app.js`, and not `/staticfiles`.
+
+`auth:console` gives a path an access policy of its own, keyed `proxy:<host>#console`,
+on top of the host's:
+
+```yaml
+policies:
+  - name: the-console-needs-a-second-factor
+    when: {client: "proxy:grafana.example.com#console"}
+    require: {groups: [ops], mfa: true}
+```
+
+### A path that could mean two things is refused
+
+The rule is checked here and the path is served by the application, which decides for
+itself what a path means. Where the two differ, a rule is a way past the check:
+`/static/../metrics` matches `/static/**` here and is `/metrics` there. So on a host
+with rules, these are refused with `403`, signed in or not, and never compared:
+
+- a dot segment, spelled out or encoded (`/a/../b`, `/a/%2e%2e/b`)
+- an empty segment (`//admin`)
+- an encoded slash or backslash, and a plain backslash
+- a path parameter (`/a;x/b`)
+- anything still encoded once decoded (`/a/%252e`)
+
+An application whose paths really look like that cannot have rules on the host. Two
+things are still yours to get right. A path is compared with its case, so an
+application that does not care about case has to be given every spelling a `deny`
+should cover. And a rule is only as good as what the proxy says: with rules on a host,
+a proxy that sends no `X-Forwarded-Uri` is refused rather than guessed at. One that
+sends no `X-Forwarded-Method` has every rule naming methods read the strict way: a
+`public` one does not apply, and a `deny` one does. The configurations below send both.
+
+Rules are read on every request and take effect on commit. A disabled host opens
+nothing, whatever its rules say, and a host is held by one organisation, so no tenant
+can write rules for another's application.
+
 ## What the app receives
 
 | Header | Contents |

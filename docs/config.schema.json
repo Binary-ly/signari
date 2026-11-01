@@ -770,6 +770,12 @@
           },
           "type": "array"
         },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/Rule"
+          },
+          "type": "array"
+        },
         "signed_identity": {
           "type": "boolean"
         }
@@ -912,6 +918,27 @@
           "type": "string"
         },
         "resource": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
           "type": "string"
         }
       },

@@ -60,6 +60,7 @@ import (
 	"signari.dev/engine/internal/passkeys"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/provision"
+	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/scim"
@@ -1718,6 +1719,58 @@ func proxyHostWrite(ctx context.Context, conn *pgx.Conn, orgID, host, event stri
 
 // proxyRelease says what a protected application is told beyond who: the groups it
 // may hear of, and whether it gets a signed statement. What is not given is kept.
+func proxyRules(ctx context.Context, conn *pgx.Conn, orgID, raw, file string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org, the organisation the host is in")
+	}
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	if file == "" {
+		held, err := store.ProxyHostFor(ctx, conn, orgID, host)
+		if err != nil {
+			return err
+		}
+		if held == nil {
+			return fmt.Errorf("no enabled protected host %q in organisation %s", host, orgID)
+		}
+		for _, r := range held.Rules {
+			effect, methods := r.Effect, "*"
+			if r.Name != "" {
+				effect += ":" + r.Name
+			}
+			if len(r.Methods) > 0 {
+				methods = strings.Join(r.Methods, ",")
+			}
+			fmt.Printf("%s %s %s\n", effect, methods, r.Path)
+		}
+		return nil
+	}
+	text, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	rules, err := proxyrules.ParseLines(string(text))
+	if err != nil {
+		return err
+	}
+	held, err := json.Marshal(rules)
+	if err != nil {
+		return err
+	}
+	err = proxyHostWrite(ctx, conn, orgID, host, "proxy.host_rules_set", func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx, `UPDATE core.proxy_hosts SET rules = $3::jsonb WHERE org_id = $1::uuid AND host = $2`,
+			orgID, host, string(held))
+		return tag.RowsAffected(), err
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %d rules, in force on commit\n", host, len(rules))
+	return nil
+}
+
 func proxyRelease(ctx context.Context, conn *pgx.Conn, orgID, raw, groups, signed string, groupsGiven bool) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the host is in")

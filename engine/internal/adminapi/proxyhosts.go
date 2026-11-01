@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/store"
 )
 
@@ -28,6 +29,8 @@ type proxyHostRequest struct {
 	// ReleaseGroups and SignedIdentity keep what the host has when absent.
 	ReleaseGroups  *[]string `json:"release_groups"`
 	SignedIdentity *bool     `json:"signed_identity"`
+	// Rules, when given, replace the host's, in order; an empty list clears them.
+	Rules *[]proxyrules.Rule `json:"rules"`
 }
 
 func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +55,7 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 	orgID := r.PathValue("orgID")
 
 	var req proxyHostRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
@@ -73,6 +76,19 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 		release = append([]string{}, *req.ReleaseGroups...)
 	}
+	var rules any
+	if req.Rules != nil {
+		if err := proxyrules.Check(*req.Rules); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rules", "detail": err.Error()})
+			return
+		}
+		held, err := json.Marshal(append([]proxyrules.Rule{}, *req.Rules...))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rules", "detail": err.Error()})
+			return
+		}
+		rules = string(held)
+	}
 
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
@@ -83,18 +99,19 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity)
-			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false))
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'))
 			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
 				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
-				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity)`,
-			orgID, host, enabled, release, req.SignedIdentity); err != nil {
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules)`,
+			orgID, host, enabled, release, req.SignedIdentity, rules); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.proxy_host_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
 			Detail: map[string]any{"host": host, "enabled": enabled, "releases_groups": req.ReleaseGroups != nil,
-				"signed_identity": req.SignedIdentity},
+				"signed_identity": req.SignedIdentity, "rules": req.Rules},
 		})
 	})
 	var pg *pgconn.PgError

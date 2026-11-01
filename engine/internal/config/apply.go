@@ -2,8 +2,10 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/store"
 )
 
@@ -176,7 +179,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	}
 
 	rows, err = tx.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
+		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +187,8 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var h ProxyHost
 		var enabled, signed bool
 		var release []string
-		if err := rows.Scan(&h.Host, &enabled, &release, &signed); err != nil {
+		var rules []proxyrules.Rule
+		if err := rows.Scan(&h.Host, &enabled, &release, &signed, &rules); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -194,6 +198,9 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		}
 		if signed {
 			h.SignedIdentity = &signed
+		}
+		if len(rules) > 0 {
+			h.Rules = &rules
 		}
 		c.proxyHosts[h.Host] = h
 	}
@@ -297,6 +304,15 @@ func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune 
 		}
 		if h.SignedIdentity != nil && *h.SignedIdentity != (have.SignedIdentity != nil) {
 			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "signed_identity"})
+			continue
+		}
+		var haveRules []proxyrules.Rule
+		if have.Rules != nil {
+			haveRules = *have.Rules
+		}
+		// In order: their order is what they mean.
+		if h.Rules != nil && !reflect.DeepEqual(append([]proxyrules.Rule{}, haveRules...), append([]proxyrules.Rule{}, *h.Rules...)) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "rules"})
 		}
 	}
 
@@ -734,13 +750,22 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			}
 			release = append([]string{}, *h.ReleaseGroups...)
 		}
+		var rules any
+		if h.Rules != nil {
+			held, err := json.Marshal(append([]proxyrules.Rule{}, *h.Rules...))
+			if err != nil {
+				return fmt.Errorf("proxy host %q: %w", h.Host, err)
+			}
+			rules = string(held)
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity)
-			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false))
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'))
 			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
 				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
-				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity)`,
-			orgID, h.Host, enabled, release, h.SignedIdentity); err != nil {
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules)`,
+			orgID, h.Host, enabled, release, h.SignedIdentity, rules); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key" {
 				return fmt.Errorf("proxy host %q is registered by another organisation; a "+

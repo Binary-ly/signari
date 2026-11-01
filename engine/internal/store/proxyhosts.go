@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/proxyrules"
 )
 
 // ProxyHost is one application protected by forward authentication.
@@ -18,6 +21,23 @@ type ProxyHost struct {
 	// SignedIdentity sends a signed statement of who it is, for an application
 	// that would rather check than trust the proxy's headers.
 	SignedIdentity bool `json:"signed_identity"`
+	// Rules say what happens on one path of it, in order. None is every path alike.
+	Rules []proxyrules.Rule `json:"rules"`
+}
+
+// ProxyRulesOf reads the rules of an enabled host of this instance, for a request
+// nobody has been found behind yet, which is why it goes by the host alone. It can: a
+// host is held once across the deployment, so no organisation can write rules for
+// another's application, and one disabled opens nothing.
+func ProxyRulesOf(ctx context.Context, q rowQuerier, instanceID, host string) ([]proxyrules.Rule, error) {
+	var rules []proxyrules.Rule
+	err := q.QueryRow(ctx, `SELECT rules FROM core.proxy_hosts
+		WHERE lower(host) = $1 AND enabled AND org_id IN (SELECT o.id FROM core.organizations o
+		      WHERE o.instance_id = COALESCE(NULLIF($2, '')::uuid, o.instance_id))`, host, instanceID).Scan(&rules)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return rules, err
 }
 
 // CheckReleaseGroups refuses a name the header could not carry: X-Forwarded-Groups
@@ -36,7 +56,7 @@ func CheckReleaseGroups(names []string) error {
 // name, in any letters.
 func ProxyHostFor(ctx context.Context, q Querier, orgID, host string) (*ProxyHost, error) {
 	rows, err := q.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity FROM core.proxy_hosts
+		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts
 		 WHERE org_id = $1::uuid AND lower(host) = $2 AND enabled`, orgID, host)
 	if err != nil {
 		return nil, err
@@ -46,7 +66,7 @@ func ProxyHostFor(ctx context.Context, q Querier, orgID, host string) (*ProxyHos
 		return nil, rows.Err()
 	}
 	var h ProxyHost
-	if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity); err != nil {
+	if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules); err != nil {
 		return nil, err
 	}
 	return &h, rows.Err()
@@ -74,7 +94,7 @@ func ProxyHosts(ctx context.Context, db interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, orgID string) ([]ProxyHost, error) {
 	rows, err := db.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity FROM core.proxy_hosts
+		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts
 		 WHERE org_id = $1::uuid ORDER BY host`, orgID)
 	if err != nil {
 		return nil, err
@@ -83,7 +103,7 @@ func ProxyHosts(ctx context.Context, db interface {
 	out := []ProxyHost{}
 	for rows.Next() {
 		var h ProxyHost
-		if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity); err != nil {
+		if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules); err != nil {
 			return nil, err
 		}
 		out = append(out, h)

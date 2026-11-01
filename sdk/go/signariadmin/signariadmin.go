@@ -1176,10 +1176,19 @@ type GetOrganizationsOrgIDProxyHostsResponse struct {
 
 // GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem struct {
-	Enabled        bool     `json:"enabled"`
-	Host           string   `json:"host"`
-	ReleaseGroups  []string `json:"release_groups"`
-	SignedIdentity bool     `json:"signed_identity"`
+	Enabled        bool                                                             `json:"enabled"`
+	Host           string                                                           `json:"host"`
+	ReleaseGroups  []string                                                         `json:"release_groups"`
+	Rules          []GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem `json:"rules"`
+	SignedIdentity bool                                                             `json:"signed_identity"`
+}
+
+// GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem struct {
+	Effect  string   `json:"effect"`
+	Methods []string `json:"methods,omitempty"`
+	Name    string   `json:"name,omitempty"`
+	Path    string   `json:"path"`
 }
 
 // GetOrganizationsOrgIDRACConnectionsResponse is a JSON object of the Admin API.
@@ -3290,10 +3299,19 @@ type PutOrganizationsOrgIDProvidersHookClaimsResponse struct {
 
 // PutOrganizationsOrgIDProxyHostsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDProxyHostsRequest struct {
-	Enabled        *bool     `json:"enabled,omitempty"`
-	Host           *string   `json:"host,omitempty"`
-	ReleaseGroups  *[]string `json:"release_groups,omitempty"`
-	SignedIdentity *bool     `json:"signed_identity,omitempty"`
+	Enabled        *bool                                              `json:"enabled,omitempty"`
+	Host           *string                                            `json:"host,omitempty"`
+	ReleaseGroups  *[]string                                          `json:"release_groups,omitempty"`
+	Rules          *[]PutOrganizationsOrgIDProxyHostsRequestRulesItem `json:"rules,omitempty"`
+	SignedIdentity *bool                                              `json:"signed_identity,omitempty"`
+}
+
+// PutOrganizationsOrgIDProxyHostsRequestRulesItem is a JSON object of the Admin API.
+type PutOrganizationsOrgIDProxyHostsRequestRulesItem struct {
+	Effect  *string   `json:"effect,omitempty"`
+	Methods *[]string `json:"methods,omitempty"`
+	Name    *string   `json:"name,omitempty"`
+	Path    *string   `json:"path,omitempty"`
 }
 
 // PutOrganizationsOrgIDProxyHostsResponse is a JSON object of the Admin API.

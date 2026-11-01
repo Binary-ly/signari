@@ -29,6 +29,7 @@ package config
 import (
 	"fmt"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
@@ -105,6 +106,8 @@ type ProxyHost struct {
 	// ReleaseGroups and SignedIdentity keep what the host has when left out.
 	ReleaseGroups  *[]string `yaml:"release_groups,omitempty"`
 	SignedIdentity *bool     `yaml:"signed_identity,omitempty"`
+	// Rules keep what the host has when left out, and an empty list clears them.
+	Rules *[]proxyrules.Rule `yaml:"rules,omitempty"`
 }
 
 // Group is a group of people.
@@ -390,6 +393,11 @@ func (f *File) Validate() error {
 			add("proxy_hosts[%d]: %q appears twice", i, host)
 		}
 		seenHosts[host] = true
+		if h.Rules != nil {
+			if err := proxyrules.Check(*h.Rules); err != nil {
+				add("proxy_hosts[%d]: %v", i, err)
+			}
+		}
 	}
 
 	for _, s := range sections {

@@ -15685,6 +15685,34 @@
                             },
                             "type": "array"
                           },
+                          "rules": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "effect": {
+                                  "type": "string"
+                                },
+                                "methods": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "effect",
+                                "path"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
                           "signed_identity": {
                             "type": "boolean"
                           }
@@ -15693,7 +15721,8 @@
                           "host",
                           "enabled",
                           "release_groups",
-                          "signed_identity"
+                          "signed_identity",
+                          "rules"
                         ],
                         "type": "object"
                       },
@@ -15785,6 +15814,30 @@
                   "release_groups": {
                     "items": {
                       "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "rules": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "effect": {
+                          "type": "string"
+                        },
+                        "methods": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
                     },
                     "type": "array"
                   },

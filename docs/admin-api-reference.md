@@ -2645,6 +2645,7 @@ Takes:
 | `enabled` | boolean |  |
 | `host` | string |  |
 | `release_groups` | list of string |  |
+| `rules` | list of object |  |
 | `signed_identity` | boolean |  |
 
 Answers:

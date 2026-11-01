@@ -324,7 +324,9 @@ var opSchemas = map[string]opSchema{
 			"source_value": str(), "transform": str(), "transform_arg": str()}))})},
 	"GET /admin/organizations/{orgID}/migration-source": {http.StatusOK, nil, migrationSourceSchema},
 	"GET /admin/organizations/{orgID}/proxy-hosts": {http.StatusOK, nil, object([]string{"proxy_hosts"}, map[string]jsonSchema{
-		"proxy_hosts": arrayOf(object([]string{"host", "enabled", "release_groups", "signed_identity"}, map[string]jsonSchema{"host": str(), "enabled": boolean(), "release_groups": arrayOf(str()), "signed_identity": boolean()}))})},
+		"proxy_hosts": arrayOf(object([]string{"host", "enabled", "release_groups", "signed_identity", "rules"}, map[string]jsonSchema{"host": str(), "enabled": boolean(), "release_groups": arrayOf(str()), "signed_identity": boolean(),
+			"rules": arrayOf(object([]string{"effect", "path"}, map[string]jsonSchema{"effect": str(), "path": str(),
+				"methods": arrayOf(str()), "name": str()}))}))})},
 	// A bare array, unlike every other list, kept for the callers it has.
 	"GET /admin/organizations/{orgID}/resource-servers": {http.StatusOK, nil, arrayOf(object([]string{"resource"},
 		map[string]jsonSchema{"resource": str(), "name": str(), "created_at": dateTime()}))},

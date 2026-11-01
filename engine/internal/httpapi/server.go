@@ -1047,6 +1047,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"SingleSignOn": s.singleSignOnOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// Other accounts this browser is signed in with, to choose instead.
 		"Accounts": s.holdsAccounts(r, s.loginOrg(r.Context(), authzQuery)),
+		// The passkey button and the ceremony behind it, where they can work.
+		"Passkeys": s.passkeysOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

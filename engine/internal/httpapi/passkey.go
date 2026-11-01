@@ -187,6 +187,25 @@ func (s *Server) relyingParty(ctx context.Context, orgID string) (*passkeys.Rely
 	return passkeys.New(rpID, displayName, s.cfg.Issuer, s.models.Provider(), related...)
 }
 
+// passkeysOffered reports whether a passkey can work for this organisation at all:
+// with no RP ID for its instance a ceremony cannot start, so the sign-in page showed a
+// button that could only fail, and asked for a challenge it could not have on every
+// load, for a deployment that had never turned passkeys on.
+func (s *Server) passkeysOffered(ctx context.Context, orgID string) bool {
+	if orgID == "" {
+		return false
+	}
+	var offered bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(i.rp_id, '') <> ''
+		  FROM core.instances i JOIN core.organizations o ON o.instance_id = i.id
+		 WHERE o.id = $1::uuid`, orgID).Scan(&offered); err != nil {
+		s.log.Error("reading whether passkeys are offered", "err", err, "correlation_id", correlationID(ctx))
+		return false
+	}
+	return offered
+}
+
 // handleWebAuthnWellKnown serves WebAuthn §5.11's document at
 // /.well-known/webauthn: {"origins": [...]}, application/json, the origins a
 // passkey under this instance's RP ID may also be used from. A browser fetches

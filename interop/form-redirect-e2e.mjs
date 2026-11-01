@@ -17,6 +17,7 @@
 // Usage:  node form-redirect-e2e.mjs <authorize-url> <arrival-origin> <email> <password>
 
 import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,15 @@ const CHROME = process.env.CHROME ||
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9334;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// RFC 6238 with its defaults, SHA-1, 30 seconds, six digits.
+function totp(seedHex) {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const mac = createHmac("sha1", Buffer.from(seedHex, "hex")).update(counter).digest();
+  const at = mac[mac.length - 1] & 0x0f;
+  return String((mac.readUInt32BE(at) & 0x7fffffff) % 1000000).padStart(6, "0");
+}
 
 class CDP {
   constructor(ws) {
@@ -123,7 +133,7 @@ try {
 
   // Waits for arrival, answering a consent page on the way, and stops when the
   // browser has stopped moving somewhere that is not the arrival.
-  let arrived = false, last = "", still = 0, consented = false;
+  let arrived = false, last = "", still = 0, consented = false, answered = false;
   for (let i = 0; i < 60 && !arrived; i++) {
     await sleep(250);
     const at = await here();
@@ -135,6 +145,17 @@ try {
       still = 0;
     } else if (++still > 12) {
       break;
+    }
+    // TOTP_SEED, in hex, answers a second factor as an authenticator would.
+    if (process.env.TOTP_SEED && !answered && await evalJS(`!!document.querySelector('input[name=code]')`)) {
+      answered = true;
+      console.log("  code      answering");
+      await evalJS(`(() => {
+        const field = document.querySelector('input[name=code]');
+        field.value = ${JSON.stringify(totp(process.env.TOTP_SEED))};
+        field.form.querySelector('button').click();
+      })()`);
+      continue;
     }
     if (!consented && at.endsWith("/consent") || (!consented && await evalJS(
       `!!document.querySelector('form[action*="consent"]')`))) {

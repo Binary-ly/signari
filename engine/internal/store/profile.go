@@ -535,7 +535,7 @@ func attributeLabel(a Attribute) string {
 func attributeContext(name string) string { return "user-attribute:" + name }
 
 // UserAttributes returns a user's attributes, unsealing what it can.
-func UserAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string,
+func UserAttributes(ctx context.Context, tx claimReader, userID, orgID string,
 	root *keys.RootKey) ([]AttributeValue, error) {
 
 	rows, err := tx.Query(ctx, `

@@ -169,7 +169,7 @@ func TestNoAssertionIsSignedForAnUnusableServiceProvider(t *testing.T) {
 		}
 		_, _, err = rf.f.srv.issueSAMLAssertion(ctx, httptest.NewRequest(http.MethodGet, "/", nil),
 			&saml.Validated{ACSURL: "https://sp.test/acs"},
-			p, sid, rf.f.userID, rf.f.orgID)
+			p, store.BrowserSession{SID: sid, UserID: rf.f.userID, OrgID: rf.f.orgID, Live: true})
 		if !errors.Is(err, errSPNotUsable) {
 			t.Errorf("an assertion for %s was not refused at the signing step: %v", entity, err)
 		}

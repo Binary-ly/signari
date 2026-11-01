@@ -85,6 +85,13 @@ var declaredCaches = []declaredCache{
 			"request, so a change shows on commit. Public, and no decision reads it.",
 	},
 	{
+		symbol: "samlCertCache",
+		delays: false,
+		why: "Each signing key's self-signed certificate, by key id. Written while " +
+			"the key has none and never after, so nothing an administrator can " +
+			"change is held: a new certificate is a new key and a new id.",
+	},
+	{
 		symbol: "ssfKeys",
 		delays: false,
 		why: "Remote transmitters' signing keys, not this deployment's " +

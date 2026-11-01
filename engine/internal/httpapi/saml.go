@@ -206,7 +206,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Is there a live session? If not, park this request and sign in first.
-	sid, userID, orgID, ok := s.currentSession(r)
+	session, ok := s.browserSession(r)
 
 	// # ForceAuthn without an infinite loop
 	//
@@ -222,13 +222,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	// forward is to actually authenticate again.
 	needsAuth := !ok
 	if ok && validated.ForceAuthn {
-		fresh, ferr := s.sessionAuthedAfter(ctx, sid, validated.IssueInstant)
-		if ferr != nil {
-			s.log.Error("checking session freshness for ForceAuthn", "err", ferr)
-			http.Error(w, "unavailable", http.StatusInternalServerError)
-			return
-		}
-		needsAuth = !fresh
+		needsAuth = !session.AuthTime.After(validated.IssueInstant)
 	}
 	// What the service provider asked of the sign-in, held to the session as an
 	// authorization request's acr_values are, per request: a password session must
@@ -240,7 +234,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok && !needsAuth && rung >= 2 {
-		met, merr := s.samlSessionReaches(ctx, sid, userID, orgID)
+		met, merr := s.samlSessionReaches(ctx, session)
 		if merr != nil {
 			s.log.Error("checking a session against a SAML authentication context", "err", merr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
@@ -274,7 +268,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := checkSPUsable(provider, orgID); err != nil {
+	if err := checkSPUsable(provider, session.OrgID); err != nil {
 		s.samlRefuse(w, r, err.Error())
 		return
 	}
@@ -303,14 +297,14 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, sid, userID, orgID)
+	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
 		// Told to the service provider as a SAML refusal, at the ACS URL the
 		// request was validated against, so it can show its own page rather
 		// than leave the person on ours with nowhere to go.
 		s.auditDetached(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Type: audit.EventLoginFailed, OrgID: session.OrgID, SubjectID: session.UserID,
 			CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "access_policy", "rule": denied.d.Rule,
 				"entity_id": provider.EntityID},
@@ -366,16 +360,6 @@ func checkSPUsable(p *saml.Provider, orgID string) error {
 		return fmt.Errorf("%w: this application belongs to a different organisation", errSPNotUsable)
 	}
 	return nil
-}
-
-// sessionAuthedAfter reports whether this session was authenticated after t.
-func (s *Server) sessionAuthedAfter(ctx context.Context, sid string, t time.Time) (bool, error) {
-	var authTime time.Time
-	if err := s.db.QueryRow(ctx,
-		`SELECT auth_time FROM core.sessions WHERE sid = $1`, sid).Scan(&authTime); err != nil {
-		return false, err
-	}
-	return authTime.After(t), nil
 }
 
 // verifyAuthnRequestSignature checks the signature by the binding the request
@@ -458,7 +442,9 @@ func samlResumeQuery(encoded, relayState, method, originalQuery string) string {
 }
 
 func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *saml.Validated,
-	p *saml.Provider, sid, userID, orgID string) (doc string, acs string, err error) {
+	p *saml.Provider, session store.BrowserSession) (doc string, acs string, err error) {
+
+	sid, userID, orgID := session.SID, session.UserID, session.OrgID
 
 	// Again here, though every caller checks first: this is the one function
 	// that produces a signed assertion for SAML and WS-Federation alike, and
@@ -473,22 +459,21 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	// checked at all: a deny rule written for a service provider refused
 	// WS-Federation and let the same application's SAML sign-ins through, while
 	// the WS-Federation page said both were gated.
-	mfa, amr := sessionFactors(ctx, s.db, sid)
-	if pd := s.checkAccessPolicy(ctx, r, orgID, p.EntityID, userID, "openid", mfa, amr); pd != nil {
-		return "", "", &policyDenied{d: pd}
+	if p.HasAccessPolicy {
+		if pd := s.checkAccessPolicy(ctx, r, orgID, p.EntityID, userID, "openid",
+			oauth.IsMultiFactor(session.AMR), session.AMR); pd != nil {
+			return "", "", &policyDenied{d: pd}
+		}
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+	// Each of these reads is a statement of its own, so none needs a transaction,
+	// and the one that writes, a NameID's first use, is one statement that settles
+	// a race by itself.
 	var nameID string
 	if p.NameIDAttribute != "" {
-		nameID, err = store.NameIDFromAttribute(ctx, tx, userID, orgID, p.NameIDAttribute, s.root)
+		nameID, err = store.NameIDFromAttribute(ctx, s.db, userID, orgID, p.NameIDAttribute, s.root)
 	} else {
-		nameID, err = store.EnsureNameID(ctx, tx, p.ID, userID, orgID, p.NameIDFormat)
+		nameID, err = store.EnsureNameID(ctx, s.db, p.ID, userID, orgID, p.NameIDFormat)
 	}
 	if err != nil {
 		return "", "", err
@@ -498,7 +483,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	if err != nil {
 		return "", "", err
 	}
-	certDER, err := saml.EnsureCertificate(ctx, tx, key.KID(), s.cfg.Issuer, key.Signer())
+	certDER, err := s.samlCertificateFor(ctx, key)
 	if err != nil {
 		return "", "", err
 	}
@@ -508,23 +493,17 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	// go stale.
 	sessionIndex := sid
 
-	// The stored acr is not used: the authentication context is derived from
-	// the methods actually used (samlAuthnContext).
-	_, amr, authTime, err := store.SessionAuthContext(ctx, tx, sid)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Group attributes, if this provider is released any. Read here, inside the
-	// same transaction that mints the assertion, for the same reason the OIDC
-	// path reads them at issuance: an assertion is an authorization statement
-	// with a lifetime, and a stale group in one is privilege that outlived its
-	// revocation.
+	// Group attributes, if this provider is released any. Read here, at
+	// issuance, for the same reason the OIDC path reads them there: an assertion
+	// is an authorization statement with a lifetime, and a stale group in one is
+	// privilege that outlived its revocation.
 	attrs := map[string][]string{}
-	if attrName, groups, gerr := store.GroupsForSAML(ctx, tx, userID, p.ID); gerr != nil {
-		return "", "", gerr
-	} else if attrName != "" && len(groups) > 0 {
-		attrs[attrName] = groups
+	if p.ReleasesGroups {
+		if attrName, groups, gerr := store.GroupsForSAML(ctx, s.db, userID, p.ID); gerr != nil {
+			return "", "", gerr
+		} else if attrName != "" && len(groups) > 0 {
+			attrs[attrName] = groups
+		}
 	}
 
 	// The provider's declared attribute release.
@@ -540,8 +519,8 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	// sealed under the subject key here too and an erased subject releases
 	// nothing. A SAML assertion is a token by another name; it must not be the
 	// path where erasure does not reach.
-	if s.root != nil {
-		released, rerr := store.SAMLAttributes(ctx, tx, userID, p.ID, s.root)
+	if s.root != nil && p.ReleasesAttributes {
+		released, rerr := store.SAMLAttributes(ctx, s.db, userID, p.ID, s.root)
 		if rerr != nil {
 			return "", "", rerr
 		}
@@ -555,27 +534,25 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		}
 	}
 
-	// Everything the assertion says has been read. Committed before it is
-	// signed: the signer is a crypto.Signer that may be a remote key service,
-	// and signing with the transaction open held a pool connection across that
-	// call. The record of who received it is written after, in its own
-	// transaction, and the document is returned only once that commits.
-	if err := tx.Commit(ctx); err != nil {
-		return "", "", err
-	}
-
-	// The operator's provider, with the transaction closed for the same reason. What it
-	// adds cannot take a name already released, and refusing is told to the service
-	// provider as a policy refusal is, by the caller.
-	hook := s.askHook(ctx, s.db, orgID, provider.HookSAMLAssertion,
-		store.SAMLAssertionHookRequest{Subject: userID, EntityID: p.EntityID, OrgID: orgID})
-	if hook.Vetoed {
-		s.recordHookRefusal(ctx, provider.HookSAMLAssertion, orgID, userID, "", hook.Reason)
-		return "", "", &policyDenied{&policy.Decision{Rule: "provider", Message: clientAccessRefusal}}
-	}
-	for name, value := range hook.Claims {
-		if _, taken := attrs[name]; !taken {
-			attrs[name] = attributeValues(value)
+	// Everything the assertion says has been read, with no transaction held: the
+	// provider below may take its whole timeout and the signer is a crypto.Signer
+	// that may be a remote key service, and neither may keep a pool connection. The
+	// record of who received it is written after, in a transaction of its own, and
+	// the document is returned only once that commits.
+	//
+	// What the operator's provider adds cannot take a name already released, and
+	// refusing is told to the service provider as a policy refusal is, by the caller.
+	if p.HasAssertionHook {
+		hook := s.askHook(ctx, s.db, orgID, provider.HookSAMLAssertion,
+			store.SAMLAssertionHookRequest{Subject: userID, EntityID: p.EntityID, OrgID: orgID})
+		if hook.Vetoed {
+			s.recordHookRefusal(ctx, provider.HookSAMLAssertion, orgID, userID, "", hook.Reason)
+			return "", "", &policyDenied{&policy.Decision{Rule: "provider", Message: clientAccessRefusal}}
+		}
+		for name, value := range hook.Claims {
+			if _, taken := attrs[name]; !taken {
+				attrs[name] = attributeValues(value)
+			}
 		}
 	}
 
@@ -599,11 +576,12 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 			NameID:       nameID,
 			NameIDFormat: saml.FullNameIDFormat(p.NameIDFormat),
 			SessionIndex: sessionIndex,
-			AuthnInstant: authTime,
+			AuthnInstant: session.AuthTime,
 			// The context reflects what the user ACTUALLY did, not what was asked
 			// for. Claiming multi-factor for a password-only session is a lie the
-			// service provider makes access decisions on.
-			AuthnContext: samlAuthnContext(amr),
+			// service provider makes access decisions on. The stored acr is not
+			// used: it is derived from the methods (samlAuthnContext).
+			AuthnContext: samlAuthnContext(session.AMR),
 			Attributes:   attrs,
 		},
 	}, key.KID(), key.Signer(), certDER)
@@ -648,19 +626,15 @@ const (
 
 // samlSessionReaches holds a live session to a demand for a second factor, as the
 // authorization endpoint holds one to acr_values=2.
-func (s *Server) samlSessionReaches(ctx context.Context, sid, userID, orgID string) (samlContextState, error) {
-	var amr []string
-	if err := s.db.QueryRow(ctx, `SELECT amr FROM core.sessions WHERE sid = $1`, sid).Scan(&amr); err != nil {
-		return samlContextShort, err
-	}
-	if oauth.IsMultiFactor(amr) {
+func (s *Server) samlSessionReaches(ctx context.Context, session store.BrowserSession) (samlContextState, error) {
+	if oauth.IsMultiFactor(session.AMR) {
 		return samlContextMet, nil
 	}
-	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
+	enrolled, err := store.HasSecondFactor(ctx, s.db, session.UserID)
 	if err != nil {
 		return samlContextShort, err
 	}
-	if !enrolled || s.stepUpNeverAsked(ctx, orgID, userID, samlStepUpQuery) {
+	if !enrolled || s.stepUpNeverAsked(ctx, session.OrgID, session.UserID, samlStepUpQuery) {
 		return samlContextUnreachable, nil
 	}
 	return samlContextShort, nil
@@ -820,8 +794,13 @@ func (s *Server) samlSigningKey(signatureAlg string) (keys.Key, error) {
 		"add one with `signari keys rotate -alg %s`", signatureAlg, alg, alg)
 }
 
-// samlCertificateFor returns the stored certificate for one key.
+// samlCertificateFor returns the stored certificate for one key. Held once read:
+// a key's certificate is written while it has none and never after, so what a
+// key id names cannot change underneath this.
 func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, error) {
+	if der, held := s.samlCertCache.Load(k.KID()); held {
+		return der.([]byte), nil
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -831,7 +810,11 @@ func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	return der, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	s.samlCertCache.Store(k.KID(), der)
+	return der, nil
 }
 
 // samlCertificates returns every certificate a service provider should accept,

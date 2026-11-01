@@ -73,6 +73,15 @@ type Provider struct {
 	// from it, and DefaultRelayState is what goes with that response.
 	IdPInitiated      bool
 	DefaultRelayState string
+
+	// InstanceID is the instance its organisation belongs to. The rest say whether
+	// an assertion for it has anything more to ask, read with the provider: most
+	// have none of them, and each was a statement on every assertion.
+	InstanceID         string
+	HasAccessPolicy    bool
+	HasAssertionHook   bool
+	ReleasesGroups     bool
+	ReleasesAttributes bool
 }
 
 // MaxRelayState is the value SAML itself specifies: 80 bytes.

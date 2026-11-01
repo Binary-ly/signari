@@ -231,27 +231,21 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// tampered, which is the most useless possible failure mode for an integrity
 	// mechanism -- it would be indistinguishable from a real attack.
 	//
-	// One extra round trip to let the database canonicalise it, and both sides
-	// then hash exactly the same string.
+	// So the database canonicalises it, and both sides then hash exactly the same
+	// string.
 	//
-	// The ids go through the same round trip, for the same reason. PostgreSQL
+	// The ids go through the same statement, for the same reason. PostgreSQL
 	// accepts a uuid in upper case, in braces, without hyphens or with one after
 	// every four digits, and stores the canonical form. A respelled id therefore
 	// hashed as one string and was stored as another, and the chain read as
 	// tampered from that row on, permanently: an Admin API PATCH to
 	// /admin/users/d578-90c1-... did exactly this to the shared test database.
-	var detail string
-	var org, subject, actor, correlation, token *string
-	if err := tx.QueryRow(ctx,
-		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text`,
-		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
-		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID)).
-		Scan(&detail, &org, &subject, &actor, &correlation, &token); err != nil {
-		return fmt.Errorf("audit: canonicalising the entry: %w", err)
-	}
-	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
-	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
-
+	//
+	// The statement also takes the chain's lock, which saves it a round trip of
+	// its own. It reads nothing from a table, so it does not matter that its
+	// snapshot is older than the lock: the read of the tail below is a statement
+	// of its own and sees what was committed before the lock was had.
+	//
 	// An advisory lock on the CHAIN, not a row lock on its current tail.
 	//
 	// The first version took FOR UPDATE on the tail row, reasoning that
@@ -280,9 +274,18 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// is a constant because the chain is global: it is verified in id order
 	// across every organisation, so a per-organisation lock would permit
 	// exactly the interleaving this prevents.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLock); err != nil {
-		return fmt.Errorf("audit: taking the chain lock: %w", err)
+	var detail, locked string
+	var org, subject, actor, correlation, token *string
+	if err := tx.QueryRow(ctx,
+		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text,
+		        pg_advisory_xact_lock($7)::text`,
+		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID), auditChainLock).
+		Scan(&detail, &org, &subject, &actor, &correlation, &token, &locked); err != nil {
+		return fmt.Errorf("audit: canonicalising the entry and taking the chain lock: %w", err)
 	}
+	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
+	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
 
 	var prev []byte
 	err = tx.QueryRow(ctx, `

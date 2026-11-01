@@ -91,16 +91,19 @@ func (s *Server) loadSAMLSource(ctx context.Context, slug string) (*store.SAMLSo
 // ended.
 func (s *Server) loadSAMLProvider(ctx context.Context, entityID string) (*saml.Provider, error) {
 	p, err := store.LoadSAMLProvider(ctx, s.db, entityID)
-	if err == nil && !s.ownedBy(ctx, s.db, p.OrgID, "saml service provider") {
-		return nil, store.ErrSAMLProviderUnknown
-	}
-	return p, err
+	return s.ofThisInstance(ctx, p, err)
 }
 
 // loadSAMLProviderByID is the same by the provider's own id.
 func (s *Server) loadSAMLProviderByID(ctx context.Context, id string) (*saml.Provider, error) {
 	p, err := store.LoadSAMLProviderByID(ctx, s.db, id)
-	if err == nil && !s.ownedBy(ctx, s.db, p.OrgID, "saml service provider") {
+	return s.ofThisInstance(ctx, p, err)
+}
+
+func (s *Server) ofThisInstance(ctx context.Context, p *saml.Provider, err error) (*saml.Provider, error) {
+	if err == nil && !s.serves(p.InstanceID) {
+		s.log.Info("an object of another instance was refused", "what", "saml service provider",
+			"org_id", p.OrgID, "correlation_id", correlationID(ctx))
 		return nil, store.ErrSAMLProviderUnknown
 	}
 	return p, err

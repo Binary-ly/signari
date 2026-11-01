@@ -61,6 +61,10 @@ type Server struct {
 	jwksCache []byte
 	jwksETag  string
 
+	// samlCertCache is each signing key's certificate, by key id. See
+	// samlCertificateFor.
+	samlCertCache sync.Map
+
 	// discoveryCache is the discovery document as of discoveryVersion and the
 	// algorithms in discoveryKeys. See discoveryDocument.
 	discoveryMu      sync.Mutex

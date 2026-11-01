@@ -69,7 +69,7 @@ func GroupsForUser(ctx context.Context, db interface {
 
 // GroupsForSAML returns the groups released to a SAML provider, and the
 // attribute name to publish them under.
-func GroupsForSAML(ctx context.Context, tx pgx.Tx, userID, providerID string) (attr string, groups []string, err error) {
+func GroupsForSAML(ctx context.Context, tx claimReader, userID, providerID string) (attr string, groups []string, err error) {
 	var only []string
 	err = tx.QueryRow(ctx, `
 		SELECT attribute_name, only_groups FROM core.saml_group_release

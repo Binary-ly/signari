@@ -195,6 +195,31 @@ func TestAResumedAuthorizationAsksTheDatabaseLittle(t *testing.T) {
 	underLimit(t, "a resumed authorization", spent.take(), 8)
 }
 
+// A SAML sign-in for somebody with a session, the second of two, since the first
+// makes the key's certificate. Begin and commit counted, with a provider that
+// releases no groups and no attributes.
+func TestASAMLResponseAsksTheDatabaseLittle(t *testing.T) {
+	rf := newRealmFixture(t)
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf.f.srv.root = root
+	if err := rf.f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, rf.f.orgID).Scan(&rf.f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	spent := traced(t, rf.f.srv)
+	if _, doc := rf.samlSSO(t, rf.own); doc == "" {
+		t.Fatal("no response")
+	}
+	spent.take()
+	if _, doc := rf.samlSSO(t, rf.own); doc == "" {
+		t.Fatal("no second response")
+	}
+	underLimit(t, "a SAML response", spent.take(), 9)
+}
+
 // These two are what a resource server calls on every request it serves, so a
 // statement here is one for each of those.
 func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {

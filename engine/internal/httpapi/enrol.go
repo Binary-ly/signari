@@ -44,21 +44,21 @@ import (
 
 // currentSession resolves the signed-in user for an account-management request.
 func (s *Server) currentSession(r *http.Request) (sid, userID, orgID string, ok bool) {
+	found, ok := s.browserSession(r)
+	return found.SID, found.UserID, found.OrgID, ok
+}
+
+// browserSession is currentSession for a page that goes on to ask more of it.
+func (s *Server) browserSession(r *http.Request) (store.BrowserSession, bool) {
 	cookie := sessionCookie(r)
 	if cookie == "" {
-		return "", "", "", false
+		return store.BrowserSession{}, false
 	}
-	ctx := r.Context()
-	sid, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
-	if err != nil || !live || sid == "" {
-		return "", "", "", false
+	found, err := store.ResolveBrowserSession(r.Context(), s.db, store.HashToken(cookie), s.instanceID)
+	if err != nil || !found.Live {
+		return store.BrowserSession{}, false
 	}
-	if err := s.db.QueryRow(ctx,
-		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&userID, &orgID); err != nil {
-		return "", "", "", false
-	}
-	return sid, userID, orgID, true
+	return found, true
 }
 
 // handleTOTPPage shows the enrolment introduction. It changes nothing.

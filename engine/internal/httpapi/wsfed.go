@@ -86,7 +86,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid, userID, orgID, ok := s.currentSession(r)
+	session, ok := s.browserSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin(r.URL.RequestURI()), http.StatusSeeOther)
 		return
@@ -94,7 +94,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 	// The same check the SAML endpoint makes, and the one this endpoint went
 	// without: a realm is another organisation's application, and a session here
 	// must not be turned into a signed token for it.
-	if err := checkSPUsable(p, orgID); err != nil {
+	if err := checkSPUsable(p, session.OrgID); err != nil {
 		s.log.Info("ws-federation realm refused", "realm", realm, "err", err)
 		writeError(w, http.StatusForbidden, "access_denied", err.Error())
 		return
@@ -121,7 +121,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 	// second code path knowing about it. The access policy is applied there too,
 	// for both protocols.
 	v := &saml.Validated{ACSURL: dest}
-	doc, _, err := s.issueSAMLAssertion(ctx, r, v, p, sid, userID, orgID)
+	doc, _, err := s.issueSAMLAssertion(ctx, r, v, p, session)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
 		writeError(w, http.StatusForbidden, "access_denied", denied.d.Message)
@@ -148,7 +148,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditDetached(ctx, audit.Event{
-		Type: "wsfed.token_issued", OrgID: orgID, SubjectID: userID,
+		Type: "wsfed.token_issued", OrgID: session.OrgID, SubjectID: session.UserID,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"wtrealm": realm, "wreply": dest},
 	})

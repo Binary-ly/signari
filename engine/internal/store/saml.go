@@ -44,36 +44,31 @@ func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) 
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
 		       sp_key_transport, signature_alg,
 		       lifetime_seconds, enabled, COALESCE(name_id_attribute, ''),
-		       idp_initiated, default_relay_state
+		       idp_initiated, default_relay_state,
+		       (SELECT o.instance_id::text FROM core.organizations o WHERE o.id = core.saml_providers.org_id),
+		       EXISTS (SELECT 1 FROM core.access_policies a WHERE a.org_id = core.saml_providers.org_id),
+		       EXISTS (SELECT 1 FROM core.providers h
+		                WHERE h.org_id = core.saml_providers.org_id AND h.hook = 'saml_assertion'),
+		       EXISTS (SELECT 1 FROM core.saml_group_release g WHERE g.provider_id = core.saml_providers.id),
+		       attributes <> '{}'::jsonb,
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('URL', u.url, 'Binding', u.binding, 'IsDefault', u.is_default)
+		                                  ORDER BY u.is_default DESC, u.url)
+		                   FROM core.saml_acs_urls u WHERE u.provider_id = core.saml_providers.id), '[]'::jsonb)
 		FROM core.saml_providers
 		WHERE `+where, key).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
 		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg,
-		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState)
+		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
+		&p.InstanceID, &p.HasAccessPolicy, &p.HasAssertionHook, &p.ReleasesGroups, &p.ReleasesAttributes,
+		&p.ACSURLs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSAMLProviderUnknown
 		}
 		return nil, fmt.Errorf("loading the service provider: %w", err)
 	}
-
-	rows, err := db.Query(ctx, `
-		SELECT url, binding, is_default FROM core.saml_acs_urls
-		WHERE provider_id = $1::uuid
-		ORDER BY is_default DESC, url`, p.ID)
-	if err != nil {
-		return nil, fmt.Errorf("loading assertion consumer URLs: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var a saml.ACSURL
-		if err := rows.Scan(&a.URL, &a.Binding, &a.IsDefault); err != nil {
-			return nil, err
-		}
-		p.ACSURLs = append(p.ACSURLs, a)
-	}
-	return p, rows.Err()
+	return p, nil
 }
 
 // EnsureNameID returns the stable pairwise identifier for a user at a provider,
@@ -87,7 +82,7 @@ func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) 
 // NameID as the account key, so a new value means a new, empty account.
 //
 // A random per-provider value costs nothing and removes both problems.
-func EnsureNameID(ctx context.Context, tx pgx.Tx, providerID, userID, orgID, format string) (string, error) {
+func EnsureNameID(ctx context.Context, tx claimReader, providerID, userID, orgID, format string) (string, error) {
 	// Transient identifiers are per-session by definition and are never stored.
 	if format == "transient" {
 		return newOpaqueID()
@@ -152,7 +147,7 @@ func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgI
 // rather than falling back: another identifier would be a new, empty account at the
 // provider. Refused too when the attribute has since become one a person can edit,
 // since whoever writes this value signs in as whoever else holds it there.
-func NameIDFromAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, attribute string, root *keys.RootKey) (string, error) {
+func NameIDFromAttribute(ctx context.Context, tx claimReader, userID, orgID, attribute string, root *keys.RootKey) (string, error) {
 	if attribute == nameIDFromUsername {
 		var username string
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(username, '') FROM core.users WHERE id = $1::uuid`,
@@ -256,22 +251,6 @@ func newOpaqueID() (string, error) {
 		return "", fmt.Errorf("generating an identifier: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// SessionAuthContext reports what the user actually did to establish this
-// session, so the assertion can state it truthfully.
-//
-// Read at assertion time rather than carried from login, because a session's
-// authentication context can change underneath it -- a step-up raises it, and
-// an assertion claiming the old value would understate what happened.
-func SessionAuthContext(ctx context.Context, tx pgx.Tx, sid string) (acr string, amr []string, authTime time.Time, err error) {
-	err = tx.QueryRow(ctx, `
-		SELECT acr, amr, auth_time FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&acr, &amr, &authTime)
-	if err != nil {
-		return "", nil, time.Time{}, fmt.Errorf("reading the session's authentication context: %w", err)
-	}
-	return acr, amr, authTime, nil
 }
 
 // SAMLParticipant is one service provider's view of a session.

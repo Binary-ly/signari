@@ -291,7 +291,7 @@ func typedValue(raw, valueType string) any {
 //
 // So a personal attribute is unsealed with the subject key, exactly as for a
 // mapped OIDC claim, and an erased subject releases nothing.
-func SAMLAttributes(ctx context.Context, tx pgx.Tx, userID, providerID string,
+func SAMLAttributes(ctx context.Context, tx claimReader, userID, providerID string,
 	root *keys.RootKey) (map[string]string, error) {
 
 	// The provider's release map, and the organisation it belongs to.

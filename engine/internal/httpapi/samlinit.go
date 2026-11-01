@@ -32,7 +32,7 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "no such application")
 		return
 	}
-	sid, userID, orgID, ok := s.currentSession(r)
+	session, ok := s.browserSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin(pathSAMLInit+id), http.StatusSeeOther)
 		return
@@ -49,7 +49,7 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 	}
 	// The same words for another organisation's and for one that has not opted in,
 	// so this does not list another tenant's applications by id.
-	if provider.OrgID != orgID {
+	if provider.OrgID != session.OrgID {
 		s.samlRefuse(w, r, "no such application")
 		return
 	}
@@ -58,13 +58,13 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "no such application")
 		return
 	}
-	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, sid, userID, orgID)
+	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
 		// Told here. There is no request to answer, and a refusal posted to a
 		// provider that was not expecting anything has nowhere to show it.
 		s.auditDetached(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Type: audit.EventLoginFailed, OrgID: session.OrgID, SubjectID: session.UserID,
 			CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "access_policy", "rule": denied.d.Rule,
 				"entity_id": provider.EntityID},

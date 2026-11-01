@@ -53,6 +53,8 @@ type Ticket struct {
 	BoundClient string
 	// PendingRequest is the resource-owner decision this ticket polls, §3.3.6.
 	PendingRequest string
+	// PersistClaims is the person having said a PCT may be kept for them.
+	PersistClaims bool
 }
 
 // CreatePermissionTicket records a ticket for a resource server's request.
@@ -92,9 +94,9 @@ func RedeemPermissionTicket(ctx context.Context, db *pgxpool.Pool, ticketHash []
 		SET redeemed_at = now()
 		WHERE ticket_hash = $1 AND redeemed_at IS NULL AND expires_at > now()
 		RETURNING id::text, org_id::text, resource_server, permissions,
-		          requesting_party::text, bound_client, pending_request_id::text`,
+		          requesting_party::text, bound_client, pending_request_id::text, persist_claims`,
 		ticketHash).Scan(&t.ID, &t.OrgID, &t.ResourceServer, &blob,
-		&party, &bound, &pending)
+		&party, &bound, &pending, &t.PersistClaims)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrTicketUnknown
 	}

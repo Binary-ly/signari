@@ -273,6 +273,9 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 			// proved to THIS client; a second client presenting the successor
 			// ticket would be handed somebody else's proof.
 			BoundClient: i.ClientID,
+			// Off unless they ticked it: §6.2 recommends asking a person before
+			// keeping anything of theirs across authorization processes.
+			PersistClaims: r.PostForm.Get("remember") != "",
 		}, uma.TicketLifetime); err != nil {
 		s.log.Error("recording a successor permission ticket", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
@@ -411,6 +414,28 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 			"claim_token and claim_token_format must appear together (section 3.3.1)")
 	}
 
+	// §3.3.1 has the client make "a best effort" that the person is the one a PCT
+	// was issued for, which is all it can be. This server's part is to refuse one it
+	// did not issue to this client, and one disagreeing with anything else in the
+	// request: it stands for an identity, so two of them are one or the other.
+	remembered := ""
+	if pct := r.PostForm.Get("pct"); pct != "" {
+		var err error
+		if remembered, err = store.PersonOfPersistedClaims(ctx, s.db, pct, c.ClientID); err != nil {
+			if !errors.Is(err, store.ErrPersistedClaimsUnknown) {
+				s.log.Error("reading a persisted claims token", "err", err)
+			}
+			return requestingParty{}, uma.InvalidGrant(
+				"this persisted claims token is unknown, has expired, or was not issued to this client")
+		}
+	}
+	disagrees := func(person string) *uma.Error {
+		if remembered != "" && remembered != person {
+			return uma.InvalidGrant("the persisted claims token is about somebody other than this request")
+		}
+		return nil
+	}
+
 	if t.RequestingParty != "" {
 		if pushed != "" {
 			return requestingParty{}, uma.InvalidRequest(
@@ -418,6 +443,9 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 					"interactive claims gathering, and this request also pushes a " +
 					"claim_token; the two would have to be the same person and this " +
 					"server will not guess which one you meant")
+		}
+		if bad := disagrees(t.RequestingParty); bad != nil {
+			return requestingParty{}, bad
 		}
 		ref, err := store.RequestingPartyRef(ctx, s.db, t.RequestingParty)
 		if err != nil {
@@ -431,7 +459,14 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 	}
 
 	if pushed == "" {
-		return requestingParty{}, nil
+		if remembered == "" {
+			return requestingParty{}, nil
+		}
+		ref, err := store.RequestingPartyRef(ctx, s.db, remembered)
+		if err != nil {
+			return requestingParty{}, uma.InvalidGrant("the person this token was about no longer exists")
+		}
+		return requestingParty{userID: remembered, ref: ref}, nil
 	}
 	if format != uma.ClaimTokenFormatIDToken {
 		// Named, not generic. A client that sent a SAML assertion needs to know
@@ -492,6 +527,9 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 	if err != nil {
 		return requestingParty{}, uma.InvalidGrant(
 			"the pushed claim_token names a subject this server does not know")
+	}
+	if bad := disagrees(person); bad != nil {
+		return requestingParty{}, bad
 	}
 	ref, err := store.RequestingPartyRef(ctx, s.db, person)
 	if err != nil {
@@ -649,7 +687,7 @@ func (s *Server) successorTicket(ctx context.Context, t *store.Ticket,
 		store.TicketOrigin{
 			OrgID: t.OrgID, ResourceServer: t.ResourceServer,
 			Permissions: t.Permissions, RequestingParty: party,
-			BoundClient: boundClient, PendingRequest: pending,
+			BoundClient: boundClient, PendingRequest: pending, PersistClaims: t.PersistClaims,
 		}, uma.TicketLifetime); err != nil {
 		return "", err
 	}

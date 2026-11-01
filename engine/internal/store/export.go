@@ -134,6 +134,7 @@ var exportSections = []exportSection{
 	{table: "uma_permission_tickets", by: "requesting_party"},
 	{table: "uma_pending_requests", by: "requesting_party"},
 	{table: "uma_claims_interactions", by: "requesting_party"},
+	{table: "uma_persisted_claims", by: "user_id"},
 	{table: "ssf_received", by: "user_id"},
 
 	// The profile, membership and provisioning.

@@ -68,7 +68,7 @@ var notConfiguration = map[string]string{
 	"recovery_requests": running, "refresh_token_families": running, "saml_logout_progress": running,
 	"saml_seen_requests": running, "saml_session_participants": running, "sessions": running,
 	"ssf_received": running, "uma_claims_interactions": running, "uma_pending_requests": running,
-	"uma_permission_tickets": running,
+	"uma_permission_tickets": running, "uma_persisted_claims": running,
 
 	"directory_links": found, "scim_group_links": found, "scim_links": found,
 }

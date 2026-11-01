@@ -186,6 +186,20 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !revoked {
+		// UMA §3.7 has this endpoint take a PCT, and for this client alone. Whose
+		// else it might be is not reported: it holds no identity worth confirming.
+		holder, perr := store.RevokePersistedClaims(ctx, tx, raw, c.ClientID)
+		if perr != nil {
+			s.log.Error("revoking a persisted claims token", "client_id", c.ClientID, "err", perr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		if holder != "" {
+			revoked, revokedKind, revokedSubject = true, "pct", holder
+		}
+	}
+
+	if !revoked {
 		// The same §2.1 check for refresh tokens, which RevokeRefreshToken
 		// cannot report on its own: it returns false for unknown, foreign and
 		// already-revoked alike, and only the middle one is an error.

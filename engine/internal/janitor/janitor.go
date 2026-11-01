@@ -125,6 +125,8 @@ type Stats struct {
 	OffersSwept int64
 	// KeptOffersSwept are offers kept by reference whose code is over.
 	KeptOffersSwept int64
+	// PersistedClaimsSwept are UMA persisted claims tokens past their month.
+	PersistedClaimsSwept int64
 	// NotificationsSwept are records of issuance no token can report on any more.
 	NotificationsSwept int64
 	// CredentialRequestsSwept are parked requests no token can come back for.
@@ -242,6 +244,7 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 			return store.SweepSpentPreAuthorizedCodes(ctx, tx, tokens.MaxAccessTokenTTL, limit)
 		}},
 		{"kept credential offers", sweepBatch, &st.KeptOffersSwept, store.SweepExpiredCredentialOffers},
+		{"persisted claims", sweepBatch, &st.PersistedClaimsSwept, store.SweepExpiredPersistedClaims},
 		{"credential notifications", sweepBatch, &st.NotificationsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
 			return store.SweepCredentialNotifications(ctx, tx, tokens.MaxAccessTokenTTL, limit)
 		}},
@@ -524,6 +527,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("ceremonies_swept", s.CeremoniesSwept)
 	add("offers_swept", s.OffersSwept)
 	add("kept_offers_swept", s.KeptOffersSwept)
+	add("persisted_claims_swept", s.PersistedClaimsSwept)
 	add("notifications_swept", s.NotificationsSwept)
 	add("credential_requests_swept", s.CredentialRequestsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0260 uma_persisted_claims
+
+Compatible with the release before: its binary may still serve this schema.
+
+A persisted claims token (11.12): UMA's way of not asking a person who they are twice. It works as a refresh token works, with no interaction behind the next token, so it is kept the same way: by hash, bound to the client it was issued to, and read on every use, so that somebody deactivated has nothing left to be persisted. It is issued only to a person who ticked the box at the claims interaction, which §6.2 recommends, and that choice travels on the ticket. It holds no claims, only who they were about, because the claims are this server's own records and those are read when the token is used. An older binary refuses `pct`, as it always did.
+
 ## 0259 authorization_views
 
 Compatible with the release before: its binary may still serve this schema.

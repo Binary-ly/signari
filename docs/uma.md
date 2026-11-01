@@ -365,11 +365,32 @@ RPT replaced is revoked, as §3.3.5.1 says it SHOULD be.
 §5.3 leaves proof of possession to a profile. A [DPoP](dpop.md) proof on the token
 request binds an RPT as it binds any other token: `cnf.jkt`, and `token_type` `DPoP`.
 
-## Still not implemented
+## Remembering a person (§3.3.5)
 
-- **`pct`** (§3.3.5), persisted claims tokens. It saves gathering the same claims twice,
-  and is **refused rather than ignored**, because a client that sends one and receives a
-  token concludes it was honoured.
+The claims interaction has a box: remember this for the application for a month. A person
+who ticks it gets a **persisted claims token** issued to the client alongside the next
+RPT, and the client can send it as `pct` to say who is asking without sending them through
+the screen again. A person who does not tick it gets none, which is what §6.2 recommends:
+ask before keeping anything across authorization processes.
+
+A PCT works as a refresh token works, with no interaction behind the next token, so it is
+kept the same way. It is stored as a hash and holds no claims, only who it was about,
+because those are this server's own records and are read when it is used. It is good for
+the client it was issued to and no other, as §5.2 requires. It stops at its month, when
+the client revokes it (`token_type_hint=pct`, §3.7), when the person is deactivated, and
+when they are signed out everywhere, which is a thing they are told happened and would not
+be true with one of these left over.
+
+It says who is asking and nothing else: every permission is still decided, and the
+resource owner's policy applies to a remembered person as to anybody. A request that
+gathers one identity and presents a PCT for another is refused, because it has named two
+people and this server will not pick. §5.2 has the client make a best effort that the
+person using it now is the person the token was issued for, which only the client can do.
+
+## Still not implemented
 
 - **Resource registration** (Federated Authorization §2), which is why a
   permission carries `resource_type` — see above.
+- **A screen for a person** to see the tokens remembering them and end one, short of
+  signing out everywhere.
+- **`claim_token` formats** beyond an ID token this server issued.

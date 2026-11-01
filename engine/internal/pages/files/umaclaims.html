@@ -11,6 +11,7 @@
 <form method="post" action="/uma2/claims">
  <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
  <input type="hidden" name="handle" value="{{.Handle}}">
+ <p><label><input type="checkbox" name="remember" value="1"> {{T "umaclaims.remember" .}}</label></p>
  <button type="submit">{{T "common.confirm"}}</button>
 </form>
 {{end}}

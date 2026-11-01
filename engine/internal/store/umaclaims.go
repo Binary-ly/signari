@@ -85,6 +85,7 @@ type TicketOrigin struct {
 	RequestingParty string
 	BoundClient     string
 	PendingRequest  string
+	PersistClaims   bool
 }
 
 // MintSuccessorTicket records a new ticket continuing an authorization process.
@@ -117,11 +118,11 @@ func MintSuccessorTicket(ctx context.Context, db *pgxpool.Pool, ticketHash []byt
 	_, err = db.Exec(ctx, `
 		INSERT INTO core.uma_permission_tickets
 			(org_id, resource_server, ticket_hash, permissions, expires_at,
-			 requesting_party, pending_request_id, bound_client)
-		VALUES ($1::uuid, $2, $3, $4, now() + $5::interval, $6::uuid, $7::uuid, $8)`,
+			 requesting_party, pending_request_id, bound_client, persist_claims)
+		VALUES ($1::uuid, $2, $3, $4, now() + $5::interval, $6::uuid, $7::uuid, $8, $9)`,
 		o.OrgID, o.ResourceServer, ticketHash, blob,
 		fmt.Sprintf("%d seconds", int(lifetime.Seconds())),
-		party, pending, bound)
+		party, pending, bound, o.PersistClaims)
 	if err != nil {
 		return fmt.Errorf("recording a successor permission ticket: %w", err)
 	}

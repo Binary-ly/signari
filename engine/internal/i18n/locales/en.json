@@ -359,6 +359,7 @@
   "racindex.none": "There are no machines you can reach.",
   "racindex.none.hint": "If you expect to see something here, ask an administrator whether the connection requires a group you are not in.",
 
+  "umaclaims.remember": "Remember this for {ClientName} for a month, so it need not ask who I am again",
   "umaclaims.title": "Confirm this request",
   "umaclaims.heading": "{ClientName} is asking on your behalf",
   "umaclaims.wants": "It wants access held by <strong>{ResourceServer}</strong>:",

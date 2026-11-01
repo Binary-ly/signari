@@ -112,14 +112,6 @@ func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
-	// Still not implemented, and still refused rather than ignored: a client that
-	// sends one and receives a token concludes it was honoured.
-	if r.PostForm.Get("pct") != "" {
-		writeUMAError(w, uma.InvalidRequest("pct is not supported by this server; there is no "+
-			"persisted claims token, so nothing here would act on it"))
-		return
-	}
-
 	ticket := r.PostForm.Get("ticket")
 	if ticket == "" {
 		writeUMAError(w, uma.InvalidRequest("ticket is required for the UMA grant"))
@@ -312,6 +304,15 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	}
 	if upgraded != nil {
 		body["upgraded"] = true
+	}
+	// Only to a person who said so, at the screen they said it on. One that fails
+	// costs them being asked again, which is no reason to withhold the RPT.
+	if t.PersistClaims && party.userID != "" {
+		if pct, err := store.NewPersistedClaims(ctx, s.db, c.OrgID, c.ClientID, party.userID); err != nil {
+			s.log.Error("issuing a persisted claims token", "err", err, "correlation_id", correlationID(ctx))
+		} else {
+			body["pct"] = pct
+		}
 	}
 	writeJSON(w, http.StatusOK, body)
 }

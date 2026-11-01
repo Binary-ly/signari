@@ -84,6 +84,15 @@ func TerminateEachSession(ctx context.Context, tx pgx.Tx, sids []string, reason 
 // terminate is the one path a session ends by: the sessions named, or every one
 // a person holds.
 func terminate(ctx context.Context, tx pgx.Tx, sids []string, userID string, reason TerminationReason) (*Terminated, error) {
+	// Everything of a person's ending ends what speaks for them with no session
+	// behind it, as it ends their refresh tokens: signed out everywhere is a thing
+	// they are told happened, and a PCT left over would make it untrue.
+	if userID != "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM core.uma_persisted_claims WHERE user_id = $1::uuid`, userID); err != nil {
+			return nil, fmt.Errorf("ending persisted claims: %w", err)
+		}
+	}
+
 	// 1. Snapshot. Only live sessions: re-revoking an already-revoked session
 	// must not re-notify, or an expiry sweep would replay logout storms.
 	rows, err := tx.Query(ctx, `

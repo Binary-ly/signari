@@ -4,11 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jcmturner/goidentity/v6"
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
 // The check that this is not gokrb5 agreeing with itself: MIT's own KDC, and a second
@@ -121,6 +129,59 @@ func startKDC(t *testing.T, realm, person, password string) *realKDC {
 	return nil
 }
 
+// A ticket from a real KDC, which is not what a test can mint: a current MIT KDC puts a
+// PAC with no Windows logon block in every ticket, and SPNEGO refused them all, on a
+// path no real KDC had ever been behind.
+func TestARealKDCsTicketIsAccepted(t *testing.T) {
+	const realm, spn = "EXAMPLE.TEST", "HTTP/auth.example.test"
+	const password = "the-password-the-realm-knows"
+	real := startKDC(t, realm, "alice", password)
+	impostor := startKDC(t, realm, "alice", password)
+	keytabOf := func(k *realKDC) *keytab.Keytab {
+		t.Helper()
+		kt, err := Config{KeytabPath: filepath.Join(filepath.Dir(k.conf), "http.keytab")}.Keytab()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return kt
+	}
+	ticketFrom := func(k *realKDC) *http.Request {
+		t.Helper()
+		cfg, err := config.Load(k.conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl := client.NewWithPassword("alice", realm, password, cfg, client.DisablePAFXFAST(true))
+		defer cl.Destroy()
+		if err := cl.Login(); err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodGet, "/login/kerberos", nil)
+		if err := spnego.SetSPNEGOHeader(cl, r, spn); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	var who string
+	h := Negotiate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		id := goidentity.FromHTTPRequestContext(r)
+		who = id.UserName() + "@" + id.Domain()
+	}), keytabOf(real), spn)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, ticketFrom(real))
+	if rec.Code != http.StatusOK || who != "alice@"+realm {
+		t.Fatalf("the realm's own ticket: %d as %q: %s", rec.Code, who, rec.Body.String())
+	}
+
+	who = ""
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, ticketFrom(impostor))
+	if rec.Code != http.StatusUnauthorized || who != "" {
+		t.Errorf("a ticket from a KDC without this key: %d as %q", rec.Code, who)
+	}
+}
+
 func TestAPasswordIsCheckedAgainstARealKDCAndNotAnImpostor(t *testing.T) {
 	const realm, spn = "EXAMPLE.TEST", "HTTP/auth.example.test"
 	const password, attackers = "the-password-the-realm-knows", "a-password-of-the-attackers-choosing"
@@ -149,6 +210,21 @@ func TestAPasswordIsCheckedAgainstARealKDCAndNotAnImpostor(t *testing.T) {
 	fooled.ConfPath = impostor.conf
 	if err := fooled.Verify(t.Context(), "alice", attackers); !errors.Is(err, ErrKDCUnproven) {
 		t.Errorf("a KDC that does not hold this service's key: %v", err)
+	}
+
+	// A keytab held here rather than in a file does the same, and proves the same.
+	raw, err := os.ReadFile(keytabOf(real))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := v
+	held.KeytabPath, held.KeytabData = "", raw
+	if err := held.Verify(t.Context(), "alice", password); err != nil {
+		t.Errorf("the realm's own password, with the keytab held: %v", err)
+	}
+	held.ConfPath = impostor.conf
+	if err := held.Verify(t.Context(), "alice", attackers); !errors.Is(err, ErrKDCUnproven) {
+		t.Errorf("an impostor, with the keytab held: %v", err)
 	}
 
 	// With the wrong keytab it is the same to the real one, and a person is not told

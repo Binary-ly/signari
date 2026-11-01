@@ -42,6 +42,7 @@ refused with `412` when the configuration moved since the version it names.
 | [instances / trust-marks](#instances--trust-marks) | 3 |
 | [instances / webauthn](#instances--webauthn) | 2 |
 | [invitations](#invitations) | 3 |
+| [kerberos-realms](#kerberos-realms) | 3 |
 | [me](#me) | 1 |
 | [migration-source](#migration-source) | 4 |
 | [organizations](#organizations) | 4 |
@@ -2124,6 +2125,61 @@ Answers:
 Revoke an open invitation. Needs users:write.
 
 Go `DeleteInvitationsInvitationID`, TypeScript `deleteInvitationsInvitationID`.
+
+## kerberos-realms
+
+### `GET /admin/organizations/{orgID}/kerberos-realms`
+
+An organisation's Kerberos realms, without their keytabs Needs config:read.
+
+Go `GetOrganizationsOrgIDKerberosRealms`, TypeScript `getOrganizationsOrgIDKerberosRealms`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `realms` | list of object | always |
+
+### `POST /admin/organizations/{orgID}/kerberos-realms`
+
+Register a Kerberos realm and its keytab Needs organizations:write.
+
+Go `PostOrganizationsOrgIDKerberosRealms`, TypeScript `postOrganizationsOrgIDKerberosRealms`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `host` | string |  |
+| `keytab` | string |  |
+| `realm` | string |  |
+| `service_principal` | string |  |
+| `strip_realm` | boolean |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `created_at` | string | always |
+| `host` | string | always |
+| `id` | string | always |
+| `realm` | string | always |
+| `service_principal` | string | always |
+| `strip_realm` | boolean | always |
+
+### `DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}`
+
+Forget a Kerberos realm and its keytab Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDKerberosRealmsRealm`, TypeScript `deleteOrganizationsOrgIDKerberosRealmsRealm`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `removed` | string | always |
 
 ## me
 

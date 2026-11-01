@@ -749,10 +749,10 @@ a user meets it.
 
 | | |
 |---|---|
-| `SIGNARI_KERBEROS_KEYTAB` | Service keytab. Absent, `/login/kerberos` is not registered at all |
+| `SIGNARI_KERBEROS_KEYTAB` | Service keytab, for a host with no realm of its own from `signari kerberos add-realm`. With neither, `/login/kerberos` is a `404` |
 | `SIGNARI_KERBEROS_CONF` | The krb5 configuration that names a realm's KDCs, for checking a password against one. Absent, `/etc/krb5.conf` |
 | `SIGNARI_KERBEROS_REALM` | Realm, upper case by convention. Principals from any other realm are refused |
-| `SIGNARI_KERBEROS_SPN` | Service principal, e.g. `HTTP/auth.example.com` |
+| `SIGNARI_KERBEROS_SPN` | Service principal, e.g. `HTTP/auth.example.com`. Named, a ticket to any other service in the keytab is refused |
 | `SIGNARI_KERBEROS_STRIP_REALM` | `1` to map `alice@EXAMPLE.COM` to `alice` rather than `alice@example.com` |
 
 ## Outposts

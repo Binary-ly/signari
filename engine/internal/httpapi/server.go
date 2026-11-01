@@ -568,12 +568,10 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/broker/{slug}/token", s.handleBrokerToken)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
-	// SPNEGO is registered only when a keytab is loaded. A route that answers
-	// 401 Negotiate with no keytab behind it makes every domain browser show a
-	// credential dialog for a service that cannot check the answer.
-	if h := s.wrapKerberos(http.HandlerFunc(s.handleKerberosLogin)); h != nil {
-		mux.Handle("GET /login/kerberos", h)
-	}
+	// SPNEGO answers only for a host with a keytab behind it. A route that answers
+	// 401 Negotiate with none makes every domain browser show a credential dialog
+	// for a service that cannot check the answer, so handleKerberos says 404.
+	mux.HandleFunc("GET /login/kerberos", s.handleKerberos)
 	mux.HandleFunc("GET /wsfed", s.handleWSFed)
 	mux.HandleFunc("POST /wsfed", s.handleWSFed)
 	mux.HandleFunc("GET /FederationMetadata/2007-06/FederationMetadata.xml", s.handleWSFedMetadata)

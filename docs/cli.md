@@ -208,6 +208,9 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari scim-source add` / `scim-source list` | Inbound SCIM |
 | `signari scim-source disable` / `scim-source enable` | `-org <uuid> -slug <slug>`: take an inbound provisioning source out of service, or put it back. Disabled, its bearer token is refused from the next request. Links, settings and the accounts it provisioned are kept. Audited. The switch existed and was read on every request, and nothing could turn it off |
 | `signari kerberos check` / `kerberos principals` / `kerberos sync` | Kerberos/SPNEGO, keytab checking, principal import |
+| `signari kerberos add-realm` | `-org <uuid> -realm <REALM> -host <name> -spn <principal> -keytab <file> [-strip-realm]`: give an organisation a realm of its own, chosen by the host a browser asks for a ticket to. The keytab is sealed under the root key. Refused if it holds no key for the principal. See [kerberos.md](kerberos.md#a-realm-for-each-organisation) |
+| `signari kerberos list-realms` | `-org <uuid> [-o json]`: an organisation's realms. A keytab never comes back |
+| `signari kerberos remove-realm` | `-org <uuid> -realm <REALM>`: forget a realm and its keytab, on commit |
 | `signari dir add` / `dir sync` | Directory sync from LDAP, Entra or Google. An LDAP source's `-ldap-url` can name replicas, separated by spaces, tried in order |
 | `signari dir test` | `-slug <slug>`: read a source as a sync would, and say where it stopped: connect, bind, search, or the identifier a flavour tracks people by. Changes nothing, works on a disabled source, and exits non-zero when the directory cannot be read |
 | `signari dir list` | `-org <uuid>`: each source's settings and what its last sync did: when it ran, how many people it created, updated and deactivated, and its last error. Every sync recorded these, and no command read them back |

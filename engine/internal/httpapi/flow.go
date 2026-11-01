@@ -3165,11 +3165,19 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		return false
 	}
 
+	// A realm is asked about the person as it knows them. Somebody who typed their
+	// address has a name in the realm, not an address, and being asked about the one
+	// they typed would call their right password wrong.
+	asked := identifier
+	if pending.Source.Kind == "kerberos" && pending.Username != "" {
+		asked = pending.Username
+	}
+
 	var verr error
 	if pending.Source.Kind == "hook" {
 		verr = s.verifyByProvider(ctx, pending.OrgID, identifier, password)
 	} else {
-		verr = s.delegator.Verify(ctx, pending.Source, identifier, password)
+		verr = s.delegator.Verify(ctx, pending.Source, asked, password)
 	}
 	switch {
 	case errors.Is(verr, delegated.ErrUnavailable):

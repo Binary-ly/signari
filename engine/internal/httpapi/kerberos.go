@@ -1,13 +1,15 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/jcmturner/goidentity/v6"
-	"github.com/jcmturner/gokrb5/v8/spnego"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/kerberos"
+	"signari.dev/engine/internal/store"
 )
 
 // SPNEGO sign-in, for domain-joined machines.
@@ -31,9 +33,46 @@ import (
 // credential dialog before it ever sees the form -- so SPNEGO lives at its own
 // path, and the login page links to it.
 
-// handleKerberosLogin is wrapped by the SPNEGO middleware; by the time it runs,
-// the ticket has been validated.
-func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
+// handleKerberos finds the realm a request is for, and validates its ticket with that
+// realm's key. A browser gets a ticket for the host it is talking to, so the host says
+// which, and with it whose organisation the person is in. Read per request: a realm
+// removed takes effect on commit, and a keytab held in memory would go on opening
+// tickets. A host with no realm of its own falls back to the one the environment
+// names, and with neither there is nothing here, as if the route did not exist.
+func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	host := requestHost(r.Host)
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	realm, err := store.KerberosRealmForHost(ctx, s.db, s.cfg.Root, s.instanceID, host)
+	if err != nil {
+		s.log.Error("reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	config, kt, orgID := s.krbConfig, s.krbKeytab, ""
+	if realm != nil {
+		config = kerberos.Config{Realm: realm.Realm, ServicePrincipal: realm.ServicePrincipal, StripRealm: realm.StripRealm}
+		orgID = realm.OrgID
+		if kt, err = kerberos.ParseKeytab(realm.Keytab, "the keytab of realm "+realm.Realm); err != nil {
+			s.log.Error("reading a realm's keytab", "err", err, "correlation_id", correlationID(ctx))
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+	}
+	if kt == nil {
+		http.NotFound(w, r)
+		return
+	}
+	signIn := func(w http.ResponseWriter, r *http.Request) { s.handleKerberosLogin(w, r, config, orgID) }
+	kerberos.Negotiate(http.HandlerFunc(signIn), kt, config.ServicePrincipal).ServeHTTP(w, r)
+}
+
+// handleKerberosLogin runs behind the SPNEGO middleware; by the time it does, the
+// ticket has been validated. orgID is the realm's organisation, empty for the one the
+// environment names.
+func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request, config kerberos.Config, orgID string) {
 	ctx := r.Context()
 
 	id := goidentity.FromHTTPRequestContext(r)
@@ -50,7 +89,7 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 		principal = principal + "@" + d
 	}
 
-	username, err := s.krbConfig.UsernameFor(principal)
+	username, err := config.UsernameFor(principal)
 	if err != nil {
 		// Logged with the reason, answered without it. The reason a mapping
 		// was refused is an operator's business; telling the browser which
@@ -71,7 +110,7 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 	// From here it is an ordinary sign-in. The session, the policy, the audit
 	// entry and the amr are the same as every other route, because a second
 	// notion of "signed in" is how one of them ends up missing a check.
-	s.completeKerberosSignIn(w, r, username, principal)
+	s.completeKerberosSignIn(w, r, username, orgID)
 }
 
 // completeKerberosSignIn establishes a session for an already-validated ticket.
@@ -84,14 +123,14 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 //
 // Accounts come from the directory sync, which is a deliberate act by an
 // administrator. An unmatched principal is refused and told to ask for one.
-func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
-	username, principal string) {
-
+func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, username, orgID string) {
 	ctx := r.Context()
-	orgID, err := s.defaultOrg(ctx)
-	if err != nil || orgID == "" {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
+	if orgID == "" {
+		var err error
+		if orgID, err = s.defaultOrg(ctx); err != nil || orgID == "" {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -104,7 +143,8 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	var userID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		 WHERE org_id = $1::uuid AND email_fold = lower($2) AND status = 'active'`,
+		 WHERE org_id = $1::uuid AND (email_fold = lower($2) OR username_fold = lower($2))
+		   AND status = 'active'`,
 		orgID, username).Scan(&userID)
 	if err != nil {
 		s.log.Info("kerberos principal has no account", "correlation_id", correlationID(ctx))
@@ -128,15 +168,4 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	// to say so.
 	s.completeSignIn(w, r, tx, userID, orgID, []string{"krb"},
 		r.URL.Query().Get("authz"))
-}
-
-// wrapKerberos installs the SPNEGO middleware in front of the handler.
-//
-// Returns nil when Kerberos is not configured, so the route is simply not
-// registered rather than registered and always failing.
-func (s *Server) wrapKerberos(h http.Handler) http.Handler {
-	if s.krbKeytab == nil {
-		return nil
-	}
-	return spnego.SPNEGOKRB5Authenticate(h, s.krbKeytab)
 }

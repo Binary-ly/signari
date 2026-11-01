@@ -1,11 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/store"
@@ -60,11 +64,29 @@ func TestARealmIsAskedAtEverySignInAndNothingIsKept(t *testing.T) {
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.migration_sources WHERE id = $1::uuid`, source)
 	})
 
+	// The organisation's own keytab for the realm, not the deployment's.
+	spn := fmt.Sprintf("HTTP/sso-%d.test", time.Now().UnixNano())
+	_, ownKeytab := serviceKeytab(t, "EXAMPLE.COM", spn)
+	if _, err := store.AddKerberosRealm(ctx, f.pool, root, f.orgID, store.KerberosRealmSpec{Realm: "EXAMPLE.COM",
+		Host: strings.TrimPrefix(spn, "HTTP/"), ServicePrincipal: spn, Keytab: ownKeytab}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.kerberos_realms WHERE service_principal = $1`, spn)
+	})
+	if src, err := store.MigrationSourceToTest(ctx, f.pool, root, f.orgID); err != nil ||
+		!bytes.Equal(src.Keytab, ownKeytab) || src.ServicePrincipal != spn {
+		t.Errorf("testing the source would not use the organisation's keytab: %v", err)
+	}
+
 	const good = "the-password-the-realm-knows"
 	var answer error
 	var asked []string
-	f.srv.delegator.Kerberos = func(_ context.Context, realm, username, password string) error {
-		asked = append(asked, realm+" "+username)
+	f.srv.delegator.Kerberos = func(_ context.Context, realm delegated.Source, username, password string) error {
+		asked = append(asked, realm.TokenEndpoint+" "+username)
+		if !bytes.Equal(realm.Keytab, ownKeytab) || realm.ServicePrincipal != spn {
+			t.Errorf("the realm was asked with a keytab of %d bytes as %q", len(realm.Keytab), realm.ServicePrincipal)
+		}
 		if answer != nil {
 			return answer
 		}
@@ -134,5 +156,19 @@ func TestARealmIsAskedAtEverySignInAndNothingIsKept(t *testing.T) {
 	answer = nil
 	if got := f.attempt(t, f.email, good); !got.signedIn() {
 		t.Errorf("after the outage: %+v", got)
+	}
+
+	// Somebody with a name here is asked about by it, however they typed themselves:
+	// the realm has a principal, not an address.
+	name := fmt.Sprintf("ada-%d", time.Now().UnixNano())
+	if _, err := f.pool.Exec(ctx, `UPDATE core.users SET username = $2 WHERE id = $1::uuid`, f.userID, name); err != nil {
+		t.Fatal(err)
+	}
+	asked = nil
+	if got := f.attempt(t, f.email, good); !got.signedIn() {
+		t.Errorf("signing in by address: %+v", got)
+	}
+	if len(asked) != 1 || asked[0] != "EXAMPLE.COM "+name {
+		t.Errorf("the realm was asked %q", asked)
 	}
 }

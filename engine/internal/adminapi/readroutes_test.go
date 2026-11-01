@@ -102,6 +102,7 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/saml-providers", org("/saml-providers")},
 		{"GET /admin/organizations/{orgID}/identity-providers", org("/identity-providers")},
 		{"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", org("/identity-providers/none/saml-keys")},
+		{"GET /admin/organizations/{orgID}/kerberos-realms", org("/kerberos-realms")},
 		{"GET /admin/organizations/{orgID}/ssf-sources", org("/ssf-sources")},
 		{"GET /admin/organizations/{orgID}/sign-in-flow", org("/sign-in-flow")},
 		{"GET /admin/organizations/{orgID}/radius-authorizations", org("/radius-authorizations")},

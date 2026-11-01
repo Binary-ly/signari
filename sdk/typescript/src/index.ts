@@ -204,6 +204,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys/${encodeURIComponent(keyID)}`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}: Forget a Kerberos realm and its
+  // keytab Needs organizations:write.
+  deleteOrganizationsOrgIDKerberosRealmsRealm(orgID: string, realm: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDKerberosRealmsRealmResponse>> {
+    return this.call<DeleteOrganizationsOrgIDKerberosRealmsRealmResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/kerberos-realms/${encodeURIComponent(realm)}`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/migration-source: Remove the migration source. Needs
   // organizations:write.
   deleteOrganizationsOrgIDMigrationSource(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDMigrationSourceResponse>> {
@@ -543,6 +549,12 @@ export class SignariAdmin {
   // in this deployment, with their certificates. Needs config:read.
   getOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>> {
     return this.call<GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/kerberos-realms: An organisation's Kerberos realms, without
+  // their keytabs Needs config:read.
+  getOrganizationsOrgIDKerberosRealms(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDKerberosRealmsResponse>> {
+    return this.call<GetOrganizationsOrgIDKerberosRealmsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/kerberos-realms`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/migration-source: The provider this organisation is migrating
@@ -988,6 +1000,12 @@ export class SignariAdmin {
   // SAML upstream, to sign requests or to be encrypted to. Needs organizations:write.
   postOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(orgID: string, slug: string, body: PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>> {
     return this.call<PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys`, body, opts)
+  }
+
+  // POST /admin/organizations/{orgID}/kerberos-realms: Register a Kerberos realm and its keytab
+  // Needs organizations:write.
+  postOrganizationsOrgIDKerberosRealms(orgID: string, body: PostOrganizationsOrgIDKerberosRealmsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDKerberosRealmsResponse>> {
+    return this.call<PostOrganizationsOrgIDKerberosRealmsResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/kerberos-realms`, body, opts)
   }
 
   // POST /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a
@@ -1484,6 +1502,12 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
 export interface DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse {
   config_version: number
   retired: string
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDKerberosRealmsRealmResponse {
+  config_version: number
+  removed: string
 }
 
 /** A JSON object of the Admin API. */
@@ -2247,6 +2271,21 @@ export interface GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysI
   id: string
   purpose: string
   retired_at: string | null
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDKerberosRealmsResponse {
+  realms: GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem {
+  created_at: string
+  host: string
+  id: string
+  realm: string
+  service_principal: string
+  strip_realm: boolean
 }
 
 /** A JSON object of the Admin API. */
@@ -3635,6 +3674,26 @@ export interface PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse {
   created_at: string
   id: string
   purpose: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDKerberosRealmsRequest {
+  host?: string
+  keytab?: string
+  realm?: string
+  service_principal?: string
+  strip_realm?: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDKerberosRealmsResponse {
+  config_version: number
+  created_at: string
+  host: string
+  id: string
+  realm: string
+  service_principal: string
+  strip_realm: boolean
 }
 
 /** A JSON object of the Admin API. */

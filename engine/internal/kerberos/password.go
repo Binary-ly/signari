@@ -53,6 +53,17 @@ type PasswordVerifier struct {
 	// KeytabPath and ServicePrincipal are this service's, the same as SPNEGO's.
 	// Required: see Verify.
 	KeytabPath, ServicePrincipal string
+	// KeytabData is the keytab itself, in place of KeytabPath, for a realm whose
+	// keytab this deployment holds sealed.
+	KeytabData []byte
+}
+
+// keytab is the service's key, wherever it was given.
+func (v PasswordVerifier) keytab() (*keytab.Keytab, error) {
+	if v.KeytabData != nil {
+		return ParseKeytab(v.KeytabData, "the keytab of realm "+v.Realm)
+	}
+	return Config{KeytabPath: v.KeytabPath}.Keytab()
 }
 
 // ErrRefused is returned for any password the KDC did not accept.
@@ -102,7 +113,7 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 		}
 		username = username[:at]
 	}
-	if v.KeytabPath == "" || v.ServicePrincipal == "" {
+	if (v.KeytabPath == "" && v.KeytabData == nil) || v.ServicePrincipal == "" {
 		return fmt.Errorf("a password cannot be checked against a realm without a keytab and a service " +
 			"principal: nothing else tells the realm's KDC from one that says yes")
 	}
@@ -120,7 +131,7 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 	if err != nil {
 		return fmt.Errorf("%s did not parse as a krb5 configuration: %w", path, err)
 	}
-	kt, err := Config{KeytabPath: v.KeytabPath}.Keytab()
+	kt, err := v.keytab()
 	if err != nil {
 		return err
 	}

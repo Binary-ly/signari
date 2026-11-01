@@ -48,6 +48,11 @@ type Source struct {
 	// CAPEM is the CA the directory's certificate must chain to, alone. Empty
 	// trusts the system roots and SIGNARI_CA_BUNDLE.
 	CAPEM string
+
+	// For Kind == "kerberos", the organisation's own keytab for this realm and the
+	// service principal in it. None falls back to the deployment's.
+	Keytab           []byte
+	ServicePrincipal string
 }
 
 // ldapTLS is the TLS configuration a directory connection is made with: the
@@ -71,9 +76,9 @@ func ldapTLS(s Source) (*tls.Config, error) {
 // Verifier asks a source whether a password is correct.
 type Verifier struct {
 	client *http.Client
-	// Kerberos asks a realm about a password, answering as kerberos.PasswordVerifier
-	// does. A field so a test can stand in for a KDC.
-	Kerberos func(ctx context.Context, realm, username, password string) error
+	// Kerberos asks a source's realm about a password, answering as
+	// kerberos.PasswordVerifier does. A field so a test can stand in for a KDC.
+	Kerberos func(ctx context.Context, s Source, username, password string) error
 }
 
 // New forwards through safedial: the source's token endpoint is a stored
@@ -82,10 +87,13 @@ type Verifier struct {
 // old provider that is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
 func New() *Verifier {
 	v := NewWithClient(safedial.Client(0))
-	v.Kerberos = func(ctx context.Context, realm, username, password string) error {
-		return kerberos.PasswordVerifier{Realm: realm, ConfPath: os.Getenv("SIGNARI_KERBEROS_CONF"),
-			KeytabPath: os.Getenv("SIGNARI_KERBEROS_KEYTAB"), ServicePrincipal: os.Getenv("SIGNARI_KERBEROS_SPN")}.
-			Verify(ctx, username, password)
+	v.Kerberos = func(ctx context.Context, s Source, username, password string) error {
+		realm := kerberos.PasswordVerifier{Realm: s.TokenEndpoint, ConfPath: os.Getenv("SIGNARI_KERBEROS_CONF"),
+			KeytabData: s.Keytab, ServicePrincipal: s.ServicePrincipal}
+		if s.Keytab == nil {
+			realm.KeytabPath, realm.ServicePrincipal = os.Getenv("SIGNARI_KERBEROS_KEYTAB"), os.Getenv("SIGNARI_KERBEROS_SPN")
+		}
+		return realm.Verify(ctx, username, password)
 	}
 	return v
 }
@@ -153,7 +161,7 @@ func (v *Verifier) askRealm(ctx context.Context, s Source, username, password st
 	if v.Kerberos == nil {
 		return fmt.Errorf("%w: this process cannot reach a realm", ErrUnavailable)
 	}
-	err := v.Kerberos(ctx, s.TokenEndpoint, username, password)
+	err := v.Kerberos(ctx, s, username, password)
 	switch {
 	case err == nil:
 		return nil

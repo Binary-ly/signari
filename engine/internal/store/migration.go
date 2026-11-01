@@ -26,7 +26,9 @@ const migrationSecretContext = "migration_source_secret"
 type PendingMigration struct {
 	UserID string
 	OrgID  string
-	Source delegated.Source
+	// Username is what the person is called here, empty for no name but an address.
+	Username string
+	Source   delegated.Source
 }
 
 // LookupMigrationCandidate finds a user with no usable local credential whose
@@ -52,7 +54,7 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, inst
 	var secretEnc []byte
 
 	rows, err := db.Query(ctx, `
-		SELECT u.id::text, u.org_id::text,
+		SELECT u.id::text, u.org_id::text, COALESCE(u.username, ''),
 		       ms.id::text, ms.kind, ms.display_name, ms.token_endpoint,
 		       COALESCE(ms.client_id, ''), ms.client_secret_enc, ms.scope,
 		       COALESCE(ms.bind_dn_template, ''), ms.start_tls, COALESCE(ms.ca_pem, '')
@@ -76,7 +78,7 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, inst
 	found := 0
 	for rows.Next() {
 		found++
-		if err := rows.Scan(&p.UserID, &p.OrgID, &p.Source.ID, &p.Source.Kind,
+		if err := rows.Scan(&p.UserID, &p.OrgID, &p.Username, &p.Source.ID, &p.Source.Kind,
 			&p.Source.DisplayName, &p.Source.TokenEndpoint, &p.Source.ClientID,
 			&secretEnc, &p.Source.Scope, &p.Source.BindDNTemplate, &p.Source.StartTLS,
 			&p.Source.CAPEM); err != nil {
@@ -103,7 +105,23 @@ func LookupMigrationCandidate(ctx context.Context, db *pgxpool.Pool, orgID, inst
 		}
 		p.Source.ClientSecret = string(secret)
 	}
+	if err := sourceRealm(ctx, db, root, p.OrgID, &p.Source); err != nil {
+		return nil, false, err
+	}
 	return &p, true, nil
+}
+
+// sourceRealm gives a realm source the organisation's own keytab, when it has one.
+func sourceRealm(ctx context.Context, q rowQuerier, root *keys.RootKey, orgID string, s *delegated.Source) error {
+	if s.Kind != "kerberos" {
+		return nil
+	}
+	realm, err := KerberosRealmOfOrg(ctx, q, root, orgID, s.TokenEndpoint)
+	if err != nil || realm == nil {
+		return err
+	}
+	s.Keytab, s.ServicePrincipal = realm.Keytab, realm.ServicePrincipal
+	return nil
 }
 
 // MigrationSourceConfig is an organisation's old provider as an operator sets
@@ -430,7 +448,7 @@ func MigrationSourceToTest(ctx context.Context, q interface {
 		}
 		s.ClientSecret = string(plain)
 	}
-	return s, nil
+	return s, sourceRealm(ctx, q, root, orgID, &s)
 }
 
 // CompleteMigration records a successful delegated sign-in.

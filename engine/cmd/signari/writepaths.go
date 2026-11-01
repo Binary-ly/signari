@@ -2043,6 +2043,71 @@ func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, entityID, url string) e
 	return nil
 }
 
+// kerberosAddRealm gives an organisation a realm of its own: the host its people's
+// browsers ask for tickets to, and the keytab that opens them, sealed here. The file
+// can be deleted once this has run.
+func kerberosAddRealm(ctx context.Context, conn *pgx.Conn, orgID, realm, host, spn, keytabPath string, strip bool) error {
+	if orgID == "" || realm == "" || host == "" || spn == "" || keytabPath == "" {
+		return fmt.Errorf("give -org, -realm, -host, -spn and -keytab")
+	}
+	raw, err := os.ReadFile(keytabPath)
+	if err != nil {
+		return fmt.Errorf("reading the keytab: %w", err)
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	added, err := store.AddKerberosRealm(ctx, conn, root, orgID, store.KerberosRealmSpec{Realm: realm, Host: host,
+		ServicePrincipal: spn, Keytab: raw, StripRealm: strip})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: signs in at %s, as %s\n", added.Realm, added.Host, added.ServicePrincipal)
+	return nil
+}
+
+// kerberosListRealms shows an organisation's realms. A keytab stays where it is.
+func kerberosListRealms(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	realms, err := store.KerberosRealms(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if out.text() {
+		fmt.Printf("%-24s %-32s %-6s %s\n", "REALM", "HOST", "STRIP", "SERVICE PRINCIPAL")
+	}
+	for _, r := range realms {
+		out.add(map[string]any{"realm": r.Realm, "host": r.Host, "service_principal": r.ServicePrincipal,
+			"strip_realm": r.StripRealm})
+		if out.text() {
+			fmt.Printf("%-24s %-32s %-6t %s\n", r.Realm, r.Host, r.StripRealm, r.ServicePrincipal)
+		}
+	}
+	if len(realms) == 0 && out.text() {
+		fmt.Println("(none -- add one with `signari kerberos add-realm`)")
+	}
+	return out.flush()
+}
+
+// kerberosRemoveRealm forgets a realm and its keytab, on commit.
+func kerberosRemoveRealm(ctx context.Context, conn *pgx.Conn, orgID, realm string) error {
+	if orgID == "" || realm == "" {
+		return fmt.Errorf("give -org and -realm")
+	}
+	if _, err := store.RemoveKerberosRealm(ctx, conn, orgID, realm); err != nil {
+		return err
+	}
+	fmt.Printf("%s: removed, and its keytab with it\n", realm)
+	return nil
+}
+
 // samlWSFedToken says which SAML a WS-Federation application's token is in.
 func samlWSFedToken(ctx context.Context, conn *pgx.Conn, entityID, version string) error {
 	if entityID == "" || version == "" {

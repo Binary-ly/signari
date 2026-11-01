@@ -12,10 +12,10 @@ SIGNARI_KERBEROS_REALM=EXAMPLE.COM
 SIGNARI_KERBEROS_SPN=HTTP/auth.example.com
 ```
 
-`/login/kerberos` is registered **only when a keytab loads**. A route answering
-`401 WWW-Authenticate: Negotiate` with no keytab behind it makes every
-domain-joined browser show a native credential dialog for a service that cannot
-check the answer.
+`/login/kerberos` answers **only for a host with a keytab behind it**, and is a
+`404` otherwise. A route answering `401 WWW-Authenticate: Negotiate` with no keytab
+behind it makes every domain-joined browser show a native credential dialog for a
+service that cannot check the answer.
 
 The keytab is read at startup, and a bad one refuses to start:
 
@@ -27,6 +27,35 @@ produce exactly this error
 Run `signari kerberos check -keytab /etc/signari/http.keytab` to see what is
 wrong with it
 ```
+
+A realm named this way is the deployment's, and signs people in to its first
+organisation. That suits a deployment with one organisation.
+
+## A realm for each organisation
+
+Several organisations, each with a domain of its own, register a realm each:
+
+```sh
+signari kerberos add-realm -org <uuid> -realm CORP.EXAMPLE.COM \
+  -host sso.corp.example.com -spn HTTP/sso.corp.example.com \
+  -keytab /tmp/corp.keytab
+```
+
+A browser gets a ticket for the host it is talking to, so the host says which realm's
+key opens the ticket, and whose organisation the person is in. The name is the one
+the browser sends, without a port, and one host answers for one realm.
+
+The keytab is the key to every ticket of that service, so it is sealed under the root
+key, rotated with it, and never comes back out: the file can be deleted once this has
+run. A keytab holding no key for the service principal in the realm is refused, since
+it would open no ticket and look like a working one until somebody tried. It is read
+on each request, so `signari kerberos remove-realm` stops both ways in on commit.
+
+A host with no realm of its own falls back to the environment's, and a host with
+neither is a `404`.
+
+`-strip-realm` matches `alice@EXAMPLE.COM` by the name `alice`, against a person's
+username or address, for a realm whose names are not addresses.
 
 ## `signari kerberos check` is worth more than the feature
 
@@ -124,8 +153,12 @@ seconds ago is refused, which a cached hash cannot do.
 **A ticket from the KDC is not enough on its own.** Whoever answers an AS request
 chooses the key its reply is encrypted with, so a KDC an attacker stands up on the
 network says yes to any password. So the verifier goes on to ask for a ticket to this
-service, `SIGNARI_KERBEROS_SPN`, and opens it with `SIGNARI_KERBEROS_KEYTAB`. Only the
-realm's KDC holds that key. The keytab and the principal are required, a ticket that
+service and opens it with the service's key: the organisation's own, when
+`kerberos add-realm` gave it that realm, and otherwise `SIGNARI_KERBEROS_SPN` and
+`SIGNARI_KERBEROS_KEYTAB`. Only the realm's KDC holds that key. A krb5 configuration
+naming every realm's KDCs is still one file, `SIGNARI_KERBEROS_CONF`. The realm is
+asked about a person by their username when they have one, whatever they typed, since
+it has a principal for them and not an address. The keytab and the principal are required, a ticket that
 will not open or names somebody else is refused, and that is reported as the source
 failing and not as a wrong password, since a person typing their password into a form
 is not who to blame for a KDC on the wrong end of the wire.

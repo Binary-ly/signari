@@ -31,6 +31,7 @@ var EventTypes = []string{
 	"admin.idp_group_mapped", "admin.idp_group_unmapped",
 	"admin.idp_token_auth_set", "admin.instance_webauthn_set", "admin.invitation_created",
 	"admin.invitation_revoked", "admin.issuer_alias_added", "admin.issuer_alias_retired",
+	"admin.kerberos_realm_added", "admin.kerberos_realm_removed",
 	"admin.migration_source_removed", "admin.migration_source_set", "admin.migration_source_tested",
 	"admin.organization_budgets_set",
 	"admin.organization_created", "admin.organization_deleted",

@@ -298,6 +298,12 @@ type DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse struct {
 	Retired       string `json:"retired"`
 }
 
+// DeleteOrganizationsOrgIDKerberosRealmsRealmResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDKerberosRealmsRealmResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Removed       string `json:"removed"`
+}
+
 // DeleteOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDMigrationSourceResponse struct {
 	ConfigVersion int64 `json:"config_version"`
@@ -1059,6 +1065,21 @@ type GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem struct {
 	ID          string  `json:"id"`
 	Purpose     string  `json:"purpose"`
 	RetiredAt   *string `json:"retired_at"`
+}
+
+// GetOrganizationsOrgIDKerberosRealmsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDKerberosRealmsResponse struct {
+	Realms []GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem `json:"realms"`
+}
+
+// GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem struct {
+	CreatedAt        string `json:"created_at"`
+	Host             string `json:"host"`
+	ID               string `json:"id"`
+	Realm            string `json:"realm"`
+	ServicePrincipal string `json:"service_principal"`
+	StripRealm       bool   `json:"strip_realm"`
 }
 
 // GetOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
@@ -2449,6 +2470,26 @@ type PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse struct {
 	Purpose       string `json:"purpose"`
 }
 
+// PostOrganizationsOrgIDKerberosRealmsRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDKerberosRealmsRequest struct {
+	Host             *string `json:"host,omitempty"`
+	Keytab           *string `json:"keytab,omitempty"`
+	Realm            *string `json:"realm,omitempty"`
+	ServicePrincipal *string `json:"service_principal,omitempty"`
+	StripRealm       *bool   `json:"strip_realm,omitempty"`
+}
+
+// PostOrganizationsOrgIDKerberosRealmsResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDKerberosRealmsResponse struct {
+	ConfigVersion    int64  `json:"config_version"`
+	CreatedAt        string `json:"created_at"`
+	Host             string `json:"host"`
+	ID               string `json:"id"`
+	Realm            string `json:"realm"`
+	ServicePrincipal string `json:"service_principal"`
+	StripRealm       bool   `json:"strip_realm"`
+}
+
 // PostOrganizationsOrgIDMigrationSourceTestRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDMigrationSourceTestRequest struct {
 	Password *string `json:"password,omitempty"`
@@ -3691,6 +3732,18 @@ func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID(ctx 
 	return &out, v, nil
 }
 
+// DeleteOrganizationsOrgIDKerberosRealmsRealm is DELETE
+// /admin/organizations/{orgID}/kerberos-realms/{realm}: Forget a Kerberos realm and its keytab
+// Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDKerberosRealmsRealm(ctx context.Context, orgID string, realm string, opts ...Option) (*DeleteOrganizationsOrgIDKerberosRealmsRealmResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDKerberosRealmsRealmResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/kerberos-realms/"+url.PathEscape(realm), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteOrganizationsOrgIDMigrationSource is DELETE /admin/organizations/{orgID}/migration-source:
 // Remove the migration source. Needs organizations:write.
 func (c *Client) DeleteOrganizationsOrgIDMigrationSource(ctx context.Context, orgID string, opts ...Option) (*DeleteOrganizationsOrgIDMigrationSourceResponse, int64, error) {
@@ -4337,6 +4390,17 @@ func (c *Client) GetOrganizationsOrgIDIdentityProviders(ctx context.Context, org
 func (c *Client) GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.Context, orgID string, slug string, opts ...Option) (*GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse, int64, error) {
 	var out GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDKerberosRealms is GET /admin/organizations/{orgID}/kerberos-realms: An
+// organisation's Kerberos realms, without their keytabs Needs config:read.
+func (c *Client) GetOrganizationsOrgIDKerberosRealms(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDKerberosRealmsResponse, int64, error) {
+	var out GetOrganizationsOrgIDKerberosRealmsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/kerberos-realms", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5181,6 +5245,17 @@ func (c *Client) PostOrganizationsOrgIDIdentityProvidersSlugMetadata(ctx context
 func (c *Client) PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest, opts ...Option) (*PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse, int64, error) {
 	var out PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDKerberosRealms is POST /admin/organizations/{orgID}/kerberos-realms:
+// Register a Kerberos realm and its keytab Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDKerberosRealms(ctx context.Context, orgID string, body PostOrganizationsOrgIDKerberosRealmsRequest, opts ...Option) (*PostOrganizationsOrgIDKerberosRealmsResponse, int64, error) {
+	var out PostOrganizationsOrgIDKerberosRealmsResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/kerberos-realms", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

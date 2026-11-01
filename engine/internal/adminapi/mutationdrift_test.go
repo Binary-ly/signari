@@ -623,6 +623,20 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/kerberos-realms", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/kerberos-realms"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string { return kerberosRealmBody(t, uniqueHost()) },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return newDriftKerberosRealm(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				org, slug, p := newDriftSAMLUpstream(t, s)

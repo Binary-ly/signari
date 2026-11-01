@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0244 kerberos_realms
+
+Compatible with the release before: its binary may still serve this schema.
+
+A Kerberos realm of an organisation's own (8.10). One realm from the environment, and every ticket landing in the first organisation, was all a deployment could have: two customers with two domains could not both sign in. A browser gets a ticket for the host it is talking to, so the host says which realm's key opens it and whose organisation the person is in. The keytab is sealed under the root key, being the key to every ticket of that service.
+
 ## 0243 wsfed_saml_version
 
 Compatible with the release before: its binary may still serve this schema.

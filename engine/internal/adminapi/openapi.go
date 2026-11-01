@@ -251,6 +251,9 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
 	// This deployment's own keys toward a SAML upstream (8.04).
+	"GET /admin/organizations/{orgID}/kerberos-realms":                                "An organisation's Kerberos realms, without their keytabs",
+	"POST /admin/organizations/{orgID}/kerberos-realms":                               "Register a Kerberos realm and its keytab",
+	"DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}":                     "Forget a Kerberos realm and its keytab",
 	"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":            "A SAML upstream's keys in this deployment, with their certificates.",
 	"POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":           "Make a key toward a SAML upstream, to sign requests or to be encrypted to.",
 	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}": "Retire a key toward a SAML upstream.",

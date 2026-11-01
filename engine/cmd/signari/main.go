@@ -313,6 +313,9 @@ federation in:
   kerberos check            will this keytab work (no database needed)
   kerberos principals       the principals a realm holds
   kerberos sync             import a realm's principals as people
+  kerberos add-realm        give an organisation a realm and its keytab, by host
+  kerberos list-realms      show an organisation's realms
+  kerberos remove-realm     forget a realm and its keytab
   import keycloak           import users, groups and clients from a Keycloak realm export
   import authentik          import users, groups and providers from an authentik dumpdata export
   import zitadel            import an organisation's users and roles from a Zitadel export
@@ -683,6 +686,7 @@ func run(args []string) (err error) {
 	krbAdmin := fs.String("admin-principal", "",
 		"administrative principal kadmin authenticates as, e.g. signari/admin@EXAMPLE.COM")
 	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
+	krbStripRealm := fs.Bool("strip-realm", false, "`kerberos add-realm`: match people by the name before the @")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
 	targetDomain := fs.String("target-domain", "",
@@ -1835,6 +1839,12 @@ func run(args []string) (err error) {
 		return signupShow(ctx, conn, *orgID)
 	case "kerberos sync":
 		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply)
+	case "kerberos add-realm":
+		return kerberosAddRealm(ctx, conn, *orgID, *krbRealm, *racHost, *krbSPN, *keytabPath, *krbStripRealm)
+	case "kerberos list-realms":
+		return kerberosListRealms(ctx, conn, *orgID, *outputFormat)
+	case "kerberos remove-realm":
+		return kerberosRemoveRealm(ctx, conn, *orgID, *krbRealm)
 	case "prompt set":
 		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
 	case "prompt list":

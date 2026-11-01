@@ -30,12 +30,15 @@ package kerberos
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/service"
+	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
 // Config is what a deployment needs to accept SPNEGO.
@@ -61,18 +64,51 @@ func (c Config) Keytab() (*keytab.Keytab, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the keytab: %w", err)
 	}
+	return ParseKeytab(raw, c.KeytabPath)
+}
+
+// ParseKeytab reads a keytab held as bytes, name being what to call it in an error.
+func ParseKeytab(raw []byte, name string) (*keytab.Keytab, error) {
 	kt := keytab.New()
 	if err := kt.Unmarshal(raw); err != nil {
 		return nil, fmt.Errorf("%s is not a keytab: %w. Export it with `ktpass` on "+
 			"Windows or `ipa-getkeytab` on FreeIPA -- a krb5.conf or a certificate "+
-			"will produce exactly this error", c.KeytabPath, err)
+			"will produce exactly this error", name, err)
 	}
 	if len(kt.Entries) == 0 {
 		return nil, fmt.Errorf("%s contains no entries. An empty keytab authenticates "+
-			"nobody and looks identical to a working one until somebody tries",
-			c.KeytabPath)
+			"nobody and looks identical to a working one until somebody tries", name)
 	}
 	return kt, nil
+}
+
+// Negotiate validates a request's ticket with this service's key and hands on to next.
+// An empty servicePrincipal accepts anything in the keytab, which is right when it
+// holds exactly one entry; a named one holds a ticket to that service alone.
+//
+// The PAC is left undecoded. Nothing here reads it, since a person's groups come from
+// the directory, and gokrb5 refuses any PAC with no Windows logon block, which is what
+// a current MIT KDC puts in every ticket: left on, SPNEGO against an MIT realm answers
+// 401 to every ticket it should accept, while one minted in a test goes through.
+func Negotiate(next http.Handler, kt *keytab.Keytab, servicePrincipal string) http.Handler {
+	settings := []func(*service.Settings){service.DecodePAC(false)}
+	if servicePrincipal != "" {
+		settings = append(settings, service.KeytabPrincipal(servicePrincipal))
+	}
+	return spnego.SPNEGOKRB5Authenticate(next, kt, settings...)
+}
+
+// Holds reports whether a keytab has a key for a service principal of a realm. A
+// keytab without one opens no ticket, and looks like a working one until somebody
+// signs in.
+func Holds(kt *keytab.Keytab, servicePrincipal, realm string) bool {
+	name, _, _ := strings.Cut(servicePrincipal, "@")
+	for _, e := range kt.Entries {
+		if strings.Join(e.Principal.Components, "/") == name && strings.EqualFold(e.Principal.Realm, realm) {
+			return true
+		}
+	}
+	return false
 }
 
 // Entry describes one principal in a keytab, for reporting.

@@ -46,6 +46,8 @@ var globalNameKeys = map[string]string{
 		"one instance, above every organisation it hosts, and the statements name the instance",
 	"federation_trust_marks_held.issuer": "the table has no organisation: a trust mark is " +
 		"held by the federation entity, which is the instance, and the statement names it",
+	"kerberos_realms.host": "unique across organisations since migration 0244: a browser " +
+		"names a host and no tenant, and the host is what says whose realm it is",
 }
 
 // globalPairKeys are keys unique across organisations only together with a

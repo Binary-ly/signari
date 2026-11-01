@@ -350,6 +350,10 @@ func (s *Server) Routes() http.Handler {
 		s.retireSAMLSourceKey)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", ScopeOrganizationsWrite,
 		s.setSAMLSourceKeyUse)
+	// An organisation's Kerberos realms, `signari kerberos add-realm` (kerberosrealms.go).
+	route("GET /admin/organizations/{orgID}/kerberos-realms", ScopeConfigRead, s.listKerberosRealms)
+	route("POST /admin/organizations/{orgID}/kerberos-realms", ScopeOrganizationsWrite, s.addKerberosRealm)
+	route("DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}", ScopeOrganizationsWrite, s.removeKerberosRealm)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", ScopeOrganizationsWrite,
 		s.putIdPTokenAuth)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,

@@ -39,6 +39,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -240,12 +241,48 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// hashed as one string and was stored as another, and the chain read as
 	// tampered from that row on, permanently: an Admin API PATCH to
 	// /admin/users/d578-90c1-... did exactly this to the shared test database.
+	var detail string
+	var org, subject, actor, correlation, token *string
+	if err := tx.QueryRow(ctx,
+		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text`,
+		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID)).
+		Scan(&detail, &org, &subject, &actor, &correlation, &token); err != nil {
+		return fmt.Errorf("audit: canonicalising the entry: %w", err)
+	}
+	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
+	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
+
+	// Fan the event out to subscribers, in THIS transaction.
 	//
-	// The statement also takes the chain's lock, which saves it a round trip of
-	// its own. It reads nothing from a table, so it does not matter that its
-	// snapshot is older than the lock: the read of the tail below is a statement
-	// of its own and sees what was committed before the lock was had.
+	// Here rather than at each call site for the same reason the audit entry
+	// itself is written here: there are dozens of places that record an event,
+	// and a fan-out written at each of them is one missing from some of them --
+	// discovered by an operator whose alerting never fired for the one event
+	// type that mattered.
 	//
+	// Same transaction, which is the entire point of an outbox: the event and
+	// the intent to deliver it commit together, so there is no window where the
+	// log says something happened and nothing was ever sent.
+	//
+	// Before the chain's lock, because everything after the lock is a round trip
+	// every other audited transaction in the deployment waits out, and nothing
+	// here needs it.
+	//
+	// NOT fatal to the audit write. A subscription that cannot be enqueued must
+	// not stop the thing being audited from happening -- that would make an event
+	// subscription a way to break sign-in.
+	if publish != nil && e.OrgID != "" {
+		_ = publish(ctx, tx, e, detail)
+	}
+
+	// Microseconds, which is what timestamptz keeps, so the time hashed is the
+	// time stored.
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
+
 	// An advisory lock on the CHAIN, not a row lock on its current tail.
 	//
 	// The first version took FOR UPDATE on the tail row, reasoning that
@@ -274,68 +311,21 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// is a constant because the chain is global: it is verified in id order
 	// across every organisation, so a per-organisation lock would permit
 	// exactly the interleaving this prevents.
-	var detail, locked string
-	var org, subject, actor, correlation, token *string
-	if err := tx.QueryRow(ctx,
-		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text,
-		        pg_advisory_xact_lock($7)::text`,
-		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
-		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID), auditChainLock).
-		Scan(&detail, &org, &subject, &actor, &correlation, &token, &locked); err != nil {
-		return fmt.Errorf("audit: canonicalising the entry and taking the chain lock: %w", err)
-	}
-	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
-	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
-
-	var prev []byte
-	err = tx.QueryRow(ctx, `
-		SELECT entry_hash FROM core.audit_events
-		ORDER BY id DESC LIMIT 1`).Scan(&prev)
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("audit: reading chain head: %w", err)
-	}
-
-	// Microseconds, which is what timestamptz keeps, so the time hashed is the
-	// time stored.
-	if e.OccurredAt.IsZero() {
-		e.OccurredAt = time.Now()
-	}
-	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
-	entry := hashFor(version, prev, e, detail)
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO core.audit_events
-			(org_id, event_type, subject_id, actor_id, client_id, correlation_id,
-			 retention_class, detail, prev_hash, entry_hash, admin_token_id, occurred_at, hash_version)
-		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10, $11::uuid, $12, $13)`,
-		nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
-		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention,
-		detail, prev, entry, nullIfEmpty(e.AdminTokenID), e.OccurredAt, version)
-	if err != nil {
+	//
+	// Lock, tail and insert are one statement (migration 0239), since each round
+	// trip inside the lock is one every other audited transaction waits out. The
+	// bytes hashed are built here, and the function puts the tail in front of them.
+	body, tail := hashParts(version, e, detail)
+	if _, err = tx.Exec(ctx, `
+		SELECT core.audit_append($1, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9::jsonb,
+		                         $10::uuid, $11, $12, $13, $14)`,
+		auditChainLock, nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention, detail,
+		nullIfEmpty(e.AdminTokenID), e.OccurredAt, int16(version), body, tail); err != nil {
 		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 	}
-
-	// Fan the event out to subscribers, in THIS transaction.
-	//
-	// Here rather than at each call site for the same reason the audit entry
-	// itself is written here: there are dozens of places that record an event,
-	// and a fan-out written at each of them is one missing from some of them --
-	// discovered by an operator whose alerting never fired for the one event
-	// type that mattered.
-	//
-	// Same transaction, which is the entire point of an outbox: the event and
-	// the intent to deliver it commit together, so there is no window where the
-	// log says something happened and nothing was ever sent.
 	if observe != nil {
 		observe(e)
-	}
-	if publish != nil && e.OrgID != "" {
-		if err := publish(ctx, tx, e, detail); err != nil {
-			// NOT fatal to the audit write. A subscription that cannot be
-			// enqueued must not stop the thing being audited from happening --
-			// that would make an event subscription a way to break sign-in.
-			return nil
-		}
 	}
 	return nil
 }
@@ -374,6 +364,13 @@ func SetObserver(o Observer) { observe = o }
 func chainHash(prev []byte, e Event, detail string) []byte {
 	h := sha256.New()
 	h.Write(prev)
+	h.Write(chainBody(e, detail))
+	return h.Sum(nil)
+}
+
+// chainBody is what chainHash hashes after the previous entry's hash.
+func chainBody(e Event, detail string) []byte {
+	var h bytes.Buffer
 	for _, f := range []string{
 		e.Type, e.OrgID, e.SubjectID, e.ActorID, e.ClientID, e.CorrelationID, e.Retention,
 	} {
@@ -404,7 +401,7 @@ func chainHash(prev []byte, e Event, detail string) []byte {
 	}
 
 	h.Write([]byte(detail))
-	return h.Sum(nil)
+	return h.Bytes()
 }
 
 // hashFor is the entry hash at a version, or nil for one this binary does
@@ -419,13 +416,24 @@ func hashFor(version int, prev []byte, e Event, detail string) []byte {
 	case 1:
 		return chainHash(prev, e, detail)
 	case 2:
+		_, tail := hashParts(version, e, detail)
 		h := sha256.New()
 		h.Write(chainHash(prev, e, detail))
-		h.Write([]byte("v2\x00"))
-		h.Write([]byte(e.OccurredAt.UTC().Format("2006-01-02T15:04:05.000000Z")))
+		h.Write(tail)
 		return h.Sum(nil)
 	}
 	return nil
+}
+
+// hashParts is hashFor without the previous hash, which core.audit_append
+// supplies: sha256(prev || body), and then, when there is a tail, sha256 of that
+// and the tail.
+func hashParts(version int, e Event, detail string) (body, tail []byte) {
+	body = chainBody(e, detail)
+	if version == 2 {
+		tail = []byte("v2\x00" + e.OccurredAt.UTC().Format("2006-01-02T15:04:05.000000Z"))
+	}
+	return body, tail
 }
 
 // Verify walks the chain and reports the first entry whose hash does not follow

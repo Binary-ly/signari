@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0239 audit_append
+
+Compatible with the release before: its binary may still serve this schema.
+
+core.audit_append takes the audit chain's lock, reads its tail, works out the entry's hash and appends it in one statement (E.11). The lock is global and held until commit, so what it lets through is one over the round trips made while holding it, and that was four and a half: the lock's answer, the tail, the insert, the subscriptions, the commit. Now it is the answer and the commit, and the engine builds the same bytes it always hashed, so nothing about the chain changes and a version before this one, taking the same lock, appends to the same chain.
+
 ## 0238 saml_metadata_origin
 
 Compatible with the release before: its binary may still serve this schema.

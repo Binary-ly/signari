@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -33,6 +34,47 @@ import (
 // appenders under READ COMMITTED: the blocked transaction re-reads THAT ROW,
 // finds it unchanged, and appends after it -- while the transaction it waited
 // for has already appended after it too.
+// The hash is worked out by core.audit_append and checked by Verify, in two
+// languages, so each version's entry is compared here on its own: a walk of the
+// chain would answer for every row before it as well.
+func TestTheDatabaseHashesWhatVerifyExpects(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	orgID, err := anyOrg(ctx, pool)
+	if err != nil {
+		t.Skipf("no organisation to attribute events to: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, version := range []int{1, 2} {
+		e := Event{Type: "probe.hash", OrgID: orgID, ClientID: "probe", Retention: RetentionSecurity,
+			Detail: map[string]any{"b": 1, "a": "x"}}
+		if err := write(ctx, tx, e, version); err != nil {
+			t.Fatal(err)
+		}
+		var prev, stored []byte
+		var detail string
+		if err := tx.QueryRow(ctx, `SELECT prev_hash, entry_hash, detail::text, occurred_at
+			FROM core.audit_events ORDER BY id DESC LIMIT 1`).Scan(&prev, &stored, &detail, &e.OccurredAt); err != nil {
+			t.Fatal(err)
+		}
+		if want := hashFor(version, prev, e, detail); !bytes.Equal(stored, want) {
+			t.Errorf("version %d: the database stored %x, and Verify would expect %x", version, stored, want)
+		}
+	}
+}
+
 func TestConcurrentAppendsDoNotForkTheChain(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {

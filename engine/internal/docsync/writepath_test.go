@@ -221,6 +221,30 @@ func sourceFiles(t *testing.T, root string) map[string]string {
 			t.Fatal(err)
 		}
 	}
+
+	// A function a migration defines is code, though, and what it writes the
+	// engine writes whenever it calls it. Only the ones something calls: a trigger's
+	// function runs on a write the engine has already made.
+	dir := filepath.Join(root, "engine", "migrations", "core")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined := regexp.MustCompile(`(?is)CREATE (?:OR REPLACE )?FUNCTION core\.([a-z0-9_]+)\(.*?\$\$(.*?)\$\$`)
+	for _, e := range entries {
+		src, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		for _, m := range defined.FindAllStringSubmatch(string(src), -1) {
+			for rel, body := range out {
+				if strings.HasSuffix(rel, ".go") && strings.Contains(body, "core."+m[1]+"(") {
+					out["function core."+m[1]] = m[2]
+					break
+				}
+			}
+		}
+	}
 	return out
 }
 

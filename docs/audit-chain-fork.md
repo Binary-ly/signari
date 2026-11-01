@@ -65,6 +65,15 @@ mid-append cannot wedge the log. The key is a constant because the chain is
 global — it is verified in id order across every organisation, so a
 per-organisation lock would permit exactly the interleaving this prevents.
 
+Those three steps are one statement now, `core.audit_append` (migration 0239).
+The lock is held to the commit and every audited transaction waits behind it, so
+what it lets through is one over the round trips made while holding it: 146
+audited transactions a second through a 1.5 ms round trip when they were three
+statements and a read of the subscriptions after them, and 490 as one. The
+function is volatile, which is what keeps it correct: a volatile function takes a
+new snapshot for each statement inside it, so the read of the tail sees what
+committed while it waited for the lock.
+
 ## Proven both ways
 
 12 concurrent writers, on a fresh database:

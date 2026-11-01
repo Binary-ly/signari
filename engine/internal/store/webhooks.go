@@ -355,11 +355,26 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, env EventEnvelope) (int, error
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	if len(targets) == 0 {
+		return 0, nil
+	}
 
+	// A savepoint, since a statement that fails ends the transaction it is in, and
+	// this transaction is somebody signing in: audit.Write says a delivery that
+	// cannot be queued does not stop what is being recorded, and without this it
+	// did, at the commit.
+	queued, err := tx.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = queued.Rollback(ctx) }()
 	for _, t := range targets {
-		if err := queueDelivery(ctx, tx, t.id, t.url, env); err != nil {
+		if err := queueDelivery(ctx, queued, t.id, t.url, env); err != nil {
 			return 0, err
 		}
+	}
+	if err := queued.Commit(ctx); err != nil {
+		return 0, err
 	}
 	return len(targets), nil
 }

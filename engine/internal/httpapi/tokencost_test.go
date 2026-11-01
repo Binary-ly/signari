@@ -108,7 +108,7 @@ func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
 		t.Fatalf("signing in: %+v", got)
 	}
 	seen := spent.take()
-	underLimit(t, "the form and a password sign-in", seen, 27)
+	underLimit(t, "the form and a password sign-in", seen, 25)
 	if transactions(seen) > 1 {
 		t.Errorf("a sign-in opened %d transactions", transactions(seen))
 	}
@@ -217,7 +217,7 @@ func TestASAMLResponseAsksTheDatabaseLittle(t *testing.T) {
 	if _, doc := rf.samlSSO(t, rf.own); doc == "" {
 		t.Fatal("no second response")
 	}
-	underLimit(t, "a SAML response", spent.take(), 9)
+	underLimit(t, "a SAML response", spent.take(), 8)
 }
 
 // These two are what a resource server calls on every request it serves, so a

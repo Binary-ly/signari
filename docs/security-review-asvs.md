@@ -1072,6 +1072,13 @@ must pass `Sec-Fetch-*` through: strip them and sign-in stops at the same place.
 `interop/form-redirect-e2e.mjs` drives the real forms in a real browser and passes
 only if it arrives at the application.
 
+The reverse journey has its own rule. The session cookie is `SameSite=Lax`, so it
+stays behind on a form posted from another site, and a person with a live session
+read as nobody and was asked to sign in again. `/saml/sso` and the authorization
+endpoint answer such a POST, recognised by `Sec-Fetch-Site: cross-site` with
+`Sec-Fetch-Dest: document`, with a `303` to the same request as a `GET`, which
+brings the cookie. `/wsfed` does the same for any POST without a form token of ours.
+
 ### Pinned structurally
 
 `TestEveryHTMLResponseCarriesAPolicyAndNoStore` scans the package source rather

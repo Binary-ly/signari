@@ -70,6 +70,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, err.Error())
 		return
 	}
+	if crossSiteForm(r) {
+		http.Redirect(w, r, r.URL.RequestURI(), http.StatusSeeOther)
+		return
+	}
 
 	// # Redeeming a pushed request
 	//

@@ -37,6 +37,17 @@ func fromOwnForm(r *http.Request) bool {
 		r.Header.Get("Sec-Fetch-Dest") == "document"
 }
 
+// crossSiteForm reports a browser submitting a form on another site's page. The
+// session cookie is SameSite=Lax and stays behind on that POST, so a person
+// signed in reads as nobody and is asked again. An endpoint a relying party may
+// post to answers with a 303 to the same request as a GET, which brings the
+// cookie.
+func crossSiteForm(r *http.Request) bool {
+	return r.Method == http.MethodPost &&
+		r.Header.Get("Sec-Fetch-Site") == "cross-site" &&
+		r.Header.Get("Sec-Fetch-Dest") == "document"
+}
+
 func (s *Server) withFormRedirects(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !fromOwnForm(r) {

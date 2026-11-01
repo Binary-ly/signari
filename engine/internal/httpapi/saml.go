@@ -175,6 +175,14 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 			"specification allows", len(relayState), maxRelayState))
 		return
 	}
+	if crossSiteForm(r) {
+		q := url.Values{"SAMLRequest": {encoded}, "Binding": {"POST"}}
+		if relayState != "" {
+			q.Set("RelayState", relayState)
+		}
+		http.Redirect(w, r, r.URL.Path+"?"+q.Encode(), http.StatusSeeOther)
+		return
+	}
 
 	// Which decoding applies depends on how the request ORIGINALLY arrived, not
 	// on how it is arriving now. A POST-binding request parked across sign-in

@@ -55,7 +55,7 @@ For a single entity, `-entity-id` is a check.
 
 | | Service provider | Upstream |
 |---|---|---|
-| Endpoints | Every https `AssertionConsumerService` on HTTP-POST, the one marked `isDefault` first and otherwise the lowest `index`; a `SingleLogoutService`, on HTTP-Redirect if it has one | The `SingleSignOnService` on HTTP-Redirect, the binding a sign-in here is sent by |
+| Endpoints | Every https `AssertionConsumerService` on HTTP-POST, the one marked `isDefault` first and otherwise the lowest `index`; a `SingleLogoutService` on SOAP for a logout with no browser, and one on HTTP-Redirect if it has one | The `SingleSignOnService` on HTTP-Redirect, the binding a sign-in here is sent by |
 | Keys | Every certificate with `use="signing"` or no `use` | The same, and at least one has to be current |
 | Other | `AuthnRequestsSigned`, the first `NameIDFormat` that fits | The first `NameIDFormat` that fits. `transient` is skipped, since an account linked to one is abandoned at once |
 

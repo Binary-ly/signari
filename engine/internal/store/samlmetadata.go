@@ -80,6 +80,7 @@ func ReadSAMLMetadata(ctx context.Context, client *http.Client, r SAMLMetadataRe
 func (s *SAMLProviderSpec) ApplyMetadata(entityID string, m *saml.ServiceProviderMetadata, encrypt bool, o SAMLMetadataOrigin) {
 	s.EntityID, s.ACSURL, s.MoreACSURLs = entityID, m.ACSURLs[0], m.ACSURLs[1:]
 	s.SLOURL, s.SLOBinding, s.SigningCertPEM = m.SLOURL, m.SLOBinding, m.SigningCertPEM
+	s.SOAPLogoutURL = m.SOAPLogoutURL
 	if encrypt {
 		s.EncryptionCertPEM = m.EncryptionCertPEM
 	}
@@ -157,15 +158,20 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 	if acs, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 		return nil, err
 	}
-	err = tx.QueryRow(ctx, `SELECT url, binding FROM core.saml_slo_urls WHERE provider_id = $1::uuid
+	err = tx.QueryRow(ctx, `SELECT url, binding FROM core.saml_slo_urls WHERE provider_id = $1::uuid AND binding <> 'SOAP'
 		ORDER BY url LIMIT 1`, providerID).Scan(&cur.SLOURL, &cur.SLOBinding)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	err = tx.QueryRow(ctx, `SELECT url FROM core.saml_slo_urls WHERE provider_id = $1::uuid AND binding = 'SOAP'
+		ORDER BY url LIMIT 1`, providerID).Scan(&cur.SOAPLogoutURL)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 
 	next := SAMLProviderSpec{EntityID: cur.EntityID, Name: cur.Name, NameIDFormat: cur.NameIDFormat,
 		KeyTransport: cur.KeyTransport, ACSURL: m.ACSURLs[0], MoreACSURLs: m.ACSURLs[1:],
-		SLOURL: m.SLOURL, SLOBinding: m.SLOBinding, SigningCertPEM: m.SigningCertPEM,
+		SLOURL: m.SLOURL, SLOBinding: m.SLOBinding, SOAPLogoutURL: m.SOAPLogoutURL, SigningCertPEM: m.SigningCertPEM,
 		EncryptionCertPEM:  cmp.Or(m.EncryptionCertPEM, cur.EncryptionCertPEM),
 		WantSignedRequests: cur.WantSignedRequests || m.WantSignedRequests}
 	if cur.EncryptionCertPEM == "" {
@@ -186,6 +192,7 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 	if next.SLOURL != "" {
 		note("slo_binding", cur.SLOBinding, next.SLOBinding)
 	}
+	note("soap_logout_url", cur.SOAPLogoutURL, next.SOAPLogoutURL)
 	note("signing_certificate", fingerprints(cur.SigningCertPEM), fingerprints(next.SigningCertPEM))
 	note("encryption_certificate", fingerprints(cur.EncryptionCertPEM), fingerprints(next.EncryptionCertPEM))
 	if next.WantSignedRequests != cur.WantSignedRequests {
@@ -204,6 +211,12 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 	if next.SLOURL != "" {
 		if _, err := tx.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding) VALUES ($1::uuid, $2, $3)`,
 			providerID, next.SLOURL, next.SLOBinding); err != nil {
+			return nil, err
+		}
+	}
+	if next.SOAPLogoutURL != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding) VALUES ($1::uuid, $2, 'SOAP')`,
+			providerID, next.SOAPLogoutURL); err != nil {
 			return nil, err
 		}
 	}

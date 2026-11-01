@@ -44,6 +44,8 @@ type SAMLProviderSpec struct {
 	ACSURL             string
 	NameIDFormat       string
 	SLOURL, SLOBinding string
+	// SOAPLogoutURL is where it is told of a logout with no browser (8.03).
+	SOAPLogoutURL      string
 	SigningCertPEM     string
 	EncryptionCertPEM  string
 	KeyTransport       string
@@ -123,6 +125,9 @@ func (s *SAMLProviderSpec) Validate() error {
 	if s.SLOBinding != "HTTP-Redirect" && s.SLOBinding != "HTTP-POST" {
 		return samlInvalid{fmt.Sprintf("unknown logout binding %q: use HTTP-Redirect or HTTP-POST", s.SLOBinding)}
 	}
+	if s.SOAPLogoutURL != "" && !strings.HasPrefix(s.SOAPLogoutURL, "https://") {
+		return samlInvalid{fmt.Sprintf("the SOAP logout URL must be https: %q", s.SOAPLogoutURL)}
+	}
 	if s.EncryptionCertPEM != "" {
 		cert, err := certificateIn(s.EncryptionCertPEM)
 		if err != nil {
@@ -194,6 +199,12 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 	if s.SLOURL != "" {
 		if _, err := tx.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding) VALUES ($1::uuid, $2, $3)`,
 			id, s.SLOURL, s.SLOBinding); err != nil {
+			return "", err
+		}
+	}
+	if s.SOAPLogoutURL != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding) VALUES ($1::uuid, $2, 'SOAP')`,
+			id, s.SOAPLogoutURL); err != nil {
 			return "", err
 		}
 	}

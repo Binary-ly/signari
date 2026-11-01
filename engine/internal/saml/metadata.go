@@ -8,6 +8,7 @@ const (
 	nsMetadata = "urn:oasis:names:tc:SAML:2.0:metadata"
 	nsDsig     = "http://www.w3.org/2000/09/xmldsig#"
 
+	BindingSOAP     = "urn:oasis:names:tc:SAML:2.0:bindings:SOAP"
 	BindingRedirect = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 	BindingPOST     = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
 )

@@ -220,6 +220,29 @@ func TestAnIdentityProvidersMetadataIsRead(t *testing.T) {
 	}
 }
 
+// A service provider's SOAP address is read beside its browser one, needs no
+// certificate of its own, and is https.
+func TestAServiceProvidersSOAPLogoutIsRead(t *testing.T) {
+	read := func(location string) *EntityMetadata {
+		t.Helper()
+		got, err := ReadMetadata(MetadataSource{Unsigned: true, Document: []byte(`<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example.test">
+<SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+<SingleLogoutService Binding="` + BindingSOAP + `" Location="` + location + `"/>
+<AssertionConsumerService index="0" Binding="` + BindingPOST + `" Location="https://sp.example.test/acs"/>
+</SPSSODescriptor></EntityDescriptor>`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := read("https://sp.example.test/Shibboleth.sso/SLO/SOAP"); got.SP.SOAPLogoutURL != "https://sp.example.test/Shibboleth.sso/SLO/SOAP" {
+		t.Errorf("read %q", got.SP.SOAPLogoutURL)
+	}
+	if got := read("http://sp.example.test/slo"); got.SP.SOAPLogoutURL != "" || !strings.Contains(strings.Join(got.Notes, " "), "has to be https") {
+		t.Errorf("read %q, notes %q", got.SP.SOAPLogoutURL, got.Notes)
+	}
+}
+
 // A sign-out reaches an upstream as a redirect, so that is the one address kept, and
 // what is left out is said.
 func TestAnUpstreamsLogoutIsTheRedirectBindings(t *testing.T) {

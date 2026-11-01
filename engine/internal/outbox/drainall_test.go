@@ -350,13 +350,13 @@ func TestTheDrainersCoverEveryTopic(t *testing.T) {
 			t.Errorf("%s has no drain or no batch", d.what)
 		}
 	}
-	for _, want := range []string{"logout notices", "security events", "CIBA ping notifications",
+	for _, want := range []string{"logout notices", "SAML logouts", "security events", "CIBA ping notifications",
 		"CIBA token pushes", "events", "account notices"} {
 		if !got[want] {
 			t.Errorf("nothing drains %s", want)
 		}
 	}
-	if s := fmt.Sprint(len(got)); s != "6" {
+	if s := fmt.Sprint(len(got)); s != "7" {
 		t.Errorf("%s topics; a new one needs a row here", s)
 	}
 }

@@ -307,7 +307,7 @@ func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude str
 		       COALESCE(array_agg(u.url) FILTER (WHERE u.url IS NOT NULL), '{}')
 		FROM core.saml_session_participants p
 		JOIN core.saml_providers sp ON sp.id = p.provider_id
-		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id
+		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id AND u.binding <> 'SOAP'
 		WHERE p.sid = $1 AND ($2 = '' OR p.provider_id <> $2::uuid) AND sp.enabled
 		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id, p.name_id_format`, sid, exclude)
 	if err != nil {

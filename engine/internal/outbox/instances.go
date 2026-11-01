@@ -55,3 +55,15 @@ func (w *Worker) signerFor(ctx context.Context, clientID string) (signer, error)
 	}
 	return s, nil
 }
+
+// signerOfInstance is who signs for an instance.
+func (w *Worker) signerOfInstance(instanceID string) (signer, error) {
+	if len(w.instances) == 0 {
+		return signer{keys: w.keys, issuer: w.issuer}, nil
+	}
+	s, ok := w.instances[instanceID]
+	if !ok {
+		return signer{}, fmt.Errorf("instance %s is not one this process serves", instanceID)
+	}
+	return s, nil
+}

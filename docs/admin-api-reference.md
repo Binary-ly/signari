@@ -3089,6 +3089,7 @@ Takes:
 | `sign_assertions` | boolean |  |
 | `sign_responses` | boolean |  |
 | `signature_alg` | string |  |
+| `soap_logout_url` | string |  |
 
 Answers:
 

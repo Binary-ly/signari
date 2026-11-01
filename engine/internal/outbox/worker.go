@@ -103,6 +103,7 @@ type drainer struct {
 func (w *Worker) drainers() []drainer {
 	return []drainer{
 		{"logout notices", w.batch, w.drainOnce},
+		{"SAML logouts", w.batch, w.drainSAMLLogouts},
 		{"security events", w.batch, w.DrainSSF},
 		// Parked rows are invisible to the claim query, so only decided requests
 		// are drained here.

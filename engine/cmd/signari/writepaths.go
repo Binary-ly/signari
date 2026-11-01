@@ -2019,6 +2019,30 @@ func samlNameID(ctx context.Context, conn *pgx.Conn, entityID, attribute string)
 	return nil
 }
 
+// samlSOAPLogout says where a service provider is told of a session that ended with
+// no browser to carry the news; no -url stops telling it.
+func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, entityID, url string) error {
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
+	}
+	if err := store.SetSAMLSOAPLogout(ctx, conn, orgID, providerID, url); err != nil {
+		return err
+	}
+	if url == "" {
+		fmt.Printf("%s: a logout reaches it only through a browser\n", entityID)
+		return nil
+	}
+	fmt.Printf("%s: told of every session that ends, at %s\n", entityID, url)
+	return nil
+}
+
 // samlGroupRelease says which groups a service provider is told about.
 //
 // An allow-list, matching `client group release` for OIDC clients and for the

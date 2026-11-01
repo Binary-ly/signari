@@ -18631,6 +18631,9 @@
                   },
                   "signature_alg": {
                     "type": "string"
+                  },
+                  "soap_logout_url": {
+                    "type": "string"
                   }
                 },
                 "type": "object"

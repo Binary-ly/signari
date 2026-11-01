@@ -8,6 +8,7 @@ everything:
 | **back-channel** (OIDC) | server-side sessions at relying parties | retried, parked failures surfaced |
 | **front-channel** (OIDC) | state the browser holds — cookies the RP's server never sees, local storage, service workers | best effort, no completion signal |
 | **SAML front-channel chain** | SAML service providers | sequential, per-provider result recorded |
+| **SAML SOAP** | SAML service providers with a SOAP address, however the session ended | retried, parked failures surfaced |
 
 Each is reported separately rather than summed into a single "signed out",
 because they succeed and fail independently.

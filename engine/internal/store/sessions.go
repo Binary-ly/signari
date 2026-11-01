@@ -222,6 +222,23 @@ func terminate(ctx context.Context, tx pgx.Tx, sids []string, userID string, rea
 		return nil, fmt.Errorf("queuing CAEP session-revoked events for poll: %w", err)
 	}
 
+	// 2d. Service providers that take a logout with no browser. The redirect chain
+	// reaches a provider only when a person signs out by hand; this is every other
+	// way a session ends, and that way as well. A provider told twice has nothing
+	// left to end the second time.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.outbox (topic, payload)
+		SELECT DISTINCT $3::text, jsonb_build_object('sid', s.sid, 'provider_id', p.provider_id::text)
+		  FROM core.sessions s
+		  JOIN core.saml_session_participants p ON p.sid = s.sid
+		  JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id AND u.binding = 'SOAP'
+		 WHERE s.revoked_at IS NULL
+		   AND ($1::text[] IS NULL OR s.sid = ANY($1))
+		   AND ($2::uuid IS NULL OR s.user_id = $2)`,
+		sids, nullIf(userID), SAMLLogoutTopic); err != nil {
+		return nil, fmt.Errorf("queuing SAML logouts: %w", err)
+	}
+
 	// 3. Destroy. Only now, once delivery is durably queued in the same
 	// transaction: if this rolls back, the notices roll back with it.
 	tag, err := tx.Exec(ctx, `

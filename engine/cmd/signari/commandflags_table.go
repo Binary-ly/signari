@@ -223,6 +223,7 @@ var commandFlags = map[string][]string{
 	"saml idp-initiated":              {"entity-id", "relay-state", "remove"},
 	"saml list":                       {"o"},
 	"saml nameid":                     {"attribute", "entity-id"},
+	"saml soap-logout":                {"entity-id", "url"},
 	"saml signing":                    {"assertion-lifetime", "entity-id", "sign-assertions", "sign-responses", "signature-alg"},
 	"scim add":                        {"base-url", "compatibility", "name", "oauth-client-id", "oauth-scope", "oauth-token-url", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "token"},
 	"scim deprovision-group":          {"group", "org", "slug"},

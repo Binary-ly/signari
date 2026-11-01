@@ -328,7 +328,7 @@ func sloEndpoint(ctx context.Context, s *Server, providerID, prefer string) (str
 	var u, binding string
 	_ = s.db.QueryRow(ctx, `
 		SELECT url, binding FROM core.saml_slo_urls
-		WHERE provider_id = $1::uuid
+		WHERE provider_id = $1::uuid AND binding <> 'SOAP'
 		ORDER BY (binding = $2) DESC, url
 		LIMIT 1`, providerID, prefer).Scan(&u, &binding)
 	return u, binding

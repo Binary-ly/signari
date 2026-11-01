@@ -230,10 +230,10 @@ practical, and a warning nobody reads is not a control.
 
 Signing out of Signari now signs the user out of the SAML service providers too.
 
-SAML has no usable back-channel — the SOAP binding exists and almost nothing
-implements it — so propagation means walking the **browser** through each
-provider's logout endpoint in turn. Signari redirects to provider one, it ends
-its session and redirects back, then provider two, until the list is empty.
+The SOAP binding is a back channel few providers offer, so for most of them
+propagation means walking the **browser** through each provider's logout endpoint
+in turn. Signari redirects to provider one, it ends its session and redirects
+back, then provider two, until the list is empty.
 
 **Our session is terminated before the chain starts, never at the end.** A chain
 that ended the local session last would leave the user signed in here whenever a
@@ -274,6 +274,32 @@ session is already gone — so the worst a forged one achieves is advancing our 
 bookkeeping past a provider we were about to notify, and it costs a valid chain
 token the attacker does not have. Requiring a signature would instead strand the
 chain at every provider that answers unsigned, which most do.
+
+### With no browser
+
+A chain needs a browser, and most sessions do not end in one: an administrator ends
+them, a person is deactivated, a session expires. A provider with a SOAP address hears
+of all of these. It comes from the provider's metadata, as a `SingleLogoutService` on
+the SOAP binding, or is set by hand:
+
+```sh
+signari saml soap-logout -entity-id https://sp.example.com/shibboleth \
+  -url https://sp.example.com/Shibboleth.sso/SLO/SOAP
+```
+
+Every session that ends and reached that provider queues a notice in the same
+transaction, which holds ids and no NameID, since a queue is the last place to keep
+somebody's address. The outbox then posts a signed `LogoutRequest` in a SOAP 1.1
+envelope, carrying the NameID and SessionIndex the assertion did, with the signature
+the provider's copy of the metadata verifies. It is delivered like a back-channel
+logout: retried with backoff when the provider is down, answers with anything but a
+`LogoutResponse` to that request saying `Success`, or sends a SOAP fault, and parked
+after that with the failure on record. A provider since disabled is not chased.
+
+The signature on the answer is not checked. The provider was reached at its
+registered address over TLS, and all the answer decides is whether to try again. A
+SOAP address is never given to a browser, and a provider with both is told both ways,
+which it can bear: the second finds nothing left to end.
 
 ## Signed AuthnRequests
 

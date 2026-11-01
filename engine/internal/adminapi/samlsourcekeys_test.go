@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -100,6 +101,68 @@ func TestARefreshTakesAnUpstreamsLogoutAddress(t *testing.T) {
 	}
 	if got := held(); got != "" {
 		t.Errorf("an address the upstream took back is still held: %q", got)
+	}
+}
+
+// A service provider's SOAP address is set and taken away as `signari saml
+// soap-logout` does it, comes and goes with its metadata, and is another organisation's
+// to set for no one else.
+func TestAServiceProvidersSOAPAddressIsSetThroughTheAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	_, path := newDriftSAMLProvider(t, s)
+	id := path[strings.LastIndex(path, "/")+1:]
+	held := func() string {
+		t.Helper()
+		var got string
+		if err := s.db.QueryRow(ctx, `SELECT COALESCE(string_agg(url, ' '), '') FROM core.saml_slo_urls
+			WHERE provider_id = $1::uuid AND binding = 'SOAP'`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	const soap = "https://sp.example.test/slo/soap"
+	if rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"soap_logout_url": "http://sp.example.test/slo"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("an address in the clear: %d %s", rec.Code, rec.Body.String())
+	}
+	stranger := newDriftMigrationOrg(t, s, false)
+	other := "/admin/organizations/" + stranger + "/saml-providers/" + id
+	if rec := call(t, s, http.MethodPatch, other, testToken, map[string]any{"soap_logout_url": soap}); rec.Code != http.StatusNotFound {
+		t.Errorf("from another organisation: %d %s", rec.Code, rec.Body.String())
+	}
+	// And at the store, which the command reaches without that route's other checks.
+	if err := store.SetSAMLSOAPLogout(ctx, s.db, stranger, id, soap); !errors.Is(err, store.ErrSAMLProviderUnknown) {
+		t.Errorf("from another organisation, at the store: %v", err)
+	}
+	if rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"soap_logout_url": soap}); rec.Code != http.StatusOK {
+		t.Fatalf("setting it: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != soap {
+		t.Errorf("holding %q", got)
+	}
+	if rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"soap_logout_url": ""}); rec.Code != http.StatusOK {
+		t.Fatalf("taking it away: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != "" {
+		t.Errorf("still holding %q", got)
+	}
+
+	document := spMetadata(t, s, path)
+	with := strings.Replace(document, "<AssertionConsumerService ", `<SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="`+soap+`"/>
+<AssertionConsumerService `, 1)
+	body := func(d string) map[string]any { return map[string]any{"metadata": d, "metadata_unsigned": true} }
+	rec := call(t, s, http.MethodPost, path+"/metadata", testToken, body(with))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "soap_logout_url") {
+		t.Fatalf("reading it: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != soap {
+		t.Errorf("after reading it, holding %q", got)
+	}
+	if rec := call(t, s, http.MethodPost, path+"/metadata", testToken, body(document)); rec.Code != http.StatusOK {
+		t.Fatalf("reading it again: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != "" {
+		t.Errorf("an address the provider took back is held: %q", got)
 	}
 }
 

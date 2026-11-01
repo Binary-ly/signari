@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0241 saml_soap_logout
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider that takes a logout with no browser in it (8.03). The redirect chain reaches a provider only when somebody signs out by hand in a browser that can still be walked through it; a session ended by an administrator, a deactivation or its own expiry has no browser, and the provider went on believing it. A SOAP address is what lets the outbox tell it. Not compatible with the version before: an older binary reading these rows would hand a SOAP address to a browser as a redirect.
+
 ## 0240 saml_source_keys
 
 Compatible with the release before: its binary may still serve this schema.

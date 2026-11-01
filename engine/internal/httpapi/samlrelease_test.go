@@ -122,6 +122,28 @@ func TestForceAuthnIsMetByASignInAfterTheRequest(t *testing.T) {
 	}
 }
 
+// A provider's SOAP address is for the outbox: a LogoutResponse carried by a browser
+// goes somewhere a browser can go, or nowhere.
+func TestAnAnswerIsNeverSentToASOAPAddress(t *testing.T) {
+	rf := newRealmFixture(t)
+	ctx := context.Background()
+	id := rf.providerID(t, rf.own)
+	if _, err := rf.f.pool.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding)
+		VALUES ($1::uuid, 'https://sp.test/slo/soap', 'SOAP')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if url, _ := sloEndpoint(ctx, rf.f.srv, id, bindingRedirect); url != "" {
+		t.Errorf("a browser would be sent to %q", url)
+	}
+	if _, err := rf.f.pool.Exec(ctx, `INSERT INTO core.saml_slo_urls (provider_id, url, binding)
+		VALUES ($1::uuid, 'https://sp.test/slo', 'HTTP-Redirect')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if url, binding := sloEndpoint(ctx, rf.f.srv, id, bindingPOST); url != "https://sp.test/slo" || binding != bindingRedirect {
+		t.Errorf("answered at %q on %q", url, binding)
+	}
+}
+
 func TestAProviderOfAnotherInstanceIsNoProviderHere(t *testing.T) {
 	rf := newRealmFixture(t)
 	if err := rf.f.pool.QueryRow(context.Background(), `

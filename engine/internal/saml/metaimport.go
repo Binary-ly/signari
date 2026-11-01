@@ -69,6 +69,9 @@ type ServiceProviderMetadata struct {
 	ACSURLs []string
 	// SLOURL is empty when it takes no logout.
 	SLOURL, SLOBinding string
+	// SOAPLogoutURL is where it is told of a logout with no browser, the signature
+	// being this deployment's to make, so no certificate of its own is needed.
+	SOAPLogoutURL string
 	// SigningCertPEM holds every certificate it signs with.
 	SigningCertPEM string
 	// EncryptionCertPEM is a key it offers for encrypted assertions, which it is
@@ -279,6 +282,17 @@ func readServiceProvider(d *etree.Element, now time.Time, notes *[]string) (*Ser
 	} else if len(d.SelectElements("SingleLogoutService")) > 0 {
 		*notes = append(*notes, "single logout left out: a logout request is acted on only when signed, and "+
 			"the metadata publishes no signing certificate")
+	}
+	for _, s := range d.SelectElements("SingleLogoutService") {
+		if s.SelectAttrValue("Binding", "") != BindingSOAP {
+			continue
+		}
+		if loc := s.SelectAttrValue("Location", ""); strings.HasPrefix(loc, "https://") {
+			sp.SOAPLogoutURL = loc
+			break
+		} else {
+			*notes = append(*notes, fmt.Sprintf("left out %s: a logout URL has to be https", loc))
+		}
 	}
 	sp.NameIDFormat = nameIDFormat(d, "persistent", "emailAddress", "transient")
 	return sp, nil

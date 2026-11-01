@@ -15,8 +15,8 @@ import (
 //
 // # Why a redirect chain
 //
-// SAML has no usable back-channel. The SOAP binding exists and almost nothing
-// implements it, so propagating a logout means walking the BROWSER through each
+// The SOAP binding is a back channel few providers offer (outbox/samllogout.go), so
+// for the rest propagating a logout means walking the BROWSER through each
 // service provider's logout endpoint in turn: we redirect to provider one, it
 // ends its session and redirects back to us, we redirect to provider two, and
 // so on until the list is empty.

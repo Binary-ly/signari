@@ -1904,6 +1904,7 @@ type PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest struct {
 	SignAssertions    *bool   `json:"sign_assertions,omitempty"`
 	SignResponses     *bool   `json:"sign_responses,omitempty"`
 	SignatureAlg      *string `json:"signature_alg,omitempty"`
+	SoapLogoutURL     *string `json:"soap_logout_url,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSAMLProvidersProviderIDResponse is a JSON object of the Admin API.

@@ -77,6 +77,9 @@ type patchSAMLProviderRequest struct {
 	// DefaultRelayState is what goes with that response.
 	IdPInitiated      *bool   `json:"idp_initiated"`
 	DefaultRelayState *string `json:"default_relay_state"`
+	// SOAPLogoutURL is where it is told of a logout with no browser, empty for
+	// nowhere, as `signari saml soap-logout` sets it.
+	SOAPLogoutURL *string `json:"soap_logout_url"`
 }
 
 type samlAttributeRequest struct {
@@ -206,7 +209,7 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" &&
-		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil {
+		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil && req.SOAPLogoutURL == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
 	}
@@ -247,6 +250,12 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 			if req.DefaultRelayState != nil {
 				detail["default_relay_state"] = *req.DefaultRelayState
 			}
+		}
+		if req.SOAPLogoutURL != nil {
+			if err := store.SetSAMLSOAPLogout(ctx, tx, orgID, providerID, *req.SOAPLogoutURL); err != nil {
+				return err
+			}
+			detail["soap_logout_url"] = *req.SOAPLogoutURL
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_signing_set", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

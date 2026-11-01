@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
@@ -113,7 +114,10 @@ type Tuple struct {
 }
 
 // TuplesAmong reads every live relation among these subjects and objects, each a
-// (type, id) pair, for a batch of questions to answer from one statement.
+// (type, id) pair, for a batch of questions to answer from one statement. A batch
+// names one subject once per question, and the join finds each of their relations
+// once per mention, so the lists are made distinct here rather than by DISTINCT
+// afterwards: a hundred questions cost twelve times what ten did (E.17).
 func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects [][2]string,
 	relations []string) (map[Tuple]bool, error) {
 
@@ -122,13 +126,18 @@ func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects
 		return out, nil
 	}
 	split := func(pairs [][2]string) (types, ids []string) {
+		seen := make(map[[2]string]bool, len(pairs))
 		for _, p := range pairs {
-			types, ids = append(types, p[0]), append(ids, p[1])
+			if !seen[p] {
+				seen[p] = true
+				types, ids = append(types, p[0]), append(ids, p[1])
+			}
 		}
 		return types, ids
 	}
 	subjectTypes, subjectIDs := split(subjects)
 	objectTypes, objectIDs := split(objects)
+	relations = slices.Compact(slices.Sorted(slices.Values(relations)))
 	rows, err := q.Query(ctx, `
 		SELECT DISTINCT r.subject_type, r.subject_id, r.relation, r.object_type, r.object_id
 		  FROM core.relations r

@@ -60,6 +60,7 @@ type Server struct {
 	jwksMu    sync.Mutex
 	jwksCache []byte
 	jwksETag  string
+	jwksGzip  gzipMemo
 
 	// samlCertCache is each signing key's certificate, by key id. See
 	// samlCertificateFor.
@@ -67,6 +68,7 @@ type Server struct {
 
 	// discoveryCache is the discovery document as of discoveryVersion and the
 	// algorithms in discoveryKeys. See discoveryDocument.
+	discoveryGzip    gzipMemo
 	discoveryMu      sync.Mutex
 	discoveryCache   []byte
 	discoveryETag    string
@@ -1131,11 +1133,13 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
 	}
+	body, etag = negotiate(w, r, &s.discoveryGzip, body, etag)
 	// Discovery is public, stable, and polled. Let it be cached, but not so long
 	// that adding a signing algorithm takes a day to become visible.
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	w.Header().Set("ETag", etag)
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.Header().Del("Content-Encoding")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -1247,10 +1251,12 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "key set unavailable")
 		return
 	}
+	body, etag = negotiate(w, r, &s.jwksGzip, body, etag)
 	w.Header().Set("ETag", etag)
 	// A conditional request costs nothing and is not counted against the limit:
 	// a client asking "has it changed" is the behaviour we want to encourage.
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.Header().Del("Content-Encoding")
 		w.Header().Set("Cache-Control",
 			fmt.Sprintf("public, max-age=%d", int(keys.JWKSMaxAge.Seconds())))
 		w.WriteHeader(http.StatusNotModified)

@@ -46,6 +46,18 @@ func formCapped(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// AllowH2C lets the listener speak HTTP/2 with no TLS, for a proxy in front of it
+// that has already ended TLS and would rather keep one connection than many. With
+// prior knowledge only: net/http does not honour the `Upgrade: h2c` a browser could
+// be made to send through a proxy that passes it on, which is the known way of
+// smuggling a request past one.
+func AllowH2C(srv *http.Server) {
+	srv.Protocols = new(http.Protocols)
+	srv.Protocols.SetHTTP1(true)
+	srv.Protocols.SetHTTP2(true)
+	srv.Protocols.SetUnencryptedHTTP2(true)
+}
+
 // NewPublicServer is the public listener with those timeouts.
 func NewPublicServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{

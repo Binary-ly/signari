@@ -104,7 +104,8 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	// rotating certificate, and a long cache is what turns rotation into an
 	// outage.
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	_, _ = w.Write([]byte(doc))
+	body, _ := negotiate(w, r, nil, []byte(doc), "")
+	_, _ = w.Write(body)
 }
 
 // samlEntityID is our own entity id.

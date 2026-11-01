@@ -3159,6 +3159,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		log.Info("also serving", "issuer", inst.issuer, "algs", inst.keys.Algorithms())
 	}
 	h := httpapi.NewPublicServer(addr, routes)
+	if os.Getenv("SIGNARI_H2C") == "1" {
+		httpapi.AllowH2C(h)
+	}
 
 	// Ordered shutdown. The sequence is the whole point, and getting it wrong is
 	// invisible until a deploy drops requests:

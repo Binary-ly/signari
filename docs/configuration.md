@@ -129,6 +129,7 @@ effect at all.
 | | |
 |---|---|
 | `SIGNARI_TLS_CERT`, `SIGNARI_TLS_KEY` | Serve HTTPS. Without them the engine warns: browsers refuse `__Host-` cookies over plaintext on anything but localhost, so sign-in silently fails to persist |
+| `SIGNARI_H2C` | `1` lets the public listener speak HTTP/2 with no TLS, for a proxy that has already ended TLS: a client has to know to, as the `Upgrade: h2c` way in is not honoured. Off, as a listener in the clear is otherwise HTTP/1.1 only |
 | `SIGNARI_TLS_CLIENT_CA` | Authorities that may issue client certificates for RFC 8705 mutual-TLS. Absent, `tls_client_auth` is refused rather than relaxed |
 | `SIGNARI_ADMIN_ADDR` | Listen address for the admin API. Absent, it does not start |
 | `SIGNARI_ADMIN_RATE`, `SIGNARI_ADMIN_TOKEN_RATE` | The admin API's request rates, a second: everything arriving at the listener (default 100), and one token's share (default 50), each allowed a burst of twice. 1 to 100000, and one token cannot be allowed more than the listener; anything else stops the engine from starting rather than falling back to a default. A provisioning run larger than the defaults needed this; `GET /admin/system` reports what is in force |

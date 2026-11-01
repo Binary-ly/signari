@@ -340,14 +340,36 @@ things.
 Requiring the type is the honest bridge. The alternative is a registration
 endpoint whose only purpose is to remember a string.
 
+## Upgrading an RPT (§3.3.5.1)
+
+A client holding an RPT can send it along with a new ticket as `rpt`, and the token it
+gets holds both. The response says `"upgraded": true` when that happened. Without it the
+client treats the new RPT as not holding the old one's permissions, as §3.3.5 requires,
+so a token that cannot be upgraded is not an error: the client gets its new RPT and is
+told nothing was carried.
+
+§3.3.1 says the RPT presented "MAY be expired", which is what makes this worth care. An
+upgrade gives everything it carries a new lifetime, so copying permissions forward would
+let one that was taken away go on being renewed for as long as the client kept asking.
+**So each is decided again**, by the same decision point as the ticket's, and if any is
+refused nothing is upgraded: §3.3.5.1 has the server add the previous RPT's permissions,
+and part of them is not that.
+
+It has to be this client's RPT, for this requesting party and this resource server,
+bound to the same key if it is bound to one, and not revoked. §1.2 has an RPT unique to
+all of those, and a token moved between them has proved nothing to the second. The
+RPT replaced is revoked, as §3.3.5.1 says it SHOULD be.
+
+## Binding an RPT with DPoP
+
+§5.3 leaves proof of possession to a profile. A [DPoP](dpop.md) proof on the token
+request binds an RPT as it binds any other token: `cnf.jkt`, and `token_type` `DPoP`.
+
 ## Still not implemented
 
-- **`pct`** (§3.3.5), persisted claims tokens.
-- **`rpt`** (§3.3.5.1), RPT upgrade.
-
-Both are optimisations — a PCT saves gathering the same claims twice, an upgrade
-saves minting a second token — and both are **refused rather than ignored**,
-because a client that sends one and receives a token concludes it was honoured.
+- **`pct`** (§3.3.5), persisted claims tokens. It saves gathering the same claims twice,
+  and is **refused rather than ignored**, because a client that sends one and receives a
+  token concludes it was honoured.
 
 - **Resource registration** (Federated Authorization §2), which is why a
   permission carries `resource_type` — see above.

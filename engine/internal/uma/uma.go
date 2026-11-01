@@ -208,3 +208,19 @@ func Scopes(ps []Permission) []string {
 	}
 	return out
 }
+
+// ParseScope reads back one of what Scopes writes, `type:id#scope`. An id can hold
+// either mark, so the type ends at the first colon and the scope starts at the last
+// hash.
+func ParseScope(s string) (resourceType, resourceID, scope string, ok bool) {
+	at := strings.LastIndex(s, "#")
+	if at < 0 {
+		return "", "", "", false
+	}
+	resourceType, resourceID, found := strings.Cut(s[:at], ":")
+	scope = s[at+1:]
+	if !found || resourceType == "" || resourceID == "" || scope == "" {
+		return "", "", "", false
+	}
+	return resourceType, resourceID, scope, true
+}

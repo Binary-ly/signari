@@ -238,7 +238,7 @@ func TestUnsupportedUMAParametersAreRefusedRatherThanIgnored(t *testing.T) {
 	f := newCIBAFixture(t)
 	f.allowClientOn(t, "document", "42", "viewer")
 
-	for _, param := range []string{"claim_token", "pct", "rpt"} {
+	for _, param := range []string{"claim_token", "pct"} {
 		_, body := f.permission(t, f.clientID, f.secret, onePermission)
 		ticket, _ := body["ticket"].(string)
 

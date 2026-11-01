@@ -112,17 +112,12 @@ func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
-	// Still not implemented, and still refused rather than ignored. Both are
-	// optimisations -- a PCT saves gathering the same claims twice, an upgrade
-	// saves minting a second token -- and a client that sends one and receives a
-	// token concludes it was honoured.
-	for _, unsupported := range []string{"pct", "rpt"} {
-		if r.PostForm.Get(unsupported) != "" {
-			writeUMAError(w, uma.InvalidRequest(unsupported+" is not supported by this "+
-				"server; there is no persisted claims token and no RPT upgrade, so "+
-				"nothing here would act on it"))
-			return
-		}
+	// Still not implemented, and still refused rather than ignored: a client that
+	// sends one and receives a token concludes it was honoured.
+	if r.PostForm.Get("pct") != "" {
+		writeUMAError(w, uma.InvalidRequest("pct is not supported by this server; there is no "+
+			"persisted claims token, so nothing here would act on it"))
+		return
 	}
 
 	ticket := r.PostForm.Get("ticket")
@@ -183,18 +178,40 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	// permissions. The request's own `scope` parameter mints nothing here, so
 	// asking about it let the caller choose what the policy saw, and leaving it
 	// out passed every rule written about a scope.
-	scopes := uma.Scopes(t.Permissions)
-	if party.userID != "" && s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, party.userID, "",
-		joinScopes(scopes), "uma") {
-		return
-	}
-
 	subject := authzen.Subject{Type: "client", ID: c.ClientID}
 	if party.userID != "" {
 		// The person, not the client. This is the point of the whole exercise: a
 		// resource owner writes policy about somebody this server may never have
 		// seen before, and the grant now carries one.
 		subject = authzen.Subject{Type: "user", ID: party.ref}
+	}
+	// The RPT's subject is the REQUESTING PARTY when there is one.
+	//
+	// §1.2 defines an RPT as "unique to a requesting party, client, authorization
+	// server, resource server, and resource owner", and a resource server
+	// introspecting one has to be able to tell who it is about. Leaving the
+	// client id here once claims have been gathered would produce a token that
+	// says the application asked for itself, after this server went to the
+	// trouble of establishing that it did not.
+	rptSubject := c.ClientID
+	if party.userID != "" {
+		rptSubject = party.userID
+	}
+
+	// §5.3 leaves proof of possession to a profile, and an RPT is an access token
+	// like any other at a resource server that takes DPoP: a proof at this endpoint
+	// binds it, as it binds every other grant's.
+	jkt := dpopThumbprintFrom(ctx)
+	scopes := uma.Scopes(t.Permissions)
+	carried, upgraded := s.rptToUpgrade(ctx, r.PostForm.Get("rpt"), c, t.ResourceServer, rptSubject, subject, jkt)
+	for _, permission := range carried {
+		if !containsScope(scopes, permission) {
+			scopes = append(scopes, permission)
+		}
+	}
+	if party.userID != "" && s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, party.userID, "",
+		joinScopes(scopes), "uma") {
+		return
 	}
 
 	// The decision comes from the SAME policy decision point that answers
@@ -248,18 +265,6 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	// The RPT's subject is the REQUESTING PARTY when there is one.
-	//
-	// §1.2 defines an RPT as "unique to a requesting party, client, authorization
-	// server, resource server, and resource owner", and a resource server
-	// introspecting one has to be able to tell who it is about. Leaving the
-	// client id here once claims have been gathered would produce a token that
-	// says the application asked for itself, after this server went to the
-	// trouble of establishing that it did not.
-	rptSubject := c.ClientID
-	if party.userID != "" {
-		rptSubject = party.userID
-	}
 	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
 		Subject: rptSubject, ClientID: c.ClientID, Scopes: scopes,
 		Grant: oauth.GrantTypeUMATicket, OrgID: c.OrgID})
@@ -275,11 +280,15 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		JTI:      jti,
 		ClientID: c.ClientID,
 		Scope:    joinScopes(scopes),
+		Cnf:      bindingFor(jkt, ""),
 	})
 	if err != nil {
 		s.log.Error("signing an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
+	}
+	if upgraded != nil {
+		s.retireUpgraded(ctx, upgraded, c.ClientID)
 	}
 
 	s.auditDetached(ctx, audit.Event{
@@ -289,16 +298,22 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 			"resource_server": t.ResourceServer,
 			"scope":           joinScopes(scopes),
 			"identified":      party.userID != "",
+			"upgraded":        upgraded != nil,
 		},
 	})
 
-	// §3.3.5: the RFC 6749 §5.1 response shape, token_type Bearer.
-	writeJSON(w, http.StatusOK, map[string]any{
+	// §3.3.5: the RFC 6749 §5.1 response shape. `upgraded` only when it is so:
+	// absent, the client treats the new RPT as not holding the old one's.
+	body := map[string]any{
 		"access_token": rpt,
-		"token_type":   "Bearer",
+		"token_type":   bearerOrDPoP(jkt),
 		"expires_in":   int(c.AccessTokenTTL().Seconds()),
 		"scope":        joinScopes(scopes),
-	})
+	}
+	if upgraded != nil {
+		body["upgraded"] = true
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // writeUMAError renders §3.3.6's error with its own status.

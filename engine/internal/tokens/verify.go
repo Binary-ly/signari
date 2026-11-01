@@ -56,6 +56,18 @@ func VerifyAccessToken(set *keys.Set, issuer, raw string) (*AccessTokenClaims, e
 // else. It is emphatically not "skip the issuer check": an unregistered issuer
 // is still refused, which is what keeps this from being a mix-up attack.
 func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
+	return verifyAccessToken(set, issuers, raw, false)
+}
+
+// VerifyEvenExpired is VerifyAccessTokenAny for the one thing a token that has run
+// out may still do: say what it held. UMA §3.3.1 lets a client present an RPT that
+// "MAY be expired" to have it upgraded. What comes back is a signed statement and no
+// authority, and its caller decides again everything it carries.
+func VerifyEvenExpired(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
+	return verifyAccessToken(set, issuers, raw, true)
+}
+
+func verifyAccessToken(set *keys.Set, issuers []string, raw string, expiredToo bool) (*AccessTokenClaims, error) {
 	// The header and signature checks live in verifiedPayload, shared with
 	// VerifyTypedJSON. Two copies of this is one copy that eventually forgets
 	// the jku check, which is alg confusion through the back door.
@@ -83,7 +95,7 @@ func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessT
 		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, ErrWrongIssuer)
 	case c.Subject == "":
 		return nil, fmt.Errorf("%w: no subject", ErrInvalidToken)
-	case c.Expiry == 0 || now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
+	case c.Expiry == 0, !expiredToo && now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
 		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
 	case c.IssuedAt == 0 || now.Add(Leeway).Before(time.Unix(c.IssuedAt, 0)):
 		return nil, fmt.Errorf("%w: issued in the future", ErrInvalidToken)

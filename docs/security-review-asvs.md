@@ -1039,6 +1039,32 @@ order of two statements. That has been replaced with the headers written out in
 full and a comment saying why the helper is wrong here, because "it works because
 these two lines are in this order" is a thing somebody tidies up.
 
+### A redirect after a form is sent as a page
+
+`form-action 'self'` on the sign-in pages stops injected markup from posting a
+password somewhere else. Chrome applies that directive to every redirect in the
+navigation a form starts, not only to the form's own target, so the walk from a
+password to an application (`POST /login`, `303` to the authorization endpoint,
+`303` to the relying party) was stopped at its last hop. The person stayed on the
+sign-in page with the right password and no error. Chrome 156 does this; an HTTP
+client does not, which is why no test here saw it.
+
+Listing every destination in the policy would make every page responsible for
+knowing where the journey might end. Removing the directive would give up what it
+is for. So the navigation is ended instead. When a browser submits a form on a
+page from this origin, `withFormRedirects` answers a redirect with `200` and a
+page that refreshes to the same place, keeping any cookies set with it. From
+there the browser is on an ordinary navigation, which the directive has no say in.
+The page's own policy lets nothing run.
+
+It is recognised by `Sec-Fetch-Site: same-origin` with `Sec-Fetch-Dest: document`,
+which a page cannot set. A form on a relying party's page, an API client and a
+script's `fetch` keep their redirects. So a reverse proxy in front of the engine
+must pass `Sec-Fetch-*` through: strip them and sign-in stops at the same place.
+
+`interop/form-redirect-e2e.mjs` drives the real forms in a real browser and passes
+only if it arrives at the application.
+
 ### Pinned structurally
 
 `TestEveryHTMLResponseCarriesAPolicyAndNoStore` scans the package source rather

@@ -471,7 +471,7 @@ func (s *Server) Routes() http.Handler {
 	// line and everything inside them name the same client. The access log
 	// inside correlation, so its line carries the id, and outside recovery, so
 	// a panic's 500 is logged as the response it was.
-	outer := s.withRecovery(s.withSecurityHeaders(s.withCORS(inner)))
+	outer := s.withRecovery(s.withSecurityHeaders(s.withCORS(s.withFormRedirects(inner))))
 	if s.accessLog {
 		outer = s.withAccessLog(outer)
 	}

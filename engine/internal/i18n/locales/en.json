@@ -20,6 +20,7 @@
   "login.emailcode": "Email me a code instead",
   "login.sso": "Continue with single sign-on",
   "login.accounts": "Choose an account you are signed in with",
+  "redirect.continue": "Continue",
   "login.pending": "This account is waiting for an administrator to approve it. You will get an email when you can sign in.",
   "accounts.title": "Choose an account",
   "accounts.intro": "You are signed in with these accounts on this browser.",

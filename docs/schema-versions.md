@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0255 bulk_writes_stay_linear
+
+Not compatible with the release before: stop it before migrating.
+
+Bringing many people in at once took time that grew with the square of how many (0.70), for two reasons. The check that an address is nobody's username makes its plan once for a whole statement, so a plan made on an empty or nearly empty table stays: with no statistics every index starting with org_id cost the same as the identifier's and the planner took one that reads the whole organisation for each row, so 20,000 people took 103 s, and a first directory sync is one such statement. It now compares the organisation in a form no index can serve, which leaves the identifier's, and has a sequential scan off, because a small table with statistics plans one and keeps that too. The second is the operator CLI's version bump: every statement updated the one row of core.config_version, a transaction cannot prune its own versions of a row, and each update walked past all of them, which with the first had a realm import of 16,000 people take 267 s. A transaction now moves the version once, which is all an If-Match compares.
+
 ## 0254 federation_subordinates
 
 Compatible with the release before: its binary may still serve this schema.

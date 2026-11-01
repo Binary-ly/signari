@@ -3804,7 +3804,7 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 	if err != nil {
 		return err
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginImport(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -3831,6 +3831,24 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 			"password hash. Each one is upgraded to Argon2id on their first sign-in.\n")
 	}
 	return nil
+}
+
+// beginImport opens the one transaction an import runs in. A prepared statement
+// settles on one plan after a few uses, which here is while the table is at its
+// smallest, and nothing replaces that plan before the commit. On a new deployment
+// that table has no statistics and the plan reads the whole organisation for each
+// person, so each doubling of an import took near four times as long (0.70).
+// Planned every time, a statement sees the table as it has grown.
+func beginImport(ctx context.Context, conn *pgx.Conn) (pgx.Tx, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_custom_plan`); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
 }
 
 // selectInstance resolves which instance this process serves.
@@ -5759,7 +5777,7 @@ func importZitadel(ctx context.Context, conn *pgx.Conn, path, orgID string, dryR
 	if err != nil {
 		return err
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginImport(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -5808,7 +5826,7 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID, installID
 	if err != nil {
 		return err
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginImport(ctx, conn)
 	if err != nil {
 		return err
 	}

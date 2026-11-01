@@ -95,6 +95,41 @@ office behind one gateway. Removed. What remains:
 | failures per address | one source guessing at many accounts |
 | failures per account | many sources guessing at one account |
 
+## A hundred thousand people
+
+One client over loopback on the same laptop, busy with other work at the time, against one
+organisation of 100,000 people, each linked to a SCIM source, and 100,000 relations.
+
+```
+SCIM, 100 people a page     first page   p50  9 ms   p99 40 ms
+                            middle       p50 15 ms   p99 66 ms
+                            last page    p50 21 ms   p99 64 ms
+AuthZEN, 100 evaluations    one request  p50  2 ms   p99 7-11 ms, five statements
+```
+
+The evaluations were 17 ms until this was measured. A batch named its subject once per
+question and the join found their relations once per mention, so a hundred questions cost
+twelve times what ten did, on the same five statements. Counting statements, which a test
+does, could not see it. The lists are made distinct now.
+
+Getting to a hundred thousand people found more than the measurements did, because it took
+over half an hour and was not finished. Bringing people in took time that grew with the square
+of how many, and only on a deployment that had never held any:
+
+| | before | after |
+|---|---|---|
+| one statement, 20,000 people, new deployment | 103 s | 1.3 s |
+| the same, into an organisation of 100 | 243 s | 1.1 s |
+| a realm import of 16,000 people, new deployment | 267 s | 17 s |
+
+Three causes, each hidden from a test by a database that already had statistics in it. The
+check that an address is nobody's username made one plan for the whole statement, on a table
+with nothing to go on, and the plan read the organisation for every row. An import's own
+lookups did the same for the length of its transaction. And the CLI's version bump updated one
+row for every statement, which a transaction cannot prune behind itself, so each update walked
+past all the ones before it. A first directory sync is one such statement, and an import is
+what a migration begins with, so a new deployment was the worst place for this to be slow.
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

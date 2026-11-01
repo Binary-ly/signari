@@ -71,13 +71,17 @@ func TestARedeemedOffersTokenIsGoodForNothingElse(t *testing.T) {
 		}
 		return f.post(t, form)
 	}
-	refused := func(what string, status int, body map[string]any) {
+	refusedAs := func(code, what string, status int, body map[string]any) {
 		t.Helper()
 		desc, _ := body["error_description"].(string)
-		if status != http.StatusBadRequest || body["error"] != "invalid_grant" ||
+		if status != http.StatusBadRequest || body["error"] != code ||
 			!strings.Contains(desc, "nothing else") {
 			t.Errorf("%s answered %d %v", what, status, body)
 		}
+	}
+	refused := func(what string, status int, body map[string]any) {
+		t.Helper()
+		refusedAs("invalid_request", what, status, body)
 	}
 	if status, body := exchange(url.Values{"subject_token": {ordinary}}); status != http.StatusOK {
 		t.Fatalf("exchanging an ordinary token answered %d %v", status, body)
@@ -97,7 +101,7 @@ func TestARedeemedOffersTokenIsGoodForNothingElse(t *testing.T) {
 		t.Fatalf("a transaction token from an ordinary token answered %d %v", status, body)
 	}
 	status, body = f.txnToken(t, issuance, accessToken, "read")
-	refused("a transaction token from an issuance token", status, body)
+	refusedAs("invalid_grant", "a transaction token from an issuance token", status, body)
 
 	// And the other way round: what a sign-in holds does not reach this endpoint.
 	if status, _ := f.postJSON(t, "/oid4vci/credential", ordinary, "{}"); status != http.StatusUnauthorized {

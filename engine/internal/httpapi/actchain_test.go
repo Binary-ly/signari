@@ -71,7 +71,7 @@ func TestAnActorChainStopsAtItsBound(t *testing.T) {
 			"client_secret": {secret}, "subject_token": {token}, "audience": {exchangeAudience}, "scope": {"read"},
 			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"}})
 		if hop > tokens.MaxActorDepth {
-			if status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+			if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 				t.Fatalf("exchange %d answered %d %v", hop, status, body)
 			}
 			return

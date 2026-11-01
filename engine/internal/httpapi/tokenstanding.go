@@ -50,10 +50,11 @@ func endedDescription(st store.TokenStanding) string {
 	return ""
 }
 
-// exchangeRefusal is the invalid_grant for a token offered in an exchange that has
-// ended, and nil for one that has not. A dead credential must not become a live
-// one: which says which of the tokens offered this is.
-func (s *Server) exchangeRefusal(ctx context.Context, claims *tokens.AccessTokenClaims, which string) *oauth.TokenError {
+// exchangeRefusal is the refusal, under code, of a token offered in an exchange that
+// has ended, and nil for one that has not. A dead credential must not become a live
+// one: which says which of the tokens offered this is. RFC 8693 §2.2.2 wants
+// invalid_request, and a Txn-Token's request goes by RFC 6749 §5.2.
+func (s *Server) exchangeRefusal(ctx context.Context, claims *tokens.AccessTokenClaims, which, code string) *oauth.TokenError {
 	st := s.standing(ctx, claims, which+" token")
 	var why string
 	switch {
@@ -68,5 +69,5 @@ func (s *Server) exchangeRefusal(ctx context.Context, claims *tokens.AccessToken
 	default:
 		return nil
 	}
-	return &oauth.TokenError{Code: "invalid_grant", Description: why, Status: http.StatusBadRequest}
+	return &oauth.TokenError{Code: code, Description: why, Status: http.StatusBadRequest}
 }

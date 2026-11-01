@@ -37,20 +37,29 @@ func TestAClientCanBeReadAndThenConditionallyWrittenFromTheResponseAlone(t *test
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
 
-	read := httptest.NewRecorder()
-	s.Routes().ServeHTTP(read, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
-	if read.Code != http.StatusOK {
-		t.Fatalf("GET gave %d: %s", read.Code, read.Body.String())
-	}
-	tag := read.Header().Get("ETag")
-	if tag == "" {
-		t.Fatal("a read carried no ETag, so a caller cannot make its write conditional " +
-			"without an unrelated extra request")
-	}
+	// Again if somebody moved the version in between: `go test ./...` runs other packages
+	// against this database, and that 412 would be correct. A read whose ETag is never
+	// accepted fails every time.
+	var write *httptest.ResponseRecorder
+	for attempt := 0; attempt < 5; attempt++ {
+		read := httptest.NewRecorder()
+		s.Routes().ServeHTTP(read, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
+		if read.Code != http.StatusOK {
+			t.Fatalf("GET gave %d: %s", read.Code, read.Body.String())
+		}
+		tag := read.Header().Get("ETag")
+		if tag == "" {
+			t.Fatal("a read carried no ETag, so a caller cannot make its write conditional " +
+				"without an unrelated extra request")
+		}
 
-	write := httptest.NewRecorder()
-	s.Routes().ServeHTTP(write, adminReq(t, http.MethodPatch, "/admin/clients/"+clientID,
-		`{"enabled":false}`, tag))
+		write = httptest.NewRecorder()
+		s.Routes().ServeHTTP(write, adminReq(t, http.MethodPatch, "/admin/clients/"+clientID,
+			`{"enabled":false}`, tag))
+		if write.Code != http.StatusPreconditionFailed {
+			break
+		}
+	}
 	if write.Code != http.StatusOK {
 		t.Fatalf("the ETag from the read was not accepted as If-Match: %d %s",
 			write.Code, write.Body.String())

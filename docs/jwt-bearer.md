@@ -214,6 +214,40 @@ rather than answered with invented claims.
 carries no `sid`, because inventing one would make logout appear to reach a token
 it cannot.
 
+## The same token through token exchange
+
+A JWT from a registered issuer can also be presented to RFC 8693 token exchange, as
+`subject_token` with `subject_token_type=urn:ietf:params:oauth:token-type:jwt`. Use
+this rather than the grant when the token is going to be passed on: it can be
+addressed to one of the client's `set-exchange` audiences, and the result records
+who is acting.
+
+```sh
+signari client set-exchange -client-id gateway -exchange-audiences https://api.acme.example
+signari client set-assertion-issuers -client-id gateway -issuers partner
+```
+
+Every rule above applies, with the same one sentence for every refusal: the issuer
+opted in, the client paired with it, the claim rules, a linked and active person, a
+consent not withdrawn, the access policy, and one use of each `jti`, shared with the
+grant. A token spent either way cannot be spent the other. On top of those:
+
+- The client needs exchange too, and one without it is refused before any keys are
+  fetched.
+- The ceiling is the client's registered scope. A `scope` claim in the token is its
+  issuer's vocabulary and buys nothing here.
+- `openid` is refused, and so is a client whose registration carries it when no
+  `scope` was asked for, as with the grant.
+- An `act` chain in the token is kept, with the calling client added above it, and a
+  `may_act` in it is held to.
+- The result never outlives the token it came from, and has no session.
+- Only `...token-type:jwt`. An access token from elsewhere means whatever its issuer
+  says it means, and nothing asks them, so it is refused as any invalid token is.
+
+The audit record, `oauth.token_exchanged`, names the `subject_issuer`. Refusals of a
+subject or actor token are `invalid_request`, as RFC 8693 §2.2.2 requires, where this
+grant's are `invalid_grant`.
+
 ## Key fetching
 
 Provider keys are cached, with three behaviours worth knowing:

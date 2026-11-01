@@ -199,7 +199,8 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 					switch {
 					case isCall(n, "store", "TokenStandingOf") && len(n.Args) == 3:
 						asked = n.Args[2]
-					case (isCall(n, "s", "standing") || isCall(n, "s", "exchangeRefusal")) && len(n.Args) == 3:
+					case isCall(n, "s", "standing") && len(n.Args) == 3,
+						isCall(n, "s", "exchangeRefusal") && len(n.Args) == 4:
 						asked = n.Args[1]
 					}
 					if id, ok := asked.(*ast.Ident); ok {

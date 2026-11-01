@@ -3359,51 +3359,15 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	ctx := r.Context()
 	ex := oauth.ParseExchange(r.PostForm)
 
-	// Verified first. Everything downstream reasons about what this token
-	// actually says, not what the request claims about it.
-	subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.SubjectToken)
-	if err != nil {
-		s.log.Info("token exchange: subject token rejected", "err", err,
-			"caller", c.ClientID, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the subject token is not valid", Status: http.StatusBadRequest})
-		return
+	var subject *tokens.AccessTokenClaims
+	var foreign *assertionStatement
+	var ok bool
+	if s.subjectTokenIsForeign(ctx, ex) {
+		subject, foreign, ok = s.foreignSubject(ctx, w, c, ex)
+	} else {
+		subject, ok = s.ownSubject(w, r, c, ex)
 	}
-	if s.issuanceOnly(subject) {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the subject token is good for issuing a credential and nothing else",
-			Status:      http.StatusBadRequest})
-		return
-	}
-
-	// A bound subject token may only be exchanged by whoever holds its key.
-	// Without this the token endpoint is the one door where possession alone
-	// suffices, and an attacker only needs the weakest door.
-	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
-		s.log.Info("token exchange: subject token binding not proved", "err", berr,
-			"caller", c.ClientID, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
-			Description: berr.Error(), Status: http.StatusBadRequest})
-		return
-	}
-
-	// A revoked or signed-out token must not be exchangeable. Otherwise
-	// exchange becomes a way to launder a dead credential into a live one --
-	// the token the user revoked yesterday still produces working tokens today.
-	if terr := s.exchangeRefusal(ctx, subject, "subject"); terr != nil {
-		writeTokenError(w, terr)
-		return
-	}
-
-	if c.ExchangeRequiresAudienceMatch &&
-		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
-		s.log.Info("token exchange: caller is neither the holder nor in the subject token's audience",
-			"caller", c.ClientID, "token_client", subject.ClientID,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "this client may only exchange subject tokens it holds or " +
-				"is named in the audience of",
-			Status: http.StatusBadRequest})
+	if !ok {
 		return
 	}
 
@@ -3422,17 +3386,17 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		if aerr != nil {
 			s.log.Info("token exchange: actor token rejected", "err", aerr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 				Description: "the actor token is not valid", Status: http.StatusBadRequest})
 			return
 		}
 		if s.issuanceOnly(actor) {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 				Description: "the actor token is good for issuing a credential and nothing else",
 				Status:      http.StatusBadRequest})
 			return
 		}
-		if terr := s.exchangeRefusal(ctx, actor, "actor"); terr != nil {
+		if terr := s.exchangeRefusal(ctx, actor, "actor", "invalid_request"); terr != nil {
 			writeTokenError(w, terr)
 			return
 		}
@@ -3450,7 +3414,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// unevaluable constraint rather than a satisfied one.
 	if err := oauth.CheckMayAct(subject.MayAct, c.ClientID, actorSubject,
 		s.cfg.Issuer); err != nil {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: err.Error(), Status: http.StatusBadRequest})
 		return
 	}
@@ -3459,6 +3423,14 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		c.ClientID, splitScopes(subject.Scope))
 	if terr != nil {
 		writeTokenError(w, terr)
+		return
+	}
+	// As the jwt-bearer grant says: somebody else authenticated this person.
+	if foreign != nil && containsScope(granted, "openid") {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+			Description: "openid is not available from a token issued elsewhere: the " +
+				"authentication was performed by its issuer, not here",
+			Status: http.StatusBadRequest})
 		return
 	}
 
@@ -3497,7 +3469,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		actorName = actorSubject
 	}
 	if subject.Act.Depth() >= tokens.MaxActorDepth {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: fmt.Sprintf("the subject token has been delegated %d times, the most allowed", tokens.MaxActorDepth),
 			Status:      http.StatusBadRequest})
 		return
@@ -3570,7 +3542,21 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if subject.Expiry > 0 && subject.Expiry < expiry {
 		expiry = subject.Expiry
 	}
-	at, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
+	// A token from elsewhere buys one token here, in the transaction that issues it.
+	var issuing store.SubjectDB = s.db
+	var spent pgx.Tx
+	if foreign != nil {
+		if spent, err = s.db.Begin(hookCtx); err != nil {
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		defer func() { _ = spent.Rollback(hookCtx) }()
+		if !s.spendAssertion(hookCtx, w, spent, c, foreign, "invalid_request") {
+			return
+		}
+		issuing = spent
+	}
+	at, err := issueAccessToken(hookCtx, issuing, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
 		Audience: audience,
@@ -3604,13 +3590,21 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	detail := map[string]any{"acting_for": subject.ClientID, "audience": audience, "scope": granted}
+	if foreign != nil {
+		// Committed before it is written, so a failure spends nothing.
+		if err := spent.Commit(hookCtx); err != nil {
+			s.log.Error("token exchange: committing the spent token", "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		detail["subject_issuer"] = foreign.claims.Issuer
+	}
 
 	s.auditDetached(ctx, audit.Event{
 		Type: "oauth.token_exchanged", SubjectID: subject.Subject, ClientID: c.ClientID,
 		CorrelationID: correlationID(ctx),
-		Detail: map[string]any{
-			"acting_for": subject.ClientID, "audience": audience, "scope": granted,
-		},
+		Detail:        detail,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -3624,6 +3618,112 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		"expires_in":        int(expiry - now.Unix()),
 		"scope":             joinScopes(granted),
 	})
+}
+
+// ownSubject reads a subject token this deployment issued, and refuses one that does
+// not still stand. RFC 8693 §2.2.2 is a MUST on the code: "if either the subject_token or
+// actor_token are invalid for any reason, or are unacceptable based on policy", the
+// error is invalid_request.
+func (s *Server) ownSubject(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	ex oauth.ExchangeRequest) (*tokens.AccessTokenClaims, bool) {
+
+	ctx := r.Context()
+	// Verified first. Everything downstream reasons about what this token
+	// actually says, not what the request claims about it.
+	subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.SubjectToken)
+	if err != nil {
+		s.log.Info("token exchange: subject token rejected", "err", err,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "the subject token is not valid", Status: http.StatusBadRequest})
+		return nil, false
+	}
+	if s.issuanceOnly(subject) {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "the subject token is good for issuing a credential and nothing else",
+			Status:      http.StatusBadRequest})
+		return nil, false
+	}
+
+	// A bound subject token may only be exchanged by whoever holds its key.
+	// Without this the token endpoint is the one door where possession alone
+	// suffices, and an attacker only needs the weakest door.
+	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
+		s.log.Info("token exchange: subject token binding not proved", "err", berr,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+			Description: berr.Error(), Status: http.StatusBadRequest})
+		return nil, false
+	}
+
+	// A revoked or signed-out token must not be exchangeable. Otherwise
+	// exchange becomes a way to launder a dead credential into a live one --
+	// the token the user revoked yesterday still produces working tokens today.
+	if terr := s.exchangeRefusal(ctx, subject, "subject", "invalid_request"); terr != nil {
+		writeTokenError(w, terr)
+		return nil, false
+	}
+
+	if c.ExchangeRequiresAudienceMatch &&
+		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
+		s.log.Info("token exchange: caller is neither the holder nor in the subject token's audience",
+			"caller", c.ClientID, "token_client", subject.ClientID,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "this client may only exchange subject tokens it holds or " +
+				"is named in the audience of",
+			Status: http.StatusBadRequest})
+		return nil, false
+	}
+	return subject, true
+}
+
+// subjectTokenIsForeign reports a JWT naming an issuer that is not this deployment. The
+// issuer is read unverified, to choose the path and nothing else, and an access token by
+// that name is not one: what a token that is opaque to us means is its issuer's to say.
+func (s *Server) subjectTokenIsForeign(ctx context.Context, ex oauth.ExchangeRequest) bool {
+	if ex.SubjectTokenType != oauth.TokenTypeJWT {
+		return false
+	}
+	issuer, err := oauth.PeekAssertionIssuer(ex.SubjectToken)
+	return err == nil && !slices.Contains(s.acceptedIssuers(ctx), issuer)
+}
+
+// foreignSubject reads a subject token from a registered issuer (8.32), as the jwt-bearer
+// grant reads an assertion: the same pairing of client and issuer, the same claims, the same
+// one sentence for every refusal. What it speaks for is the local account it is linked to,
+// and its ceiling is the calling client's registered scope: a `scope` it carries means
+// whatever that issuer meant by it, and there is no session behind it to end.
+func (s *Server) foreignSubject(ctx context.Context, w http.ResponseWriter, c *clients.Client,
+	ex oauth.ExchangeRequest) (*tokens.AccessTokenClaims, *assertionStatement, bool) {
+
+	// Whether this client may exchange at all, before anybody's keys are fetched for it.
+	if _, _, terr := oauth.ValidateExchange(ex, c.Type == "confidential", c.MayExchange, c.ExchangeAudiences,
+		c.ClientID, c.Scopes); terr != nil {
+		writeTokenError(w, terr)
+		return nil, nil, false
+	}
+	statement, ok := s.readAssertion(ctx, w, c, ex.SubjectToken, "invalid_request")
+	if !ok {
+		return nil, nil, false
+	}
+	if s.assertionConsentRefused(ctx, w, c, statement, "invalid_request") {
+		return nil, nil, false
+	}
+	// Who it says may act, and who has acted, hold wherever it was issued.
+	var carried struct {
+		Act    *tokens.Actor  `json:"act"`
+		MayAct map[string]any `json:"may_act"`
+	}
+	if err := json.Unmarshal(statement.payload, &carried); err != nil {
+		s.log.Info("token exchange: unreadable act or may_act", "provider", statement.provider.Slug,
+			"err", err, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request", Description: assertionRefused,
+			Status: http.StatusBadRequest})
+		return nil, nil, false
+	}
+	return &tokens.AccessTokenClaims{Subject: statement.userID, Expiry: statement.claims.Expiry,
+		Scope: joinScopes(c.Scopes), Act: carried.Act, MayAct: carried.MayAct}, statement, true
 }
 
 // resumeAfterSignIn decides where a freshly signed-in browser goes.

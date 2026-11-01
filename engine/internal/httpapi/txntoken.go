@@ -203,7 +203,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// Txn-Token. Otherwise exchange laundered a dead credential into one
 		// that every internal service will honour for the next five minutes --
 		// and the internal services have no way to check.
-		if terr := s.exchangeRefusal(ctx, subject, "subject"); terr != nil {
+		if terr := s.exchangeRefusal(ctx, subject, "subject", "invalid_grant"); terr != nil {
 			writeTokenError(w, terr)
 			return
 		}

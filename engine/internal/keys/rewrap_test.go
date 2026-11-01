@@ -55,6 +55,11 @@ var columnClass = map[string]string{
 	"saml_source_keys.key_sealed":       "rootSealed",
 	"kerberos_realms.keytab_sealed":     "rootSealed",
 	"ssf_sources.poll_secret_sealed":    "rootSealed",
+	"credential_offers.offer_sealed":    "rootSealed",
+	"credential_offers.handle_hash":     "oneWay",
+
+	// The id of a token, which proves nothing without the token.
+	"credential_notifications.token_jti": "public",
 
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.

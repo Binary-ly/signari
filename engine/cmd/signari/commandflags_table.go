@@ -52,7 +52,7 @@ var commandFlags = map[string][]string{
 	"client set-tls":                  {"client-id", "sp-cert", "tls-bound-tokens", "tls-san-dns", "tls-san-email", "tls-san-ip", "tls-san-uri", "tls-subject-dn"},
 	"credential define":               {"always", "brand-name", "credential-configuration", "org", "require-key-attestation", "selective", "valid-for", "vct"},
 	"credential list":                 {"o"},
-	"credential offer":                {"client-id", "credential-configuration", "credential-issuer", "email", "issuer", "offer-expires", "org", "tx-code", "tx-code-length"},
+	"credential offer":                {"by-reference", "client-id", "credential-configuration", "credential-issuer", "email", "issuer", "offer-expires", "org", "tx-code", "tx-code-length"},
 	"credential roots":                {"o"},
 	"credential trust-root":           {"name", "org", "root-cert"},
 	"credential untrust-root":         {"name", "org"},

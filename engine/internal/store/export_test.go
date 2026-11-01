@@ -140,6 +140,7 @@ func TestTheExportCoversEveryTableKeyedByAPerson(t *testing.T) {
 // exportedDespiteName are text columns in exported tables whose names sound
 // like a credential and are not one.
 var exportedDespiteName = map[string]string{
+	"credential_notifications.token_jti":   "the identifier of an access token, not the token",
 	"authorization_codes.nonce":            "the application's own value, sent in the clear on its request",
 	"preauthorized_codes.access_token_jti": "the identifier of an access token, not the token",
 	"subject_keys.wrap_key_ref":            "names the root key that wraps it, not the key",

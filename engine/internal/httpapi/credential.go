@@ -85,10 +85,10 @@ func issuanceAudienceFrom(ctx context.Context) bool {
 	return on
 }
 
-// handleCredential implements §8, the Credential Endpoint.
-func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
+// issuanceToken authenticates a request to an endpoint of issuance. Having answered
+// otherwise, it returns nil.
+func (s *Server) issuanceToken(w http.ResponseWriter, r *http.Request) *tokens.AccessTokenClaims {
 	ctx := r.Context()
-	w.Header().Set("Cache-Control", "no-store")
 
 	// A protected resource, authenticated exactly as userinfo is — including the
 	// DPoP scheme, because a credential endpoint reached with a bound token that
@@ -99,7 +99,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
 				`, DPoP realm="signari", algs="`+dpop.SupportedAlgs()+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
-		return
+		return nil
 	}
 	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
 	if err != nil {
@@ -108,14 +108,14 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token"`)
 		w.WriteHeader(http.StatusUnauthorized)
-		return
+		return nil
 	}
 	if !s.issuanceOnly(claims) {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", `+
 				`error_description="This token was issued for another resource"`)
 		w.WriteHeader(http.StatusUnauthorized)
-		return
+		return nil
 	}
 	// The same two-step enforcement userinfo performs: the SCHEME rule first
 	// (RFC 9449 §7.1 and §7.2 both key on it, which is why checking `cnf` alone
@@ -124,9 +124,104 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
 		w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token", perr.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
-		return
+		return nil
 	}
 	if s.boundTokenRefused(w, r, raw, claims.Cnf, "credential") {
+		return nil
+	}
+
+	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
+	// endpoint checked neither, so a token its client had revoked went on
+	// minting credentials until it expired.
+	if ended := endedDescription(s.standing(ctx, claims, "the credential endpoint")); ended != "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="`+ended+`"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return nil
+	}
+	return claims
+}
+
+// handleCredentialOffer serves an offer kept by reference (§4.1.3). Uncacheable, as the
+// specification asks of a URI that is not unique, and this one is: it carries a code.
+func (s *Server) handleCredentialOffer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	offer, err := store.CredentialOfferByHandle(ctx, s.db, s.root, r.PathValue("handle"), s.instanceID)
+	if err != nil {
+		s.log.Error("reading a kept credential offer", "err", err, "correlation_id", correlationID(ctx))
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if offer == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(offer)
+}
+
+// notificationEvents are §11.1's, and case sensitive.
+var notificationEvents = map[string]bool{"credential_accepted": true, "credential_failure": true,
+	"credential_deleted": true}
+
+// handleCredentialNotification implements §11: a wallet saying what became of what it
+// was issued. Nothing depends on it, since a wallet may never say, so it is recorded and
+// audited and not acted on.
+func (s *Server) handleCredentialNotification(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	claims := s.issuanceToken(w, r)
+	if claims == nil {
+		return
+	}
+	var req struct {
+		NotificationID   string `json:"notification_id"`
+		Event            string `json:"event"`
+		EventDescription string `json:"event_description"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_notification_request", "the request body is not JSON")
+		return
+	}
+	if req.NotificationID == "" || !notificationEvents[req.Event] || !notificationText(req.EventDescription) {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_notification_request",
+			"give a notification_id and an event of credential_accepted, credential_failure or credential_deleted")
+		return
+	}
+	configuration, err := store.CredentialNotified(ctx, s.db, req.NotificationID, claims.JTI)
+	if errors.Is(err, store.ErrNotificationUnknown) {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_notification_id", err.Error())
+		return
+	}
+	if err != nil {
+		s.log.Error("reading a credential notification", "err", err, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	s.auditDetached(ctx, audit.Event{Type: "oid4vci.credential_notified", SubjectID: claims.Subject,
+		ClientID: claims.ClientID, CorrelationID: correlationID(ctx),
+		Detail: map[string]any{"configuration": configuration, "event": req.Event, "description": req.EventDescription}})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// notificationText is §11.1's alphabet for event_description: printable ASCII without
+// a double quote or a backslash.
+func notificationText(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// handleCredential implements §8, the Credential Endpoint.
+func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	claims := s.issuanceToken(w, r)
+	if claims == nil {
 		return
 	}
 
@@ -140,16 +235,6 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	if verr != nil {
 		writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
 			verr.Error())
-		return
-	}
-
-	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
-	// endpoint checked neither, so a token its client had revoked went on
-	// minting credentials until it expired.
-	if ended := endedDescription(s.standing(ctx, claims, "the credential endpoint")); ended != "" {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="`+ended+`"`)
-		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
@@ -313,7 +398,13 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 			"count": len(issued), "format": cfg.Format},
 	})
 
-	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued})
+	// Issued whether or not this can be written: the credential is the point, and a
+	// wallet with no id reports nothing, which §11 allows of any wallet.
+	notification, nerr := store.NewCredentialNotification(ctx, s.db, orgID, claims.Subject, claims.JTI, cfg.ID)
+	if nerr != nil {
+		s.log.Error("recording an issuance", "err", nerr, "correlation_id", correlationID(ctx))
+	}
+	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued, NotificationID: notification})
 }
 
 // validateCredentialProof checks one key proof and spends its nonce. attested
@@ -458,6 +549,8 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 		"credential_issuer":   s.cfg.Issuer,
 		"credential_endpoint": s.cfg.Issuer + oidcPathCredential,
 		"nonce_endpoint":      s.cfg.Issuer + oidcPathCredentialNonce,
+		// §12.2.4. Named here, so a wallet knows the id in a response has somewhere to go.
+		"notification_endpoint": s.cfg.Issuer + oidcPathCredentialNotification,
 		// The wallet needs to know where to get a token, and for us that is the
 		// same deployment.
 		"authorization_servers": []string{s.cfg.Issuer},
@@ -483,6 +576,7 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 }
 
 const (
-	oidcPathCredential      = "/oid4vci/credential"
-	oidcPathCredentialNonce = "/oid4vci/nonce"
+	oidcPathCredential             = "/oid4vci/credential"
+	oidcPathCredentialNonce        = "/oid4vci/nonce"
+	oidcPathCredentialNotification = "/oid4vci/notification"
 )

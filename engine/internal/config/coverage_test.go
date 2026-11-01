@@ -60,6 +60,7 @@ var notConfiguration = map[string]string{
 	"user_attributes": person, "users": person, "webauthn_credentials": person,
 
 	"attestation_challenges": running, "audit_events": running, "authorization_codes": running,
+	"credential_notifications": running, "credential_offers": running,
 	"device_authorizations": running, "duo_challenges": running, "email_sign_in_codes": running,
 	"email_verifications": running, "event_deliveries": running, "federated_logins": running,
 	"impersonations": running, "invitations": running, "opaque_access_tokens": running, "preauthorized_codes": running,

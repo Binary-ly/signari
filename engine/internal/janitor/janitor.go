@@ -123,6 +123,10 @@ type Stats struct {
 	// OffersSwept are credential offers (pre-authorized codes) no token can
 	// still need.
 	OffersSwept int64
+	// KeptOffersSwept are offers kept by reference whose code is over.
+	KeptOffersSwept int64
+	// NotificationsSwept are records of issuance no token can report on any more.
+	NotificationsSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
@@ -234,6 +238,10 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		// ran.
 		{"credential offers", sweepBatch, &st.OffersSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
 			return store.SweepSpentPreAuthorizedCodes(ctx, tx, tokens.MaxAccessTokenTTL, limit)
+		}},
+		{"kept credential offers", sweepBatch, &st.KeptOffersSwept, store.SweepExpiredCredentialOffers},
+		{"credential notifications", sweepBatch, &st.NotificationsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+			return store.SweepCredentialNotifications(ctx, tx, tokens.MaxAccessTokenTTL, limit)
 		}},
 		// Duo prompts nobody finished. Each row holds a live challenge state, so
 		// keeping them past expiry stores flow state for a flow nobody will finish.
@@ -510,6 +518,8 @@ func (s Stats) Log(log *slog.Logger) {
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
 	add("ceremonies_swept", s.CeremoniesSwept)
 	add("offers_swept", s.OffersSwept)
+	add("kept_offers_swept", s.KeptOffersSwept)
+	add("notifications_swept", s.NotificationsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)

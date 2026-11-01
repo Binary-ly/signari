@@ -898,6 +898,8 @@ func run(args []string) (err error) {
 		"require a Transaction Code, delivered to the holder by another channel. "+
 			"Defends against somebody photographing the QR code over their shoulder")
 	credTxLength := fs.Int("tx-code-length", 6, "digits in the generated transaction code")
+	credByReference := fs.Bool("by-reference", false,
+		"`credential offer`: keep the offer here and print a short address to it, for a QR code")
 	credTTL := fs.Duration("offer-expires", 5*time.Minute,
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
@@ -1756,7 +1758,7 @@ func run(args []string) (err error) {
 		return resourceRemove(ctx, conn, *orgID, *resourceURI)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
-			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
+			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL, *credByReference)
 	case "federation show":
 		return federationShow(ctx, conn)
 	case "trust-mark issue":
@@ -8930,7 +8932,7 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 // token can do is decided HERE.
 func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID,
 	configs, credIssuer, issuer string, wantTxCode bool, txLength int,
-	ttl time.Duration) error {
+	ttl time.Duration, byReference bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the holder belongs to")
@@ -9011,11 +9013,24 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 	fmt.Printf("  expires   : %s from now\n", ttl)
 	fmt.Printf("\n%s\n", blob)
 	// §G.7.1: the wallet is invoked with the offer by value in a query
-	// parameter. Printed rather than rendered as a QR code, because whatever
-	// puts this on a screen is the operator's own front desk software, and a
-	// terminal is not where a holder scans anything.
-	fmt.Printf("\n%s://?credential_offer=%s\n",
-		oid4vci.CredentialOfferURIScheme, url.QueryEscape(string(blob)))
+	// parameter, or by reference to where to fetch it. Printed rather than
+	// rendered as a QR code, because whatever puts this on a screen is the
+	// operator's own front desk software, and a terminal is not where a holder
+	// scans anything.
+	if byReference {
+		root, err := rootKey()
+		if err != nil {
+			return err
+		}
+		invocation, err := store.OfferByReference(ctx, conn, root, orgID, blob, ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\n%s\n", invocation)
+	} else {
+		fmt.Printf("\n%s://?credential_offer=%s\n",
+			oid4vci.CredentialOfferURIScheme, url.QueryEscape(string(blob)))
+	}
 	if txPlain != "" {
 		// Deliberately separate from everything above. §3.5: the transaction code
 		// "MUST be sent via a different channel than the Credential Offer" —

@@ -2854,6 +2854,7 @@ type PostUsersResponse struct {
 
 // PostUsersUserIDCredentialOffersRequest is a JSON object of the Admin API.
 type PostUsersUserIDCredentialOffersRequest struct {
+	ByReference              *bool     `json:"by_reference,omitempty"`
 	ClientID                 *string   `json:"client_id,omitempty"`
 	CredentialConfigurations *[]string `json:"credential_configurations,omitempty"`
 	CredentialIssuer         *string   `json:"credential_issuer,omitempty"`

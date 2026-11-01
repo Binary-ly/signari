@@ -55,6 +55,8 @@ type credentialOfferRequest struct {
 	TxCode           bool   `json:"tx_code"`
 	TxCodeLength     int    `json:"tx_code_length"`
 	ExpiresInSeconds int64  `json:"expires_in_s"`
+	// ByReference keeps the offer here, for offer_uri to be short enough for a QR code.
+	ByReference bool `json:"by_reference"`
 }
 
 const credentialRefusal = "change what the organisation issues as credentials or which key proofs it trusts"
@@ -293,7 +295,7 @@ func (s *Server) offerCredential(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var minted *store.MintedOffer
-	var issuer string
+	var issuer, offerURI string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		issuer = strings.TrimSpace(req.CredentialIssuer)
 		if issuer == "" {
@@ -308,24 +310,27 @@ func (s *Server) offerCredential(w http.ResponseWriter, r *http.Request) {
 			TxCode: req.TxCode, TxLength: length, TTL: ttl}); err != nil {
 			return err
 		}
+		blob, err := json.Marshal(minted.Offer)
+		if err != nil {
+			return err
+		}
+		// §G.7.1: the wallet is invoked with the offer by value in a query parameter,
+		// or by reference to where it can fetch it.
+		offerURI = oid4vci.CredentialOfferURIScheme + "://?credential_offer=" + url.QueryEscape(string(blob))
+		if req.ByReference {
+			if offerURI, err = store.OfferByReference(ctx, tx, s.root, orgID, blob, ttl); err != nil {
+				return err
+			}
+		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_offered", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, SubjectID: userID, Detail: map[string]any{"client_id": clientID,
 				"configurations": minted.Offer.ConfigurationIDs, "credential_issuer": issuer,
-				"tx_code": req.TxCode, "expires_in_s": int64(ttl.Seconds())}})
+				"tx_code": req.TxCode, "expires_in_s": int64(ttl.Seconds()), "by_reference": req.ByReference}})
 	})
 	if s.writeCredentialFailure(w, err, orgID) {
 		return
 	}
-	blob, err := json.Marshal(minted.Offer)
-	if err != nil {
-		s.log.Error("encoding a credential offer", "user_id", userID, "err", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
-		return
-	}
-	out := map[string]any{"user_id": userID, "offer": minted.Offer,
-		// §G.7.1: the wallet is invoked with the offer by value in a query
-		// parameter.
-		"offer_uri":      oid4vci.CredentialOfferURIScheme + "://?credential_offer=" + url.QueryEscape(string(blob)),
+	out := map[string]any{"user_id": userID, "offer": minted.Offer, "offer_uri": offerURI,
 		"expires_at":     time.Now().Add(ttl).UTC(),
 		"config_version": version}
 	if minted.TxCode != "" {

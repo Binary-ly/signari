@@ -93,7 +93,7 @@ var EventTypes = []string{
 	"mfa.sms_enrolled", "mfa.sms_removed", "mfa.totp_enrolled", "mfa.totp_removed",
 	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted", "oauth.pkce_challenge_reused",
 	"oauth.refresh_retried", "oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
-	"oid4vci.credential_issued",
+	"oid4vci.credential_issued", "oid4vci.credential_notified",
 	"org.login_throttle_set", "org.mail_sender_set", "org.new_device_notice_set", "org.password_only_binds_set", "org.reauth_window_set",
 	"org.remember_device_set", "org.session_lifetime_set", "org.session_limit_set", "org.sms_numbers_set",
 	"org.totp_policy_set",

@@ -194,6 +194,8 @@ Everything above is the authorization server. This is the other role: Signari no
 ```
 POST /oid4vci/nonce                          §7  — unauthenticated
 POST /oid4vci/credential                     §8  — bearer or DPoP
+POST /oid4vci/notification                   §11 — bearer or DPoP
+GET  /oid4vci/offer/{handle}                 §4.1.3 — unauthenticated
 GET  /.well-known/openid-credential-issuer   §12.2
 ```
 
@@ -365,11 +367,34 @@ disclosures the holder may reveal:
 The access token was obtained by redeeming a pre-authorized code **with no
 `client_id`**, which is the ordinary wallet case §6.1 describes.
 
+## An offer too big for a QR code
+
+An offer by value carries everything in the code a person scans. `signari credential
+offer -by-reference`, or `"by_reference": true` on the Admin API, keeps it here instead
+and gives a short address (§4.1.3):
+
+```
+openid-credential-offer://?credential_offer_uri=https%3A%2F%2Fid.example%2Foid4vci%2Foffer%2F...
+```
+
+The offer holds a pre-authorized code, so it is sealed under the root key, only the
+handle's hash is stored, it is served `no-store`, and it goes when the code does. The
+address is as good as the code to whoever has it, so use a transaction code for an
+offer shown where others can see it.
+
+## What became of a credential
+
+A Credential Response carries a `notification_id`, and the metadata names
+`POST /oid4vci/notification` (§11). A wallet may report `credential_accepted`,
+`credential_failure` or `credential_deleted` with the token that asked, and that token
+only. Each is recorded as `oid4vci.credential_notified`. Nothing depends on it, since a
+wallet may never say, and the window is the token's lifetime.
+
 ## What is still not built
 
 - **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
   only SD-JWT VC, so adding it is a migration rather than a rewrite.
-- **Deferred issuance** (§9) and the **notification endpoint** (§11).
+- **Deferred issuance** (§9).
 - **Credential response encryption** (§10) and encrypted requests.
 - The **authorization code flow** variant (`issuer_state`), and with it
   `openid_credential` authorization details and `credential_identifier`

@@ -725,6 +725,8 @@ func (s *Server) mux() *http.ServeMux {
 	// issues nothing publishes nothing.
 	mux.HandleFunc("POST "+oidcPathCredential, s.handleCredential)
 	mux.HandleFunc("POST "+oidcPathCredentialNonce, s.handleCredentialNonce)
+	mux.HandleFunc("POST "+oidcPathCredentialNotification, s.handleCredentialNotification)
+	mux.HandleFunc("GET "+store.CredentialOfferPath+"{handle}", s.handleCredentialOffer)
 	mux.HandleFunc("GET /.well-known/openid-credential-issuer", s.handleCredentialIssuerMetadata)
 	// SD-JWT VC §3: how a VERIFIER — not the wallet — resolves the key that
 	// signed a credential. §2.5 defines only two mechanisms, this and an inline

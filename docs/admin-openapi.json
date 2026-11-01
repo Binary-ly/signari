@@ -26181,6 +26181,9 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "by_reference": {
+                    "type": "boolean"
+                  },
                   "client_id": {
                     "type": "string"
                   },

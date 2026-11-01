@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0252 credential_followup
+
+Compatible with the release before: its binary may still serve this schema.
+
+An offer too big for a QR code, and word of what became of a credential (12.08). An offer by value carries everything in the code a person scans, which is more than a phone will read off a screen across a counter; by reference it is a short address, and the offer waits here, sealed, because it holds a pre-authorized code. A notification is the wallet saying a credential was stored, failed or deleted, the only way an issuer ever learns any of that: the row here is what lets the one token that asked say so, and what it said goes to the audit trail.
+
 ## 0251 session_risk
 
 Compatible with the release before: its binary may still serve this schema.

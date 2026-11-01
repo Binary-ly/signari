@@ -4253,6 +4253,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `by_reference` | boolean |  |
 | `client_id` | string |  |
 | `credential_configurations` | list of string |  |
 | `credential_issuer` | string |  |

@@ -4066,6 +4066,7 @@ export interface PostUsersResponse {
 
 /** A JSON object of the Admin API. */
 export interface PostUsersUserIDCredentialOffersRequest {
+  by_reference?: boolean
   client_id?: string
   credential_configurations?: string[]
   credential_issuer?: string

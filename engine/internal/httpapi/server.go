@@ -891,7 +891,9 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 	}
 
 	// Only failure budgets, READ here and charged only when the credential turns
-	// out to be wrong -- see recordSignInFailure.
+	// out to be wrong -- see recordSignInFailure. A burst of guesses at one account
+	// is not what these bound: store.ReserveLoginAttempt spends a guess in one
+	// statement before each hash.
 	//
 	// There is deliberately no per-address ceiling on attempts. One was written
 	// and removed: it duplicated the global bucket that already protects CPU,
@@ -935,7 +937,11 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 // one address work: a successful sign-in spends nothing, so two hundred people
 // arriving at nine o'clock are indistinguishable from one, while an address
 // working through a password list is bounded exactly as before.
+//
+// On a context of its own, or a guess whose sender hung up at the right moment would
+// go uncharged.
 func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
+	ctx = context.WithoutCancel(ctx)
 	ip := clientIP(r)
 	if ip == "" {
 		ip = "unknown"

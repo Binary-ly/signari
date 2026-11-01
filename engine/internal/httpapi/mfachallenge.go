@@ -424,8 +424,10 @@ func (s *Server) BindCodeOK(ctx context.Context, orgID, userID, code string) (bo
 	return res.OK, nil
 }
 
-// recordSecondFactorFailure charges a wrong code to both budgets.
+// recordSecondFactorFailure charges a wrong code to both budgets, on a context of its
+// own for the reason recordSignInFailure gives.
 func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip string) {
+	ctx = context.WithoutCancel(ctx)
 	if ip != "" {
 		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 			signInPerIPLimit, signInPerIPWindow); err != nil {

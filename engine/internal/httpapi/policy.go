@@ -391,25 +391,37 @@ func (s *Server) impossibleTravelIn(ctx context.Context, q interface {
 func (s *Server) riskElevated(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID, ip string) bool {
+	return s.riskScore(ctx, q, userID, ip) > 0
+}
+
+// riskScore is what riskElevated decides on, as the number a session keeps (11.07).
+// Nothing is read for an address no GeoIP source can place, which is every address of
+// a deployment that has none.
+func (s *Server) riskScore(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) int {
 	if ip == "" {
-		return false
-	}
-	if s.impossibleTravelIn(ctx, q, userID, ip) {
-		return true
+		return 0
 	}
 	here := s.geo.Resolve(ip)
-	if !here.Known || here.Country == "" {
-		return false
+	if !here.Known {
+		return 0
+	}
+	if s.impossibleTravelIn(ctx, q, userID, ip) {
+		return risk.ScoreImpossibleTravel
+	}
+	if here.Country == "" {
+		return 0
 	}
 	seen, history, err := store.CountrySeen(ctx, q, userID, here.Country)
 	if err != nil {
 		s.log.Error("reading where a person has signed in from", "err", err)
-		return false
+		return 0
 	}
 	if history && !seen {
 		s.log.Warn("a sign-in from a new country", "user_id", userID, "country", here.Country,
 			"correlation_id", correlationID(ctx))
-		return true
+		return risk.ScoreNewCountry
 	}
-	return false
+	return 0
 }

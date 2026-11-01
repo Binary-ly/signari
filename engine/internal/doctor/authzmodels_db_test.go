@@ -9,10 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// A model stored before `authz set-model` refused device posture and risk is
-// still the one evaluated. Doctor names the organisation and the rule, and says
-// nothing about a model on facts the decision point has.
-func TestAStoredModelOnUnpopulatedFactsIsCritical(t *testing.T) {
+// The engine evaluates the compiled copy of a model, so a copy that does not load
+// is the organisation's authorization not working. Doctor says whose.
+func TestAStoredModelThatDoesNotLoadIsCritical(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
 		t.Skip("no dsn")
@@ -63,15 +62,17 @@ func TestAStoredModelOnUnpopulatedFactsIsCritical(t *testing.T) {
 		return nil
 	}
 
-	store(`{"types":{"doc":{"relations":{"owner":[]},"permissions":{"read":["owner"]},"require":{"read":{"mfa":true}}}}}`)
+	// Device posture and risk are facts a session carries now (11.07), so a model set
+	// when doctor called them critical is an ordinary model.
+	store(`{"types":{"doc":{"relations":{"owner":[]},"permissions":{"read":["owner"]},"require":{"read":{"max_risk":30}}}}}`)
 	if f := probe(); f != nil {
-		t.Fatalf("a model on facts the decision point has was reported: %s", f.Summary)
+		t.Fatalf("a model that loads was reported: %s", f.Summary)
 	}
 
-	store(`{"types":{"doc":{"relations":{"owner":[]},"permissions":{"read":["owner"]},"require":{"read":{"max_risk":30}}}}}`)
+	store(`{"types":"not a map of types"}`)
 	f := probe()
-	if f == nil || !strings.Contains(f.Summary, "doc.read: max_risk") {
-		t.Fatalf("a stored max_risk rule was not reported naming the rule: %+v", f)
+	if f == nil || !strings.Contains(f.Summary, "does not load") {
+		t.Fatalf("a stored model that does not load was not reported: %+v", f)
 	}
 	if f.Severity != Critical {
 		t.Errorf("reported as %s, want critical", f.Severity)

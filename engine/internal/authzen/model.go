@@ -182,27 +182,6 @@ func missingAttribute(required map[string][]string, held map[string]string) (str
 	return "", false
 }
 
-// unpopulated names what c requires of facts the decision point never has.
-//
-// SubjectFacts reads the subject's groups, account state and e-mail
-// verification, and the session's amr. No device posture and no risk score
-// reach this decision point yet (11.07), so a rule requiring device_managed or
-// device_compliant refused everybody and one with max_risk refused nobody --
-// the first found on the first request, the second never.
-func (c Condition) unpopulated() []string {
-	var out []string
-	if c.DeviceManaged {
-		out = append(out, "device_managed")
-	}
-	if c.DeviceCompliant {
-		out = append(out, "device_compliant")
-	}
-	if c.MaxRisk != 0 {
-		out = append(out, "max_risk")
-	}
-	return out
-}
-
 // Summary says what a condition asks for, in words for an operator.
 func (c Condition) Summary() string {
 	var parts []string
@@ -225,27 +204,6 @@ func (c Condition) Summary() string {
 		parts = append(parts, "the attribute "+name)
 	}
 	return strings.Join(parts, " and ")
-}
-
-// Unpopulated lists each requirement in the model on a fact the decision point
-// never has, as "where: fact", sorted. ParseModel refuses a model with any, and
-// `signari doctor` reads it from a model stored before that.
-func (m *Model) Unpopulated() []string {
-	var out []string
-	for name, c := range m.Policies {
-		for _, f := range c.unpopulated() {
-			out = append(out, "policy "+name+": "+f)
-		}
-	}
-	for tn, t := range m.Types {
-		for act, c := range t.Require {
-			for _, f := range c.unpopulated() {
-				out = append(out, tn+"."+act+": "+f)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // resolved is a Condition with its named policies attached.
@@ -415,12 +373,6 @@ func (m *Model) validate() error {
 		if cyc := t.cycle(); cyc != "" {
 			return fmt.Errorf("%s: the relations form a cycle (%s)", name, cyc)
 		}
-	}
-	if u := m.Unpopulated(); len(u) > 0 {
-		return fmt.Errorf("%s: no request to this engine carries device posture or a "+
-			"risk score yet, so a rule requiring device_managed or device_compliant would "+
-			"refuse everybody and max_risk would refuse nobody. Remove it",
-			strings.Join(u, "; "))
 	}
 	return nil
 }
@@ -717,8 +669,10 @@ func (m *Model) RunTests() error {
 		}
 		if granted {
 			if c, has := m.ConditionFor(objType, tc.Action); has {
+				// A case describes a session, which is what its facts are about.
 				f := Facts{
-					MFA: tc.MFA, Groups: tc.Groups, DeviceManaged: tc.DeviceManaged,
+					FromSession: true,
+					MFA:         tc.MFA, Groups: tc.Groups, DeviceManaged: tc.DeviceManaged,
 					DeviceCompliant: tc.DeviceCompliant, Risk: tc.Risk,
 					EmailVerified: tc.EmailVerified, Attributes: tc.Attributes,
 					ResourceProps: tc.ResourceProps, IP: tc.IP,
@@ -794,7 +748,8 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 	if c.DeviceCompliant && !f.DeviceCompliant {
 		return false
 	}
-	if c.MaxRisk > 0 && f.Risk > c.MaxRisk {
+	// With no session there is no score, and no score is not a low one.
+	if c.MaxRisk > 0 && (!f.FromSession || f.Risk > c.MaxRisk) {
 		return false
 	}
 	if len(c.AnyGroup) > 0 {
@@ -977,6 +932,8 @@ func (c Condition) Unmet(f Facts) string {
 		return "a managed device"
 	case c.DeviceCompliant && !f.DeviceCompliant:
 		return "a compliant device"
+	case c.MaxRisk > 0 && !f.FromSession:
+		return fmt.Sprintf("session risk at most %d", c.MaxRisk)
 	case c.MaxRisk > 0 && f.Risk > c.MaxRisk:
 		return fmt.Sprintf("session risk at most %d (it is %d)", c.MaxRisk, f.Risk)
 	case len(c.AnyGroup) > 0 && !hasAny(f.Groups, c.AnyGroup):

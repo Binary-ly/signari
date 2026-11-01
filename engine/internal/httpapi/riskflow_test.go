@@ -18,6 +18,12 @@ import (
 
 func (f *signInFixture) signInFrom(t *testing.T, ip string) *httptest.ResponseRecorder {
 	t.Helper()
+	return f.signInShowing(t, ip, nil)
+}
+
+// signInShowing is signInFrom with what the request's path through a proxy added to it.
+func (f *signInFixture) signInShowing(t *testing.T, ip string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	get := httptest.NewRecorder()
 	f.srv.handleLoginGet(get, httptest.NewRequest(http.MethodGet, "/login", nil))
 	m := csrfValue.FindStringSubmatch(get.Body.String())
@@ -26,6 +32,9 @@ func (f *signInFixture) signInFrom(t *testing.T, ip string) *httptest.ResponseRe
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.AddCookie(cookieFrom(get, CSRFCookieName))
 	r.RemoteAddr = ip + ":5555"
+	for name, value := range headers {
+		r.Header.Set(name, value)
+	}
 	rec := httptest.NewRecorder()
 	f.srv.rateLimitedLogin(rec, r)
 	return rec

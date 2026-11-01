@@ -182,10 +182,10 @@ func TestAnAbsentFactDoesNotSatisfyACondition(t *testing.T) {
 
 	// MaxRisk is an upper bound, so equal is allowed and above is not.
 	c = Condition{MaxRisk: 50}
-	if !c.SatisfiedBy(Facts{Risk: 50}) {
+	if !c.SatisfiedBy(Facts{FromSession: true, Risk: 50}) {
 		t.Fatal("risk exactly at the limit was refused")
 	}
-	if c.SatisfiedBy(Facts{Risk: 51}) {
+	if c.SatisfiedBy(Facts{FromSession: true, Risk: 51}) {
 		t.Fatal("risk above the limit was allowed")
 	}
 }

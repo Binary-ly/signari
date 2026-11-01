@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0251 session_risk
+
+Compatible with the release before: its binary may still serve this schema.
+
+What was known about a sign-in, kept with the session it made (11.07). The authorization model has always had words for device posture and a risk score, and no decision could read either: a PDP call arrives from a relying party with no browser behind it, so what the browser showed has to be written down when it is there. An older binary writes the defaults: no risk and no device shown, so a model asking for a device refuses and a model capping risk passes, as it did.
+
 ## 0250 providers_per_hook
 
 Not compatible with the release before: stop it before migrating.

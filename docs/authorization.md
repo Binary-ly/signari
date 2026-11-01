@@ -192,13 +192,36 @@ requirement allowing no values. At evaluation time the only safe response to a
 broken condition is to refuse — and a typo that silently denies everything is
 worse than one that refuses to deploy.
 
-A requirement on device posture (`device_managed`, `device_compliant`) or a
-risk score (`max_risk`) is refused too, naming the rule. The language has the
-words, and no request carries either fact to this decision point yet, so the
-first would refuse everybody and the second nobody. Device posture is enforced
-today by the [access policy](device-posture.md), which does receive it. A
-model set before this refusal is still the one evaluated; `signari doctor`
-reports it as critical.
+### What the session showed
+
+```yaml
+types:
+  document:
+    require:
+      read: {max_risk: 10}
+      edit: {device_managed: true}
+```
+
+`device_managed`, `device_compliant` and `max_risk` read what a sign-in showed, kept
+with the session it made: a decision comes from a relying party, with no browser
+behind it to ask. Pass the session in the request, as for `mfa`:
+
+```json
+{"subject": {...}, "action": {...}, "resource": {...}, "context": {"sid": "<sid>"}}
+```
+
+With no live session of that subject named, all three refuse: no score is not a low
+one, and no device is not a managed one.
+
+The score runs from 0 to 100 and has two rungs today. **50** is the first sign-in from
+a country this person has history elsewhere than, and **80** is a sign-in that could
+not have followed the last one in time. Both need a GeoIP source (see
+[configuration.md](configuration.md)). Without one, or with no history, it is 0. A
+cap below 50 refuses both and a cap from 50 to 79 refuses only the second.
+
+These are what was true **at sign-in**. A session does not get riskier, and a device
+that falls out of compliance afterwards is not noticed until the next sign-in. For a
+check on each request, the [access policy](device-posture.md) asks the device itself.
 
 ## Relations, not roles
 

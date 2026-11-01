@@ -7378,7 +7378,7 @@ func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searc
 		fmt.Println("There is nothing to run: a reverse proxy asks /proxy/verify itself.")
 	}
 	fmt.Println("\nThe token is shown once. It is stored hashed.")
-	fmt.Println("It verifies passwords and nothing else: it cannot change anything,")
+	fmt.Println("It does this outpost's one job and nothing else: it cannot change anything,")
 	fmt.Println("mint a session, or be used for a different protocol.")
 	return nil
 }

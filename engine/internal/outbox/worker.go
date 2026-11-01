@@ -149,7 +149,11 @@ func (w *Worker) drainAll(ctx context.Context, d drainer) {
 	for ctx.Err() == nil {
 		n, err := d.drain(ctx)
 		if err != nil {
-			w.log.Error("draining "+d.what, "err", err)
+			// Stopping mid-batch is what a shutdown looks like, and what it left comes
+			// round again: an error here is one nobody can act on.
+			if ctx.Err() == nil {
+				w.log.Error("draining "+d.what, "err", err)
+			}
 			return
 		}
 		if n > 0 {

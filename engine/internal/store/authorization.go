@@ -539,7 +539,7 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	// amr only: whether the session is multi-factor is derived from the methods
 	// actually used, never read back from a stored acr (oauth.ACRFromAMR).
 	rows, err = q.Query(ctx, `
-		SELECT amr
+		SELECT amr, risk, device_managed, device_compliant
 		  FROM core.sessions
 		 WHERE sid = $1 AND org_id = $2::uuid AND user_id = $3::uuid
 		   AND revoked_at IS NULL AND not_after > now()`, sid, orgID, userID)
@@ -549,7 +549,7 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	defer rows.Close()
 	if rows.Next() {
 		var amr []string
-		if err := rows.Scan(&amr); err != nil {
+		if err := rows.Scan(&amr, &f.Risk, &f.DeviceManaged, &f.DeviceCompliant); err != nil {
 			return f, err
 		}
 		f.FromSession = true

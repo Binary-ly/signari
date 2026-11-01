@@ -430,7 +430,7 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 		if !cond.SatisfiedBy(facts) {
 			need := cond.Unmet(facts)
 			why := "the action requires " + need + ", which this request did not show"
-			if !facts.FromSession && (cond.MFA || cond.DeviceManaged || cond.DeviceCompliant) {
+			if !facts.FromSession && (cond.MFA || cond.DeviceManaged || cond.DeviceCompliant || cond.MaxRisk > 0) {
 				// The condition is about a session, and none was named -- or the
 				// one named is not this subject's live session. Refused rather
 				// than guessed: a rule demanding a second factor must not be

@@ -2544,18 +2544,27 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		}
 	}
 
+	// What this sign-in showed, kept with it: a decision made later has only a relying
+	// party's request to go on, with no browser behind it (11.07). Read before this
+	// session's own location is recorded, or it would be its own history.
+	device := s.posture.Evaluate(r)
+	riskNow := s.riskScore(ctx, tx, userID, clientIP(r))
+
 	// persistent records "stay signed in", where it was asked and is offered,
 	// for whichever of this browser's cookies holds the session later (0185).
 	userAgent, ipHash := s.sessionDevice(r)
 	if tag, err := tx.Exec(ctx, `
 		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after,
-		                           absolute_not_after, last_seen_at, user_agent, ip_hash, persistent)
+		                           absolute_not_after, last_seen_at, user_agent, ip_hash, persistent,
+		                           risk, device_managed, device_compliant)
 		SELECT $1, $2, o.id, $4, $5, $6, now(),
 		       now() + make_interval(secs => least(o.session_lifetime_s, coalesce(o.session_idle_s, o.session_lifetime_s))),
-		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8, $9 AND o.persistent_sessions
+		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8, $9 AND o.persistent_sessions,
+		       $10, $11, $12
 		  FROM core.organizations o WHERE o.id = $3::uuid`,
 		sid, store.HashToken(cookieToken), orgID, userID, acr, amr,
-		userAgent, ipHash, rememberAsked(r)); err != nil || tag.RowsAffected() != 1 {
+		userAgent, ipHash, rememberAsked(r), riskNow, device.Managed,
+		device.Managed && device.Compliant); err != nil || tag.RowsAffected() != 1 {
 		s.log.Error("creating session", "err", err, "rows", tag.RowsAffected())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

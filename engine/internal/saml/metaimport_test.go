@@ -220,6 +220,32 @@ func TestAnIdentityProvidersMetadataIsRead(t *testing.T) {
 	}
 }
 
+// A sign-out reaches an upstream as a redirect, so that is the one address kept, and
+// what is left out is said.
+func TestAnUpstreamsLogoutIsTheRedirectBindings(t *testing.T) {
+	p := newPartner(t)
+	read := func(services string) (*EntityMetadata, error) {
+		document := strings.Replace(idpEntity("https://idp.example.test", p.cert),
+			"<SingleSignOnService ", services+"\n<SingleSignOnService ", 1)
+		return ReadMetadata(MetadataSource{Document: []byte(document), Unsigned: true})
+	}
+	got, err := read(`<SingleLogoutService Binding="` + BindingPOST + `" Location="https://idp.example.test/slo-post"/>
+<SingleLogoutService Binding="` + BindingRedirect + `" Location="https://idp.example.test/slo"/>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdP.SLOURL != "https://idp.example.test/slo" {
+		t.Errorf("read %q", got.IdP.SLOURL)
+	}
+	got, err = read(`<SingleLogoutService Binding="` + BindingPOST + `" Location="https://idp.example.test/slo-post"/>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdP.SLOURL != "" || !strings.Contains(strings.Join(got.Notes, " "), "only HTTP-POST") {
+		t.Errorf("read %q, notes %q", got.IdP.SLOURL, got.Notes)
+	}
+}
+
 // The row's acceptance: without a signature nothing is believed, unless the
 // caller says so by name.
 func TestUnsignedMetadataIsRefusedUnlessAskedForByName(t *testing.T) {

@@ -131,6 +131,9 @@ var rootSealedOutsideTheDatabase = map[string]string{
 	"signari email sign-in page": "the emailed sign-in's code page cookie (httpapi/emailsignin.go), " +
 		"fifteen minutes long: an online rotation's accepted key opens one sealed before it, " +
 		"and after an offline one the person asks for the code again",
+	"saml_upstream_subject": "who a person is at a SAML upstream, in a session-long cookie " +
+		"(httpapi/samlsourcelogout.go): an online rotation's accepted key opens one sealed before it, " +
+		"and after an offline one the sign-out stops at this side, having ended the session here",
 }
 
 // callArgs splits the arguments of a call whose opening parenthesis has just

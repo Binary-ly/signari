@@ -39,8 +39,10 @@ func (s *Server) rememberUpstream(w http.ResponseWriter, provider *federation.Co
 }
 
 func (s *Server) forgetUpstream(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: upstreamCookieName, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	for _, name := range []string{upstreamCookieName, samlSubjectCookieName} {
+		http.SetCookie(w, &http.Cookie{Name: name, Path: "/", Secure: true, HttpOnly: true,
+			SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	}
 }
 
 // upstreamLogout is the address to send a browser to next, to end its session at
@@ -52,7 +54,7 @@ func (s *Server) upstreamLogout(ctx context.Context, r *http.Request, sid, targe
 	if err != nil || sid == "" {
 		return ""
 	}
-	endSession, clientID, err := store.UpstreamLogout(ctx, s.db, sid, cookie.Value)
+	endSession, clientID, kind, err := store.UpstreamLogout(ctx, s.db, sid, cookie.Value)
 	if err != nil {
 		s.log.Error("reading the provider to sign out at", "err", err, "correlation_id", correlationID(ctx))
 		return ""
@@ -60,6 +62,9 @@ func (s *Server) upstreamLogout(ctx context.Context, r *http.Request, sid, targe
 	u, err := url.Parse(endSession)
 	if endSession == "" || err != nil {
 		return ""
+	}
+	if kind == "saml" {
+		return s.samlUpstreamLogout(ctx, r, cookie.Value, target)
 	}
 	q := u.Query()
 	q.Set("client_id", clientID)

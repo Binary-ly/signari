@@ -109,13 +109,14 @@ func checkForwardParameters(slug, kind string, names []string) error {
 }
 
 // checkEndSession refuses an address a browser should not be sent to, and a
-// provider with no OIDC session to end there.
+// provider with no session to end there. A SAML upstream's is its
+// SingleLogoutService on the redirect binding.
 func checkEndSession(slug, kind, address string) error {
 	if address == "" {
 		return nil
 	}
-	if kind == "saml" || kind == "assertion" {
-		return idpInvalid{fmt.Sprintf("%s is a %s provider, which has no OIDC end_session_endpoint", slug, kind)}
+	if kind == "assertion" {
+		return idpInvalid{fmt.Sprintf("%s is an assertion provider, which has no session to end", slug)}
 	}
 	if u, err := url.Parse(address); err != nil || u.Scheme != "https" || u.Host == "" {
 		return idpInvalid{fmt.Sprintf("%q is not an https address", address)}

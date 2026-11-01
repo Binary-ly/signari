@@ -58,9 +58,11 @@ type IdentityProviderSpec struct {
 	// against, where AuthnRequests go, the certificate assertions are
 	// verified with, the NameID format, and the clock tolerance.
 	EntityID, SSOURL, CertPEM, NameIDFormat string
-	AllowUnsolicited, ForceAuthn            bool
-	SkewSeconds                             int
-	Origin                                  SAMLMetadataOrigin
+	// SLOURL is where a sign-out here goes on to, as `idp logout` sets it.
+	SLOURL                       string
+	AllowUnsolicited, ForceAuthn bool
+	SkewSeconds                  int
+	Origin                       SAMLMetadataOrigin
 }
 
 func (s *IdentityProviderSpec) invalid(format string, a ...any) error {
@@ -244,10 +246,10 @@ func AddIdentityProvider(ctx context.Context, q outpostDB, root *keys.RootKey, o
 		err = q.QueryRow(ctx, `
 			INSERT INTO core.identity_providers
 				(org_id, slug, display_name, kind, client_id, scopes, allow_signup, allow_linking,
-				 trust_email_verification)
-			VALUES ($1::uuid, $2, $3, 'saml', '', '{}', $4, $5, $6)
+				 trust_email_verification, end_session_url)
+			VALUES ($1::uuid, $2, $3, 'saml', '', '{}', $4, $5, $6, NULLIF($7, ''))
 			RETURNING id::text`, orgID, s.Slug, s.Name, s.AllowSignup, s.AllowLinking,
-			s.TrustEmailVerification).Scan(&id)
+			s.TrustEmailVerification, s.SLOURL).Scan(&id)
 		if err == nil {
 			_, err = q.Exec(ctx, `
 				INSERT INTO core.saml_sources

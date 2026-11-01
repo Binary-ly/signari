@@ -46,7 +46,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if src.Provider.SignRequests {
-		signer, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
+		signer, _, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
 		if serr != nil {
 			s.log.Error("reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
 			s.federationError(w, r, "That sign-in method is not configured correctly.")
@@ -170,6 +170,10 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if src.SLOURL != "" {
+		s.rememberSAMLSubject(w, assertion)
+	}
+
 	// From here it is the ordinary external-identity path: the same decision,
 	// the same linking rules, the same audit events as Google or GitHub.
 	ext := federation.ExternalIdentity{
@@ -190,6 +194,8 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		DisplayName: src.DisplayName,
 		Policy:      src.Policy,
 		Kind:        federation.KindSAML,
+
+		EndSessionURL: src.SLOURL,
 	}, &store.PendingLogin{ReturnTo: returnPath}, ext)
 }
 
@@ -279,11 +285,20 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
     </KeyDescriptor>`)
 	}
 
+	// Only where this deployment can take part: a logout has to be signed, which
+	// takes a key, and there has to be somewhere to send the other half.
+	logout := ""
+	if src.SLOURL != "" && strings.Contains(descriptors.String(), `use="signing"`) {
+		logout = `
+    <SingleLogoutService Binding="` + saml.BindingRedirect + `"
+        Location="` + xmlAttr(s.cfg.Issuer+"/saml/source/"+slug+"/slo") + `"/>`
+	}
+
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` +
 		xmlAttr(src.Provider.SPEntityID) + `">
   <SPSSODescriptor AuthnRequestsSigned="` + strconv.FormatBool(src.Provider.SignRequests) + `" WantAssertionsSigned="true"
-      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` + descriptors.String() + `
+      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` + descriptors.String() + logout + `
     <NameIDFormat>` + xmlAttr(saml.FullNameIDFormat(src.Provider.NameIDFormat)) +
 		`</NameIDFormat>
     <AssertionConsumerService index="0" isDefault="true"

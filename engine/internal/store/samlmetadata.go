@@ -90,7 +90,7 @@ func (s *SAMLProviderSpec) ApplyMetadata(entityID string, m *saml.ServiceProvide
 
 // ApplyMetadata fills an upstream's registration from what it says of itself.
 func (s *IdentityProviderSpec) ApplyMetadata(entityID string, m *saml.IdentityProviderMetadata, o SAMLMetadataOrigin) {
-	s.EntityID, s.SSOURL, s.CertPEM = entityID, m.SSOURL, m.SigningCertPEM
+	s.EntityID, s.SSOURL, s.CertPEM, s.SLOURL = entityID, m.SSOURL, m.SigningCertPEM, m.SLOURL
 	s.NameIDFormat = cmp.Or(s.NameIDFormat, m.NameIDFormat)
 	s.Origin = o
 }
@@ -235,10 +235,11 @@ func RefreshSAMLSource(ctx context.Context, tx pgx.Tx, orgID, slug string, m *sa
 	var id string
 	cur := IdentityProviderSpec{Slug: slug, Kind: "saml"}
 	err := tx.QueryRow(ctx, `
-		SELECT s.provider_id::text, s.entity_id, s.sso_url, s.cert_pem, s.name_id_format
+		SELECT s.provider_id::text, s.entity_id, s.sso_url, s.cert_pem, s.name_id_format,
+		       COALESCE(p.end_session_url, '')
 		  FROM core.saml_sources s JOIN core.identity_providers p ON p.id = s.provider_id
 		 WHERE p.org_id = $1::uuid AND p.slug = $2 FOR UPDATE OF s`, orgID, slug).
-		Scan(&id, &cur.EntityID, &cur.SSOURL, &cur.CertPEM, &cur.NameIDFormat)
+		Scan(&id, &cur.EntityID, &cur.SSOURL, &cur.CertPEM, &cur.NameIDFormat, &cur.SLOURL)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProviderUnknown
 	}
@@ -246,13 +247,20 @@ func RefreshSAMLSource(ctx context.Context, tx pgx.Tx, orgID, slug string, m *sa
 		return nil, err
 	}
 	next := cur
-	next.SSOURL, next.CertPEM = m.SSOURL, m.SigningCertPEM
+	next.SSOURL, next.CertPEM, next.SLOURL = m.SSOURL, m.SigningCertPEM, m.SLOURL
 	if err := next.Validate(); err != nil {
 		return nil, err
 	}
 	var changes []SAMLMetadataChange
 	if cur.SSOURL != next.SSOURL {
 		changes = append(changes, SAMLMetadataChange{"sso_url", cur.SSOURL, next.SSOURL})
+	}
+	if cur.SLOURL != next.SLOURL {
+		changes = append(changes, SAMLMetadataChange{"slo_url", cur.SLOURL, next.SLOURL})
+		if _, err := tx.Exec(ctx, `UPDATE core.identity_providers SET end_session_url = NULLIF($2, '')
+			WHERE id = $1::uuid`, id, next.SLOURL); err != nil {
+			return nil, err
+		}
 	}
 	if from, to := fingerprints(cur.CertPEM), fingerprints(next.CertPEM); from != to {
 		changes = append(changes, SAMLMetadataChange{"signing_certificate", from, to})

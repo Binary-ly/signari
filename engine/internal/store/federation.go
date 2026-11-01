@@ -60,26 +60,50 @@ func SetIdentityProviderEnabled(ctx context.Context, db interface {
 	return orgID, tx.Commit(ctx)
 }
 
-// UpstreamLogout is the end-session address and client id of the named provider,
-// when the session came through a provider at all and this one is in its
-// organisation, in service and has an address. Otherwise both are empty.
-func UpstreamLogout(ctx context.Context, q Querier, sid, slug string) (endSession, clientID string, err error) {
+// UpstreamLogout is the end-session address, client id and kind of the named
+// provider, when the session came through a provider at all and this one is in its
+// organisation, in service and has an address. Otherwise all are empty.
+func UpstreamLogout(ctx context.Context, q Querier, sid, slug string) (endSession, clientID, kind string, err error) {
 	rows, err := q.Query(ctx, `
-		SELECT p.end_session_url, p.client_id
+		SELECT p.end_session_url, p.client_id, p.kind
 		  FROM core.identity_providers p
 		  JOIN core.sessions s ON s.org_id = p.org_id
 		 WHERE s.sid = $1 AND 'fed' = ANY(s.amr)
 		   AND p.slug = $2 AND p.enabled AND p.end_session_url IS NOT NULL`, sid, slug)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	defer rows.Close()
 	if rows.Next() {
-		if err := rows.Scan(&endSession, &clientID); err != nil {
-			return "", "", err
+		if err := rows.Scan(&endSession, &clientID, &kind); err != nil {
+			return "", "", "", err
 		}
 	}
-	return endSession, clientID, rows.Err()
+	return endSession, clientID, kind, rows.Err()
+}
+
+// FederatedSessions are the live sessions of whoever a provider knows as subject
+// that came through a provider, and that person. Nothing when it knows nobody by that
+// name here.
+func FederatedSessions(ctx context.Context, q Querier, providerID, subject string) (sids []string, userID string, err error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.sid, s.user_id::text
+		  FROM core.federated_identities f
+		  JOIN core.sessions s ON s.user_id = f.user_id
+		 WHERE f.provider_id = $1::uuid AND f.subject = $2 AND 'fed' = ANY(s.amr)
+		   AND s.revoked_at IS NULL AND s.not_after > now()`, providerID, subject)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid, &userID); err != nil {
+			return nil, "", err
+		}
+		sids = append(sids, sid)
+	}
+	return sids, userID, rows.Err()
 }
 
 // LoadIdentityProvider fetches an external provider by its URL slug.

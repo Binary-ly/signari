@@ -193,10 +193,32 @@ What decrypts is a document from outside like any other: the same scan for DTDs 
 entities, one `Assertion` and nothing else, and every check of the assertion after
 that. A second assertion, whether inside the ciphertext or beside it, is refused.
 
-## Not yet
+## Single logout with an upstream
 
-- **SAML single logout as a source.** Sessions here end normally; the upstream
-  is not notified.
+With a logout address, read from the upstream's metadata or set with
+`signari idp logout -slug corp -url <its SingleLogoutService>`, and a signing key,
+logout goes both ways on the HTTP-Redirect binding. The metadata offers
+`/saml/source/corp/slo` once both are there, and not before: a logout has to be signed.
+
+A sign-out here ends the session here first and then sends the browser to the
+upstream with a signed `LogoutRequest` carrying the NameID and SessionIndex its
+assertion did, kept sealed in the browser since a request with anything else ends
+nothing. The upstream's answer brings the browser back to where it was going. With no
+signing key the sign-out stops here, and the session here has ended all the same.
+
+A `LogoutRequest` from the upstream has to be signed with the certificate registered
+for it, on the HTTP-Redirect or HTTP-POST binding, and is heard once. It ends every
+session here of the person it names that came through a provider: no record is kept
+that could match its SessionIndex to one of them, the upstream signed them all in, and
+it has said they are signed out. A name nobody here is linked to is answered with
+success, that being the state it asked for. The answer is signed and goes back by
+redirect.
+
+## What is not done
+
+No `SOAP` binding for logout, and a logout address that takes only HTTP-POST is left
+out, with a note: a sign-out reaches an upstream as a redirect. `EncryptedAttribute` is
+not read, so an attribute an upstream encrypts on its own is not seen.
 
 Each is absent from the metadata document as well as from the code — a
 capability advertised and not implemented is the failure this project sweeps for.

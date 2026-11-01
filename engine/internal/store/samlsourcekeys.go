@@ -162,24 +162,24 @@ func SetSAMLSourceKeyUse(ctx context.Context, q samlSourceKeysDB, orgID, slug st
 	return err
 }
 
-// SAMLSourceSigner is the key an upstream's requests are signed with: the newest
-// that is live.
-func SAMLSourceSigner(ctx context.Context, q claimReader, root *keys.RootKey, providerID string) (crypto.Signer, error) {
-	live, err := liveSAMLSourceKeys(ctx, q, root, providerID, saml.SPKeySigning, 1)
+// SAMLSourceSigner is the key an upstream's requests are signed with, the newest
+// that is live, and its certificate as DER.
+func SAMLSourceSigner(ctx context.Context, q claimReader, root *keys.RootKey, providerID string) (crypto.Signer, []byte, error) {
+	live, certs, err := liveSAMLSourceKeys(ctx, q, root, providerID, saml.SPKeySigning, 1)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(live) == 0 {
-		return nil, errors.New("no live signing key")
+		return nil, nil, errors.New("no live signing key")
 	}
-	return live[0], nil
+	return live[0], certs[0], nil
 }
 
 // SAMLSourceDecrypters are the keys an assertion from an upstream may be encrypted
 // to. All that are live, since an upstream takes up a new certificate in its own
 // time.
 func SAMLSourceDecrypters(ctx context.Context, q claimReader, root *keys.RootKey, providerID string) ([]crypto.Decrypter, error) {
-	live, err := liveSAMLSourceKeys(ctx, q, root, providerID, saml.SPKeyEncryption, 16)
+	live, _, err := liveSAMLSourceKeys(ctx, q, root, providerID, saml.SPKeyEncryption, 16)
 	if err != nil {
 		return nil, err
 	}
@@ -190,33 +190,39 @@ func SAMLSourceDecrypters(ctx context.Context, q claimReader, root *keys.RootKey
 	return out, nil
 }
 
-func liveSAMLSourceKeys(ctx context.Context, q claimReader, root *keys.RootKey, providerID, purpose string, limit int) ([]saml.SPKey, error) {
+func liveSAMLSourceKeys(ctx context.Context, q claimReader, root *keys.RootKey, providerID, purpose string, limit int) ([]saml.SPKey, [][]byte, error) {
 	if root == nil {
-		return nil, errors.New("a key is sealed under the root key, and none is configured")
+		return nil, nil, errors.New("a key is sealed under the root key, and none is configured")
 	}
 	rows, err := q.Query(ctx, `
-		SELECT key_sealed FROM core.saml_source_keys
+		SELECT key_sealed, certificate FROM core.saml_source_keys
 		 WHERE provider_id = $1::uuid AND purpose = $2 AND retired_at IS NULL
 		 ORDER BY created_at DESC, id LIMIT $3`, providerID, purpose, limit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	var out []saml.SPKey
+	var certs [][]byte
 	for rows.Next() {
 		var sealed []byte
-		if err := rows.Scan(&sealed); err != nil {
-			return nil, err
+		var certPEM string
+		if err := rows.Scan(&sealed, &certPEM); err != nil {
+			return nil, nil, err
 		}
 		pkcs8, err := root.Open(sealed, sealContextSAMLSourceKey)
 		if err != nil {
-			return nil, fmt.Errorf("opening a key: %w", err)
+			return nil, nil, fmt.Errorf("opening a key: %w", err)
 		}
 		key, err := saml.ParseSPKey(pkcs8)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		out = append(out, key)
+		parsed, err := saml.ParseCertificates(certPEM)
+		if err != nil || len(parsed) != 1 {
+			return nil, nil, fmt.Errorf("reading a key's certificate: %w", err)
+		}
+		out, certs = append(out, key), append(certs, parsed[0].Raw)
 	}
-	return out, rows.Err()
+	return out, certs, rows.Err()
 }

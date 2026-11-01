@@ -36,6 +36,8 @@ type SAMLSource struct {
 	// the email-verification rules.
 	Policy   federation.Policy
 	Provider *saml.InboundProvider
+	// SLOURL is where a sign-out here goes on to, empty for nowhere.
+	SLOURL string
 }
 
 // LoadSAMLSource reads one enabled source by slug.
@@ -50,7 +52,8 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 		       p.allow_signup, p.allow_linking, p.require_verified_email,
 		       p.trust_email_verification,
 		       x.entity_id, x.sso_url, x.cert_pem, x.name_id_format,
-		       x.force_authn, x.allow_unsolicited, x.skew_seconds, x.sign_requests, x.require_encryption
+		       x.force_authn, x.allow_unsolicited, x.skew_seconds, x.sign_requests, x.require_encryption,
+		       COALESCE(p.end_session_url, '')
 		FROM core.identity_providers p
 		JOIN core.saml_sources x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'saml' AND p.enabled`, slug).
@@ -60,7 +63,7 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 			&s.Provider.EntityID, &s.Provider.SSOURL, &s.Provider.CertPEM,
 			&s.Provider.NameIDFormat, &s.Provider.ForceAuthn,
 			&s.Provider.AllowUnsolicited, &s.Provider.SkewSeconds, &s.Provider.SignRequests,
-			&s.Provider.RequireEncryption)
+			&s.Provider.RequireEncryption, &s.SLOURL)
 	if err != nil {
 		return nil, err
 	}

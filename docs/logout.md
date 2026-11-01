@@ -71,8 +71,9 @@ chain, because nothing here can resume once the browser has left. Sessions end h
 first, so a provider that fails or refuses leaves the person signed out here, and
 only here. It happens only for a session that came through a provider, in the
 browser it came through. The upstream `id_token` is not kept, so no `id_token_hint`
-goes with it and the provider may ask the person to confirm. A SAML upstream has no
-such address.
+goes with it and the provider may ask the person to confirm. A SAML upstream's address
+is its SingleLogoutService, and it needs a signing key, for which see
+[single logout with an upstream](saml-source.md#single-logout-with-an-upstream).
 
 ## Why both OIDC channels
 

@@ -68,6 +68,41 @@ func TestAnUpstreamsKeysAreKeptThroughTheAPI(t *testing.T) {
 	}
 }
 
+// Reading an upstream's metadata again takes its logout address with the rest, and
+// says so.
+func TestARefreshTakesAnUpstreamsLogoutAddress(t *testing.T) {
+	s, _ := newTestServer(t)
+	org, _, path := newDriftSAMLUpstream(t, s)
+	held := func() string {
+		t.Helper()
+		var got string
+		if err := s.db.QueryRow(context.Background(), `SELECT COALESCE(end_session_url, '') FROM core.identity_providers
+			WHERE org_id = $1::uuid`, org).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	plain := idpMetadata(t, s, path)
+	with := strings.Replace(plain, "<SingleSignOnService ", `<SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.test/slo"/>
+<SingleSignOnService `, 1)
+	body := func(document string) map[string]any {
+		return map[string]any{"metadata": document, "metadata_unsigned": true}
+	}
+	rec := call(t, s, http.MethodPost, path+"/metadata", testToken, body(with))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "slo_url") {
+		t.Fatalf("reading it: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != "https://idp.example.test/slo" {
+		t.Errorf("holding %q", got)
+	}
+	if rec := call(t, s, http.MethodPost, path+"/metadata", testToken, body(plain)); rec.Code != http.StatusOK {
+		t.Fatalf("reading it again: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := held(); got != "" {
+		t.Errorf("an address the upstream took back is still held: %q", got)
+	}
+}
+
 // Another organisation's upstream is not reached by naming its slug under yours.
 func TestAnotherOrganisationsUpstreamHasNoKeysHere(t *testing.T) {
 	s, _ := newTestServer(t)

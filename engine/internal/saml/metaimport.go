@@ -84,6 +84,9 @@ type IdentityProviderMetadata struct {
 	SSOURL         string
 	SigningCertPEM string
 	NameIDFormat   string
+	// SLOURL is where a sign-out here goes on to, empty when it has nowhere on
+	// the redirect binding, which is how one reaches an upstream.
+	SLOURL string
 }
 
 // EntityMetadata is one entity read from a document that passed.
@@ -286,6 +289,11 @@ func readIdentityProvider(d *etree.Element, now time.Time, notes *[]string) (*Id
 	var err error
 	if idp.SigningCertPEM, err = certificates(d, "signing", now, notes); err != nil {
 		return nil, err
+	}
+	if url, binding := logoutService(d, notes); binding == "HTTP-Redirect" {
+		idp.SLOURL = url
+	} else if url != "" {
+		*notes = append(*notes, "left out its logout URL, which takes only HTTP-POST: a sign-out reaches an upstream as a redirect")
 	}
 	if idp.SigningCertPEM == "" {
 		return nil, fmt.Errorf("the identity provider publishes no signing certificate that is still valid, so " +

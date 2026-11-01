@@ -18673,6 +18673,9 @@
                           "name_id_format": {
                             "type": "string"
                           },
+                          "org_endpoint": {
+                            "type": "boolean"
+                          },
                           "sign_assertions": {
                             "type": "boolean"
                           },
@@ -18717,7 +18720,8 @@
                           "default_relay_state",
                           "metadata_url",
                           "metadata_read_at",
-                          "wsfed_saml_version"
+                          "wsfed_saml_version",
+                          "org_endpoint"
                         ],
                         "type": "object"
                       },
@@ -18872,12 +18876,16 @@
                     },
                     "name_id_format": {
                       "type": "string"
+                    },
+                    "org_endpoint": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "id",
                     "entity_id",
                     "name_id_format",
+                    "org_endpoint",
                     "config_version"
                   ],
                   "type": "object"
@@ -18984,6 +18992,9 @@
                   },
                   "name_id_attribute": {
                     "type": "string"
+                  },
+                  "org_endpoint": {
+                    "type": "boolean"
                   },
                   "sign_assertions": {
                     "type": "boolean"

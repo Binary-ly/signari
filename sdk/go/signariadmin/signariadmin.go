@@ -1322,6 +1322,7 @@ type GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem struct {
 	Name               string                                                               `json:"name"`
 	NameIDAttribute    string                                                               `json:"name_id_attribute"`
 	NameIDFormat       string                                                               `json:"name_id_format"`
+	OrgEndpoint        bool                                                                 `json:"org_endpoint"`
 	SignAssertions     bool                                                                 `json:"sign_assertions"`
 	SignResponses      bool                                                                 `json:"sign_responses"`
 	SignatureAlg       string                                                               `json:"signature_alg"`
@@ -1923,6 +1924,7 @@ type PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest struct {
 	IdPInitiated      *bool   `json:"idp_initiated,omitempty"`
 	LifetimeS         *int64  `json:"lifetime_s,omitempty"`
 	NameIDAttribute   *string `json:"name_id_attribute,omitempty"`
+	OrgEndpoint       *bool   `json:"org_endpoint,omitempty"`
 	SignAssertions    *bool   `json:"sign_assertions,omitempty"`
 	SignResponses     *bool   `json:"sign_responses,omitempty"`
 	SignatureAlg      *string `json:"signature_alg,omitempty"`
@@ -2623,6 +2625,7 @@ type PostOrganizationsOrgIDSAMLProvidersResponse struct {
 	EntityID      string `json:"entity_id"`
 	ID            string `json:"id"`
 	NameIDFormat  string `json:"name_id_format"`
+	OrgEndpoint   bool   `json:"org_endpoint"`
 }
 
 // PostOrganizationsOrgIDSAMLProvidersProviderIDMetadataRequest is a JSON object of the Admin API.

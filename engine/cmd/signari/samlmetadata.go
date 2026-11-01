@@ -117,11 +117,11 @@ func samlAddSPFromMetadata(ctx context.Context, conn *pgx.Conn, orgID, entityID,
 // samlRefreshSP reads a service provider's metadata again and applies it, or with
 // -dry-run says what that would do. Only ever when asked: this is what decides
 // where assertions go.
-func samlRefreshSP(ctx context.Context, conn *pgx.Conn, entityID string, meta metadataFlags, dryRun bool) error {
+func samlRefreshSP(ctx context.Context, conn *pgx.Conn, org, entityID string, meta metadataFlags, dryRun bool) error {
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	id, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	id, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if errors.Is(err, store.ErrSAMLProviderUnknown) {
 		return fmt.Errorf("no service provider has the entity id %q", entityID)
 	}

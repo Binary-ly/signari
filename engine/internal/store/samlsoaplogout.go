@@ -24,6 +24,8 @@ type SAMLLogoutNotice struct {
 // SAMLLogoutTarget is what telling it takes.
 type SAMLLogoutTarget struct {
 	URL, NameID, NameIDFormat, SessionIndex, SignatureAlg, InstanceID string
+	// EndpointOrg is as saml.Provider's: it says who the provider knows us as.
+	EndpointOrg string
 }
 
 // SAMLLogoutTargetOf reads it. pgx.ErrNoRows is a provider since disabled, deleted or
@@ -31,14 +33,15 @@ type SAMLLogoutTarget struct {
 func SAMLLogoutTargetOf(ctx context.Context, q rowQuerier, sid, providerID string) (SAMLLogoutTarget, error) {
 	var t SAMLLogoutTarget
 	err := q.QueryRow(ctx, `
-		SELECT u.url, p.name_id, COALESCE(p.name_id_format, ''), p.session_index, sp.signature_alg, o.instance_id::text
+		SELECT u.url, p.name_id, COALESCE(p.name_id_format, ''), p.session_index, sp.signature_alg, o.instance_id::text,
+		       CASE WHEN sp.org_endpoint THEN o.slug ELSE '' END
 		  FROM core.saml_session_participants p
 		  JOIN core.saml_providers sp ON sp.id = p.provider_id AND sp.enabled
 		  JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id AND u.binding = 'SOAP'
 		  JOIN core.organizations o ON o.id = sp.org_id
 		 WHERE p.sid = $1 AND p.provider_id = $2::uuid
 		 ORDER BY u.url LIMIT 1`, sid, providerID).
-		Scan(&t.URL, &t.NameID, &t.NameIDFormat, &t.SessionIndex, &t.SignatureAlg, &t.InstanceID)
+		Scan(&t.URL, &t.NameID, &t.NameIDFormat, &t.SessionIndex, &t.SignatureAlg, &t.InstanceID, &t.EndpointOrg)
 	return t, err
 }
 

@@ -585,8 +585,8 @@ var opSchemas = map[string]opSchema{
 			"name_id_format", "name_id_attribute", "signature_alg", "enabled", "sign_assertions", "sign_responses",
 			"want_signed_requests", "encrypted", "has_signing_cert", "lifetime_s", "acs_urls", "slo_urls", "attribute_release",
 			"group_release", "idp_initiated", "default_relay_state", "metadata_url", "metadata_read_at",
-			"wsfed_saml_version"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
-			"metadata_url": str(), "metadata_read_at": nullable(dateTime()), "wsfed_saml_version": str(),
+			"wsfed_saml_version", "org_endpoint"}, map[string]jsonSchema{"id": uuidStr(), "entity_id": str(), "name": str(),
+			"metadata_url": str(), "metadata_read_at": nullable(dateTime()), "wsfed_saml_version": str(), "org_endpoint": boolean(),
 			"name_id_format": str(), "name_id_attribute": str(), "signature_alg": str(), "enabled": boolean(), "sign_assertions": boolean(),
 			"sign_responses": boolean(), "want_signed_requests": boolean(), "encrypted": boolean(),
 			"has_signing_cert": boolean(), "lifetime_s": integer(), "acs_urls": arrayOf(str()),
@@ -620,8 +620,8 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use": {http.StatusOK,
 		typeOf[samlKeyUseRequest](), object([]string{"config_version"}, withVersion(map[string]jsonSchema{}))},
 	"POST /admin/organizations/{orgID}/saml-providers": {http.StatusCreated, typeOf[addSAMLProviderRequest](), object(
-		[]string{"id", "entity_id", "name_id_format", "config_version"}, withVersion(map[string]jsonSchema{
-			"id": uuidStr(), "entity_id": str(), "name_id_format": str()}))},
+		[]string{"id", "entity_id", "name_id_format", "org_endpoint", "config_version"}, withVersion(map[string]jsonSchema{
+			"id": uuidStr(), "entity_id": str(), "name_id_format": str(), "org_endpoint": boolean()}))},
 	"PATCH /admin/organizations/{orgID}/saml-providers/{providerID}": {http.StatusOK, typeOf[patchSAMLProviderRequest](),
 		object([]string{"id", "sign_assertions", "sign_responses", "signature_alg", "config_version"},
 			withVersion(map[string]jsonSchema{"id": uuidStr(), "sign_assertions": boolean(),

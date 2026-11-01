@@ -60,6 +60,9 @@ type Provider struct {
 	// WSFedSAMLVersion is the SAML its WS-Federation token is in, WSFedSAML2 or
 	// WSFedSAML11.
 	WSFedSAMLVersion string
+	// EndpointOrg is the slug of the organisation whose endpoints it answers at,
+	// empty for the deployment's. See EntityID.
+	EndpointOrg string
 	// SignatureAlg is what this provider is signed with: SignatureAlgRSASHA256
 	// or SignatureAlgECDSASHA256.
 	SignatureAlg string

@@ -117,9 +117,9 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 	// carried in the chain, so a provider moved between algorithms while a
 	// logout was under way is still sent a signature it can check. One that has
 	// since been removed is sent RSA, the default.
-	signatureAlg := saml.SignatureAlgRSASHA256
-	if p, err := s.loadSAMLProvider(ctx, step.EntityID); err == nil {
-		signatureAlg = p.SignatureAlg
+	signatureAlg, issuer := saml.SignatureAlgRSASHA256, saml.EntityID(s.cfg.Issuer, "")
+	if p, err := s.loadSAMLProviderByID(ctx, step.ProviderID); err == nil {
+		signatureAlg, issuer = p.SignatureAlg, s.samlEntityID(p)
 	} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
 		return "", err
 	}
@@ -138,7 +138,7 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 		format = saml.NameIDFormatPersistent
 	}
 	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      issuer,
 		Destination: step.SLOURL,
 		// EXACTLY what the assertion carried. A service provider matches on these;
 		// anything else is accepted and ends nothing, which reports success and

@@ -94,6 +94,24 @@ func (s *Server) loadSAMLProvider(ctx context.Context, entityID string) (*saml.P
 	return s.ofThisInstance(ctx, p, err)
 }
 
+// providerAt finds the provider an entity id names at the path a request came to. The
+// deployment's endpoints hold an entity id once, and an organisation's endpoints once
+// within it, so each path answers for one row and neither can reach the other's: a
+// provider of one organisation is no provider at another's path.
+func (s *Server) providerAt(r *http.Request, entityID string) (*saml.Provider, error) {
+	ctx := r.Context()
+	slug := r.PathValue("org")
+	if slug == "" {
+		return s.loadSAMLProvider(ctx, entityID)
+	}
+	orgID, err := store.OrgBySlug(ctx, s.db, s.instanceID, slug)
+	if err != nil {
+		return nil, err
+	}
+	p, err := store.LoadOrgSAMLProvider(ctx, s.db, orgID, entityID)
+	return s.ofThisInstance(ctx, p, err)
+}
+
 // loadSAMLProviderByID is the same by the provider's own id.
 func (s *Server) loadSAMLProviderByID(ctx context.Context, id string) (*saml.Provider, error) {
 	p, err := store.LoadSAMLProviderByID(ctx, s.db, id)

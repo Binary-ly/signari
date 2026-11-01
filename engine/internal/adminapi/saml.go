@@ -41,6 +41,8 @@ type samlProviderView struct {
 	MetadataReadAt *time.Time `json:"metadata_read_at"`
 	// WSFedSAMLVersion is the SAML its WS-Federation token is in.
 	WSFedSAMLVersion string `json:"wsfed_saml_version"`
+	// OrgEndpoint is a provider that answers at its organisation's endpoints.
+	OrgEndpoint bool `json:"org_endpoint"`
 }
 
 type addSAMLProviderRequest struct {
@@ -85,6 +87,9 @@ type patchSAMLProviderRequest struct {
 	// WSFedSAMLVersion is the SAML its WS-Federation token is in, as
 	// `signari saml wsfed-token` sets it.
 	WSFedSAMLVersion *string `json:"wsfed_saml_version"`
+	// OrgEndpoint moves it to its organisation's endpoints or back, as
+	// `signari saml org-endpoint` does.
+	OrgEndpoint *bool `json:"org_endpoint"`
 }
 
 type samlAttributeRequest struct {
@@ -121,7 +126,7 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
 			SLOURLs: p.SLOURLs, Attributes: p.Attributes, IdPInitiated: p.IdPInitiated,
 			DefaultRelayState: p.DefaultRelayState, MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
-			WSFedSAMLVersion: p.WSFedSAMLVersion}
+			WSFedSAMLVersion: p.WSFedSAMLVersion, OrgEndpoint: p.OrgEndpoint}
 		if v.Attributes == nil {
 			v.Attributes = map[string]string{}
 		}
@@ -184,12 +189,16 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
+	var onOrg bool
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
 			return err
 		}
 		var err error
 		if id, err = store.AddSAMLProvider(ctx, tx, orgID, spec); err != nil {
+			return err
+		}
+		if onOrg, err = store.SAMLOnOrgEndpoint(ctx, tx, id); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_provider_added", AdminTokenID: TokenIDFrom(ctx),
@@ -202,7 +211,7 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	setETag(w, version)
 	// The provider imports the certificate from /saml/metadata.
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "entity_id": spec.EntityID,
-		"name_id_format": spec.NameIDFormat, "config_version": version})
+		"name_id_format": spec.NameIDFormat, "org_endpoint": onOrg, "config_version": version})
 }
 
 // patchSAMLProvider chooses what is signed, with which algorithm, and how
@@ -216,7 +225,7 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SignAssertions == nil && req.SignResponses == nil && req.LifetimeSeconds == 0 && req.SignatureAlg == "" &&
 		req.NameIDAttribute == nil && req.IdPInitiated == nil && req.DefaultRelayState == nil && req.SOAPLogoutURL == nil &&
-		req.WSFedSAMLVersion == nil {
+		req.WSFedSAMLVersion == nil && req.OrgEndpoint == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing_to_change"})
 		return
 	}
@@ -269,6 +278,12 @@ func (s *Server) patchSAMLProvider(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			detail["wsfed_saml_version"] = *req.WSFedSAMLVersion
+		}
+		if req.OrgEndpoint != nil {
+			if err := store.SetSAMLOrgEndpoint(ctx, tx, orgID, providerID, *req.OrgEndpoint); err != nil {
+				return err
+			}
+			detail["org_endpoint"] = *req.OrgEndpoint
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.saml_signing_set", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

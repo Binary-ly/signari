@@ -73,15 +73,50 @@ func TestASAMLProviderIsConfiguredThroughTheAPI(t *testing.T) {
 			t.Errorf("%v answered %q", bad, e)
 		}
 	}
-	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"entity_id": entity,
-		"acs_url": "https://wiki.example.test/acs", "name_id_format": "emailAddress"}); rec.Code != http.StatusCreated {
-		t.Fatalf("registering: %d %s", rec.Code, rec.Body.String())
+	first := call(t, s, http.MethodPost, base, testToken, map[string]any{"entity_id": entity,
+		"acs_url": "https://wiki.example.test/acs", "name_id_format": "emailAddress"})
+	if first.Code != http.StatusCreated {
+		t.Fatalf("registering: %d %s", first.Code, first.Body.String())
 	}
-	// Entity ids are unique across organisations.
-	other := "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"
-	if e := errorOf(http.MethodPost, other, map[string]any{"entity_id": entity, "acs_url": "https://x.example.test/acs"},
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	firstPath := base + "/" + created.ID
+	// Held once by an organisation. Held by another, it goes to its own endpoints, and
+	// neither moves the other nor may take the deployment's from it.
+	if e := errorOf(http.MethodPost, base, map[string]any{"entity_id": entity, "acs_url": "https://wiki.example.test/acs"},
 		http.StatusConflict); e != "already_exists" {
-		t.Errorf("a second registration of the entity id answered %q", e)
+		t.Errorf("a second registration in one organisation answered %q", e)
+	}
+	other := "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"
+	shared := call(t, s, http.MethodPost, other, testToken, map[string]any{"entity_id": entity, "acs_url": "https://x.example.test/acs"})
+	if shared.Code != http.StatusCreated || !strings.Contains(shared.Body.String(), `"org_endpoint":true`) {
+		t.Fatalf("another organisation registering it: %d %s", shared.Code, shared.Body.String())
+	}
+	if err := json.Unmarshal(shared.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	secondPath := other + "/" + created.ID
+	if rec := call(t, s, http.MethodGet, other, testToken, nil); !strings.Contains(rec.Body.String(), `"org_endpoint":true`) {
+		t.Errorf("the list says %s", rec.Body.String())
+	}
+	if e := errorOf(http.MethodPatch, secondPath, map[string]any{"org_endpoint": false}, http.StatusConflict); e != "already_exists" {
+		t.Errorf("taking the deployment's endpoints from whoever holds them answered %q", e)
+	}
+	if e := errorOf(http.MethodPatch, firstPath[:len(base)]+"/"+created.ID, map[string]any{"org_endpoint": false}, http.StatusNotFound); e != "provider_not_found" {
+		t.Errorf("moving another organisation's provider answered %q", e)
+	}
+	if rec := call(t, s, http.MethodPatch, firstPath, testToken, map[string]any{"org_endpoint": true}); rec.Code != http.StatusOK {
+		t.Fatalf("moving the first to its own endpoints: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(t, s, http.MethodPatch, secondPath, testToken, map[string]any{"org_endpoint": false}); rec.Code != http.StatusOK {
+		t.Errorf("with the deployment's endpoints free: %d %s", rec.Code, rec.Body.String())
+	}
+	if e := errorOf(http.MethodPatch, firstPath, map[string]any{"org_endpoint": false}, http.StatusConflict); e != "already_exists" {
+		t.Errorf("and the first cannot have them back, answering %q", e)
 	}
 
 	if e := errorOf(http.MethodPatch, provider, map[string]any{"sign_assertions": false}, http.StatusBadRequest); e != "invalid_saml_provider" {

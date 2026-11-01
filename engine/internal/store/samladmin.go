@@ -182,9 +182,9 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
 		                                 sp_signing_cert, want_authn_requests_signed,
 		                                 sp_encryption_cert, sp_key_transport,
-		                                 metadata_url, metadata_signer, metadata_read_at)
+		                                 metadata_url, metadata_signer, metadata_read_at, org_endpoint)
 		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8, NULLIF($9,''), NULLIF($10,''),
-		        CASE WHEN $11 THEN now() END)
+		        CASE WHEN $11 THEN now() END, `+EntityHeldElsewhere+`)
 		RETURNING id::text`, orgID, s.EntityID, s.Name, s.NameIDFormat, s.SigningCertPEM,
 		s.WantSignedRequests, s.EncryptionCertPEM, s.KeyTransport, s.Origin.URL, s.Origin.SignerPEM,
 		s.Origin.Read).Scan(&id); err != nil {
@@ -211,17 +211,67 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 	return id, nil
 }
 
-// SAMLProviderByEntity finds a provider by entity id, which is unique across
-// the deployment, and its organisation.
+// EntityHeldElsewhere is the SQL for whether the entity id in $2 is held at the
+// deployment's endpoints. A provider registered then goes to its own organisation's:
+// nothing moves for whoever holds it, and the two do not meet, since each path answers
+// for one row.
+const EntityHeldElsewhere = `EXISTS (SELECT 1 FROM core.saml_providers h
+	WHERE h.entity_id = $2 AND h.org_endpoint = false)`
+
+// ErrSAMLEntityAmbiguous is an entity id several organisations hold, with none named.
+var ErrSAMLEntityAmbiguous = errors.New("several organisations hold that entity id: give -org")
+
+// SAMLProviderByEntity finds a provider by entity id and its organisation. orgID may be
+// empty when only one holds it, which is every entity id but a shared application's.
 func SAMLProviderByEntity(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, entityID string) (id, orgID string, err error) {
-	err = q.QueryRow(ctx, `SELECT id::text, org_id::text FROM core.saml_providers WHERE entity_id = $1`,
-		entityID).Scan(&id, &orgID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", ErrSAMLProviderUnknown
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID, entityID string) (id, org string, err error) {
+	rows, err := q.Query(ctx, `SELECT id::text, org_id::text FROM core.saml_providers
+		WHERE entity_id = $1 AND org_id = COALESCE(NULLIF($2, '')::uuid, org_id) LIMIT 2`, entityID, orgID)
+	if err != nil {
+		return "", "", err
 	}
-	return id, orgID, err
+	defer rows.Close()
+	found := 0
+	for rows.Next() {
+		found++
+		if err := rows.Scan(&id, &org); err != nil {
+			return "", "", err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
+	switch found {
+	case 0:
+		return "", "", ErrSAMLProviderUnknown
+	case 1:
+		return id, org, nil
+	}
+	return "", "", ErrSAMLEntityAmbiguous
+}
+
+// SAMLOnOrgEndpoint reports whether a provider answers at its organisation's endpoints.
+func SAMLOnOrgEndpoint(ctx context.Context, q rowQuerier, id string) (bool, error) {
+	var on bool
+	err := q.QueryRow(ctx, `SELECT org_endpoint FROM core.saml_providers WHERE id::text = $1`, id).Scan(&on)
+	return on, err
+}
+
+// SetSAMLOrgEndpoint moves a provider between its organisation's endpoints and the
+// deployment's. Back to the deployment's is refused while somebody else holds the entity
+// id there. The provider has to be given the new metadata: its IdP's entity id changes.
+func SetSAMLOrgEndpoint(ctx context.Context, q outpostDB, orgID, providerID string, on bool) error {
+	var moved bool
+	err := q.QueryRow(ctx, `UPDATE core.saml_providers SET org_endpoint = $3
+		WHERE id::text = $1 AND org_id = $2::uuid RETURNING true`, providerID, orgID, on).Scan(&moved)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrSAMLProviderUnknown
+	case err != nil && strings.Contains(err.Error(), "duplicate key"):
+		return ErrSAMLEntityTaken
+	}
+	return err
 }
 
 func requireSAMLProvider(ctx context.Context, q outpostDB, orgID, providerID string) error {
@@ -441,6 +491,8 @@ type SAMLProviderRow struct {
 	MetadataReadAt *time.Time
 	// WSFedSAMLVersion is the SAML its WS-Federation token is in.
 	WSFedSAMLVersion string
+	// OrgEndpoint is a provider that answers at its organisation's endpoints.
+	OrgEndpoint bool
 }
 
 // SAMLProviders lists an organisation's service providers by entity id.
@@ -453,7 +505,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
 		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state,
-		       COALESCE(p.metadata_url, ''), p.metadata_read_at, p.wsfed_saml_version
+		       COALESCE(p.metadata_url, ''), p.metadata_read_at, p.wsfed_saml_version, p.org_endpoint
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -468,7 +520,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
 			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
 			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
-			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion); err != nil {
+			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion, &p.OrgEndpoint); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

@@ -1901,7 +1901,7 @@ func proxyRemoveHost(ctx context.Context, conn *pgx.Conn, orgID, raw string) err
 // A disclosure control that silently releases nothing looks like success. One
 // that silently releases everything looks like success too. Both are why this is
 // an explicit map rather than a wildcard.
-func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlName,
+func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, org, entityID, samlName,
 	attribute string, remove bool) error {
 
 	if entityID == "" || samlName == "" {
@@ -1909,7 +1909,7 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 			"attribute name it expects, e.g. http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress)")
 	}
 
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -1957,13 +1957,13 @@ func samlAttributeRelease(ctx context.Context, conn *pgx.Conn, entityID, samlNam
 //
 // The signature algorithm is refused when no active key of its kind exists,
 // because every sign-in to that provider would then fail at signing.
-func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
+func samlSigning(ctx context.Context, conn *pgx.Conn, org, entityID string,
 	assertions, responses *bool, lifetime int, signatureAlg string) error {
 
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -1995,11 +1995,11 @@ func samlSigning(ctx context.Context, conn *pgx.Conn, entityID string,
 
 // samlNameID says where a service provider's NameID comes from, empty for what its
 // format alone decides.
-func samlNameID(ctx context.Context, conn *pgx.Conn, entityID, attribute string) error {
+func samlNameID(ctx context.Context, conn *pgx.Conn, org, entityID, attribute string) error {
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -2021,11 +2021,11 @@ func samlNameID(ctx context.Context, conn *pgx.Conn, entityID, attribute string)
 
 // samlSOAPLogout says where a service provider is told of a session that ended with
 // no browser to carry the news; no -url stops telling it.
-func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, entityID, url string) error {
+func samlSOAPLogout(ctx context.Context, conn *pgx.Conn, org, entityID, url string) error {
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -2108,12 +2108,36 @@ func kerberosRemoveRealm(ctx context.Context, conn *pgx.Conn, orgID, realm strin
 	return nil
 }
 
+// samlOrgEndpoint moves a provider to its organisation's endpoints, or with remove back
+// to the deployment's. The provider has to be given the new metadata either way.
+func samlOrgEndpoint(ctx context.Context, conn *pgx.Conn, org, entityID string, remove bool) error {
+	if entityID == "" {
+		return fmt.Errorf("give -entity-id")
+	}
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLProviderUnknown) {
+			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
+		}
+		return err
+	}
+	if err := store.SetSAMLOrgEndpoint(ctx, conn, orgID, providerID, !remove); err != nil {
+		return err
+	}
+	where := "its organisation's endpoints"
+	if remove {
+		where = "the deployment's endpoints"
+	}
+	fmt.Printf("%s: answers at %s. Give it the metadata from there: who it knows us as has changed\n", entityID, where)
+	return nil
+}
+
 // samlWSFedToken says which SAML a WS-Federation application's token is in.
-func samlWSFedToken(ctx context.Context, conn *pgx.Conn, entityID, version string) error {
+func samlWSFedToken(ctx context.Context, conn *pgx.Conn, org, entityID, version string) error {
 	if entityID == "" || version == "" {
 		return fmt.Errorf("give -entity-id and -saml-version")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -2133,13 +2157,13 @@ func samlWSFedToken(ctx context.Context, conn *pgx.Conn, entityID, version strin
 // same reason: group membership is authorization data. A provider that receives
 // every group learns the shape of the organisation, and one that receives a
 // group it was never meant to see can act on it.
-func samlGroupRelease(ctx context.Context, conn *pgx.Conn, entityID, attrName,
+func samlGroupRelease(ctx context.Context, conn *pgx.Conn, org, entityID, attrName,
 	only string, remove bool) error {
 
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			return fmt.Errorf("no SAML service provider with entity id %q", entityID)
@@ -3080,11 +3104,11 @@ var racReservedParameters = map[string]string{
 // guacd refuses a name it does not take for the protocol at the next connect,
 // by name, which is where the protocol's own list is known.
 // samlIdPInitiated says whether a sign-in to a provider can start here.
-func samlIdPInitiated(ctx context.Context, conn *pgx.Conn, entityID string, enabled bool, relayState *string) error {
+func samlIdPInitiated(ctx context.Context, conn *pgx.Conn, org, entityID string, enabled bool, relayState *string) error {
 	if entityID == "" {
 		return fmt.Errorf("give -entity-id")
 	}
-	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, entityID)
+	providerID, orgID, err := store.SAMLProviderByEntity(ctx, conn, org, entityID)
 	if errors.Is(err, store.ErrSAMLProviderUnknown) {
 		return fmt.Errorf("no SAML service provider with entity id %q", entityID)
 	}

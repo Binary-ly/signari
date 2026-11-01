@@ -87,11 +87,10 @@ func TestASignInStartedHereIsDeclared(t *testing.T) {
 	}
 }
 
-// A SAML request names only its entity ID, so a second organisation
-// registering the same one would make every request to either an even bet.
-// `apply` must refuse the second registration by name and keep upserting the
-// first organisation's own row.
-func TestApplyRefusesAnotherOrganisationsSAMLEntityID(t *testing.T) {
+// A request at the deployment's endpoints names only its entity ID, so a second
+// organisation holding one there would make every request to either an even bet.
+// `apply` puts the second at its own endpoints, and keeps upserting each row.
+func TestApplyGivesASharedSAMLEntityIDItsOwnEndpoints(t *testing.T) {
 	ctx, pool, org := applyFixture(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -126,23 +125,27 @@ func TestApplyRefusesAnotherOrganisationsSAMLEntityID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A savepoint, because the refusal aborts the transaction and the
-	// re-apply below has to run in it.
-	if _, err := tx.Exec(ctx, `SAVEPOINT second`); err != nil {
-		t.Fatal(err)
+	// The second holds it at its own endpoints, and the first stays where it was. A file
+	// that is applied again moves neither.
+	if err := apply(other); err != nil {
+		t.Fatalf("a second organisation registering the entity ID: %v", err)
 	}
-	err = apply(other)
-	if err == nil {
-		t.Fatal("a second organisation registered an entity ID the first already holds")
-	}
-	if !strings.Contains(err.Error(), "registered by another organisation") {
-		t.Errorf("the refusal does not say why: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT second`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := apply(org); err != nil {
-		t.Fatalf("re-applying the first organisation's own registration was refused: %v", err)
+	for range 2 {
+		if err := apply(org); err != nil {
+			t.Fatalf("re-applying the first organisation's own registration was refused: %v", err)
+		}
+		if err := apply(other); err != nil {
+			t.Fatalf("re-applying the second's: %v", err)
+		}
+		for owner, want := range map[string]bool{org: false, other: true} {
+			var onOrg bool
+			if err := tx.QueryRow(ctx, `SELECT org_endpoint FROM core.saml_providers
+				WHERE org_id = $1::uuid AND entity_id = $2`, owner, entity).Scan(&onOrg); err != nil {
+				t.Fatal(err)
+			}
+			if onOrg != want {
+				t.Errorf("organisation %s is at its own endpoints: %v", owner, onOrg)
+			}
+		}
 	}
 }

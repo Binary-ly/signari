@@ -26,9 +26,15 @@ import (
 // make this endpoint a redirector for any entity id an attacker invents.
 var ErrSAMLProviderUnknown = errors.New("no service provider registered with that entity id")
 
-// LoadSAMLProvider fetches a provider and everything needed to answer it.
+// LoadSAMLProvider fetches a provider at the deployment's endpoints, where an entity id
+// is held once, and everything needed to answer it.
 func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*saml.Provider, error) {
-	return loadSAMLProvider(ctx, db, "entity_id = $1", entityID)
+	return loadSAMLProvider(ctx, db, "entity_id = $1 AND org_endpoint = false", entityID)
+}
+
+// LoadOrgSAMLProvider is the same at an organisation's endpoints.
+func LoadOrgSAMLProvider(ctx context.Context, db *pgxpool.Pool, orgID, entityID string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "entity_id = $1 AND org_id = $2::uuid AND org_endpoint", entityID, orgID)
 }
 
 // LoadSAMLProviderByID is the same by the provider's own id.
@@ -36,13 +42,28 @@ func LoadSAMLProviderByID(ctx context.Context, db *pgxpool.Pool, id string) (*sa
 	return loadSAMLProvider(ctx, db, "id::text = $1", id)
 }
 
-func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) (*saml.Provider, error) {
+// OrgBySlug finds the organisation a path names in an instance, or
+// ErrSAMLProviderUnknown for none, since all a path does is find a provider. An empty
+// instance is a server that was not told its own, as for InInstance.
+func OrgBySlug(ctx context.Context, q rowQuerier, instanceID, slug string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id::text FROM core.organizations
+		WHERE slug = $1 AND instance_id = COALESCE(NULLIF($2, '')::uuid, instance_id)`, slug, instanceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrSAMLProviderUnknown
+	}
+	return id, err
+}
+
+func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where string, args ...any) (*saml.Provider, error) {
 	p := &saml.Provider{}
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, entity_id, display_name, name_id_format,
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
 		       sp_key_transport, signature_alg, wsfed_saml_version,
+		       CASE WHEN org_endpoint THEN (SELECT o.slug FROM core.organizations o WHERE o.id = core.saml_providers.org_id)
+		            ELSE '' END,
 		       lifetime_seconds, enabled, COALESCE(name_id_attribute, ''),
 		       idp_initiated, default_relay_state,
 		       (SELECT o.instance_id::text FROM core.organizations o WHERE o.id = core.saml_providers.org_id),
@@ -55,10 +76,10 @@ func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where, key string) 
 		                                  ORDER BY u.is_default DESC, u.url)
 		                   FROM core.saml_acs_urls u WHERE u.provider_id = core.saml_providers.id), '[]'::jsonb)
 		FROM core.saml_providers
-		WHERE `+where, key).Scan(
+		WHERE `+where, args...).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
-		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg, &p.WSFedSAMLVersion,
+		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg, &p.WSFedSAMLVersion, &p.EndpointOrg,
 		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
 		&p.InstanceID, &p.HasAccessPolicy, &p.HasAssertionHook, &p.ReleasesGroups, &p.ReleasesAttributes,
 		&p.ACSURLs)

@@ -34,6 +34,11 @@ change without the application being reconfigured. `?wtrealm=<realm>` gives the
 certificates of a realm set to `ecdsa-sha256`; an unknown realm gets the default
 document, so this does not say which realms exist.
 
+An application another organisation also holds answers at
+`/wsfed/org/<slug>`, with its metadata at
+`/wsfed/org/<slug>/FederationMetadata.xml`. See
+[saml.md](saml.md#one-entity-id-several-organisations).
+
 ## Endpoints
 
 | | |

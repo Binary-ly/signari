@@ -102,7 +102,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.loadSAMLProvider(ctx, req.Issuer)
+	provider, err := s.providerAt(r, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			s.samlRefuse(w, r, "no service provider is registered with that entity id")
@@ -136,7 +136,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validated, err := saml.ValidateLogoutRequest(&req, provider, s.cfg.Issuer+"/saml/slo", time.Now())
+	validated, err := saml.ValidateLogoutRequest(&req, provider, s.samlEntityID(provider)+"/slo", time.Now())
 	if err != nil {
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -176,7 +176,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doc, err := saml.BuildLogoutResponse(saml.LogoutResponseInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      s.samlEntityID(provider),
 		Destination: sloURL,
 		InResponse:  validated.RequestID,
 		Status:      status,

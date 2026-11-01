@@ -575,6 +575,9 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /wsfed", s.handleWSFed)
 	mux.HandleFunc("POST /wsfed", s.handleWSFed)
 	mux.HandleFunc("GET /FederationMetadata/2007-06/FederationMetadata.xml", s.handleWSFedMetadata)
+	mux.HandleFunc("GET /wsfed/org/{org}", s.handleWSFed)
+	mux.HandleFunc("POST /wsfed/org/{org}", s.handleWSFed)
+	mux.HandleFunc("GET /wsfed/org/{org}/FederationMetadata.xml", s.handleWSFedMetadata)
 	mux.HandleFunc("GET /outpost/hello", s.handleOutpostHello)
 	mux.HandleFunc("POST /outpost/authenticate", s.handleOutpostAuthenticate)
 	mux.HandleFunc("POST /outpost/desktop", s.handleDesktopVerify)
@@ -690,6 +693,12 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET "+pathSAMLInit+"{id}", s.handleSAMLInit)
 	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
+	// The same again for an organisation's own providers: see providerAt.
+	mux.HandleFunc("GET /saml/org/{org}/metadata", s.handleSAMLMetadata)
+	mux.HandleFunc("GET /saml/org/{org}/sso", s.handleSAMLSSO)
+	mux.HandleFunc("POST /saml/org/{org}/sso", s.handleSAMLSSO)
+	mux.HandleFunc("GET /saml/org/{org}/slo", s.handleSAMLSLO)
+	mux.HandleFunc("POST /saml/org/{org}/slo", s.handleSAMLSLO)
 
 	// Inbound: signing in FROM an upstream SAML provider. The mirror of the
 	// three routes above, which serve applications consuming what we issue.

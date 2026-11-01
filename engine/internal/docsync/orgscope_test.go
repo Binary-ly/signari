@@ -38,8 +38,6 @@ import (
 var globalNameKeys = map[string]string{
 	"identity_providers.slug": "unique across organisations since migration 0129: the " +
 		"slug is in the callback URL, which the upstream provider does not scope",
-	"saml_providers.entity_id": "unique across organisations since migration 0130: an " +
-		"AuthnRequest names an entity ID, not a tenant",
 	"instances.issuer": "unique since migration 0002: the issuer is the instance's own " +
 		"identity, above every organisation it hosts",
 	"instance_issuer_aliases.issuer": "unique since migration 0002: an alias is claimed by " +
@@ -58,6 +56,12 @@ var globalPairKeys = map[string]struct{ with, reason string }{
 		"since migration 0138: two tenants can trust one transmitter, and the audience is " +
 		"what it writes to say whose an event is; SourceFor refuses a token whose several " +
 		"audiences reach two"},
+	"saml_providers.entity_id": {"org_endpoint", "held once at the deployment's endpoints " +
+		"since migration 0245, the partial index that was 0130's: a request there names an " +
+		"entity ID and no tenant. A statement that does not say which endpoints finds " +
+		"either organisation's row"},
+	"organizations.slug": {"instance_id", "unique with instance_id since migration 0002: " +
+		"an instance hosts its organisations, and a path names one of them"},
 }
 
 var (

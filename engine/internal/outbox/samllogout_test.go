@@ -203,6 +203,29 @@ func TestASessionEndingTellsTheProviderWithNoBrowser(t *testing.T) {
 
 // A provider down, or saying no, is asked again, and one that answers something else
 // than this request has not answered it.
+// A provider at its organisation's endpoints knows us by the entity id of those.
+func TestALogoutGoesOutAsWhoTheProviderKnows(t *testing.T) {
+	p := newSOAPProvider(t)
+	ctx := context.Background()
+	if _, err := p.pool.Exec(ctx, `UPDATE core.saml_providers SET org_endpoint = true WHERE id = $1::uuid`, p.id); err != nil {
+		t.Fatal(err)
+	}
+	var slug string
+	if err := p.pool.QueryRow(ctx, `SELECT slug FROM core.organizations WHERE id = $1::uuid`, p.orgID).Scan(&slug); err != nil {
+		t.Fatal(err)
+	}
+	p.end(t, p.sid, "")
+	if done, err := p.w.drainSAMLLogouts(ctx); err != nil || done != 1 {
+		t.Fatalf("drained %d, %v", done, err)
+	}
+	if len(p.bodies) != 1 {
+		t.Fatalf("the provider heard %d", len(p.bodies))
+	}
+	if want := "/saml/org/" + slug + "</saml:Issuer>"; !strings.Contains(string(p.bodies[0]), want) {
+		t.Errorf("the request does not end %q: %.400s", want, p.bodies[0])
+	}
+}
+
 func TestAProviderThatDidNotTakeItIsToldAgain(t *testing.T) {
 	p := newSOAPProvider(t)
 	ctx := context.Background()

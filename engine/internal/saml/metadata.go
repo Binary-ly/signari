@@ -13,6 +13,17 @@ const (
 	BindingPOST     = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
 )
 
+// EntityID is this IdP's own entity id at a provider, which is also where its SAML
+// endpoints are: the deployment's, or those of the organisation named. Derived, for the
+// reason there is one function: a provider holds it to the issuer on every assertion and
+// logout message, and two ways to spell it is how one of them comes to disagree.
+func EntityID(issuer, endpointOrg string) string {
+	if endpointOrg == "" {
+		return issuer + "/saml"
+	}
+	return issuer + "/saml/org/" + endpointOrg
+}
+
 // MetadataInput is what the IdP publishes about itself.
 type MetadataInput struct {
 	EntityID string

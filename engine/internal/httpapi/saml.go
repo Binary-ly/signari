@@ -54,10 +54,14 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	// An unknown entity id is NOT an error: it is answered with the default
 	// document, because failing here would turn this endpoint into a way to
 	// enumerate which service providers are registered.
+	slug, ok := s.pathOrg(w, r)
+	if !ok {
+		return
+	}
 	var wantSigned bool
 	signatureAlg := saml.SignatureAlgRSASHA256
 	if sp := r.URL.Query().Get("sp"); sp != "" {
-		if p, perr := s.loadSAMLProvider(ctx, sp); perr == nil {
+		if p, perr := s.providerAt(r, sp); perr == nil {
 			wantSigned = p.WantAuthnRequestsSigned
 			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
@@ -74,15 +78,16 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	entityID := saml.EntityID(s.cfg.Issuer, slug)
 	doc, err := saml.Metadata(saml.MetadataInput{
-		EntityID:                s.samlEntityID(),
-		SSOURL:                  s.cfg.Issuer + "/saml/sso",
+		EntityID:                entityID,
+		SSOURL:                  entityID + "/sso",
 		WantAuthnRequestsSigned: wantSigned,
 		// Advertised now that it is implemented, and not before -- the same rule
 		// OIDC discovery follows here. An endpoint in metadata that answers with
 		// an error is worse than one that is absent: the service provider calls
 		// it, fails, and blames its own configuration.
-		SLOURL:       s.cfg.Issuer + "/saml/slo",
+		SLOURL:       entityID + "/slo",
 		Certificates: certs,
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
@@ -112,12 +117,34 @@ func writeMetadata(w http.ResponseWriter, r *http.Request, doc string) {
 	_, _ = w.Write(body)
 }
 
-// samlEntityID is our own entity id.
+// samlEntityID is our own entity id at a provider.
 //
 // Derived from the issuer rather than configured separately, because two names
 // for the same thing is how a deployment ends up with metadata that no service
 // provider can match against the assertions it receives.
-func (s *Server) samlEntityID() string { return s.cfg.Issuer + "/saml" }
+func (s *Server) samlEntityID(p *saml.Provider) string {
+	return saml.EntityID(s.cfg.Issuer, p.EndpointOrg)
+}
+
+// pathOrg is the organisation slug a metadata path names, "" for the deployment's
+// endpoints. One that names nothing here is a 404, and ok is false.
+func (s *Server) pathOrg(w http.ResponseWriter, r *http.Request) (slug string, ok bool) {
+	slug = r.PathValue("org")
+	if slug == "" {
+		return "", true
+	}
+	_, err := store.OrgBySlug(r.Context(), s.db, s.instanceID, slug)
+	switch {
+	case errors.Is(err, store.ErrSAMLProviderUnknown):
+		http.NotFound(w, r)
+		return "", false
+	case err != nil:
+		s.log.Error("reading the organisation a path names", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return "", false
+	}
+	return slug, true
+}
 
 // handleSAMLSSO answers an AuthnRequest on either binding.
 func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +198,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := s.loadSAMLProvider(ctx, req.Issuer)
+	provider, err := s.providerAt(r, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			// Deliberately NOT a SAML error response. Answering an unknown entity
@@ -199,7 +226,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	validated, err := saml.ValidateAuthnRequest(&req, provider, s.cfg.Issuer+"/saml/sso", time.Now())
+	validated, err := saml.ValidateAuthnRequest(&req, provider, s.samlEntityID(provider)+"/sso", time.Now())
 	if err != nil {
 		// Refused locally, again. Every failure here is a statement about the
 		// request itself, so there is no established, trustworthy place to send a
@@ -264,7 +291,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the user is not signed in and IsPassive was requested", relayState)
 			return
 		}
-		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
+		back := r.URL.Path + "?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
 		if rung >= 2 {
 			http.Redirect(w, r, parkLoginForMFA(back), http.StatusSeeOther)
 			return
@@ -563,7 +590,7 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
 	input := saml.ResponseInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      s.samlEntityID(p),
 		Destination: v.ACSURL,
 		InResponse:  v.RequestID,
 		Audience:    p.EntityID,
@@ -728,7 +755,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 	p *saml.Provider, status, reason, relayState string) {
 
 	doc, err := saml.BuildStatusResponse(saml.StatusInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      s.samlEntityID(p),
 		Destination: v.ACSURL,
 		InResponse:  v.RequestID,
 		Status:      status,

@@ -73,7 +73,7 @@ func (w *Worker) tellSAMLProvider(ctx context.Context, n store.SAMLLogoutNotice)
 	if format == "" {
 		format = saml.NameIDFormatPersistent
 	}
-	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{Issuer: as.issuer + "/saml", Destination: t.URL,
+	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{Issuer: saml.EntityID(as.issuer, t.EndpointOrg), Destination: t.URL,
 		NameID: t.NameID, NameIDFormat: format, SessionIndex: t.SessionIndex, Now: time.Now()}, key.Signer(), cert)
 	if err != nil {
 		return err

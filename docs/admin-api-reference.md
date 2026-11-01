@@ -3127,6 +3127,7 @@ Answers:
 | `entity_id` | string | always |
 | `id` | string | always |
 | `name_id_format` | string | always |
+| `org_endpoint` | boolean | always |
 
 ### `PATCH /admin/organizations/{orgID}/saml-providers/{providerID}`
 
@@ -3142,6 +3143,7 @@ Takes:
 | `idp_initiated` | boolean |  |
 | `lifetime_s` | integer |  |
 | `name_id_attribute` | string |  |
+| `org_endpoint` | boolean |  |
 | `sign_assertions` | boolean |  |
 | `sign_responses` | boolean |  |
 | `signature_alg` | string |  |

@@ -298,6 +298,7 @@ federation in:
   saml idp-initiated        let a sign-in to a service provider start from the portal
   saml soap-logout          tell a service provider of a logout with no browser
   saml wsfed-token          which SAML a WS-Federation application's token is in
+  saml org-endpoint         have a service provider answer at its organisation's endpoints
   saml attribute-release    which local attribute a SAML attribute carries
   saml group-release        which groups a service provider is told of
   scim-source add           register an inbound SCIM source and mint its token
@@ -1678,7 +1679,7 @@ func run(args []string) (err error) {
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
 	case "saml refresh-sp":
-		return samlRefreshSP(ctx, conn, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+		return samlRefreshSP(ctx, conn, *orgID, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
 			unsigned: *metadataUnsigned}, *dryRun)
 	case "idp refresh-saml":
 		return idpRefreshSAML(ctx, conn, *slug, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
@@ -1863,7 +1864,7 @@ func run(args []string) (err error) {
 	case "brand show":
 		return brandShow(ctx, conn, *issuer)
 	case "saml attribute-release":
-		return samlAttributeRelease(ctx, conn, *entityID, *upstreamClaim, *localAttribute, *removeMember)
+		return samlAttributeRelease(ctx, conn, *orgID, *entityID, *upstreamClaim, *localAttribute, *removeMember)
 	case "saml signing":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -1874,13 +1875,15 @@ func run(args []string) (err error) {
 		if given["sign-responses"] {
 			responses = signResponses
 		}
-		return samlSigning(ctx, conn, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
+		return samlSigning(ctx, conn, *orgID, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
 	case "saml nameid":
-		return samlNameID(ctx, conn, *entityID, *localAttribute)
+		return samlNameID(ctx, conn, *orgID, *entityID, *localAttribute)
 	case "saml soap-logout":
-		return samlSOAPLogout(ctx, conn, *entityID, *subURL)
+		return samlSOAPLogout(ctx, conn, *orgID, *entityID, *subURL)
 	case "saml wsfed-token":
-		return samlWSFedToken(ctx, conn, *entityID, *samlVersion)
+		return samlWSFedToken(ctx, conn, *orgID, *entityID, *samlVersion)
+	case "saml org-endpoint":
+		return samlOrgEndpoint(ctx, conn, *orgID, *entityID, *removeMember)
 	case "saml idp-initiated":
 		var relayState *string
 		fs.Visit(func(f *flag.Flag) {
@@ -1888,9 +1891,9 @@ func run(args []string) (err error) {
 				relayState = samlRelayState
 			}
 		})
-		return samlIdPInitiated(ctx, conn, *entityID, !*removeMember, relayState)
+		return samlIdPInitiated(ctx, conn, *orgID, *entityID, !*removeMember, relayState)
 	case "saml group-release":
-		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
+		return samlGroupRelease(ctx, conn, *orgID, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -3975,16 +3978,25 @@ func registerSP(ctx context.Context, conn *pgx.Conn, orgID string, spec store.SA
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := store.AddSAMLProvider(ctx, tx, orgID, spec); err != nil {
+	id, err := store.AddSAMLProvider(ctx, tx, orgID, spec)
+	if err != nil {
 		if errors.Is(err, store.ErrSAMLEntityTaken) {
-			return fmt.Errorf("a service provider with entity id %q is already registered "+
-				"in this deployment. Entity IDs are unique across organisations: an "+
-				"AuthnRequest names only its entity ID and the SSO endpoint names no "+
-				"organisation, so two registrations would be answered at random", spec.EntityID)
+			return fmt.Errorf("this organisation already has a service provider with entity id %q", spec.EntityID)
 		}
 		return err
 	}
-	return tx.Commit(ctx)
+	onOrg, err := store.SAMLOnOrgEndpoint(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if onOrg {
+		fmt.Println("Another organisation holds this entity id at the deployment's endpoints, so this")
+		fmt.Println("one answers at its own: give the provider the metadata from /saml/org/<slug>/metadata.")
+	}
+	return nil
 }
 
 // samlAddSP registers a service provider.

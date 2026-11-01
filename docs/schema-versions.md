@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0245 saml_org_endpoint
+
+Not compatible with the release before: stop it before migrating.
+
+Two organisations holding one service provider (8.34). A SaaS application has one entity ID for all its customers, and 0130 let only one of them register it, because the IdP's endpoints named no organisation. Now a provider answers at one of two places: the deployment's endpoints, where an entity ID is still held once, or endpoints of its organisation, where the path says whose it is and the entity ID need only be held once in that organisation.
+
 ## 0244 kerberos_realms
 
 Compatible with the release before: its binary may still serve this schema.

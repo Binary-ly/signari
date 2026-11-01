@@ -109,7 +109,7 @@ func (s *Server) wsFedLanding(r *http.Request, q url.Values) string {
 		return ""
 	}
 	if realm := q.Get("wtrealm"); realm != "" {
-		if p, err := s.loadSAMLProvider(ctx, realm); err == nil {
+		if p, err := s.providerAt(r, realm); err == nil {
 			if _, derr := wsFedDestination(p, reply); derr == nil {
 				return reply
 			}
@@ -164,20 +164,20 @@ func readWSFedDemand(q url.Values) (wsFedDemand, error) {
 // whr, whose provider has had its say. A person can take either off the URL anyway:
 // the request is not signed, so a relying party that cares reads the token's
 // authentication instant, which only signing in can move.
-func wsFedResume(q url.Values) string {
+func wsFedResume(path string, q url.Values) string {
 	again := url.Values{}
 	for name, given := range q {
 		if name != "wfresh" && name != "whr" {
 			again[name] = given
 		}
 	}
-	return "/wsfed?" + again.Encode()
+	return path + "?" + again.Encode()
 }
 
 // wsFedToSignIn sends somebody to sign in: to the provider whr names when it names
 // one, or to the sign-in page.
 func (s *Server) wsFedToSignIn(w http.ResponseWriter, r *http.Request, p *saml.Provider, q url.Values, d wsFedDemand) {
-	back := wsFedResume(q)
+	back := wsFedResume(r.URL.Path, q)
 	if whr := q.Get("whr"); whr != "" {
 		slug, kind, err := s.wsFedHomeRealm(r.Context(), p.OrgID, whr)
 		if err != nil {
@@ -200,9 +200,13 @@ func (s *Server) wsFedToSignIn(w http.ResponseWriter, r *http.Request, p *saml.P
 // error, so this does not say which realms exist.
 func (s *Server) handleWSFedMetadata(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	slug, ok := s.pathOrg(w, r)
+	if !ok {
+		return
+	}
 	signatureAlg := saml.SignatureAlgRSASHA256
 	if realm := r.URL.Query().Get("wtrealm"); realm != "" {
-		if p, err := s.loadSAMLProvider(ctx, realm); err == nil {
+		if p, err := s.providerAt(r, realm); err == nil {
 			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
 			s.log.Error("loading a realm for metadata", "err", err)
@@ -216,8 +220,12 @@ func (s *Server) handleWSFedMetadata(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
+	endpoint := s.cfg.Issuer + "/wsfed"
+	if slug != "" {
+		endpoint += "/org/" + slug
+	}
 	doc, err := saml.WSFederationMetadata(saml.WSFederationMetadataInput{
-		EntityID: s.samlEntityID(), Endpoint: s.cfg.Issuer + "/wsfed", Certificates: certs})
+		EntityID: saml.EntityID(s.cfg.Issuer, slug), Endpoint: endpoint, Certificates: certs})
 	if err != nil {
 		s.log.Error("rendering WS-Federation metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
@@ -237,7 +245,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 
 	// The realm is the SAML entity id. Reusing the registry means a WS-Federation
 	// application is configured, audited and released exactly like a SAML one.
-	p, err := s.loadSAMLProvider(ctx, realm)
+	p, err := s.providerAt(r, realm)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found",
 			"no application is registered with that wtrealm")

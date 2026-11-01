@@ -671,10 +671,10 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		var id string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO core.saml_providers (org_id, entity_id, display_name,
-			                                 name_id_format, enabled, idp_initiated, default_relay_state)
+			                                 name_id_format, enabled, idp_initiated, default_relay_state, org_endpoint)
 			VALUES ($1::uuid, $2, COALESCE(NULLIF($3, ''), $2),
 			        COALESCE(NULLIF($4, ''), 'persistent'), COALESCE($5::boolean, true),
-			        COALESCE($6::boolean, false), COALESCE($7::text, ''))
+			        COALESCE($6::boolean, false), COALESCE($7::text, ''), `+store.EntityHeldElsewhere+`)
 			ON CONFLICT (org_id, entity_id) DO UPDATE SET
 				display_name = COALESCE(NULLIF($3, ''), core.saml_providers.display_name),
 				name_id_format = COALESCE(NULLIF($4, ''), core.saml_providers.name_id_format),
@@ -686,9 +686,8 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			orgID, sp.EntityID, sp.Name, sp.NameID, sp.Enabled, sp.IdPInitiated, sp.DefaultRelayState).Scan(&id); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "saml_providers_entity_id_key" {
-				return fmt.Errorf("saml provider %q is registered by another organisation; "+
-					"entity IDs are unique across the deployment, because an AuthnRequest "+
-					"names only its entity ID and the SSO endpoint names no organisation", sp.EntityID)
+				return fmt.Errorf("saml provider %q was registered by another organisation "+
+					"as this ran; apply again", sp.EntityID)
 			}
 			return fmt.Errorf("saml provider %q: %w", sp.EntityID, err)
 		}

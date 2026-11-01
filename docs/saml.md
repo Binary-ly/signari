@@ -25,23 +25,45 @@ attribute and group releases the same way, under
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
 
-## One entity ID, one organisation
+## One entity ID, several organisations
 
-An entity ID can be registered by only one organisation in a deployment.
-`saml add-sp` and `signari apply` both refuse a second registration and say
-which rule they are applying, and migration 0130 will not run over a database
-that already has a duplicate. The reason is that an AuthnRequest names only its
-issuer, a WS-Federation `wtrealm` does the same, and these endpoints do not name
-an organisation either. With two rows for one entity ID, each request was
-answered with one of them at random. The other tenant's certificate checked the
-signature, its ACS URLs received the assertion and its attribute release decided
-what went into it.
+A SaaS application usually sends the same entity ID for every customer, so two
+organisations in a deployment may both need to register it. An AuthnRequest names
+only its issuer, and a WS-Federation `wtrealm` does the same, so the path has to say
+whose provider it is:
 
-The second registration is refused rather than the sign-in. If ambiguity were
-refused at sign-in, any tenant could switch off another tenant's SAML sign-in
-just by registering the same entity ID. A SaaS application that sends the same
-entity ID for every customer can therefore serve only one organisation per
-deployment, until the endpoints carry the organisation (see *Not yet built*).
+| | |
+|---|---|
+| The deployment's endpoints | `/saml/sso`, `/saml/slo`, `/saml/metadata`, `/wsfed`. An entity ID is held here once. This server's entity ID is `<issuer>/saml` |
+| An organisation's endpoints | `/saml/org/<slug>/sso`, `/slo`, `/metadata`, `/wsfed/org/<slug>`, and `/wsfed/org/<slug>/FederationMetadata.xml`. An entity ID is held once in the organisation. This server's entity ID is `<issuer>/saml/org/<slug>` |
+
+A provider answers at one or the other. Registering an entity ID somebody else holds
+at the deployment's endpoints puts the new registration at its organisation's, and
+`saml add-sp`, the Admin API and `signari apply` all do this without being asked:
+
+```sh
+signari saml add-sp -org <uuid> -metadata https://app.example.com/saml/metadata -metadata-unsigned
+Another organisation holds this entity id at the deployment's endpoints, so this
+one answers at its own: give the provider the metadata from /saml/org/<slug>/metadata.
+```
+
+Nothing moves for whoever held it first. A request at a path finds only that path's
+provider, so one organisation's certificate cannot check another's request, its reply
+URLs cannot receive the other's assertion, and a person of one is refused at the
+other's path.
+
+Registration decides this rather than sign-in, on purpose. Refusing an entity ID two
+organisations hold at the deployment's endpoints would let any tenant switch off
+another's sign-in by registering the same entity ID.
+
+`signari saml org-endpoint -entity-id <id> [-org <uuid>]` moves a provider to its
+organisation's endpoints, `-remove` back, which is refused while somebody else holds
+the entity ID there. Either way the provider has to be given the new metadata,
+because the entity ID it knows this server by has changed. So does renaming an
+organisation's slug.
+
+Where two organisations hold an entity ID, a command that takes `-entity-id` needs
+`-org` as well, and says so.
 
 ## What was built against, and why it looks like this
 
@@ -600,10 +622,6 @@ provider, which was not expecting anything.
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
-- **Per-organisation SSO endpoints and IdP entity IDs.** These would let two
-  tenants register the same service provider, which is the usual shape of a
-  SaaS application. Until they exist, an entity ID belongs to one organisation
-  (see above).
 
-Each is absent from the metadata document as well as from this list — the rule
+It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

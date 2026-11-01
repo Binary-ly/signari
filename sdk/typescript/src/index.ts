@@ -2528,6 +2528,7 @@ export interface GetOrganizationsOrgIDSAMLProvidersResponseProvidersItem {
   name: string
   name_id_attribute: string
   name_id_format: string
+  org_endpoint: boolean
   sign_assertions: boolean
   sign_responses: boolean
   signature_alg: string
@@ -3129,6 +3130,7 @@ export interface PatchOrganizationsOrgIDSAMLProvidersProviderIDRequest {
   idp_initiated?: boolean
   lifetime_s?: number
   name_id_attribute?: string
+  org_endpoint?: boolean
   sign_assertions?: boolean
   sign_responses?: boolean
   signature_alg?: string
@@ -3829,6 +3831,7 @@ export interface PostOrganizationsOrgIDSAMLProvidersResponse {
   entity_id: string
   id: string
   name_id_format: string
+  org_endpoint: boolean
 }
 
 /** A JSON object of the Admin API. */

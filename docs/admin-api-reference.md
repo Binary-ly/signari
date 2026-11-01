@@ -31,7 +31,7 @@ refused with `412` when the configuration moved since the version it names.
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
-| [identity-providers](#identity-providers) | 9 |
+| [identity-providers](#identity-providers) | 13 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
 | [instances / federation](#instances--federation) | 2 |
@@ -1578,6 +1578,72 @@ Answers:
 | `config_version` | integer |  |
 | `entity_id` | string | always |
 | `notes` | list of string | always |
+
+### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use`
+
+Say whether a SAML upstream is sent signed requests and must encrypt its assertions. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse`, TypeScript `putOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `require_encryption` | boolean |  |
+| `sign_requests` | boolean |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+
+### `GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys`
+
+A SAML upstream's keys in this deployment, with their certificates. Needs config:read.
+
+Go `GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys`, TypeScript `getOrganizationsOrgIDIdentityProvidersSlugSAMLKeys`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `keys` | list of object | always |
+
+### `POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys`
+
+Make a key toward a SAML upstream, to sign requests or to be encrypted to. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeys`, TypeScript `postOrganizationsOrgIDIdentityProvidersSlugSAMLKeys`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `purpose` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `certificate` | string | always |
+| `config_version` | integer | always |
+| `created_at` | string | always |
+| `id` | string | always |
+| `purpose` | string | always |
+
+### `DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}`
+
+Retire a key toward a SAML upstream. Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID`, TypeScript `deleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `retired` | string | always |
 
 ### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth`
 

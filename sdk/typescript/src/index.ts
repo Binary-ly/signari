@@ -198,6 +198,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/group-map`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}: Retire a key
+  // toward a SAML upstream. Needs organizations:write.
+  deleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID(orgID: string, slug: string, keyID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse>> {
+    return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys/${encodeURIComponent(keyID)}`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/migration-source: Remove the migration source. Needs
   // organizations:write.
   deleteOrganizationsOrgIDMigrationSource(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDMigrationSourceResponse>> {
@@ -531,6 +537,12 @@ export class SignariAdmin {
   // the issuers assertions come from. Needs config:read.
   getOrganizationsOrgIDIdentityProviders(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDIdentityProvidersResponse>> {
     return this.call<GetOrganizationsOrgIDIdentityProvidersResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys: A SAML upstream's keys
+  // in this deployment, with their certificates. Needs config:read.
+  getOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>> {
+    return this.call<GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/migration-source: The provider this organisation is migrating
@@ -972,6 +984,12 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/metadata`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys: Make a key toward a
+  // SAML upstream, to sign requests or to be encrypted to. Needs organizations:write.
+  postOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(orgID: string, slug: string, body: PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>> {
+    return this.call<PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys`, body, opts)
+  }
+
   // POST /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a
   // credential, as a first sign-in would, and name the step that failed. Needs
   // organizations:write.
@@ -1220,6 +1238,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/group-map`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use: Say whether a SAML
+  // upstream is sent signed requests and must encrypt its assertions. Needs organizations:write.
+  putOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse>> {
+    return this.call<PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-key-use`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth: Say how this engine
   // proves itself at the provider's token endpoint. Needs organizations:write.
   putOrganizationsOrgIDIdentityProvidersSlugTokenAuth(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>> {
@@ -1454,6 +1478,12 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
   mapped: boolean
   remote_group: string
   slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse {
+  config_version: number
+  retired: string
 }
 
 /** A JSON object of the Admin API. */
@@ -2203,6 +2233,20 @@ export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttr
 export interface GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem {
   group: string
   remote_group: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse {
+  keys: GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem {
+  certificate: string
+  created_at: string
+  id: string
+  purpose: string
+  retired_at: string | null
 }
 
 /** A JSON object of the Admin API. */
@@ -3577,6 +3621,20 @@ export interface PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChan
 }
 
 /** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest {
+  purpose?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse {
+  certificate: string
+  config_version: number
+  created_at: string
+  id: string
+  purpose: string
+}
+
+/** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDMigrationSourceTestRequest {
   password?: string
   username?: string
@@ -4255,6 +4313,17 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
   mapped: boolean
   remote_group: string
   slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseRequest {
+  require_encryption?: boolean
+  sign_requests?: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse {
+  config_version: number
 }
 
 /** A JSON object of the Admin API. */

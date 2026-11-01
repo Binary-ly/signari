@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"crypto"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -51,6 +52,11 @@ type InboundProvider struct {
 	// SkewSeconds tolerates clock drift between us and the upstream. Bounded:
 	// see clampSkew.
 	SkewSeconds int
+
+	// SignRequests says this upstream is to be sent signed requests, by
+	// RequestSigner when the request is built.
+	SignRequests  bool
+	RequestSigner crypto.Signer
 }
 
 // AuthnRequestOut is a request to send to an upstream provider.
@@ -65,10 +71,10 @@ type AuthnRequestOut struct {
 
 // BuildAuthnRequest builds a request to send to the upstream IdP.
 //
-// Unsigned. Most upstreams do not require SP-signed requests, and signing one
-// requires a key exchange in the other direction that many deployments never
-// complete. The security of this flow rests on verifying the RESPONSE, which is
-// where the authentication claim actually lives.
+// Unsigned unless the provider asks. Most upstreams do not require SP-signed
+// requests, and signing one requires a key exchange in the other direction that
+// many deployments never complete. The security of this flow rests on verifying
+// the RESPONSE, which is where the authentication claim actually lives.
 func BuildAuthnRequest(p *InboundProvider, relayState string,
 	now time.Time) (*AuthnRequestOut, error) {
 
@@ -79,6 +85,8 @@ func BuildAuthnRequest(p *InboundProvider, relayState string,
 		return nil, fmt.Errorf("provider has no SP entity ID")
 	case p.ACSURL == "":
 		return nil, fmt.Errorf("provider has no assertion consumer service URL")
+	case p.SignRequests && p.RequestSigner == nil:
+		return nil, fmt.Errorf("provider is to be sent signed requests and there is no key to sign them with")
 	}
 
 	id, err := newID()
@@ -122,6 +130,19 @@ func BuildAuthnRequest(p *InboundProvider, relayState string,
 	u, err := url.Parse(p.SSOURL)
 	if err != nil {
 		return nil, fmt.Errorf("SSO URL %q: %w", p.SSOURL, err)
+	}
+	if p.SignRequests {
+		// The signature is over these octets as they are sent, so they are added
+		// to the URL as a string and never go through a url.Values.
+		signed, err := SignRedirectQuery("SAMLRequest", encoded, relayState, p.RequestSigner)
+		if err != nil {
+			return nil, err
+		}
+		if u.RawQuery != "" {
+			signed = u.RawQuery + "&" + signed
+		}
+		u.RawQuery = signed
+		return &AuthnRequestOut{ID: id, RedirectURL: u.String(), XML: xml}, nil
 	}
 	q := u.Query()
 	q.Set("SAMLRequest", encoded)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,15 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if src.Provider.SignRequests {
+		signer, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
+		if serr != nil {
+			s.log.Error("reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
+			s.federationError(w, r, "That sign-in method is not configured correctly.")
+			return
+		}
+		src.Provider.RequestSigner = signer
+	}
 	req, err := saml.BuildAuthnRequest(src.Provider, relay, time.Now())
 	if err != nil {
 		s.log.Error("building the SAML request", "slug", slug, "err", err)
@@ -224,15 +234,39 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
+	spKeys, err := store.SAMLSourceKeys(r.Context(), s.db, src.OrgID, slug)
+	if err != nil {
+		s.log.Error("reading an upstream's keys", "slug", slug, "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
 
-	// No signing certificate is advertised: this SP does not sign its requests
-	// and does not accept encrypted assertions yet, and advertising either would
-	// be the "documented but absent" failure this project sweeps for.
+	// The keys that are live, whether or not the upstream is held to them yet:
+	// a provider has to have a certificate before it can be asked to use it, and
+	// a retired one is no longer ours to hand out.
+	var descriptors strings.Builder
+	for _, k := range spKeys {
+		if k.RetiredAt != nil {
+			continue
+		}
+		certs, cerr := saml.ParseCertificates(k.Certificate)
+		if cerr != nil || len(certs) != 1 {
+			s.log.Error("an upstream's key has an unreadable certificate", "slug", slug, "key", k.ID, "err", cerr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+		descriptors.WriteString(`
+    <KeyDescriptor use="` + k.Purpose + `">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>` +
+			saml.CertificateB64(certs[0].Raw) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+    </KeyDescriptor>`)
+	}
+
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` +
 		xmlAttr(src.Provider.SPEntityID) + `">
-  <SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true"
-      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+  <SPSSODescriptor AuthnRequestsSigned="` + strconv.FormatBool(src.Provider.SignRequests) + `" WantAssertionsSigned="true"
+      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` + descriptors.String() + `
     <NameIDFormat>` + xmlAttr(saml.FullNameIDFormat(src.Provider.NameIDFormat)) +
 		`</NameIDFormat>
     <AssertionConsumerService index="0" isDefault="true"

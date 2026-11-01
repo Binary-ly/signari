@@ -84,6 +84,11 @@ func EnsureCertificate(ctx context.Context, tx pgx.Tx, kid, issuer string, signe
 // not by a chain to a public root. A CA-issued certificate here would cost money
 // and add an expiry cliff without changing what is actually verified.
 func selfSign(issuer, kid string, signer crypto.Signer) ([]byte, time.Time, error) {
+	return selfSignFor(issuer, "key "+kid, signer, x509.KeyUsageDigitalSignature)
+}
+
+// selfSignFor is selfSign for a key used as usage says, named by label.
+func selfSignFor(issuer, label string, signer crypto.Signer, usage x509.KeyUsage) ([]byte, time.Time, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("generating a serial number: %w", err)
@@ -107,14 +112,14 @@ func selfSign(issuer, kid string, signer crypto.Signer) ([]byte, time.Time, erro
 		// whichever it had loaded last when the names were the same: xmlsec1
 		// verified in one order and found no key in another.
 		Subject: pkix.Name{CommonName: cn, Organization: []string{"Signari"},
-			OrganizationalUnit: []string{"key " + kid}},
+			OrganizationalUnit: []string{label}},
 		// Backdated by an hour so a service provider whose clock is behind ours
 		// does not reject a certificate that is technically not yet valid.
 		NotBefore: now.Add(-1 * time.Hour),
 		NotAfter:  notAfter,
-		// Signing only. Not a TLS certificate, and marking it as one would invite
-		// somebody to reuse it as one.
-		KeyUsage:              x509.KeyUsageDigitalSignature,
+		// Not a TLS certificate, and marking it as one would invite somebody to
+		// reuse it as one.
+		KeyUsage:              usage,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}

@@ -98,6 +98,8 @@ var commandFlags = map[string][]string{
 	"idp auth":                        {"client-cert-file", "client-key-file", "method", "slug"},
 	"idp check":                       {"slug"},
 	"idp refresh-saml":                {"dry-run", "metadata", "metadata-signer", "metadata-unsigned", "slug"},
+	"idp saml-key":                    {"purpose", "retire", "slug"},
+	"idp saml-use":                    {"require-encryption", "sign-requests", "slug"},
 	"idp disable":                     {"slug"},
 	"idp domains":                     {"domains", "slug"},
 	"idp enable":                      {"slug"},

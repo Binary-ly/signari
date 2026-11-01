@@ -292,6 +292,12 @@ type DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Retired       string `json:"retired"`
+}
+
 // DeleteOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDMigrationSourceResponse struct {
 	ConfigVersion int64 `json:"config_version"`
@@ -1039,6 +1045,20 @@ type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemAttributeMapItem
 type GetOrganizationsOrgIDIdentityProvidersResponseProvidersItemGroupMapItem struct {
 	Group       string `json:"group"`
 	RemoteGroup string `json:"remote_group"`
+}
+
+// GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse struct {
+	Keys []GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem `json:"keys"`
+}
+
+// GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem struct {
+	Certificate string  `json:"certificate"`
+	CreatedAt   string  `json:"created_at"`
+	ID          string  `json:"id"`
+	Purpose     string  `json:"purpose"`
+	RetiredAt   *string `json:"retired_at"`
 }
 
 // GetOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
@@ -2412,6 +2432,20 @@ type PostOrganizationsOrgIDIdentityProvidersSlugMetadataResponseChangesItem stru
 	To    string `json:"to"`
 }
 
+// PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest struct {
+	Purpose *string `json:"purpose,omitempty"`
+}
+
+// PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse struct {
+	Certificate   string `json:"certificate"`
+	ConfigVersion int64  `json:"config_version"`
+	CreatedAt     string `json:"created_at"`
+	ID            string `json:"id"`
+	Purpose       string `json:"purpose"`
+}
+
 // PostOrganizationsOrgIDMigrationSourceTestRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDMigrationSourceTestRequest struct {
 	Password *string `json:"password,omitempty"`
@@ -3093,6 +3127,17 @@ type PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseRequest struct {
+	RequireEncryption *bool `json:"require_encryption,omitempty"`
+	SignRequests      *bool `json:"sign_requests,omitempty"`
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse struct {
+	ConfigVersion int64 `json:"config_version"`
+}
+
 // PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest struct {
 	ClientCertificate *string `json:"client_certificate,omitempty"`
@@ -3625,6 +3670,18 @@ func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugAttributeMap(ctx c
 func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx context.Context, orgID string, slug string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/group-map", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID is DELETE
+// /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}: Retire a key toward a
+// SAML upstream. Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID(ctx context.Context, orgID string, slug string, keyID string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys/"+url.PathEscape(keyID), nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4265,6 +4322,18 @@ func (c *Client) GetOrganizationsOrgIDEventSubscriptions(ctx context.Context, or
 func (c *Client) GetOrganizationsOrgIDIdentityProviders(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDIdentityProvidersResponse, int64, error) {
 	var out GetOrganizationsOrgIDIdentityProvidersResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys is GET
+// /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys: A SAML upstream's keys in this
+// deployment, with their certificates. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.Context, orgID string, slug string, opts ...Option) (*GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse, int64, error) {
+	var out GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5103,6 +5172,18 @@ func (c *Client) PostOrganizationsOrgIDIdentityProvidersSlugMetadata(ctx context
 	return &out, v, nil
 }
 
+// PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeys is POST
+// /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys: Make a key toward a SAML
+// upstream, to sign requests or to be encrypted to. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysRequest, opts ...Option) (*PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse, int64, error) {
+	var out PostOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // PostOrganizationsOrgIDMigrationSourceTest is POST
 // /admin/organizations/{orgID}/migration-source/test: Ask the migration source about a credential,
 // as a first sign-in would, and name the step that failed. Needs organizations:write.
@@ -5567,6 +5648,18 @@ func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugAttributeMap(ctx cont
 func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugGroupMapRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse, int64, error) {
 	var out PutOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/group-map", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse is PUT
+// /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use: Say whether a SAML upstream
+// is sent signed requests and must encrypt its assertions. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse, int64, error) {
+	var out PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUseResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-key-use", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

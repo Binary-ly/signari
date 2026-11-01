@@ -52,6 +52,7 @@ var columnClass = map[string]string{
 	"scim_targets.credentials_enc":      "rootSealed",
 	"ssf_streams.auth_token":            "rootSealed",
 	"federated_tokens.sealed":           "rootSealed",
+	"saml_source_keys.key_sealed":       "rootSealed",
 
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.

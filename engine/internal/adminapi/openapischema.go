@@ -597,6 +597,17 @@ var opSchemas = map[string]opSchema{
 		typeOf[samlMetadataRequest](), samlMetadataReadSchema},
 	"POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata": {http.StatusOK,
 		typeOf[samlMetadataRequest](), samlMetadataReadSchema},
+	"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys": {http.StatusOK, nil, object([]string{"keys"},
+		map[string]jsonSchema{"keys": arrayOf(object([]string{"id", "purpose", "certificate", "created_at", "retired_at"},
+			map[string]jsonSchema{"id": uuidStr(), "purpose": str(), "certificate": str(), "created_at": str(),
+				"retired_at": nullable(str())}))})},
+	"POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys": {http.StatusCreated,
+		typeOf[addSAMLSourceKeyRequest](), object([]string{"id", "purpose", "certificate", "created_at", "config_version"},
+			withVersion(map[string]jsonSchema{"id": uuidStr(), "purpose": str(), "certificate": str(), "created_at": str()}))},
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}": {http.StatusOK, nil,
+		object([]string{"retired", "config_version"}, withVersion(map[string]jsonSchema{"retired": uuidStr()}))},
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use": {http.StatusOK,
+		typeOf[samlKeyUseRequest](), object([]string{"config_version"}, withVersion(map[string]jsonSchema{}))},
 	"POST /admin/organizations/{orgID}/saml-providers": {http.StatusCreated, typeOf[addSAMLProviderRequest](), object(
 		[]string{"id", "entity_id", "name_id_format", "config_version"}, withVersion(map[string]jsonSchema{
 			"id": uuidStr(), "entity_id": str(), "name_id_format": str()}))},

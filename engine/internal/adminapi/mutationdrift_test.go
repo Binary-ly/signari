@@ -607,6 +607,31 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftSAMLUpstream(t, s)
+				return p + "/saml-keys"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"purpose":"signing"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftSAMLUpstream(t, s)
+				return p + "/saml-keys/" + driftSAMLKey(t, s, org, slug, "signing")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftSAMLUpstream(t, s)
+				driftSAMLKey(t, s, org, slug, "signing")
+				return p + "/saml-key-use"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"sign_requests":true}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				_, p := newDriftSAMLProvider(t, s)

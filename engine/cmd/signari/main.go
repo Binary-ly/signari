@@ -270,6 +270,8 @@ federation in:
   idp list                  show external sign-in providers
   idp check                 probe a provider's discovery document and keys
   idp refresh-saml          read a SAML upstream's metadata again
+  idp saml-key              make, retire or list this deployment's keys toward a SAML upstream
+  idp saml-use              say whether a SAML upstream gets signed requests and must encrypt
   idp disable               take an upstream provider out of service
   idp enable                put an upstream provider back in service
   idp assertions            allow or refuse RFC 7523 assertions from a provider
@@ -811,6 +813,10 @@ func run(args []string) (err error) {
 	oauth2Verified := fs.String("userinfo-email-verified", "", "`idp add -kind oauth2`: the path to a JSON true saying "+
 		"the address is confirmed, needed to trust one")
 	oauth2Name := fs.String("userinfo-name", "", "`idp add -kind oauth2`: the path to their name, default name")
+	samlKeyPurpose := fs.String("purpose", "", "idp saml-key: what the new key is for: signing or encryption")
+	samlKeyRetire := fs.String("retire", "", "idp saml-key: the id of the key to retire")
+	samlSignRequests := fs.Bool("sign-requests", false, "idp saml-use: sign the requests sent to this upstream")
+	samlRequireEncryption := fs.Bool("require-encryption", false, "idp saml-use: refuse an assertion from this upstream that is not encrypted")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
 	requireVerified := fs.Bool("require-verified-email", true,
 		"`idp verified-email`: a new account through the provider needs an address it verified and is believed about")
@@ -1670,6 +1676,19 @@ func run(args []string) (err error) {
 	case "idp refresh-saml":
 		return idpRefreshSAML(ctx, conn, *slug, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
 			unsigned: *metadataUnsigned}, *dryRun)
+	case "idp saml-key":
+		return idpSAMLKey(ctx, conn, *slug, *samlKeyPurpose, *samlKeyRetire)
+	case "idp saml-use":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var signing, encryption *bool
+		if given["sign-requests"] {
+			signing = samlSignRequests
+		}
+		if given["require-encryption"] {
+			encryption = samlRequireEncryption
+		}
+		return idpSAMLUse(ctx, conn, *slug, signing, encryption)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":

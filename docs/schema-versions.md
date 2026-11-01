@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0240 saml_source_keys
+
+Compatible with the release before: its binary may still serve this schema.
+
+This deployment's own keys toward an upstream SAML identity provider (8.04): one to sign its requests, which some providers insist on, and one the provider encrypts assertions to. Per upstream and apart from the keys that sign tokens, so that one partner's certificate is nobody else's and giving a partner a decryption key gives it nothing else. Several of each may be live, since a rotation has to overlap: the newest signs, and any of them decrypts until it is retired. Sealed under the root key.
+
 ## 0239 audit_append
 
 Compatible with the release before: its binary may still serve this schema.

@@ -46,7 +46,7 @@ const (
 var notConfiguration = map[string]string{
 	"admin_role_bindings": "who may administer the deployment: granted by the privileged routes, never by a " +
 		"file that a token holding organizations:write may apply",
-	"admin_tokens": credential, "registration_tokens": credential,
+	"admin_tokens": credential, "registration_tokens": credential, "saml_source_keys": credential,
 	"relations": "authorization data the application writes as people and objects come and go, as group " +
 		"membership is: the model they are checked against is configuration, the tuples are not",
 

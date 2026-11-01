@@ -344,6 +344,12 @@ func (s *Server) Routes() http.Handler {
 		s.patchIdentityProvider)
 	route("POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata", ScopeOrganizationsWrite,
 		s.refreshIdentityProviderMetadata)
+	route("GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", ScopeConfigRead, s.listSAMLSourceKeys)
+	route("POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", ScopeOrganizationsWrite, s.addSAMLSourceKey)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}", ScopeOrganizationsWrite,
+		s.retireSAMLSourceKey)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", ScopeOrganizationsWrite,
+		s.setSAMLSourceKeyUse)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", ScopeOrganizationsWrite,
 		s.putIdPTokenAuth)
 	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,

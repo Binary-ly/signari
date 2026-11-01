@@ -168,6 +168,8 @@ var cliAPI = map[string]string{
 	"idp list":           reads,
 	"idp check":          reads,
 	"idp refresh-saml":   "POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata",
+	"idp saml-key":       "POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys",
+	"idp saml-use":       "PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use",
 	"idp domains":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp logout":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp forward":        "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",

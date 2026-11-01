@@ -250,6 +250,12 @@ var summaries = map[string]string{
 	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
 	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
 
+	// This deployment's own keys toward a SAML upstream (8.04).
+	"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":            "A SAML upstream's keys in this deployment, with their certificates.",
+	"POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":           "Make a key toward a SAML upstream, to sign requests or to be encrypted to.",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}": "Retire a key toward a SAML upstream.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use":         "Say whether a SAML upstream is sent signed requests and must encrypt its assertions.",
+
 	// Upstream identity providers (6.07).
 	"GET /admin/organizations/{orgID}/identity-providers":                         "The providers people sign in through and the issuers assertions come from.",
 	"POST /admin/organizations/{orgID}/identity-providers":                        "Register a provider to sign in through, or an issuer whose assertions may be accepted.",

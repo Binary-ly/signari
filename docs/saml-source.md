@@ -134,13 +134,35 @@ This is safe to default on **only because** the address is never used to find or
 match an account. It is recorded, displayed, used for notifications. The vector
 that makes email trust dangerous elsewhere is closed one level up.
 
+## This deployment's keys toward an upstream
+
+Each upstream gets keys of its own, kept apart from the keys that sign tokens, so
+one partner's certificate is nobody else's. They are made here and sealed under
+the root key, and only the certificate ever leaves:
+
+```sh
+signari idp saml-key -slug corp -purpose signing
+signari idp saml-use -slug corp -sign-requests=true
+```
+
+The certificate is in the upstream's metadata at `/saml/source/corp/metadata`,
+with `AuthnRequestsSigned` saying what the upstream can expect, and in the answer
+to `idp saml-key`. Give the certificate to the upstream first and turn signing on
+second: a provider that verifies requests refuses any it has no certificate for.
+
+To rotate, make a second key. The newest signs, the older stays in the metadata
+until it is retired with `signari idp saml-key -slug corp -retire <id>`, and a key
+the upstream is held to cannot be retired while it is the last one. Neither setting
+can be turned on with no key to do it with. A signature is over the HTTP-Redirect
+query as it is sent, so it verifies however the upstream's URL was written, and the
+signing is with RSA-SHA256, which is what a provider that insists on signed requests
+can be counted on to take.
+
 ## Not yet
 
 - **Encrypted assertions.** Refused with a message saying so, rather than
   silently ignored. The decryption side of `internal/saml/encrypt.go` exists for
   the outbound direction; wiring it here is the next piece.
-- **Signed AuthnRequests.** Most upstreams do not require them, and the security
-  of this flow rests on verifying the response.
 - **SAML single logout as a source.** Sessions here end normally; the upstream
   is not notified.
 

@@ -27,9 +27,14 @@ the parent domain — and that only works if there is one:
 | Issuer | Protected app | `SIGNARI_PROXY_COOKIE_DOMAIN` | |
 |---|---|---|---|
 | `auth.example.com` | `n8n.example.com` | `example.com` | works |
-| `auth.example.com` | `n8n.other.com` | — | impossible, no shared parent |
+| `auth.example.com` | `n8n.other.com` | — | no shared parent: see [a cookie of its own](#an-application-on-another-domain) |
 | `auth.localhost` | `n8n.localhost` | `localhost` | works (local development) |
 | `localhost:9443` | `127.0.0.1:8080` | — | different hosts, not parent/child |
+
+`signari proxy cookie -org <uuid> -host <h> -cookie <domain>` gives one host a parent
+of its own instead of the deployment's, and it must cover the issuer too. A browser
+refuses a cookie for a domain the address setting it is not under, so that is refused
+at sign-in by the same check.
 
 Get this wrong and the browser loops forever: the proxy says 401, Signari sets a
 cookie the app's host will never receive, redirects back, the proxy says 401
@@ -271,6 +276,53 @@ through, and they would arrive here again in a loop.
 
 Until October 2026 none of this was checked. Anyone who could sign in anywhere
 in the deployment passed every protected host of every organisation.
+
+## An application on another domain
+
+A cookie can only be set for a domain the address setting it is under, so the issuer
+cannot set one for an application on a domain they do not share. That application can
+keep a cookie of its own, set on its own address:
+
+```sh
+signari proxy cookie -org <uuid> -host n8n.other.com -cookie own
+```
+
+Its proxy has to route one more path to Signari, sending the application's name in
+`X-Forwarded-Host`. On nginx, alongside the `location` blocks below:
+
+```nginx
+location /.signari/ {
+    proxy_pass              https://auth.example.com;
+    proxy_ssl_server_name   on;
+    proxy_set_header Host             auth.example.com;
+    proxy_set_header X-Forwarded-Host $http_host;
+}
+```
+
+The sign-in then goes:
+
+1. The proxy asks about a request with no cookie. The answer sends the browser to
+   `https://n8n.other.com/.signari/proxy/begin`, not to the issuer.
+2. That sets a state cookie on the application's address and sends the browser to
+   the issuer, carrying the state.
+3. The issuer signs the person in as ever, and sends them back to
+   `/.signari/proxy/callback` with a code that lasts a minute, for this host and this
+   state.
+4. There the code is held to the state in the browser, the host, and a session that is
+   still live. The proxy cookie is set on the application's address alone and the
+   browser goes back to the page it asked for.
+
+The state is why step 2 exists. A code in a URL works for whoever opens it, so without
+it somebody could sign in, stop at the callback, and send the link to somebody else,
+who would then be using the application as them, and telling it things. The code is
+good only in the browser that started the sign-in.
+
+A cookie set this way names its application, and is refused at any other, the same
+organisation's included. Everything else is as it was: the session is checked on every
+request, so signing out at the issuer ends it, and it needs signing in once per
+application instead of once per parent domain. Registering a host this way changes
+what its proxy has to do, so do the two together: until `/.signari/` is routed, the
+person is sent to a page the application does not have.
 
 ## Rules for one path
 

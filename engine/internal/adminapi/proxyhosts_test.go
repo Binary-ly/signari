@@ -125,6 +125,48 @@ func TestAHostsRulesAreKeptThroughTheAdminAPI(t *testing.T) {
 	if got := held(); len(got) != 0 {
 		t.Errorf("cleared, it holds %v", got)
 	}
+
+	// Where its cookie lives, one or the other, and each clears the other.
+	cookie := func() (string, bool) {
+		t.Helper()
+		var domain string
+		var own bool
+		if err := s.db.QueryRow(context.Background(), `SELECT cookie_domain, own_cookie FROM core.proxy_hosts WHERE host = $1`,
+			host).Scan(&domain, &own); err != nil {
+			t.Fatal(err)
+		}
+		return domain, own
+	}
+	if rec := put(map[string]any{"cookie_domain": "example.com", "own_cookie": true}); rec.Code != http.StatusBadRequest {
+		t.Errorf("both answered %d", rec.Code)
+	}
+	if rec := put(map[string]any{"cookie_domain": "https://example.com"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("a URL for a domain answered %d", rec.Code)
+	}
+	if rec := put(map[string]any{"cookie_domain": "example.com"}); rec.Code != http.StatusOK {
+		t.Fatalf("a parent: %d %s", rec.Code, rec.Body.String())
+	}
+	if d, o := cookie(); d != "example.com" || o {
+		t.Errorf("a parent left %q, %v", d, o)
+	}
+	if rec := put(map[string]any{"own_cookie": true}); rec.Code != http.StatusOK {
+		t.Fatalf("its own: %d %s", rec.Code, rec.Body.String())
+	}
+	if d, o := cookie(); d != "" || !o {
+		t.Errorf("its own left %q, %v", d, o)
+	}
+	if rec := put(map[string]any{"enabled": true}); rec.Code != http.StatusOK {
+		t.Fatalf("something else: %d", rec.Code)
+	}
+	if _, o := cookie(); !o {
+		t.Error("a change that did not name it moved it")
+	}
+	if rec := put(map[string]any{"cookie_domain": "example.com"}); rec.Code != http.StatusOK {
+		t.Fatalf("back to a parent: %d %s", rec.Code, rec.Body.String())
+	}
+	if d, o := cookie(); d != "example.com" || o {
+		t.Errorf("back to a parent left %q, %v", d, o)
+	}
 }
 
 // Protected hosts through the admin API: register, list, disable, remove, each

@@ -31,6 +31,9 @@ type proxyHostRequest struct {
 	SignedIdentity *bool     `json:"signed_identity"`
 	// Rules, when given, replace the host's, in order; an empty list clears them.
 	Rules *[]proxyrules.Rule `json:"rules"`
+	// CookieDomain and OwnCookie say where its proxy cookie lives, kept when absent.
+	CookieDomain *string `json:"cookie_domain"`
+	OwnCookie    *bool   `json:"own_cookie"`
 }
 
 func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +92,19 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 		}
 		rules = string(held)
 	}
+	if req.CookieDomain != nil || req.OwnCookie != nil {
+		domain, own := "", false
+		if req.CookieDomain != nil {
+			domain = *req.CookieDomain
+		}
+		if req.OwnCookie != nil {
+			own = *req.OwnCookie
+		}
+		if err := store.CheckProxyCookie(domain, own); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+			return
+		}
+	}
 
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
@@ -99,19 +115,23 @@ func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules)
-			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'))
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'),
+			        COALESCE($7::text, ''), COALESCE($8::boolean, false))
 			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
 				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
 				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
-				rules = COALESCE($6::jsonb, core.proxy_hosts.rules)`,
-			orgID, host, enabled, release, req.SignedIdentity, rules); err != nil {
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules),
+				cookie_domain = COALESCE($7::text, CASE WHEN $8::boolean THEN '' ELSE core.proxy_hosts.cookie_domain END),
+				own_cookie = COALESCE($8::boolean, CASE WHEN $7::text <> '' THEN false ELSE core.proxy_hosts.own_cookie END)`,
+			orgID, host, enabled, release, req.SignedIdentity, rules, req.CookieDomain, req.OwnCookie); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.proxy_host_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
 			Detail: map[string]any{"host": host, "enabled": enabled, "releases_groups": req.ReleaseGroups != nil,
-				"signed_identity": req.SignedIdentity, "rules": req.Rules},
+				"signed_identity": req.SignedIdentity, "rules": req.Rules, "cookie_domain": req.CookieDomain,
+				"own_cookie": req.OwnCookie},
 		})
 	})
 	var pg *pgconn.PgError

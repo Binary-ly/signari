@@ -15673,11 +15673,17 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "cookie_domain": {
+                            "type": "string"
+                          },
                           "enabled": {
                             "type": "boolean"
                           },
                           "host": {
                             "type": "string"
+                          },
+                          "own_cookie": {
+                            "type": "boolean"
                           },
                           "release_groups": {
                             "items": {
@@ -15722,7 +15728,9 @@
                           "enabled",
                           "release_groups",
                           "signed_identity",
-                          "rules"
+                          "rules",
+                          "cookie_domain",
+                          "own_cookie"
                         ],
                         "type": "object"
                       },
@@ -15805,11 +15813,17 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "cookie_domain": {
+                    "type": "string"
+                  },
                   "enabled": {
                     "type": "boolean"
                   },
                   "host": {
                     "type": "string"
+                  },
+                  "own_cookie": {
+                    "type": "boolean"
                   },
                   "release_groups": {
                     "items": {

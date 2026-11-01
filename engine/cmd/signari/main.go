@@ -402,6 +402,7 @@ outposts and remote access:
   proxy add-host         protect an application with forward auth
   proxy release          the groups a protected application hears of, and a signed identity
   proxy rules            what happens on one path of a protected application
+  proxy cookie           where a protected application's proxy cookie lives
   proxy list             the protected hosts
   proxy disable-host     stop protecting a host, keeping it
   proxy enable-host      protect a host again
@@ -773,6 +774,7 @@ func run(args []string) (err error) {
 	relAction := fs.String("action", "", "e.g. write")
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins, or a protected host may hear of")
+	proxyCookieScope := fs.String("cookie", "", "`proxy cookie`: own, deployment, or the parent domain to set it for")
 	signedIdentity := fs.String("signed-identity", "", "on or off: give a protected host a signed statement of who it is")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
 	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
@@ -1643,6 +1645,8 @@ func run(args []string) (err error) {
 		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
 	case "proxy rules":
 		return proxyRules(ctx, conn, *orgID, *racHost, *file)
+	case "proxy cookie":
+		return proxyCookie(ctx, conn, *orgID, *racHost, *proxyCookieScope)
 	case "proxy release":
 		groupsGiven := false
 		fs.Visit(func(f *flag.Flag) { groupsGiven = groupsGiven || f.Name == "groups" })

@@ -2382,8 +2382,10 @@ export interface GetOrganizationsOrgIDProxyHostsResponse {
 
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem {
+  cookie_domain: string
   enabled: boolean
   host: string
+  own_cookie: boolean
   release_groups: string[]
   rules: GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem[]
   signed_identity: boolean
@@ -4505,8 +4507,10 @@ export interface PutOrganizationsOrgIDProvidersHookClaimsResponse {
 
 /** A JSON object of the Admin API. */
 export interface PutOrganizationsOrgIDProxyHostsRequest {
+  cookie_domain?: string
   enabled?: boolean
   host?: string
+  own_cookie?: boolean
   release_groups?: string[]
   rules?: PutOrganizationsOrgIDProxyHostsRequestRulesItem[]
   signed_identity?: boolean

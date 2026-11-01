@@ -106,6 +106,46 @@ func TestAHostsRulesAreDeclared(t *testing.T) {
 	if _, err := Parse([]byte("version: 1\nproxy_hosts:\n  - host: a.example.com\n    rules:\n      - {effect: allow, path: /x}\n")); err == nil {
 		t.Error("a file with a rule that cannot be meant was read")
 	}
+
+	// Where its cookie lives is declared the same way, and exported the same way.
+	own, domain := true, "example.com"
+	cookie := func() (string, bool) {
+		t.Helper()
+		var d string
+		var o bool
+		if err := tx.QueryRow(ctx, `SELECT cookie_domain, own_cookie FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`,
+			org, host).Scan(&d, &o); err != nil {
+			t.Fatal(err)
+		}
+		return d, o
+	}
+	withCookie := &File{ProxyHosts: []ProxyHost{{Host: host, OwnCookie: &own}}}
+	if plan := planOf(withCookie); len(plan.Changes) != 1 {
+		t.Errorf("moving the cookie planned %+v", plan.Changes)
+	}
+	apply(withCookie)
+	if _, o := cookie(); !o {
+		t.Error("the host does not keep a cookie of its own")
+	}
+	if plan := planOf(withCookie); len(plan.Changes) != 0 {
+		t.Errorf("the same setting planned %+v", plan.Changes)
+	}
+	exported, err = Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range exported.ProxyHosts {
+		if h.Host == host && (h.OwnCookie == nil || !*h.OwnCookie) {
+			t.Error("the export does not say so")
+		}
+	}
+	apply(&File{ProxyHosts: []ProxyHost{{Host: host, CookieDomain: &domain}}})
+	if d, o := cookie(); d != "example.com" || o {
+		t.Errorf("a parent of its own left %q, %v", d, o)
+	}
+	if _, err := Parse([]byte("version: 1\nproxy_hosts:\n  - host: a.example.com\n    cookie_domain: example.com\n    own_cookie: true\n")); err == nil {
+		t.Error("a file with both was read")
+	}
 }
 
 func TestApplyRegistersUpdatesAndPrunesProxyHosts(t *testing.T) {

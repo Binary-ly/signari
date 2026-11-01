@@ -139,7 +139,7 @@ effect at all.
 | `SIGNARI_OUTPOST_LDAP_INSECURE` | `1` permits an LDAP outpost (`signari outpost run -kind-outpost ldap`) to listen without TLS, as `-ldap-insecure` does. Without it, an LDAP outpost given no `-tls-cert` refuses to start, because every simple bind carries a password. See [outposts](outposts.md#ldaps) |
 | `SIGNARI_ADMIN_INSECURE` | `1` permits the admin API to serve plaintext HTTP. Without it, an admin listener configured with no `SIGNARI_TLS_CERT` refuses to start rather than putting a bearer token that can erase a subject on the wire in clear. Only reasonable bound to loopback behind a terminator you control |
 | `SIGNARI_INSECURE_ISSUER` | `1` permits an `http://` issuer. Development only |
-| `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie |
+| `SIGNARI_PROXY_COOKIE_DOMAIN` | Parent domain for the forward-auth cookie, for every host that names none of its own with `signari proxy cookie` |
 
 Every listener (public, admin and metrics) allows 10 seconds for headers, 30
 to read a whole request, 60 to answer it and 120 for an idle keep-alive. These

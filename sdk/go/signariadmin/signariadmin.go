@@ -1176,8 +1176,10 @@ type GetOrganizationsOrgIDProxyHostsResponse struct {
 
 // GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDProxyHostsResponseProxyHostsItem struct {
+	CookieDomain   string                                                           `json:"cookie_domain"`
 	Enabled        bool                                                             `json:"enabled"`
 	Host           string                                                           `json:"host"`
+	OwnCookie      bool                                                             `json:"own_cookie"`
 	ReleaseGroups  []string                                                         `json:"release_groups"`
 	Rules          []GetOrganizationsOrgIDProxyHostsResponseProxyHostsItemRulesItem `json:"rules"`
 	SignedIdentity bool                                                             `json:"signed_identity"`
@@ -3299,8 +3301,10 @@ type PutOrganizationsOrgIDProvidersHookClaimsResponse struct {
 
 // PutOrganizationsOrgIDProxyHostsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDProxyHostsRequest struct {
+	CookieDomain   *string                                            `json:"cookie_domain,omitempty"`
 	Enabled        *bool                                              `json:"enabled,omitempty"`
 	Host           *string                                            `json:"host,omitempty"`
+	OwnCookie      *bool                                              `json:"own_cookie,omitempty"`
 	ReleaseGroups  *[]string                                          `json:"release_groups,omitempty"`
 	Rules          *[]PutOrganizationsOrgIDProxyHostsRequestRulesItem `json:"rules,omitempty"`
 	SignedIdentity *bool                                              `json:"signed_identity,omitempty"`

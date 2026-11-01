@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0247 proxy_host_cookie
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where the proxy cookie of a protected application lives (8.25). One domain for the whole deployment meant every application had to sit under one parent with the issuer, and one on another domain could not be protected at all: a cookie can only be set for a domain the host setting it is under. cookie_domain gives a host a parent of its own. own_cookie gives it a cookie of its own, set on its own address through a path its proxy routes back here. An older binary ignores both, and refuses such a host at sign-in by the check it has always made.
+
 ## 0246 proxy_host_rules
 
 Compatible with the release before: its binary may still serve this schema.

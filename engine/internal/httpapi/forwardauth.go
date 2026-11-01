@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +70,9 @@ type proxyClaims struct {
 	OrgID  string `json:"org"`
 	Email  string `json:"email,omitempty"`
 	Expiry int64  `json:"exp"`
+	// Host is the one application it is good for, when it was set on that
+	// application's own address. A cookie for a parent domain says nothing here.
+	Host string `json:"host,omitempty"`
 }
 
 // handleProxyVerify is the endpoint the reverse proxy calls per request.
@@ -122,6 +126,11 @@ func (s *Server) handleProxyVerify(w http.ResponseWriter, r *http.Request) {
 	// say which applications it reaches.
 	if pc.SID == "" || pc.OrgID == "" {
 		s.denyProxy(w, r, "proxy token predates per-host authorization; sign in again")
+		return
+	}
+	// Carried to another application by hand, a cookie set on one address says nothing.
+	if pc.Host != "" && pc.Host != strings.ToLower(firstHeader(r, "X-Forwarded-Host")) {
+		s.denyProxy(w, r, "this proxy token is for another application")
 		return
 	}
 
@@ -389,6 +398,18 @@ func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string
 	loc := s.cfg.Issuer + "/proxy/start"
 	if orig != "" {
 		loc += "?rd=" + url.QueryEscape(orig)
+		// A host with a cookie of its own starts on its own address, where the
+		// browser can be given something to prove at the end that it was this one.
+		if s.db != nil {
+			own, err := store.ProxyHostKeepsOwnCookie(r.Context(), s.db, s.instanceID, strings.ToLower(firstHeader(r, "X-Forwarded-Host")))
+			if err != nil {
+				s.log.Error("reading where a protected host keeps its cookie", "err", err)
+			}
+			if own {
+				loc = firstHeader(r, "X-Forwarded-Proto") + "://" + firstHeader(r, "X-Forwarded-Host") + pathProxyBegin +
+					"?rd=" + url.QueryEscape(orig)
+			}
+		}
 	}
 	w.Header().Set("Location", loc)
 	// The reason is a HEADER, not a body: nginx auth_request discards the body,
@@ -446,14 +467,21 @@ func firstHeader(r *http.Request, name string) string {
 // handleProxyStart issues the proxy cookie for an already signed-in browser.
 func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rd := r.URL.Query().Get("rd")
+	rd, state := r.URL.Query().Get("rd"), r.URL.Query().Get("state")
 
 	_, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		// Not signed in: send them through the normal login, and come back here.
-		back := "/proxy/start"
+		again := url.Values{}
 		if rd != "" {
-			back += "?rd=" + url.QueryEscape(rd)
+			again.Set("rd", rd)
+		}
+		if state != "" {
+			again.Set("state", state)
+		}
+		back := "/proxy/start"
+		if len(again) > 0 {
+			back += "?" + again.Encode()
 		}
 		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
@@ -463,7 +491,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 	// original request, so it is attacker-influenced. Redirecting to it unchecked
 	// turns every protected application into an open redirector reached from a
 	// link that looks like a login.
-	target, err := s.validateProxyRedirect(ctx, orgID, rd)
+	target, host, err := s.validateProxyRedirect(ctx, orgID, rd)
 	if err != nil {
 		s.log.Info("proxy redirect refused", "rd", rd, "err", err,
 			"correlation_id", correlationID(ctx))
@@ -487,36 +515,42 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	tok, err := tokens.NewSigner(key).SignJSON(proxyClaims{
-		Issuer: s.cfg.Issuer, Subject: userID, SID: sid, OrgID: orgID, Email: email,
-		Expiry: time.Now().Add(proxyTTL).Unix(),
-	}, typProxy)
-	if err != nil {
-		s.log.Error("signing proxy token", "err", err)
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+
+	// A cookie of its own can only be set from its own address, so the sign-in goes
+	// there to be turned into one, in a code good only for this browser and this host.
+	if host != nil && host.OwnCookie {
+		if state == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				"this application's sign-in starts at its own address, "+pathProxyBegin)
+			return
+		}
+		code, err := tokens.NewSigner(key).SignJSON(proxyCode{Issuer: s.cfg.Issuer, Subject: userID, SID: sid, OrgID: orgID,
+			Email: email, Host: strings.ToLower(host.Host), State: state, Target: target,
+			Expiry: time.Now().Add(proxyCodeTTL).Unix()}, typProxyCode)
+		if err != nil {
+			s.log.Error("signing a proxy code", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		u, err := url.Parse(target)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "rd must be an absolute URL")
+			return
+		}
+		http.Redirect(w, r, u.Scheme+"://"+u.Host+pathProxyCallback+"?code="+url.QueryEscape(code), http.StatusSeeOther)
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:  ProxyCookieName,
-		Value: tok,
-		Path:  "/",
-		// The parent domain, so every protected subdomain receives it. This is
-		// the reason the cookie cannot be __Host- prefixed, and the reason it
-		// must never carry session authority.
-		Domain:   s.cfg.ProxyCookieDomain,
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(proxyTTL.Seconds()),
-	})
-
-	s.auditDetached(ctx, audit.Event{
-		Type: "proxy.session_issued", OrgID: orgID, SubjectID: userID,
-		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"target": target},
-	})
-
+	// The parent domain, so every protected subdomain receives it. This is the
+	// reason the cookie cannot be __Host- prefixed, and the reason it must never
+	// carry session authority.
+	domain := s.cfg.ProxyCookieDomain
+	if host != nil && host.CookieDomain != "" {
+		domain = host.CookieDomain
+	}
+	if !s.issueProxyCookie(w, r, proxyClaims{Subject: userID, SID: sid, OrgID: orgID, Email: email}, domain, target) {
+		return
+	}
 	if target == "" {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "proxy session established"})
 		return
@@ -524,29 +558,173 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
+// issueProxyCookie signs a person's proxy token and sets it, for a parent domain or,
+// with none, for the address answering. It reports whether it did.
+func (s *Server) issueProxyCookie(w http.ResponseWriter, r *http.Request, pc proxyClaims, domain, target string) bool {
+	ctx := r.Context()
+	key, err := s.anySigningKey()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return false
+	}
+	pc.Issuer, pc.Expiry = s.cfg.Issuer, time.Now().Add(proxyTTL).Unix()
+	tok, err := tokens.NewSigner(key).SignJSON(pc, typProxy)
+	if err != nil {
+		s.log.Error("signing proxy token", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return false
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     ProxyCookieName,
+		Value:    tok,
+		Path:     "/",
+		Domain:   domain,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(proxyTTL.Seconds()),
+	})
+	s.auditDetached(ctx, audit.Event{
+		Type: "proxy.session_issued", OrgID: pc.OrgID, SubjectID: pc.Subject,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"target": target},
+	})
+	return true
+}
+
+const (
+	// pathProxyBegin and pathProxyCallback are served here and reached on a protected
+	// application's own address, through its proxy, for a host with a cookie of its own.
+	pathProxyBegin    = "/.signari/proxy/begin"
+	pathProxyCallback = "/.signari/proxy/callback"
+
+	// proxyStateCookie is what ties the browser that starts a sign-in to the browser
+	// that finishes it. __Host-, so nothing at another address can have set it.
+	proxyStateCookie = "__Host-signari_proxy_state"
+	proxyStateTTL    = 30 * time.Minute
+
+	typProxyCode = "proxy-code+jwt"
+	// proxyCodeTTL is a redirect's length: the code goes straight to the callback.
+	proxyCodeTTL = time.Minute
+)
+
+// proxyCode carries a sign-in from the issuer to an application's own address.
+type proxyCode struct {
+	Issuer  string `json:"iss"`
+	Subject string `json:"sub"`
+	SID     string `json:"sid"`
+	OrgID   string `json:"org"`
+	Email   string `json:"email,omitempty"`
+	// Host is the application it is for, and State what its browser must hold.
+	Host   string `json:"host"`
+	State  string `json:"state"`
+	Target string `json:"target"`
+	Expiry int64  `json:"exp"`
+}
+
+// proxyRequestHost is the application a request reached here through.
+func proxyRequestHost(r *http.Request) string {
+	if host := firstHeader(r, "X-Forwarded-Host"); host != "" {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(r.Host)
+}
+
+// handleProxyBegin starts a sign-in on an application's own address, leaving in the
+// browser what the end of it will ask for.
+//
+// # Why the browser has to be told anything
+//
+// A code in a URL is usable by whoever opens it. Without this, somebody signs in to the
+// application themselves, stops at the callback, and sends the link to somebody else,
+// who is then working in the application as them, and telling it things.
+func (s *Server) handleProxyBegin(w http.ResponseWriter, r *http.Request) {
+	rd := r.URL.Query().Get("rd")
+	u, err := url.Parse(rd)
+	if err != nil || !u.IsAbs() || !strings.EqualFold(u.Host, proxyRequestHost(r)) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "rd must be on this application")
+		return
+	}
+	state, err := randomToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: proxyStateCookie, Value: state, Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: int(proxyStateTTL.Seconds())})
+	http.Redirect(w, r, s.cfg.Issuer+"/proxy/start?"+url.Values{"rd": {rd}, "state": {state}}.Encode(), http.StatusSeeOther)
+}
+
+// handleProxyCallback turns a code into a cookie for the application it arrived at.
+func (s *Server) handleProxyCallback(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	refuse := func(why string) {
+		s.log.Info("proxy callback refused", "reason", why, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusBadRequest, "invalid_request", "this sign-in could not be finished: "+why)
+	}
+	var code proxyCode
+	payload, err := tokens.VerifyTyped(s.cfg.Keys, s.cfg.Issuer, r.URL.Query().Get("code"), typProxyCode)
+	if err != nil || json.Unmarshal(payload, &code) != nil {
+		refuse("the code did not verify")
+		return
+	}
+	if time.Now().After(time.Unix(code.Expiry, 0)) {
+		refuse("the code has expired")
+		return
+	}
+	host := proxyRequestHost(r)
+	if code.Host != host {
+		refuse("the code is for another application")
+		return
+	}
+	held, err := r.Cookie(proxyStateCookie)
+	if err != nil || subtle.ConstantTimeCompare([]byte(held.Value), []byte(code.State)) != 1 {
+		refuse("this browser did not start it")
+		return
+	}
+	// Everything the code said could have changed in the minute it was good for.
+	live, err := store.SessionLive(ctx, s.db, code.SID)
+	if err != nil || !live {
+		refuse("the session has ended")
+		return
+	}
+	registered, err := store.ProxyHostFor(ctx, s.db, code.OrgID, host)
+	if err != nil || registered == nil || !registered.OwnCookie {
+		refuse("this application no longer keeps a cookie of its own")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: proxyStateCookie, Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	if !s.issueProxyCookie(w, r, proxyClaims{Subject: code.Subject, SID: code.SID, OrgID: code.OrgID, Email: code.Email,
+		Host: host}, "", code.Target) {
+		return
+	}
+	http.Redirect(w, r, code.Target, http.StatusSeeOther)
+}
+
 // validateProxyRedirect refuses anything not under a protected host.
 //
 // An allow-list, not a pattern: "same registrable domain" is the check people
 // reach for and it is wrong, because a hostname an attacker controls under that
 // domain then qualifies. The hosts are registered explicitly.
-func (s *Server) validateProxyRedirect(ctx context.Context, orgID, rd string) (string, error) {
+func (s *Server) validateProxyRedirect(ctx context.Context, orgID, rd string) (string, *store.ProxyHost, error) {
 	if rd == "" {
-		return "", nil
+		return "", nil, nil
 	}
 	u, err := url.Parse(rd)
 	if err != nil || !u.IsAbs() || u.Host == "" {
-		return "", fmt.Errorf("rd must be an absolute URL")
+		return "", nil, fmt.Errorf("rd must be an absolute URL")
 	}
 	if u.Scheme != "https" && !isLoopback(u.Hostname()) {
-		return "", fmt.Errorf("rd must be https")
+		return "", nil, fmt.Errorf("rd must be https")
 	}
 
-	var allowed bool
-	if err := s.db.QueryRow(ctx, `
-		SELECT true FROM core.proxy_hosts
-		WHERE org_id = $1::uuid AND lower(host) = lower($2) AND enabled`,
-		orgID, u.Host).Scan(&allowed); err != nil || !allowed {
-		return "", fmt.Errorf("%q is not a registered protected host", u.Host)
+	host, err := store.ProxyHostFor(ctx, s.db, orgID, strings.ToLower(u.Host))
+	if err != nil || host == nil {
+		return "", nil, fmt.Errorf("%q is not a registered protected host", u.Host)
+	}
+	if host.OwnCookie {
+		return u.String(), host, nil
 	}
 
 	// The cookie has to REACH the protected host, or this endpoint issues a
@@ -557,10 +735,19 @@ func (s *Server) validateProxyRedirect(ctx context.Context, orgID, rd string) (s
 	// It is caught here, at configuration time, because the loop itself gives an
 	// operator nothing to go on -- the cookie is set, every response is a valid
 	// redirect, and no component reports an error.
-	if err := cookieReaches(s.cfg.ProxyCookieDomain, u.Hostname()); err != nil {
-		return "", err
+	domain := s.cfg.ProxyCookieDomain
+	if host.CookieDomain != "" {
+		domain = host.CookieDomain
+		// A browser refuses a domain the address setting it is not under, which is
+		// the same loop from the other side.
+		if issuer, err := url.Parse(s.cfg.Issuer); err != nil || cookieReaches(domain, issuer.Hostname()) != nil {
+			return "", nil, fmt.Errorf("this issuer is not under %q, so a browser would refuse a cookie for it", domain)
+		}
 	}
-	return u.String(), nil
+	if err := cookieReaches(domain, u.Hostname()); err != nil {
+		return "", nil, err
+	}
+	return u.String(), host, nil
 }
 
 // cookieReaches reports whether a cookie scoped to domain would be sent to host,

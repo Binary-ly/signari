@@ -63,6 +63,8 @@ proxy_hosts:                  # applications behind forward auth
       - {effect: deny, path: /metrics}
   - host: wiki.example.com:8443
     enabled: false
+  - host: n8n.other.com
+    own_cookie: true          # or cookie_domain: other.com; left out keeps what it has
 
 scopes:                       # beyond the standard ones; applied before the clients
   - name: hr

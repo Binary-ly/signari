@@ -179,20 +179,28 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	}
 
 	rows, err = tx.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
+		SELECT host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie
+		  FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var h ProxyHost
-		var enabled, signed bool
+		var enabled, signed, own bool
 		var release []string
 		var rules []proxyrules.Rule
-		if err := rows.Scan(&h.Host, &enabled, &release, &signed, &rules); err != nil {
+		var domain string
+		if err := rows.Scan(&h.Host, &enabled, &release, &signed, &rules, &domain, &own); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		h.Enabled = &enabled
+		if domain != "" {
+			h.CookieDomain = &domain
+		}
+		if own {
+			h.OwnCookie = &own
+		}
 		if len(release) > 0 {
 			h.ReleaseGroups = &release
 		}
@@ -313,6 +321,14 @@ func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune 
 		// In order: their order is what they mean.
 		if h.Rules != nil && !reflect.DeepEqual(append([]proxyrules.Rule{}, haveRules...), append([]proxyrules.Rule{}, *h.Rules...)) {
 			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "rules"})
+			continue
+		}
+		haveDomain, haveOwn := "", have.OwnCookie != nil
+		if have.CookieDomain != nil {
+			haveDomain = *have.CookieDomain
+		}
+		if (h.CookieDomain != nil && *h.CookieDomain != haveDomain) || (h.OwnCookie != nil && *h.OwnCookie != haveOwn) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "cookie"})
 		}
 	}
 
@@ -759,13 +775,16 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			rules = string(held)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules)
-			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'))
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'),
+			        COALESCE($7::text, ''), COALESCE($8::boolean, false))
 			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
 				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
 				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
-				rules = COALESCE($6::jsonb, core.proxy_hosts.rules)`,
-			orgID, h.Host, enabled, release, h.SignedIdentity, rules); err != nil {
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules),
+				cookie_domain = COALESCE($7::text, CASE WHEN $8::boolean THEN '' ELSE core.proxy_hosts.cookie_domain END),
+				own_cookie = COALESCE($8::boolean, CASE WHEN $7::text <> '' THEN false ELSE core.proxy_hosts.own_cookie END)`,
+			orgID, h.Host, enabled, release, h.SignedIdentity, rules, h.CookieDomain, h.OwnCookie); err != nil {
 			var pg *pgconn.PgError
 			if errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key" {
 				return fmt.Errorf("proxy host %q is registered by another organisation; a "+

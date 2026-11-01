@@ -190,6 +190,7 @@ var commandFlags = map[string][]string{
 	"provision add":                   {"credentials", "impersonate", "kind-outpost", "name", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "target-domain"},
 	"proxy add-host":                  {"host", "org"},
 	"proxy check":                     {"app", "insecure", "issuer", "origin", "path"},
+	"proxy cookie":                    {"cookie", "host", "org"},
 	"proxy disable-host":              {"host", "org"},
 	"proxy enable-host":               {"host", "org"},
 	"proxy list":                      {"o"},

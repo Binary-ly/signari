@@ -2642,8 +2642,10 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `cookie_domain` | string |  |
 | `enabled` | boolean |  |
 | `host` | string |  |
+| `own_cookie` | boolean |  |
 | `release_groups` | list of string |  |
 | `rules` | list of object |  |
 | `signed_identity` | boolean |  |

@@ -108,6 +108,9 @@ type ProxyHost struct {
 	SignedIdentity *bool     `yaml:"signed_identity,omitempty"`
 	// Rules keep what the host has when left out, and an empty list clears them.
 	Rules *[]proxyrules.Rule `yaml:"rules,omitempty"`
+	// CookieDomain and OwnCookie say where its proxy cookie lives, kept when left out.
+	CookieDomain *string `yaml:"cookie_domain,omitempty"`
+	OwnCookie    *bool   `yaml:"own_cookie,omitempty"`
 }
 
 // Group is a group of people.
@@ -395,6 +398,18 @@ func (f *File) Validate() error {
 		seenHosts[host] = true
 		if h.Rules != nil {
 			if err := proxyrules.Check(*h.Rules); err != nil {
+				add("proxy_hosts[%d]: %v", i, err)
+			}
+		}
+		if h.CookieDomain != nil || h.OwnCookie != nil {
+			domain, own := "", false
+			if h.CookieDomain != nil {
+				domain = *h.CookieDomain
+			}
+			if h.OwnCookie != nil {
+				own = *h.OwnCookie
+			}
+			if err := store.CheckProxyCookie(domain, own); err != nil {
 				add("proxy_hosts[%d]: %v", i, err)
 			}
 		}

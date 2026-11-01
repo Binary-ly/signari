@@ -304,6 +304,7 @@ var cliAPI = map[string]string{
 	"proxy enable-host":     "PUT /admin/organizations/{orgID}/proxy-hosts",
 	"proxy release":         "PUT /admin/organizations/{orgID}/proxy-hosts",
 	"proxy rules":           "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy cookie":          "PUT /admin/organizations/{orgID}/proxy-hosts",
 	"proxy remove-host":     "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
 	"proxy list":            reads,
 	// Except -recording-path and a parameter naming a path, which choose where

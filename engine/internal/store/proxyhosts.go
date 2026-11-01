@@ -23,6 +23,35 @@ type ProxyHost struct {
 	SignedIdentity bool `json:"signed_identity"`
 	// Rules say what happens on one path of it, in order. None is every path alike.
 	Rules []proxyrules.Rule `json:"rules"`
+	// CookieDomain is the parent its proxy cookie is set for, empty for the deployment's.
+	CookieDomain string `json:"cookie_domain"`
+	// OwnCookie has the cookie set on its own address, for a host under no parent the
+	// issuer shares. CookieDomain and this are never both set.
+	OwnCookie bool `json:"own_cookie"`
+}
+
+// CheckProxyCookie refuses a cookie setting that could not be honoured.
+func CheckProxyCookie(domain string, own bool) error {
+	if domain != "" && own {
+		return errors.New("a host keeps a cookie of its own or shares a parent domain's, not both")
+	}
+	if strings.ContainsAny(domain, "/:@ \t") || strings.HasPrefix(domain, ".") || (domain != "" && !strings.Contains(domain, ".")) {
+		return fmt.Errorf("%q is not a parent domain: give the name alone, such as example.com", domain)
+	}
+	return nil
+}
+
+// ProxyHostKeepsOwnCookie reports whether a host of this instance sets its cookie on its
+// own address, which is what a browser sent to sign in must be told.
+func ProxyHostKeepsOwnCookie(ctx context.Context, q rowQuerier, instanceID, host string) (bool, error) {
+	var own bool
+	err := q.QueryRow(ctx, `SELECT own_cookie FROM core.proxy_hosts
+		WHERE lower(host) = $1 AND enabled AND org_id IN (SELECT o.id FROM core.organizations o
+		      WHERE o.instance_id = COALESCE(NULLIF($2, '')::uuid, o.instance_id))`, host, instanceID).Scan(&own)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return own, err
 }
 
 // ProxyRulesOf reads the rules of an enabled host of this instance, for a request
@@ -56,7 +85,7 @@ func CheckReleaseGroups(names []string) error {
 // name, in any letters.
 func ProxyHostFor(ctx context.Context, q Querier, orgID, host string) (*ProxyHost, error) {
 	rows, err := q.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts
+		SELECT host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie FROM core.proxy_hosts
 		 WHERE org_id = $1::uuid AND lower(host) = $2 AND enabled`, orgID, host)
 	if err != nil {
 		return nil, err
@@ -66,7 +95,7 @@ func ProxyHostFor(ctx context.Context, q Querier, orgID, host string) (*ProxyHos
 		return nil, rows.Err()
 	}
 	var h ProxyHost
-	if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules); err != nil {
+	if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules, &h.CookieDomain, &h.OwnCookie); err != nil {
 		return nil, err
 	}
 	return &h, rows.Err()
@@ -94,7 +123,7 @@ func ProxyHosts(ctx context.Context, db interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, orgID string) ([]ProxyHost, error) {
 	rows, err := db.Query(ctx, `
-		SELECT host, enabled, release_groups, signed_identity, rules FROM core.proxy_hosts
+		SELECT host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie FROM core.proxy_hosts
 		 WHERE org_id = $1::uuid ORDER BY host`, orgID)
 	if err != nil {
 		return nil, err
@@ -103,7 +132,7 @@ func ProxyHosts(ctx context.Context, db interface {
 	out := []ProxyHost{}
 	for rows.Next() {
 		var h ProxyHost
-		if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules); err != nil {
+		if err := rows.Scan(&h.Host, &h.Enabled, &h.ReleaseGroups, &h.SignedIdentity, &h.Rules, &h.CookieDomain, &h.OwnCookie); err != nil {
 			return nil, err
 		}
 		out = append(out, h)

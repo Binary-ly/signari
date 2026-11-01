@@ -758,11 +758,17 @@
     "ProxyHost": {
       "additionalProperties": false,
       "properties": {
+        "cookie_domain": {
+          "type": "string"
+        },
         "enabled": {
           "type": "boolean"
         },
         "host": {
           "type": "string"
+        },
+        "own_cookie": {
+          "type": "boolean"
         },
         "release_groups": {
           "items": {

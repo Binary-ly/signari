@@ -1719,6 +1719,44 @@ func proxyHostWrite(ctx context.Context, conn *pgx.Conn, orgID, host, event stri
 
 // proxyRelease says what a protected application is told beyond who: the groups it
 // may hear of, and whether it gets a signed statement. What is not given is kept.
+// proxyCookie says where a host's proxy cookie lives: `own`, on its own address through
+// a path its proxy routes here; `deployment`, for SIGNARI_PROXY_COOKIE_DOMAIN; or a
+// parent domain of its own, which the issuer has to be under as well.
+func proxyCookie(ctx context.Context, conn *pgx.Conn, orgID, raw, scope string) error {
+	if orgID == "" || scope == "" {
+		return fmt.Errorf("give -org and -cookie: own, deployment, or a parent domain")
+	}
+	host, err := normaliseProxyHost(raw)
+	if err != nil {
+		return err
+	}
+	domain, own := scope, false
+	switch scope {
+	case "own":
+		domain, own = "", true
+	case "deployment":
+		domain = ""
+	}
+	if err := store.CheckProxyCookie(domain, own); err != nil {
+		return err
+	}
+	err = proxyHostWrite(ctx, conn, orgID, host, "proxy.host_cookie_set", func(tx pgx.Tx) (int64, error) {
+		tag, err := tx.Exec(ctx, `UPDATE core.proxy_hosts SET cookie_domain = $3, own_cookie = $4
+			WHERE org_id = $1::uuid AND host = $2`, orgID, host, domain, own)
+		return tag.RowsAffected(), err
+	})
+	if err != nil {
+		return err
+	}
+	if own {
+		fmt.Printf("%s keeps a cookie of its own. Route %s/ on it to this server, keeping its Host in\n", host, "/.signari")
+		fmt.Println("X-Forwarded-Host, or its sign-in stops at a 404 from the application.")
+		return nil
+	}
+	fmt.Printf("%s: its proxy cookie is set for %s\n", host, map[bool]string{true: "the deployment's domain", false: domain}[domain == ""])
+	return nil
+}
+
 func proxyRules(ctx context.Context, conn *pgx.Conn, orgID, raw, file string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the host is in")

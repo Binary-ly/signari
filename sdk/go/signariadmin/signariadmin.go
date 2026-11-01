@@ -919,6 +919,7 @@ type GetOrganizationsOrgIDCredentialConfigurationsResponse struct {
 // GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurationsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurationsItem struct {
 	Always                []string `json:"always"`
+	Deferred              bool     `json:"deferred"`
 	DisplayName           string   `json:"display_name"`
 	Format                string   `json:"format"`
 	ID                    string   `json:"id"`
@@ -939,6 +940,21 @@ type GetOrganizationsOrgIDCredentialProofRootsResponseRootsItem struct {
 	Name     string  `json:"name"`
 	NotAfter *string `json:"not_after"`
 	Subject  string  `json:"subject"`
+}
+
+// GetOrganizationsOrgIDCredentialRequestsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDCredentialRequestsResponse struct {
+	OrgID    string                                                        `json:"org_id"`
+	Requests []GetOrganizationsOrgIDCredentialRequestsResponseRequestsItem `json:"requests"`
+}
+
+// GetOrganizationsOrgIDCredentialRequestsResponseRequestsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDCredentialRequestsResponseRequestsItem struct {
+	Configuration string `json:"configuration"`
+	CreatedAt     string `json:"created_at"`
+	Email         string `json:"email"`
+	ID            string `json:"id"`
+	UserID        string `json:"user_id"`
 }
 
 // GetOrganizationsOrgIDDirectoriesResponse is a JSON object of the Admin API.
@@ -3104,6 +3120,7 @@ type PutOrganizationsOrgIDBudgetsResponse struct {
 // PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest struct {
 	Always                *[]string `json:"always,omitempty"`
+	Deferred              *bool     `json:"deferred,omitempty"`
 	DisplayName           *string   `json:"display_name,omitempty"`
 	LifetimeS             *int64    `json:"lifetime_s,omitempty"`
 	RequireKeyAttestation *bool     `json:"require_key_attestation,omitempty"`
@@ -3129,6 +3146,18 @@ type PutOrganizationsOrgIDCredentialProofRootsNameResponse struct {
 	Name          string `json:"name"`
 	NotAfter      string `json:"not_after"`
 	Subject       string `json:"subject"`
+}
+
+// PutOrganizationsOrgIDCredentialRequestsRequestIDRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDCredentialRequestsRequestIDRequest struct {
+	Decision *string `json:"decision,omitempty"`
+}
+
+// PutOrganizationsOrgIDCredentialRequestsRequestIDResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDCredentialRequestsRequestIDResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Decision      string `json:"decision"`
+	ID            string `json:"id"`
 }
 
 // PutOrganizationsOrgIDDirectoriesSlugGroupMapRequest is a JSON object of the Admin API.
@@ -4387,6 +4416,17 @@ func (c *Client) GetOrganizationsOrgIDCredentialConfigurations(ctx context.Conte
 func (c *Client) GetOrganizationsOrgIDCredentialProofRoots(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDCredentialProofRootsResponse, int64, error) {
 	var out GetOrganizationsOrgIDCredentialProofRootsResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/credential-proof-roots", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDCredentialRequests is GET /admin/organizations/{orgID}/credential-requests:
+// What wallets have asked for and is waiting on a decision. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDCredentialRequests(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDCredentialRequestsResponse, int64, error) {
+	var out GetOrganizationsOrgIDCredentialRequestsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/credential-requests", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5733,6 +5773,18 @@ func (c *Client) PutOrganizationsOrgIDCredentialConfigurationsConfigID(ctx conte
 func (c *Client) PutOrganizationsOrgIDCredentialProofRootsName(ctx context.Context, orgID string, name string, body PutOrganizationsOrgIDCredentialProofRootsNameRequest, opts ...Option) (*PutOrganizationsOrgIDCredentialProofRootsNameResponse, int64, error) {
 	var out PutOrganizationsOrgIDCredentialProofRootsNameResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/credential-proof-roots/"+url.PathEscape(name), body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDCredentialRequestsRequestID is PUT
+// /admin/organizations/{orgID}/credential-requests/{requestID}: Approve or deny a waiting request.
+// Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDCredentialRequestsRequestID(ctx context.Context, orgID string, requestID string, body PutOrganizationsOrgIDCredentialRequestsRequestIDRequest, opts ...Option) (*PutOrganizationsOrgIDCredentialRequestsRequestIDResponse, int64, error) {
+	var out PutOrganizationsOrgIDCredentialRequestsRequestIDResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/credential-requests/"+url.PathEscape(requestID), body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

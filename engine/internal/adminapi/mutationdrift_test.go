@@ -854,6 +854,22 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/credential-requests/{requestID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				user := newDriftUserIn(t, s, org)
+				var id string
+				if err := s.db.QueryRow(context.Background(), `
+					INSERT INTO core.credential_requests (org_id, user_id, configuration, token_jti, transaction_hash, holder_keys)
+					VALUES ($1::uuid, $2::uuid, 'drift', 'drift', sha256(gen_random_uuid()::text::bytea), '[]')
+					RETURNING id::text`, org, user).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/credential-requests/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return `{"decision":"deny"}` },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/ssf-sources/poll", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				org := newDriftMigrationOrg(t, s, false)

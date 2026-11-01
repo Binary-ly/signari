@@ -203,6 +203,8 @@ var summaries = map[string]string{
 	// OID4VCI issuance (6.07).
 	"GET /admin/organizations/{orgID}/credential-configurations":            "The credentials the organisation issues.",
 	"PUT /admin/organizations/{orgID}/credential-configurations/{configID}": "Define a credential, or redefine it.",
+	"GET /admin/organizations/{orgID}/credential-requests":                  "What wallets have asked for and is waiting on a decision.",
+	"PUT /admin/organizations/{orgID}/credential-requests/{requestID}":      "Approve or deny a waiting request.",
 	"GET /admin/organizations/{orgID}/credential-proof-roots":               "The roots an x5c key proof may verify to.",
 	"PUT /admin/organizations/{orgID}/credential-proof-roots/{name}":        "Trust a CA for x5c key proofs.",
 	"DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}":     "Stop trusting a CA for x5c key proofs.",

@@ -130,6 +130,111 @@ func CredentialNotified(ctx context.Context, q rowQuerier, id, jti string) (stri
 	return configuration, err
 }
 
+// CredentialRequest is a wallet's request waiting on somebody's decision (§9).
+type CredentialRequest struct {
+	ID, OrgID, UserID, Email, Configuration, State string
+	// HolderKeys are the public keys the wallet proved it holds, as a JSON array of JWKs.
+	HolderKeys []byte
+	CreatedAt  time.Time
+}
+
+// NewCredentialRequest parks a request and returns the transaction_id that fetches the
+// answer, which with the token that asked is the only way to it.
+func NewCredentialRequest(ctx context.Context, e Execer, orgID, userID, jti, configuration string, holderKeys []byte) (string, error) {
+	transaction, err := newCredentialHandle()
+	if err != nil {
+		return "", err
+	}
+	if _, err := e.Exec(ctx, `
+		INSERT INTO core.credential_requests (org_id, user_id, configuration, token_jti, transaction_hash, holder_keys)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::jsonb)`,
+		orgID, userID, configuration, jti, HashToken(transaction), holderKeys); err != nil {
+		return "", fmt.Errorf("parking a credential request: %w", err)
+	}
+	return transaction, nil
+}
+
+// CredentialRequestFor is the request a transaction id names for the token that asked, or
+// nil: §9.3 has one answer for an id that was never issued and one already used.
+func CredentialRequestFor(ctx context.Context, q rowQuerier, transaction, jti string) (*CredentialRequest, error) {
+	var r CredentialRequest
+	err := q.QueryRow(ctx, `
+		SELECT id::text, org_id::text, user_id::text, configuration, state, holder_keys, created_at
+		  FROM core.credential_requests WHERE transaction_hash = $1 AND token_jti = $2`,
+		HashToken(transaction), jti).Scan(&r.ID, &r.OrgID, &r.UserID, &r.Configuration, &r.State, &r.HolderKeys, &r.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SpendCredentialRequest ends an approved request, reporting whether this caller did:
+// §9.1 wants the id invalid once the credential has been obtained, and of two racing
+// one gets it.
+func SpendCredentialRequest(ctx context.Context, e Execer, id string) (bool, error) {
+	tag, err := e.Exec(ctx, `DELETE FROM core.credential_requests WHERE id = $1::uuid AND state = 'approved'`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// PendingCredentialRequests lists what is waiting on a decision, oldest first.
+func PendingCredentialRequests(ctx context.Context, q Querier, orgID string) ([]CredentialRequest, error) {
+	rows, err := q.Query(ctx, `
+		SELECT r.id::text, r.user_id::text, COALESCE(u.email, ''), r.configuration, r.created_at
+		  FROM core.credential_requests r JOIN core.users u ON u.id = r.user_id
+		 WHERE r.org_id = $1::uuid AND r.state = 'pending' ORDER BY r.created_at`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CredentialRequest{}
+	for rows.Next() {
+		var r CredentialRequest
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Email, &r.Configuration, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ErrCredentialRequestUnknown is a decision on a request that is not waiting for one.
+var ErrCredentialRequestUnknown = errors.New("no request of that id is waiting in this organisation")
+
+// DecideCredentialRequest approves or denies a waiting request. Only a waiting one: a
+// decision already made stands, or a wallet told no could be told yes by a second click.
+func DecideCredentialRequest(ctx context.Context, e Execer, orgID, id string, approve bool) error {
+	state := "denied"
+	if approve {
+		state = "approved"
+	}
+	tag, err := e.Exec(ctx, `UPDATE core.credential_requests SET state = $3
+		WHERE id::text = $1 AND org_id = $2::uuid AND state = 'pending'`, id, orgID, state)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCredentialRequestUnknown
+	}
+	return nil
+}
+
+// SweepCredentialRequests removes requests no token can come back for.
+func SweepCredentialRequests(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.credential_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.credential_requests WHERE created_at < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`, tokenTTL.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // SweepCredentialNotifications removes records no token can report on any more.
 func SweepCredentialNotifications(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration, limit int) (int64, error) {
 	tag, err := tx.Exec(ctx, `DELETE FROM core.credential_notifications WHERE ctid = ANY(ARRAY(

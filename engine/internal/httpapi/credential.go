@@ -350,7 +350,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issued := make([]oid4vci.IssuedCredential, 0, len(proofs))
+	holderKeys := make([]*jose.JSONWebKey, 0, len(proofs))
 	for _, p := range proofs {
 		key, attested, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots)
 		if perr != nil {
@@ -380,17 +380,41 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		} else {
 			seenKeys[fp] = true
 		}
-		cred, ierr := s.issueCredential(ctx, orgID, claims, cfg, key, issuedAt)
-		if ierr != nil {
-			s.log.Error("issuing a credential", "err", ierr,
-				"correlation_id", correlationID(ctx))
-			writeCredentialError(w, http.StatusInternalServerError, "server_error",
-				"the credential could not be issued")
-			return
+		holderKeys = append(holderKeys, key)
+	}
+
+	if cfg.Deferred {
+		s.deferCredential(w, r, orgID, claims, cfg, holderKeys)
+		return
+	}
+	issued, ierr := s.mintCredentials(ctx, orgID, claims, cfg, holderKeys, issuedAt)
+	if ierr != nil {
+		s.log.Error("issuing a credential", "err", ierr, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "the credential could not be issued")
+		return
+	}
+	s.answerIssued(w, r, orgID, claims, cfg, issued)
+}
+
+// mintCredentials mints one credential per key.
+func (s *Server) mintCredentials(ctx context.Context, orgID string, claims *tokens.AccessTokenClaims,
+	cfg oid4vci.Configuration, holderKeys []*jose.JSONWebKey, at time.Time) ([]oid4vci.IssuedCredential, error) {
+
+	issued := make([]oid4vci.IssuedCredential, 0, len(holderKeys))
+	for _, key := range holderKeys {
+		cred, err := s.issueCredential(ctx, orgID, claims, cfg, key, at)
+		if err != nil {
+			return nil, err
 		}
 		issued = append(issued, oid4vci.IssuedCredential{Credential: cred})
 	}
+	return issued, nil
+}
 
+// answerIssued is the end of an issuance, immediate or deferred.
+func (s *Server) answerIssued(w http.ResponseWriter, r *http.Request, orgID string, claims *tokens.AccessTokenClaims,
+	cfg oid4vci.Configuration, issued []oid4vci.IssuedCredential) {
+	ctx := r.Context()
 	s.auditDetached(ctx, audit.Event{
 		Type: "oid4vci.credential_issued", OrgID: orgID, SubjectID: claims.Subject,
 		ClientID: claims.ClientID, CorrelationID: correlationID(ctx),
@@ -405,6 +429,105 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("recording an issuance", "err", nerr, "correlation_id", correlationID(ctx))
 	}
 	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued, NotificationID: notification})
+}
+
+// deferredInterval is §8.3's wait, as a wallet is told it: long enough not to be
+// polling, short enough to come back inside the life of its token, which is all the
+// time a decision has.
+const deferredInterval = 30
+
+// deferCredential parks a request whose proofs have passed, keeping the keys and not the
+// proofs: a nonce is spent once, so a proof could not be checked again and need not be.
+func (s *Server) deferCredential(w http.ResponseWriter, r *http.Request, orgID string, claims *tokens.AccessTokenClaims,
+	cfg oid4vci.Configuration, holderKeys []*jose.JSONWebKey) {
+	ctx := r.Context()
+	keysJSON, err := json.Marshal(holderKeys)
+	if err == nil {
+		var transaction string
+		if transaction, err = store.NewCredentialRequest(ctx, s.db, orgID, claims.Subject, claims.JTI, cfg.ID, keysJSON); err == nil {
+			s.auditDetached(ctx, audit.Event{Type: "oid4vci.credential_deferred", OrgID: orgID, SubjectID: claims.Subject,
+				ClientID: claims.ClientID, CorrelationID: correlationID(ctx), Detail: map[string]any{"configuration": cfg.ID}})
+			writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": transaction, "interval": deferredInterval})
+			return
+		}
+	}
+	s.log.Error("parking a credential request", "err", err, "correlation_id", correlationID(ctx))
+	writeCredentialError(w, http.StatusInternalServerError, "server_error", "the request could not be kept")
+}
+
+// handleDeferredCredential implements §9: what came of a parked request. Asked with the
+// token that made it, since §9 wants one valid for that issuance, and read again now: a
+// person deactivated, or a configuration removed, since the request gets nothing.
+func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	claims := s.issuanceToken(w, r)
+	if claims == nil {
+		return
+	}
+	var req struct {
+		TransactionID string `json:"transaction_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil || req.TransactionID == "" {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request", "give a transaction_id")
+		return
+	}
+	parked, err := store.CredentialRequestFor(ctx, s.db, req.TransactionID, claims.JTI)
+	if err != nil {
+		s.log.Error("reading a parked credential request", "err", err, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if parked == nil {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_transaction_id",
+			"that transaction_id was not issued to this token, or has already been used")
+		return
+	}
+	switch parked.State {
+	case "pending":
+		writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": req.TransactionID, "interval": deferredInterval})
+		return
+	case "denied":
+		writeCredentialError(w, http.StatusBadRequest, "credential_request_denied", "this request was not accepted")
+		return
+	}
+	configs, err := store.CredentialConfigurations(ctx, s.db, parked.OrgID)
+	if err != nil {
+		s.log.Error("loading credential configurations", "err", err)
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	cfg, known := configs[parked.Configuration]
+	if !known {
+		writeCredentialError(w, http.StatusBadRequest, "credential_request_denied",
+			"this issuer no longer offers that credential")
+		return
+	}
+	var holderKeys []*jose.JSONWebKey
+	if err := json.Unmarshal(parked.HolderKeys, &holderKeys); err != nil {
+		s.log.Error("reading a parked request's keys", "err", err, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	issued, err := s.mintCredentials(ctx, parked.OrgID, claims, cfg, holderKeys, time.Now())
+	if err != nil {
+		s.log.Error("issuing a deferred credential", "err", err, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "the credential could not be issued")
+		return
+	}
+	// Spent after minting, so that a failure above leaves the wallet able to come back,
+	// and before answering, so that of two racing one is answered.
+	spent, err := store.SpendCredentialRequest(ctx, s.db, parked.ID)
+	if err != nil {
+		s.log.Error("spending a parked request", "err", err, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if !spent {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_transaction_id", "that transaction_id has already been used")
+		return
+	}
+	s.answerIssued(w, r, parked.OrgID, claims, cfg, issued)
 }
 
 // validateCredentialProof checks one key proof and spends its nonce. attested
@@ -550,7 +673,8 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 		"credential_endpoint": s.cfg.Issuer + oidcPathCredential,
 		"nonce_endpoint":      s.cfg.Issuer + oidcPathCredentialNonce,
 		// §12.2.4. Named here, so a wallet knows the id in a response has somewhere to go.
-		"notification_endpoint": s.cfg.Issuer + oidcPathCredentialNotification,
+		"notification_endpoint":        s.cfg.Issuer + oidcPathCredentialNotification,
+		"deferred_credential_endpoint": s.cfg.Issuer + oidcPathDeferredCredential,
 		// The wallet needs to know where to get a token, and for us that is the
 		// same deployment.
 		"authorization_servers": []string{s.cfg.Issuer},
@@ -579,4 +703,5 @@ const (
 	oidcPathCredential             = "/oid4vci/credential"
 	oidcPathCredentialNonce        = "/oid4vci/nonce"
 	oidcPathCredentialNotification = "/oid4vci/notification"
+	oidcPathDeferredCredential     = "/oid4vci/deferred_credential"
 )

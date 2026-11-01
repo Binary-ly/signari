@@ -247,6 +247,8 @@ clients:
 verifiable credentials:
   credential define        define a credential this issuer can mint (SD-JWT VC)
   credential list          show the credential configurations this issuer publishes
+  credential requests      what wallets have asked for and is waiting on a decision
+  credential decide        approve or deny a waiting request
   credential offer         mint an OID4VCI Credential Offer a wallet can redeem
   credential trust-root    trust a CA for x5c key proofs
   credential untrust-root  stop trusting a CA for x5c key proofs
@@ -929,6 +931,9 @@ func run(args []string) (err error) {
 	racMaxDuration := fs.Duration("max-duration", 0, "how long one session may last, 0 for no limit (rac limits)")
 	credRequireAttestation := fs.Bool("require-key-attestation", false,
 		"issue this credential only to a key a trusted attester vouches for (credential define)")
+	credDeferred := fs.Bool("deferred", false, "hold each request for this credential for a decision (credential define)")
+	credRequest := fs.String("request", "", "the id `credential requests` shows (credential decide)")
+	credDecision := fs.String("decision", "", "approve or deny (credential decide)")
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
 			"Empty clears it, which returns them to the deployment default")
@@ -1736,14 +1741,21 @@ func run(args []string) (err error) {
 	case "credential define":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
-		var requireAttestation *bool
+		var requireAttestation, deferred *bool
 		if given["require-key-attestation"] {
 			requireAttestation = credRequireAttestation
 		}
+		if given["deferred"] {
+			deferred = credDeferred
+		}
 		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
-			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation)
+			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred)
 	case "credential list":
 		return credentialList(ctx, conn, *outputFormat)
+	case "credential requests":
+		return credentialRequests(ctx, conn, *orgID, *outputFormat)
+	case "credential decide":
+		return credentialDecide(ctx, conn, *orgID, *credRequest, *credDecision)
 	case "credential trust-root":
 		return credentialTrustRoot(ctx, conn, *orgID, *name, *credRootCert)
 	case "credential roots":
@@ -9211,7 +9223,7 @@ func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
 // quietly drop a requirement somebody set.
 func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	always, selective string, lifetime time.Duration, displayName string,
-	requireAttestation *bool) error {
+	requireAttestation, deferred *bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -9235,7 +9247,7 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	// checked in store.CredentialSpec, as the Admin API checks them.
 	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, VCT: vct,
 		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
-		RequireKeyAttestation: requireAttestation})
+		RequireKeyAttestation: requireAttestation, Deferred: deferred})
 	if err != nil {
 		return err
 	}
@@ -9255,8 +9267,53 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 		fmt.Printf("  key       : attested only (key_attestations_required); register the\n")
 		fmt.Printf("              wallet provider with `signari attester add`\n")
 	}
+	if deferred != nil && *deferred {
+		fmt.Printf("  issuance  : each request waits for `signari credential decide`, for as\n")
+		fmt.Printf("              long as the wallet's token lasts\n")
+	}
 	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
 	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")
+	return nil
+}
+
+// credentialRequests shows what is waiting on a decision.
+func credentialRequests(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	waiting, err := store.PendingCredentialRequests(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(waiting) == 0 && out.text() {
+		fmt.Println("nothing is waiting on a decision")
+		return nil
+	}
+	for _, r := range waiting {
+		out.add(map[string]any{"id": r.ID, "email": r.Email, "configuration": r.Configuration, "created_at": r.CreatedAt.UTC()})
+		if out.text() {
+			fmt.Printf("%s  %s  %s  %s\n", r.ID, r.CreatedAt.Format("2006-01-02 15:04:05"), r.Configuration, r.Email)
+		}
+	}
+	return out.flush()
+}
+
+// credentialDecide approves or denies a waiting request. A decision stands.
+func credentialDecide(ctx context.Context, conn *pgx.Conn, orgID, request, decision string) error {
+	switch {
+	case orgID == "" || request == "":
+		return fmt.Errorf("-org and -request are required; `signari credential requests` lists them")
+	case decision != "approve" && decision != "deny":
+		return fmt.Errorf("-decision is approve or deny")
+	}
+	if err := store.DecideCredentialRequest(ctx, conn, orgID, request, decision == "approve"); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s. The wallet learns it the next time it asks.\n", request, decision)
 	return nil
 }
 

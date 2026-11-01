@@ -521,6 +521,12 @@ export class SignariAdmin {
     return this.call<GetOrganizationsOrgIDCredentialProofRootsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/credential-proof-roots`, undefined, opts)
   }
 
+  // GET /admin/organizations/{orgID}/credential-requests: What wallets have asked for and is
+  // waiting on a decision. Needs config:read.
+  getOrganizationsOrgIDCredentialRequests(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDCredentialRequestsResponse>> {
+    return this.call<GetOrganizationsOrgIDCredentialRequestsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/credential-requests`, undefined, opts)
+  }
+
   // GET /admin/organizations/{orgID}/directories: The directories the organisation's accounts
   // follow, and what each last sync did. Needs config:read.
   getOrganizationsOrgIDDirectories(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDDirectoriesResponse>> {
@@ -1230,6 +1236,12 @@ export class SignariAdmin {
   // Needs organizations:write.
   putOrganizationsOrgIDCredentialProofRootsName(orgID: string, name: string, body: PutOrganizationsOrgIDCredentialProofRootsNameRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDCredentialProofRootsNameResponse>> {
     return this.call<PutOrganizationsOrgIDCredentialProofRootsNameResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/credential-proof-roots/${encodeURIComponent(name)}`, body, opts)
+  }
+
+  // PUT /admin/organizations/{orgID}/credential-requests/{requestID}: Approve or deny a waiting
+  // request. Needs organizations:write.
+  putOrganizationsOrgIDCredentialRequestsRequestID(orgID: string, requestID: string, body: PutOrganizationsOrgIDCredentialRequestsRequestIDRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDCredentialRequestsRequestIDResponse>> {
+    return this.call<PutOrganizationsOrgIDCredentialRequestsRequestIDResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/credential-requests/${encodeURIComponent(requestID)}`, body, opts)
   }
 
   // PUT /admin/organizations/{orgID}/directories/{slug}/group-map: Say which local group a
@@ -2131,6 +2143,7 @@ export interface GetOrganizationsOrgIDCredentialConfigurationsResponse {
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurationsItem {
   always: string[]
+  deferred: boolean
   display_name: string
   format: string
   id: string
@@ -2151,6 +2164,21 @@ export interface GetOrganizationsOrgIDCredentialProofRootsResponseRootsItem {
   name: string
   not_after: string | null
   subject: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDCredentialRequestsResponse {
+  org_id: string
+  requests: GetOrganizationsOrgIDCredentialRequestsResponseRequestsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDCredentialRequestsResponseRequestsItem {
+  configuration: string
+  created_at: string
+  email: string
+  id: string
+  user_id: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4316,6 +4344,7 @@ export interface PutOrganizationsOrgIDBudgetsResponse {
 /** A JSON object of the Admin API. */
 export interface PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest {
   always?: string[]
+  deferred?: boolean
   display_name?: string
   lifetime_s?: number
   require_key_attestation?: boolean
@@ -4341,6 +4370,18 @@ export interface PutOrganizationsOrgIDCredentialProofRootsNameResponse {
   name: string
   not_after: string
   subject: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDCredentialRequestsRequestIDRequest {
+  decision?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDCredentialRequestsRequestIDResponse {
+  config_version: number
+  decision: string
+  id: string
 }
 
 /** A JSON object of the Admin API. */

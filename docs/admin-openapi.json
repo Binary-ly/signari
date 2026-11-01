@@ -8636,6 +8636,9 @@
                             },
                             "type": "array"
                           },
+                          "deferred": {
+                            "type": "boolean"
+                          },
                           "display_name": {
                             "type": "string"
                           },
@@ -8669,7 +8672,8 @@
                           "selective",
                           "lifetime_s",
                           "display_name",
-                          "require_key_attestation"
+                          "require_key_attestation",
+                          "deferred"
                         ],
                         "type": "object"
                       },
@@ -8772,6 +8776,9 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  "deferred": {
+                    "type": "boolean"
                   },
                   "display_name": {
                     "type": "string"
@@ -9215,6 +9222,241 @@
           }
         ],
         "summary": "Trust a CA for x5c key proofs."
+      }
+    },
+    "/admin/organizations/{orgID}/credential-requests": {
+      "get": {
+        "operationId": "get_organizations_orgID_credential_requests",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "requests": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "configuration": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "email": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "format": "uuid",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "user_id",
+                          "email",
+                          "configuration",
+                          "created_at"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "requests"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "What wallets have asked for and is waiting on a decision."
+      }
+    },
+    "/admin/organizations/{orgID}/credential-requests/{requestID}": {
+      "put": {
+        "operationId": "put_organizations_orgID_credential_requests_requestID",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "requestID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "decision": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "decision": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "decision",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Approve or deny a waiting request."
       }
     },
     "/admin/organizations/{orgID}/directories": {

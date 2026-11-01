@@ -195,6 +195,7 @@ Everything above is the authorization server. This is the other role: Signari no
 POST /oid4vci/nonce                          §7  — unauthenticated
 POST /oid4vci/credential                     §8  — bearer or DPoP
 POST /oid4vci/notification                   §11 — bearer or DPoP
+POST /oid4vci/deferred_credential            §9  — bearer or DPoP
 GET  /oid4vci/offer/{handle}                 §4.1.3 — unauthenticated
 GET  /.well-known/openid-credential-issuer   §12.2
 ```
@@ -390,11 +391,43 @@ A Credential Response carries a `notification_id`, and the metadata names
 only. Each is recorded as `oid4vci.credential_notified`. Nothing depends on it, since a
 wallet may never say, and the window is the token's lifetime.
 
+## A credential somebody has to look at first
+
+Some credentials are not issued on the strength of a code alone. `signari credential
+define -deferred`, `"deferred": true` on the Admin API, or `deferred: true` in a
+configuration file holds each request for a decision (§9):
+
+```sh
+signari credential requests -org <uuid>
+signari credential decide -org <uuid> -request <id> -decision approve
+```
+
+The wallet's proofs are checked when it asks, and it is answered `202` with a
+`transaction_id` and an `interval`. It then asks `POST /oid4vci/deferred_credential`
+with the same token until there is an answer:
+
+| The decision | The wallet is answered |
+|---|---|
+| none yet | `202`, with the same `transaction_id` |
+| approved | `200` with the credentials, bound to the keys it proved, once |
+| denied | `400 credential_request_denied` |
+| the configuration has been removed | `400 credential_request_denied` |
+| an id not given to this token, or already used | `400 invalid_transaction_id` |
+
+What waits is the public keys and not the proofs, because a nonce is spent once. A
+person deactivated while waiting gets nothing: their token stops working, as it does
+at the Credential Endpoint.
+
+**A decision has as long as the wallet's token lasts**, which is five minutes unless
+`signari client set-lifetimes -access-ttl` says otherwise for the wallet client, and at
+most an hour. §9 requires a token valid for the issuance, and an offer's code is
+spent, so a wallet cannot get another. A request nobody decides in that time is swept.
+This suits a person at a counter, and not a review that takes days.
+
 ## What is still not built
 
 - **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
   only SD-JWT VC, so adding it is a migration rather than a rewrite.
-- **Deferred issuance** (§9).
 - **Credential response encryption** (§10) and encrypted requests.
 - The **authorization code flow** variant (`issuer_state`), and with it
   `openid_credential` authorization details and `credential_identifier`

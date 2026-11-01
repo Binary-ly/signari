@@ -25,6 +25,7 @@ refused with `412` when the configuration moved since the version it names.
 | [config-version](#config-version) | 1 |
 | [credential-configurations](#credential-configurations) | 2 |
 | [credential-proof-roots](#credential-proof-roots) | 3 |
+| [credential-requests](#credential-requests) | 2 |
 | [directories](#directories) | 7 |
 | [duo](#duo) | 2 |
 | [event-subscriptions](#event-subscriptions) | 6 |
@@ -830,6 +831,7 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `always` | list of string |  |
+| `deferred` | boolean |  |
 | `display_name` | string |  |
 | `lifetime_s` | integer |  |
 | `require_key_attestation` | boolean |  |
@@ -893,6 +895,41 @@ Answers:
 | `name` | string | always |
 | `not_after` | string | always |
 | `subject` | string | always |
+
+## credential-requests
+
+### `GET /admin/organizations/{orgID}/credential-requests`
+
+What wallets have asked for and is waiting on a decision. Needs config:read.
+
+Go `GetOrganizationsOrgIDCredentialRequests`, TypeScript `getOrganizationsOrgIDCredentialRequests`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `org_id` | string | always |
+| `requests` | list of object | always |
+
+### `PUT /admin/organizations/{orgID}/credential-requests/{requestID}`
+
+Approve or deny a waiting request. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDCredentialRequestsRequestID`, TypeScript `putOrganizationsOrgIDCredentialRequestsRequestID`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `decision` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `decision` | string | always |
+| `id` | string | always |
 
 ## directories
 

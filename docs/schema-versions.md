@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0253 credential_deferred
+
+Compatible with the release before: its binary may still serve this schema.
+
+A credential somebody has to look at first (12.08). Some are not issued on the strength of a code alone: a staff card, a licence, whatever a person signs off. So a configuration can defer, and a wallet's request waits here for a decision. What waits is the keys the wallet proved it holds, which are public, so that the proof does not have to be made again, and the hash of the transaction id, which with the token is what fetches the result. An older binary ignores the column and issues at once, so a deferred configuration wants the newer binary everywhere.
+
 ## 0252 credential_followup
 
 Compatible with the release before: its binary may still serve this schema.

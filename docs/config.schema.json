@@ -201,6 +201,9 @@
         "config_id": {
           "type": "string"
         },
+        "deferred": {
+          "type": "boolean"
+        },
         "display_name": {
           "type": "string"
         },

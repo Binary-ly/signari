@@ -29,6 +29,21 @@ type credentialConfigurationView struct {
 	LifetimeSeconds       int64    `json:"lifetime_s"`
 	DisplayName           string   `json:"display_name"`
 	RequireKeyAttestation bool     `json:"require_key_attestation"`
+	Deferred              bool     `json:"deferred"`
+}
+
+// credentialRequestView is a wallet's request waiting on a decision.
+type credentialRequestView struct {
+	ID            string    `json:"id"`
+	UserID        string    `json:"user_id"`
+	Email         string    `json:"email"`
+	Configuration string    `json:"configuration"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// decideCredentialRequest is `credential decide`: approve or deny.
+type decideCredentialRequest struct {
+	Decision string `json:"decision"`
 }
 
 // putCredentialConfigurationRequest is `credential define`.
@@ -40,6 +55,8 @@ type putCredentialConfigurationRequest struct {
 	DisplayName     string   `json:"display_name"`
 	// RequireKeyAttestation absent keeps the configuration's setting.
 	RequireKeyAttestation *bool `json:"require_key_attestation"`
+	// Deferred holds each request for a decision, and absent keeps the setting.
+	Deferred *bool `json:"deferred"`
 }
 
 type putProofRootRequest struct {
@@ -79,7 +96,7 @@ func (s *Server) listCredentialConfigurations(w http.ResponseWriter, r *http.Req
 		out = append(out, credentialConfigurationView{ID: c.ID, Format: c.Format, VCT: c.VCT,
 			Always: nonNilStrings(c.AlwaysClaims), Selective: nonNilStrings(c.SelectiveClaims),
 			LifetimeSeconds: int64(c.Lifetime.Seconds()), DisplayName: c.DisplayName,
-			RequireKeyAttestation: c.RequireKeyAttestation})
+			RequireKeyAttestation: c.RequireKeyAttestation, Deferred: c.Deferred})
 	}
 	slices.SortFunc(out, func(a, b credentialConfigurationView) int { return strings.Compare(a.ID, b.ID) })
 	s.writeList(w, r, map[string]any{"org_id": orgID, "configurations": out})
@@ -109,7 +126,7 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 	spec := store.CredentialSpec{ConfigID: configID, VCT: strings.TrimSpace(req.VCT),
 		DisplayName: strings.TrimSpace(req.DisplayName), Always: cleanList(req.Always, false),
 		Selective: cleanList(req.Selective, false), Lifetime: time.Duration(req.LifetimeSeconds) * time.Second,
-		RequireKeyAttestation: req.RequireKeyAttestation}
+		RequireKeyAttestation: req.RequireKeyAttestation, Deferred: req.Deferred}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_credential", "detail": err.Error()})
 		return
@@ -133,7 +150,7 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_defined", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"configuration": configID, "vct": spec.VCT,
 				"always": spec.Always, "selective": spec.Selective, "lifetime_s": req.LifetimeSeconds,
-				"require_key_attestation": required}})
+				"require_key_attestation": required, "deferred": req.Deferred}})
 	})
 	if s.writeCredentialFailure(w, err, orgID) {
 		return
@@ -141,6 +158,69 @@ func (s *Server) putCredentialConfiguration(w http.ResponseWriter, r *http.Reque
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{"id": configID, "require_key_attestation": required,
 		"config_version": version})
+}
+
+// listCredentialRequests is what is waiting on somebody, as `credential requests` shows.
+func (s *Server) listCredentialRequests(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	got, err := store.PendingCredentialRequests(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Error("listing credential requests", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	out := make([]credentialRequestView, 0, len(got))
+	for _, c := range got {
+		out = append(out, credentialRequestView{ID: c.ID, UserID: c.UserID, Email: c.Email,
+			Configuration: c.Configuration, CreatedAt: c.CreatedAt})
+	}
+	s.writeList(w, r, map[string]any{"org_id": orgID, "requests": out})
+}
+
+// decideOnCredentialRequest approves or denies, as `credential decide` does.
+func (s *Server) decideOnCredentialRequest(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, id := r.PathValue("orgID"), r.PathValue("requestID")
+	var req decideCredentialRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if req.Decision != "approve" && req.Decision != "deny" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_decision",
+			"detail": "a decision is approve or deny"})
+		return
+	}
+	if narrowedTokenRefused(w, r, credentialRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if err := store.DecideCredentialRequest(ctx, tx, orgID, id, req.Decision == "approve"); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_request_decided", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"request": id, "decision": req.Decision}})
+	})
+	switch {
+	case errors.Is(err, store.ErrCredentialRequestUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "request_not_found", "detail": err.Error()})
+		return
+	case s.writeCredentialFailure(w, err, orgID):
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "decision": req.Decision, "config_version": version})
 }
 
 type proofRootView struct {

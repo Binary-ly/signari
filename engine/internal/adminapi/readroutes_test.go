@@ -65,6 +65,7 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/prompts", org("/prompts")},
 		{"GET /admin/organizations/{orgID}/authorization-detail-types", org("/authorization-detail-types")},
 		{"GET /admin/organizations/{orgID}/attesters", org("/attesters")},
+		{"GET /admin/organizations/{orgID}/credential-requests", org("/credential-requests")},
 		{"GET /admin/organizations/{orgID}/credential-configurations", func(t *testing.T, s *Server) string {
 			o, _, _, _ := newDriftWallet(t, s)
 			return "/admin/organizations/" + o + "/credential-configurations"

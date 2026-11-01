@@ -89,6 +89,8 @@ type Configuration struct {
 	// attester vouches for, and is what the metadata's
 	// key_attestations_required describes.
 	RequireKeyAttestation bool
+	// Deferred holds a request for somebody to decide on (§9).
+	Deferred bool
 }
 
 // ValidateRequest applies §8.2's parameter rules.

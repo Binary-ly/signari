@@ -140,6 +140,8 @@ var cliAPI = map[string]string{
 	// Credentials (OID4VCI).
 	"credential define":       "PUT /admin/organizations/{orgID}/credential-configurations/{configID}",
 	"credential list":         reads,
+	"credential requests":     reads,
+	"credential decide":       "PUT /admin/organizations/{orgID}/credential-requests/{requestID}",
 	"credential offer":        "POST /admin/users/{userID}/credential-offers",
 	"credential trust-root":   "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
 	"credential roots":        reads,

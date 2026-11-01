@@ -60,6 +60,9 @@ var columnClass = map[string]string{
 
 	// The id of a token, which proves nothing without the token.
 	"credential_notifications.token_jti": "public",
+	"credential_requests.token_jti":      "public",
+
+	"credential_requests.transaction_hash": "oneWay",
 
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.

@@ -1586,7 +1586,7 @@ func run(args []string) (err error) {
 		return ssfListStreams(ctx, conn, *outputFormat)
 	case "migration-source add":
 		return migrationSourceAdd(ctx, conn, *orgID, *kind, *name, *migrationTokenEndpoint, *ldapURL,
-			*extClientID, *extSecret, *migrationScope, *bindDNTemplate, *ldapStartTLS, *ldapCA)
+			*extClientID, *extSecret, *migrationScope, *bindDNTemplate, *ldapStartTLS, *ldapCA, *krbRealm)
 	case "migration-source enable":
 		return migrationSourceSetEnabled(ctx, conn, *orgID, true)
 	case "migration-source disable":
@@ -8113,9 +8113,11 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 		// No password credential. The account authenticates against the realm --
 		// by SPNEGO or by the password backend -- and inventing a local password
 		// for it would be a second way in that nobody chose.
+		//
+		// Pending, which is what has a `kerberos` migration source asked about them.
 		if _, err := conn.Exec(ctx, `
-			INSERT INTO core.users (org_id, user_handle, email)
-			VALUES ($1::uuid, decode(repeat(md5(random()::text),4),'hex'), $2)
+			INSERT INTO core.users (org_id, user_handle, email, migration_state)
+			VALUES ($1::uuid, decode(repeat(md5(random()::text),4),'hex'), $2, 'pending')
 			ON CONFLICT DO NOTHING`, orgID, email); err != nil {
 			return fmt.Errorf("creating %s: %w", email, err)
 		}

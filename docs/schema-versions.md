@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0242 migration_source_kerberos
+
+Not compatible with the release before: stop it before migrating.
+
+A Kerberos realm as where a person's password is checked (8.11). The verifier was built and tested and nothing called it, so a person signing in with the password their realm knows was checked locally, where they had none. It joins the sources a password is delegated to, whose throttling and outage handling it needs, and differs in one way: the realm stays the authority, so no hash is taken and a person stays `pending` for as long as the source is there. The realm is held in token_endpoint, the column that says where a source is reached.
+
 ## 0241 saml_soap_logout
 
 Not compatible with the release before: stop it before migrating.

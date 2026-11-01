@@ -2,6 +2,7 @@ package kerberos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,10 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/krberror"
+	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // Verifying a password against the KDC.
@@ -45,6 +50,9 @@ type PasswordVerifier struct {
 	ConfPath string
 	// Timeout bounds one exchange with the KDC.
 	Timeout time.Duration
+	// KeytabPath and ServicePrincipal are this service's, the same as SPNEGO's.
+	// Required: see Verify.
+	KeytabPath, ServicePrincipal string
 }
 
 // ErrRefused is returned for any password the KDC did not accept.
@@ -54,7 +62,20 @@ type PasswordVerifier struct {
 // oracle for anyone who can reach whatever exposes it.
 var ErrRefused = fmt.Errorf("the realm did not accept those credentials")
 
-// Verify asks the KDC for a ticket.
+// ErrKDCUnproven is a KDC that took the password and could not show it is the
+// realm's. Not a wrong password: somebody else's KDC, or a keytab out of date.
+var ErrKDCUnproven = errors.New("the KDC could not prove it holds this service's key")
+
+// Verify asks the KDC for a ticket, and then for a ticket to this service.
+//
+// # Why the first is not enough
+//
+// The AS exchange proves only that whoever answered knows the key the reply was
+// encrypted with, and whoever answers on the network can choose that: send a
+// reply encrypted with a password of its own and any password "works" for it.
+// That is the KDC spoofing attack, and the way out is the one every PAM module
+// came to. Ask for a ticket to a service whose key this side holds, and open it.
+// Nobody but the real KDC has that key to encrypt with.
 func (v PasswordVerifier) Verify(ctx context.Context, username, password string) error {
 	if v.Realm == "" {
 		return fmt.Errorf("no Kerberos realm is configured")
@@ -81,6 +102,10 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 		}
 		username = username[:at]
 	}
+	if v.KeytabPath == "" || v.ServicePrincipal == "" {
+		return fmt.Errorf("a password cannot be checked against a realm without a keytab and a service " +
+			"principal: nothing else tells the realm's KDC from one that says yes")
+	}
 
 	path := v.ConfPath
 	if path == "" {
@@ -95,13 +120,29 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 	if err != nil {
 		return fmt.Errorf("%s did not parse as a krb5 configuration: %w", path, err)
 	}
+	kt, err := Config{KeytabPath: v.KeytabPath}.Keytab()
+	if err != nil {
+		return err
+	}
+	spn, _, _ := strings.Cut(v.ServicePrincipal, "@")
+	realm := strings.ToUpper(v.Realm)
 
-	cl := client.NewWithPassword(username, strings.ToUpper(v.Realm), password, cfg,
-		client.DisablePAFXFAST(true))
+	cl := client.NewWithPassword(username, realm, password, cfg, client.DisablePAFXFAST(true))
 	defer cl.Destroy()
 
 	done := make(chan error, 1)
-	go func() { done <- cl.Login() }()
+	go func() {
+		if err := cl.Login(); err != nil {
+			done <- loginFailure(err)
+			return
+		}
+		tkt, _, err := cl.GetServiceTicket(spn)
+		if err != nil {
+			done <- fmt.Errorf("%w: asking for a ticket to %s: %w", ErrKDCUnproven, spn, err)
+			return
+		}
+		done <- checkServiceTicket(&tkt, kt, spn, username, realm, time.Now())
+	}()
 
 	timeout := v.Timeout
 	if timeout <= 0 {
@@ -109,10 +150,7 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 	}
 	select {
 	case err := <-done:
-		if err != nil {
-			return ErrRefused
-		}
-		return nil
+		return err
 	case <-time.After(timeout):
 		// A KDC that does not answer is NOT a wrong password. Saying so would
 		// send an office to reset passwords they typed correctly.
@@ -120,4 +158,43 @@ func (v PasswordVerifier) Verify(ctx context.Context, username, password string)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// loginFailure says what a failed AS exchange means. A KDC that said no is
+// ErrRefused, whatever it said no about. One that was never reached, or a realm this
+// configuration does not name, has said nothing about the password, and calling that
+// a wrong one sends an office to reset passwords they typed correctly.
+func loginFailure(err error) error {
+	var failed krberror.Krberror
+	if errors.As(err, &failed) &&
+		(failed.RootCause == krberror.NetworkingError || failed.RootCause == krberror.ConfigError) {
+		return fmt.Errorf("the KDC could not be asked: %w", err)
+	}
+	return ErrRefused
+}
+
+// ticketSkew is the clock drift allowed against a ticket's times, the five
+// minutes Kerberos deployments have always allowed.
+const ticketSkew = 5 * time.Minute
+
+// checkServiceTicket opens a ticket with this service's key and holds it to the
+// person who asked. Opening it is the proof; the rest stops a real ticket for
+// somebody else, or an old one, being replayed in its place.
+func checkServiceTicket(tkt *messages.Ticket, kt *keytab.Keytab, spn, username, realm string, now time.Time) error {
+	sname, _ := types.ParseSPNString(spn)
+	if err := tkt.DecryptEncPart(kt, &sname); err != nil {
+		return fmt.Errorf("%w: %w", ErrKDCUnproven, err)
+	}
+	enc := tkt.DecryptedEncPart
+	if enc.CName.PrincipalNameString() != username || !strings.EqualFold(enc.CRealm, realm) {
+		return fmt.Errorf("%w: the ticket is for %s@%s", ErrKDCUnproven, enc.CName.PrincipalNameString(), enc.CRealm)
+	}
+	start := enc.StartTime
+	if start.IsZero() {
+		start = enc.AuthTime
+	}
+	if now.Before(start.Add(-ticketSkew)) || now.After(enc.EndTime.Add(ticketSkew)) {
+		return fmt.Errorf("%w: the ticket is not current", ErrKDCUnproven)
+	}
+	return nil
 }

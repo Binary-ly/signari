@@ -190,8 +190,17 @@ func (c *MigrationSourceConfig) validate() error {
 			return invalidSource("a hook source has no endpoint or credentials of its own: its provider holds them")
 		}
 		c.Scope = "openid"
+	case "kerberos":
+		c.URL = strings.ToUpper(strings.TrimSpace(c.URL))
+		if c.URL == "" || strings.ContainsAny(c.URL, " /:@") {
+			return invalidSource("give the realm, as in EXAMPLE.COM")
+		}
+		if c.ClientID != "" || c.ClientSecret != "" || c.BindDNTemplate != "" || c.CAPEM != "" || c.StartTLS {
+			return invalidSource("a kerberos source is a realm and nothing else: its keytab is the deployment's")
+		}
+		c.Scope = "openid"
 	default:
-		return invalidSource("the kind is oidc_password, ldap or hook, not %q", c.Kind)
+		return invalidSource("the kind is oidc_password, ldap, hook or kerberos, not %q", c.Kind)
 	}
 	return nil
 }
@@ -454,6 +463,16 @@ func CompleteMigration(ctx context.Context, tx pgx.Tx, userID, orgID, sourceID, 
 		return fmt.Errorf("counting the delegated success: %w", err)
 	}
 	return nil
+}
+
+// RecordDelegationSuccess counts one a source accepted with nothing migrated, for a
+// realm, which stays the authority.
+func RecordDelegationSuccess(ctx context.Context, tx pgx.Tx, sourceID string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE core.migration_sources
+		SET delegated_successes = delegated_successes + 1, last_used_at = now(), last_error = NULL
+		WHERE id = $1::uuid`, sourceID)
+	return err
 }
 
 // RecordDelegationFailure counts a failure against the SOURCE, not the user.

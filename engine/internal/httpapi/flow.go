@@ -3189,6 +3189,26 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		return true
 	}
 
+	// A realm is not being migrated from. It stays the authority, so no hash is
+	// taken: one kept here would go on working after the realm had changed the
+	// password or disabled the account, which is the whole of what asking it gets.
+	if pending.Source.Kind == "kerberos" {
+		tx, err := s.db.Begin(ctx)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return true
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := store.RecordDelegationSuccess(ctx, tx, pending.Source.ID); err != nil {
+			_ = tx.Rollback(ctx)
+			s.log.Error("counting a sign-in through a realm", "err", err)
+			s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+			return true
+		}
+		s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID, []string{oauth.AMRPassword}, authzQuery)
+		return true
+	}
+
 	// Accepted by the old provider. Take a local hash NOW, in the same
 	// transaction as the session -- so this user never needs the old system
 	// again, and the migration shrinks by one.

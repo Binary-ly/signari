@@ -154,7 +154,7 @@ var commandFlags = map[string][]string{
 	"migrate fingerprint":             {},
 	"migrate status":                  {"o"},
 	"migrate up":                      {"lock-timeout", "statement-timeout", "to"},
-	"migration-source add":            {"bind-dn-template", "client-id-ext", "client-secret", "kind", "ldap-ca", "ldap-start-tls", "ldap-url", "migration-scope", "name", "org", "token-endpoint"},
+	"migration-source add":            {"bind-dn-template", "client-id-ext", "client-secret", "kind", "ldap-ca", "ldap-start-tls", "ldap-url", "migration-scope", "name", "org", "realm", "token-endpoint"},
 	"migration-source disable":        {"org"},
 	"migration-source enable":         {"org"},
 	"migration-source remove":         {"org"},

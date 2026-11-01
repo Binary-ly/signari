@@ -95,20 +95,40 @@ unmatched principal is refused and told to ask for one.
 | | |
 |---|---|
 | **SPNEGO** | A domain-joined browser signs in with no interaction |
-| **Password backend** | A password is verified against the KDC — built and tested, and not yet called by any sign-in |
+| **Password backend** | A password typed at the sign-in form is verified against the KDC, at every sign-in |
 | **Directory sync** | Accounts are created from the realm's principals |
 
 ### Password backend
 
-**Not wired yet.** The verifier below exists and is tested, and the sign-in form
-does not call it: a password typed at sign-in is checked locally and never sent to
-the KDC, so none of what follows runs today. This page used to list it as one of
-three working uses.
+For somebody on a machine that is not domain-joined, typing the password they already
+have. It is a source a password is delegated to, as a directory being migrated from is:
+
+```sh
+signari migration-source add -org <uuid> -kind kerberos -name "Corp" -realm EXAMPLE.COM
+signari migration-source test -org <uuid> -username alice
+signari migration-source enable -org <uuid>
+```
+
+It applies to a person with no password here who is marked pending, which is what
+`signari kerberos sync` makes. It differs from a migration in one way: **no hash is
+kept.** The realm stays the authority, and a person is asked about at every sign-in,
+because a hash kept here would go on working after the realm had changed the password
+or disabled the account. Wrong passwords are charged as any others are, to the address
+and the captcha, and a KDC that does not answer is an outage, charged to nobody.
 
 There is no hash to compare — a realm does not publish password material, and
 the only way to check a password is to ask the KDC for a ticket with it. That
 also makes every check live: a password changed or an account disabled five
 seconds ago is refused, which a cached hash cannot do.
+
+**A ticket from the KDC is not enough on its own.** Whoever answers an AS request
+chooses the key its reply is encrypted with, so a KDC an attacker stands up on the
+network says yes to any password. So the verifier goes on to ask for a ticket to this
+service, `SIGNARI_KERBEROS_SPN`, and opens it with `SIGNARI_KERBEROS_KEYTAB`. Only the
+realm's KDC holds that key. The keytab and the principal are required, a ticket that
+will not open or names somebody else is refused, and that is reported as the source
+failing and not as a wrong password, since a person typing their password into a form
+is not who to blame for a KDC on the wrong end of the wire.
 
 Four things are refused **before** the KDC is asked, and each would be a bypass
 otherwise:
@@ -121,8 +141,9 @@ otherwise:
   password, because the alternative sends an office to reset passwords they
   typed correctly
 
-Needs `/etc/krb5.conf` naming the KDCs, read fresh on each verification so a
-realm whose KDCs move is fixed by editing a file rather than by a restart.
+Needs `/etc/krb5.conf`, or the file `SIGNARI_KERBEROS_CONF` names, naming the KDCs,
+read fresh on each verification so a realm whose KDCs move is fixed by editing a file
+rather than by a restart.
 
 ### Directory sync
 

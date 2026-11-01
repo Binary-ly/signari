@@ -3093,7 +3093,7 @@ func racSetParameters(ctx context.Context, conn *pgx.Conn, orgID, slug, raw stri
 // Nothing could create one, so delegated verification could not be switched
 // on. The source is created disabled, and a replaced one keeps its state.
 func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, tokenEndpoint, ldapURL,
-	clientID, secret, scope, template string, startTLS bool, caPath string) error {
+	clientID, secret, scope, template string, startTLS bool, caPath, realm string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -3121,6 +3121,11 @@ func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, 
 		if tokenEndpoint != "" || ldapURL != "" || template != "" || caPath != "" {
 			return fmt.Errorf("a -kind hook source has no endpoint of its own: `signari provider add -hook " +
 				"password_verify` says where it is")
+		}
+	case "kerberos":
+		c.Kind, c.URL = "kerberos", realm
+		if tokenEndpoint != "" || ldapURL != "" || template != "" || caPath != "" {
+			return fmt.Errorf("a -kind kerberos source is a -realm, and the deployment's keytab reaches it")
 		}
 	default:
 		return fmt.Errorf("-kind is oidc_password, ldap or hook for a migration source")
@@ -3283,6 +3288,8 @@ func migrationSourceShow(ctx context.Context, conn *pgx.Conn, orgID string) erro
 			s.StartTLS, s.HasCA)
 	case "hook":
 		fmt.Println("  asked    : the provider registered for password_verify")
+	case "kerberos":
+		fmt.Printf("  realm    : %s\n", s.URL)
 	default:
 		fmt.Printf("  url      : %s\n  client   : %s (secret %v)\n  scope    : %s\n", s.URL, s.ClientID, s.HasSecret, s.Scope)
 	}
@@ -3292,7 +3299,10 @@ func migrationSourceShow(ctx context.Context, conn *pgx.Conn, orgID string) erro
 		fmt.Printf("; last: %s", s.LastError)
 	}
 	fmt.Println()
-	if s.Enabled {
+	if s.Enabled && s.Kind == "kerberos" {
+		fmt.Println("\n  While enabled, the password a pending person types is checked at the realm at every")
+		fmt.Println("  sign-in, and nothing is kept here: the realm stays the authority.")
+	} else if s.Enabled {
 		fmt.Println("\n  While enabled, the password a pending person types is sent to this source to be")
 		fmt.Println("  checked, and kept here as a hash when it is accepted.")
 	} else {

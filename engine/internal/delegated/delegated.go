@@ -10,9 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/safedial"
 )
 
@@ -69,6 +71,9 @@ func ldapTLS(s Source) (*tls.Config, error) {
 // Verifier asks a source whether a password is correct.
 type Verifier struct {
 	client *http.Client
+	// Kerberos asks a realm about a password, answering as kerberos.PasswordVerifier
+	// does. A field so a test can stand in for a KDC.
+	Kerberos func(ctx context.Context, realm, username, password string) error
 }
 
 // New forwards through safedial: the source's token endpoint is a stored
@@ -76,7 +81,13 @@ type Verifier struct {
 // redirects into the private network is refused before anything is sent. An
 // old provider that is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
 func New() *Verifier {
-	return NewWithClient(safedial.Client(0))
+	v := NewWithClient(safedial.Client(0))
+	v.Kerberos = func(ctx context.Context, realm, username, password string) error {
+		return kerberos.PasswordVerifier{Realm: realm, ConfPath: os.Getenv("SIGNARI_KERBEROS_CONF"),
+			KeytabPath: os.Getenv("SIGNARI_KERBEROS_KEYTAB"), ServicePrincipal: os.Getenv("SIGNARI_KERBEROS_SPN")}.
+			Verify(ctx, username, password)
+	}
+	return v
 }
 
 // NewWithClient is New over a transport the caller chooses, such as a dialer
@@ -126,11 +137,30 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 			BindDNTemplate: s.BindDNTemplate,
 			CACerts:        conf,
 		}, username, password)
+	case "kerberos":
+		return v.askRealm(ctx, s, username, password)
 	default:
 		return fmt.Errorf("delegated: unsupported source kind %q", s.Kind)
 	}
 	_, err := v.exchange(ctx, s, username, password)
 	return err
+}
+
+// askRealm asks a realm, whose name a source holds where it says how it is
+// reached. A KDC that cannot show it is the realm's is not a wrong password, and
+// says nothing about the person.
+func (v *Verifier) askRealm(ctx context.Context, s Source, username, password string) error {
+	if v.Kerberos == nil {
+		return fmt.Errorf("%w: this process cannot reach a realm", ErrUnavailable)
+	}
+	err := v.Kerberos(ctx, s.TokenEndpoint, username, password)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, kerberos.ErrRefused):
+		return ErrRejected
+	}
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
 // exchange is the token endpoint's verification, answering the step it
@@ -245,6 +275,8 @@ func (v *Verifier) Test(ctx context.Context, s Source, username, password string
 			BindDNTemplate: s.BindDNTemplate, CACerts: conf}, username, password)
 	case "oidc_password":
 		step, err = v.exchange(ctx, s, username, password)
+	case "kerberos":
+		step, err = StepBind, v.askRealm(ctx, s, username, password)
 	default:
 		return Result{Step: StepConfiguration, Detail: fmt.Sprintf("delegated: unsupported source kind %q", s.Kind)}
 	}

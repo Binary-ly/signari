@@ -82,6 +82,11 @@ func seedCommand(args []string) error {
 		}
 		added += int(tag.RowsAffected())
 	}
+	// Counted now, or the first run measures a planner that takes all these people
+	// for a handful: autovacuum gets to it in its own time and a run does not wait.
+	if _, err := conn.Exec(ctx, `ANALYZE core.users, core.password_credentials`); err != nil {
+		return fmt.Errorf("analysing what was seeded: %w", err)
+	}
 	fmt.Printf("seeded %d people (bench-1@%s to bench-%d@%s); %d already existed\n",
 		added, benchDomain, *users, benchDomain, *users-added)
 	return nil

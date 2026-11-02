@@ -73,6 +73,7 @@ nothing is ever mailed to one.
   for the benchmark and say so, or read `shed` as the result.
 - **Analyse after loading.** A table filled a moment ago has no statistics until
   autovacuum gets to it, and a planner that takes 100,000 rows for a handful makes
-  a good query look like a bad one. `ANALYZE` first: a real table has them.
+  a good query look like a bad one. `bench seed` does this for you. After any other
+  load, `ANALYZE` first, as the table's owner: anybody else is skipped with a warning.
 - **Take turns.** To compare two builds, alternate them, and run each more than
   once. One run here read a quarter of the others, for nothing in the code.

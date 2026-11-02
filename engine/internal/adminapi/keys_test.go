@@ -106,3 +106,61 @@ func TestAnInstancesKeysAreRotatedThroughTheAPI(t *testing.T) {
 		t.Errorf("an organisation's token rotated the instance's keys: %d", rec.Code)
 	}
 }
+
+// What a wallet encrypts to is a key of its own: making one touches no signing key, and
+// each one keeps a single generation behind it.
+func TestAWalletsEncryptionKeyIsMadeThroughTheAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	id := newDriftKeyedInstance(t, s)
+	path := "/admin/instances/" + id + "/credential-encryption-key"
+	signing := func() string {
+		t.Helper()
+		set, err := keys.LoadSet(ctx, s.db, id, s.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := ""
+		for _, k := range set.Keys() {
+			out += k.KID() + "=" + string(k.State()) + " "
+		}
+		return out
+	}
+	before := signing()
+	made := func() string {
+		t.Helper()
+		rec := call(t, s, http.MethodPost, path, testToken, nil)
+		var out struct {
+			KID string `json:"kid"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK || out.KID == "" {
+			t.Fatalf("it answered %d %s", rec.Code, rec.Body)
+		}
+		return out.KID
+	}
+	first, second, third := made(), made(), made()
+	if got := signing(); got != before {
+		t.Errorf("the signing keys went from %s to %s", before, got)
+	}
+	set, err := keys.LoadSetFor(ctx, s.db, id, keys.PurposeEncryption, s.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := set.ByKID(first); kept {
+		t.Error("two rotations later the first key still opens")
+	}
+	for kid, want := range map[string]keys.State{second: keys.StatePassive, third: keys.StateActive} {
+		if k, kept := set.ByKID(kid); !kept || k.State() != want {
+			t.Errorf("%s is %v, want %s", kid, k, want)
+		}
+	}
+	tenant := mintToken(t, s, fmt.Sprintf("encryption-tenant-%d", time.Now().UnixNano()), anyOrgID(t, s),
+		[]string{ScopeOrganizationsWrite, ScopeConfigRead}, nil)
+	if rec := call(t, s, http.MethodPost, path, tenant, nil); rec.Code != http.StatusForbidden {
+		t.Errorf("an organisation's token made the instance's key: %d", rec.Code)
+	}
+	unknown := "/admin/instances/00000000-0000-0000-0000-000000000001/credential-encryption-key"
+	if rec := call(t, s, http.MethodPost, unknown, testToken, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("an unknown instance answered %d", rec.Code)
+	}
+}

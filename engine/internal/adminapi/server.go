@@ -610,6 +610,7 @@ func (s *Server) Routes() http.Handler {
 		// private halves are sealed with; deployment-wide tokens only.
 		route("GET /admin/instances/{instanceID}/keys", ScopeConfigRead, s.listSigningKeys)
 		route("POST /admin/instances/{instanceID}/keys/rotate", ScopeOrganizationsWrite, s.rotateSigningKeys)
+		route("POST /admin/instances/{instanceID}/credential-encryption-key", ScopeOrganizationsWrite, s.rotateCredentialEncryptionKey)
 		route("POST /admin/instances/{instanceID}/keys/retire", ScopeOrganizationsWrite, s.retireSigningKeys)
 
 		// OpenID Federation and Trust Marks (federation.go), signed with the

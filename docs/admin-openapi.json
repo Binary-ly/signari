@@ -3692,6 +3692,108 @@
         "summary": "Brand the instance's pages, checked for contrast."
       }
     },
+    "/admin/instances/{instanceID}/credential-encryption-key": {
+      "post": {
+        "operationId": "post_instances_instanceID_credential_encryption_key",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "instanceID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "instance_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "kid": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "instance_id",
+                    "kid",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Make a new key for wallets to encrypt to."
+      }
+    },
     "/admin/instances/{instanceID}/federation": {
       "get": {
         "operationId": "get_instances_instanceID_federation",

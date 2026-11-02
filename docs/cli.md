@@ -170,6 +170,7 @@ existed, and the test that exists to catch exactly that could not see this table
 | `signari credential trust-root` | `-org <id> -name <n> -root-cert <ca.pem>`: trust a CA for OID4VCI key proofs that carry an `x5c` chain. One certificate, a CA, unexpired; a file holding a private key is refused. The same name replaces. With none registered, every `x5c` proof is refused. See [oid4vci.md](oid4vci.md) |
 | `signari credential roots` | List the CAs `x5c` key proofs may verify to |
 | `signari credential untrust-root` | `-org <id> -name <n>`: withdraw one; chains to it are refused from the next credential request |
+| `signari credential encryption-key` | Make a new key for wallets to encrypt a credential request to, and offer encrypted credentials. Again, it rotates: the previous key still opens, the one before stops ([oid4vci.md](oid4vci.md#a-credential-only-the-wallet-can-read)) |
 | `signari credential offer` | Mint an OID4VCI Credential Offer. `-by-reference` keeps it here and prints a short address, for a QR code. `-authorization-code` has the holder sign in to take it up, rather than handing the wallet a code. See [oid4vci.md](oid4vci.md) |
 
 ## Keys and audit

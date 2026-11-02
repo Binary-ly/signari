@@ -139,6 +139,8 @@ func (r *RootKey) openOwn(sealed []byte) ([]byte, error) {
 const (
 	PurposeOIDC       = "oidc"
 	PurposeFederation = "federation"
+	// PurposeEncryption decrypts and signs nothing (decrypt.go).
+	PurposeEncryption = "encryption"
 )
 
 // Save persists an OIDC protocol key.

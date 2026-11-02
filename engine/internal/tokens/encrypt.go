@@ -10,8 +10,9 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
-// Encrypting what goes to a client, to a key it registered. Nothing here decrypts: this
-// server holds no encryption key of its own, and refuses an encrypted Request Object.
+// Encrypting what goes to a client, to a key it registered. Nothing here decrypts. The one
+// message this server opens is a wallet's credential request, and that takes a key of its
+// own, in internal/keys; an encrypted Request Object is refused.
 
 // Encryption is how something is encrypted to a client. The zero value is not at all.
 type Encryption struct {

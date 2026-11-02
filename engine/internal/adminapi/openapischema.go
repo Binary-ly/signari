@@ -947,6 +947,9 @@ var opSchemas = map[string]opSchema{
 			"instance_id": uuidStr(), "steps": arrayOf(object([]string{"algorithm"}, map[string]jsonSchema{
 				"algorithm": str(), "published": str(), "promoted": str(), "demoted": str(), "forced": boolean(),
 				"wait_s": integer()}))}))},
+	"POST /admin/instances/{instanceID}/credential-encryption-key": {http.StatusOK, nil, object(
+		[]string{"instance_id", "kid", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "kid": str()}))},
 	"POST /admin/instances/{instanceID}/keys/retire": {http.StatusOK, nil, object(
 		[]string{"instance_id", "retired", "config_version"}, withVersion(map[string]jsonSchema{
 			"instance_id": uuidStr(), "retired": arrayOf(str())}))},

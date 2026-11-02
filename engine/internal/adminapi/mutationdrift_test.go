@@ -1252,6 +1252,13 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{}` },
 		},
 		{
+			name: "POST /admin/instances/{instanceID}/credential-encryption-key", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/credential-encryption-key"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/instances/{instanceID}/keys/retire", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys/retire"

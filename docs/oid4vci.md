@@ -517,12 +517,61 @@ configuration of it naming `-selective` is refused. Use `dc+sd-jwt`, the default
 holder should choose. Everything else here applies to both: key proofs, attestation,
 deferred issuance, wallet-initiated requests and the notification endpoint.
 
+## A credential only the wallet can read
+
+TLS ends where it ends. A wallet with a backend, or an issuer behind something that
+terminates TLS, can have a credential pass through a component that should not see it.
+So a wallet can ask for the credential sealed to a key of its own (§10):
+
+```sh
+signari credential encryption-key
+```
+
+That makes a key and publishes it, as `credential_request_encryption.jwks` in the issuer
+metadata, with `credential_response_encryption` beside it. Until there is a key the
+metadata mentions neither, and a request with `Content-Type: application/jwt` is refused.
+An issuer with no key offers nothing it could not do.
+
+The key is for this. It is a P-256 key used for `ECDH-ES`, it signs nothing and is never
+in the JWKS, and it is sealed under the root key like any other, so
+`signari keys rotate` leaves it alone and `signari keys rewrap-root` carries it.
+
+The wallet sends its request as a JWE in `application/jwt`, with
+`credential_response_encryption` inside it: `{"jwk": {...}, "enc": "A256GCM"}`, the key
+carrying an `alg` of `ECDH-ES` or `RSA-OAEP-256`. The answer comes back as a JWE in
+`application/jwt` with that key's `kid` in the header. It works the same at the deferred
+endpoint, and there the object in each request decides that request's answer, whatever
+the first one said.
+
+**A request for encryption has to arrive encrypted.** §8.2: "Credential Request encryption
+MUST be used if the credential_response_encryption parameter is included, to prevent it
+being substituted by an attacker". Whoever could read the credential could otherwise have
+swapped the key for theirs, so the request is refused with
+`invalid_encryption_parameters`. It works the other way round: a sealed request that does
+not ask gets a plain JSON answer.
+
+**What cannot be sealed is refused before anything is issued.** A compressed answer, an
+`enc` or `alg` not on offer, a key with no `alg` or a signing key, all answer
+`invalid_encryption_parameters` with no proof spent and no credential minted. If sealing
+fails after that, the wallet gets a 500 and not the credential in the clear. Errors are
+`application/json` either way, as §8.3.1 has them.
+
+**Running the command again rotates.** The new key goes into the metadata, the old one
+keeps opening what a wallet sealed from a cached copy, and the one before that stops
+opening anything. So a key you believe lost takes two runs. Wallets have nothing to redo:
+they take the key from the metadata, and a refusal sends them back for it. There is no
+dwell as with a signing key, since nothing verifies against this key later. Each run is
+recorded as `keys.rotated`, with `purpose` saying which key.
+
+Under `fips140=only` the offered `enc` values are the CBC ones ([FIPS 140-3](fips.md)).
+
 ## What is still not built
 
 - **ISO mdoc** (`mso_mdoc`), which needs COSE, and **`ldp_vc`**, which needs JSON-LD
   canonicalization. The `format` column has a CHECK constraint listing what is
   signed, so adding one is a migration rather than a rewrite.
-- **Credential response encryption** (§10) and encrypted requests.
+- **Requiring encryption.** `encryption_required` is `false` both ways, and the
+  metadata names no `zip_values_supported`, so a compressed request is refused.
 - A credential requested by **`scope`** (§5.1.2). A wallet asks with
   authorization details, and the metadata names no scope for it to use instead.
 - The **`claims`** of an authorization detail (§5.1.1) are accepted and not

@@ -157,6 +157,49 @@ func (s *Server) rotateSigningKeys(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "steps": out, "config_version": version})
 }
 
+// rotateCredentialEncryptionKey is what a wallet encrypts to (OpenID4VCI §10), a key that
+// signs nothing and so takes no part in the steps above.
+func (s *Server) rotateCredentialEncryptionKey(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	instanceID := r.PathValue("instanceID")
+	if !deploymentWide(w, ctx) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	var key keys.Key
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		exists, err := store.InstanceExists(ctx, tx, instanceID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return store.ErrInstanceUnknown
+		}
+		key, err = keys.RotateEncryptionKey(ctx, tx, instanceID, s.root, "admin_api")
+		if err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.credential_encryption_key_rotated", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "kid": key.KID()}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, store.ErrInstanceUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "instance_not_found"})
+		return
+	case err != nil:
+		s.log.Error("rotating the credential encryption key", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "kid": key.KID(), "config_version": version})
+}
+
 func (s *Server) retireSigningKeys(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	instanceID := r.PathValue("instanceID")

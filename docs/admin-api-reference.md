@@ -37,6 +37,7 @@ refused with `412` when the configuration moved since the version it names.
 | [identity-providers](#identity-providers) | 13 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
+| [instances / credential-encryption-key](#instances--credential-encryption-key) | 1 |
 | [instances / federation](#instances--federation) | 8 |
 | [instances / held-trust-marks](#instances--held-trust-marks) | 2 |
 | [instances / issuer-aliases](#instances--issuer-aliases) | 3 |
@@ -1955,6 +1956,22 @@ Answers:
 | `logo_url` | string | always |
 | `product_name` | string | always |
 | `support_url` | string | always |
+
+## instances / credential-encryption-key
+
+### `POST /admin/instances/{instanceID}/credential-encryption-key`
+
+Make a new key for wallets to encrypt to. Needs organizations:write.
+
+Go `PostInstancesInstanceIDCredentialEncryptionKey`, TypeScript `postInstancesInstanceIDCredentialEncryptionKey`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `instance_id` | string | always |
+| `kid` | string | always |
 
 ## instances / federation
 

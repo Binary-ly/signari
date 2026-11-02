@@ -2358,6 +2358,13 @@ type PostGroupsResponse struct {
 	ID            string `json:"id"`
 }
 
+// PostInstancesInstanceIDCredentialEncryptionKeyResponse is a JSON object of the Admin API.
+type PostInstancesInstanceIDCredentialEncryptionKeyResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	InstanceID    string `json:"instance_id"`
+	Kid           string `json:"kid"`
+}
+
 // PostInstancesInstanceIDIssuerAliasesRequest is a JSON object of the Admin API.
 type PostInstancesInstanceIDIssuerAliasesRequest struct {
 	Alias       *string         `json:"alias,omitempty"`
@@ -5625,6 +5632,18 @@ func (c *Client) PostClientsClientIDRotateSecret(ctx context.Context, clientID s
 func (c *Client) PostGroups(ctx context.Context, body PostGroupsRequest, opts ...Option) (*PostGroupsResponse, int64, error) {
 	var out PostGroupsResponse
 	v, err := c.call(ctx, "POST", "/admin/groups", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostInstancesInstanceIDCredentialEncryptionKey is POST
+// /admin/instances/{instanceID}/credential-encryption-key: Make a new key for wallets to encrypt
+// to. Needs organizations:write.
+func (c *Client) PostInstancesInstanceIDCredentialEncryptionKey(ctx context.Context, instanceID string, opts ...Option) (*PostInstancesInstanceIDCredentialEncryptionKeyResponse, int64, error) {
+	var out PostInstancesInstanceIDCredentialEncryptionKeyResponse
+	v, err := c.call(ctx, "POST", "/admin/instances/"+url.PathEscape(instanceID)+"/credential-encryption-key", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

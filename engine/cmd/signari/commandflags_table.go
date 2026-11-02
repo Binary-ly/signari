@@ -60,6 +60,7 @@ var commandFlags = map[string][]string{
 	"client set-token-format":         {"client-id", "token-format"},
 	"credential decide":               {"decision", "org", "request"},
 	"credential define":               {"always", "brand-name", "credential-configuration", "credential-format", "deferred", "org", "require-key-attestation", "selective", "valid-for", "vct", "wallet-initiated"},
+	"credential encryption-key":       {},
 	"credential list":                 {"o"},
 	"credential offer":                {"authorization-code", "by-reference", "client-id", "credential-configuration", "credential-issuer", "email", "issuer", "offer-expires", "org", "tx-code", "tx-code-length"},
 	"credential requests":             {"o", "org"},

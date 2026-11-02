@@ -979,6 +979,12 @@ export class SignariAdmin {
     return this.call<PostGroupsResponse>("POST", `/admin/groups`, body, opts)
   }
 
+  // POST /admin/instances/{instanceID}/credential-encryption-key: Make a new key for wallets to
+  // encrypt to. Needs organizations:write.
+  postInstancesInstanceIDCredentialEncryptionKey(instanceID: string, opts: CallOptions = {}): Promise<Answer<PostInstancesInstanceIDCredentialEncryptionKeyResponse>> {
+    return this.call<PostInstancesInstanceIDCredentialEncryptionKeyResponse>("POST", `/admin/instances/${encodeURIComponent(instanceID)}/credential-encryption-key`, undefined, opts)
+  }
+
   // POST /admin/instances/{instanceID}/issuer-aliases: Claim a legacy issuer while relying parties
   // move across. Needs organizations:write.
   postInstancesInstanceIDIssuerAliases(instanceID: string, body: PostInstancesInstanceIDIssuerAliasesRequest, opts: CallOptions = {}): Promise<Answer<PostInstancesInstanceIDIssuerAliasesResponse>> {
@@ -3713,6 +3719,13 @@ export interface PostGroupsRequest {
 export interface PostGroupsResponse {
   config_version: number
   id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostInstancesInstanceIDCredentialEncryptionKeyResponse {
+  config_version: number
+  instance_id: string
+  kid: string
 }
 
 /** A JSON object of the Admin API. */

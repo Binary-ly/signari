@@ -226,10 +226,19 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, encrypted, ok := s.credentialRequestBody(w, r, 1<<20)
+	if !ok {
+		return
+	}
 	var req oid4vci.CredentialRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
 			"the request body is not JSON")
+		return
+	}
+	seal, serr := sealFor(req.ResponseEncryption, encrypted)
+	if serr != nil {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_encryption_parameters", serr.Error())
 		return
 	}
 	proofs, verr := req.Validate()
@@ -419,7 +428,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if cfg.Deferred {
-		s.deferCredential(w, r, orgID, claims, cfg, holderKeys)
+		s.deferCredential(w, r, seal, orgID, claims, cfg, holderKeys)
 		return
 	}
 	issued, ierr := s.mintCredentials(ctx, orgID, claims, cfg, holderKeys, issuedAt)
@@ -428,7 +437,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "the credential could not be issued")
 		return
 	}
-	s.answerIssued(w, r, orgID, claims, cfg, issued)
+	s.answerIssued(w, r, seal, orgID, claims, cfg, issued)
 }
 
 // mintCredentials mints one credential per key.
@@ -447,8 +456,8 @@ func (s *Server) mintCredentials(ctx context.Context, orgID string, claims *toke
 }
 
 // answerIssued is the end of an issuance, immediate or deferred.
-func (s *Server) answerIssued(w http.ResponseWriter, r *http.Request, orgID string, claims *tokens.AccessTokenClaims,
-	cfg oid4vci.Configuration, issued []oid4vci.IssuedCredential) {
+func (s *Server) answerIssued(w http.ResponseWriter, r *http.Request, seal *credentialSeal, orgID string,
+	claims *tokens.AccessTokenClaims, cfg oid4vci.Configuration, issued []oid4vci.IssuedCredential) {
 	ctx := r.Context()
 	s.auditDetached(ctx, audit.Event{
 		Type: "oid4vci.credential_issued", OrgID: orgID, SubjectID: claims.Subject,
@@ -463,7 +472,7 @@ func (s *Server) answerIssued(w http.ResponseWriter, r *http.Request, orgID stri
 	if nerr != nil {
 		s.log.ErrorContext(ctx, "recording an issuance", "err", nerr, "correlation_id", correlationID(ctx))
 	}
-	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued, NotificationID: notification})
+	s.writeCredentialAnswer(w, r, seal, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued, NotificationID: notification})
 }
 
 // deferredInterval is §8.3's wait, as a wallet is told it: long enough not to be
@@ -473,8 +482,8 @@ const deferredInterval = 30
 
 // deferCredential parks a request whose proofs have passed, keeping the keys and not the
 // proofs: a nonce is spent once, so a proof could not be checked again and need not be.
-func (s *Server) deferCredential(w http.ResponseWriter, r *http.Request, orgID string, claims *tokens.AccessTokenClaims,
-	cfg oid4vci.Configuration, holderKeys []*jose.JSONWebKey) {
+func (s *Server) deferCredential(w http.ResponseWriter, r *http.Request, seal *credentialSeal, orgID string,
+	claims *tokens.AccessTokenClaims, cfg oid4vci.Configuration, holderKeys []*jose.JSONWebKey) {
 	ctx := r.Context()
 	keysJSON, err := json.Marshal(holderKeys)
 	if err == nil {
@@ -482,7 +491,7 @@ func (s *Server) deferCredential(w http.ResponseWriter, r *http.Request, orgID s
 		if transaction, err = store.NewCredentialRequest(ctx, s.db, orgID, claims.Subject, claims.JTI, cfg.ID, keysJSON); err == nil {
 			s.auditDetached(ctx, audit.Event{Type: "oid4vci.credential_deferred", OrgID: orgID, SubjectID: claims.Subject,
 				ClientID: claims.ClientID, CorrelationID: correlationID(ctx), Detail: map[string]any{"configuration": cfg.ID}})
-			writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": transaction, "interval": deferredInterval})
+			s.writeCredentialAnswer(w, r, seal, http.StatusAccepted, map[string]any{"transaction_id": transaction, "interval": deferredInterval})
 			return
 		}
 	}
@@ -500,11 +509,21 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	if claims == nil {
 		return
 	}
-	var req struct {
-		TransactionID string `json:"transaction_id"`
+	body, encrypted, ok := s.credentialRequestBody(w, r, 16<<10)
+	if !ok {
+		return
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil || req.TransactionID == "" {
+	var req struct {
+		TransactionID      string          `json:"transaction_id"`
+		ResponseEncryption json.RawMessage `json:"credential_response_encryption"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.TransactionID == "" {
 		writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request", "give a transaction_id")
+		return
+	}
+	seal, serr := sealFor(req.ResponseEncryption, encrypted)
+	if serr != nil {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_encryption_parameters", serr.Error())
 		return
 	}
 	parked, err := store.CredentialRequestFor(ctx, s.db, req.TransactionID, claims.JTI)
@@ -520,7 +539,7 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	}
 	switch parked.State {
 	case "pending":
-		writeJSON(w, http.StatusAccepted, map[string]any{"transaction_id": req.TransactionID, "interval": deferredInterval})
+		s.writeCredentialAnswer(w, r, seal, http.StatusAccepted, map[string]any{"transaction_id": req.TransactionID, "interval": deferredInterval})
 		return
 	case "denied":
 		writeCredentialError(w, http.StatusBadRequest, "credential_request_denied", "this request was not accepted")
@@ -562,7 +581,7 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 		writeCredentialError(w, http.StatusBadRequest, "invalid_transaction_id", "that transaction_id has already been used")
 		return
 	}
-	s.answerIssued(w, r, parked.OrgID, claims, cfg, issued)
+	s.answerIssued(w, r, seal, parked.OrgID, claims, cfg, issued)
 }
 
 // validateCredentialProof checks one key proof and spends its nonce. attested
@@ -707,7 +726,7 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 	}
 
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	writeJSON(w, http.StatusOK, map[string]any{
+	document := map[string]any{
 		// §12.2.3 makes this the mix-up defence: a wallet compares it against the
 		// identifier it inserted the well-known path into, and refuses the
 		// document if they differ.
@@ -738,7 +757,11 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 			"batch_size": oid4vci.MaxProofsPerRequest,
 		},
 		"credential_configurations_supported": supported,
-	})
+	}
+	for name, value := range s.credentialEncryptionMetadata(r) {
+		document[name] = value
+	}
+	writeJSON(w, http.StatusOK, document)
 }
 
 const (

@@ -191,6 +191,9 @@ var summaries = map[string]string{
 	"POST /admin/instances/{instanceID}/keys/rotate": "Take the next safe step of rotation for each algorithm in use.",
 	"POST /admin/instances/{instanceID}/keys/retire": "Retire the passive keys whose dwell is over.",
 
+	// What a wallet encrypts to.
+	"POST /admin/instances/{instanceID}/credential-encryption-key": "Make a new key for wallets to encrypt to.",
+
 	// Duo as a second factor (6.07).
 	"GET /admin/organizations/{orgID}/duo": "The organisation's Duo application, without its secret, and how many people are enrolled.",
 	"PUT /admin/organizations/{orgID}/duo": "Configure Duo, checked against Duo before anything is stored.",

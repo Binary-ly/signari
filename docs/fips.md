@@ -168,7 +168,9 @@ library, which chooses GCM's nonce itself, and the module refuses a nonce the ca
 chose. So under `fips140=only` the content encryptions on offer are `A128CBC-HS256` and
 `A256CBC-HS512`, in discovery and in the setting alike. `RSA-OAEP-256` and `ECDH-ES` work
 with both, and the encryption tests pass in that mode. A client set to a GCM value before
-the move answers a 500 rather than send anything in the clear.
+the move answers a 500 rather than send anything in the clear. A wallet's
+[credential request](oid4vci.md#a-credential-only-the-wallet-can-read) is the same in the
+other direction: the metadata offers the CBC values, and those are what open.
 
 ## What was fixed rather than documented
 

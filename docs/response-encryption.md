@@ -130,6 +130,8 @@ will not take these claims any other way.
 
 ## What is not here
 
-**Decrypting anything.** This server holds no encryption key. An encrypted Request
-Object is [refused](jar.md#what-is-not-here), and a client cannot encrypt to this server,
-so `id_token_hint` and client assertions are signed JWTs.
+**Encrypting to this server, for a relying party.** An encrypted Request Object is
+[refused](jar.md#what-is-not-here), and `id_token_hint` and client assertions are signed
+JWTs. The one message that arrives encrypted is a wallet's
+[credential request](oid4vci.md#a-credential-only-the-wallet-can-read), to a key that
+exists for that and nothing else.

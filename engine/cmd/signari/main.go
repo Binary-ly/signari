@@ -258,7 +258,8 @@ verifiable credentials:
   credential trust-root    trust a CA for x5c key proofs
   credential untrust-root  stop trusting a CA for x5c key proofs
   credential roots         the CAs x5c key proofs may verify to
-  attester add             trust a Client Attester's public keys
+  credential encryption-key  make a new key for wallets to encrypt to
+  attester add            trust a Client Attester's public keys
   attester list            the trusted Client Attesters
   external-factor add      register a service an external_factor stage may ask
   external-factor list     the registered services
@@ -1847,6 +1848,8 @@ func run(args []string) (err error) {
 		return credentialRoots(ctx, conn, *outputFormat)
 	case "credential untrust-root":
 		return credentialUntrustRoot(ctx, conn, *orgID, *name)
+	case "credential encryption-key":
+		return credentialEncryptionKey(ctx, conn)
 	case "resource add":
 		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name, *tokenScopes)
 	case "resource list":
@@ -9981,6 +9984,30 @@ func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name stri
 		return err
 	}
 	fmt.Printf("no longer trusted for x5c key proofs: %q\n", name)
+	return nil
+}
+
+// credentialEncryptionKey makes the key a wallet encrypts a credential request to
+// (OpenID4VCI §10), or a new one. Until there is one the issuer offers no encryption at
+// all, since a response may be sealed only for a request that was.
+func credentialEncryptionKey(ctx context.Context, conn *pgx.Conn) error {
+	instanceID, _, root, err := loadInstanceKeys(ctx, conn)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	key, err := keys.RotateEncryptionKey(ctx, tx, instanceID, root, "cli")
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("encryption key %s is published in the credential issuer metadata\n", key.KID())
 	return nil
 }
 

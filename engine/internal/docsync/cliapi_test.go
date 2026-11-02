@@ -142,14 +142,15 @@ var cliAPI = map[string]string{
 	"logout-test":                     cliOnly("runs a relying party on the operator's host to watch a logout arrive"),
 
 	// Credentials (OID4VCI).
-	"credential define":       "PUT /admin/organizations/{orgID}/credential-configurations/{configID}",
-	"credential list":         reads,
-	"credential requests":     reads,
-	"credential decide":       "PUT /admin/organizations/{orgID}/credential-requests/{requestID}",
-	"credential offer":        "POST /admin/users/{userID}/credential-offers",
-	"credential trust-root":   "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
-	"credential roots":        reads,
-	"credential untrust-root": "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}",
+	"credential define":         "PUT /admin/organizations/{orgID}/credential-configurations/{configID}",
+	"credential list":           reads,
+	"credential requests":       reads,
+	"credential decide":         "PUT /admin/organizations/{orgID}/credential-requests/{requestID}",
+	"credential offer":          "POST /admin/users/{userID}/credential-offers",
+	"credential trust-root":     "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
+	"credential roots":          reads,
+	"credential encryption-key": "POST /admin/instances/{instanceID}/credential-encryption-key",
+	"credential untrust-root":   "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}",
 
 	// Keys and the audit trail.
 	"keys list":        reads,

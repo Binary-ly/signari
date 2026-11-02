@@ -14,6 +14,7 @@ way it already had.
 | | |
 |---|---|
 | `SIGNARI_DSN` | PostgreSQL connection string |
+| `SIGNARI_READ_DSN` | A replica for the Admin API's `GET /admin/audit-events`, and for nothing else. Absent, the primary answers, and it answers anyway if the replica does not. [high-availability.md](high-availability.md) says why it is only that |
 | `SIGNARI_ROOT_KEY` | 32 random bytes, base64. Seals every stored secret. Lose it and sealed data — RADIUS secrets, bind passwords, SCIM tokens, signing keys — cannot be read, and the engine refuses to start rather than run with keys it cannot unwrap |
 | `SIGNARI_ROOT_KEY_FILE` | A file holding the root key, instead of `SIGNARI_ROOT_KEY`: a mounted secret, so the key is not in the environment every child process inherits and a container runtime shows. Refused when its group or anybody else may read it, and when `SIGNARI_ROOT_KEY` is set as well. A Kubernetes secret volume is mode 0644 unless told otherwise, so mount it with `defaultMode: 0400` |
 | `SIGNARI_ISSUER` | The issuer URL. Must match an instance in the database |

@@ -2880,6 +2880,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}
 		adminSrv.SetMetrics(met)
 		adminSrv.SetRelease(version)
+		if readDSN := os.Getenv("SIGNARI_READ_DSN"); readDSN != "" {
+			replica, rerr := pgxpool.New(ctx, readDSN)
+			if rerr != nil {
+				return fmt.Errorf("SIGNARI_READ_DSN: %w", rerr)
+			}
+			defer replica.Close()
+			adminSrv.SetReadReplica(replica)
+		}
 		// Personal user attributes are sealed under the subject's key, so the
 		// attribute routes need the key that unwraps subject keys. Without it
 		// they are not registered at all.

@@ -259,6 +259,39 @@ looking. Startup still refuses an empty list: a listener coming up with nothing
 configured is almost certainly a misconfiguration, and saying so immediately is
 more useful than serving a port that answers no one.
 
+## A read replica, for the audit trail
+
+`SIGNARI_READ_DSN` points the Admin API's `GET /admin/audit-events` at a replica, and
+`signari export audit -dsn` takes one too. Reading the trail is the long read an operator
+makes, and it is append-only, so a replica that lags is only missing the newest events.
+If the replica does not answer, the primary does, and the log says so.
+
+It is that and nothing else, on purpose:
+
+- **Nothing that decides anything.** A session, a token or a client is read from the
+  primary, because a revocation a replica has not heard of yet is an authentication that
+  should have been refused.
+- **No list that carries an `ETag`.** A list answered from behind the primary would carry
+  a version the primary has moved past, and `If-Match` exists so that an apply cannot
+  overwrite a change it never saw.
+
+## More instances on one machine
+
+Client credentials against one database, 16 workers shared between one load generator per
+instance, median of two runs, everything on one 8-core laptop under other load:
+
+```
+instances   tokens/s    errors
+1           2,864       0
+2           2,657       0
+4           2,969       0
+```
+
+Flat, because the machine is what ran out: the engines, PostgreSQL and the load generators
+were sharing eight cores. So this says that a second and a fourth instance cost nothing in
+coordination, which is what they should cost, as nothing is shared between them but the
+database. It does not say how far they scale, which needs hosts of their own.
+
 ## What this still does not do
 
 Issuer aliases were read once at startup, which made a retired alias go on being

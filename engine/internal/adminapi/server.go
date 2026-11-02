@@ -48,7 +48,9 @@ import (
 // endpoints so it can be bound to a private interface: an internet-reachable
 // admin API on an identity provider is a large and unnecessary target.
 type Server struct {
-	db    *pgxpool.Pool
+	db *pgxpool.Pool
+	// reads is a replica, for the audit trail alone. See SetReadReplica.
+	reads *pgxpool.Pool
 	log   *slog.Logger
 	token string
 	// ops is what Routes() registered, in registration order. The OpenAPI

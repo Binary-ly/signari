@@ -1,14 +1,41 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"signari.dev/engine/internal/store"
 )
+
+// SetReadReplica points the audit read at a replica (E.18).
+//
+// The audit trail and nothing else, and the reason is in what every other read is
+// for. A list answered from a replica that has not caught up would carry an ETag the
+// primary has moved past, or a row the primary has changed, and `If-Match` exists so
+// that an apply cannot overwrite a change it never saw. The trail is append-only, takes
+// no precondition, and is the long read a primary should not be carrying. What a
+// replica costs here is that the newest events may be missing for as long as it lags.
+func (s *Server) SetReadReplica(replica *pgxpool.Pool) { s.reads = replica }
+
+// queryAudit reads from the replica where there is one. One that does not answer is
+// not a reason to refuse somebody investigating something, so the primary answers.
+func (s *Server) queryAudit(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if s.reads != nil {
+		rows, err := s.reads.Query(ctx, sql, args...)
+		if err == nil {
+			return rows, nil
+		}
+		s.log.Warn("the read replica did not answer; reading the audit trail from the primary", "err", err)
+	}
+	return s.db.Query(ctx, sql, args...)
+}
 
 // Reading the audit trail over HTTP.
 //
@@ -89,6 +116,9 @@ type auditEvent struct {
 // for schema core_v1. That error is the boundary working rather than a
 // misconfiguration.
 //
+// It reads from a replica where one is set (SetReadReplica), since a long read of the
+// trail is the one thing here a primary should not be asked to carry.
+//
 // The core_v1 views exist for the CONSOLE, which has no privilege on schema core
 // at all (ADR-004). This handler is the engine, which owns core. Reading its own
 // data through a compatibility view built for a different consumer would make
@@ -147,7 +177,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Query(ctx, `
+	rows, err := s.queryAudit(ctx, `
 		SELECT id::text,
 		       org_id::text,
 		       to_char(occurred_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),

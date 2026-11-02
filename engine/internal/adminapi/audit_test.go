@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
 )
@@ -58,6 +63,63 @@ func getAuditPage(t *testing.T, s *Server, query string) auditPage {
 // id is. This test writes several events with an identical timestamp and pages
 // through them one at a time, which is the smallest page size that can expose
 // the bug.
+// countingTracer counts the statements a pool is asked for.
+type countingTracer struct{ asked atomic.Int32 }
+
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.asked.Add(1)
+	return ctx
+}
+
+func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// The trail reads from a replica where one is set, nothing else does, and a replica
+// that is not there does not stop somebody reading it.
+func TestTheAuditTrailAloneReadsFromTheReplica(t *testing.T) {
+	s, _ := newTestServer(t)
+	cfg, err := pgxpool.ParseConfig(os.Getenv("SIGNARI_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &countingTracer{}
+	cfg.ConnConfig.Tracer = tracer
+	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
+		return err
+	}
+	replica, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(replica.Close)
+	s.SetReadReplica(replica)
+
+	if rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=1", testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("reading the trail: %d %s", rec.Code, rec.Body.String())
+	}
+	if tracer.asked.Load() == 0 {
+		t.Error("the replica was never asked")
+	}
+
+	tracer.asked.Store(0)
+	for _, path := range []string{"/admin/clients", "/admin/users", "/admin/organizations"} {
+		call(t, s, http.MethodGet, path, testToken, nil)
+	}
+	if n := tracer.asked.Load(); n != 0 {
+		t.Errorf("%d statements of a list that carries an ETag went to the replica", n)
+	}
+
+	gone, err := pgxpool.New(context.Background(), "postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gone.Close)
+	s.SetReadReplica(gone)
+	if rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=1", testToken, nil); rec.Code != http.StatusOK {
+		t.Errorf("with the replica gone the trail answered %d", rec.Code)
+	}
+}
+
 func TestPagingTheAuditTrailDoesNotSkipRowsSharingATimestamp(t *testing.T) {
 	s, _ := newTestServer(t)
 	userID := newDriftUser(t, s)

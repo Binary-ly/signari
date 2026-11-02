@@ -39,7 +39,7 @@ func (s *Server) handleJWTVCIssuerMetadata(w http.ResponseWriter, r *http.Reques
 	// credentials for anybody to verify.
 	configs, err := store.AllCredentialConfigurations(r.Context(), s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("loading credential configurations", "err", err)
+		s.log.ErrorContext(r.Context(), "loading credential configurations", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

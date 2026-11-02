@@ -94,7 +94,7 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 
 	streamID, status, ok, err := store.PollStreamForClient(ctx, s.db, clientID)
 	if err != nil {
-		s.log.Error("locating a poll stream", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "locating a poll stream", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -121,7 +121,7 @@ func (s *Server) handleSSFPoll(w http.ResponseWriter, r *http.Request) {
 
 	sets, more, err := s.pollDeliver(ctx, streamID, clientID, req.Ack, maxEvents, returnImmediately, onlyOfType)
 	if err != nil {
-		s.log.Error("delivering polled events", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "delivering polled events", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

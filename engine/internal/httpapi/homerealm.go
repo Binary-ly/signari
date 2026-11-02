@@ -95,7 +95,7 @@ func (s *Server) singleSignOnOffered(ctx context.Context, orgID string) bool {
 	}
 	offered, err := store.RoutesByDomain(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("reading whether single sign-on is offered", "err", err)
+		s.log.ErrorContext(ctx, "reading whether single sign-on is offered", "err", err)
 		return false
 	}
 	return offered
@@ -114,7 +114,7 @@ func (s *Server) routeByAddress(w http.ResponseWriter, r *http.Request, orgID, i
 	}
 	slug, kind, err := store.ProviderForDomain(r.Context(), s.db, orgID, domain)
 	if err != nil {
-		s.log.Error("routing an address to its provider", "err", err)
+		s.log.ErrorContext(r.Context(), "routing an address to its provider", "err", err)
 		return false
 	}
 	if slug == "" {

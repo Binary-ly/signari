@@ -76,7 +76,7 @@ func (s *Server) handleRACView(w http.ResponseWriter, r *http.Request) {
 	if err := s.writePage(w, r, orgID, "racview", map[string]any{
 		"Slug": conn.Slug, "Name": conn.DisplayName, "Protocol": conn.Protocol,
 	}); err != nil {
-		s.log.Error("rendering the remote-access viewer", "err", err)
+		s.log.ErrorContext(ctx, "rendering the remote-access viewer", "err", err)
 	}
 }
 
@@ -90,7 +90,7 @@ func (s *Server) handleRACIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	conns, err := store.ListRACConnections(ctx, s.db, orgID, userID)
 	if err != nil {
-		s.log.Error("listing remote connections", "err", err)
+		s.log.ErrorContext(ctx, "listing remote connections", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

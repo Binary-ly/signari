@@ -18,7 +18,7 @@ func (s *Server) sendMail(ctx context.Context, orgID string, m mail.Message) err
 	if err != nil {
 		// The deployment's address is a worse sender and a better outcome than a
 		// sign-in code that never left.
-		s.log.Warn("reading an organisation's mail sender", "org_id", orgID, "err", err)
+		s.log.WarnContext(ctx, "reading an organisation's mail sender", "org_id", orgID, "err", err)
 	}
 	return s.sendAs(ctx, orgID, sender, m)
 }
@@ -27,7 +27,7 @@ func (s *Server) sendMail(ctx context.Context, orgID string, m mail.Message) err
 func (s *Server) sendMailTo(ctx context.Context, userID string, m mail.Message) error {
 	sender, orgID, err := store.UserMailSender(ctx, s.db, userID)
 	if err != nil {
-		s.log.Warn("reading a person's mail sender", "user_id", userID, "err", err)
+		s.log.WarnContext(ctx, "reading a person's mail sender", "user_id", userID, "err", err)
 	}
 	return s.sendAs(ctx, orgID, sender, m)
 }

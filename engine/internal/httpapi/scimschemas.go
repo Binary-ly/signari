@@ -117,7 +117,7 @@ func scimSchemaDefinitions() []map[string]any {
 func (s *Server) scimEnterpriseSchema(ctx context.Context, src *store.SCIMSource) map[string]any {
 	declared, err := store.DeclaredSCIMEnterprise(ctx, s.db, src.OrgID)
 	if err != nil {
-		s.log.Error("reading what the SCIM enterprise extension can hold", "err", err)
+		s.log.ErrorContext(ctx, "reading what the SCIM enterprise extension can hold", "err", err)
 		return nil
 	}
 	if len(declared) == 0 {

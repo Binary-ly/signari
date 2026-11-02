@@ -28,7 +28,7 @@ func (s *Server) verifyAccepted(ctx context.Context, raw string) (*tokens.Access
 func (s *Server) standing(ctx context.Context, claims *tokens.AccessTokenClaims, where string) store.TokenStanding {
 	st, err := store.TokenStandingOf(ctx, s.db, claims)
 	if err != nil {
-		s.log.Error("reading what has become of a token", "where", where, "err", err,
+		s.log.ErrorContext(ctx, "reading what has become of a token", "where", where, "err", err,
 			"correlation_id", correlationID(ctx))
 	}
 	return st

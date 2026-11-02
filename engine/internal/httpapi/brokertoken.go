@@ -42,7 +42,7 @@ func (s *Server) handleBrokerToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("reading a provider's tokens", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a provider's tokens", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "the token could not be read")
 		return
 	}
@@ -55,14 +55,14 @@ func (s *Server) handleBrokerToken(w http.ResponseWriter, r *http.Request) {
 		}
 		fresh, rerr := upstream.RefreshTokens(ctx, s.outboundClient(federationTimeout), held.RefreshToken)
 		if rerr != nil {
-			s.log.Warn("a provider would not renew a token", "provider", slug, "err", rerr,
+			s.log.WarnContext(ctx, "a provider would not renew a token", "provider", slug, "err", rerr,
 				"correlation_id", correlationID(ctx))
 			writeError(w, http.StatusConflict, "reauthentication_required",
 				"the person has to sign in at the provider again")
 			return
 		}
 		if err := store.KeepFederatedTokens(ctx, s.db, s.root, upstream.ID, person, upstream.OrgID, *fresh); err != nil {
-			s.log.Error("keeping a renewed token", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "keeping a renewed token", "err", err, "correlation_id", correlationID(ctx))
 			writeError(w, http.StatusInternalServerError, "server_error", "the token could not be kept")
 			return
 		}

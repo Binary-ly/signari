@@ -137,7 +137,7 @@ var errSMSRefused = errors.New("the text message was refused")
 
 func (s *Server) refuseSMS(ctx context.Context, userID, outcome, why string) error {
 	s.countSMS(outcome)
-	s.log.Warn("text message refused", "reason", why, "user_id", userID)
+	s.log.WarnContext(ctx, "text message refused", "reason", why, "user_id", userID)
 	s.auditDetached(ctx, audit.Event{
 		Type: "sms.refused", SubjectID: userID, CorrelationID: correlationID(ctx),
 		Detail: map[string]any{"reason": outcome},

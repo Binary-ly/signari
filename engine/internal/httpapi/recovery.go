@@ -136,7 +136,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 		if err := s.beginRecovery(ctx, identifier); err != nil {
 			// Logged, never surfaced: the error text distinguishes "no such user"
 			// from "SMTP is down", and only one of those is the caller's business.
-			s.log.Error("beginning recovery", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "beginning recovery", "err", err, "correlation_id", correlationID(ctx))
 		}
 	}
 
@@ -206,7 +206,7 @@ func (s *Server) deliverRecovery(ctx context.Context, n store.AccountNotice) err
 func (s *Server) allowRecovery(ctx context.Context, key string, limit int, window time.Duration) bool {
 	res, err := store.AllowRate(ctx, s.db, key, limit, window)
 	if err != nil {
-		s.log.Error("checking the recovery pace", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "checking the recovery pace", "err", err, "correlation_id", correlationID(ctx))
 		return false
 	}
 	return res.Allowed
@@ -300,7 +300,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 
 	userID, cancelled, err := store.CancelRecovery(ctx, tx, hash)
 	if err != nil {
-		s.log.Error("cancelling recovery", "err", err)
+		s.log.ErrorContext(ctx, "cancelling recovery", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -309,10 +309,10 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 			Type: "account.recovery_cancelled", SubjectID: userID,
 			CorrelationID: correlationID(ctx),
 		}); err != nil {
-			s.log.Error("auditing recovery cancellation", "err", err)
+			s.log.ErrorContext(ctx, "auditing recovery cancellation", "err", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing recovery cancellation", "err", err)
+			s.log.ErrorContext(ctx, "committing recovery cancellation", "err", err)
 		}
 	}
 	// Released before rendering, which takes a connection of its own.
@@ -389,7 +389,7 @@ func (s *Server) renderReset(w http.ResponseWriter, r *http.Request, req *store.
 	ctx := r.Context()
 	factors, err := store.RecoveryFactorsOf(ctx, s.db, req.UserID)
 	if err != nil {
-		s.log.Error("reading the recovering person's second factors", "err", err)
+		s.log.ErrorContext(ctx, "reading the recovering person's second factors", "err", err)
 	}
 	data := map[string]any{"Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
 		"Error": msg, "Notice": notice, "SMS": factors.SMS}
@@ -477,7 +477,7 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil:
 		_ = tx.Rollback(ctx)
-		s.log.Error("verifying a second factor during recovery", "err", err)
+		s.log.ErrorContext(ctx, "verifying a second factor during recovery", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	case res.Replayed:
@@ -487,7 +487,7 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 	case !res.OK:
 		// Committed, as at sign-in: the failure counters must outlive the refusal.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing a failed second factor during recovery", "err", err)
+			s.log.ErrorContext(ctx, "committing a failed second factor during recovery", "err", err)
 		}
 		s.recordSecondFactorFailure(ctx, req.UserID, ip)
 		s.factorsDisabled(ctx, req.OrgID, req.UserID, res.Disabled)
@@ -504,7 +504,7 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 		Type: "account.recovery_factor_proven", OrgID: req.OrgID, SubjectID: req.UserID,
 		CorrelationID: correlationID(ctx), Detail: map[string]any{"factor": factor, "was_pending": pending},
 	}); err != nil {
-		s.log.Error("auditing a second factor proven during recovery", "err", err)
+		s.log.ErrorContext(ctx, "auditing a second factor proven during recovery", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -578,7 +578,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		// permits it -- nothing is handed out, so there is nothing to prove -- but
 		// consuming the token and rendering success would tell somebody their
 		// password was reset when it was not.
-		s.log.Error("the recovery flow has no password_change stage", "flow", flowName,
+		s.log.ErrorContext(ctx, "the recovery flow has no password_change stage", "flow", flowName,
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error",
 			"account recovery is misconfigured: the recovery flow changes no credential")
@@ -606,7 +606,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// that it was otherwise valid.
 	previous, perr := store.RecentPasswordHashes(ctx, s.db, req.UserID, s.pwPolicy.HistoryDepth)
 	if perr != nil {
-		s.log.Error("reading password history", "err", perr)
+		s.log.ErrorContext(ctx, "reading password history", "err", perr)
 	}
 	identity, _ := store.EmailForUser(ctx, s.db, req.UserID)
 	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
@@ -619,13 +619,13 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
-		s.log.Warn("the breach check did not run for a password reset",
+		s.log.WarnContext(ctx, "the breach check did not run for a password reset",
 			"correlation_id", correlationID(ctx))
 	}
 
 	newHash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
-		s.log.Error("hashing the new password", "err", err)
+		s.log.ErrorContext(ctx, "hashing the new password", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -641,12 +641,12 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// would file the new password as a previous one and refuse it next time.
 	if s.pwPolicy.HistoryDepth > 0 {
 		if err := store.RetirePassword(ctx, tx, req.UserID, req.OrgID); err != nil {
-			s.log.Error("recording the retired password", "err", err)
+			s.log.ErrorContext(ctx, "recording the retired password", "err", err)
 		}
 	}
 	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
 		_ = tx.Rollback(ctx)
-		s.log.Error("consuming recovery", "err", err)
+		s.log.ErrorContext(ctx, "consuming recovery", "err", err)
 		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return
 	}
@@ -654,7 +654,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// and an outstanding confirmation ends (0177), which is the way back for one
 	// past its ceiling of wrong codes.
 	if err := store.AddressProvedByRecovery(ctx, tx, req.ID, req.UserID); err != nil {
-		s.log.Error("recording the address the reset proved", "err", err)
+		s.log.ErrorContext(ctx, "recording the address the reset proved", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -663,7 +663,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"waived_by": req.WaivedBy},
 	}); err != nil {
-		s.log.Error("auditing password reset", "err", err)
+		s.log.ErrorContext(ctx, "auditing password reset", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

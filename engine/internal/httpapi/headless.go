@@ -232,7 +232,7 @@ func (s *Server) headlessWalk(w http.ResponseWriter, r *http.Request, st *headle
 	for range headlessMaxHops {
 		rec, note, err := s.headlessRequest(r, st, method, target, form)
 		if err != nil {
-			s.log.Error("walking a sign-in", "err", err, "correlation_id", correlationID(r.Context()))
+			s.log.ErrorContext(r.Context(), "walking a sign-in", "err", err)
 			headlessRefuse(w, http.StatusInternalServerError, "server_error", "the walk could not continue")
 			return
 		}
@@ -246,10 +246,10 @@ func (s *Server) headlessWalk(w http.ResponseWriter, r *http.Request, st *headle
 			method, target, form = http.MethodGet, next, nil
 			continue
 		}
-		s.headlessAnswer(w, st, target, rec, note)
+		s.headlessAnswer(r.Context(), w, st, target, rec, note)
 		return
 	}
-	s.log.Error("a sign-in walked in circles", "correlation_id", correlationID(r.Context()))
+	s.log.ErrorContext(r.Context(), "a sign-in walked in circles")
 	headlessRefuse(w, http.StatusInternalServerError, "server_error", "the walk did not settle")
 }
 
@@ -326,14 +326,14 @@ func (h *headlessRecorder) Write(b []byte) (int, error) {
 }
 
 // headlessAnswer reads the page the handlers answered with.
-func (s *Server) headlessAnswer(w http.ResponseWriter, st *headlessState, target string,
+func (s *Server) headlessAnswer(ctx context.Context, w http.ResponseWriter, st *headlessState, target string,
 	rec *headlessRecorder, note *headlessNote) {
 
 	forms, hidden := readForms(rec.body.String(), target)
 	st.Forms = hidden
 	sealed, err := s.sealHeadless(st)
 	if err != nil {
-		s.log.Error("sealing a walk", "err", err)
+		s.log.ErrorContext(ctx, "sealing a walk", "err", err)
 		headlessRefuse(w, http.StatusInternalServerError, "server_error", "the walk could not continue")
 		return
 	}

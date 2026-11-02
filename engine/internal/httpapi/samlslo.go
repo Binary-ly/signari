@@ -108,7 +108,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 			s.samlRefuse(w, r, "no service provider is registered with that entity id")
 			return
 		}
-		s.log.Error("loading SAML provider for logout", "err", err)
+		s.log.ErrorContext(ctx, "loading SAML provider for logout", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -130,7 +130,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		err = saml.VerifyRedirectSignature(r.URL.RawQuery, provider.SPSigningCert, "SAMLRequest")
 	}
 	if err != nil {
-		s.log.Info("SAML logout refused", "entity_id", req.Issuer, "err", err,
+		s.log.InfoContext(ctx, "SAML logout refused", "entity_id", req.Issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -144,7 +144,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 
 	status, err := s.endSAMLSession(ctx, validated, provider)
 	if err != nil {
-		s.log.Error("ending a session for SAML logout", "err", err,
+		s.log.ErrorContext(ctx, "ending a session for SAML logout", "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
@@ -169,7 +169,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	if sloURL == "" {
 		// Nowhere to answer. The session is still ended -- the logout succeeded,
 		// we simply cannot say so.
-		s.log.Info("SAML logout completed with no response endpoint registered",
+		s.log.InfoContext(ctx, "SAML logout completed with no response endpoint registered",
 			"entity_id", provider.EntityID)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -183,7 +183,7 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		Now:         time.Now(),
 	}, key.Signer(), certDER)
 	if err != nil {
-		s.log.Error("building a LogoutResponse", "err", err)
+		s.log.ErrorContext(ctx, "building a LogoutResponse", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -211,13 +211,13 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 
 	respEncoded, err := saml.EncodeRedirect(doc)
 	if err != nil {
-		s.log.Error("encoding a LogoutResponse for the redirect binding", "err", err)
+		s.log.ErrorContext(ctx, "encoding a LogoutResponse for the redirect binding", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	query, err := saml.SignRedirectQuery("SAMLResponse", respEncoded, relayState, key.Signer())
 	if err != nil {
-		s.log.Error("signing a LogoutResponse query", "err", err)
+		s.log.ErrorContext(ctx, "signing a LogoutResponse query", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

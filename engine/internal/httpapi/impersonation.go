@@ -85,7 +85,7 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		s.log.Error("beginning impersonation", "err", err)
+		s.log.ErrorContext(ctx, "beginning impersonation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -108,7 +108,7 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 	var amr []string
 	if err := tx.QueryRow(ctx, `SELECT amr FROM core.sessions WHERE sid = $1`,
 		adminSID).Scan(&amr); err != nil {
-		s.log.Error("reading the administrator's factors", "err", err)
+		s.log.ErrorContext(ctx, "reading the administrator's factors", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -126,12 +126,12 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval, $8, $9)`,
 		sid, store.HashToken(cookieToken), orgID, target, acr, amr,
 		ttl.String(), userAgent, ipHash); err != nil {
-		s.log.Error("creating an impersonated session", "err", err)
+		s.log.ErrorContext(ctx, "creating an impersonated session", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if err := store.AttachImpersonation(ctx, tx, im.ID, sid, actorID); err != nil {
-		s.log.Error("attaching impersonation", "err", err)
+		s.log.ErrorContext(ctx, "attaching impersonation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -147,11 +147,11 @@ func (s *Server) handleImpersonateStart(w http.ResponseWriter, r *http.Request) 
 			"expires_at": im.ExpiresAt.UTC().Format(time.RFC3339),
 		},
 	}); err != nil {
-		s.log.Error("auditing impersonation start", "err", err)
+		s.log.ErrorContext(ctx, "auditing impersonation start", "err", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing impersonation", "err", err)
+		s.log.ErrorContext(ctx, "committing impersonation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleImpersonateStop(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := store.EndImpersonation(ctx, tx, sid, "stopped"); err != nil {
-		s.log.Error("ending impersonation", "err", err)
+		s.log.ErrorContext(ctx, "ending impersonation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -193,10 +193,10 @@ func (s *Server) handleImpersonateStop(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"how": "stopped"},
 	}); err != nil {
-		s.log.Error("auditing impersonation end", "err", err)
+		s.log.ErrorContext(ctx, "auditing impersonation end", "err", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing the end of impersonation", "err", err)
+		s.log.ErrorContext(ctx, "committing the end of impersonation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

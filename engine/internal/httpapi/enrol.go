@@ -81,7 +81,7 @@ func (s *Server) handleTOTPPage(w http.ResponseWriter, r *http.Request) {
 		SELECT EXISTS (SELECT 1 FROM core.totp_credentials
 		                WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`,
 		userID).Scan(&hasCurrent); err != nil {
-		s.log.Error("reading the TOTP credential", "err", err)
+		s.log.ErrorContext(ctx, "reading the TOTP credential", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -128,7 +128,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, encoded, err := mfa.GenerateSecret(params.Algorithm)
 	if err != nil {
-		s.log.Error("generating a TOTP secret", "err", err)
+		s.log.ErrorContext(ctx, "generating a TOTP secret", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -142,7 +142,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.StartTOTPEnrolment(ctx, tx, userID, orgID, secret,
 		string(params.Algorithm), params.Digits, params.Period, s.cfg.Root); err != nil {
-		s.log.Error("starting a TOTP enrolment", "err", err)
+		s.log.ErrorContext(ctx, "starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -167,7 +167,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	if code, qerr := qr.Encode([]byte(uri)); qerr == nil {
 		qrSVG = code.SVG(4, 4)
 	} else {
-		s.log.Warn("rendering the TOTP QR code", "err", qerr)
+		s.log.WarnContext(ctx, "rendering the TOTP QR code", "err", qerr)
 	}
 
 	csrf, err := s.csrfToken(w, r)
@@ -268,7 +268,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enrolmentParams(ctx context.Context, orgID string) mfa.Params {
 	p, err := store.LoadTOTPPolicy(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("loading the TOTP policy", "org_id", orgID, "err", err)
+		s.log.ErrorContext(ctx, "loading the TOTP policy", "org_id", orgID, "err", err)
 	}
 	return mfa.Params{Algorithm: mfa.Algorithm(p.Algorithm), Digits: p.Digits, Period: p.Period}
 }
@@ -322,7 +322,7 @@ func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code
 		return totpExpired, nil, false, nil
 	}
 	if err != nil {
-		s.log.Info("confirming TOTP without an enrolment in progress", "err", err)
+		s.log.InfoContext(ctx, "confirming TOTP without an enrolment in progress", "err", err)
 		return totpNone, nil, false, nil
 	}
 	counter, verr := otpParams(pending).Verify(pending.Secret, code, time.Now(), mfa.DefaultSkew, 0)
@@ -332,7 +332,7 @@ func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code
 
 	replaced, err = store.CompleteTOTPEnrolment(ctx, tx, userID, counter)
 	if err != nil {
-		s.log.Error("confirming TOTP", "err", err)
+		s.log.ErrorContext(ctx, "confirming TOTP", "err", err)
 		return totpNone, nil, false, err
 	}
 	// Recovery codes are generated WITH the factor, not offered afterwards.
@@ -341,7 +341,7 @@ func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code
 	// turns a help desk into the weakest authentication path in the system.
 	codes, err = store.GenerateRecoveryCodes(ctx, tx, userID, orgID, 10)
 	if err != nil {
-		s.log.Error("generating recovery codes", "err", err)
+		s.log.ErrorContext(ctx, "generating recovery codes", "err", err)
 		return totpNone, nil, false, err
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -349,7 +349,7 @@ func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"recovery_codes_issued": len(codes), "replaced": replaced},
 	}); err != nil {
-		s.log.Error("auditing TOTP enrolment", "err", err)
+		s.log.ErrorContext(ctx, "auditing TOTP enrolment", "err", err)
 		return totpNone, nil, false, err
 	}
 	return totpConfirmed, codes, replaced, nil
@@ -536,7 +536,7 @@ func (s *Server) printerFor(ctx context.Context, orgID, lang string) *i18n.Print
 	words, err := store.OrgWords(ctx, s.db, orgID, p.Lang())
 	if err != nil {
 		// The catalogue's wording beats no page.
-		s.log.Warn("reading an organisation's words", "org_id", orgID, "err", err)
+		s.log.WarnContext(ctx, "reading an organisation's words", "org_id", orgID, "err", err)
 		return p
 	}
 	return p.With(words)
@@ -551,7 +551,7 @@ func (s *Server) pagesFor(ctx context.Context, orgID string) *pages.Set {
 	}
 	slug, err := store.OrgSlug(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Warn("reading an organisation's slug", "org_id", orgID, "err", err)
+		s.log.WarnContext(ctx, "reading an organisation's slug", "org_id", orgID, "err", err)
 		return set
 	}
 	return set.For(slug)
@@ -657,7 +657,7 @@ func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
 		orgID = s.pageOrg(r)
 	}
 	if err := s.pagesFor(r.Context(), orgID).ExecuteIn(w, s.langFor(r), name, data); err != nil {
-		s.log.Error("rendering a bridge page", "page", name, "err", err)
+		s.log.ErrorContext(r.Context(), "rendering a bridge page", "page", name, "err", err)
 	}
 }
 
@@ -678,13 +678,13 @@ func (s *Server) writeBranded(w io.Writer, r *http.Request, orgID, name string, 
 	}
 	if css == "" {
 		if err := s.writePage(w, r, orgID, name, data); err != nil {
-			s.log.Error("rendering a page", "page", name, "err", err)
+			s.log.ErrorContext(r.Context(), "rendering a page", "page", name, "err", err)
 		}
 		return
 	}
 	var buf bytes.Buffer
 	if err := s.writePage(&buf, r, orgID, name, data); err != nil {
-		s.log.Error("rendering a page", "page", name, "err", err)
+		s.log.ErrorContext(r.Context(), "rendering a page", "page", name, "err", err)
 		return
 	}
 	page := buf.Bytes()
@@ -725,7 +725,7 @@ func (s *Server) brandOf(ctx context.Context, orgID string) *brand.Brand {
 	}
 	b, err := store.LoadBrandByIssuer(ctx, s.db, s.cfg.Issuer)
 	if err != nil {
-		s.log.Error("reading the brand", "err", err)
+		s.log.ErrorContext(ctx, "reading the brand", "err", err)
 		return nil
 	}
 	if orgID == "" {
@@ -733,7 +733,7 @@ func (s *Server) brandOf(ctx context.Context, orgID string) *brand.Brand {
 	}
 	own, err := store.OrgBrandOf(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("reading an organisation's brand", "org_id", orgID, "err", err)
+		s.log.ErrorContext(ctx, "reading an organisation's brand", "org_id", orgID, "err", err)
 		return b
 	}
 	return own.Over(b)
@@ -771,7 +771,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.QueryRow(ctx,
 			`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`,
 			userID).Scan(&current); err != nil {
-			s.log.Error("reading the account address", "err", err)
+			s.log.ErrorContext(ctx, "reading the account address", "err", err)
 		}
 		render("start", current, "")
 		return
@@ -797,7 +797,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		okCode, replaced, verr := store.ConfirmEmailOTPEnrolment(ctx, tx, userID,
 			strings.TrimSpace(r.PostForm.Get("code")))
 		if verr != nil {
-			s.log.Error("verifying an enrolment code", "err", verr)
+			s.log.ErrorContext(ctx, "verifying an enrolment code", "err", verr)
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
@@ -811,7 +811,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"replaced": replaced != ""},
 		}); err != nil {
-			s.log.Error("auditing the email factor enrolment", "err", err)
+			s.log.ErrorContext(ctx, "auditing the email factor enrolment", "err", err)
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
@@ -834,7 +834,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 				Subject: tr.Text("mail.emailotp.moved.subject"),
 				Body:    tr.Text("mail.emailotp.moved.body"),
 			}); err != nil {
-				s.log.Warn("telling the previous address its codes have moved", "err", err)
+				s.log.WarnContext(ctx, "telling the previous address its codes have moved", "err", err)
 			}
 		}
 		render("done", "", "")
@@ -856,7 +856,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		// Pending only: the address that already works -- if any -- stays the
 		// factor until a code sent to this one comes back.
 		if err := store.StartEmailOTPEnrolment(ctx, tx, userID, orgID, address); err != nil {
-			s.log.Error("enrolling the email factor", "err", err)
+			s.log.ErrorContext(ctx, "enrolling the email factor", "err", err)
 			render("start", address, "Something went wrong. Try again.")
 			return
 		}
@@ -866,7 +866,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ierr != nil {
-			s.log.Error("issuing an enrolment code", "err", ierr)
+			s.log.ErrorContext(ctx, "issuing an enrolment code", "err", ierr)
 			render("start", address, "Something went wrong. Try again.")
 			return
 		}
@@ -886,7 +886,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 				"Minutes": int(store.EmailOTPLifetime.Minutes()),
 			}),
 		}); err != nil {
-			s.log.Error("sending an enrolment code", "err", err)
+			s.log.ErrorContext(ctx, "sending an enrolment code", "err", err)
 			// Said out loud HERE, unlike at sign-in: this person is already
 			// authenticated, so there is nothing to disclose, and silently
 			// showing a code entry form for mail that never left is cruel.
@@ -974,7 +974,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		okCode, replaced, verr := store.ConfirmSMSOTPEnrolment(ctx, tx, userID,
 			strings.TrimSpace(r.PostForm.Get("code")), s.smsDelegate())
 		if verr != nil {
-			s.log.Error("verifying an SMS enrolment code", "err", verr)
+			s.log.ErrorContext(ctx, "verifying an SMS enrolment code", "err", verr)
 			render("verify", "", "Something went wrong. Try again.")
 			return
 		}
@@ -987,7 +987,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"replaced": replaced != ""},
 		}); aerr != nil {
-			s.log.Error("recording the SMS enrolment", "err", aerr)
+			s.log.ErrorContext(ctx, "recording the SMS enrolment", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
 			render("verify", "", "Something went wrong. Try again.")
@@ -999,7 +999,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			if serr := s.sendSMS(ctx, userID, smsNotice, sms.Message{
 				To: replaced, Body: s.notifierFor(ctx, userID).Text("sms.smsotp.moved"),
 			}); serr != nil {
-				s.log.Warn("telling the previous number its codes have moved", "err", serr)
+				s.log.WarnContext(ctx, "telling the previous number its codes have moved", "err", serr)
 			}
 		}
 		// Every channel the account has, as an app or an address being added
@@ -1023,7 +1023,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		// and the recovery codes gone with the last second factor.
 		if _, rerr := s.removeOwnFactor(ctx, userID, orgID, "sms_otp"); rerr != nil &&
 			!errors.Is(rerr, store.ErrFactorNotFound) {
-			s.log.Error("removing the SMS factor", "err", rerr)
+			s.log.ErrorContext(ctx, "removing the SMS factor", "err", rerr)
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
@@ -1046,7 +1046,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		// keyed hash, and the code that proves it goes to the number typed here.
 		hashed, herr := store.SMSNumbersHashed(ctx, s.db, orgID)
 		if herr != nil {
-			s.log.Error("reading how SMS numbers are kept", "err", herr)
+			s.log.ErrorContext(ctx, "reading how SMS numbers are kept", "err", herr)
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
@@ -1061,7 +1061,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		typed, nerr := sms.NormaliseNumber(r.PostForm.Get("number"))
 		if nerr == nil && hashed {
 			if hash, nerr = s.smsNumberHash(ctx, tx, userID, typed); nerr != nil {
-				s.log.Error("hashing an SMS number", "err", nerr)
+				s.log.ErrorContext(ctx, "hashing an SMS number", "err", nerr)
 				render("start", "", "Something went wrong. Try again.")
 				return
 			}
@@ -1089,7 +1089,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			render("verify", sms.RedactNumber(number), "")
 			return
 		case ierr != nil:
-			s.log.Error("issuing an SMS enrolment code", "err", ierr)
+			s.log.ErrorContext(ctx, "issuing an SMS enrolment code", "err", ierr)
 			render("start", "", "Something went wrong. Try again.")
 			return
 		}
@@ -1106,7 +1106,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			// Surfaced, unlike a sign-in send. Here the person is setting the
 			// factor up and can fix a wrong number; telling them nothing would
 			// leave them waiting for a message that is never coming.
-			s.log.Error("sending an SMS enrolment code", "err", serr,
+			s.log.ErrorContext(ctx, "sending an SMS enrolment code", "err", serr,
 				"to", sms.RedactNumber(to))
 			render("start", number,
 				"That message could not be sent. Check the number and try again.")

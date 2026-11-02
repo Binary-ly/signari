@@ -22,25 +22,25 @@ import (
 func (s *Server) orgBudgetSpent(ctx context.Context, w http.ResponseWriter, orgID string,
 	kind store.BudgetKind) (spent bool, err error) {
 	res, err := store.AllowOrgBudget(ctx, s.db, orgID, kind)
-	return s.budgetAnswer(w, orgID, kind, res, err)
+	return s.budgetAnswer(ctx, w, orgID, kind, res, err)
 }
 
 // tokenBudgetSpent is orgBudgetSpent for a client, which came with its budget.
 func (s *Server) tokenBudgetSpent(ctx context.Context, w http.ResponseWriter, c *clients.Client) (bool, error) {
 	res, err := store.ChargeOrgBudget(ctx, s.db, c.OrgID, store.BudgetTokens,
 		store.OrgBudgets{TokensPerMinute: c.TokenBudget})
-	return s.budgetAnswer(w, c.OrgID, store.BudgetTokens, res, err)
+	return s.budgetAnswer(ctx, w, c.OrgID, store.BudgetTokens, res, err)
 }
 
-func (s *Server) budgetAnswer(w http.ResponseWriter, orgID string, kind store.BudgetKind, res store.RateResult,
+func (s *Server) budgetAnswer(ctx context.Context, w http.ResponseWriter, orgID string, kind store.BudgetKind, res store.RateResult,
 	err error) (spent bool, _ error) {
 	if err != nil {
-		s.log.Error("checking an organisation's budget", "org_id", orgID, "kind", kind, "err", err)
+		s.log.ErrorContext(ctx, "checking an organisation's budget", "org_id", orgID, "kind", kind, "err", err)
 		return false, err
 	}
 	if !res.Allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(res.RetryAfter.Seconds()))))
-		s.log.Info("an organisation's budget is spent", "org_id", orgID, "kind", kind, "limit", res.Limit)
+		s.log.InfoContext(ctx, "an organisation's budget is spent", "org_id", orgID, "kind", kind, "limit", res.Limit)
 		return true, nil
 	}
 	return false, nil

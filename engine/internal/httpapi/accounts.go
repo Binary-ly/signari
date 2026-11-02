@@ -173,7 +173,7 @@ func (s *Server) parkOthers(ctx context.Context, w http.ResponseWriter, r *http.
 	held, err := s.heldAccounts(ctx, r, "")
 	if err != nil {
 		// The new sign-in still happens; the others are only not kept.
-		s.log.Error("reading the accounts this browser holds", "err", err)
+		s.log.ErrorContext(ctx, "reading the accounts this browser holds", "err", err)
 		return
 	}
 	if len(held) == 0 && len(parkedTokens(r)) == 0 {
@@ -190,7 +190,7 @@ func (s *Server) parkOthers(ctx context.Context, w http.ResponseWriter, r *http.
 	// left in the browser to end it.
 	for len(keep) > maxParkedAccounts {
 		if err := s.terminateOwnSession(ctx, keep[len(keep)-1].token); err != nil {
-			s.log.Error("signing out an account the browser had no room for", "err", err)
+			s.log.ErrorContext(ctx, "signing out an account the browser had no room for", "err", err)
 		}
 		keep = keep[:len(keep)-1]
 	}
@@ -204,7 +204,7 @@ func (s *Server) holdsAccounts(r *http.Request, orgID string) bool {
 	}
 	held, err := s.heldAccounts(r.Context(), r, orgID)
 	if err != nil {
-		s.log.Error("reading the accounts this browser holds", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the accounts this browser holds", "err", err)
 		return false
 	}
 	return len(held) > 0
@@ -244,7 +244,7 @@ func (s *Server) handleAccountsGet(w http.ResponseWriter, r *http.Request) {
 	authz := r.URL.Query().Get("authz")
 	held, err := s.heldAccounts(r.Context(), r, s.loginOrg(r.Context(), authz))
 	if err != nil {
-		s.log.Error("reading the accounts this browser holds", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the accounts this browser holds", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -277,7 +277,7 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	held, err := s.heldAccounts(ctx, r, s.loginOrg(ctx, authz))
 	if err != nil {
-		s.log.Error("reading the accounts this browser holds", "err", err)
+		s.log.ErrorContext(ctx, "reading the accounts this browser holds", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -304,7 +304,7 @@ func (s *Server) handleAccountsPost(w http.ResponseWriter, r *http.Request) {
 	// parked; the one in use joins them.
 	all, err := s.heldAccounts(ctx, r, "")
 	if err != nil {
-		s.log.Error("reading the accounts this browser holds", "err", err)
+		s.log.ErrorContext(ctx, "reading the accounts this browser holds", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

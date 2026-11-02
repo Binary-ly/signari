@@ -102,7 +102,7 @@ func (w *formRedirectWriter) WriteHeader(code int) {
 <meta http-equiv="refresh" content="0;url=%s"><title>%s</title></head>
 <body><p><a href="%s">%s</a></p></body></html>
 `, html.EscapeString(p.Lang()), html.EscapeString(p.Dir()), target, text, target, text); err != nil {
-		w.s.log.Warn("writing the page that follows a form", "err", err, "correlation_id", correlationID(w.r.Context()))
+		w.s.log.WarnContext(w.r.Context(), "writing the page that follows a form", "err", err, "correlation_id", correlationID(w.r.Context()))
 	}
 }
 

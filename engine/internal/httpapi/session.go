@@ -205,7 +205,7 @@ func (s *Server) persistentCookieAge(ctx context.Context, sid string) int {
 		            THEN greatest(0, floor(extract(epoch FROM s.absolute_not_after - now())))::int ELSE 0 END
 		  FROM core.sessions s JOIN core.organizations o ON o.id = s.org_id WHERE s.sid = $1`, sid).
 		Scan(&age); err != nil {
-		s.log.Error("reading whether a session may outlast the browser", "err", err)
+		s.log.ErrorContext(ctx, "reading whether a session may outlast the browser", "err", err)
 		return 0
 	}
 	return age

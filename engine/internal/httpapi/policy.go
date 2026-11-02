@@ -86,7 +86,7 @@ func (s *Server) policyFor(ctx context.Context, q dbReader, orgID string) *polic
 		// The database could not say. The last answer it gave is the best
 		// available; the request this decision belongs to needs the same
 		// database a moment later and is unlikely to get further.
-		s.log.Error("reading the access policy", "org_id", orgID, "err", err)
+		s.log.ErrorContext(ctx, "reading the access policy", "org_id", orgID, "err", err)
 		if have {
 			return cached.file
 		}
@@ -103,11 +103,11 @@ func (s *Server) policyFor(ctx context.Context, q dbReader, orgID string) *polic
 	case perr == nil:
 		entry.file = f
 	case have:
-		s.log.Error("the stored access policy will not load; keeping the previous one",
+		s.log.ErrorContext(ctx, "the stored access policy will not load; keeping the previous one",
 			"org_id", orgID, "err", perr)
 		entry.file = cached.file
 	default:
-		s.log.Error("the stored access policy will not load and there is no previous one; "+
+		s.log.ErrorContext(ctx, "the stored access policy will not load and there is no previous one; "+
 			"refusing every authorization in this organisation until it is fixed",
 			"org_id", orgID, "err", perr)
 		entry.file = refuseEverything
@@ -176,7 +176,7 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 	if _, person := store.CanonicalUUID(userID); person {
 		var err error
 		if groups, err = store.AllGroupsForUser(ctx, q, userID); err != nil {
-			s.log.Error("reading groups for a policy decision", "err", err)
+			s.log.ErrorContext(ctx, "reading groups for a policy decision", "err", err)
 			// Fail CLOSED only when a policy exists: we cannot evaluate a rule that
 			// depends on membership, and guessing "not a member" would deny while
 			// guessing "a member" would grant. Refusing is the honest answer.
@@ -192,7 +192,7 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 	if _, person := store.CanonicalUUID(userID); person && len(f.AttributeNames()) > 0 {
 		var err error
 		if req.Attributes, err = store.PlainAttributes(ctx, q, userID); err != nil {
-			s.log.Error("reading attributes for a policy decision", "err", err)
+			s.log.ErrorContext(ctx, "reading attributes for a policy decision", "err", err)
 			return &policy.Decision{Allowed: false, Rule: "(internal)",
 				Message: "Access could not be checked. Please try again."}
 		}
@@ -200,7 +200,7 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 	if _, person := store.CanonicalUUID(userID); person && f.UsesApplicationRoles() {
 		var err error
 		if req.ApplicationRoles, err = store.ApplicationRoles(ctx, q, orgID, userID, clientID); err != nil {
-			s.log.Error("reading roles for a policy decision", "err", err)
+			s.log.ErrorContext(ctx, "reading roles for a policy decision", "err", err)
 			return &policy.Decision{Allowed: false, Rule: "(internal)",
 				Message: "Access could not be checked. Please try again."}
 		}
@@ -223,7 +223,7 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 			// else this rule cannot be sure of.
 			failures, err := store.CountRate(ctx, q, "signin:fail:ip:"+budgetIP(req.IP), signInPerIPWindow)
 			if err != nil {
-				s.log.Error("reading an address's failures for a policy decision", "err", err)
+				s.log.ErrorContext(ctx, "reading an address's failures for a policy decision", "err", err)
 				return &policy.Decision{Allowed: false, Rule: "(internal)",
 					Message: "Access could not be checked. Please try again."}
 			}
@@ -235,7 +235,7 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 		// deployments -- most of them -- whose policy never mentions a device.
 		if f.UsesDevicePosture() {
 			device := s.posture.Evaluate(r)
-			s.log.Debug("device posture", "managed", device.Managed,
+			s.log.DebugContext(ctx, "device posture", "managed", device.Managed,
 				"compliant", device.Compliant, "source", device.Source)
 			req.DeviceManaged, req.DeviceCompliant = device.Managed, device.Compliant
 		}
@@ -314,7 +314,7 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 
 	ctx := r.Context()
 	if userOrg, err := store.OrgOfUser(ctx, s.db, userID); err != nil || userOrg != orgID {
-		s.log.Info("a grant named a person outside the client's organisation",
+		s.log.InfoContext(ctx, "a grant named a person outside the client's organisation",
 			"client_id", clientID, "via", via, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this grant does not name a person this client may act for",
@@ -336,7 +336,7 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 	if pd == nil {
 		return false
 	}
-	s.log.Info("access refused by policy", "client_id", clientID, "via", via,
+	s.log.InfoContext(ctx, "access refused by policy", "client_id", clientID, "via", via,
 		"rule", pd.Rule, "correlation_id", correlationID(ctx))
 	s.auditDetached(ctx, audit.Event{
 		Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID, ClientID: clientID,
@@ -367,7 +367,7 @@ func (s *Server) impossibleTravelIn(ctx context.Context, q interface {
 }, userID, ip string) bool {
 	previous, err := store.PreviousAuthLocation(ctx, q, userID)
 	if err != nil {
-		s.log.Error("reading the previous sign-in location", "err", err)
+		s.log.ErrorContext(ctx, "reading the previous sign-in location", "err", err)
 		return false
 	}
 	current := s.geo.Resolve(ip)
@@ -375,7 +375,7 @@ func (s *Server) impossibleTravelIn(ctx context.Context, q interface {
 
 	v := risk.CheckTravel(previous, current)
 	if v.Impossible {
-		s.log.Warn("impossible travel", "user_id", userID, "reason", v.Reason,
+		s.log.WarnContext(ctx, "impossible travel", "user_id", userID, "reason", v.Reason,
 			"correlation_id", correlationID(ctx))
 	}
 	return v.Impossible
@@ -415,11 +415,11 @@ func (s *Server) riskScore(ctx context.Context, q interface {
 	}
 	seen, history, err := store.CountrySeen(ctx, q, userID, here.Country)
 	if err != nil {
-		s.log.Error("reading where a person has signed in from", "err", err)
+		s.log.ErrorContext(ctx, "reading where a person has signed in from", "err", err)
 		return 0
 	}
 	if history && !seen {
-		s.log.Warn("a sign-in from a new country", "user_id", userID, "country", here.Country,
+		s.log.WarnContext(ctx, "a sign-in from a new country", "user_id", userID, "country", here.Country,
 			"correlation_id", correlationID(ctx))
 		return risk.ScoreNewCountry
 	}

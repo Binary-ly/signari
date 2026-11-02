@@ -70,7 +70,7 @@ func (s *Server) handleAuthzEvaluate(w http.ResponseWriter, r *http.Request) {
 	e := s.newEvaluation(orgID)
 	resp, err := e.decide(ctx, req)
 	if err != nil {
-		s.log.Error("evaluating an authorization request", "err", err,
+		s.log.ErrorContext(ctx, "evaluating an authorization request", "err", err,
 			"correlation_id", correlationID(ctx))
 		authzError(w, http.StatusInternalServerError, "the decision could not be made")
 		return
@@ -106,7 +106,7 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		}
 		resp, derr := e.decide(ctx, single)
 		if derr != nil {
-			s.log.Error("evaluating a defaults-only evaluations request", "err", derr,
+			s.log.ErrorContext(ctx, "evaluating a defaults-only evaluations request", "err", derr,
 				"correlation_id", correlationID(ctx))
 			authzError(w, http.StatusInternalServerError, "the decision could not be made")
 			return
@@ -150,7 +150,7 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if err := e.readAhead(ctx, answerable); err != nil {
-		s.log.Error("reading a batch's relations", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a batch's relations", "err", err, "correlation_id", correlationID(ctx))
 	}
 
 	out := make([]authzen.Response, 0, len(batch.Evaluations))
@@ -167,7 +167,7 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		default:
 			decided, derr := e.decide(ctx, merged)
 			if derr != nil {
-				s.log.Error("evaluating a batch entry", "err", derr,
+				s.log.ErrorContext(ctx, "evaluating a batch entry", "err", derr,
 					"correlation_id", correlationID(ctx))
 				resp = authzen.Response{
 					Decision: false,
@@ -556,11 +556,11 @@ func (s *Server) consultAuthorizeProvider(ctx context.Context, p *provider.Provi
 		// answering means an operator's veto is no longer being enforced, and
 		// nothing else would record that.
 		if p.Decide(callErr) {
-			s.log.Warn("the authorization provider did not answer; continuing because "+
+			s.log.WarnContext(ctx, "the authorization provider did not answer; continuing because "+
 				"it is registered fail_open",
 				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
 		} else {
-			s.log.Error("the authorization provider did not answer; denying because it "+
+			s.log.ErrorContext(ctx, "the authorization provider did not answer; denying because it "+
 				"is registered fail_closed",
 				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
 		}
@@ -673,7 +673,7 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 	}
 	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
 	if werr != nil {
-		s.log.Error("reading whether a search can start from a row", "err", werr)
+		s.log.ErrorContext(ctx, "reading whether a search can start from a row", "err", werr)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
@@ -690,7 +690,7 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 				Resource: authzen.Resource{Type: req.Resource.Type, ID: id}, Context: req.Context}
 		})
 	if err != nil {
-		s.log.Error("searching resources", "err", err)
+		s.log.ErrorContext(ctx, "searching resources", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
@@ -815,7 +815,7 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 	}
 	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
 	if werr != nil {
-		s.log.Error("reading whether a search can start from a row", "err", werr)
+		s.log.ErrorContext(ctx, "reading whether a search can start from a row", "err", werr)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
@@ -832,7 +832,7 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 				Action: *req.Action, Resource: *req.Resource, Context: req.Context}
 		})
 	if err != nil {
-		s.log.Error("searching subjects", "err", err)
+		s.log.ErrorContext(ctx, "searching subjects", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
@@ -891,7 +891,7 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 	}
 	e := s.newEvaluation(orgID)
 	if err := e.readAhead(ctx, questions); err != nil {
-		s.log.Error("searching actions", "err", err)
+		s.log.ErrorContext(ctx, "searching actions", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
@@ -899,7 +899,7 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 	for _, question := range questions {
 		resp, err := e.decide(ctx, question)
 		if err != nil {
-			s.log.Error("searching actions", "err", err)
+			s.log.ErrorContext(ctx, "searching actions", "err", err)
 			authzError(w, http.StatusInternalServerError, "the search could not be run")
 			return
 		}
@@ -1043,7 +1043,7 @@ func (s *Server) factsFor(ctx context.Context, orgID, subjectID string,
 
 func (s *Server) searchUnavailable(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
-		s.log.Error("loading the authorization model", "err", err)
+		s.log.ErrorContext(r.Context(), "loading the authorization model", "err", err)
 		authzError(w, http.StatusInternalServerError, "the model could not be loaded")
 		return
 	}

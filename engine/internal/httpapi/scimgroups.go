@@ -88,7 +88,7 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 		return
 	}
 	if err != nil {
-		s.log.Error("listing SCIM groups", "err", err)
+		s.log.ErrorContext(r.Context(), "listing SCIM groups", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -173,7 +173,7 @@ func (s *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request, src *st
 
 	g, err := store.UpsertSCIMGroup(ctx, s.db, src, in.ExternalID, in.DisplayName, in.memberIDs())
 	if err != nil {
-		s.writeSCIMGroupError(w, err, "creating a SCIM group")
+		s.writeSCIMGroupError(r.Context(), w, err, "creating a SCIM group")
 		return
 	}
 	s.auditDetached(ctx, audit.Event{
@@ -238,7 +238,7 @@ func (s *Server) scimServeGroup(w http.ResponseWriter, r *http.Request, src *sto
 		}
 		g, uerr := store.UpsertSCIMGroup(ctx, s.db, src, existing.ExternalID, name, members)
 		if uerr != nil {
-			s.writeSCIMGroupError(w, uerr, "replacing a SCIM group")
+			s.writeSCIMGroupError(r.Context(), w, uerr, "replacing a SCIM group")
 			return
 		}
 		s.auditGroupChange(ctx, src, g, "scim.group_replaced")
@@ -255,7 +255,7 @@ func (s *Server) scimServeGroup(w http.ResponseWriter, r *http.Request, src *sto
 				writeSCIMError(w, http.StatusNotFound, "no such group")
 				return
 			}
-			s.log.Error("deleting a SCIM group", "err", derr)
+			s.log.ErrorContext(ctx, "deleting a SCIM group", "err", derr)
 			writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 			return
 		}
@@ -288,7 +288,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if len(patch.Unsupported) > 0 {
-		s.log.Warn("SCIM group patch contained paths this engine does not store",
+		s.log.WarnContext(ctx, "SCIM group patch contained paths this engine does not store",
 			"paths", strings.Join(patch.Unsupported, ","), "source", src.Slug)
 	}
 
@@ -298,7 +298,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 			writeSCIMError(w, http.StatusNotFound, "no such group")
 			return
 		}
-		s.writeSCIMGroupError(w, err, "patching a SCIM group")
+		s.writeSCIMGroupError(r.Context(), w, err, "patching a SCIM group")
 		return
 	}
 	s.auditDetached(ctx, audit.Event{
@@ -312,7 +312,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 }
 
 // writeSCIMGroupError maps a store error to the status an upstream acts on.
-func (s *Server) writeSCIMGroupError(w http.ResponseWriter, err error, what string) {
+func (s *Server) writeSCIMGroupError(ctx context.Context, w http.ResponseWriter, err error, what string) {
 	var conflict *store.SCIMConflictError
 	if errors.As(err, &conflict) {
 		// 409 uniqueness is what stops an upstream retrying forever.
@@ -339,7 +339,7 @@ func (s *Server) writeSCIMGroupError(w http.ResponseWriter, err error, what stri
 		writeSCIMError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Error(what, "err", err)
+	s.log.ErrorContext(ctx, what, "err", err)
 	writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 }
 

@@ -117,13 +117,13 @@ func (s *Server) wsFedLanding(r *http.Request, q url.Values) string {
 	} else if sid, _, _ := s.sessionIdentity(ctx, sessionCookie(r)); sid != "" {
 		held, err := store.SessionHoldsReplyURL(ctx, s.db, sid, reply)
 		if err != nil {
-			s.log.Error("reading the reply URLs of a session", "err", err)
+			s.log.ErrorContext(ctx, "reading the reply URLs of a session", "err", err)
 		}
 		if held {
 			return reply
 		}
 	}
-	s.log.Info("ws-federation sign-out wreply dropped", "wreply", reply, "correlation_id", correlationID(ctx))
+	s.log.InfoContext(ctx, "ws-federation sign-out wreply dropped", "wreply", reply, "correlation_id", correlationID(ctx))
 	return ""
 }
 
@@ -181,7 +181,7 @@ func (s *Server) wsFedToSignIn(w http.ResponseWriter, r *http.Request, p *saml.P
 	if whr := q.Get("whr"); whr != "" {
 		slug, kind, err := s.wsFedHomeRealm(r.Context(), p.OrgID, whr)
 		if err != nil {
-			s.log.Error("finding the provider a whr names", "err", err)
+			s.log.ErrorContext(r.Context(), "finding the provider a whr names", "err", err)
 		}
 		if slug != "" {
 			http.Redirect(w, r, providerStart(slug, kind, url.Values{"return": {back}}.Encode()), http.StatusSeeOther)
@@ -209,14 +209,14 @@ func (s *Server) handleWSFedMetadata(w http.ResponseWriter, r *http.Request) {
 		if p, err := s.providerAt(r, realm); err == nil {
 			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
-			s.log.Error("loading a realm for metadata", "err", err)
+			s.log.ErrorContext(ctx, "loading a realm for metadata", "err", err)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
 	}
 	certs, err := s.samlCertificates(ctx, signatureAlg)
 	if err != nil {
-		s.log.Error("building WS-Federation metadata", "err", err)
+		s.log.ErrorContext(ctx, "building WS-Federation metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -227,7 +227,7 @@ func (s *Server) handleWSFedMetadata(w http.ResponseWriter, r *http.Request) {
 	doc, err := saml.WSFederationMetadata(saml.WSFederationMetadataInput{
 		EntityID: saml.EntityID(s.cfg.Issuer, slug), Endpoint: endpoint, Certificates: certs})
 	if err != nil {
-		s.log.Error("rendering WS-Federation metadata", "err", err)
+		s.log.ErrorContext(ctx, "rendering WS-Federation metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -266,7 +266,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 	reply := q.Get("wreply")
 	dest, derr := wsFedDestination(p, reply)
 	if derr != nil {
-		s.log.Info("ws-federation wreply refused", "realm", realm, "wreply", reply)
+		s.log.InfoContext(ctx, "ws-federation wreply refused", "realm", realm, "wreply", reply)
 		writeError(w, http.StatusBadRequest, "invalid_request", derr.Error())
 		return
 	}
@@ -286,7 +286,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 	// without: a realm is another organisation's application, and a session here
 	// must not be turned into a signed token for it.
 	if err := checkSPUsable(p, session.OrgID); err != nil {
-		s.log.Info("ws-federation realm refused", "realm", realm, "err", err)
+		s.log.InfoContext(ctx, "ws-federation realm refused", "realm", realm, "err", err)
 		writeError(w, http.StatusForbidden, "access_denied", err.Error())
 		return
 	}
@@ -301,7 +301,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 	if demand.rung >= 2 {
 		met, err := s.samlSessionReaches(ctx, session)
 		if err != nil {
-			s.log.Error("checking a session against a wauth", "err", err)
+			s.log.ErrorContext(ctx, "checking a session against a wauth", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -334,13 +334,13 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 		return
 	}
 	if err != nil {
-		s.log.Error("building the ws-federation assertion", "err", err)
+		s.log.ErrorContext(ctx, "building the ws-federation assertion", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	assertion, err := extractAssertion(doc)
 	if err != nil {
-		s.log.Error("extracting the assertion for ws-federation", "err", err)
+		s.log.ErrorContext(ctx, "extracting the assertion for ws-federation", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -348,7 +348,7 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
 	rstr, err := wsFedRSTR(assertion, realm, saml.WSFedTokenType(p.WSFedSAMLVersion), time.Now(), lifetime)
 	if err != nil {
-		s.log.Error("building the RSTR", "err", err)
+		s.log.ErrorContext(ctx, "building the RSTR", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

@@ -148,7 +148,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// just harder to see.
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-			s.log.Info("PAR client authentication failed", "client_id", clientID, "err", err,
+			s.log.InfoContext(ctx, "PAR client authentication failed", "client_id", clientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
@@ -158,7 +158,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 
 	// Out of its profile, a client gets nothing to authorize.
 	if problems := c.ProfileProblems(); len(problems) > 0 {
-		s.log.Error("a client out of its security profile was refused", "client_id", clientID,
+		s.log.ErrorContext(ctx, "a client out of its security profile was refused", "client_id", clientID,
 			"problems", problems, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "unauthorized_client", "this client does not meet its security profile")
 		return
@@ -176,7 +176,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	}
 	res, rerr := store.AllowRate(ctx, s.db, key, limit, parPerAddressWindow)
 	if rerr != nil {
-		s.log.Error("checking the PAR rate limit", "err", rerr)
+		s.log.ErrorContext(ctx, "checking the PAR rate limit", "err", rerr)
 		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
@@ -220,7 +220,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
 			return
 		}
-		s.log.Error("checking resource indicators", "err", err)
+		s.log.ErrorContext(ctx, "checking resource indicators", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
@@ -294,7 +294,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
 		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
 		pushedHash(handle), c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
-		s.log.Error("storing a pushed request", "err", err)
+		s.log.ErrorContext(ctx, "storing a pushed request", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -388,7 +388,7 @@ func (s *Server) parkedRequest(ctx context.Context, authzQuery string) url.Value
 	}
 	pushed, err := s.readPushedRequest(ctx, handle, q.Get("client_id"))
 	if err != nil {
-		s.log.Info("a parked pushed request could not be read", "err", err, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "a parked pushed request could not be read", "err", err, "correlation_id", correlationID(ctx))
 		return q
 	}
 	pushed.Set("client_id", q.Get("client_id"))
@@ -405,7 +405,7 @@ func (s *Server) answerPrompts(ctx context.Context, authzQuery string, answered 
 		return consumePrompt(authzQuery, answered...)
 	}
 	if err := store.AnswerPushedPrompts(ctx, s.db, pushedHash(handle), answered); err != nil {
-		s.log.Error("recording an answered prompt", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "recording an answered prompt", "err", err, "correlation_id", correlationID(ctx))
 	}
 	return authzQuery
 }

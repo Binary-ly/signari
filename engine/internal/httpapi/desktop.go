@@ -101,7 +101,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		res, ok, err := store.ReserveRate(ctx, s.db, "signin:fail:user:"+id,
 			signInPerAccountLimit, signInPerAccountWindow)
 		if err != nil {
-			s.log.Error("reserving against the desktop sign-in budget", "err", err)
+			s.log.ErrorContext(ctx, "reserving against the desktop sign-in budget", "err", err)
 			writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 			return
 		}
@@ -122,7 +122,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, r := range held {
 			if err := r.Release(context.WithoutCancel(ctx), s.db); err != nil {
-				s.log.Error("releasing a desktop sign-in reservation", "err", err)
+				s.log.ErrorContext(ctx, "releasing a desktop sign-in reservation", "err", err)
 			}
 		}
 	}()
@@ -170,14 +170,14 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	// carry a code, and this one can.
 	needsMFA, err := s.BindDemandsMFA(ctx, orgID, userID)
 	if err != nil {
-		s.log.Error("checking whether the flow demands a second factor", "err", err)
+		s.log.ErrorContext(ctx, "checking whether the flow demands a second factor", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	enrolled := false
 	if needsMFA {
 		if enrolled, err = store.HasSecondFactor(ctx, s.db, userID); err != nil {
-			s.log.Error("checking enrolled factors", "err", err)
+			s.log.ErrorContext(ctx, "checking enrolled factors", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -212,7 +212,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = tx.Rollback(ctx) }()
 		res, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
 		if verr != nil {
-			s.log.Error("verifying a desktop second factor", "err", verr)
+			s.log.ErrorContext(ctx, "verifying a desktop second factor", "err", verr)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -226,7 +226,7 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 			// the failure count with the sign-in, and the lockout and the ceiling
 			// would never be reached from here. They were not, until this.
 			if err := tx.Commit(ctx); err != nil {
-				s.log.Error("committing a failed desktop second factor", "err", err)
+				s.log.ErrorContext(ctx, "committing a failed desktop second factor", "err", err)
 			}
 			s.recordSecondFactorFailure(ctx, userID, "")
 			s.factorsDisabled(ctx, orgID, userID, res.Disabled)

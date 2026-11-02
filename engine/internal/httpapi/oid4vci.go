@@ -42,7 +42,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 
 	stored, err := store.LookupPreAuthorizedCode(ctx, s.db, store.HashToken(vreq.Code))
 	if err != nil && !errors.Is(err, store.ErrPreAuthUnknown) {
-		s.log.Error("looking up a pre-authorized code", "err", err)
+		s.log.ErrorContext(ctx, "looking up a pre-authorized code", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -62,7 +62,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		// does NOT do is vary the error CODE, so a redemption attempt against a
 		// code that never existed is indistinguishable from one against a spent
 		// code to anything parsing the response programmatically.
-		s.log.Info("pre-authorized code refused", "err", verr,
+		s.log.InfoContext(ctx, "pre-authorized code refused", "err", verr,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: verr.Error(), Status: http.StatusBadRequest})
@@ -87,7 +87,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 		// The offer names a client that no longer exists. Refusing is the only
 		// safe answer: minting without one would produce a token whose audience
 		// and lifetime nothing decided.
-		s.log.Error("a pre-authorized code names a client that no longer exists",
+		s.log.ErrorContext(ctx, "a pre-authorized code names a client that no longer exists",
 			"client_id", stored.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "the client this offer was issued for no longer exists",
@@ -103,7 +103,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// registration was withdrawn after the offer went out — which is exactly when
 	// refusing matters.
 	if !c.AllowsGrantType(oid4vci.GrantType) {
-		s.log.Info("pre-authorized code refused: the client is no longer registered "+
+		s.log.InfoContext(ctx, "pre-authorized code refused: the client is no longer registered "+
 			"for the grant", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
 			Description: "this client is not registered for the pre-authorized code grant",
@@ -123,7 +123,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// branch is not the path a wallet takes.
 	if c.Type == "confidential" {
 		if aerr := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); aerr != nil {
-			s.log.Info("client authentication failed redeeming a pre-authorized code",
+			s.log.InfoContext(ctx, "client authentication failed redeeming a pre-authorized code",
 				"client_id", c.ClientID, "err", aerr, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
@@ -179,7 +179,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// of service that anybody who photographed the QR code can perform.
 	if stored.RequiresTxCode && !stored.CheckTxCode(store.HashToken(vreq.TxCode)) {
 		if rerr := store.RecordTxCodeFailure(ctx, s.db, stored.ID); rerr != nil {
-			s.log.Error("recording a transaction code failure", "err", rerr)
+			s.log.ErrorContext(ctx, "recording a transaction code failure", "err", rerr)
 		}
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: stored.OrgID, SubjectID: stored.UserID,
@@ -226,7 +226,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	resp, _, merr := s.mintSet(withIssuanceAudience(ctx), tx, c, stored.OrgID, stored.UserID, "", "",
 		scopes, nil, nil, "")
 	if merr != nil {
-		s.log.Error("minting tokens for a pre-authorized code grant", "err", merr,
+		s.log.ErrorContext(ctx, "minting tokens for a pre-authorized code grant", "err", merr,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
@@ -236,7 +236,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// what it may be exchanged for. Recorded in the same transaction, so there
 	// is no token without the record (see store.IssuableConfigurations).
 	if rerr := store.RecordPreAuthorizedToken(ctx, tx, stored.ID, resp.jti); rerr != nil {
-		s.log.Error("recording the token a pre-authorized code minted", "err", rerr,
+		s.log.ErrorContext(ctx, "recording the token a pre-authorized code minted", "err", rerr,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})

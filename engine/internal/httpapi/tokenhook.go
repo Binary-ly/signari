@@ -132,7 +132,7 @@ func (s *Server) verifyPresentedIn(ctx context.Context, q interface {
 		case err == nil:
 			raw = signed
 		case !errors.Is(err, store.ErrNoOpaqueToken):
-			s.log.Error("reading an opaque access token", "err", err)
+			s.log.ErrorContext(ctx, "reading an opaque access token", "err", err)
 		}
 	}
 	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, issuers, raw)
@@ -157,7 +157,7 @@ func (s *Server) verifyPresentedIn(ctx context.Context, q interface {
 func (s *Server) askHook(ctx context.Context, q dbReader, orgID string, hook provider.Hook, req any) store.TokenHookResult {
 	res, err := store.ConsultHook(ctx, q, s.root, s.outboundClient, s.log, orgID, hook, req)
 	if err != nil {
-		s.log.Error("consulting a provider", "hook", string(hook), "err", err,
+		s.log.ErrorContext(ctx, "consulting a provider", "hook", string(hook), "err", err,
 			"correlation_id", correlationID(ctx))
 		return store.TokenHookResult{Vetoed: true, Reason: "the provider could not be read"}
 	}
@@ -167,7 +167,7 @@ func (s *Server) askHook(ctx context.Context, q dbReader, orgID string, hook pro
 // recordHookRefusal logs and audits a provider's refusal. The reason stays here: it was
 // written by somebody outside this deployment, and is not for the person refused.
 func (s *Server) recordHookRefusal(ctx context.Context, hook provider.Hook, orgID, subject, clientID, reason string) {
-	s.log.Warn("a provider refused", "hook", string(hook), "client_id", clientID, "reason", reason,
+	s.log.WarnContext(ctx, "a provider refused", "hook", string(hook), "client_id", clientID, "reason", reason,
 		"correlation_id", correlationID(ctx))
 	s.auditDetached(ctx, audit.Event{Type: "provider.refused", OrgID: orgID, SubjectID: subject,
 		ClientID: clientID, CorrelationID: correlationID(ctx),
@@ -213,7 +213,7 @@ func (s *Server) consultTokenHook(ctx context.Context, w http.ResponseWriter, c 
 	}
 	hook, err := store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log, req.OrgID, req)
 	if err != nil {
-		s.log.Error("consulting the token provider", "err", err, "grant_type", req.Grant)
+		s.log.ErrorContext(ctx, "consulting the token provider", "err", err, "grant_type", req.Grant)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return ctx, false
 	}
@@ -240,7 +240,7 @@ func (s *Server) refuseVetoedIssuance(ctx context.Context, w http.ResponseWriter
 
 // recordVeto logs and audits a veto, for a path with no response to write.
 func (s *Server) recordVeto(ctx context.Context, req store.TokenHookRequest, reason string) {
-	s.log.Warn("token issuance vetoed by the operator's provider",
+	s.log.WarnContext(ctx, "token issuance vetoed by the operator's provider",
 		"client_id", req.ClientID, "grant_type", req.Grant, "reason", reason,
 		"correlation_id", correlationID(ctx))
 	// A person's id; a client's own token names the client, which the record

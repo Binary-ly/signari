@@ -33,14 +33,14 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 
 	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
-		s.log.Info("unknown SAML source", "slug", slug, "err", err)
+		s.log.InfoContext(ctx, "unknown SAML source", "slug", slug, "err", err)
 		http.NotFound(w, r)
 		return
 	}
 
 	relay, err := saml.RelayStateToken()
 	if err != nil {
-		s.log.Error("generating relay state", "err", err)
+		s.log.ErrorContext(ctx, "generating relay state", "err", err)
 		s.federationError(w, r, "Something went wrong. Please try again.")
 		return
 	}
@@ -48,7 +48,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	if src.Provider.SignRequests {
 		signer, _, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
 		if serr != nil {
-			s.log.Error("reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
+			s.log.ErrorContext(ctx, "reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
 			s.federationError(w, r, "That sign-in method is not configured correctly.")
 			return
 		}
@@ -56,7 +56,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := saml.BuildAuthnRequest(src.Provider, relay, time.Now())
 	if err != nil {
-		s.log.Error("building the SAML request", "slug", slug, "err", err)
+		s.log.ErrorContext(ctx, "building the SAML request", "slug", slug, "err", err)
 		s.federationError(w, r, "That sign-in method is not configured correctly.")
 		return
 	}
@@ -69,7 +69,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.RecordSAMLRequest(ctx, s.db, src.ProviderID, req.ID, relay,
 		returnPath, samlSourceRequestTTL); err != nil {
-		s.log.Error("recording the SAML request", "err", err)
+		s.log.ErrorContext(ctx, "recording the SAML request", "err", err)
 		s.federationError(w, r, "Something went wrong. Please try again.")
 		return
 	}
@@ -98,7 +98,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := saml.DecodePOST(r.PostForm.Get("SAMLResponse"))
 	if err != nil {
-		s.log.Info("undecodable SAML response", "slug", slug, "err", err)
+		s.log.InfoContext(ctx, "undecodable SAML response", "slug", slug, "err", err)
 		s.federationError(w, r, "That sign-in could not be completed.")
 		return
 	}
@@ -112,7 +112,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	if relay != "" {
 		pending, perr := store.ConsumeSAMLRequest(ctx, s.db, relay)
 		if perr != nil {
-			s.log.Info("no outstanding SAML request", "slug", slug, "err", perr)
+			s.log.InfoContext(ctx, "no outstanding SAML request", "slug", slug, "err", perr)
 			s.federationError(w, r, "That sign-in has expired. Please try again.")
 			return
 		}
@@ -120,7 +120,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 			// The relay state belongs to a different provider. Refused rather than
 			// reconciled: it means the response and the request came from two
 			// different flows.
-			s.log.Info("relay state belongs to another provider", "slug", slug)
+			s.log.InfoContext(ctx, "relay state belongs to another provider", "slug", slug)
 			s.federationError(w, r, "That sign-in could not be completed.")
 			return
 		}
@@ -132,7 +132,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	// upstream that does not encrypt would be a statement for nothing.
 	if bytes.Contains(raw, []byte("Encrypted")) {
 		if src.Provider.Decrypters, err = store.SAMLSourceDecrypters(ctx, s.db, s.root, src.ProviderID); err != nil {
-			s.log.Error("reading the keys an upstream encrypts to", "slug", slug, "err", err)
+			s.log.ErrorContext(ctx, "reading the keys an upstream encrypts to", "slug", slug, "err", err)
 			s.federationError(w, r, "That sign-in method is not configured correctly.")
 			return
 		}
@@ -145,7 +145,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Logged in full, shown in outline. The detail is what an operator needs
 		// and what an attacker would use to find which check to satisfy next.
-		s.log.Warn("SAML assertion refused", "slug", slug, "err", err,
+		s.log.WarnContext(ctx, "SAML assertion refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationError(w, r, "That sign-in could not be completed.")
 		return
@@ -156,7 +156,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	// explanation, because it is a configuration mistake on the upstream and the
 	// operator is the only person who can fix it.
 	if err := saml.CheckSubjectFormat(assertion.SubjectFormat); err != nil {
-		s.log.Warn("transient NameID from a SAML source", "slug", slug, "err", err)
+		s.log.WarnContext(ctx, "transient NameID from a SAML source", "slug", slug, "err", err)
 		s.federationError(w, r, "That sign-in method is not configured correctly.")
 		return
 	}
@@ -164,14 +164,14 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	// Spend the assertion. After this, the same document is worthless.
 	if err := store.RecordSAMLAssertion(ctx, s.db, src.ProviderID,
 		assertion.AssertionID, assertion.NotOnOrAfter); err != nil {
-		s.log.Warn("SAML assertion replay", "slug", slug, "err", err,
+		s.log.WarnContext(ctx, "SAML assertion replay", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationError(w, r, "That sign-in could not be completed.")
 		return
 	}
 
 	if src.SLOURL != "" {
-		s.rememberSAMLSubject(w, assertion)
+		s.rememberSAMLSubject(ctx, w, assertion)
 	}
 
 	// From here it is the ordinary external-identity path: the same decision,
@@ -252,7 +252,7 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 	}
 	spKeys, err := store.SAMLSourceKeys(r.Context(), s.db, src.OrgID, slug)
 	if err != nil {
-		s.log.Error("reading an upstream's keys", "slug", slug, "err", err)
+		s.log.ErrorContext(r.Context(), "reading an upstream's keys", "slug", slug, "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 		}
 		certs, cerr := saml.ParseCertificates(k.Certificate)
 		if cerr != nil || len(certs) != 1 {
-			s.log.Error("an upstream's key has an unreadable certificate", "slug", slug, "key", k.ID, "err", cerr)
+			s.log.ErrorContext(r.Context(), "an upstream's key has an unreadable certificate", "slug", slug, "key", k.ID, "err", cerr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}

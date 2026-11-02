@@ -930,7 +930,7 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 		// credential lookup is one query later -- so failing closed here costs
 		// nothing that was going to work, and failing open would turn a database
 		// blip into an unlimited guessing window.
-		s.log.Error("checking the sign-in rate limit", "err", err)
+		s.log.ErrorContext(ctx, "checking the sign-in rate limit", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 		return false
 	}
@@ -962,7 +962,7 @@ func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
 	}
 	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 		signInPerIPLimit, signInPerIPWindow); err != nil {
-		s.log.Error("recording a sign-in failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a sign-in failure", "err", err)
 	}
 
 	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
@@ -971,7 +971,7 @@ func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
 	}
 	if _, err := store.AllowRate(ctx, s.db, "signin:fail:user:"+identifier,
 		signInPerAccountLimit, signInPerAccountWindow); err != nil {
-		s.log.Error("recording a sign-in failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a sign-in failure", "err", err)
 	}
 }
 
@@ -1005,7 +1005,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	// silently dropped, which would produce a form whose token can never match.
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("minting csrf token", "err", err)
+		s.log.ErrorContext(r.Context(), "minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
 		return
 	}
@@ -1167,7 +1167,7 @@ func (s *Server) firstOrgID(ctx context.Context) string {
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	body, etag, err := s.discoveryDocument(r.Context())
 	if err != nil {
-		s.log.Error("building discovery metadata", "err", err)
+		s.log.ErrorContext(r.Context(), "building discovery metadata", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
 	}
@@ -1194,7 +1194,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) discoveryDocument(ctx context.Context) ([]byte, string, error) {
 	version, verr := store.CurrentConfigVersion(ctx, s.db)
 	if verr != nil {
-		s.log.Error("reading the configuration version for discovery", "err", verr)
+		s.log.ErrorContext(ctx, "reading the configuration version for discovery", "err", verr)
 	}
 	held := fmt.Sprint(s.cfg.Keys.Algorithms())
 	if verr == nil {
@@ -1234,7 +1234,7 @@ func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
 	// before it works" mistake this project refuses elsewhere -- and a client
 	// that reads it will try, fail, and blame its own configuration.
 	if on, cerr := store.AnyRegistrationEnabled(ctx, s.db, s.instanceID); cerr != nil {
-		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
+		s.log.ErrorContext(ctx, "checking whether dynamic registration is enabled", "err", cerr)
 	} else if on {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
 	}
@@ -1260,7 +1260,7 @@ func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
 	// registration_endpoint -- a type named here that no client may request is a
 	// capability advertised before it works.
 	if types, terr := store.AllAuthorizationDetailTypes(ctx, s.db, s.instanceID); terr != nil {
-		s.log.Error("listing authorization detail types", "err", terr)
+		s.log.ErrorContext(ctx, "listing authorization detail types", "err", terr)
 	} else if len(types) > 0 {
 		md.AuthorizationDetailsTypesSupported = types
 	}
@@ -1285,7 +1285,7 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	// limit is an amplification backstop set far above any real estate.
 	body, etag, err := s.jwksBody()
 	if err != nil {
-		s.log.Error("marshalling jwks", "err", err)
+		s.log.ErrorContext(r.Context(), "marshalling jwks", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "key set unavailable")
 		return
 	}
@@ -1387,13 +1387,13 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.db.Ping(ctx); err != nil {
-		s.log.Error("readiness probe failed", "err", err)
+		s.log.ErrorContext(ctx, "readiness probe failed", "err", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
 		return
 	}
 	for _, c := range s.readiness {
 		if err := c.check(); err != nil {
-			s.log.Error("readiness probe failed", "check", c.name, "err", err)
+			s.log.ErrorContext(ctx, "readiness probe failed", "check", c.name, "err", err)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
 			return
 		}

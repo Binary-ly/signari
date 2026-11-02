@@ -174,15 +174,22 @@ func TestMutationBumpsConfigVersion(t *testing.T) {
 // transaction, so a rollback takes it along.
 func TestFailedMutationDoesNotBumpVersion(t *testing.T) {
 	s, pool := newTestServer(t)
-	before := configVersionOf(t, pool)
 
-	rec := doPatch(t, s, "no-such-client-"+strings.Repeat("z", 6), `{"enabled":false}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown client gave %d, want 404", rec.Code)
+	// The version is one counter for the whole database, and other packages write to
+	// it while this runs. A bump of this request's would move it every time, so one
+	// attempt it stays still on is the answer.
+	var before, after int64
+	for range 5 {
+		before = configVersionOf(t, pool)
+		rec := doPatch(t, s, "no-such-client-"+strings.Repeat("z", 6), `{"enabled":false}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unknown client gave %d, want 404", rec.Code)
+		}
+		if after = configVersionOf(t, pool); after == before {
+			return
+		}
 	}
-	if after := configVersionOf(t, pool); after != before {
-		t.Fatalf("version moved on a failed mutation: %d -> %d", before, after)
-	}
+	t.Fatalf("version moved on a failed mutation: %d -> %d", before, after)
 }
 
 // Absent and false must be distinguishable, or a PATCH that does not mention

@@ -34,7 +34,7 @@ func (s *Server) authenticateStreamClient(w http.ResponseWriter, r *http.Request
 		return "", false
 	}
 	if aerr := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); aerr != nil {
-		s.log.Info("ssf receiver authentication failed", "client_id", creds.ClientID, "err", aerr,
+		s.log.InfoContext(ctx, "ssf receiver authentication failed", "client_id", creds.ClientID, "err", aerr,
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return "", false
@@ -87,12 +87,12 @@ func (s *Server) handleSSFVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "slow_down", "a verification was asked for too recently")
 		return
 	case err != nil:
-		s.log.Error("queueing a verification event", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "queueing a verification event", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("queueing a verification event", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "queueing a verification event", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

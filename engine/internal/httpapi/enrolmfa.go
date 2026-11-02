@@ -50,7 +50,7 @@ func (s *Server) beginEnrolMFA(w http.ResponseWriter, r *http.Request,
 
 	if err := s.setPendingCookieFor(w, userID, orgID, amr, authzQuery,
 		string(flow.StageEnrolMFA)); err != nil {
-		s.log.Error("issuing the pending token for an enrolment", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing the pending token for an enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) hasFactorAlready(w http.ResponseWriter, r *http.Request, pendin
 	ctx := r.Context()
 	has, err := store.HasSecondFactor(ctx, s.db, pending.Subject)
 	if err != nil {
-		s.log.Error("checking for a factor before enrolling one", "err", err)
+		s.log.ErrorContext(ctx, "checking for a factor before enrolling one", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return true
 	}
@@ -110,7 +110,7 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, encoded, err := mfa.GenerateSecret(params.Algorithm)
 	if err != nil {
-		s.log.Error("generating a TOTP secret", "err", err)
+		s.log.ErrorContext(ctx, "generating a TOTP secret", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -122,7 +122,7 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := store.StartTOTPEnrolment(ctx, tx, pending.Subject, pending.OrgID, secret,
 		string(params.Algorithm), params.Digits, params.Period, s.cfg.Root); err != nil {
-		s.log.Error("starting a TOTP enrolment", "err", err)
+		s.log.ErrorContext(ctx, "starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -144,7 +144,7 @@ func (s *Server) handleEnrolMFAStart(w http.ResponseWriter, r *http.Request) {
 	if code, qerr := qr.Encode([]byte(uri)); qerr == nil {
 		qrSVG = code.SVG(4, 4)
 	} else {
-		s.log.Warn("rendering the TOTP QR code", "err", qerr)
+		s.log.WarnContext(ctx, "rendering the TOTP QR code", "err", qerr)
 	}
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {

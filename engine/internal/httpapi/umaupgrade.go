@@ -56,7 +56,7 @@ func (s *Server) rptToUpgrade(ctx context.Context, raw string, c *clients.Client
 		resp, err := s.decide(ctx, c.OrgID, authzen.Request{Subject: subject,
 			Resource: authzen.Resource{Type: resourceType, ID: resourceID}, Action: authzen.Action{Name: scope}})
 		if err != nil {
-			s.log.Error("deciding a permission an RPT would carry", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "deciding a permission an RPT would carry", "err", err, "correlation_id", correlationID(ctx))
 			return nil, nil
 		}
 		if !resp.Decision {
@@ -82,6 +82,6 @@ func (s *Server) retireUpgraded(ctx context.Context, old *tokens.AccessTokenClai
 		}
 	}
 	if err != nil {
-		s.log.Error("revoking an upgraded RPT", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "revoking an upgraded RPT", "err", err, "correlation_id", correlationID(ctx))
 	}
 }

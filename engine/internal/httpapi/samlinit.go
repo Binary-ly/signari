@@ -43,7 +43,7 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("loading a SAML provider", "provider", id, "err", err)
+		s.log.ErrorContext(ctx, "loading a SAML provider", "provider", id, "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -73,7 +73,7 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("issuing an unsolicited SAML assertion", "entity_id", provider.EntityID, "err", err,
+		s.log.ErrorContext(ctx, "issuing an unsolicited SAML assertion", "entity_id", provider.EntityID, "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return

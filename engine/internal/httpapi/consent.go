@@ -160,7 +160,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("minting csrf token", "err", err)
+		s.log.ErrorContext(r.Context(), "minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -254,7 +254,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if submitted := r.PostForm.Get("client_id"); submitted != "" && submitted != clientID {
-		s.log.Warn("consent form named a different client than the request",
+		s.log.WarnContext(ctx, "consent form named a different client than the request",
 			"form", submitted, "request", clientID,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "that consent request could not be verified", http.StatusBadRequest)
@@ -289,7 +289,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 
 	if len(scopes) > 0 {
 		if err := store.RecordConsent(ctx, tx, userID, clientID, scopes); err != nil {
-			s.log.Error("recording consent", "err", err)
+			s.log.ErrorContext(ctx, "recording consent", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -299,7 +299,7 @@ func (s *Server) handleConsentPost(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"scopes": scopes},
 	}); err != nil {
-		s.log.Error("auditing consent", "err", err)
+		s.log.ErrorContext(ctx, "auditing consent", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

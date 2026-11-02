@@ -60,7 +60,7 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 			}
 
 			id := correlationID(r.Context())
-			s.log.Error("a handler panicked",
+			s.log.ErrorContext(r.Context(), "a handler panicked",
 				"err", fmt.Sprint(rec),
 				"method", r.Method,
 				// The path, NOT the raw URL: a query string here can hold a

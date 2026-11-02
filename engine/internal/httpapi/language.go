@@ -88,7 +88,7 @@ func (s *Server) handleAccountLanguage(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.db.Exec(ctx, `UPDATE core.users SET locale = NULLIF($2, ''), updated_at = now()
 		WHERE id = $1::uuid`, userID, lang); err != nil {
-		s.log.Error("saving the chosen language", "err", err)
+		s.log.ErrorContext(ctx, "saving the chosen language", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

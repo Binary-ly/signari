@@ -200,7 +200,7 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		// client needs the database one query later anyway, so refusing here costs
 		// nothing that was going to work, and failing open turns a database blip
 		// into an unlimited guessing window.
-		s.log.Error("checking the client authentication rate limit", "err", err)
+		s.log.ErrorContext(ctx, "checking the client authentication rate limit", "err", err)
 		return false
 	}
 	return spent[0] < clientAuthPerPairLimit && spent[1] < clientAuthPerIPLimit
@@ -215,10 +215,10 @@ func (s *Server) recordClientAuthFailure(ctx context.Context, r *http.Request, c
 	}
 	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:pair:"+clientID+":"+budgetIP(ip),
 		clientAuthPerPairLimit, clientAuthPerPairWindow); err != nil {
-		s.log.Error("recording a client authentication failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a client authentication failure", "err", err)
 	}
 	if _, err := store.AllowRate(ctx, s.db, "clientauth:fail:ip:"+budgetIP(ip),
 		clientAuthPerIPLimit, clientAuthPerIPWindow); err != nil {
-		s.log.Error("recording a client authentication failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a client authentication failure", "err", err)
 	}
 }

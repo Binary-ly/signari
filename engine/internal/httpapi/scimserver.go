@@ -222,7 +222,7 @@ func (s *Server) scimListUsers(w http.ResponseWriter, r *http.Request, src *stor
 		return
 	}
 	if err != nil {
-		s.log.Error("listing SCIM users", "err", err)
+		s.log.ErrorContext(ctx, "listing SCIM users", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -281,7 +281,7 @@ func (s *Server) scimCreateUser(w http.ResponseWriter, r *http.Request, src *sto
 			})
 			return
 		}
-		s.log.Error("creating a SCIM user", "err", err)
+		s.log.ErrorContext(ctx, "creating a SCIM user", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -357,7 +357,7 @@ func (s *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request,
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
 		}
-		s.log.Error("replacing a SCIM user", "err", err)
+		s.log.ErrorContext(ctx, "replacing a SCIM user", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -389,7 +389,7 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 	if len(patch.Unsupported) > 0 {
 		// Logged, not failed: the operation may well have changed something else
 		// we did apply, and refusing the whole request would block the sync.
-		s.log.Warn("SCIM patch contained paths this engine does not store",
+		s.log.WarnContext(ctx, "SCIM patch contained paths this engine does not store",
 			"paths", strings.Join(patch.Unsupported, ","), "source", src.Slug)
 	}
 
@@ -402,7 +402,7 @@ func (s *Server) scimPatchUser(w http.ResponseWriter, r *http.Request,
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
 		}
-		s.log.Error("patching a SCIM user", "err", err)
+		s.log.ErrorContext(ctx, "patching a SCIM user", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -425,7 +425,7 @@ func (s *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request,
 			writeSCIMError(w, http.StatusNotFound, "no such user")
 			return
 		}
-		s.log.Error("deleting a SCIM user", "err", err)
+		s.log.ErrorContext(ctx, "deleting a SCIM user", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -495,13 +495,13 @@ func (s *Server) withEnterprise(ctx context.Context, src *store.SCIMSource, user
 		ids = append(ids, u.UserID)
 		if len(u.NotStored) > 0 {
 			// The operator's to act on, and nobody else can see it.
-			s.log.Warn("the SCIM enterprise extension gave attributes this organisation does not declare",
+			s.log.WarnContext(ctx, "the SCIM enterprise extension gave attributes this organisation does not declare",
 				"attributes", strings.Join(u.NotStored, ","), "source", src.Slug)
 		}
 	}
 	values, err := store.SCIMEnterpriseValues(ctx, s.db, src.OrgID, ids, s.root)
 	if err != nil {
-		s.log.Error("reading the SCIM enterprise extension", "err", err)
+		s.log.ErrorContext(ctx, "reading the SCIM enterprise extension", "err", err)
 		return
 	}
 	for i := range users {

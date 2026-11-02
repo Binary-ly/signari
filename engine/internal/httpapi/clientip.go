@@ -54,7 +54,7 @@ func (s *Server) warnIfBehindAnUnnamedProxy(r *http.Request) {
 		return
 	}
 	s.unconfiguredProxyWarning.Do(func() {
-		s.log.Warn("requests carry forwarding headers from a private address but "+
+		s.log.WarnContext(r.Context(), "requests carry forwarding headers from a private address but "+
 			"SIGNARI_TRUSTED_PROXIES is unset, so every client behind that proxy shares "+
 			"one address for rate limits, captcha and network policy",
 			"peer", host)

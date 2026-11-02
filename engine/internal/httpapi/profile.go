@@ -104,7 +104,7 @@ func (s *Server) renderProfile(w http.ResponseWriter, r *http.Request, userID, o
 
 	fields, err := s.profileFields(r.Context(), userID, orgID, false, posted)
 	if err != nil {
-		s.log.Error("reading the profile", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the profile", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -155,7 +155,7 @@ func (s *Server) handleProfilePost(w http.ResponseWriter, r *http.Request) {
 		s.renderProfile(w, r, userID, orgID, posted, "", err.Error())
 		return
 	case err != nil:
-		s.log.Error("saving the profile", "err", err)
+		s.log.ErrorContext(ctx, "saving the profile", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -167,7 +167,7 @@ func (s *Server) handleProfilePost(w http.ResponseWriter, r *http.Request) {
 			Type: "user.attributes_updated", OrgID: orgID, SubjectID: userID,
 			CorrelationID: correlationID(ctx), Detail: map[string]any{"attributes": changed},
 		}); err != nil {
-			s.log.Error("auditing a profile change", "err", err)
+			s.log.ErrorContext(ctx, "auditing a profile change", "err", err)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}

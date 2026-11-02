@@ -36,7 +36,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderAccountPassword(w http.ResponseWriter, r *http.Request, errMsg, note string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -99,7 +99,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 	if err := s.db.QueryRow(ctx, `
 		SELECT COALESCE(email,''), COALESCE(username,'') FROM core.users WHERE id = $1::uuid`,
 		userID).Scan(&email, &username); err != nil {
-		s.log.Error("reading the account's names", "err", err)
+		s.log.ErrorContext(ctx, "reading the account's names", "err", err)
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 	for _, b := range budget {
 		n, err := store.CountRate(ctx, s.db, b.key, b.window)
 		if err != nil {
-			s.log.Error("checking the current-password budget", "err", err)
+			s.log.ErrorContext(ctx, "checking the current-password budget", "err", err)
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -138,7 +138,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 	if _, verr := s.hasher.Verify(ctx, stored, current); verr != nil {
 		for _, b := range budget {
 			if _, err := store.AllowRate(ctx, s.db, b.key, b.limit, b.window); err != nil {
-				s.log.Error("charging the current-password budget", "err", err)
+				s.log.ErrorContext(ctx, "charging the current-password budget", "err", err)
 			}
 		}
 		s.renderAccountPassword(w, r, "That is not your current password.", "")
@@ -151,7 +151,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 
 	previous, perr := store.RecentPasswordHashes(ctx, s.db, userID, s.pwPolicy.HistoryDepth)
 	if perr != nil {
-		s.log.Error("reading password history", "err", perr)
+		s.log.ErrorContext(ctx, "reading password history", "err", perr)
 	}
 	if _, err := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); err != nil {
 		s.renderAccountPassword(w, r, err.Error(), "")
@@ -160,7 +160,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 
 	hash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
-		s.log.Error("hashing a changed password", "err", err)
+		s.log.ErrorContext(ctx, "hashing a changed password", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -174,11 +174,11 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 
 	if s.pwPolicy.HistoryDepth > 0 {
 		if rerr := store.RetirePassword(ctx, tx, userID, orgID); rerr != nil {
-			s.log.Error("recording the retired password", "err", rerr)
+			s.log.ErrorContext(ctx, "recording the retired password", "err", rerr)
 		}
 	}
 	if err := store.SetPassword(ctx, tx, userID, hash); err != nil {
-		s.log.Error("setting a changed password", "err", err)
+		s.log.ErrorContext(ctx, "setting a changed password", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -189,7 +189,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 	// again with the new password. ASVS V7.4.3 (terminate other sessions after a
 	// credential change) is satisfied by terminating all of them.
 	if _, terr := store.TerminateSessions(ctx, tx, "", userID, store.ReasonPasswordChange); terr != nil {
-		s.log.Error("terminating sessions after a voluntary password change", "err", terr)
+		s.log.ErrorContext(ctx, "terminating sessions after a voluntary password change", "err", terr)
 	}
 
 	if aerr := audit.Write(ctx, tx, audit.Event{
@@ -197,14 +197,14 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"required": false, "self_service": true},
 	}); aerr != nil {
-		s.log.Error("recording a voluntary password change", "err", aerr)
+		s.log.ErrorContext(ctx, "recording a voluntary password change", "err", aerr)
 	}
 
 	// Told on every channel, queued with the change so it goes out if and only
 	// if the change commits: whoever changed it may not be the account's holder.
 	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
 		Notice: store.NoticePasswordChanged}); err != nil {
-		s.log.Error("queueing the password-changed notice", "err", err)
+		s.log.ErrorContext(ctx, "queueing the password-changed notice", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

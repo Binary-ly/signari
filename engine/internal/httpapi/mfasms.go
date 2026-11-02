@@ -60,7 +60,7 @@ func (s *Server) handleMFASMSSend(w http.ResponseWriter, r *http.Request) {
 	hash, err := s.smsNumberHash(ctx, tx, pending.Subject, number)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		s.log.Error("hashing a typed SMS number", "err", err)
+		s.log.ErrorContext(ctx, "hashing a typed SMS number", "err", err)
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
@@ -74,7 +74,7 @@ func (s *Server) handleMFASMSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		_ = tx.Rollback(ctx)
-		s.log.Error("issuing an SMS code to a typed number", "err", err)
+		s.log.ErrorContext(ctx, "issuing an SMS code to a typed number", "err", err)
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) handleMFASMSSend(w http.ResponseWriter, r *http.Request) {
 			"If you did not request it, someone has your password.",
 			s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),
 	}); err != nil {
-		s.log.Error("sending the SMS code", "err", err, "to", sms.RedactNumber(to))
+		s.log.ErrorContext(ctx, "sending the SMS code", "err", err, "to", sms.RedactNumber(to))
 	}
 	s.renderMFAWith(w, r, pending.Subject, pending.Authz, "", notice)
 }

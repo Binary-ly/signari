@@ -47,7 +47,7 @@ func (s *Server) handleFederatedBackchannelLogout(w http.ResponseWriter, r *http
 	}
 	claims, err := provider.VerifyLogoutToken(ctx, s.outboundClient(federationTimeout), &s.assertionKeys, raw, time.Now())
 	if err != nil {
-		s.log.Info("a logout token was refused", "slug", slug, "err", err, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "a logout token was refused", "slug", slug, "err", err, "correlation_id", correlationID(ctx))
 		refuse("the logout token could not be verified")
 		return
 	}
@@ -68,13 +68,13 @@ func (s *Server) handleFederatedBackchannelLogout(w http.ResponseWriter, r *http
 		return
 	}
 	if err != nil {
-		s.log.Error("recording a logout token", "slug", slug, "err", err)
+		s.log.ErrorContext(ctx, "recording a logout token", "slug", slug, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
 	userID, err := store.FindFederatedIdentity(ctx, tx, provider.ID, claims.Subject)
 	if err != nil {
-		s.log.Error("finding who a logout token names", "slug", slug, "err", err)
+		s.log.ErrorContext(ctx, "finding who a logout token names", "slug", slug, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
@@ -82,7 +82,7 @@ func (s *Server) handleFederatedBackchannelLogout(w http.ResponseWriter, r *http
 	if userID != "" {
 		term, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonSharedSignal)
 		if err != nil {
-			s.log.Error("ending sessions on a logout token", "slug", slug, "err", err)
+			s.log.ErrorContext(ctx, "ending sessions on a logout token", "slug", slug, "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 			return
 		}
@@ -91,7 +91,7 @@ func (s *Server) handleFederatedBackchannelLogout(w http.ResponseWriter, r *http
 		}
 		if err := audit.Write(ctx, tx, audit.Event{Type: "federation.backchannel_logout", OrgID: provider.OrgID,
 			SubjectID: userID, Detail: map[string]any{"provider": slug, "sessions_ended": ended}}); err != nil {
-			s.log.Error("recording a back-channel logout", "slug", slug, "err", err)
+			s.log.ErrorContext(ctx, "recording a back-channel logout", "slug", slug, "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 			return
 		}

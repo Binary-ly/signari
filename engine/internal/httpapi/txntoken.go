@@ -40,7 +40,7 @@ func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *cl
 	ctx := r.Context()
 	_, err := store.OrgOfUser(ctx, s.db, subject)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.log.Error("txn-token: resolving the subject", "err", err)
+		s.log.ErrorContext(ctx, "txn-token: resolving the subject", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return true
@@ -51,7 +51,7 @@ func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *cl
 	// A machine subject, from a client-credentials token: the client it names
 	// must belong where the workload does.
 	if sc, err := s.lookupClient(ctx, subject); err != nil || sc == nil || sc.OrgID != c.OrgID {
-		s.log.Info("txn-token: subject outside the workload's organisation",
+		s.log.InfoContext(ctx, "txn-token: subject outside the workload's organisation",
 			"caller", c.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this token would name a subject outside this workload's organisation",
@@ -126,7 +126,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// A REPLACEMENT: the next hop in a chain.
 		prev, err := s.verifyTxnToken(ctx, req.SubjectToken)
 		if err != nil {
-			s.log.Info("txn-token replacement: subject token rejected", "err", err,
+			s.log.InfoContext(ctx, "txn-token replacement: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the presented transaction token is not valid",
@@ -162,7 +162,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			case errors.Is(err, txntoken.ErrWiden):
 				code = "invalid_scope"
 			case errors.Is(err, txntoken.ErrChainTooLong):
-				s.log.Warn("txn-token: call chain limit reached",
+				s.log.WarnContext(ctx, "txn-token: call chain limit reached",
 					"caller", c.ClientID, "txn", prev.Transaction,
 					"correlation_id", correlationID(ctx))
 			}
@@ -177,7 +177,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// reached only for types we accept.
 		subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), req.SubjectToken)
 		if err != nil {
-			s.log.Info("txn-token: subject token rejected", "err", err,
+			s.log.InfoContext(ctx, "txn-token: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the subject token is not valid", Status: http.StatusBadRequest})
@@ -192,7 +192,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// Same rule as the exchange endpoint: a sender-constrained subject token
 		// is only exchangeable by the party that can prove the key.
 		if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
-			s.log.Info("txn-token: subject token binding not proved", "err", berr,
+			s.log.InfoContext(ctx, "txn-token: subject token binding not proved", "err", berr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 				Description: berr.Error(), Status: http.StatusBadRequest})
@@ -289,7 +289,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		}
 	}
 	if err != nil {
-		s.log.Error("txn-token: no active key", "err", err)
+		s.log.ErrorContext(ctx, "txn-token: no active key", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -301,7 +301,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 	// this confusion.
 	signed, err := tokens.NewSigner(key).SignJSON(out, txntoken.Typ)
 	if err != nil {
-		s.log.Error("txn-token: signing", "err", err)
+		s.log.ErrorContext(ctx, "txn-token: signing", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return

@@ -70,7 +70,7 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 	// mutual TLS or attestation, which hold no secret to compare.
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
-			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
+			s.log.InfoContext(ctx, "client authentication failed", "client_id", c.ClientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			if isAttestationFailure(c, err) {
 				s.writeAttestationError(w, r, c, err)
@@ -133,7 +133,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	// hint is how a client's revocation silently does nothing.
 	revoked, err := store.RevokeRefreshToken(ctx, tx, store.HashToken(raw), c.ClientID)
 	if err != nil {
-		s.log.Error("revoking refresh token", "client_id", c.ClientID, "err", err)
+		s.log.ErrorContext(ctx, "revoking refresh token", "client_id", c.ClientID, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -155,7 +155,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			if claims.ClientID == c.ClientID && claims.JTI != "" {
 				if err := store.RevokeJTI(ctx, tx, claims.JTI, c.ClientID,
 					time.Unix(claims.Expiry, 0)); err != nil {
-					s.log.Error("denylisting access token", "client_id", c.ClientID, "err", err)
+					s.log.ErrorContext(ctx, "denylisting access token", "client_id", c.ClientID, "err", err)
 					writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 					return
 				}
@@ -175,7 +175,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				// answering 200 would tell them it had been revoked when it had
 				// not -- the same silent-success failure this endpoint's review
 				// criticises elsewhere.
-				s.log.Info("revocation refused: token belongs to another client",
+				s.log.InfoContext(ctx, "revocation refused: token belongs to another client",
 					"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
 				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 					Description: "this token was issued to a different client",
@@ -190,7 +190,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// else it might be is not reported: it holds no identity worth confirming.
 		holder, perr := store.RevokePersistedClaims(ctx, tx, raw, c.ClientID)
 		if perr != nil {
-			s.log.Error("revoking a persisted claims token", "client_id", c.ClientID, "err", perr)
+			s.log.ErrorContext(ctx, "revoking a persisted claims token", "client_id", c.ClientID, "err", perr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
@@ -205,12 +205,12 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		// already-revoked alike, and only the middle one is an error.
 		owner, oerr := store.RefreshTokenOwner(ctx, tx, store.HashToken(raw))
 		if oerr != nil {
-			s.log.Error("looking up refresh token owner", "err", oerr)
+			s.log.ErrorContext(ctx, "looking up refresh token owner", "err", oerr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
 		if owner != "" && owner != c.ClientID {
-			s.log.Info("revocation refused: refresh token belongs to another client",
+			s.log.InfoContext(ctx, "revocation refused: refresh token belongs to another client",
 				"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "this token was issued to a different client",
@@ -220,14 +220,14 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing revocation", "err", err)
+		s.log.ErrorContext(ctx, "committing revocation", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
 
 	// Logged either way, because "the client called revoke and nothing matched"
 	// is the shape of both a retry and a misconfigured integration.
-	s.log.Info("token revocation", "client_id", c.ClientID, "matched", revoked)
+	s.log.InfoContext(ctx, "token revocation", "client_id", c.ClientID, "matched", revoked)
 	// Recorded when something was revoked, which nothing did before 2.52.
 	if revoked {
 		s.auditDetached(ctx, audit.Event{Type: audit.EventTokenRevoked, OrgID: c.OrgID,
@@ -368,7 +368,7 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 	}
 
 	if claims.ClientID != c.ClientID && !audienceIncludes(claims.Audience, c.ClientID) {
-		s.log.Info("client introspected a token it is neither the owner nor an audience of",
+		s.log.InfoContext(ctx, "client introspected a token it is neither the owner nor an audience of",
 			"caller", c.ClientID, "token_client", claims.ClientID)
 		return &introspectionResponse{Active: false}
 	}
@@ -415,7 +415,7 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 
 	st, err := store.LookupRefreshToken(ctx, s.db, store.HashToken(raw))
 	if err != nil {
-		s.log.Error("introspecting refresh token", "err", err)
+		s.log.ErrorContext(ctx, "introspecting refresh token", "err", err)
 		return inactive
 	}
 	if !st.Found || st.ClientID != c.ClientID || !st.Active {
@@ -432,7 +432,7 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 	}
 	subject, err := subjectFor(ctx, s.db, c, st.UserID)
 	if err != nil {
-		s.log.Error("introspecting refresh token", "err", err)
+		s.log.ErrorContext(ctx, "introspecting refresh token", "err", err)
 		return inactive
 	}
 

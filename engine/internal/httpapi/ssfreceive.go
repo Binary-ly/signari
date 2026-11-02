@@ -66,13 +66,13 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 		// Unreachable by one audience since migration 0138. A token listing
 		// several can still name two tenants' sources, and acting for either
 		// would be a guess about whose people to sign out.
-		s.log.Warn("shared-signals event addressed to more than one organisation",
+		s.log.WarnContext(ctx, "shared-signals event addressed to more than one organisation",
 			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
 		return setResult{http.StatusBadRequest, errInvalidAudience,
 			"the audience names more than one recipient here; address one"}
 	}
 	if err != nil {
-		s.log.Error("looking up a shared-signals source", "err", err)
+		s.log.ErrorContext(ctx, "looking up a shared-signals source", "err", err)
 		return failed
 	}
 	if found && polled != "" && src.ID != polled {
@@ -86,10 +86,10 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 		// nobody here. 400 either way, per §2.3.
 		received, aerr := store.AudienceIsReceived(ctx, s.db, audiences, s.instanceID)
 		if aerr != nil {
-			s.log.Error("looking up a shared-signals audience", "err", aerr)
+			s.log.ErrorContext(ctx, "looking up a shared-signals audience", "err", aerr)
 			return failed
 		}
-		s.log.Info("shared-signals event matching no source",
+		s.log.InfoContext(ctx, "shared-signals event matching no source",
 			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
 		if !received {
 			return setResult{http.StatusBadRequest, errInvalidAudience, "the audience does not identify this recipient"}
@@ -99,7 +99,7 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 
 	event, err := ssf.Verify(ctx, s.ssfKeys, src, raw, time.Now())
 	if err != nil {
-		s.log.Warn("shared-signals event refused", "issuer", issuer, "err", err,
+		s.log.WarnContext(ctx, "shared-signals event refused", "issuer", issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		if errors.Is(err, ssf.ErrKeysUnavailable) {
 			return failed
@@ -119,7 +119,7 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 
 	userID, err := store.ResolveSSFSubject(ctx, tx, src.OrgID, event.Subject)
 	if err != nil {
-		s.log.Error("resolving a shared-signals subject", "err", err)
+		s.log.ErrorContext(ctx, "resolving a shared-signals subject", "err", err)
 		return failed
 	}
 
@@ -142,11 +142,11 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 			// A replay is not an error to the sender: at-least-once delivery
 			// means a transmitter legitimately resends, and answering 4xx would
 			// make it retry forever. Accepted, and nothing repeated.
-			s.log.Info("shared-signals event replayed", "issuer", issuer,
+			s.log.InfoContext(ctx, "shared-signals event replayed", "issuer", issuer,
 				"jti", event.JTI, "correlation_id", correlationID(ctx))
 			return setResult{status: http.StatusAccepted}
 		}
-		s.log.Error("recording a shared-signals event", "err", err)
+		s.log.ErrorContext(ctx, "recording a shared-signals event", "err", err)
 		return failed
 	}
 
@@ -157,15 +157,15 @@ func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
 			"issuer": issuer, "event": event.Type, "action": action, "detail": detail,
 		},
 	}); err != nil {
-		s.log.Error("auditing a shared-signals event", "err", err)
+		s.log.ErrorContext(ctx, "auditing a shared-signals event", "err", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing a shared-signals event", "err", err)
+		s.log.ErrorContext(ctx, "committing a shared-signals event", "err", err)
 		return failed
 	}
 
-	s.log.Info("shared-signals event applied", "issuer", issuer,
+	s.log.InfoContext(ctx, "shared-signals event applied", "issuer", issuer,
 		"event", event.Type, "action", action, "detail", detail)
 	return setResult{status: http.StatusAccepted}
 }
@@ -328,12 +328,12 @@ func (s *Server) applySignals(ctx context.Context, tx pgx.Tx,
 	}
 	n, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonSharedSignal)
 	if err != nil {
-		s.log.Error("terminating sessions from a shared signal", "err", err)
+		s.log.ErrorContext(ctx, "terminating sessions from a shared signal", "err", err)
 		return "", ""
 	}
 	if compromised {
 		if err := store.RequirePasswordChange(ctx, tx, userID, "reason.upstreamcompromise"); err != nil {
-			s.log.Error("requiring a new password from a shared signal", "err", err)
+			s.log.ErrorContext(ctx, "requiring a new password from a shared signal", "err", err)
 			return "", ""
 		}
 	}

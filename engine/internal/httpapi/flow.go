@@ -89,7 +89,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		wasPushed = true
 		pushed, err := s.readPushedRequest(ctx, requestURI, query.Get("client_id"))
 		if err != nil {
-			s.log.Info("pushed request refused", "err", err,
+			s.log.InfoContext(ctx, "pushed request refused", "err", err,
 				"correlation_id", correlationID(ctx))
 			// Rendered locally. There is no validated redirect_uri to send an
 			// error to -- the parameters that would have named one are exactly
@@ -157,7 +157,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			aerr := &oauth.AuthzError{Code: "invalid_target", Description: err.Error(),
 				Disposition: oauth.DispositionRedirect}
 			if !refusedTarget(err) {
-				s.log.Error("checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+				s.log.ErrorContext(ctx, "checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
 				aerr.Code, aerr.Description = "temporarily_unavailable", "please try again shortly"
 			}
 			s.writeAuthzError(w, r, req, aerr)
@@ -200,7 +200,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// by now, so asking the query for request_uri refused every request from
 	// such a client, the pushed ones included.
 	if c != nil && c.RequirePAR && !wasPushed {
-		s.log.Info("plain authorization request refused for a PAR-only client",
+		s.log.InfoContext(ctx, "plain authorization request refused for a PAR-only client",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		s.renderAuthzFailure(w, r,
 			"This client must start authorization by pushing the request first.")
@@ -224,7 +224,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if oauth.HasPrompt(req.Prompt, oauth.PromptSelectAccount) {
 		held, herr := s.heldAccounts(ctx, r, c.OrgID)
 		if herr != nil {
-			s.log.Error("reading the accounts this browser holds", "err", herr)
+			s.log.ErrorContext(ctx, "reading the accounts this browser holds", "err", herr)
 		}
 		if len(held) > 0 {
 			s.renderAccounts(w, r, r.URL.RawQuery, held, "")
@@ -239,7 +239,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// identifier. Never treat the cookie value as the sid.
 		session, err = store.ResolveBrowserSession(ctx, s.db, store.HashToken(cookie), s.instanceID)
 		if err != nil {
-			s.log.Error("checking session", "err", err)
+			s.log.ErrorContext(ctx, "checking session", "err", err)
 			s.writeAuthzError(w, r, req,
 				&oauth.AuthzError{Code: "server_error", Description: "could not verify session",
 					Disposition: oauth.DispositionRedirect})
@@ -266,7 +266,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// The request names them as this client knows them.
 		named, err := subjectFor(ctx, s.db, c, session.UserID)
 		if err != nil {
-			s.log.Error("reading how this client knows them", "err", err)
+			s.log.ErrorContext(ctx, "reading how this client knows them", "err", err)
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
 				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 			return
@@ -288,7 +288,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if reason != oauth.StepUpNone {
-			s.log.Info("step-up required", "sid", sid, "reason", reason,
+			s.log.InfoContext(ctx, "step-up required", "sid", sid, "reason", reason,
 				"correlation_id", correlationID(ctx))
 			// The session stays live. Step-up asks for another factor; it does
 			// not throw away an authentication that was legitimately performed.
@@ -325,7 +325,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					held, kerr := store.HasWebAuthnKey(ctx, s.db, session.UserID, need == 4)
 					switch {
 					case kerr != nil:
-						s.log.Error("checking for a key at a step-up", "err", kerr)
+						s.log.ErrorContext(ctx, "checking for a key at a step-up", "err", kerr)
 					case !held:
 						s.writeAuthzError(w, r, req, &oauth.AuthzError{
 							Code: "unmet_authentication_requirements",
@@ -338,9 +338,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, session.UserID); ferr != nil {
 					// Failing open here shows the form, which is the previous
 					// behaviour: a database error must not turn into a refusal.
-					s.log.Error("checking second factor for a step-up", "err", ferr)
+					s.log.ErrorContext(ctx, "checking second factor for a step-up", "err", ferr)
 				} else if !enrolled {
-					s.log.Info("step-up is unsatisfiable: no second factor is enrolled",
+					s.log.InfoContext(ctx, "step-up is unsatisfiable: no second factor is enrolled",
 						"sid", sid, "correlation_id", correlationID(ctx))
 					s.writeAuthzError(w, r, req, &oauth.AuthzError{
 						Code: "unmet_authentication_requirements",
@@ -351,7 +351,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				} else if s.stepUpNeverAsked(ctx, session.OrgID, session.UserID, r.URL.RawQuery) {
 					// The same loop by another road: a factor is enrolled, and
 					// the sign-in flow never asks a password sign-in for it.
-					s.log.Info("step-up is unsatisfiable: the sign-in flow asks for no second factor",
+					s.log.InfoContext(ctx, "step-up is unsatisfiable: the sign-in flow asks for no second factor",
 						"sid", sid, "correlation_id", correlationID(ctx))
 					s.writeAuthzError(w, r, req, &oauth.AuthzError{
 						Code: "unmet_authentication_requirements",
@@ -384,7 +384,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				slug, kind, herr = s.homeRealm(ctx, c.OrgID, query)
 			}
 			if herr != nil {
-				s.log.Error("finding a home realm", "err", herr, "correlation_id", correlationID(ctx))
+				s.log.ErrorContext(ctx, "finding a home realm", "err", herr, "correlation_id", correlationID(ctx))
 			}
 			if slug != "" {
 				http.Redirect(w, r, providerStart(slug, kind, r.URL.RawQuery), http.StatusSeeOther)
@@ -410,7 +410,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// sign in anywhere -- an organisation with open signup or federation --
 	// opened another tenant's client and was issued its tokens.
 	if session.OrgID != c.OrgID {
-		s.log.Info("a session from another organisation asked for this client",
+		s.log.InfoContext(ctx, "a session from another organisation asked for this client",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "login_required",
@@ -430,7 +430,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if c.HasAccessPolicy {
 		if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, session.UserID,
 			req.Scope, oauth.IsMultiFactor(session.AMR), session.AMR); pd != nil {
-			s.log.Info("access refused by policy", "client_id", c.ClientID,
+			s.log.InfoContext(ctx, "access refused by policy", "client_id", c.ClientID,
 				"rule", pd.Rule, "correlation_id", correlationID(ctx))
 			// Rendered to the person, not redirected to the client. A policy refusal
 			// is about who they are, and the message names what to do next; bouncing
@@ -447,7 +447,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
 		open, oerr := store.CredentialOpenTo(ctx, s.db, wanted)
 		if oerr != nil {
-			s.log.Error("reading whether a credential is open to a person", "err", oerr,
+			s.log.ErrorContext(ctx, "reading whether a credential is open to a person", "err", oerr,
 				"correlation_id", correlationID(ctx))
 			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
 				Description: "unavailable", Disposition: oauth.DispositionRedirect})
@@ -461,7 +461,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	decision, ask, err := s.needsConsent(r, c, session.UserID, req)
 	if err != nil {
-		s.log.Error("checking consent", "err", err)
+		s.log.ErrorContext(ctx, "checking consent", "err", err)
 		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
 			Description: "could not check consent", Disposition: oauth.DispositionRedirect})
 		return
@@ -492,7 +492,7 @@ func (s *Server) startCreateAccount(w http.ResponseWriter, r *http.Request, c *c
 	authz := s.answerPrompts(r.Context(), r.URL.RawQuery, oauth.PromptCreate)
 	rule, err := s.signupRule(r.Context())
 	if err != nil {
-		s.log.Error("reading the sign-up rule for prompt=create", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the sign-up rule for prompt=create", "err", err)
 	}
 	if err == nil && rule != nil && rule.OrgID == c.OrgID {
 		http.Redirect(w, r, "/signup?authz="+url.QueryEscape(authz), http.StatusSeeOther)
@@ -531,7 +531,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	// endpoint, the consent form), so the organisation is checked here as well
 	// as where the request is first read.
 	if session.OrgID != c.OrgID {
-		s.log.Warn("refused a code for a session from another organisation",
+		s.log.WarnContext(ctx, "refused a code for a session from another organisation",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		s.renderAuthzFailure(w, r, "You are signed in to a different organisation. "+
 			"Sign in with your account for this application.")
@@ -540,7 +540,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 
 	code, hash, err := store.NewCode()
 	if err != nil {
-		s.log.Error("generating code", "err", err)
+		s.log.ErrorContext(ctx, "generating code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -570,7 +570,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	// client that could resend them is a client that could change them.
 	details, derr := store.MarshalDetails(req.AuthorizationDetails)
 	if derr != nil {
-		s.log.Error("encoding authorization_details", "err", derr)
+		s.log.ErrorContext(ctx, "encoding authorization_details", "err", derr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -579,7 +579,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	if handle := r.URL.Query().Get("request_uri"); handle != "" {
 		spent, serr := store.SpendPushedRequest(ctx, tx, pushedHash(handle))
 		if serr != nil {
-			s.log.Error("spending a pushed request", "err", serr)
+			s.log.ErrorContext(ctx, "spending a pushed request", "err", serr)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -594,7 +594,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
 		spent, serr := store.SpendCredentialOffer(ctx, tx, wanted)
 		if serr != nil {
-			s.log.Error("spending a credential offer", "err", serr)
+			s.log.ErrorContext(ctx, "spending a credential offer", "err", serr)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -606,18 +606,18 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	}
 	if err := store.IssueCode(ctx, tx, session.OrgID, c.ClientID, session.SID, session.UserID, grant, hash,
 		req.Resources, details); err != nil {
-		s.log.Error("issuing code", "err", err)
+		s.log.ErrorContext(ctx, "issuing code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if err := s.noteChallengeReuse(ctx, tx, session.OrgID, c.ClientID, session.UserID, req.CodeChallenge); err != nil {
-		s.log.Error("noting a PKCE challenge", "err", err)
+		s.log.ErrorContext(ctx, "noting a PKCE challenge", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	// Record that this relying party saw the session, so logout can enumerate it.
 	if err := store.TouchSessionClient(ctx, tx, session.SID, c.ClientID); err != nil {
-		s.log.Error("recording session client", "err", err)
+		s.log.ErrorContext(ctx, "recording session client", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -638,7 +638,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	if oauth.NormaliseResponseType(req.ResponseType) == "code id_token" {
 		idt, ierr := s.mintHybridIDToken(ctx, c, session.SID, code, req.Nonce, s.issuerFor(c))
 		if ierr != nil {
-			s.log.Error("minting the hybrid id_token", "err", ierr, "client", c.ClientID)
+			s.log.ErrorContext(ctx, "minting the hybrid id_token", "err", ierr, "client", c.ClientID)
 			// The code is already issued and valid. Failing the whole response
 			// here would strand it; the client asked for an id_token though, and
 			// silently omitting one it will look for is worse than an error it
@@ -798,7 +798,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "use_dpop_nonce", "this server requires a nonce in the DPoP proof")
 		return
 	} else if err != nil {
-		s.log.Info("DPoP proof refused at the token endpoint", "err", err,
+		s.log.InfoContext(r.Context(), "DPoP proof refused at the token endpoint", "err", err,
 			"correlation_id", correlationID(r.Context()))
 		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
 		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", err.Error())
@@ -865,7 +865,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
-			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
+			s.log.InfoContext(ctx, "client authentication failed", "client_id", c.ClientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			// An attestation failure gets §7.4's specific code, and a challenge
 			// failure additionally gets a fresh challenge to retry with. Collapsing
@@ -905,7 +905,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// audiences the client may exchange FOR, which a grant-type list cannot
 	// express.
 	if req.GrantType != oauth.GrantTypeTokenExchange && !c.AllowsGrantType(req.GrantType) {
-		s.log.Info("client is not registered for the grant it requested",
+		s.log.InfoContext(ctx, "client is not registered for the grant it requested",
 			"client_id", c.ClientID, "grant_type", req.GrantType,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
@@ -1004,7 +1004,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// code's tokens alive.
 		n, rerr := store.RevokeFamilyForCode(ctx, tx, hash)
 		if rerr != nil {
-			s.log.Error("revoking after code reuse", "err", rerr)
+			s.log.ErrorContext(ctx, "revoking after code reuse", "err", rerr)
 		} else if aerr := audit.Write(ctx, tx, audit.Event{
 			Type:          audit.EventCodeReused,
 			ClientID:      req.ClientID,
@@ -1014,14 +1014,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			// The revocation still commits below if it can. Losing the audit row
 			// for a theft signal is bad; failing to revoke the stolen tokens
 			// because of it would be worse.
-			s.log.Error("auditing code reuse", "err", aerr)
+			s.log.ErrorContext(ctx, "auditing code reuse", "err", aerr)
 			if err := tx.Commit(ctx); err != nil {
-				s.log.Error("committing revocation after code reuse", "err", err)
+				s.log.ErrorContext(ctx, "committing revocation after code reuse", "err", err)
 			}
 		} else if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing revocation after code reuse", "err", err)
+			s.log.ErrorContext(ctx, "committing revocation after code reuse", "err", err)
 		}
-		s.log.Warn("authorization code reuse detected", "client_id", req.ClientID,
+		s.log.WarnContext(ctx, "authorization code reuse detected", "client_id", req.ClientID,
 			"families_revoked", n, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "authorization code has already been used", Status: http.StatusBadRequest})
@@ -1041,7 +1041,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// The code is already consumed by this point, which is correct: a failed
 		// redemption must not leave a reusable code behind.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing code consumption after failed validation", "err", err)
+			s.log.ErrorContext(ctx, "committing code consumption after failed validation", "err", err)
 		}
 		writeTokenError(w, verr)
 		return
@@ -1067,7 +1067,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			consumed.OrgID, tokenHookRequest(consumed, c.ClientID, req.GrantType))
 	}
 	if herr := hookErr; herr != nil {
-		s.log.Error("consulting the token provider", "err", herr)
+		s.log.ErrorContext(ctx, "consulting the token provider", "err", herr)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	} else if hook.Vetoed {
@@ -1075,7 +1075,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// Recording it first held two, which with a one-connection pool waited
 		// forever. The code is spent either way: a vetoed code is not retried.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing code consumption after a provider veto", "err", err)
+			s.log.ErrorContext(ctx, "committing code consumption after a provider veto", "err", err)
 		}
 		s.refuseVetoedIssuance(ctx, w, tokenHookRequest(consumed, c.ClientID, req.GrantType), hook.Reason)
 		return
@@ -1087,7 +1087,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
-		s.log.Error("minting tokens", "err", err)
+		s.log.ErrorContext(ctx, "minting tokens", "err", err)
 		writeMintError(w, err)
 		return
 	}
@@ -1649,7 +1649,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
-		s.log.Error("no active key for client_credentials", "alg", alg, "err", err)
+		s.log.ErrorContext(r.Context(), "no active key for client_credentials", "alg", alg, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -1700,7 +1700,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		// logout appear to cover a token it cannot.
 	})
 	if err != nil {
-		s.log.Error("signing client_credentials token", "err", err)
+		s.log.ErrorContext(r.Context(), "signing client_credentials token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -1779,25 +1779,25 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			time.Duration(c.RefreshReuseGrace)*time.Second); gerr == nil {
 			grant, rerr, retried = g, nil, sealed
 		} else if !errors.Is(gerr, store.ErrRefreshReused) {
-			s.log.Error("retrying a refresh", "err", gerr)
+			s.log.ErrorContext(ctx, "retrying a refresh", "err", gerr)
 		}
 	}
 
 	if errors.Is(rerr, store.ErrRefreshReused) {
 		holderOrg, holder, herr := store.RefreshTokenHolder(ctx, tx, oldHash)
 		if herr != nil {
-			s.log.Error("reading the holder of a reused refresh token", "err", herr)
+			s.log.ErrorContext(ctx, "reading the holder of a reused refresh token", "err", herr)
 		}
 		n, revErr := store.RevokeFamilyByToken(ctx, tx, oldHash, "reuse_detected")
 		committed := false
 		if revErr != nil {
-			s.log.Error("revoking family after refresh reuse", "err", revErr)
+			s.log.ErrorContext(ctx, "revoking family after refresh reuse", "err", revErr)
 		} else if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing revocation after refresh reuse", "err", err)
+			s.log.ErrorContext(ctx, "committing revocation after refresh reuse", "err", err)
 		} else {
 			committed = true
 		}
-		s.log.Warn("refresh token reuse detected -- family revoked",
+		s.log.WarnContext(ctx, "refresh token reuse detected -- family revoked",
 			"client_id", c.ClientID, "families_revoked", n)
 		// The theft signal, recorded and published. Only the log said so before
 		// 2.52. After the revocation commits, so that the revocation never
@@ -1830,7 +1830,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// application is not idle. In this transaction, so a refresh refused below
 	// moves nothing.
 	if err := store.TouchSession(ctx, tx, grant.SessionID); err != nil {
-		s.log.Error("recording a refresh as a use of its session", "err", err)
+		s.log.ErrorContext(ctx, "recording a refresh as a use of its session", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -1878,7 +1878,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.DPoPJKT)) != 1 {
 			// Logged, because this is what a replayed refresh token looks like:
 			// a valid proof of the wrong key.
-			s.log.Warn("refresh token presented with a DPoP key it is not bound to",
+			s.log.WarnContext(ctx, "refresh token presented with a DPoP key it is not bound to",
 				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 				Description: "the DPoP proof is for a different key than the one " +
@@ -1903,7 +1903,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.CertThumbprint)) != 1 {
-			s.log.Warn("refresh token presented with a certificate it is not bound to",
+			s.log.WarnContext(ctx, "refresh token presented with a certificate it is not bound to",
 				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the client certificate on this connection is not the " +
@@ -1961,7 +1961,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// organisation's policy, not this client's.
 	if grant.OrgID != c.OrgID {
 		_ = tx.Rollback(ctx)
-		s.log.Warn("refused a refresh for a grant from another organisation",
+		s.log.WarnContext(ctx, "refused a refresh for a grant from another organisation",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this grant does not belong to this client's organisation",
@@ -1989,7 +1989,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
 	if err != nil {
-		s.log.Error("minting from refresh", "err", err)
+		s.log.ErrorContext(ctx, "minting from refresh", "err", err)
 		writeMintError(w, err)
 		return
 	}
@@ -2005,7 +2005,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 				SubjectID: grant.UserID, ClientID: c.ClientID, CorrelationID: correlationID(ctx)})
 		}
 		if oerr != nil {
-			s.log.Error("answering a retried refresh", "err", oerr)
+			s.log.ErrorContext(ctx, "answering a retried refresh", "err", oerr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
@@ -2016,11 +2016,11 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			var serr error
 			if sealed, serr = store.SealSuccessor(req.RefreshToken, resp.RefreshToken); serr != nil {
 				// A retry is a kindness. Without it the rotation is still sound.
-				s.log.Error("sealing a successor", "err", serr)
+				s.log.ErrorContext(ctx, "sealing a successor", "err", serr)
 			}
 		}
 		if err := store.LinkSuccessor(ctx, tx, oldHash, newHash, sealed); err != nil {
-			s.log.Error("linking successor", "err", err)
+			s.log.ErrorContext(ctx, "linking successor", "err", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -2062,7 +2062,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 			s.captcha.RecordFailure(ctx, r.RemoteAddr)
 			s.recordSignInFailure(ctx, r)
-			s.log.Info("captcha refused", "err", cerr,
+			s.log.InfoContext(ctx, "captcha refused", "err", cerr,
 				"correlation_id", correlationID(ctx))
 			s.renderLogin(w, r, authzQuery,
 				"That challenge was not completed. Please try again.")
@@ -2075,7 +2075,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	pageOrg := s.loginOrg(ctx, authzQuery)
 	cred, ok, ambiguous, err := s.lookupCredential(ctx, identifier, pageOrg)
 	if err != nil {
-		s.log.Error("looking up credential", "err", err)
+		s.log.ErrorContext(ctx, "looking up credential", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return
 	}
@@ -2160,7 +2160,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		// Refused, for the reason allowSignInAttempt gives: nothing was going to
 		// work against a database that cannot answer this, and going on would be
 		// a guess nobody counted.
-		s.log.Error("spending a guess at an account", "err", terr)
+		s.log.ErrorContext(ctx, "spending a guess at an account", "err", terr)
 		s.renderLogin(w, r, authzQuery, generic)
 		return
 	}
@@ -2201,7 +2201,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// office NAT should not inherit a challenge from somebody who mistyped.
 	s.captcha.Clear(ctx, r.RemoteAddr)
 	if err := store.ClearLoginThrottle(ctx, s.db, userID); err != nil {
-		s.log.Error("clearing login throttle", "err", err)
+		s.log.ErrorContext(ctx, "clearing login throttle", "err", err)
 	}
 
 	// Lazy rehash, before either branch: a successful password check upgrades a
@@ -2212,7 +2212,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				UPDATE core.password_credentials
 				SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now()
 				WHERE user_id = $1`, userID, fresh); err != nil {
-				s.log.Error("rehashing password", "err", err)
+				s.log.ErrorContext(ctx, "rehashing password", "err", err)
 			}
 			// A user imported by password hash has now finished migrating: the
 			// foreign hash is gone and their credential is ours. Recording that
@@ -2227,7 +2227,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				UPDATE core.users
 				SET migration_state = 'complete', migrated_at = now()
 				WHERE id = $1 AND migration_state = 'pending'`, userID); err != nil {
-				s.log.Error("marking a hash-imported user migrated", "err", err)
+				s.log.ErrorContext(ctx, "marking a hash-imported user migrated", "err", err)
 			}
 		}
 	}
@@ -2255,7 +2255,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			// unreachable -- otherwise an outage becomes a retry on every
 			// sign-in by every user, and their bad hour becomes ours.
 			if err := store.RecordBreachCheck(ctx, s.db, userID); err != nil {
-				s.log.Error("recording a breach check", "err", err)
+				s.log.ErrorContext(ctx, "recording a breach check", "err", err)
 			}
 			if berr == nil && bad {
 				// A KEY, not a sentence. The reason is written now and read on a
@@ -2264,7 +2264,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				// speaking when the flag was set. See renderChangeReason.
 				if ferr := store.RequirePasswordChange(ctx, s.db, userID,
 					"reason.breached"); ferr != nil {
-					s.log.Error("flagging a breached password", "err", ferr)
+					s.log.ErrorContext(ctx, "flagging a breached password", "err", ferr)
 				}
 				s.auditDetached(ctx, audit.Event{
 					Type: "password.breached", OrgID: orgID, SubjectID: userID,
@@ -2395,7 +2395,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		       COALESCE(u.locale, '')
 		  FROM core.users u WHERE u.id = $1::uuid`,
 		userID, s.instanceID).Scan(&status, &locale); err != nil {
-		s.log.Error("reading the account's status at sign-in", "err", err)
+		s.log.ErrorContext(ctx, "reading the account's status at sign-in", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -2463,7 +2463,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	case decisionDone:
 		// The flow finished deliberately without issuing a session.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing a flow that issued no session", "err", err)
+			s.log.ErrorContext(ctx, "committing a flow that issued no session", "err", err)
 		}
 		s.clearPending(w)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "done"})
@@ -2526,7 +2526,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 			store.HashToken(old), userID).Scan(&oldSID); err == nil && oldSID != "" {
 			if _, terr := store.TerminateSessions(ctx, tx, oldSID, "",
 				store.ReasonReauthenticated); terr != nil {
-				s.log.Error("terminating the superseded session", "err", terr,
+				s.log.ErrorContext(ctx, "terminating the superseded session", "err", terr,
 					"correlation_id", correlationID(ctx))
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -2565,22 +2565,22 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "session_limit"},
 		}); aerr != nil {
-			s.log.Error("auditing a session-limit refusal", "err", aerr)
+			s.log.ErrorContext(ctx, "auditing a session-limit refusal", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			s.log.Error("committing the session-limit refusal", "err", cerr)
+			s.log.ErrorContext(ctx, "committing the session-limit refusal", "err", cerr)
 		}
 		s.renderLogin(w, r, "", "You are already signed in on the maximum number "+
 			"of devices for this organisation. Sign out somewhere else and try again.")
 		return
 	}
 	if lerr != nil {
-		s.log.Error("enforcing the session limit", "err", lerr)
+		s.log.ErrorContext(ctx, "enforcing the session limit", "err", lerr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if len(evicted) > 0 {
-		s.log.Info("sessions evicted to make room", "user_id", userID,
+		s.log.InfoContext(ctx, "sessions evicted to make room", "user_id", userID,
 			"count", len(evicted), "correlation_id", correlationID(ctx))
 	}
 
@@ -2592,7 +2592,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	if device, isNew := s.newDeviceSignIn(ctx, r, tx, userID, orgID); isNew {
 		if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
 			Notice: store.NoticeNewDevice, Device: device}); err != nil {
-			s.log.Error("queueing the new-device notice", "err", err)
+			s.log.ErrorContext(ctx, "queueing the new-device notice", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -2619,7 +2619,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		sid, store.HashToken(cookieToken), orgID, userID, acr, amr,
 		userAgent, ipHash, rememberAsked(r), riskNow, device.Managed,
 		device.Managed && device.Compliant); err != nil || tag.RowsAffected() != 1 {
-		s.log.Error("creating session", "err", err, "rows", tag.RowsAffected())
+		s.log.ErrorContext(ctx, "creating session", "err", err, "rows", tag.RowsAffected())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -2633,7 +2633,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	}); err != nil {
 		// Rule 4 of the package doc: no record, no session. A sign-in nobody can
 		// prove happened is exactly what an investigation cannot work with.
-		s.log.Error("auditing login", "err", err)
+		s.log.ErrorContext(ctx, "auditing login", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -2670,7 +2670,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	loc := s.geo.Resolve(clientIP(r))
 	loc.At = time.Now()
 	if lerr := store.RecordAuthLocation(ctx, s.db, userID, orgID, loc); lerr != nil {
-		s.log.Error("recording the sign-in location", "err", lerr)
+		s.log.ErrorContext(ctx, "recording the sign-in location", "err", lerr)
 	}
 
 	// Back to whatever was parked, if anything was.
@@ -2792,13 +2792,13 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (*clients.Cl
 		return nil, err
 	}
 	if !c.Enabled {
-		s.log.Info("a disabled client was refused", "client_id", clientID,
+		s.log.InfoContext(ctx, "a disabled client was refused", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
 		return nil, clients.ErrDisabled
 	}
 	// And a client of a suspended organisation, the same way (6.09).
 	if c.OrgSuspended {
-		s.log.Info("a client of a suspended organisation was refused", "client_id", clientID,
+		s.log.InfoContext(ctx, "a client of a suspended organisation was refused", "client_id", clientID,
 			"org_id", c.OrgID, "correlation_id", correlationID(ctx))
 		return nil, clients.ErrOrgSuspended
 	}
@@ -2821,7 +2821,7 @@ func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*cl
 	// registered with the other issuer, and its relying parties verify that
 	// issuer's tokens. Answered as unknown, so nobody learns it exists there.
 	if !s.serves(c.InstanceID) {
-		s.log.Info("a client of another instance was refused", "client_id", clientID,
+		s.log.InfoContext(ctx, "a client of another instance was refused", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
 		return nil, clients.ErrNotFound
 	}
@@ -2840,7 +2840,7 @@ func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
 			http.Redirect(w, r, target, http.StatusSeeOther)
 			return
 		}
-		s.log.Error("building error redirect", "err", err)
+		s.log.ErrorContext(r.Context(), "building error redirect", "err", err)
 	}
 	s.renderPageStatus(w, r, http.StatusBadRequest, "err", map[string]any{
 		"Code":        e.Code,
@@ -2955,7 +2955,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 	// signing out of a shared computer leaves nobody signed in on it.
 	for _, cookie := range append([]string{sessionCookie(r)}, parkedTokens(r)...) {
 		if err := s.terminateOwnSession(ctx, cookie); err != nil {
-			s.log.Error("ending session", "err", err)
+			s.log.ErrorContext(ctx, "ending session", "err", err)
 			// The cookies are still cleared: they are defence in depth for THIS
 			// browser, and withholding them would leave the user with neither
 			// outcome. But we do not redirect and do not claim success.
@@ -2989,7 +2989,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 		// the caller follows the spec and sends one.
 		clientID := q.Get("client_id")
 		if clientID == "" {
-			clientID = s.clientFromIDTokenHint(q.Get("id_token_hint"))
+			clientID = s.clientFromIDTokenHint(r.Context(), q.Get("id_token_hint"))
 		}
 		// And a client of this instance (6.12), as a client_id names here.
 		var ok bool
@@ -3116,13 +3116,13 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 // anything: the post-logout URI is still checked against that client's registered
 // set. A hint that fails to verify yields "" and the redirect is refused, which is
 // the safe direction.
-func (s *Server) clientFromIDTokenHint(hint string) string {
+func (s *Server) clientFromIDTokenHint(ctx context.Context, hint string) string {
 	if hint == "" {
 		return ""
 	}
 	claims, err := tokens.VerifyIDTokenAudience(s.cfg.Keys, s.cfg.Issuer, hint)
 	if err != nil {
-		s.log.Info("id_token_hint did not verify", "err", err)
+		s.log.InfoContext(ctx, "id_token_hint did not verify", "err", err)
 		return ""
 	}
 	return claims
@@ -3148,7 +3148,7 @@ func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
 	// what the specification accepts in place of asking the person. Verified,
 	// not merely present: an unverified hint is a string the attacker chose.
 	if hint := r.URL.Query().Get("id_token_hint"); hint != "" {
-		if s.clientFromIDTokenHint(hint) != "" {
+		if s.clientFromIDTokenHint(r.Context(), hint) != "" {
 			return true
 		}
 	}
@@ -3171,7 +3171,7 @@ func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) renderLogoutConfirmation(w http.ResponseWriter, r *http.Request) {
 	tok, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token for the sign-out confirmation", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing a CSRF token for the sign-out confirmation", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -3221,7 +3221,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	}
 	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, pageOrg, s.instanceID, identifier, s.cfg.Root)
 	if err != nil {
-		s.log.Error("looking up migration candidate", "err", err)
+		s.log.ErrorContext(ctx, "looking up migration candidate", "err", err)
 		return false
 	}
 	if !ok {
@@ -3248,7 +3248,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		// failure and NOT counted against the account -- otherwise someone
 		// else's outage locks out every user still to be migrated.
 		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, verr.Error())
-		s.log.Error("migration source unavailable", "source", pending.Source.DisplayName,
+		s.log.ErrorContext(ctx, "migration source unavailable", "source", pending.Source.DisplayName,
 			"err", verr, "correlation_id", correlationID(ctx))
 		s.renderLogin(w, r, authzQuery,
 			"Sign-in is temporarily unavailable. Please try again shortly.")
@@ -3283,7 +3283,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		defer func() { _ = tx.Rollback(ctx) }()
 		if err := store.RecordDelegationSuccess(ctx, tx, pending.Source.ID); err != nil {
 			_ = tx.Rollback(ctx)
-			s.log.Error("counting a sign-in through a realm", "err", err)
+			s.log.ErrorContext(ctx, "counting a sign-in through a realm", "err", err)
 			s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 			return true
 		}
@@ -3310,7 +3310,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 
 	hash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
-		s.log.Error("hashing a migrated password", "err", err)
+		s.log.ErrorContext(ctx, "hashing a migrated password", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
@@ -3325,13 +3325,13 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	if migratedBreach != "" {
 		if ferr := store.RequirePasswordChange(ctx, tx, pending.UserID,
 			migratedBreach); ferr != nil {
-			s.log.Error("flagging a migrated breached password", "err", ferr)
+			s.log.ErrorContext(ctx, "flagging a migrated breached password", "err", ferr)
 		}
 	}
 	if err := store.CompleteMigration(ctx, tx, pending.UserID, pending.OrgID,
 		pending.Source.ID, hash); err != nil {
 		_ = tx.Rollback(ctx)
-		s.log.Error("completing migration", "err", err)
+		s.log.ErrorContext(ctx, "completing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
@@ -3341,12 +3341,12 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		Detail:        map[string]any{"source": pending.Source.DisplayName},
 	}); err != nil {
 		_ = tx.Rollback(ctx)
-		s.log.Error("auditing migration", "err", err)
+		s.log.ErrorContext(ctx, "auditing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
 
-	s.log.Info("user migrated on first sign-in", "source", pending.Source.DisplayName,
+	s.log.InfoContext(ctx, "user migrated on first sign-in", "source", pending.Source.DisplayName,
 		"correlation_id", correlationID(ctx))
 	s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID,
 		[]string{oauth.AMRPassword}, authzQuery)
@@ -3385,7 +3385,7 @@ func (s *Server) acceptedIssuers(ctx context.Context) []string {
 	}
 	aliases, err := store.LiveIssuerAliases(ctx, s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("reading issuer aliases; accepting this deployment's own issuer only", "err", err)
+		s.log.ErrorContext(ctx, "reading issuer aliases; accepting this deployment's own issuer only", "err", err)
 		return out
 	}
 	return append(out, aliases...)
@@ -3447,7 +3447,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if ex.ActorToken != "" {
 		actor, aerr := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.ActorToken)
 		if aerr != nil {
-			s.log.Info("token exchange: actor token rejected", "err", aerr,
+			s.log.InfoContext(ctx, "token exchange: actor token rejected", "err", aerr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 				Description: "the actor token is not valid", Status: http.StatusBadRequest})
@@ -3509,7 +3509,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	key, err := s.cfg.Keys.Active(keys.Algorithm(c.AccessTokenAlg()))
 	if err != nil {
-		s.log.Error("token exchange: no active key", "err", err)
+		s.log.ErrorContext(ctx, "token exchange: no active key", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -3554,7 +3554,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// same rule §6 applies at the token endpoint.
 	subjectDetails, derr := decodeDetailClaim(subject.AuthorizationDetails)
 	if derr != nil {
-		s.log.Error("token exchange: decoding the subject token's details", "err", derr)
+		s.log.ErrorContext(ctx, "token exchange: decoding the subject token's details", "err", derr)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -3578,7 +3578,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if forAudience := rar.FilterByAudience(exchangedDetails, audience); len(forAudience) > 0 {
 		encoded, merr := json.Marshal(forAudience)
 		if merr != nil {
-			s.log.Error("token exchange: encoding authorization_details", "err", merr)
+			s.log.ErrorContext(ctx, "token exchange: encoding authorization_details", "err", merr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
@@ -3649,7 +3649,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		AuthorizationDetails: exchangedDetailClaim,
 	})
 	if err != nil {
-		s.log.Error("token exchange: signing", "err", err)
+		s.log.ErrorContext(ctx, "token exchange: signing", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -3657,7 +3657,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if foreign != nil {
 		// Committed before it is written, so a failure spends nothing.
 		if err := spent.Commit(hookCtx); err != nil {
-			s.log.Error("token exchange: committing the spent token", "err", err)
+			s.log.ErrorContext(ctx, "token exchange: committing the spent token", "err", err)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
@@ -3695,7 +3695,7 @@ func (s *Server) ownSubject(w http.ResponseWriter, r *http.Request, c *clients.C
 	// actually says, not what the request claims about it.
 	subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.SubjectToken)
 	if err != nil {
-		s.log.Info("token exchange: subject token rejected", "err", err,
+		s.log.InfoContext(ctx, "token exchange: subject token rejected", "err", err,
 			"caller", c.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: "the subject token is not valid", Status: http.StatusBadRequest})
@@ -3712,7 +3712,7 @@ func (s *Server) ownSubject(w http.ResponseWriter, r *http.Request, c *clients.C
 	// Without this the token endpoint is the one door where possession alone
 	// suffices, and an attacker only needs the weakest door.
 	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
-		s.log.Info("token exchange: subject token binding not proved", "err", berr,
+		s.log.InfoContext(ctx, "token exchange: subject token binding not proved", "err", berr,
 			"caller", c.ClientID, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 			Description: berr.Error(), Status: http.StatusBadRequest})
@@ -3729,7 +3729,7 @@ func (s *Server) ownSubject(w http.ResponseWriter, r *http.Request, c *clients.C
 
 	if c.ExchangeRequiresAudienceMatch &&
 		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
-		s.log.Info("token exchange: caller is neither the holder nor in the subject token's audience",
+		s.log.InfoContext(ctx, "token exchange: caller is neither the holder nor in the subject token's audience",
 			"caller", c.ClientID, "token_client", subject.ClientID,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
@@ -3779,7 +3779,7 @@ func (s *Server) foreignSubject(ctx context.Context, w http.ResponseWriter, c *c
 		MayAct map[string]any `json:"may_act"`
 	}
 	if err := json.Unmarshal(statement.payload, &carried); err != nil {
-		s.log.Info("token exchange: unreadable act or may_act", "provider", statement.provider.Slug,
+		s.log.InfoContext(ctx, "token exchange: unreadable act or may_act", "provider", statement.provider.Slug,
 			"err", err, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_request", Description: assertionRefused,
 			Status: http.StatusBadRequest})

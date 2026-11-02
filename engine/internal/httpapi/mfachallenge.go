@@ -110,7 +110,7 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 		}
 	}
 	if err != nil {
-		s.log.Error("no signing key for the pending token", "err", err)
+		s.log.ErrorContext(r.Context(), "no signing key for the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return false
 	}
@@ -121,7 +121,7 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
 	}, typPending)
 	if err != nil {
-		s.log.Error("signing the pending token", "err", err)
+		s.log.ErrorContext(r.Context(), "signing the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return false
 	}
@@ -159,7 +159,7 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("beginning a transaction for the email code", "err", err)
+		s.log.ErrorContext(ctx, "beginning a transaction for the email code", "err", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -173,11 +173,11 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 		// the person has one in their inbox.
 		return
 	case err != nil:
-		s.log.Error("issuing an email code", "err", err)
+		s.log.ErrorContext(ctx, "issuing an email code", "err", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("storing an email code", "err", err)
+		s.log.ErrorContext(ctx, "storing an email code", "err", err)
 		return
 	}
 
@@ -205,7 +205,7 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 		// The code is already stored, so a resend can succeed later. Logged
 		// rather than surfaced: telling the form that mail failed would confirm
 		// the account exists and has email enrolled.
-		s.log.Error("sending an email code", "err", err, "user_id", userID)
+		s.log.ErrorContext(ctx, "sending an email code", "err", err, "user_id", userID)
 	}
 }
 
@@ -293,7 +293,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Released before rendering, which takes a connection of its own.
 		_ = tx.Rollback(ctx)
-		s.log.Error("verifying second factor", "err", err)
+		s.log.ErrorContext(ctx, "verifying second factor", "err", err)
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
@@ -312,7 +312,7 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 		// though the sign-in did not. Rolling back here would make the lockout
 		// unreachable, since every failed attempt would undo its own record.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing failed second factor", "err", err)
+			s.log.ErrorContext(ctx, "committing failed second factor", "err", err)
 		}
 		s.recordSecondFactorFailure(ctx, pending.Subject, ip)
 		s.auditDetached(ctx, audit.Event{
@@ -375,7 +375,7 @@ func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWr
 		if err != nil {
 			// Fail closed, as the password step does: verifying the code needs
 			// the database one query later anyway.
-			s.log.Error("checking the second-factor rate limit", "err", err)
+			s.log.ErrorContext(ctx, "checking the second-factor rate limit", "err", err)
 			writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 			return false
 		}
@@ -431,12 +431,12 @@ func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip strin
 	if ip != "" {
 		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 			signInPerIPLimit, signInPerIPWindow); err != nil {
-			s.log.Error("recording a second-factor failure", "err", err)
+			s.log.ErrorContext(ctx, "recording a second-factor failure", "err", err)
 		}
 	}
 	if _, err := store.AllowRate(ctx, s.db, secondFactorAccountKey(userID),
 		secondFactorPerAccountLimit, secondFactorPerAccountWindow); err != nil {
-		s.log.Error("recording a second-factor failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a second-factor failure", "err", err)
 	}
 }
 
@@ -455,7 +455,7 @@ func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disa
 				"limit": s.failureLimit(),
 			},
 		})
-		s.log.Warn("second factor disabled after consecutive failures",
+		s.log.WarnContext(ctx, "second factor disabled after consecutive failures",
 			"user_id", userID, "factor", factor, "limit", s.failureLimit())
 
 		tr := s.notifierFor(ctx, userID)
@@ -475,7 +475,7 @@ func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disa
 				tr.Text("mail.smsotp.disabled.body"), tr.Text("sms.smsotp.disabled"))
 		}
 		if err != nil {
-			s.log.Error("telling the account holder a factor was disabled",
+			s.log.ErrorContext(ctx, "telling the account holder a factor was disabled",
 				"user_id", userID, "factor", factor, "err", err)
 		}
 	}
@@ -579,7 +579,7 @@ func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string,
 	if errors.Is(serr, store.ErrSMSVerifierUnavailable) {
 		// Refused, not charged, and the other factors still tried: an outage of
 		// the service is not the person's guess.
-		s.log.Error("checking an SMS code with the verification service", "err", serr)
+		s.log.ErrorContext(ctx, "checking an SMS code with the verification service", "err", serr)
 		serr = nil
 	}
 	if serr != nil {
@@ -664,20 +664,20 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authz
 func (s *Server) renderMFAWith(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg, notice string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("minting csrf token", "err", err)
+		s.log.ErrorContext(r.Context(), "minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
 		return
 	}
 	hasKey, err := store.HasPasskey(r.Context(), s.db, userID)
 	if err != nil {
 		// The codes still work; only the button is lost.
-		s.log.Error("checking for a security key", "err", err)
+		s.log.ErrorContext(r.Context(), "checking for a security key", "err", err)
 	}
 	// The box offering to remember this device, only where the organisation
 	// offers it (rememberdevice.go).
 	rememberDays, err := store.RememberDeviceDaysForUser(r.Context(), s.db, userID)
 	if err != nil {
-		s.log.Error("reading the remembered-device setting", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the remembered-device setting", "err", err)
 	}
 	// A number kept only as a hash is typed here to be sent a code.
 	smsForm := false
@@ -723,7 +723,7 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 		return
 	}
 	if err != nil {
-		s.log.Error("checking the SMS factor", "err", err)
+		s.log.ErrorContext(ctx, "checking the SMS factor", "err", err)
 		return
 	}
 	// A number kept only as a hash is texted when the person types it on the
@@ -735,13 +735,13 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	// texted to the stored number, which is then replaced by its hash.
 	hashed, err := store.SMSNumbersHashed(ctx, s.db, cred.OrgID)
 	if err != nil {
-		s.log.Error("reading how SMS numbers are kept", "err", err)
+		s.log.ErrorContext(ctx, "reading how SMS numbers are kept", "err", err)
 		return
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("beginning a transaction for the SMS code", "err", err)
+		s.log.ErrorContext(ctx, "beginning a transaction for the SMS code", "err", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -754,7 +754,7 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 		// A code was sent moments ago and is still live. The person has it.
 		return
 	case err != nil:
-		s.log.Error("issuing an SMS code", "err", err)
+		s.log.ErrorContext(ctx, "issuing an SMS code", "err", err)
 		return
 	}
 	if hashed {
@@ -763,12 +763,12 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 			herr = store.HashSMSNumber(ctx, tx, userID, hash)
 		}
 		if herr != nil {
-			s.log.Error("replacing an SMS number with its hash", "err", herr)
+			s.log.ErrorContext(ctx, "replacing an SMS number with its hash", "err", herr)
 			return
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("storing an SMS code", "err", err)
+		s.log.ErrorContext(ctx, "storing an SMS code", "err", err)
 		return
 	}
 
@@ -783,6 +783,6 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	}); err != nil {
 		// Logged with the number redacted. A log line carrying a phone number is
 		// a log line carrying the thing SIM swap targets.
-		s.log.Error("sending the SMS code", "err", err, "to", sms.RedactNumber(number))
+		s.log.ErrorContext(ctx, "sending the SMS code", "err", err, "to", sms.RedactNumber(number))
 	}
 }

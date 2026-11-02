@@ -158,13 +158,13 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 			if s.allowRecovery(ctx, "emailsignin:user:min:"+userID, 1, time.Minute) &&
 				s.allowRecovery(ctx, "emailsignin:user:hour:"+userID, 5, time.Hour) {
 				if err := s.startEmailSignIn(ctx, userID, userOrg); err != nil {
-					s.log.Error("starting an emailed sign-in", "err", err, "correlation_id", correlationID(ctx))
+					s.log.ErrorContext(ctx, "starting an emailed sign-in", "err", err, "correlation_id", correlationID(ctx))
 				}
 			}
 		}
 	}
 	if err := s.setEmailCodeCookie(w, subject, subjectOrg, authz); err != nil {
-		s.log.Error("issuing the emailed sign-in's token", "err", err)
+		s.log.ErrorContext(ctx, "issuing the emailed sign-in's token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -183,7 +183,7 @@ func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID strin
 		   AND (email_fold = lower($2) OR username_fold = lower($2))
 		 ORDER BY org_id LIMIT 2`, orgID, identifier, s.instanceID, store.ExactUUIDOrNil(orgID))
 	if err != nil {
-		s.log.Error("looking up an emailed sign-in's account", "err", err)
+		s.log.ErrorContext(ctx, "looking up an emailed sign-in's account", "err", err)
 		return "", "", false
 	}
 	var found [][2]string
@@ -191,7 +191,7 @@ func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID strin
 		var id, org string
 		if err := rows.Scan(&id, &org); err != nil {
 			rows.Close()
-			s.log.Error("looking up an emailed sign-in's account", "err", err)
+			s.log.ErrorContext(ctx, "looking up an emailed sign-in's account", "err", err)
 			return "", "", false
 		}
 		found = append(found, [2]string{id, org})
@@ -267,14 +267,14 @@ func (s *Server) handleEmailSignInVerify(w http.ResponseWriter, r *http.Request)
 	defer func() { _ = tx.Rollback(ctx) }()
 	ok, err := store.VerifyEmailSignIn(ctx, tx, pending.Subject, strings.TrimSpace(r.PostForm.Get("code")))
 	if err != nil {
-		s.log.Error("checking an emailed sign-in code", "err", err)
+		s.log.ErrorContext(ctx, "checking an emailed sign-in code", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
 		// Committed: the count against the code outlives the refusal.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing a wrong emailed sign-in code", "err", err)
+			s.log.ErrorContext(ctx, "committing a wrong emailed sign-in code", "err", err)
 		}
 		s.recordSecondFactorFailure(ctx, pending.Subject, ip)
 		s.auditDetached(ctx, audit.Event{

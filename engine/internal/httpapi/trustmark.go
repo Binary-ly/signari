@@ -75,7 +75,7 @@ func (s *Server) handleTrustMarkStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("looking up a trust mark for a status request", "err", err)
+		s.log.ErrorContext(ctx, "looking up a trust mark for a status request", "err", err)
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -89,7 +89,7 @@ func (s *Server) handleTrustMarkStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	signed, err := s.signFederationJWT(resp, oidfed.StatusResponseTyp)
 	if err != nil {
-		s.log.Error("signing a trust mark status response", "err", err)
+		s.log.ErrorContext(ctx, "signing a trust mark status response", "err", err)
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -120,7 +120,7 @@ func (s *Server) handleTrustMarkList(w http.ResponseWriter, r *http.Request) {
 
 	subjects, err := store.TrustMarkedEntities(ctx, s.db, s.instanceID, markType, sub)
 	if err != nil {
-		s.log.Error("listing trust marked entities", "err", err)
+		s.log.ErrorContext(ctx, "listing trust marked entities", "err", err)
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -171,7 +171,7 @@ func (s *Server) handleTrustMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("fetching a trust mark", "err", err)
+		s.log.ErrorContext(ctx, "fetching a trust mark", "err", err)
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

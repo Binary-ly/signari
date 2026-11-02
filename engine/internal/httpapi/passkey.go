@@ -200,7 +200,7 @@ func (s *Server) passkeysOffered(ctx context.Context, orgID string) bool {
 		SELECT COALESCE(i.rp_id, '') <> ''
 		  FROM core.instances i JOIN core.organizations o ON o.instance_id = i.id
 		 WHERE o.id = $1::uuid`, orgID).Scan(&offered); err != nil {
-		s.log.Error("reading whether passkeys are offered", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading whether passkeys are offered", "err", err, "correlation_id", correlationID(ctx))
 		return false
 	}
 	return offered
@@ -260,14 +260,14 @@ func (s *Server) beginPasskeyRegistration(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		// The most likely cause by far is an unset rp_id, and saying so beats a
 		// generic failure an operator has to go digging for.
-		s.log.Error("building the relying party", "err", err)
+		s.log.ErrorContext(ctx, "building the relying party", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", err.Error())
 		return
 	}
 
 	u, err := s.passkeyUser(ctx, userID)
 	if err != nil {
-		s.log.Error("loading passkey user", "err", err)
+		s.log.ErrorContext(ctx, "loading passkey user", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -278,17 +278,17 @@ func (s *Server) beginPasskeyRegistration(w http.ResponseWriter, r *http.Request
 	// the default is the safe-for-privacy one.
 	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
 	if perr != nil {
-		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+		s.log.ErrorContext(ctx, "loading the WebAuthn policy", "org_id", orgID, "err", perr)
 	}
 
 	creation, sd, err := rp.BeginRegistration(u, ceremonyFor(policy))
 	if err != nil {
-		s.log.Error("beginning registration", "err", err)
+		s.log.ErrorContext(ctx, "beginning registration", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if err := s.setCeremony(w, cl, sd); err != nil {
-		s.log.Error("issuing ceremony", "err", err)
+		s.log.ErrorContext(ctx, "issuing ceremony", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -319,7 +319,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 
 	cl, sd, err := s.readCeremony(r, "register")
 	if err != nil {
-		s.log.Info("registration ceremony rejected", "err", err)
+		s.log.InfoContext(r.Context(), "registration ceremony rejected", "err", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", "no valid registration in progress")
 		return
 	}
@@ -327,7 +327,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	// Otherwise a user could begin a ceremony, sign in as someone else, and
 	// attach their authenticator to that account.
 	if cl.Subject != userID {
-		s.log.Warn("ceremony subject does not match the session",
+		s.log.WarnContext(r.Context(), "ceremony subject does not match the session",
 			"ceremony_sub", cl.Subject, "session_sub", userID)
 		writeError(w, http.StatusBadRequest, "invalid_request", "no valid registration in progress")
 		return
@@ -361,7 +361,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 		// decided what to ask for; here it decides whether to accept, and
 		// accepting because a policy could not be read is how an approved-device
 		// requirement quietly stops applying.
-		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+		s.log.ErrorContext(ctx, "loading the WebAuthn policy", "org_id", orgID, "err", perr)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -373,7 +373,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		// Logged with the reason, returned without it: attestation failures are
 		// detailed and would tell an attacker exactly which check they tripped.
-		s.log.Info("registration failed verification", "err", passkeys.Reason(err))
+		s.log.InfoContext(ctx, "registration failed verification", "err", passkeys.Reason(err))
 		writeError(w, http.StatusBadRequest, "invalid_request", "the authenticator response was rejected")
 		return
 	}
@@ -396,7 +396,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 	attestationVerified, aerr := fidomds.AttestationAnchored(s.models,
 		cred.Authenticator.AAGUID, cred.AttestationType, cred.Attestation.Object)
 	if aerr != nil {
-		s.log.Warn("registration refused: the attestation does not anchor in the catalogue",
+		s.log.WarnContext(ctx, "registration refused: the attestation does not anchor in the catalogue",
 			"org_id", orgID, "user_id", userID, "attestation", cred.AttestationType, "err", aerr)
 		writeError(w, http.StatusBadRequest, "invalid_request", "the authenticator response was rejected")
 		return
@@ -409,13 +409,13 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 	// it is being honoured has no other way to discover that real devices are
 	// not honouring it, so it is said once per registration rather than never.
 	if policy.RequiresAttestation() && !attestationVerified {
-		s.log.Warn("attestation was requested and none was conveyed",
+		s.log.WarnContext(ctx, "attestation was requested and none was conveyed",
 			"org_id", orgID, "conveyance", policy.Conveyance,
 			"note", "the AAGUID recorded for this credential is self-asserted")
 	}
 
 	if ok, why := policy.PermitsAuthenticator(cred.Authenticator.AAGUID, attestationVerified); !ok {
-		s.log.Info("registration refused by the authenticator policy",
+		s.log.InfoContext(ctx, "registration refused by the authenticator policy",
 			"org_id", orgID, "user_id", userID, "attestation", cred.AttestationType,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
@@ -460,7 +460,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 		cred.ID, cred.PublicKey, cred.Authenticator.AAGUID, cred.Authenticator.SignCount,
 		discoverable, cred.Flags.BackupEligible, cred.Flags.BackupState,
 		transports, cred.AttestationType, name); err != nil {
-		s.log.Error("saving credential", "err", err)
+		s.log.ErrorContext(ctx, "saving credential", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -469,7 +469,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"rp_id": rp.RPID(), "attestation": cred.AttestationType},
 	}); err != nil {
-		s.log.Error("auditing passkey registration", "err", err)
+		s.log.ErrorContext(ctx, "auditing passkey registration", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -477,7 +477,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 	// number reported back cannot disagree with what was stored.
 	total, err := store.CountCredentials(ctx, tx, userID)
 	if err != nil {
-		s.log.Error("counting credentials", "err", err)
+		s.log.ErrorContext(ctx, "counting credentials", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -488,7 +488,7 @@ func (s *Server) finishPasskeyRegistration(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		} else if err != nil {
-			s.log.Error("finishing a passkey registration", "err", err)
+			s.log.ErrorContext(ctx, "finishing a passkey registration", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -588,7 +588,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 
 	orgID, err := s.defaultOrg(ctx)
 	if err != nil {
-		s.log.Error("resolving the org for a passkey login", "err", err)
+		s.log.ErrorContext(ctx, "resolving the org for a passkey login", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "passkeys_unavailable", "unavailable")
 		return
 	}
@@ -602,18 +602,18 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 	// requires user verification: the stricter request.
 	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, orgID)
 	if perr != nil {
-		s.log.Error("loading the WebAuthn policy", "org_id", orgID, "err", perr)
+		s.log.ErrorContext(ctx, "loading the WebAuthn policy", "org_id", orgID, "err", perr)
 	}
 	assertion, sd, err := rp.BeginDiscoverableLogin(ceremonyFor(policy))
 	if err != nil {
-		s.log.Error("beginning discoverable login", "err", err)
+		s.log.ErrorContext(ctx, "beginning discoverable login", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	// No subject: we genuinely do not know who this is yet, and inventing one
 	// would defeat the point of the flow.
 	if err := s.issueCeremony(w, "login", "", orgID, sd); err != nil {
-		s.log.Error("issuing ceremony", "err", err)
+		s.log.ErrorContext(ctx, "issuing ceremony", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -636,7 +636,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 
 	cl, sd, err := s.readCeremony(r, "login")
 	if err != nil {
-		s.log.Info("passkey login ceremony rejected", "err", err)
+		s.log.InfoContext(ctx, "passkey login ceremony rejected", "err", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", "no valid sign-in in progress")
 		return
 	}
@@ -690,7 +690,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 
 	cred, verified, err := rp.FinishDiscoverableLogin(handler, *sd, r)
 	if err != nil {
-		s.log.Info("passkey assertion rejected", "err", passkeys.Reason(err))
+		s.log.InfoContext(ctx, "passkey assertion rejected", "err", passkeys.Reason(err))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "passkey_assertion_rejected"},
@@ -755,7 +755,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 
 	stored, _, err := store.CredentialByID(ctx, tx, cred.ID)
 	if err != nil {
-		s.log.Error("loading the asserted credential", "err", err)
+		s.log.ErrorContext(ctx, "loading the asserted credential", "err", err)
 		return false, err
 	}
 
@@ -772,7 +772,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 	// once per transition: the flag stored below is the new 0, so the next
 	// assertion from the same state says nothing.
 	if stored.BackupState && !cred.Flags.BackupState {
-		s.log.Warn("passkey is no longer backed up; the user may be one device loss "+
+		s.log.WarnContext(ctx, "passkey is no longer backed up; the user may be one device loss "+
 			"from losing this credential", "user_id", resolvedUser,
 			"correlation_id", correlationID(ctx))
 		if aerr := audit.Write(ctx, tx, audit.Event{
@@ -780,7 +780,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"rp_id": stored.RPID},
 		}); aerr != nil {
-			s.log.Error("auditing a passkey backup-state change", "err", aerr)
+			s.log.ErrorContext(ctx, "auditing a passkey backup-state change", "err", aerr)
 		}
 		name := stored.FriendlyName
 		if name == "" {
@@ -788,7 +788,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 		}
 		if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: resolvedUser,
 			Notice: store.NoticePasskeyBackupLost, Passkey: name}); err != nil {
-			s.log.Error("queueing the passkey backup notice", "err", err)
+			s.log.ErrorContext(ctx, "queueing the passkey backup notice", "err", err)
 			return false, err
 		}
 	}
@@ -796,7 +796,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 	if err := store.UpdateSignCount(ctx, tx, cred.ID, stored.SignCount,
 		cred.Authenticator.SignCount, cred.Flags.BackupState); err != nil {
 		if errors.Is(err, store.ErrCredentialCloned) {
-			s.log.Warn("passkey signature counter went backwards; possible cloned authenticator",
+			s.log.WarnContext(ctx, "passkey signature counter went backwards; possible cloned authenticator",
 				"user_id", resolvedUser, "stored", stored.SignCount,
 				"presented", cred.Authenticator.SignCount, "correlation_id", correlationID(ctx))
 			if aerr := audit.Write(ctx, tx, audit.Event{
@@ -806,7 +806,7 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 					"stored": stored.SignCount, "presented": cred.Authenticator.SignCount,
 				},
 			}); aerr != nil {
-				s.log.Error("auditing counter regression", "err", aerr)
+				s.log.ErrorContext(ctx, "auditing counter regression", "err", aerr)
 			}
 			// The organisation decides, on by default (migration 0143). This was a
 			// configuration field nothing assigned, so the refusal could not be
@@ -815,16 +815,16 @@ func (s *Server) recordAssertion(ctx context.Context, tx pgx.Tx, cred *webauthn.
 			// is how a copied key gets in.
 			policy, perr := store.LoadWebAuthnPolicy(ctx, tx, resolvedOrg)
 			if perr != nil {
-				s.log.Error("reading the WebAuthn policy at a counter regression", "err", perr)
+				s.log.ErrorContext(ctx, "reading the WebAuthn policy at a counter regression", "err", perr)
 			}
 			if perr != nil || policy.RefuseCloned {
 				if cerr := tx.Commit(ctx); cerr != nil {
-					s.log.Error("committing the counter regression audit", "err", cerr)
+					s.log.ErrorContext(ctx, "committing the counter regression audit", "err", cerr)
 				}
 				return true, nil
 			}
 		} else {
-			s.log.Error("updating the signature counter", "err", err)
+			s.log.ErrorContext(ctx, "updating the signature counter", "err", err)
 			return false, err
 		}
 	}
@@ -969,7 +969,7 @@ func (s *Server) notifyAuthenticatorBound(ctx context.Context, userID, orgID, na
 		// channel, or because the account has none -- is an operational fact
 		// somebody has to be able to find later, and a log line alone is not
 		// durable enough for that.
-		s.log.Error("sending an authenticator-bound notice", "err", err,
+		s.log.ErrorContext(ctx, "sending an authenticator-bound notice", "err", err,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.passkey_notice_failed", OrgID: orgID, SubjectID: userID,
@@ -1070,7 +1070,7 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "no such passkey")
 			return
 		}
-		s.log.Error("deleting a passkey", "err", derr)
+		s.log.ErrorContext(ctx, "deleting a passkey", "err", derr)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -1079,7 +1079,7 @@ func (s *Server) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"name": name, "rp_id": rpID},
 	}); aerr != nil {
-		s.log.Error("auditing a passkey removal", "err", aerr)
+		s.log.ErrorContext(ctx, "auditing a passkey removal", "err", aerr)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -1113,7 +1113,7 @@ func (s *Server) notifyAuthenticatorRemoved(ctx context.Context, userID, orgID, 
 		tr.Text("mail.passkey.removed.subject"),
 		tr.Text("mail.passkey.removed.body", data),
 		tr.Text("sms.passkey.removed", data)); err != nil {
-		s.log.Error("sending an authenticator-removed notice", "err", err,
+		s.log.ErrorContext(ctx, "sending an authenticator-removed notice", "err", err,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.passkey_notice_failed", OrgID: orgID, SubjectID: userID,

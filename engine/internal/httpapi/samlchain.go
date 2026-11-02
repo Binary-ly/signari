@@ -83,7 +83,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 		})
 	}
 	if len(unreachable) > 0 {
-		s.log.Warn("SAML providers that cannot be sent a logout",
+		s.log.WarnContext(ctx, "SAML providers that cannot be sent a logout",
 			"providers", unreachable,
 			"reason", "no SingleLogoutService URL registered, or the chain limit was reached")
 	}
@@ -96,7 +96,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 		Remaining: steps, FinalRedirect: finalRedirect,
 	})
 	if err != nil {
-		s.log.Error("starting a SAML logout chain", "err", err)
+		s.log.ErrorContext(ctx, "starting a SAML logout chain", "err", err)
 		return ""
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -105,7 +105,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 
 	url, err := s.logoutRedirectFor(ctx, steps[0], token)
 	if err != nil {
-		s.log.Error("building the first logout request", "err", err)
+		s.log.ErrorContext(ctx, "building the first logout request", "err", err)
 		return ""
 	}
 	return url
@@ -189,7 +189,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 
 	chain, next, ok, err := store.AdvanceLogoutChain(ctx, tx, token, failed)
 	if err != nil {
-		s.log.Error("advancing the SAML logout chain", "err", err)
+		s.log.ErrorContext(ctx, "advancing the SAML logout chain", "err", err)
 		return false
 	}
 	if !ok {
@@ -208,7 +208,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 		}
 		url, err := s.logoutRedirectFor(ctx, *next, token)
 		if err != nil {
-			s.log.Error("building the next logout request", "entity_id", next.EntityID, "err", err)
+			s.log.ErrorContext(ctx, "building the next logout request", "entity_id", next.EntityID, "err", err)
 			// Skip the provider we cannot build for rather than stranding the
 			// user mid-chain.
 			return s.continueSAMLLogoutChain(w, r, token, true)
@@ -227,16 +227,16 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 			"failed":   entityIDs(chain.Failed),
 		},
 	}); err != nil {
-		s.log.Error("recording logout propagation", "err", err)
+		s.log.ErrorContext(ctx, "recording logout propagation", "err", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false
 	}
 	if len(chain.Failed) > 0 {
-		s.log.Warn("SAML logout could not be delivered to every provider",
+		s.log.WarnContext(ctx, "SAML logout could not be delivered to every provider",
 			"failed", entityIDs(chain.Failed), "notified", entityIDs(chain.Notified))
 	} else {
-		s.log.Info("SAML logout propagated to every participating provider",
+		s.log.InfoContext(ctx, "SAML logout propagated to every participating provider",
 			"providers", entityIDs(chain.Notified))
 	}
 

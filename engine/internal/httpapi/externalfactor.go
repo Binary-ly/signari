@@ -43,7 +43,7 @@ func (s *Server) beginExternalFactor(w http.ResponseWriter, r *http.Request,
 
 	ctx := r.Context()
 	broken := func(what string, err error) {
-		s.log.Error(what, "factor", name, "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, what, "factor", name, "err", err, "correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
 			Detail: map[string]any{"reason": "external_factor_unavailable", "factor": name},
@@ -126,7 +126,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 		return
 	}
 	refuse := func(why error) {
-		s.log.Warn("an external factor's answer was refused", "factor", name, "err", why,
+		s.log.WarnContext(ctx, "an external factor's answer was refused", "factor", name, "err", why,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.external_factor_failed", OrgID: pending.OrgID, SubjectID: pending.Subject,
@@ -157,7 +157,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 	}
 	spent, err := store.SpendFactorChallenge(ctx, s.db, pending.OrgID, name, pending.Subject, answer.Nonce)
 	if err != nil {
-		s.log.Error("spending an external factor's nonce", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "spending an external factor's nonce", "err", err, "correlation_id", correlationID(ctx))
 		s.federationError(w, r, "Something went wrong. Please try again.")
 		return
 	}
@@ -176,7 +176,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 		Type: "mfa.external_factor_passed", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx), Detail: map[string]any{"factor": name, "amr": answer.AMR},
 	}); aerr != nil {
-		s.log.Error("recording an external factor's answer", "err", aerr)
+		s.log.ErrorContext(ctx, "recording an external factor's answer", "err", aerr)
 	}
 	proved := flow.Mark(append(slices.Clone(pending.AMR), answer.AMR...), flow.StageExternalFactor, name)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, proved, pending.Authz)

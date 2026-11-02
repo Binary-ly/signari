@@ -53,13 +53,13 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 
 	ticket, err := uma.NewTicket()
 	if err != nil {
-		s.log.Error("minting a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "minting a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if _, err := store.CreatePermissionTicket(ctx, s.db, c.OrgID, c.ClientID,
 		store.HashToken(ticket), perms, uma.TicketLifetime); err != nil {
-		s.log.Error("recording a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "recording a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -100,7 +100,7 @@ func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Reque
 		return nil, false
 	}
 	if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-		s.log.Info("UMA permission endpoint client authentication failed",
+		s.log.InfoContext(ctx, "UMA permission endpoint client authentication failed",
 			"client_id", creds.ClientID, "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return nil, false
@@ -129,7 +129,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		return
 	}
 	if err != nil {
-		s.log.Error("redeeming a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "redeeming a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -216,7 +216,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 				Action:   authzen.Action{Name: scope},
 			})
 			if derr != nil {
-				s.log.Error("evaluating a UMA permission", "err", derr)
+				s.log.ErrorContext(ctx, "evaluating a UMA permission", "err", derr)
 				writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 				return
 			}
@@ -246,7 +246,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		}
 	}
 	if err != nil {
-		s.log.Error("no signing key for an RPT", "err", err)
+		s.log.ErrorContext(ctx, "no signing key for an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -275,7 +275,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		Cnf:      bindingFor(jkt, ""),
 	})
 	if err != nil {
-		s.log.Error("signing an RPT", "err", err)
+		s.log.ErrorContext(ctx, "signing an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -309,7 +309,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 	// costs them being asked again, which is no reason to withhold the RPT.
 	if t.PersistClaims && party.userID != "" {
 		if pct, err := store.NewPersistedClaims(ctx, s.db, c.OrgID, c.ClientID, party.userID); err != nil {
-			s.log.Error("issuing a persisted claims token", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "issuing a persisted claims token", "err", err, "correlation_id", correlationID(ctx))
 		} else {
 			body["pct"] = pct
 		}

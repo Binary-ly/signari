@@ -142,7 +142,7 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 		   JOIN core.clients c ON c.client_id = u.client_id
 		  WHERE `+store.InInstance("c.org_id", "$1"), s.instanceID)
 	if err != nil {
-		s.log.Error("loading registered origins for CORS", "err", err)
+		s.log.ErrorContext(ctx, "loading registered origins for CORS", "err", err)
 		// Serve the previous answer rather than an empty one. Returning nothing
 		// on a database blip would refuse every SPA at once, and this list only
 		// ever widens what a browser may read -- never what it may do.
@@ -176,7 +176,7 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 	// As a query that failed outright, above: the previous answer, not a
 	// short one taken for the list (0.31).
 	if err := rows.Err(); err != nil {
-		s.log.Error("loading registered origins for CORS", "err", err)
+		s.log.ErrorContext(ctx, "loading registered origins for CORS", "err", err)
 		return s.originsCache
 	}
 

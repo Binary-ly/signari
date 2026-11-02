@@ -84,7 +84,7 @@ func (s *Server) handlePasskeySignal(w http.ResponseWriter, r *http.Request) {
 	// relying party is read from the pool.
 	_ = tx.Rollback(ctx)
 	if err != nil {
-		s.log.Error("listing passkeys for a signal", "err", err)
+		s.log.ErrorContext(ctx, "listing passkeys for a signal", "err", err)
 		writeJSONResponse(w, http.StatusInternalServerError,
 			map[string]any{"error": "internal error"})
 		return
@@ -125,7 +125,7 @@ func (s *Server) handlePasskeySignal(w http.ResponseWriter, r *http.Request) {
 		SELECT user_handle, COALESCE(email,''), COALESCE(username,'')
 		FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid`,
 		userID, orgID).Scan(&handle, &email, &username); err != nil {
-		s.log.Error("reading the passkey identity for a signal", "err", err)
+		s.log.ErrorContext(ctx, "reading the passkey identity for a signal", "err", err)
 		writeJSONResponse(w, http.StatusInternalServerError,
 			map[string]any{"error": "internal error"})
 		return

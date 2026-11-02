@@ -32,7 +32,7 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 	userID, orgID string, amr []string, authzQuery string, p prompts.Prompt) {
 
 	if err := s.setPendingCookie(w, userID, orgID, amr, authzQuery); err != nil {
-		s.log.Error("issuing the pending token for a prompt", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing the pending token for a prompt", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -151,7 +151,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		rerender(s.tr(r).Text("error.prompt.changed"))
 		return
 	} else if err != nil {
-		s.log.Error("recording a prompt answer", "err", err)
+		s.log.ErrorContext(ctx, "recording a prompt answer", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 			rerender(f.Label + ": " + err.Error())
 			return
 		} else if err != nil {
-			s.log.Error("writing a prompt answer to its attribute", "err", err, "attribute", f.Attribute)
+			s.log.ErrorContext(ctx, "writing a prompt answer to its attribute", "err", err, "attribute", f.Attribute)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -184,7 +184,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"by": "prompt", "prompt": p.Slug, "attributes": written},
 		}); err != nil {
-			s.log.Error("auditing the attributes a prompt wrote", "err", err)
+			s.log.ErrorContext(ctx, "auditing the attributes a prompt wrote", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -201,7 +201,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"prompt": p.Slug, "version": p.Version},
 	}); aerr != nil {
-		s.log.Error("auditing a prompt answer", "err", aerr)
+		s.log.ErrorContext(ctx, "auditing a prompt answer", "err", aerr)
 	}
 
 	// Back into the funnel. Any remaining prompt is picked up by the same check,

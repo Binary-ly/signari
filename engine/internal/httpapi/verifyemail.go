@@ -32,7 +32,7 @@ func (s *Server) beginVerifyEmail(w http.ResponseWriter, r *http.Request,
 
 	if err := s.setPendingCookieFor(w, userID, orgID, amr, authzQuery,
 		string(flow.StageVerifyEmail)); err != nil {
-		s.log.Error("issuing the pending token for an address confirmation", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing the pending token for an address confirmation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -65,7 +65,7 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request, us
 		s.renderVerifyEmail(w, r, userID, "")
 		return
 	case err != nil:
-		s.log.Error("issuing an address confirmation code", "err", err)
+		s.log.ErrorContext(ctx, "issuing an address confirmation code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -81,7 +81,7 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request, us
 		Subject: tr.Text("mail.verifyemail.subject"),
 		Body:    tr.Text("mail.verifyemail.body", map[string]any{"Code": code}),
 	}); err != nil {
-		s.log.Error("sending an address confirmation code", "err", err, "user_id", userID)
+		s.log.ErrorContext(ctx, "sending an address confirmation code", "err", err, "user_id", userID)
 		message = s.tr(r).Text("error.verifyemail.unsent")
 	}
 	s.renderVerifyEmail(w, r, userID, message)
@@ -98,12 +98,12 @@ func (s *Server) renderVerifyEmail(w http.ResponseWriter, r *http.Request, userI
 	}
 	closed, err := store.EmailVerificationClosed(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("reading an address confirmation", "err", err)
+		s.log.ErrorContext(ctx, "reading an address confirmation", "err", err)
 	}
 	var address string
 	if err := s.db.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`,
 		userID).Scan(&address); err != nil {
-		s.log.Error("reading the address to confirm", "err", err)
+		s.log.ErrorContext(ctx, "reading the address to confirm", "err", err)
 	}
 	s.renderPage(w, r, "verifyemail", map[string]any{
 		"Address": address, "Closed": closed || address == "", "Error": message,
@@ -146,14 +146,14 @@ func (s *Server) handleVerifyEmailPost(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	right, guessed, err := store.ConfirmEmailVerification(ctx, tx, pending.Subject, r.PostForm.Get("code"))
 	if err != nil {
-		s.log.Error("checking an address confirmation code", "err", err)
+		s.log.ErrorContext(ctx, "checking an address confirmation code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !right {
 		// Committed, so the count of wrong codes stands.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("recording a wrong confirmation code", "err", err)
+			s.log.ErrorContext(ctx, "recording a wrong confirmation code", "err", err)
 		}
 		if guessed {
 			s.recordSecondFactorFailure(ctx, pending.Subject, ip)
@@ -166,7 +166,7 @@ func (s *Server) handleVerifyEmailPost(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"by": "code"},
 	}); err != nil {
-		s.log.Error("auditing an address confirmation", "err", err)
+		s.log.ErrorContext(ctx, "auditing an address confirmation", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

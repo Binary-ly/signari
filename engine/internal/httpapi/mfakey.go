@@ -43,7 +43,7 @@ func (s *Server) handleMFAKeyBegin(w http.ResponseWriter, r *http.Request) {
 	u, err := s.passkeyUser(ctx, pending.Subject)
 	if err != nil {
 		// Deactivated since the password step, or gone.
-		s.log.Info("no account for a second-factor key", "err", err)
+		s.log.InfoContext(ctx, "no account for a second-factor key", "err", err)
 		writeError(w, http.StatusUnauthorized, "invalid_request",
 			"no sign-in is in progress; sign in again")
 		return
@@ -62,16 +62,16 @@ func (s *Server) handleMFAKeyBegin(w http.ResponseWriter, r *http.Request) {
 	// because a key after a password only proves possession (BeginSecondFactor).
 	policy, perr := store.LoadWebAuthnPolicy(ctx, s.db, pending.OrgID)
 	if perr != nil {
-		s.log.Error("loading the WebAuthn policy", "org_id", pending.OrgID, "err", perr)
+		s.log.ErrorContext(ctx, "loading the WebAuthn policy", "org_id", pending.OrgID, "err", perr)
 	}
 	assertion, sd, err := rp.BeginSecondFactor(u, ceremonyFor(policy), keyAlreadyProved(pending.AMR))
 	if err != nil {
-		s.log.Error("beginning a second-factor assertion", "err", err)
+		s.log.ErrorContext(ctx, "beginning a second-factor assertion", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if err := s.issueCeremony(w, ceremonyMFA, pending.Subject, pending.OrgID, sd); err != nil {
-		s.log.Error("issuing ceremony", "err", err)
+		s.log.ErrorContext(ctx, "issuing ceremony", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) finishMFAKey(w http.ResponseWriter, r *http.Request, pending *p
 	ctx := r.Context()
 	const rejected = "That security key was not accepted. Please try again."
 	refuse := func(reason, detail string) {
-		s.log.Info("second-factor key refused", "reason", reason, "detail", detail,
+		s.log.InfoContext(ctx, "second-factor key refused", "reason", reason, "detail", detail,
 			"correlation_id", correlationID(ctx))
 		// Charged as a wrong code is. A signature cannot be guessed, but the
 		// budget is what bounds how often this can be tried, and one budget for
@@ -122,7 +122,7 @@ func (s *Server) finishMFAKey(w http.ResponseWriter, r *http.Request, pending *p
 	}
 	rp, err := s.relyingParty(ctx, pending.OrgID)
 	if err != nil {
-		s.log.Error("loading the relying party for a second-factor key", "err", err)
+		s.log.ErrorContext(ctx, "loading the relying party for a second-factor key", "err", err)
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}

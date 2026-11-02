@@ -104,7 +104,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	res, rerr := store.AllowRate(ctx, s.db, "register:ip:"+budgetIP(clientIP(r)),
 		registrationsPerAddress, registrationAddressWindow)
 	if rerr != nil {
-		s.log.Error("checking the registration rate limit", "err", rerr)
+		s.log.ErrorContext(ctx, "checking the registration rate limit", "err", rerr)
 		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Which organisation, and may this caller register at all?
 	orgID, tokenID, err := s.authorizeRegistration(ctx, r)
 	if err != nil {
-		s.log.Info("registration refused", "err", err,
+		s.log.InfoContext(ctx, "registration refused", "err", err,
 			"correlation_id", correlationID(ctx))
 		// One answer for "not enabled here", "no token" and "bad token". Telling
 		// a caller which would let them map where registration is open.
@@ -177,7 +177,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	pol, err := store.LoadRegistrationPolicy(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("loading the registration policy", "err", err)
+		s.log.ErrorContext(ctx, "loading the registration policy", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -186,7 +186,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// stops a flood doing work.
 	count, err := store.CountDynamicClients(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("counting dynamic clients", "err", err)
+		s.log.ErrorContext(ctx, "counting dynamic clients", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -260,12 +260,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("registering a client", "err", err, "org_id", orgID)
+		s.log.ErrorContext(ctx, "registering a client", "err", err, "org_id", orgID)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 
-	s.log.Info("client registered dynamically", "client_id", reg.ClientID,
+	s.log.InfoContext(ctx, "client registered dynamically", "client_id", reg.ClientID,
 		"org_id", orgID, "confidential", confidential,
 		"correlation_id", correlationID(ctx))
 
@@ -349,11 +349,11 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 		s.replaceRegisteredClient(w, r, c)
 	case http.MethodDelete:
 		if err := store.DeleteRegisteredClient(ctx, s.db, clientID); err != nil {
-			s.log.Error("deleting a registered client", "err", err)
+			s.log.ErrorContext(ctx, "deleting a registered client", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "")
 			return
 		}
-		s.log.Info("registered client deleted", "client_id", clientID,
+		s.log.InfoContext(ctx, "registered client deleted", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -399,7 +399,7 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 	}
 	pol, err := store.LoadRegistrationPolicy(ctx, s.db, c.OrgID)
 	if err != nil {
-		s.log.Error("loading the registration policy", "err", err)
+		s.log.ErrorContext(ctx, "loading the registration policy", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -409,11 +409,11 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 	}
 	name := displayNameFor(req.ClientName)
 	if err := store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, req.RedirectURIs, granted); err != nil {
-		s.log.Error("updating a registered client", "err", err)
+		s.log.ErrorContext(ctx, "updating a registered client", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
-	s.log.Info("registered client updated", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
+	s.log.InfoContext(ctx, "registered client updated", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_id":               c.ClientID,
 		"client_name":             name,

@@ -129,7 +129,7 @@ func (s *Server) onlyOrg(ctx context.Context) string {
 		SELECT count(*), COALESCE(min(o.id::text), '') FROM (
 			SELECT id FROM core.organizations
 			 WHERE $1::text = '' OR instance_id = NULLIF($1, '')::uuid LIMIT 2) o`, s.instanceID).Scan(&n, &only); err != nil {
-		s.log.Error("counting organisations for the sign-in page", "err", err)
+		s.log.ErrorContext(ctx, "counting organisations for the sign-in page", "err", err)
 		return ""
 	}
 	if n == 1 {
@@ -179,7 +179,7 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		WHERE enabled AND org_id = $1::uuid AND kind <> 'assertion'
 		ORDER BY display_name`, orgID)
 	if err != nil {
-		s.log.Error("listing external providers for the sign-in page", "err", err)
+		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
 		return nil
 	}
 	defer rows.Close()
@@ -203,7 +203,7 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		s.log.Error("listing external providers for the sign-in page", "err", err)
+		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
 	}
 	return out
 }
@@ -245,7 +245,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		  AND p.kind <> 'assertion'
 		ORDER BY p.display_name`, userID, orgID)
 	if err != nil {
-		s.log.Error("listing linked providers", "err", err)
+		s.log.ErrorContext(ctx, "listing linked providers", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -262,7 +262,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	// As the query's own failure above: a page listing some of the person's
 	// linked providers would read as the whole of them (0.31).
 	if err := rows.Err(); err != nil {
-		s.log.Error("listing linked providers", "err", err)
+		s.log.ErrorContext(ctx, "listing linked providers", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -272,7 +272,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	// drive both, and no page offered either: nobody could add a passkey.
 	passkeys, err := s.accountPasskeys(ctx, userID)
 	if err != nil {
-		s.log.Error("listing passkeys", "err", err)
+		s.log.ErrorContext(ctx, "listing passkeys", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -280,7 +280,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	var locale string
 	if err := s.db.QueryRow(ctx, `SELECT COALESCE(locale, '') FROM core.users WHERE id = $1::uuid`,
 		userID).Scan(&locale); err != nil {
-		s.log.Error("reading the chosen language", "err", err)
+		s.log.ErrorContext(ctx, "reading the chosen language", "err", err)
 	}
 
 	csrf, err := s.csrfToken(w, r)
@@ -359,7 +359,7 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	remaining, err := store.SignInMethodsBesides(ctx, tx, userID, "", slug)
 	if err != nil {
-		s.log.Error("counting remaining sign-in methods", "err", err)
+		s.log.ErrorContext(ctx, "counting remaining sign-in methods", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -382,13 +382,13 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("unlinking provider", "err", err)
+		s.log.ErrorContext(ctx, "unlinking provider", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	// The tokens came with the link.
 	if err := store.ForgetFederatedTokens(ctx, tx, providerID, userID); err != nil {
-		s.log.Error("forgetting a provider's tokens", "err", err)
+		s.log.ErrorContext(ctx, "forgetting a provider's tokens", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -399,18 +399,18 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 		Type: "federation.account_unlinked", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": slug},
 	}); err != nil {
-		s.log.Error("auditing an unlink", "err", err)
+		s.log.ErrorContext(ctx, "auditing an unlink", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
 		Notice: store.NoticeProviderUnlinked, Provider: provider}); err != nil {
-		s.log.Error("queueing the unlink notice", "err", err)
+		s.log.ErrorContext(ctx, "queueing the unlink notice", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("unlinking provider", "err", err)
+		s.log.ErrorContext(ctx, "unlinking provider", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

@@ -89,7 +89,7 @@ func (s *Server) noteChallengeReuse(ctx context.Context, tx pgx.Tx, orgID, clien
 	if seen.Allowed {
 		return nil
 	}
-	s.log.Warn("a client repeated a PKCE challenge", "client_id", clientID)
+	s.log.WarnContext(ctx, "a client repeated a PKCE challenge", "client_id", clientID)
 	return audit.Write(ctx, tx, audit.Event{Type: "oauth.pkce_challenge_reused", OrgID: orgID, SubjectID: userID,
 		Detail: map[string]any{"client_id": clientID}})
 }

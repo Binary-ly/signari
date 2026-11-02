@@ -50,7 +50,7 @@ func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
 	}
 	realm, err := store.KerberosRealmForHost(ctx, s.db, s.cfg.Root, s.instanceID, host)
 	if err != nil {
-		s.log.Error("reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -60,7 +60,7 @@ func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
 			TrustedRealms: realm.TrustedRealms, CreateAccounts: realm.CreateAccounts}
 		orgID = realm.OrgID
 		if kt, err = kerberos.ParseKeytab(realm.Keytab, "the keytab of realm "+realm.Realm); err != nil {
-			s.log.Error("reading a realm's keytab", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "reading a realm's keytab", "err", err, "correlation_id", correlationID(ctx))
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -99,7 +99,7 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request, con
 		// was refused is an operator's business; telling the browser which
 		// realms are trusted is not. Not with the principal, which names the
 		// person (3.35); the correlation id finds the request.
-		s.log.Info("kerberos principal refused", "err", err,
+		s.log.InfoContext(ctx, "kerberos principal refused", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
@@ -162,12 +162,12 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, 
 			if aerr := audit.Write(ctx, tx, audit.Event{
 				Type: "kerberos.user_created", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
 			}); aerr != nil {
-				s.log.Error("recording an account made for a ticket", "err", aerr)
+				s.log.ErrorContext(ctx, "recording an account made for a ticket", "err", aerr)
 			}
 		}
 	}
 	if err != nil {
-		s.log.Info("kerberos principal has no account", "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "kerberos principal has no account", "correlation_id", correlationID(ctx))
 		// Released before the refusal is recorded: the record is a second
 		// connection, and taking one while holding this deadlocks the pool.
 		_ = tx.Rollback(ctx)

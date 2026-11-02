@@ -37,11 +37,11 @@ func (s *Server) renderEmailChange(w http.ResponseWriter, r *http.Request, userI
 	var current string
 	if err := s.db.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`,
 		userID).Scan(&current); err != nil {
-		s.log.Error("reading the account's address", "err", err)
+		s.log.ErrorContext(ctx, "reading the account's address", "err", err)
 	}
 	pending, err := store.PendingEmailChange(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("reading a change of address", "err", err)
+		s.log.ErrorContext(ctx, "reading a change of address", "err", err)
 	}
 	data := map[string]any{"Address": current, "Message": message, "Error": errMsg}
 	if pending != nil {
@@ -107,13 +107,13 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 			s.renderEmailChange(w, r, userID, "", "")
 			return
 		case err != nil:
-			s.log.Error("confirming a change of address", "err", err)
+			s.log.ErrorContext(ctx, "confirming a change of address", "err", err)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		case moved == "":
 			// A wrong or dead code, committed so the count stands.
 			if err := tx.Commit(ctx); err != nil {
-				s.log.Error("recording a wrong code", "err", err)
+				s.log.ErrorContext(ctx, "recording a wrong code", "err", err)
 			}
 			if guessed {
 				s.recordSecondFactorFailure(ctx, userID, ip)
@@ -125,7 +125,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 			Type: "user.email_changed", OrgID: orgID, SubjectID: userID,
 			CorrelationID: correlationID(ctx), Detail: map[string]any{"by": "owner"},
 		}); err != nil {
-			s.log.Error("auditing a change of address", "err", err)
+			s.log.ErrorContext(ctx, "auditing a change of address", "err", err)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -138,11 +138,11 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 		nt := s.notifierFor(ctx, userID)
 		subject, body := nt.Text("mail.email.changed.self.subject"), nt.Text("mail.email.changed.self.body")
 		if err := s.notifyAccount(ctx, userID, subject, body, nt.Text("sms.email.changed.self")); err != nil {
-			s.log.Error("telling the holder of a change of address", "err", err)
+			s.log.ErrorContext(ctx, "telling the holder of a change of address", "err", err)
 		}
 		if old != "" {
 			if err := s.sendMail(ctx, orgID, mail.Message{To: old, Subject: subject, Body: body}); err != nil {
-				s.log.Error("telling the old address of a change of address", "err", err)
+				s.log.ErrorContext(ctx, "telling the old address of a change of address", "err", err)
 			}
 		}
 		s.renderEmailChange(w, r, userID, tr.Text("emailchange.done"), "")
@@ -165,7 +165,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 			s.renderEmailChange(w, r, userID, "", err.Error())
 			return
 		case err != nil:
-			s.log.Error("starting a change of address", "err", err)
+			s.log.ErrorContext(ctx, "starting a change of address", "err", err)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -177,7 +177,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 		nt := s.notifierFor(ctx, userID)
 		if err := s.sendMail(ctx, orgID, mail.Message{To: address, Subject: nt.Text("mail.verifyemail.subject"),
 			Body: nt.Text("mail.verifyemail.body", map[string]any{"Code": code})}); err != nil {
-			s.log.Error("sending the code for a change of address", "err", err)
+			s.log.ErrorContext(ctx, "sending the code for a change of address", "err", err)
 			s.renderEmailChange(w, r, userID, "", tr.Text("error.verifyemail.unsent"))
 			return
 		}

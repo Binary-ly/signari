@@ -90,7 +90,7 @@ func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderSecurity(w http.ResponseWriter, r *http.Request, userID, message string) {
 	st, err := s.securityState(r.Context(), userID)
 	if err != nil {
-		s.log.Error("reading the sign-in methods", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the sign-in methods", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -165,7 +165,7 @@ func (s *Server) handlePasswordRemove(w http.ResponseWriter, r *http.Request) {
 		s.renderSecurity(w, r, userID, s.tr(r).Text("security.password.kept"))
 		return
 	case err != nil:
-		s.log.Error("removing a password", "err", err)
+		s.log.ErrorContext(ctx, "removing a password", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	case !removed:
@@ -177,7 +177,7 @@ func (s *Server) handlePasswordRemove(w http.ResponseWriter, r *http.Request) {
 		Type: "user.password_removed", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
 		Detail: map[string]any{"by": "owner", "passkeys": st.Passkeys},
 	}); err != nil {
-		s.log.Error("auditing a password removal", "err", err)
+		s.log.ErrorContext(ctx, "auditing a password removal", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -190,7 +190,7 @@ func (s *Server) handlePasswordRemove(w http.ResponseWriter, r *http.Request) {
 	tr := s.notifierFor(ctx, userID)
 	if err := s.notifyAccount(ctx, userID, tr.Text("mail.password.removed.subject"),
 		tr.Text("mail.password.removed.body"), tr.Text("sms.password.removed")); err != nil {
-		s.log.Error("telling the holder their password was removed", "err", err, "user_id", userID)
+		s.log.ErrorContext(ctx, "telling the holder their password was removed", "err", err, "user_id", userID)
 	}
 	s.renderSecurity(w, r, userID, s.tr(r).Text("security.password.removed"))
 }
@@ -220,7 +220,7 @@ func (s *Server) handleSecurityRemove(w http.ResponseWriter, r *http.Request) {
 		s.renderSecurity(w, r, userID, "")
 		return
 	case err != nil:
-		s.log.Error("removing a sign-in method", "kind", kind, "err", err)
+		s.log.ErrorContext(r.Context(), "removing a sign-in method", "kind", kind, "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) removeOwnFactor(ctx context.Context, userID, orgID, kind string
 	data := map[string]any{"Factor": tr.Text("factor.kind." + kind)}
 	if nerr := s.notifyAccount(ctx, userID, tr.Text("mail.factor.removed.self.subject"),
 		tr.Text("mail.factor.removed.self.body", data), tr.Text("sms.factor.removed.self", data)); nerr != nil {
-		s.log.Error("telling the holder a sign-in method was removed", "err", nerr, "user_id", userID)
+		s.log.ErrorContext(ctx, "telling the holder a sign-in method was removed", "err", nerr, "user_id", userID)
 	}
 	return recoveryCleared, nil
 }

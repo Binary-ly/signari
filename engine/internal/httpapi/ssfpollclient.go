@@ -56,7 +56,7 @@ func (s *Server) pollDueSSFSources(ctx context.Context) int {
 	for ctx.Err() == nil {
 		due, err := store.ClaimSSFPoll(ctx, s.db, s.root, s.instanceID, ssfPollEvery)
 		if err != nil {
-			s.log.Error("claiming a shared-signals poll", "err", err)
+			s.log.ErrorContext(ctx, "claiming a shared-signals poll", "err", err)
 			return taken
 		}
 		if due == nil {
@@ -65,11 +65,11 @@ func (s *Server) pollDueSSFSources(ctx context.Context) int {
 		taken++
 		problem := ""
 		if err := s.pollSSFSource(ctx, due); err != nil {
-			s.log.Warn("polling a shared-signals transmitter", "source", due.ID, "err", err)
+			s.log.WarnContext(ctx, "polling a shared-signals transmitter", "source", due.ID, "err", err)
 			problem = err.Error()
 		}
 		if err := store.RecordSSFPoll(ctx, s.db, due.ID, problem); err != nil {
-			s.log.Error("recording a shared-signals poll", "err", err)
+			s.log.ErrorContext(ctx, "recording a shared-signals poll", "err", err)
 		}
 	}
 	return taken

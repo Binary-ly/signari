@@ -90,7 +90,7 @@ func (s *Server) handleResourceMetadata(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	found, err := store.ResourceMetadata(ctx, s.db, r.PathValue("id"), s.instanceID)
 	if err != nil {
-		s.log.Error("serving a resource's metadata", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "serving a resource's metadata", "err", err, "correlation_id", correlationID(ctx))
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}

@@ -65,7 +65,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 			wantSigned = p.WantAuthnRequestsSigned
 			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
-			s.log.Error("loading SAML provider for metadata", "err", perr)
+			s.log.ErrorContext(ctx, "loading SAML provider for metadata", "err", perr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -73,7 +73,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 
 	certs, err := s.samlCertificates(ctx, signatureAlg)
 	if err != nil {
-		s.log.Error("building SAML metadata", "err", err)
+		s.log.ErrorContext(ctx, "building SAML metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -92,7 +92,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
 	if err != nil {
-		s.log.Error("rendering SAML metadata", "err", err)
+		s.log.ErrorContext(ctx, "rendering SAML metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -139,7 +139,7 @@ func (s *Server) pathOrg(w http.ResponseWriter, r *http.Request) (slug string, o
 		http.NotFound(w, r)
 		return "", false
 	case err != nil:
-		s.log.Error("reading the organisation a path names", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the organisation a path names", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return "", false
 	}
@@ -216,7 +216,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the entity id %q", req.Issuer))
 			return
 		}
-		s.log.Error("loading SAML provider", "entity_id", req.Issuer, "err", err)
+		s.log.ErrorContext(ctx, "loading SAML provider", "entity_id", req.Issuer, "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -227,7 +227,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	// so an unauthenticated document must not get that far.
 	if provider.WantAuthnRequestsSigned {
 		if err := verifyAuthnRequestSignature(r, provider, &req, raw); err != nil {
-			s.log.Info("SAML AuthnRequest signature refused", "entity_id", req.Issuer,
+			s.log.InfoContext(ctx, "SAML AuthnRequest signature refused", "entity_id", req.Issuer,
 				"err", err, "correlation_id", correlationID(ctx))
 			s.samlRefuse(w, r, err.Error())
 			return
@@ -239,7 +239,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		// Refused locally, again. Every failure here is a statement about the
 		// request itself, so there is no established, trustworthy place to send a
 		// SAML error to -- the ACS URL is exactly what is in dispute.
-		s.log.Info("SAML AuthnRequest refused", "entity_id", req.Issuer, "err", err,
+		s.log.InfoContext(ctx, "SAML AuthnRequest refused", "entity_id", req.Issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -276,7 +276,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	if ok && !needsAuth && rung >= 2 {
 		met, merr := s.samlSessionReaches(ctx, session)
 		if merr != nil {
-			s.log.Error("checking a session against a SAML authentication context", "err", merr)
+			s.log.ErrorContext(ctx, "checking a session against a SAML authentication context", "err", merr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -324,12 +324,12 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	if provider.WantAuthnRequestsSigned {
 		fresh, merr := s.markAuthnRequestAnswered(ctx, validated.RequestID, provider)
 		if merr != nil {
-			s.log.Error("recording a signed AuthnRequest", "err", merr)
+			s.log.ErrorContext(ctx, "recording a signed AuthnRequest", "err", merr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
 		if !fresh {
-			s.log.Info("SAML AuthnRequest replayed", "entity_id", provider.EntityID,
+			s.log.InfoContext(ctx, "SAML AuthnRequest replayed", "entity_id", provider.EntityID,
 				"request_id", validated.RequestID, "correlation_id", correlationID(ctx))
 			s.postSAMLStatus(w, r, validated, provider, saml.StatusRequester,
 				"this AuthnRequest has already been answered", relayState)
@@ -353,7 +353,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("issuing SAML assertion", "entity_id", provider.EntityID, "err", err,
+		s.log.ErrorContext(ctx, "issuing SAML assertion", "entity_id", provider.EntityID, "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
@@ -760,7 +760,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 		Now:         time.Now(),
 	})
 	if err != nil {
-		s.log.Error("building a SAML status response", "err", err)
+		s.log.ErrorContext(r.Context(), "building a SAML status response", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -789,7 +789,7 @@ func (s *Server) markAuthnRequestAnswered(ctx context.Context, requestID string,
 // request -- would hand an attacker a redirect to anywhere, which is the thing
 // the allow-list exists to prevent.
 func (s *Server) samlRefuse(w http.ResponseWriter, r *http.Request, reason string) {
-	s.log.Info("SAML request refused", "reason", reason,
+	s.log.InfoContext(r.Context(), "SAML request refused", "reason", reason,
 		"correlation_id", correlationID(r.Context()))
 	// The reason is rendered as text through the template package, never
 	// concatenated into HTML: much of it is attacker-controlled.

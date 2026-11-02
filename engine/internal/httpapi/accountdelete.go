@@ -100,7 +100,7 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	amr, err := s.sessionAMR(ctx, sid)
 	if err != nil {
-		s.log.Error("reading the session's sign-in", "err", err)
+		s.log.ErrorContext(ctx, "reading the session's sign-in", "err", err)
 	}
 	s.renderAccountDelete(w, r, userID, !s.walkUnenrolment(ctx, orgID, amr), "")
 }
@@ -108,7 +108,7 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderAccountDelete(w http.ResponseWriter, r *http.Request, userID string, closed bool, errMsg string) {
 	email, username, err := s.accountIdentifiers(r.Context(), userID)
 	if err != nil {
-		s.log.Error("reading the account's identifiers", "err", err)
+		s.log.ErrorContext(r.Context(), "reading the account's identifiers", "err", err)
 	}
 	confirm := email
 	if confirm == "" {
@@ -143,7 +143,7 @@ func (s *Server) handleAccountDeletePost(w http.ResponseWriter, r *http.Request)
 	}
 	amr, err := s.sessionAMR(ctx, sid)
 	if err != nil {
-		s.log.Error("reading the session's sign-in", "err", err)
+		s.log.ErrorContext(ctx, "reading the session's sign-in", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleAccountDeletePost(w http.ResponseWriter, r *http.Request)
 	defer func() { _ = tx.Rollback(ctx) }()
 	rep, err := store.EraseSubject(ctx, tx, userID, true)
 	if err != nil {
-		s.log.Error("erasing an account at its owner's request", "err", err)
+		s.log.ErrorContext(ctx, "erasing an account at its owner's request", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleAccountDeletePost(w http.ResponseWriter, r *http.Request)
 		Detail: map[string]any{"by": "owner", "key_shredded": rep.KeyHeld,
 			"sessions_ended": rep.SessionsEnded, "logout_notices": rep.NoticesQueued},
 	}); err != nil {
-		s.log.Error("auditing an account deletion", "err", err)
+		s.log.ErrorContext(ctx, "auditing an account deletion", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Server) handleAccountDeletePost(w http.ResponseWriter, r *http.Request)
 	if email != "" {
 		if err := s.sendMail(ctx, orgID, mail.Message{To: email, Subject: tr.Text("mail.accountdeleted.subject"),
 			Body: tr.Text("mail.accountdeleted.body")}); err != nil {
-			s.log.Warn("telling a deleted account's address it was deleted", "err", err)
+			s.log.WarnContext(ctx, "telling a deleted account's address it was deleted", "err", err)
 		}
 	}
 	s.clearSessionCookie(w)

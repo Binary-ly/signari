@@ -36,14 +36,14 @@ func (s *Server) handleAttestationChallenge(w http.ResponseWriter, r *http.Reque
 
 	orgID, err := s.defaultOrgID(ctx)
 	if err != nil {
-		s.log.Error("attestation challenge: resolving the organisation", "err", err)
+		s.log.ErrorContext(ctx, "attestation challenge: resolving the organisation", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 
 	challenge, err := store.NewAttestationChallenge(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("minting an attestation challenge", "err", err)
+		s.log.ErrorContext(ctx, "minting an attestation challenge", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -212,7 +212,7 @@ func (s *Server) writeAttestationError(w http.ResponseWriter, r *http.Request,
 			if fresh, ferr := store.NewAttestationChallenge(r.Context(), s.db, c.OrgID); ferr == nil {
 				w.Header().Set(abca.HeaderChallenge, fresh)
 			} else {
-				s.log.Error("minting a replacement attestation challenge", "err", ferr)
+				s.log.ErrorContext(r.Context(), "minting a replacement attestation challenge", "err", ferr)
 			}
 		}
 		writeTokenError(w, &oauth.TokenError{Code: abca.ErrUseChallenge,

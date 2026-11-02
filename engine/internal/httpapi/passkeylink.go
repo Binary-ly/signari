@@ -44,7 +44,7 @@ func (s *Server) handlePasskeyLinkPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if !errors.Is(err, store.ErrPasskeyLinkInvalid) {
-			s.log.Error("reading a passkey link", "err", err)
+			s.log.ErrorContext(ctx, "reading a passkey link", "err", err)
 		}
 		s.renderPageStatus(w, r, http.StatusNotFound, "passkeylink", map[string]any{
 			"Error": s.tr(r).T("error.passkeylink.invalid"),
@@ -76,7 +76,7 @@ func (s *Server) handlePasskeyLinkBegin(w http.ResponseWriter, r *http.Request) 
 	link, err := s.findPasskeyLink(r.Context(), body.Token)
 	if err != nil {
 		if !errors.Is(err, store.ErrPasskeyLinkInvalid) {
-			s.log.Error("reading a passkey link", "err", err)
+			s.log.ErrorContext(r.Context(), "reading a passkey link", "err", err)
 		}
 		writeError(w, http.StatusBadRequest, "invalid_request", store.ErrPasskeyLinkInvalid.Error())
 		return
@@ -98,7 +98,7 @@ func (s *Server) handlePasskeyLinkFinish(w http.ResponseWriter, r *http.Request)
 		err = errors.New("a link ceremony naming no link")
 	}
 	if err != nil {
-		s.log.Info("link registration ceremony rejected", "err", err)
+		s.log.InfoContext(r.Context(), "link registration ceremony rejected", "err", err)
 		writeError(w, http.StatusBadRequest, "invalid_request", "no valid registration in progress")
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) deliverPasskeyLink(ctx context.Context, n store.AccountNotice) 
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && email == "") {
 		// Deactivated, or the address removed, since it was issued. Nothing to
 		// send, and trying again will not change that.
-		s.log.Warn("a passkey link was not sent: the account has no address to send it to",
+		s.log.WarnContext(ctx, "a passkey link was not sent: the account has no address to send it to",
 			"user_id", n.UserID, "link_id", n.LinkID)
 		return nil
 	}

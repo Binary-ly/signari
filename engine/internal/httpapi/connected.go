@@ -42,7 +42,7 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 
 	apps, err := store.ConnectedApps(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("listing connected applications", "err", err)
+		s.log.ErrorContext(ctx, "listing connected applications", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -61,7 +61,7 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(ctx, "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -110,7 +110,7 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 	// on the session's user as well.
 	revoked, err := store.DisconnectApp(ctx, tx, userID, clientID, "user disconnected the application")
 	if err != nil {
-		s.log.Error("disconnecting an application", "err", err, "client_id", clientID)
+		s.log.ErrorContext(ctx, "disconnecting an application", "err", err, "client_id", clientID)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -122,7 +122,7 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 			"client_id": clientID, "families_revoked": revoked,
 		},
 	}); aerr != nil {
-		s.log.Error("recording the withdrawal", "err", aerr)
+		s.log.ErrorContext(ctx, "recording the withdrawal", "err", aerr)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -45,7 +45,7 @@ func (s *Server) rememberThisDevice(ctx context.Context, w http.ResponseWriter, 
 	}
 	token, err := newSID()
 	if err != nil {
-		s.log.Error("making a remembered device's token", "err", err)
+		s.log.ErrorContext(ctx, "making a remembered device's token", "err", err)
 		return
 	}
 	ua, _ := s.sessionDevice(r)
@@ -56,7 +56,7 @@ func (s *Server) rememberThisDevice(ctx context.Context, w http.ResponseWriter, 
 	ok, err := store.RememberDevice(ctx, tx, orgID, userID, store.HashToken(token), agent)
 	if err != nil || !ok {
 		if err != nil {
-			s.log.Error("remembering a device", "err", err)
+			s.log.ErrorContext(ctx, "remembering a device", "err", err)
 		}
 		return
 	}
@@ -68,7 +68,7 @@ func (s *Server) rememberThisDevice(ctx context.Context, w http.ResponseWriter, 
 		Type: "mfa.device_remembered", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx), Detail: map[string]any{"days": days},
 	}); err != nil {
-		s.log.Error("auditing a remembered device", "err", err)
+		s.log.ErrorContext(ctx, "auditing a remembered device", "err", err)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: DeviceCookieName, Value: token, Path: "/",
@@ -87,7 +87,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	devices, err := store.RememberedDevices(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("listing remembered devices", "err", err)
+		s.log.ErrorContext(ctx, "listing remembered devices", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -135,7 +135,7 @@ func (s *Server) handleDevicesForget(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	n, err := store.ForgetDevices(ctx, tx, userID, id)
 	if err != nil {
-		s.log.Error("forgetting devices", "err", err)
+		s.log.ErrorContext(ctx, "forgetting devices", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -143,7 +143,7 @@ func (s *Server) handleDevicesForget(w http.ResponseWriter, r *http.Request) {
 		Type: "mfa.device_forgotten", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx), Detail: map[string]any{"devices": n},
 	}); err != nil {
-		s.log.Error("auditing a forgotten device", "err", err)
+		s.log.ErrorContext(ctx, "auditing a forgotten device", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -174,7 +174,7 @@ func (s *Server) deviceRemembered(ctx context.Context, r *http.Request, q interf
 	}
 	ok, err := store.DeviceRemembered(ctx, q, orgID, userID, store.HashToken(c.Value))
 	if err != nil {
-		s.log.Error("checking a remembered device", "err", err)
+		s.log.ErrorContext(ctx, "checking a remembered device", "err", err)
 		return false
 	}
 	return ok

@@ -48,7 +48,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	sessions, err := store.ListUserSessions(ctx, s.db, userID, sid)
 	if err != nil {
-		s.log.Error("listing sessions", "err", err)
+		s.log.ErrorContext(ctx, "listing sessions", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -66,7 +66,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(ctx, "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -123,7 +123,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		// form field must not let one account end another's session.
 		owned, oerr := userOwnsSession(ctx, tx, userID, target)
 		if oerr != nil {
-			s.log.Error("checking session ownership", "err", oerr)
+			s.log.ErrorContext(ctx, "checking session ownership", "err", oerr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -141,7 +141,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.log.Error("revoking sessions", "err", err)
+		s.log.ErrorContext(ctx, "revoking sessions", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -153,7 +153,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 			"scope": revokeScope(target), "sessions_ended": term.Sessions,
 		},
 	}); aerr != nil {
-		s.log.Error("recording a session revocation", "err", aerr)
+		s.log.ErrorContext(ctx, "recording a session revocation", "err", aerr)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

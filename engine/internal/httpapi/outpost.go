@@ -148,7 +148,7 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup, &enabled)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.log.Error("looking up an outpost token", "err", err)
+			s.log.ErrorContext(r.Context(), "looking up an outpost token", "err", err)
 		}
 		// The challenge is what tells this 401 from a refused password, which an
 		// outpost must not repeat to everybody behind it as their mistake.
@@ -172,7 +172,7 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 	// let the call through, so a fault in the limiter unthrottled every outpost.
 	res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id, limit, time.Minute)
 	if rerr != nil {
-		s.log.Error("checking the outpost rate limit", "err", rerr)
+		s.log.ErrorContext(r.Context(), "checking the outpost rate limit", "err", rerr)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
 		return nil, false
 	}
@@ -202,7 +202,7 @@ func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCa
 			UPDATE core.outposts SET last_seen_at = now(), last_seen_ip = $2,
 			       last_seen_version = COALESCE(NULLIF($3, ''), last_seen_version)
 			 WHERE id = $1::uuid`, id, ip, version); err != nil {
-			s.log.Debug("recording outpost activity", "err", err)
+			s.log.DebugContext(ctx, "recording outpost activity", "err", err)
 		}
 	}(clientIP(r), outpostVersion(r))
 
@@ -372,7 +372,7 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 	if kind == "ldap" {
 		proof, perr := s.outpostBindProof(c, ident.Username)
 		if perr != nil {
-			s.log.Error("signing an outpost bind proof", "err", perr)
+			s.log.ErrorContext(ctx, "signing an outpost bind proof", "err", perr)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -444,7 +444,7 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("listing the directory for an outpost", "err", err)
+		s.log.ErrorContext(r.Context(), "listing the directory for an outpost", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -482,7 +482,7 @@ func (s *Server) handleOutpostGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("listing the groups for an outpost", "err", err)
+		s.log.ErrorContext(r.Context(), "listing the groups for an outpost", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

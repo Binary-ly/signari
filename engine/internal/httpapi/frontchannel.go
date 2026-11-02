@@ -49,7 +49,7 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		WHERE sc.sid = $1 AND c.frontchannel_logout_uri IS NOT NULL AND c.enabled
 		ORDER BY c.client_id`, sid)
 	if err != nil {
-		s.log.Error("listing front-channel logout targets", "err", err)
+		s.log.ErrorContext(ctx, "listing front-channel logout targets", "err", err)
 		return nil
 	}
 	defer rows.Close()
@@ -68,7 +68,7 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		// attacker's choosing during their logout.
 		u, err := url.Parse(raw)
 		if err != nil {
-			s.log.Error("a registered front-channel logout URI does not parse",
+			s.log.ErrorContext(ctx, "a registered front-channel logout URI does not parse",
 				"client_id", clientID, "err", err)
 			continue
 		}
@@ -89,7 +89,7 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 	// can do now, and the failure is said rather than taken for the whole list
 	// (0.31).
 	if err := rows.Err(); err != nil {
-		s.log.Error("listing front-channel logout targets; some applications will not be told",
+		s.log.ErrorContext(ctx, "listing front-channel logout targets; some applications will not be told",
 			"err", err, "told", len(out))
 	}
 	return out

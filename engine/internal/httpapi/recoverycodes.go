@@ -36,7 +36,7 @@ func (s *Server) handleRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 
 	hasFactor, err := store.HasSecondFactor(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("checking for a second factor", "err", err)
+		s.log.ErrorContext(ctx, "checking for a second factor", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -54,7 +54,7 @@ func (s *Server) handleRecoveryCodes(w http.ResponseWriter, r *http.Request) {
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(ctx, "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 	// Only for an account that has a factor these codes back up.
 	hasFactor, err := store.HasSecondFactor(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("checking for a second factor", "err", err)
+		s.log.ErrorContext(ctx, "checking for a second factor", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -106,7 +106,7 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 
 	codes, err := store.GenerateRecoveryCodes(ctx, tx, userID, orgID, recoveryCodeCount)
 	if err != nil {
-		s.log.Error("regenerating recovery codes", "err", err)
+		s.log.ErrorContext(ctx, "regenerating recovery codes", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -118,7 +118,7 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 		Type: "mfa.recovery_codes_regenerated", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 	}); aerr != nil {
-		s.log.Error("recording recovery-code regeneration", "err", aerr)
+		s.log.ErrorContext(ctx, "recording recovery-code regeneration", "err", aerr)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

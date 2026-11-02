@@ -26,7 +26,7 @@ func (c *sharedCaptchaCounter) Record(ctx context.Context, key string) {
 	// and the decision is taken in Count against the configured threshold.
 	if _, err := store.AllowRate(ctx, c.db, "captcha:"+key,
 		1<<30, captcha.FailureWindow); err != nil {
-		c.log.Error("recording captcha pressure", "err", err)
+		c.log.ErrorContext(ctx, "recording captcha pressure", "err", err)
 	}
 }
 
@@ -37,7 +37,7 @@ func (c *sharedCaptchaCounter) Count(ctx context.Context, key string) int {
 		// into a CAPTCHA on every sign-in page in the deployment -- the login
 		// itself is about to fail for the same reason, and adding a challenge
 		// to it helps nobody.
-		c.log.Error("reading captcha pressure", "err", err)
+		c.log.ErrorContext(ctx, "reading captcha pressure", "err", err)
 		return 0
 	}
 	return n
@@ -45,6 +45,6 @@ func (c *sharedCaptchaCounter) Count(ctx context.Context, key string) int {
 
 func (c *sharedCaptchaCounter) Clear(ctx context.Context, key string) {
 	if err := store.ClearRate(ctx, c.db, "captcha:"+key); err != nil {
-		c.log.Error("clearing captcha pressure", "err", err)
+		c.log.ErrorContext(ctx, "clearing captcha pressure", "err", err)
 	}
 }

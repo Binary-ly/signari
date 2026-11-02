@@ -50,7 +50,7 @@ func (s *Server) credentialChangeRefused(w http.ResponseWriter, r *http.Request,
 		  FROM core.sessions s JOIN core.organizations o ON o.id = s.org_id
 		 WHERE s.sid = $1`, sid).
 		Scan(&impersonated, &recent); err != nil {
-		s.log.Error("reading the session before a credential change", "err", err)
+		s.log.ErrorContext(ctx, "reading the session before a credential change", "err", err)
 		if asJSON {
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		} else {
@@ -60,7 +60,7 @@ func (s *Server) credentialChangeRefused(w http.ResponseWriter, r *http.Request,
 	}
 	switch {
 	case impersonated:
-		s.log.Warn("credential change refused in an impersonation session",
+		s.log.WarnContext(ctx, "credential change refused in an impersonation session",
 			"sid", sid, "path", r.URL.Path, "correlation_id", correlationID(ctx))
 		const why = "You are signed in as somebody else. Their sign-in methods can " +
 			"only be changed by them."

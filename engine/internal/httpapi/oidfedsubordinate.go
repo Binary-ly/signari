@@ -31,7 +31,7 @@ func (s *Server) federationSuperior(ctx context.Context, cfg *store.FederationSe
 	}
 	has, err := store.HasSubordinates(ctx, s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("deciding whether to advertise the fetch endpoint", "err", err)
+		s.log.ErrorContext(ctx, "deciding whether to advertise the fetch endpoint", "err", err)
 	}
 	return has
 }
@@ -62,7 +62,7 @@ func (s *Server) handleFederationFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := store.SubordinateOf(ctx, s.db, s.instanceID, sub)
 	if err != nil {
-		s.log.Error("reading a subordinate", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a subordinate", "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -83,7 +83,7 @@ func (s *Server) handleFederationFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	signed, err := store.SignAsFederationEntity(ctx, s.db, s.root, s.instanceID, claims, oidfed.Typ)
 	if err != nil {
-		s.log.Error("signing a subordinate statement", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "signing a subordinate statement", "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -110,7 +110,7 @@ func (s *Server) handleFederationList(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := store.Subordinates(ctx, s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("listing subordinates", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "listing subordinates", "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 	}
 	jwks, err := s.fedKeys.MarshalJWKS()
 	if err != nil {
-		s.log.Error("marshalling the federation JWKS", "err", err)
+		s.log.ErrorContext(ctx, "marshalling the federation JWKS", "err", err)
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -161,7 +161,7 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 	now := time.Now()
 	result, chain, err := resolver.ResolveChain(ctx, sub, now)
 	if err != nil {
-		s.log.Info("a federation chain did not resolve", "sub", sub, "err", err, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "a federation chain did not resolve", "sub", sub, "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusBadRequest, "invalid_trust_chain", "no valid chain from that subject to this entity")
 		return
 	}
@@ -177,7 +177,7 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 		}
 		resolved, merr := oidfed.MetadataOf(chain, entityType)
 		if merr != nil {
-			s.log.Info("a federation policy did not apply", "sub", sub, "err", merr, "correlation_id", correlationID(ctx))
+			s.log.InfoContext(ctx, "a federation policy did not apply", "sub", sub, "err", merr, "correlation_id", correlationID(ctx))
 			writeFederationError(w, http.StatusBadRequest, "invalid_metadata", "the policies in the chain could not be applied")
 			return
 		}
@@ -203,7 +203,7 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 		"sub": sub, "iat": now.Unix(), "exp": expiry.Unix(), "metadata": metadata, "trust_chain": links},
 		oidfed.ResolveResponseTyp)
 	if err != nil {
-		s.log.Error("signing a resolve response", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "signing a resolve response", "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}

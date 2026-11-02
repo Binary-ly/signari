@@ -98,7 +98,7 @@ func (s *Server) flowFor(ctx context.Context, q dbReader, orgID string, on flow.
 	// sign anybody in.
 	def, err := flow.Default()
 	if err != nil {
-		s.log.Error("the built-in flows did not load", "err", err)
+		s.log.ErrorContext(ctx, "the built-in flows did not load", "err", err)
 		return nil
 	}
 	fl, ok := def.For(on)
@@ -142,7 +142,7 @@ func (s *Server) reloadFlows(ctx context.Context) { s.reloadFlowsFrom(ctx, s.db)
 func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 	rows, err := q.Query(ctx, `SELECT org_id::text, document FROM core.sign_in_flows`)
 	if err != nil {
-		s.log.Error("loading sign-in flows", "err", err)
+		s.log.ErrorContext(ctx, "loading sign-in flows", "err", err)
 		return
 	}
 	defer rows.Close()
@@ -152,7 +152,7 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 		var orgID, doc string
 		if err := rows.Scan(&orgID, &doc); err != nil {
 			// As a failed read below: keep every flow already loaded.
-			s.log.Error("loading sign-in flows; keeping the flows already loaded", "err", err)
+			s.log.ErrorContext(ctx, "loading sign-in flows; keeping the flows already loaded", "err", err)
 			return
 		}
 		f, perr := flow.Parse([]byte(doc))
@@ -175,7 +175,7 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 				if prev != nil {
 					serving = "the previous flow"
 				}
-				s.log.Error("the stored sign-in flow will not load; serving "+serving,
+				s.log.ErrorContext(ctx, "the stored sign-in flow will not load; serving "+serving,
 					"org_id", orgID, "err", perr)
 			}
 			continue
@@ -187,7 +187,7 @@ func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
 	// one its operator replaced, perhaps to require a second factor (0.31).
 	// The flows already loaded are kept, and the next reload tries again.
 	if err := rows.Err(); err != nil {
-		s.log.Error("loading sign-in flows; keeping the flows already loaded", "err", err)
+		s.log.ErrorContext(ctx, "loading sign-in flows; keeping the flows already loaded", "err", err)
 		return
 	}
 
@@ -314,14 +314,14 @@ var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
 		}
 		enrolled, err := has(f.ctx, f.db, f.userID)
 		if err != nil {
-			f.s.log.Error("checking second factor", "err", err)
+			f.s.log.ErrorContext(f.ctx, "checking second factor", "err", err)
 		}
 		return enrolled
 	},
 	flow.CondHasPasskey: func(f *signInFacts) bool {
 		has, err := store.HasPasskey(f.ctx, f.db, f.userID)
 		if err != nil {
-			f.s.log.Error("checking for a passkey", "err", err)
+			f.s.log.ErrorContext(f.ctx, "checking for a passkey", "err", err)
 		}
 		return has
 	},
@@ -365,7 +365,7 @@ func (f *signInFacts) providerAnswer() store.FlowConditionResult {
 	res, err := store.ConsultFlowCondition(f.ctx, f.db, f.s.root, f.s.outboundClient, f.s.log, f.orgID,
 		store.AuthenticateHookRequest{Subject: f.userID, OrgID: f.orgID, AMR: f.amr, ClientIP: f.ip})
 	if err != nil {
-		f.s.log.Error("consulting the flow_condition provider", "err", err)
+		f.s.log.ErrorContext(f.ctx, "consulting the flow_condition provider", "err", err)
 		res.Down = true
 	}
 	if memo != nil {
@@ -398,7 +398,7 @@ func (f *signInFacts) accountObligations() store.Obligations {
 	}
 	o, err := store.AccountObligations(f.ctx, f.db, f.userID)
 	if err != nil {
-		f.s.log.Error("reading what the account must do before signing in", "err", err)
+		f.s.log.ErrorContext(f.ctx, "reading what the account must do before signing in", "err", err)
 	}
 	f.obligations, f.obligationsKnown = o, true
 	// Both answers recorded whichever condition asked: the password_change
@@ -428,7 +428,7 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 	f.promptsOnce = true
 	ps, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
 	if err != nil {
-		f.s.log.Error("reading prompts", "err", err)
+		f.s.log.ErrorContext(f.ctx, "reading prompts", "err", err)
 		return nil
 	}
 	f.prompts = slices.DeleteFunc(ps, func(p prompts.Prompt) bool {
@@ -503,7 +503,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 		// No flow at all, not even the built-in one. Fall through to the session:
 		// the subject has already been proved by the time this is called, so
 		// refusing here would lock out a deployment over a configuration read.
-		s.log.Error("no authentication flow is available; issuing the session")
+		s.log.ErrorContext(ctx, "no authentication flow is available; issuing the session")
 		return decisionSession
 	}
 
@@ -524,7 +524,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// The flow ran out of stages without reaching a terminal. Parse refuses
 			// such a file, so this needs a file that bypassed it -- refuse rather
 			// than guess, because the guess would be a session.
-			s.log.Error("the sign-in flow ended without a terminal stage",
+			s.log.ErrorContext(ctx, "the sign-in flow ended without a terminal stage",
 				"flow", fl.Name, "correlation_id", correlationID(ctx))
 			return decisionDeny
 		}
@@ -688,7 +688,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 					CorrelationID: correlationID(ctx),
 					Detail:        map[string]any{"fail_open": true},
 				}); aerr != nil {
-					s.log.Error("recording Duo's absence", "err", aerr)
+					s.log.ErrorContext(ctx, "recording Duo's absence", "err", aerr)
 				}
 				s.recordDuoFailOpen(ctx, tx, orgID, userID)
 				waived = true
@@ -743,7 +743,7 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// answer, and it made `password, kerberos, session` a password
 			// sign-in; refusing is the one that cannot be weaker than the file.
 			_ = tx.Rollback(ctx)
-			s.log.Error("the sign-in flow names a stage this engine does not run; refusing",
+			s.log.ErrorContext(ctx, "the sign-in flow names a stage this engine does not run; refusing",
 				"flow", fl.Name, "stage", stage, "correlation_id", correlationID(ctx))
 			return decisionDeny
 		}

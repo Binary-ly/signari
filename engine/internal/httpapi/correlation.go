@@ -89,17 +89,17 @@ func shortCode(id string) string {
 func (s *Server) auditDetached(ctx context.Context, e audit.Event) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("auditing", "event", e.Type, "err", err)
+		s.log.ErrorContext(ctx, "auditing", "event", e.Type, "err", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := audit.Write(ctx, tx, e); err != nil {
-		s.log.Error("auditing", "event", e.Type, "err", err)
+		s.log.ErrorContext(ctx, "auditing", "event", e.Type, "err", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing audit", "event", e.Type, "err", err)
+		s.log.ErrorContext(ctx, "committing audit", "event", e.Type, "err", err)
 	}
 }
 

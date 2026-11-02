@@ -91,7 +91,7 @@ func (s *Server) stepUpNeverAsked(ctx context.Context, orgID, userID, authzQuery
 	}
 	passkey, err := store.HasPasskey(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("checking for a passkey at a step-up", "err", err)
+		s.log.ErrorContext(ctx, "checking for a passkey at a step-up", "err", err)
 		return false
 	}
 	return !passkey
@@ -109,7 +109,7 @@ func (f *signInFacts) authzClientFloorIsMFA() bool {
 	}
 	required, err := clientFloorIsMFA(f.ctx, f.db, q.Get("client_id"))
 	if err != nil {
-		f.s.log.Error("reading a client's acr floor", "err", err)
+		f.s.log.ErrorContext(f.ctx, "reading a client's acr floor", "err", err)
 		return true
 	}
 	return required

@@ -38,7 +38,7 @@ type samlSubject struct {
 	SessionIndex string `json:"s"`
 }
 
-func (s *Server) rememberSAMLSubject(w http.ResponseWriter, a *saml.InboundAssertion) {
+func (s *Server) rememberSAMLSubject(ctx context.Context, w http.ResponseWriter, a *saml.InboundAssertion) {
 	if s.root == nil {
 		return
 	}
@@ -48,7 +48,7 @@ func (s *Server) rememberSAMLSubject(w http.ResponseWriter, a *saml.InboundAsser
 	}
 	sealed, err := s.root.Seal(raw, sealContextSAMLSubject)
 	if err != nil {
-		s.log.Error("sealing who a person is upstream", "err", err)
+		s.log.ErrorContext(ctx, "sealing who a person is upstream", "err", err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: samlSubjectCookieName, Value: base64.RawURLEncoding.EncodeToString(sealed),
@@ -82,24 +82,24 @@ func (s *Server) samlUpstreamLogout(ctx context.Context, r *http.Request, slug, 
 	}
 	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
-		s.log.Error("reading the upstream to sign out at", "slug", slug, "err", err)
+		s.log.ErrorContext(ctx, "reading the upstream to sign out at", "slug", slug, "err", err)
 		return ""
 	}
 	signer, cert, err := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
 	if err != nil {
 		// Unsigned, it would be nothing any upstream should act on.
-		s.log.Warn("no signing key to sign out at a SAML upstream with", "slug", slug, "err", err)
+		s.log.WarnContext(ctx, "no signing key to sign out at a SAML upstream with", "slug", slug, "err", err)
 		return ""
 	}
 	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{Issuer: src.Provider.SPEntityID, Destination: src.SLOURL,
 		NameID: subject.NameID, NameIDFormat: subject.Format, SessionIndex: subject.SessionIndex, Now: time.Now()}, signer, cert)
 	if err != nil {
-		s.log.Error("building a LogoutRequest for an upstream", "slug", slug, "err", err)
+		s.log.ErrorContext(ctx, "building a LogoutRequest for an upstream", "slug", slug, "err", err)
 		return ""
 	}
 	var sent saml.LogoutRequest
 	if err := saml.Unmarshal([]byte(doc), &sent); err != nil {
-		s.log.Error("reading back a LogoutRequest", "err", err)
+		s.log.ErrorContext(ctx, "reading back a LogoutRequest", "err", err)
 		return ""
 	}
 	relay, err := saml.RelayStateToken()
@@ -107,7 +107,7 @@ func (s *Server) samlUpstreamLogout(ctx context.Context, r *http.Request, slug, 
 		return ""
 	}
 	if err := store.RecordSAMLRequest(ctx, s.db, src.ProviderID, sent.ID, relay, target, samlLogoutTTL); err != nil {
-		s.log.Error("recording a LogoutRequest", "err", err)
+		s.log.ErrorContext(ctx, "recording a LogoutRequest", "err", err)
 		return ""
 	}
 	encoded, err := saml.EncodeRedirect(doc)
@@ -116,7 +116,7 @@ func (s *Server) samlUpstreamLogout(ctx context.Context, r *http.Request, slug, 
 	}
 	query, err := saml.SignRedirectQuery("SAMLRequest", encoded, relay, signer)
 	if err != nil {
-		s.log.Error("signing a LogoutRequest for an upstream", "err", err)
+		s.log.ErrorContext(ctx, "signing a LogoutRequest for an upstream", "err", err)
 		return ""
 	}
 	if strings.ContainsRune(src.SLOURL, '?') {
@@ -181,7 +181,7 @@ func (s *Server) handleSAMLSourceSLO(w http.ResponseWriter, r *http.Request) {
 		err = saml.VerifyRedirectSignature(r.URL.RawQuery, src.Provider.CertPEM, "SAMLRequest")
 	}
 	if err != nil {
-		s.log.Info("a logout from a SAML upstream was refused", "slug", slug, "err", err,
+		s.log.InfoContext(ctx, "a logout from a SAML upstream was refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -199,7 +199,7 @@ func (s *Server) handleSAMLSourceSLO(w http.ResponseWriter, r *http.Request) {
 	if store.RecordSAMLAssertion(ctx, s.db, src.ProviderID, "logout:"+validated.RequestID, time.Now().Add(samlRequestTTL)) != nil {
 		status = saml.StatusRequester
 	} else if err := s.endUpstreamSessions(ctx, src, validated); err != nil {
-		s.log.Error("ending sessions for an upstream's logout", "slug", slug, "err", err,
+		s.log.ErrorContext(ctx, "ending sessions for an upstream's logout", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
@@ -211,14 +211,14 @@ func (s *Server) handleSAMLSourceSLO(w http.ResponseWriter, r *http.Request) {
 	// and cannot be said to have.
 	signer, cert, err := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
 	if err != nil || src.SLOURL == "" {
-		s.log.Info("a logout from a SAML upstream had no answer to give", "slug", slug, "err", err)
+		s.log.InfoContext(ctx, "a logout from a SAML upstream had no answer to give", "slug", slug, "err", err)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	doc, err := saml.BuildLogoutResponse(saml.LogoutResponseInput{Issuer: src.Provider.SPEntityID, Destination: src.SLOURL,
 		InResponse: validated.RequestID, Status: status, Now: time.Now()}, signer, cert)
 	if err != nil {
-		s.log.Error("building a LogoutResponse for an upstream", "err", err)
+		s.log.ErrorContext(ctx, "building a LogoutResponse for an upstream", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -229,7 +229,7 @@ func (s *Server) handleSAMLSourceSLO(w http.ResponseWriter, r *http.Request) {
 	}
 	query, err := saml.SignRedirectQuery("SAMLResponse", answer, params.Get("RelayState"), signer)
 	if err != nil {
-		s.log.Error("signing a LogoutResponse for an upstream", "err", err)
+		s.log.ErrorContext(ctx, "signing a LogoutResponse for an upstream", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -296,13 +296,13 @@ func (s *Server) upstreamAnsweredLogout(w http.ResponseWriter, r *http.Request, 
 	pending, err := store.ConsumeSAMLRequest(ctx, s.db, relay)
 	if err != nil || pending.ProviderID != src.ProviderID || pending.ID != answer.InResponseTo ||
 		answer.Issuer != src.Provider.EntityID {
-		s.log.Info("an answer to a logout nobody asked for", "slug", src.Slug, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "an answer to a logout nobody asked for", "slug", src.Slug, "correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, "this is not the answer to a sign-out in progress")
 		return
 	}
 	if answer.Status.StatusCode.Value != saml.StatusSuccess {
 		// Worth an operator's knowing and no reason to stop: the session here is over.
-		s.log.Warn("an upstream did not end its session", "slug", src.Slug, "status", answer.Status.StatusCode.Value)
+		s.log.WarnContext(ctx, "an upstream did not end its session", "slug", src.Slug, "status", answer.Status.StatusCode.Value)
 	}
 	if pending.ReturnPath != "" {
 		http.Redirect(w, r, pending.ReturnPath, http.StatusSeeOther)

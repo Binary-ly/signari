@@ -50,7 +50,7 @@ func (s *Server) handleCredentialNonce(w http.ResponseWriter, r *http.Request) {
 
 	nonce, err := store.NewCredentialNonce(ctx, s.db, credentialNonceTTL)
 	if err != nil {
-		s.log.Error("minting a c_nonce", "err", err)
+		s.log.ErrorContext(ctx, "minting a c_nonce", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -104,7 +104,7 @@ func (s *Server) issuanceToken(w http.ResponseWriter, r *http.Request) *tokens.A
 	}
 	claims, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), raw)
 	if err != nil {
-		s.log.Info("credential endpoint token rejected", "err", err,
+		s.log.InfoContext(ctx, "credential endpoint token rejected", "err", err,
 			"correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token"`)
@@ -150,7 +150,7 @@ func (s *Server) handleCredentialOffer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	offer, err := store.CredentialOfferByHandle(ctx, s.db, s.root, r.PathValue("handle"), s.instanceID)
 	if err != nil {
-		s.log.Error("reading a kept credential offer", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a kept credential offer", "err", err, "correlation_id", correlationID(ctx))
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
@@ -196,7 +196,7 @@ func (s *Server) handleCredentialNotification(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if err != nil {
-		s.log.Error("reading a credential notification", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a credential notification", "err", err, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -244,7 +244,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// the person signed in and approved what it names.
 	granted, derr := decodeDetailClaim(claims.AuthorizationDetails)
 	if derr != nil {
-		s.log.Error("reading the details of a credential token", "err", derr)
+		s.log.ErrorContext(ctx, "reading the details of a credential token", "err", derr)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -279,13 +279,13 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		// that enables issuance of a requested Credential" with an RFC 6750 error.
 		var ierr error
 		if issuable, ierr = store.IssuableConfigurations(ctx, s.db, claims.JTI, claims.Subject); ierr != nil {
-			s.log.Error("reading what a token may be exchanged for", "err", ierr)
+			s.log.ErrorContext(ctx, "reading what a token may be exchanged for", "err", ierr)
 			writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
 	}
 	if len(issuable) == 0 {
-		s.log.Info("credential endpoint refused a token no offer minted",
+		s.log.InfoContext(ctx, "credential endpoint refused a token no offer minted",
 			"client_id", claims.ClientID, "correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
 			`error_description="This access token was not issued for credential issuance"`)
@@ -295,7 +295,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(issuable, wanted) {
 		// The token is good for issuance, of something else: RFC 6750 §3.1's
 		// insufficient_scope, which is a 403.
-		s.log.Info("credential endpoint refused a configuration the offer did not name",
+		s.log.InfoContext(ctx, "credential endpoint refused a configuration the offer did not name",
 			"requested", wanted, "offered", issuable,
 			"correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="insufficient_scope", `+
@@ -319,14 +319,14 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if oerr != nil {
-		s.log.Error("resolving the organisation for a credential request", "err", oerr)
+		s.log.ErrorContext(ctx, "resolving the organisation for a credential request", "err", oerr)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 
 	configs, cerr := store.CredentialConfigurations(ctx, s.db, orgID)
 	if cerr != nil {
-		s.log.Error("loading credential configurations", "err", cerr)
+		s.log.ErrorContext(ctx, "loading credential configurations", "err", cerr)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -366,7 +366,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// register an attester.
 	attesterSet, aerr := s.trustedAttesters(ctx, orgID)
 	if aerr != nil {
-		s.log.Error("reading key attesters", "err", aerr, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading key attesters", "err", aerr, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error",
 			"the trusted key attesters could not be read")
 		return
@@ -379,7 +379,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	// trust-root`). Nil when there are none, which refuses every chain.
 	roots, rerr := store.CredentialProofRoots(ctx, s.db, orgID)
 	if rerr != nil {
-		s.log.Error("reading credential proof roots", "err", rerr, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading credential proof roots", "err", rerr, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error",
 			"the trusted proof roots could not be read")
 		return
@@ -400,7 +400,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		}
 		tp, terr := key.Thumbprint(crypto.SHA256)
 		if terr != nil {
-			s.log.Error("thumbprinting a holder key", "err", terr)
+			s.log.ErrorContext(ctx, "thumbprinting a holder key", "err", terr)
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof",
 				"the key in a proof could not be canonicalised")
 			return
@@ -424,7 +424,7 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	issued, ierr := s.mintCredentials(ctx, orgID, claims, cfg, holderKeys, issuedAt)
 	if ierr != nil {
-		s.log.Error("issuing a credential", "err", ierr, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "issuing a credential", "err", ierr, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "the credential could not be issued")
 		return
 	}
@@ -461,7 +461,7 @@ func (s *Server) answerIssued(w http.ResponseWriter, r *http.Request, orgID stri
 	// wallet with no id reports nothing, which §11 allows of any wallet.
 	notification, nerr := store.NewCredentialNotification(ctx, s.db, orgID, claims.Subject, claims.JTI, cfg.ID)
 	if nerr != nil {
-		s.log.Error("recording an issuance", "err", nerr, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "recording an issuance", "err", nerr, "correlation_id", correlationID(ctx))
 	}
 	writeJSON(w, http.StatusOK, oid4vci.CredentialResponse{Credentials: issued, NotificationID: notification})
 }
@@ -486,7 +486,7 @@ func (s *Server) deferCredential(w http.ResponseWriter, r *http.Request, orgID s
 			return
 		}
 	}
-	s.log.Error("parking a credential request", "err", err, "correlation_id", correlationID(ctx))
+	s.log.ErrorContext(ctx, "parking a credential request", "err", err, "correlation_id", correlationID(ctx))
 	writeCredentialError(w, http.StatusInternalServerError, "server_error", "the request could not be kept")
 }
 
@@ -509,7 +509,7 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	}
 	parked, err := store.CredentialRequestFor(ctx, s.db, req.TransactionID, claims.JTI)
 	if err != nil {
-		s.log.Error("reading a parked credential request", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a parked credential request", "err", err, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -528,7 +528,7 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	}
 	configs, err := store.CredentialConfigurations(ctx, s.db, parked.OrgID)
 	if err != nil {
-		s.log.Error("loading credential configurations", "err", err)
+		s.log.ErrorContext(ctx, "loading credential configurations", "err", err)
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -540,13 +540,13 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	}
 	var holderKeys []*jose.JSONWebKey
 	if err := json.Unmarshal(parked.HolderKeys, &holderKeys); err != nil {
-		s.log.Error("reading a parked request's keys", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading a parked request's keys", "err", err, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	issued, err := s.mintCredentials(ctx, parked.OrgID, claims, cfg, holderKeys, time.Now())
 	if err != nil {
-		s.log.Error("issuing a deferred credential", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "issuing a deferred credential", "err", err, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "the credential could not be issued")
 		return
 	}
@@ -554,7 +554,7 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	// and before answering, so that of two racing one is answered.
 	spent, err := store.SpendCredentialRequest(ctx, s.db, parked.ID)
 	if err != nil {
-		s.log.Error("spending a parked request", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "spending a parked request", "err", err, "correlation_id", correlationID(ctx))
 		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -643,7 +643,7 @@ func (s *Server) handleCredentialIssuerMetadata(w http.ResponseWriter, r *http.R
 
 	configs, err := store.AllCredentialConfigurations(ctx, s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("loading credential configurations", "err", err)
+		s.log.ErrorContext(ctx, "loading credential configurations", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

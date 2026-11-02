@@ -93,7 +93,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	// phish a user code that names a trusted application.
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-			s.log.Info("device authorization: client authentication failed",
+			s.log.InfoContext(ctx, "device authorization: client authentication failed",
 				"client_id", clientID, "err", err)
 			writeError(w, http.StatusUnauthorized, "invalid_client",
 				"client authentication failed")
@@ -109,7 +109,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	// display a user code to a person and ask them to approve it. The phishing
 	// value of a device flow is in the verification screen, not in the token.
 	if !c.AllowsGrantType(oauth.GrantTypeDeviceCode) {
-		s.log.Info("device authorization refused: client is not registered for the grant",
+		s.log.InfoContext(ctx, "device authorization refused: client is not registered for the grant",
 			"client_id", clientID, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "unauthorized_client",
 			"this client is not registered for the device grant")
@@ -120,7 +120,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 
 	if scope != "" {
 		if unknown := c.UnknownScopes(splitScopes(scope)); len(unknown) > 0 {
-			s.log.Info("device authorization requested an unregistered scope",
+			s.log.InfoContext(ctx, "device authorization requested an unregistered scope",
 				"client_id", clientID, "scope", unknown[0],
 				"correlation_id", correlationID(ctx))
 			writeError(w, http.StatusBadRequest, "invalid_scope",
@@ -146,20 +146,20 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
 			return
 		}
-		s.log.Error("checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
 
 	deviceCode, err := newSID()
 	if err != nil {
-		s.log.Error("generating a device code", "err", err)
+		s.log.ErrorContext(ctx, "generating a device code", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 	userCode, err := oauth.NewUserCode()
 	if err != nil {
-		s.log.Error("generating a user code", "err", err)
+		s.log.ErrorContext(ctx, "generating a user code", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -167,7 +167,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	if _, err := store.CreateDeviceAuthorization(ctx, s.db, c.OrgID, c.ClientID, scope,
 		resource, store.HashToken(deviceCode), store.HashToken(userCode),
 		devicePollInterval, deviceCodeLifetime); err != nil {
-		s.log.Error("recording a device authorization", "err", err)
+		s.log.ErrorContext(ctx, "recording a device authorization", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -248,7 +248,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		// eight-character code is the limit; serving it unlimited because the
 		// database is unhappy removes the defence exactly when nobody is
 		// watching.
-		s.log.Error("device rate limit unavailable", "err", err)
+		s.log.ErrorContext(ctx, "device rate limit unavailable", "err", err)
 		render("", "Try again in a moment.", nil)
 		return
 	} else if !res.Allowed {
@@ -281,7 +281,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 	// twice, never eight times.
 	if res, err := store.AllowRate(ctx, s.db, "device:user:"+userID,
 		deviceAttemptsPerUser, deviceAttemptWindow); err != nil {
-		s.log.Error("device per-user rate limit unavailable", "err", err)
+		s.log.ErrorContext(ctx, "device per-user rate limit unavailable", "err", err)
 		render("", "Try again in a moment.", nil)
 		return
 	} else if !res.Allowed {
@@ -355,7 +355,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		// waiting, so the person can sign in again with a second factor and
 		// enter the code once more.
 		if floor, err := clientFloor(ctx, s.db, d.ClientID); err != nil {
-			s.log.Error("reading a client's acr floor at a device approval", "err", err)
+			s.log.ErrorContext(ctx, "reading a client's acr floor at a device approval", "err", err)
 			render("", "Try again in a moment.", nil)
 			return
 		} else if !oauth.Meets(amr, floor) {
@@ -366,7 +366,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 			render("", "That request is no longer waiting. Start again on the device.", nil)
 			return
 		}
-		s.log.Info("device authorization approved", "client_id", d.ClientID,
+		s.log.InfoContext(ctx, "device authorization approved", "client_id", d.ClientID,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.releaseCIBAPing(ctx, d.ID)
 		s.releaseCIBAPush(ctx, d)
@@ -387,7 +387,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 // so both end the wait the same way.
 func (s *Server) refuseDeviceAuthorization(ctx context.Context, d *store.DeviceAuthorization) {
 	if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
-		s.log.Error("denying a device authorization", "err", err)
+		s.log.ErrorContext(ctx, "denying a device authorization", "err", err)
 	}
 	s.announceDenial(ctx, d.ID)
 }
@@ -402,7 +402,7 @@ func (s *Server) announceDenial(ctx context.Context, requestID string) {
 	// empty. A ping client is told about a refusal because it would otherwise
 	// poll forever; a push client is not waiting on anything it can stop.
 	if err := store.DiscardCIBAPush(ctx, s.db, requestID); err != nil {
-		s.log.Error("discarding a denied CIBA push", "err", err, "request_id", requestID)
+		s.log.ErrorContext(ctx, "discarding a denied CIBA push", "err", err, "request_id", requestID)
 	}
 }
 
@@ -434,7 +434,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 			Description: "the user refused this device", Status: http.StatusBadRequest})
 		return
 	case errors.Is(err, store.ErrDeviceCodeWrongClient):
-		s.log.Info("device code presented by the wrong client", "presented_by", clientID,
+		s.log.InfoContext(ctx, "device code presented by the wrong client", "presented_by", clientID,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this device code was not issued to this client",
@@ -446,7 +446,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 		// was withdrawn rather than timed out — RFC 8628 §3.5 gives the code for
 		// "the end user denied", and a revoked session is the closest true
 		// statement: the authority behind the approval is gone.
-		s.log.Info("approval refused: the session behind it has ended",
+		s.log.InfoContext(ctx, "approval refused: the session behind it has ended",
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "access_denied",
 			Description: "the session this request was approved from has ended",
@@ -462,7 +462,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 			Status:      http.StatusBadRequest})
 		return
 	case err != nil:
-		s.log.Error("polling a device code", "err", err)
+		s.log.ErrorContext(ctx, "polling a device code", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -531,7 +531,7 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		// grant has no rich permissions, it does not have zero of them.
 		nil, "")
 	if err != nil {
-		s.log.Error("minting tokens for a device grant", "err", err,
+		s.log.ErrorContext(ctx, "minting tokens for a device grant", "err", err,
 			"correlation_id", correlationID(ctx))
 		writeMintError(w, err)
 		return
@@ -542,7 +542,7 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	s.log.Info("device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
+	s.log.InfoContext(ctx, "device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
 		"correlation_id", correlationID(ctx))
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -556,11 +556,11 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 	released, err := store.ReleaseCIBAPing(ctx, s.db, requestID)
 	if err != nil {
-		s.log.Error("releasing a CIBA ping", "err", err, "request_id", requestID)
+		s.log.ErrorContext(ctx, "releasing a CIBA ping", "err", err, "request_id", requestID)
 		return
 	}
 	if released {
-		s.log.Info("CIBA ping released for delivery", "request_id", requestID)
+		s.log.InfoContext(ctx, "CIBA ping released for delivery", "request_id", requestID)
 	}
 }
 
@@ -587,7 +587,7 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 		return
 	}
 	if err != nil || c == nil {
-		s.log.Error("looking up a client for a CIBA push", "err", err,
+		s.log.ErrorContext(ctx, "looking up a client for a CIBA push", "err", err,
 			"client_id", d.ClientID)
 		return
 	}
@@ -607,7 +607,7 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 		Grant: oauth.GrantTypeCIBA, OrgID: d.OrgID}
 	hook, herr := store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log, d.OrgID, hookReq)
 	if herr != nil {
-		s.log.Error("consulting the token provider for a CIBA push", "err", herr, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "consulting the token provider for a CIBA push", "err", herr, "request_id", d.ID)
 		return
 	}
 	if hook.Vetoed {
@@ -618,7 +618,7 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("beginning a CIBA push mint", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "beginning a CIBA push mint", "err", err, "request_id", d.ID)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -626,23 +626,23 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes,
 		d.Resource, nil, "")
 	if err != nil {
-		s.log.Error("minting tokens for a CIBA push", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "minting tokens for a CIBA push", "err", err, "request_id", d.ID)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing a CIBA push mint", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "committing a CIBA push mint", "err", err, "request_id", d.ID)
 		return
 	}
 
 	released, err := store.ReleaseCIBAPush(ctx, s.db, s.cfg.Root, d.ID, resp)
 	if err != nil {
-		s.log.Error("releasing a CIBA push", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "releasing a CIBA push", "err", err, "request_id", d.ID)
 		return
 	}
 	if !released {
-		s.log.Warn("a CIBA push had nothing parked to release", "request_id", d.ID,
+		s.log.WarnContext(ctx, "a CIBA push had nothing parked to release", "request_id", d.ID,
 			"client_id", d.ClientID)
 		return
 	}
-	s.log.Info("CIBA push released", "client_id", d.ClientID, "request_id", d.ID)
+	s.log.InfoContext(ctx, "CIBA push released", "client_id", d.ClientID, "request_id", d.ID)
 }

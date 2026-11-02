@@ -48,7 +48,7 @@ func (e *evaluation) note(ctx context.Context, req authzen.Request, resp authzen
 	event := audit.Event{Type: "authz.decision", OrgID: e.orgID, CorrelationID: correlationID(ctx), Detail: detail}
 	who, err := e.subject(ctx, req.Subject.ID, sessionFromContext(req.Context))
 	if err != nil {
-		e.s.log.Error("recording an authorization decision", "err", err, "correlation_id", correlationID(ctx))
+		e.s.log.ErrorContext(ctx, "recording an authorization decision", "err", err, "correlation_id", correlationID(ctx))
 		return
 	}
 	event.SubjectID = who.userID

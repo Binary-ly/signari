@@ -59,7 +59,7 @@ func (s *Server) handleAccountExportPost(w http.ResponseWriter, r *http.Request)
 	exp, err := store.ExportSubject(ctx, tx, userID, s.root)
 	_ = tx.Rollback(ctx)
 	if err != nil {
-		s.log.Error("exporting an account for its owner", "err", err)
+		s.log.ErrorContext(ctx, "exporting an account for its owner", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -81,7 +81,7 @@ func (s *Server) handleAccountExportPost(w http.ResponseWriter, r *http.Request)
 		Type: "account.exported", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
 		Detail: map[string]any{"by": "owner", "rows": exp.Rows()},
 	}); err != nil {
-		s.log.Error("auditing an account export", "err", err)
+		s.log.ErrorContext(ctx, "auditing an account export", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -93,7 +93,7 @@ func (s *Server) handleAccountExportPost(w http.ResponseWriter, r *http.Request)
 	tr := s.notifierFor(ctx, userID)
 	if err := s.notifyAccount(ctx, userID, tr.Text("mail.accountexported.subject"),
 		tr.Text("mail.accountexported.body"), tr.Text("sms.accountexported")); err != nil {
-		s.log.Error("telling the holder their data was downloaded", "err", err, "user_id", userID)
+		s.log.ErrorContext(ctx, "telling the holder their data was downloaded", "err", err, "user_id", userID)
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

@@ -46,7 +46,7 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	claims, err := s.verifyAccepted(ctx, raw)
 	if err != nil {
 		// Logged with the reason, returned without it.
-		s.log.Info("a token was rejected", "where", where, "err", err)
+		s.log.InfoContext(ctx, "a token was rejected", "where", where, "err", err)
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
 				`, error="invalid_token", error_description="The access token is invalid"`)
@@ -59,7 +59,7 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	// server here, and the mint path honours RFC 8707 `resource`, so a token
 	// audience-restricted to a downstream API must not also open this endpoint.
 	if !tokens.AudienceAccepted(claims, s.cfg.Issuer) {
-		s.log.Info("refused a token audienced elsewhere", "where", where,
+		s.log.InfoContext(ctx, "refused a token audienced elsewhere", "where", where,
 			"aud", claims.Audience, "correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="`+
@@ -98,7 +98,7 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	// on the scheme rather than on the token, which is why checking `cnf` alone
 	// missed them. See dpop.CheckPresentation.
 	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
-		s.log.Info("a token was presented under the wrong scheme", "err", perr,
+		s.log.InfoContext(ctx, "a token was presented under the wrong scheme", "err", perr,
 			"correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token", perr.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
@@ -146,7 +146,7 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 	if tokens.HasScope(claims.Scope, "groups") {
 		groups, err := store.GroupsForUser(ctx, s.db, claims.Subject, claims.ClientID)
 		if err != nil {
-			s.log.Error("loading group membership for userinfo", "err", err)
+			s.log.ErrorContext(ctx, "loading group membership for userinfo", "err", err)
 		} else if len(groups) > 0 {
 			out["groups"] = groups
 		}
@@ -157,7 +157,7 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 	if person.ClientOfOrg && person.RolesClaim != "" {
 		roles, rerr := store.ApplicationRoles(ctx, s.db, person.OrgID, claims.Subject, claims.ClientID)
 		if rerr != nil {
-			s.log.Error("loading roles for userinfo", "err", rerr)
+			s.log.ErrorContext(ctx, "loading roles for userinfo", "err", rerr)
 		} else if _, taken := out[person.RolesClaim]; !taken && len(roles) > 0 {
 			out[person.RolesClaim] = roles
 		}
@@ -175,7 +175,7 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 		mapped, merr := store.MappedClaims(ctx, s.db, claims.Subject, person.OrgID,
 			claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
 		if merr != nil {
-			s.log.Error("resolving mapped claims", "err", merr)
+			s.log.ErrorContext(ctx, "resolving mapped claims", "err", merr)
 		}
 		for name, value := range mapped {
 			if _, taken := out[name]; !taken {

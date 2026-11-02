@@ -89,7 +89,7 @@ func (s *Server) newDeviceSignIn(ctx context.Context, r *http.Request, tx pgx.Tx
 		   AND user_agent IS NOT NULL AND user_agent <> ''
 		 LIMIT 500`, userID, int(newDeviceWindow.Seconds()))
 	if err != nil {
-		s.log.Error("reading the devices a person has signed in from", "err", err)
+		s.log.ErrorContext(ctx, "reading the devices a person has signed in from", "err", err)
 		return family, false
 	}
 	seen, known := 0, false
@@ -104,7 +104,7 @@ func (s *Server) newDeviceSignIn(ctx context.Context, r *http.Request, tx pgx.Tx
 	// As a query that failed outright: no notice decided on part of the
 	// devices, which could call a known one new (0.31).
 	if err := rows.Err(); err != nil {
-		s.log.Error("reading the devices a person has signed in from", "err", err)
+		s.log.ErrorContext(ctx, "reading the devices a person has signed in from", "err", err)
 		return family, false
 	}
 	if seen == 0 || known {

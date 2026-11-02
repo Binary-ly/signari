@@ -37,7 +37,7 @@ func (s *Server) credentialDetailsRefused(ctx context.Context, c *clients.Client
 	}
 	configured, err := store.CredentialConfigurations(ctx, s.db, c.OrgID)
 	if err != nil {
-		s.log.Error("reading credential configurations", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading credential configurations", "err", err, "correlation_id", correlationID(ctx))
 		return &oauth.AuthzError{Code: "server_error", Description: "unavailable",
 			Disposition: oauth.DispositionRedirect}
 	}

@@ -112,7 +112,7 @@ func (s *Server) probeDuo(ctx context.Context, q dbReader, userID, orgID string)
 		// Not enrolled is ordinary: this organisation uses Duo and this person
 		// has another factor. A real error is not, and is logged.
 		if !errors.Is(err, store.ErrNoDuoEnrollment) {
-			s.log.Error("reading the Duo enrollment", "err", err)
+			s.log.ErrorContext(ctx, "reading the Duo enrollment", "err", err)
 		}
 		return duoProbe{kind: probeNotUsed}
 	}
@@ -148,7 +148,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 		// Found by pointing the engine at a stand-in with the wrong environment
 		// variable name: the log said what was wrong, and the sign-in showed a
 		// form instead.
-		s.log.Error("the Duo integration is configured but unusable", "err", err,
+		s.log.ErrorContext(ctx, "the Duo integration is configured but unusable", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationError(w, r,
 			"Second-factor authentication is misconfigured on this server, so this "+
@@ -159,7 +159,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 	// Health checked BEFORE the redirect, by the probe.
 	if p.kind == probeUnreachable {
 		herr := p.err
-		s.log.Error("Duo is unreachable", "err", herr, "fail_open", cfg.FailOpen,
+		s.log.ErrorContext(ctx, "Duo is unreachable", "err", herr, "fail_open", cfg.FailOpen,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.duo_unavailable", OrgID: orgID, SubjectID: userID,
@@ -183,7 +183,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 			// there is nothing else does fail-open actually mean sign them in.
 			other, oerr := p.otherFactor, p.otherErr
 			if oerr != nil {
-				s.log.Error("checking for another factor", "err", oerr)
+				s.log.ErrorContext(ctx, "checking for another factor", "err", oerr)
 				s.federationError(w, r, "Something went wrong. Please try again.")
 				return duoTookOver
 			}
@@ -200,12 +200,12 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 
 	state, err := duo.NewState()
 	if err != nil {
-		s.log.Error("generating Duo state", "err", err)
+		s.log.ErrorContext(ctx, "generating Duo state", "err", err)
 		return duoNotUsed
 	}
 	target, err := cfg.AuthorizeURL(state, duoUsername)
 	if err != nil {
-		s.log.Error("building the Duo authorization URL", "err", err)
+		s.log.ErrorContext(ctx, "building the Duo authorization URL", "err", err)
 		return duoNotUsed
 	}
 
@@ -213,7 +213,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 		State: state, UserID: userID, OrgID: orgID, DuoUsername: duoUsername,
 		Authz: authzQuery, AMRSoFar: amr,
 	}, duoChallengeTTL); err != nil {
-		s.log.Error("recording the Duo challenge", "err", err)
+		s.log.ErrorContext(ctx, "recording the Duo challenge", "err", err)
 		return duoNotUsed
 	}
 
@@ -240,7 +240,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	// Claimed exactly once. A replayed callback finds nothing.
 	ch, err := store.ConsumeDuoChallenge(ctx, s.db, state)
 	if err != nil {
-		s.log.Info("no Duo challenge in progress", "err", err,
+		s.log.InfoContext(ctx, "no Duo challenge in progress", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationError(w, r, "That sign-in has expired. Please start again.")
 		return
@@ -248,7 +248,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 
 	cfg, err := store.LoadDuoIntegration(ctx, s.db, ch.OrgID, s.cfg.Root, s.duoRedirectURI(), s.cfg.AllowInsecureIssuer)
 	if err != nil {
-		s.log.Error("loading the Duo integration for a callback", "err", err)
+		s.log.ErrorContext(ctx, "loading the Duo integration for a callback", "err", err)
 		s.federationError(w, r, "That sign-in could not be completed.")
 		return
 	}
@@ -258,7 +258,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	// request parameter would let the browser choose the question.
 	res, err := cfg.Exchange(ctx, code, ch.DuoUsername)
 	if err != nil {
-		s.log.Warn("Duo refused or answered about somebody else", "err", err,
+		s.log.WarnContext(ctx, "Duo refused or answered about somebody else", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.duo_failed", OrgID: ch.OrgID, SubjectID: ch.UserID,
@@ -282,7 +282,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 			"duo_username": res.Username, "factor": res.Factor, "device": res.Device,
 		},
 	}); aerr != nil {
-		s.log.Error("recording the Duo result", "err", aerr)
+		s.log.ErrorContext(ctx, "recording the Duo result", "err", aerr)
 	}
 
 	// amr records what actually happened: the password proven before the
@@ -317,9 +317,9 @@ func (s *Server) recordDuoFailOpen(ctx context.Context, tx pgx.Tx, orgID, userID
 		Type: "mfa.skipped_duo_unavailable", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 	}); aerr != nil {
-		s.log.Error("recording a fail-open sign-in", "err", aerr)
+		s.log.ErrorContext(ctx, "recording a fail-open sign-in", "err", aerr)
 	}
-	s.log.Warn("signing in WITHOUT a second factor because Duo is unreachable",
+	s.log.WarnContext(ctx, "signing in WITHOUT a second factor because Duo is unreachable",
 		"user_id", userID, "correlation_id", correlationID(ctx))
 }
 

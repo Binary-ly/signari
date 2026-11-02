@@ -118,7 +118,7 @@ func (s *Server) signupFields(ctx context.Context, orgID string, posted map[stri
 	}
 	fields, err := s.profileFields(ctx, "", orgID, true, posted)
 	if err != nil {
-		s.log.Error("reading the attributes a sign-up may set", "err", err)
+		s.log.ErrorContext(ctx, "reading the attributes a sign-up may set", "err", err)
 		return nil
 	}
 	return fields
@@ -181,7 +181,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// flood it exists to stop.
 	res, err := store.AllowRate(ctx, s.db, "signup:ip:"+budgetIP(clientIP(r)), signupsPerWindow, signupWindow)
 	if err != nil {
-		s.log.Error("checking the signup rate limit", "err", err)
+		s.log.ErrorContext(ctx, "checking the signup rate limit", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
 		return
 	}
@@ -267,7 +267,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 			// operator put there on purpose is the "a written flow governs nothing"
 			// bug wearing a driver, and for enrol_mfa specifically it would make an
 			// account WITHOUT the second factor the operator required. Fail closed.
-			s.log.Error("the enrolment flow requires a stage this engine does not drive",
+			s.log.ErrorContext(ctx, "the enrolment flow requires a stage this engine does not drive",
 				"stage", stage, "flow", flowNameOf(fl), "correlation_id", correlationID(ctx))
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"sign-up is unavailable: the configured enrolment flow uses a step this "+
@@ -278,7 +278,7 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	if done == nil {
 		// A flow that never reaches create_user makes no account. Safety permits it,
 		// but it is not a sign-up, and silently returning the form would loop.
-		s.log.Error("the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
+		s.log.ErrorContext(ctx, "the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error",
 			"sign-up is misconfigured: the enrolment flow creates no account")
@@ -302,7 +302,7 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
 	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
-		s.log.Info("captcha refused at sign-up", "err", cerr,
+		s.log.InfoContext(ctx, "captcha refused at sign-up", "err", cerr,
 			"correlation_id", correlationID(ctx))
 		csrf, _ := s.csrfToken(w, r)
 		// captchaWidget, not captchaFields, for the same reason as the recovery
@@ -358,7 +358,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
 		// The check was configured and could not run. Logged loudly: a control
 		// that quietly stopped running is worse than one never configured.
-		s.log.Warn("the breach check did not run for a new password",
+		s.log.WarnContext(ctx, "the breach check did not run for a new password",
 			"correlation_id", correlationID(ctx))
 	}
 
@@ -388,7 +388,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			// to us: the first is normal, the second is a bug, and treating
 			// them alike is how a broken claim looks like a stale link.
 			if !errors.Is(err, store.ErrInvitationNotUsable) {
-				s.log.Error("claiming an invitation failed unexpectedly", "err", err)
+				s.log.ErrorContext(ctx, "claiming an invitation failed unexpectedly", "err", err)
 			}
 			fail("That invitation link is not valid. It may have been used " +
 				"already, or expired.")
@@ -423,7 +423,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			_ = store.ReleaseInvitation(ctx, s.db, invitationID)
 		}
 		if err != nil {
-			s.log.Error("reading whether the organisation is in service", "err", err)
+			s.log.ErrorContext(ctx, "reading whether the organisation is in service", "err", err)
 		}
 		fail(s.tr(r).Text("signup.suspended"))
 		return
@@ -457,14 +457,14 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			fail("An account cannot be created with that address. Please contact your administrator.")
 			return
 		}
-		s.log.Error("creating an account", "err", err)
+		s.log.ErrorContext(ctx, "creating an account", "err", err)
 		fail("The account could not be created. Reference: " +
 			shortCode(correlationID(ctx)))
 		return
 	}
 	if invitationID != "" {
 		if err := store.MarkInvitationUser(ctx, s.db, invitationID, userID); err != nil {
-			s.log.Error("recording who used an invitation", "err", err)
+			s.log.ErrorContext(ctx, "recording who used an invitation", "err", err)
 		}
 	}
 
@@ -571,14 +571,14 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 			orgID, g).Scan(&groupID, &mayImpersonate)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				s.log.Warn("an invitation named a group that does not exist",
+				s.log.WarnContext(ctx, "an invitation named a group that does not exist",
 					"group", g, "org", orgID)
 				continue
 			}
 			return "", nil, err
 		}
 		if selfSignup && mayImpersonate {
-			s.log.Error("the signup rule names a group whose members may impersonate; "+
+			s.log.ErrorContext(ctx, "the signup rule names a group whose members may impersonate; "+
 				"the new account was not added to it", "group", g, "org", orgID)
 			continue
 		}

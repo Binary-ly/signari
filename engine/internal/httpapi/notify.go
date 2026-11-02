@@ -118,7 +118,7 @@ func (s *Server) notifierFor(ctx context.Context, userID string) *i18n.Printer {
 		// A notice in the default language beats no notice. This runs on the
 		// path that tells somebody their account was touched, and failing it
 		// over a missing preference would be the wrong trade every time.
-		s.log.Warn("reading a user's locale for a notice", "user_id", userID, "err", err)
+		s.log.WarnContext(ctx, "reading a user's locale for a notice", "user_id", userID, "err", err)
 		return s.pageSet().Bundle().For(i18n.Default)
 	}
 	if locale == nil || *locale == "" {
@@ -150,7 +150,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 				// error for this call -- the email channel still carried the notice
 				// -- but worth a line so an operator who expected SMS delivery sees
 				// why it did not happen.
-				s.log.Warn("account notice not sent by SMS: no SMS gateway configured",
+				s.log.WarnContext(ctx, "account notice not sent by SMS: no SMS gateway configured",
 					"user_id", userID)
 				continue
 			}
@@ -161,7 +161,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 			sendErr = s.sendSMS(ctx, userID, smsNotice, sms.Message{To: ch.Address, Body: body})
 		}
 		if sendErr != nil {
-			s.log.Error("sending account notice", "kind", ch.Kind, "err", sendErr)
+			s.log.ErrorContext(ctx, "sending account notice", "kind", ch.Kind, "err", sendErr)
 			if firstErr == nil {
 				firstErr = sendErr
 			}

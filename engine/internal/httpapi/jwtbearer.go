@@ -140,7 +140,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
-		s.log.Error("no active key for jwt-bearer", "alg", alg, "err", err)
+		s.log.ErrorContext(ctx, "no active key for jwt-bearer", "alg", alg, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		// logout appear to cover a token it cannot reach.
 	})
 	if err != nil {
-		s.log.Error("signing jwt-bearer token", "err", err)
+		s.log.ErrorContext(ctx, "signing jwt-bearer token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -183,7 +183,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		// rolls back with it. The alternative -- commit first -- would burn the
 		// jti on a request that returned an error, and the caller's retry would
 		// be refused as a replay.
-		s.log.Error("committing jwt-bearer replay record", "err", err)
+		s.log.ErrorContext(ctx, "committing jwt-bearer replay record", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -232,7 +232,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 		// "ambiguous". The client learns that the grant failed, not which
 		// issuers this deployment trusts -- that list is a map of who can be
 		// impersonated if one of them is ever compromised.
-		s.log.Info("jwt-bearer: no usable trusted issuer",
+		s.log.InfoContext(ctx, "jwt-bearer: no usable trusted issuer",
 			"issuer", untrustedIssuer, "client_id", c.ClientID,
 			"err", err, "correlation_id", correlationID(ctx))
 		return refuse()
@@ -253,7 +253,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 	// exists to prevent — and it would confirm it to a caller who has just been
 	// told they may not use it.
 	if !c.MayUseAssertionsFrom(provider.Slug) {
-		s.log.Info("jwt-bearer: client is not paired with this provider",
+		s.log.InfoContext(ctx, "jwt-bearer: client is not paired with this provider",
 			"client_id", c.ClientID, "provider", provider.Slug,
 			"permitted", c.JWTBearerProviders, "correlation_id", correlationID(ctx))
 		return refuse()
@@ -263,7 +263,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 	hc := s.outboundClient(federationTimeout)
 	payload, err := federation.VerifyAssertion(ctx, hc, &s.assertionKeys, *provider, assertion)
 	if err != nil {
-		s.log.Info("jwt-bearer: assertion did not verify",
+		s.log.InfoContext(ctx, "jwt-bearer: assertion did not verify",
 			"provider", provider.Slug, "client_id", c.ClientID,
 			"err", err, "correlation_id", correlationID(ctx))
 		return refuse()
@@ -281,7 +281,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 	// selection from verification would otherwise silently trust the wrong
 	// anchor.
 	if claims.Issuer != provider.Issuer() {
-		s.log.Warn("jwt-bearer: verified issuer differs from the selected provider",
+		s.log.WarnContext(ctx, "jwt-bearer: verified issuer differs from the selected provider",
 			"verified", claims.Issuer, "selected", provider.Issuer(),
 			"correlation_id", correlationID(ctx))
 		return refuse()
@@ -293,7 +293,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 		// harmless, but "issued more than 1h0m0s ago" and the audience rules also
 		// describe this deployment's policy, and the whole set is a probe surface
 		// for free. One sentence out, the detail in the log.
-		s.log.Info("jwt-bearer: assertion claims refused",
+		s.log.InfoContext(ctx, "jwt-bearer: assertion claims refused",
 			"provider", provider.Slug, "reason", terr.Description,
 			"correlation_id", correlationID(ctx))
 		return refuse()
@@ -302,7 +302,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 	// Step four: the local account, which must still be allowed to sign in.
 	userID, orgID, err := store.FindActiveFederatedUser(ctx, s.db, provider.ID, claims.Subject)
 	if err != nil {
-		s.log.Info("jwt-bearer: no active linked account",
+		s.log.InfoContext(ctx, "jwt-bearer: no active linked account",
 			"provider", provider.Slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		return refuse()
@@ -313,7 +313,7 @@ func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *cl
 		// assertion from tenant B's trusted issuer and receive a token for
 		// tenant B's user -- a cross-tenant escalation assembled entirely out of
 		// individually valid pieces.
-		s.log.Warn("jwt-bearer: cross-organisation attempt",
+		s.log.WarnContext(ctx, "jwt-bearer: cross-organisation attempt",
 			"client_org", c.OrgID, "account_org", orgID, "provider", provider.Slug,
 			"correlation_id", correlationID(ctx))
 		return refuse()
@@ -331,7 +331,7 @@ func (s *Server) assertionConsentRefused(ctx context.Context, w http.ResponseWri
 
 	withdrawn, err := store.ConsentWithdrawn(ctx, s.db, st.userID, c.ClientID)
 	if err != nil {
-		s.log.Error("jwt-bearer: checking for a withdrawn consent", "err", err,
+		s.log.ErrorContext(ctx, "jwt-bearer: checking for a withdrawn consent", "err", err,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return true
@@ -339,7 +339,7 @@ func (s *Server) assertionConsentRefused(ctx context.Context, w http.ResponseWri
 	if !withdrawn {
 		return false
 	}
-	s.log.Info("jwt-bearer: the person withdrew consent from this client",
+	s.log.InfoContext(ctx, "jwt-bearer: the person withdrew consent from this client",
 		"provider", st.provider.Slug, "client_id", c.ClientID, "correlation_id", correlationID(ctx))
 	writeTokenError(w, &oauth.TokenError{Code: code, Description: assertionRefused, Status: http.StatusBadRequest})
 	return true
@@ -358,14 +358,14 @@ func (s *Server) spendAssertion(ctx context.Context, w http.ResponseWriter, tx p
 		// The database could not answer. Reporting that as a replay tells the
 		// client something false and tells whoever reads the log that they are
 		// under attack, which is how an outage becomes an incident response.
-		s.log.Error("jwt-bearer: could not record the assertion identifier",
+		s.log.ErrorContext(ctx, "jwt-bearer: could not record the assertion identifier",
 			"provider", st.provider.Slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return false
 	}
-	s.log.Warn("jwt-bearer: assertion replay refused",
+	s.log.WarnContext(ctx, "jwt-bearer: assertion replay refused",
 		"provider", st.provider.Slug, "client_id", c.ClientID,
 		"correlation_id", correlationID(ctx))
 	writeTokenError(w, &oauth.TokenError{Code: code, Description: assertionRefused, Status: http.StatusBadRequest})

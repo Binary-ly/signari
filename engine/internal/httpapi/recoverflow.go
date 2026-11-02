@@ -130,7 +130,7 @@ func (s *Server) recoveryPlan(ctx context.Context, orgID string, st flow.State,
 // about the account, because this is reachable from the request half where the
 // account's existence is not the caller's business.
 func (s *Server) refuseRecoveryStage(w http.ResponseWriter, r *http.Request, stage flow.StageName, flowName string) {
-	s.log.Error("the recovery flow requires a stage this engine does not drive",
+	s.log.ErrorContext(r.Context(), "the recovery flow requires a stage this engine does not drive",
 		"stage", stage, "flow", flowName, "correlation_id", correlationID(r.Context()))
 	writeError(w, http.StatusNotImplemented, "not_implemented",
 		"account recovery is unavailable: the configured recovery flow uses a step "+
@@ -153,7 +153,7 @@ func (s *Server) recoverCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
 	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
-		s.log.Info("captcha refused at recovery", "err", cerr,
+		s.log.InfoContext(ctx, "captcha refused at recovery", "err", cerr,
 			"correlation_id", correlationID(ctx))
 		csrf, _ := s.csrfToken(w, r)
 		// captchaWidget, not captchaFields: reaching here means the FLOW put a

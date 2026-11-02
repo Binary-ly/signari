@@ -160,7 +160,7 @@ func (s *Server) proxyRule(w http.ResponseWriter, r *http.Request) (*proxyrules.
 	}
 	rules, err := store.ProxyRulesOf(ctx, s.db, s.instanceID, host)
 	if err != nil {
-		s.log.Error("reading the rules of a protected host", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading the rules of a protected host", "err", err, "correlation_id", correlationID(ctx))
 		s.forbidProxy(w, "the rules of this application could not be read")
 		return nil, true
 	}
@@ -244,7 +244,7 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 	}
 	groups, signed, err := s.proxyDisclosure(r.Context(), host, pc)
 	if err != nil {
-		s.log.Error("saying who is at a protected host", "host", host.Host, "err", err,
+		s.log.ErrorContext(r.Context(), "saying who is at a protected host", "host", host.Host, "err", err,
 			"correlation_id", correlationID(r.Context()))
 		s.forbidProxy(w, "what this application is told could not be read")
 		return
@@ -346,7 +346,7 @@ func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims, rule *proxy
 	}
 	registered, err := store.ProxyHostFor(ctx, s.db, pc.OrgID, host)
 	if err != nil {
-		s.log.Error("checking a protected host", "err", err)
+		s.log.ErrorContext(ctx, "checking a protected host", "err", err)
 		return nil, "the protected host could not be checked"
 	}
 	if registered == nil {
@@ -403,7 +403,7 @@ func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string
 		if s.db != nil {
 			own, err := store.ProxyHostKeepsOwnCookie(r.Context(), s.db, s.instanceID, strings.ToLower(firstHeader(r, "X-Forwarded-Host")))
 			if err != nil {
-				s.log.Error("reading where a protected host keeps its cookie", "err", err)
+				s.log.ErrorContext(r.Context(), "reading where a protected host keepsits cookie", "err", err)
 			}
 			if own {
 				loc = firstHeader(r, "X-Forwarded-Proto") + "://" + firstHeader(r, "X-Forwarded-Host") + pathProxyBegin +
@@ -493,7 +493,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 	// link that looks like a login.
 	target, host, err := s.validateProxyRedirect(ctx, orgID, rd)
 	if err != nil {
-		s.log.Info("proxy redirect refused", "rd", rd, "err", err,
+		s.log.InfoContext(ctx, "proxy redirect refused", "rd", rd, "err", err,
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -528,7 +528,7 @@ func (s *Server) handleProxyStart(w http.ResponseWriter, r *http.Request) {
 			Email: email, Host: strings.ToLower(host.Host), State: state, Target: target,
 			Expiry: time.Now().Add(proxyCodeTTL).Unix()}, typProxyCode)
 		if err != nil {
-			s.log.Error("signing a proxy code", "err", err)
+			s.log.ErrorContext(ctx, "signing a proxy code", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -570,7 +570,7 @@ func (s *Server) issueProxyCookie(w http.ResponseWriter, r *http.Request, pc pro
 	pc.Issuer, pc.Expiry = s.cfg.Issuer, time.Now().Add(proxyTTL).Unix()
 	tok, err := tokens.NewSigner(key).SignJSON(pc, typProxy)
 	if err != nil {
-		s.log.Error("signing proxy token", "err", err)
+		s.log.ErrorContext(ctx, "signing proxy token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return false
 	}
@@ -659,7 +659,7 @@ func (s *Server) handleProxyBegin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProxyCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	refuse := func(why string) {
-		s.log.Info("proxy callback refused", "reason", why, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "proxy callback refused", "reason", why, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "invalid_request", "this sign-in could not be finished: "+why)
 	}
 	var code proxyCode

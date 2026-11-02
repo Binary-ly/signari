@@ -42,7 +42,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 
 	candidates, err := store.ListPortalCandidates(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("listing portal applications", "err", err)
+		s.log.ErrorContext(ctx, "listing portal applications", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -81,7 +81,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	// its entity id as the assertion will be.
 	providers, err := store.ListPortalSAML(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("listing portal SAML applications", "err", err)
+		s.log.ErrorContext(ctx, "listing portal SAML applications", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

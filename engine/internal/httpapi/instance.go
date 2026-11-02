@@ -120,7 +120,7 @@ func (s *Server) loadSAMLProviderByID(ctx context.Context, id string) (*saml.Pro
 
 func (s *Server) ofThisInstance(ctx context.Context, p *saml.Provider, err error) (*saml.Provider, error) {
 	if err == nil && !s.serves(p.InstanceID) {
-		s.log.Info("an object of another instance was refused", "what", "saml service provider",
+		s.log.InfoContext(ctx, "an object of another instance was refused", "what", "saml service provider",
 			"org_id", p.OrgID, "correlation_id", correlationID(ctx))
 		return nil, store.ErrSAMLProviderUnknown
 	}
@@ -142,12 +142,12 @@ func (s *Server) ownedBy(ctx context.Context, q dbReader, orgID, what string) bo
 	}
 	ok, err := store.OrgInInstance(ctx, q, orgID, s.instanceID)
 	if err != nil {
-		s.log.Error("reading which instance an organisation belongs to", "what", what,
+		s.log.ErrorContext(ctx, "reading which instance an organisation belongs to", "what", what,
 			"org_id", orgID, "err", err)
 		return false
 	}
 	if !ok {
-		s.log.Info("an object of another instance was refused", "what", what, "org_id", orgID,
+		s.log.InfoContext(ctx, "an object of another instance was refused", "what", what, "org_id", orgID,
 			"correlation_id", correlationID(ctx))
 	}
 	return ok

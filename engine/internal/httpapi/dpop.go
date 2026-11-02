@@ -127,7 +127,7 @@ func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw s
 		return false
 	case cnf.JKT != "":
 		if derr := s.proofForBoundToken(r, raw, cnf.JKT); derr != nil {
-			s.log.Info("DPoP enforcement refused a request", "at", where, "reason", derr,
+			s.log.InfoContext(r.Context(), "DPoP enforcement refused a request", "at", where, "reason", derr,
 				"correlation_id", correlationID(r.Context()))
 			if errors.Is(derr, errDPoPNonce) {
 				// §9: as at the token endpoint, with the status a resource uses.
@@ -144,7 +144,7 @@ func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw s
 		}
 	case cnf.X5TS256 != "":
 		if cerr := certificateForBoundToken(r, cnf.X5TS256); cerr != nil {
-			s.log.Info("certificate binding refused a request", "at", where, "reason", cerr,
+			s.log.InfoContext(r.Context(), "certificate binding refused a request", "at", where, "reason", cerr,
 				"correlation_id", correlationID(r.Context()))
 			// §3: "rejected with an error, per [RFC6750], using an HTTP 401
 			// status code and the "invalid_token" error code."
@@ -197,7 +197,7 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 	fresh, err := store.MarkDPoPProofSeen(r.Context(), s.db, proof.JKT, proof.JTI,
 		dpop.ReplayWindow)
 	if err != nil {
-		s.log.Error("recording a DPoP proof", "err", err)
+		s.log.ErrorContext(r.Context(), "recording a DPoP proof", "err", err)
 		// Fail CLOSED. If replay detection is unavailable, the proof cannot be
 		// shown to be fresh, and accepting it would silently drop the protection
 		// exactly when the database is unhappy.
@@ -378,7 +378,7 @@ func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Co
 	if c == nil || !c.DPoPBoundAccessTokens || dpopThumbprintFrom(ctx) != "" {
 		return false
 	}
-	s.log.Info("token request without DPoP from a client registered as DPoP-bound",
+	s.log.InfoContext(ctx, "token request without DPoP from a client registered as DPoP-bound",
 		"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 	w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
 	writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
@@ -411,7 +411,7 @@ func (s *Server) refuseOutOfProfile(w http.ResponseWriter, r *http.Request, c *c
 	}
 	ctx := r.Context()
 	if problems := c.ProfileProblems(); len(problems) > 0 {
-		s.log.Error("a client out of its security profile was refused", "client_id", c.ClientID,
+		s.log.ErrorContext(ctx, "a client out of its security profile was refused", "client_id", c.ClientID,
 			"problems", problems, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
 			Description: "this client does not meet its security profile", Status: http.StatusBadRequest})

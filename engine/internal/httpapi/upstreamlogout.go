@@ -56,7 +56,7 @@ func (s *Server) upstreamLogout(ctx context.Context, r *http.Request, sid, targe
 	}
 	endSession, clientID, kind, err := store.UpstreamLogout(ctx, s.db, sid, cookie.Value)
 	if err != nil {
-		s.log.Error("reading the provider to sign out at", "err", err, "correlation_id", correlationID(ctx))
+		s.log.ErrorContext(ctx, "reading the provider to sign out at", "err", err, "correlation_id", correlationID(ctx))
 		return ""
 	}
 	u, err := url.Parse(endSession)

@@ -19,6 +19,9 @@ import (
 // ErrClientMetadataRuleUnknown is a rule that is not on the list.
 var ErrClientMetadataRuleUnknown = errors.New("no such client metadata rule")
 
+// ErrClientMetadataOrgElsewhere is a rule naming an organisation of another instance.
+var ErrClientMetadataOrgElsewhere = errors.New("that organisation is not in this instance")
+
 // ClientMetadataRule says that a client_id under URLPrefix may sign people in here,
 // landing in OrgID and given no more than Scopes.
 type ClientMetadataRule struct {
@@ -73,10 +76,20 @@ func MatchClientMetadataRule(rules []ClientMetadataRule, clientID string) (Clien
 	return ClientMetadataRule{}, false
 }
 
-// SetClientMetadataRule adds a rule, or replaces what it says.
-func SetClientMetadataRule(ctx context.Context, q Execer, instanceID string, r ClientMetadataRule) error {
+// SetClientMetadataRule adds a rule, or replaces what it says. Its organisation has to be
+// one of the instance's: a list is read for one issuer, and a client is signed in by the
+// instance its organisation is in.
+func SetClientMetadataRule(ctx context.Context, q outpostDB, instanceID string, r ClientMetadataRule) error {
 	if err := r.Validate(); err != nil {
 		return err
+	}
+	var here bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations WHERE id = $1::uuid AND instance_id = $2::uuid)`,
+		r.OrgID, instanceID).Scan(&here); err != nil {
+		return err
+	}
+	if !here {
+		return ErrClientMetadataOrgElsewhere
 	}
 	_, err := q.Exec(ctx, `
 		INSERT INTO core.client_metadata_rules (instance_id, url_prefix, org_id, scopes)

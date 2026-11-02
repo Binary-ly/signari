@@ -76,6 +76,10 @@ func (s *Server) putClientMetadataRule(w http.ResponseWriter, r *http.Request) {
 			OrgID: rule.OrgID, Detail: map[string]any{"instance_id": instanceID, "url_prefix": rule.URLPrefix,
 				"scopes": rule.Scopes}})
 	})
+	if errors.Is(err, store.ErrClientMetadataOrgElsewhere) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rule", "detail": err.Error()})
+		return
+	}
 	if writeOrgRefusal(w, err) || s.writeFederationFailure(w, err, instanceID) {
 		return
 	}

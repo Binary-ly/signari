@@ -16,7 +16,8 @@ func TestClientMetadataRulesAreKeptThroughTheAPI(t *testing.T) {
 	s, _ := newTestServer(t)
 	ctx := context.Background()
 	id := newDriftInstance(t, s)
-	org := newDriftMigrationOrg(t, s, false)
+	org := newDriftOrgIn(t, s, id)
+	elsewhere := newDriftMigrationOrg(t, s, false)
 	path := "/admin/instances/" + id + "/client-metadata-rules"
 	prefix := "https://mcp.example.test/"
 
@@ -31,6 +32,7 @@ func TestClientMetadataRulesAreKeptThroughTheAPI(t *testing.T) {
 		"no host":          {"url_prefix": "https://", "org_id": org},
 		"a query":          {"url_prefix": "https://mcp.example.test/?a=/", "org_id": org},
 		"a scope of two":   {"url_prefix": prefix, "org_id": org, "scopes": []string{"two words"}},
+		"another instance": {"url_prefix": prefix, "org_id": elsewhere},
 	} {
 		if code := put(body); code != http.StatusBadRequest {
 			t.Errorf("%s answered %d", name, code)

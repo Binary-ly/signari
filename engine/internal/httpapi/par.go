@@ -129,6 +129,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	if object := r.PostForm.Get("request"); object != "" {
 		s.admitFederatedClient(r, clientID, object)
 	}
+	s.admitMetadataClient(r, clientID)
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		// writeTokenError, not writeError.
@@ -367,6 +368,7 @@ func (s *Server) parkRequestObject(r *http.Request, clientID, requestURI, object
 		return "", "send request or request_uri, not both"
 	}
 	s.admitFederatedClient(r, clientID, object)
+	s.admitMetadataClient(r, clientID)
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		return "", "unknown client"

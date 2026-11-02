@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0281 client_metadata_documents
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client that is an https URL and describes itself in a document there, so an application nobody registered can be signed in to. Nothing does until an operator writes down whose URLs to fetch: with no rows, nobody is admitted, and nothing is ever fetched. Each rule names the organisation its clients land in and what they may ask for.
+
 ## 0280 credential_status
 
 Compatible with the release before: its binary may still serve this schema.

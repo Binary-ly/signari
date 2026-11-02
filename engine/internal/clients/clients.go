@@ -210,6 +210,7 @@ type Client struct {
 	EncryptionKeys                                                 string
 	// FederationExpiry is when what a Trust Chain said of the client stops holding, and
 	// nil for a client an operator made. Past it a request has to be vouched for again.
+	// A client admitted from its metadata document is held to the same thing.
 	FederationExpiry *time.Time
 	// RequireState refuses an authorization request with no `state`.
 	RequireState bool

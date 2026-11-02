@@ -225,6 +225,15 @@ type DeleteInstancesInstanceIDBrandResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteInstancesInstanceIDClientMetadataRulesResponse is a JSON object of the Admin API.
+type DeleteInstancesInstanceIDClientMetadataRulesResponse struct {
+	ClientsRemoved int64  `json:"clients_removed"`
+	ConfigVersion  int64  `json:"config_version"`
+	InstanceID     string `json:"instance_id"`
+	Removed        bool   `json:"removed"`
+	URLPrefix      string `json:"url_prefix"`
+}
+
 // DeleteInstancesInstanceIDFederationAnchorsResponse is a JSON object of the Admin API.
 type DeleteInstancesInstanceIDFederationAnchorsResponse struct {
 	ClientsRemoved int64  `json:"clients_removed"`
@@ -592,6 +601,7 @@ type GetClientsClientIDResponse struct {
 	BackchannelTokenDeliveryMode          string         `json:"backchannel_token_delivery_mode,omitempty"`
 	ClaimsRedirectURIs                    []string       `json:"claims_redirect_uris,omitempty"`
 	ClientID                              string         `json:"client_id"`
+	ClientMetadataPrefix                  *string        `json:"client_metadata_prefix,omitempty"`
 	ClientType                            string         `json:"client_type"`
 	ConsentLifetimeS                      *int64         `json:"consent_lifetime_s,omitempty"`
 	CreatedAt                             string         `json:"created_at"`
@@ -733,6 +743,19 @@ type GetInstancesInstanceIDBrandResponse struct {
 	LogoURL          string `json:"logo_url"`
 	ProductName      string `json:"product_name"`
 	SupportURL       string `json:"support_url"`
+}
+
+// GetInstancesInstanceIDClientMetadataRulesResponse is a JSON object of the Admin API.
+type GetInstancesInstanceIDClientMetadataRulesResponse struct {
+	InstanceID string                                                       `json:"instance_id"`
+	Rules      []GetInstancesInstanceIDClientMetadataRulesResponseRulesItem `json:"rules"`
+}
+
+// GetInstancesInstanceIDClientMetadataRulesResponseRulesItem is a JSON object of the Admin API.
+type GetInstancesInstanceIDClientMetadataRulesResponseRulesItem struct {
+	OrgID     string   `json:"org_id"`
+	Scopes    []string `json:"scopes"`
+	URLPrefix string   `json:"url_prefix"`
 }
 
 // GetInstancesInstanceIDFederationResponse is a JSON object of the Admin API.
@@ -3257,6 +3280,20 @@ type PutInstancesInstanceIDBrandResponse struct {
 	SupportURL       string `json:"support_url"`
 }
 
+// PutInstancesInstanceIDClientMetadataRulesRequest is a JSON object of the Admin API.
+type PutInstancesInstanceIDClientMetadataRulesRequest struct {
+	OrgID     *string   `json:"org_id,omitempty"`
+	Scopes    *[]string `json:"scopes,omitempty"`
+	URLPrefix *string   `json:"url_prefix,omitempty"`
+}
+
+// PutInstancesInstanceIDClientMetadataRulesResponse is a JSON object of the Admin API.
+type PutInstancesInstanceIDClientMetadataRulesResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	InstanceID    string `json:"instance_id"`
+	URLPrefix     string `json:"url_prefix"`
+}
+
 // PutInstancesInstanceIDFederationRequest is a JSON object of the Admin API.
 type PutInstancesInstanceIDFederationRequest struct {
 	AuthorityHints   *[]string `json:"authority_hints,omitempty"`
@@ -4068,6 +4105,18 @@ func (c *Client) DeleteInstancesInstanceIDBrand(ctx context.Context, instanceID 
 	return &out, v, nil
 }
 
+// DeleteInstancesInstanceIDClientMetadataRules is DELETE
+// /admin/instances/{instanceID}/client-metadata-rules: Stop, and delete the clients the rule
+// admitted. Needs organizations:write.
+func (c *Client) DeleteInstancesInstanceIDClientMetadataRules(ctx context.Context, instanceID string, opts ...Option) (*DeleteInstancesInstanceIDClientMetadataRulesResponse, int64, error) {
+	var out DeleteInstancesInstanceIDClientMetadataRulesResponse
+	v, err := c.call(ctx, "DELETE", "/admin/instances/"+url.PathEscape(instanceID)+"/client-metadata-rules", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteInstancesInstanceIDFederationAnchors is DELETE
 // /admin/instances/{instanceID}/federation/anchors: Stop accepting a Trust Anchor, deleting the
 // clients it admitted. Needs organizations:write.
@@ -4668,6 +4717,18 @@ func (c *Client) GetInstances(ctx context.Context, opts ...Option) (*GetInstance
 func (c *Client) GetInstancesInstanceIDBrand(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDBrandResponse, int64, error) {
 	var out GetInstancesInstanceIDBrandResponse
 	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/brand", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetInstancesInstanceIDClientMetadataRules is GET
+// /admin/instances/{instanceID}/client-metadata-rules: Whose client_id URLs the instance will
+// fetch. Needs config:read.
+func (c *Client) GetInstancesInstanceIDClientMetadataRules(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDClientMetadataRulesResponse, int64, error) {
+	var out GetInstancesInstanceIDClientMetadataRulesResponse
+	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/client-metadata-rules", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6253,6 +6314,18 @@ func (c *Client) PutGroupsGroupIDRADIUS(ctx context.Context, groupID string, bod
 func (c *Client) PutInstancesInstanceIDBrand(ctx context.Context, instanceID string, body PutInstancesInstanceIDBrandRequest, opts ...Option) (*PutInstancesInstanceIDBrandResponse, int64, error) {
 	var out PutInstancesInstanceIDBrandResponse
 	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/brand", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutInstancesInstanceIDClientMetadataRules is PUT
+// /admin/instances/{instanceID}/client-metadata-rules: Allow client_id URLs under a prefix. Needs
+// organizations:write.
+func (c *Client) PutInstancesInstanceIDClientMetadataRules(ctx context.Context, instanceID string, body PutInstancesInstanceIDClientMetadataRulesRequest, opts ...Option) (*PutInstancesInstanceIDClientMetadataRulesResponse, int64, error) {
+	var out PutInstancesInstanceIDClientMetadataRulesResponse
+	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/client-metadata-rules", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

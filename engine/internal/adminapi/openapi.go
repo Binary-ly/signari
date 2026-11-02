@@ -194,6 +194,11 @@ var summaries = map[string]string{
 	// What a wallet encrypts to.
 	"POST /admin/instances/{instanceID}/credential-encryption-key": "Make a new key for wallets to encrypt to.",
 
+	// Whose client_id URLs to fetch a metadata document from.
+	"GET /admin/instances/{instanceID}/client-metadata-rules":    "Whose client_id URLs the instance will fetch.",
+	"PUT /admin/instances/{instanceID}/client-metadata-rules":    "Allow client_id URLs under a prefix.",
+	"DELETE /admin/instances/{instanceID}/client-metadata-rules": "Stop, and delete the clients the rule admitted.",
+
 	// Duo as a second factor (6.07).
 	"GET /admin/organizations/{orgID}/duo": "The organisation's Duo application, without its secret, and how many people are enrolled.",
 	"PUT /admin/organizations/{orgID}/duo": "Configure Duo, checked against Duo before anything is stored.",

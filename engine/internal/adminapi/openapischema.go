@@ -296,7 +296,7 @@ var (
 			"introspection_encrypted_response_alg": nullable(str()),
 			"introspection_encrypted_response_enc": nullable(str()),
 			"federation_anchor":                    nullable(str()), "federation_expires_at": nullable(dateTime()),
-			"roles_claim": nullable(str()), "login_ui_url": nullable(str()), "access_token_format": str(),
+			"client_metadata_prefix": nullable(str()), "roles_claim": nullable(str()), "login_ui_url": nullable(str()), "access_token_format": str(),
 			"subject_type": str(), "sector": str(), "security_profile": str(),
 			"initiate_login_uri": nullable(str()), "issuer_alias": nullable(str()), "jwks": nullable(openObject()),
 			"jwt_bearer_providers": arrayOf(str()), "logo_uri": nullable(str()),
@@ -956,6 +956,15 @@ var opSchemas = map[string]opSchema{
 			"instance_id": uuidStr(), "steps": arrayOf(object([]string{"algorithm"}, map[string]jsonSchema{
 				"algorithm": str(), "published": str(), "promoted": str(), "demoted": str(), "forced": boolean(),
 				"wait_s": integer()}))}))},
+	"GET /admin/instances/{instanceID}/client-metadata-rules": {http.StatusOK, nil, object([]string{"instance_id", "rules"},
+		map[string]jsonSchema{"instance_id": uuidStr(), "rules": arrayOf(object([]string{"url_prefix", "org_id", "scopes"},
+			map[string]jsonSchema{"url_prefix": str(), "org_id": uuidStr(), "scopes": arrayOf(str())}))})},
+	"PUT /admin/instances/{instanceID}/client-metadata-rules": {http.StatusOK, typeOf[putClientMetadataRuleRequest](), object(
+		[]string{"instance_id", "url_prefix", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "url_prefix": str()}))},
+	"DELETE /admin/instances/{instanceID}/client-metadata-rules": {http.StatusOK, nil, object(
+		[]string{"instance_id", "url_prefix", "removed", "clients_removed", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "url_prefix": str(), "removed": boolean(), "clients_removed": integer()}))},
 	"POST /admin/instances/{instanceID}/credential-encryption-key": {http.StatusOK, nil, object(
 		[]string{"instance_id", "kid", "config_version"}, withVersion(map[string]jsonSchema{
 			"instance_id": uuidStr(), "kid": str()}))},

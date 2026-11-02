@@ -56,6 +56,8 @@ type Metadata struct {
 	BackchannelTokenDeliveryModes     []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
 	BackchannelUserCodeSupported      *bool    `json:"backchannel_user_code_parameter_supported,omitempty"`
 	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
+	// The client ID metadata document draft's §6, once a rule says whose to fetch.
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.

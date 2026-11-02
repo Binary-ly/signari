@@ -27,6 +27,7 @@ import (
 	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Every mutating route must honour preconditions AND bump the configuration
@@ -1261,6 +1262,28 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{}` },
 		},
 		{
+			name: "PUT /admin/instances/{instanceID}/client-metadata-rules", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/client-metadata-rules"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				org := newDriftOrgIn(t, s, strings.Split(path, "/")[3])
+				return `{"url_prefix":"https://drift.example.test/","org_id":"` + org + `"}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/client-metadata-rules", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				rule := store.ClientMetadataRule{URLPrefix: "https://drift.example.test/", OrgID: newDriftOrgIn(t, s, id)}
+				if err := store.SetClientMetadataRule(context.Background(), s.db, id, rule); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/client-metadata-rules?url_prefix=" + url.QueryEscape(rule.URLPrefix)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/instances/{instanceID}/credential-encryption-key", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/credential-encryption-key"
@@ -1830,6 +1853,18 @@ func newDriftProvider(t *testing.T, s *Server) string {
 		t.Fatal(err)
 	}
 	return "/admin/organizations/" + org + "/providers/token_issue"
+}
+
+// newDriftOrgIn is an organisation of that instance, which goes with it.
+func newDriftOrgIn(t *testing.T, s *Server, instanceID string) string {
+	t.Helper()
+	var org string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO core.organizations (instance_id, slug, display_name)
+		VALUES ($1::uuid, 'drift-' || gen_random_uuid(), 'Drift') RETURNING id::text`, instanceID).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, s.db, org)
+	return org
 }
 
 // newDriftKeyedInstance is newDriftInstance with one active ES256 key.

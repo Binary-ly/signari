@@ -311,6 +311,9 @@ var cliAPI = map[string]string{
 	"external-factor remove": "DELETE /admin/organizations/{orgID}/external-factors/{name}",
 
 	// Who this instance speaks for in a federation.
+	"client-metadata rules":         reads,
+	"client-metadata allow":         "PUT /admin/instances/{instanceID}/client-metadata-rules",
+	"client-metadata forget":        "DELETE /admin/instances/{instanceID}/client-metadata-rules",
 	"federation anchors":            reads,
 	"federation add-anchor":         "PUT /admin/instances/{instanceID}/federation/anchors",
 	"federation remove-anchor":      "DELETE /admin/instances/{instanceID}/federation/anchors",

@@ -133,6 +133,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	req := oauth.ParseAuthz(query)
 	req.RequestObjectProblem = objectProblem
 
+	s.admitMetadataClient(r, req.ClientID)
 	// In any state, so ValidateAuthz can tell the person the client is
 	// disabled; it refuses one before anything else is read.
 	c, lookupErr := s.lookupClientAnyState(ctx, req.ClientID)

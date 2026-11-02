@@ -72,6 +72,8 @@ var lookupsThatAdmitADisabledClient = map[string]string{
 	"flow.go lookupClientAnyState": "the loader the declared callers share",
 	"flow.go handleAuthorize":      "oauth.ValidateAuthz refuses a disabled client first, telling the person why",
 	"accounts.go errorToClient":    "oauth.ValidateAuthz again, before any redirect to the client",
+	"clientmetadata.go admitMetadataClient": "only asks whether a client exists to read a document for, and a refresh " +
+		"leaves a disabled client disabled; the caller's own lookup decides",
 	"oidfedregister.go admitFederatedClient": "only asks whether a client exists to register; the caller's own lookup " +
 		"is the one that admits or refuses it, and a disabled one is left as it is",
 	"account.go clientOrg":               "only which organisation's page to show; nothing is granted",

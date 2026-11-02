@@ -99,7 +99,7 @@ func main() {
 // with no hint that the dispatch is what is wrong.
 var twoWordCommands = map[string]bool{
 	"migrate": true, "instance": true, "user": true, "client": true, "duo": true,
-	"janitor": true, "keys": true, "import": true, "proxy": true,
+	"janitor": true, "keys": true, "import": true, "proxy": true, "client-metadata": true,
 	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true, "message": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
@@ -390,7 +390,10 @@ authorization and federation:
   federation add-anchor          take a Trust Anchor's word for relying parties
   federation anchors             whose word this instance takes
   federation remove-anchor       stop, and delete the clients it admitted
-  trust-mark issue     issue an OpenID Federation Trust Mark to an entity
+  client-metadata allow   let client_id URLs under a prefix sign people in
+  client-metadata rules   whose client_id URLs this instance fetches
+  client-metadata forget  stop, and delete the clients a rule admitted
+  trust-mark issue    issue an OpenID Federation Trust Mark to an entity
   trust-mark revoke    withdraw a Trust Mark this entity issued
   trust-mark list      Trust Marks this entity issues and holds
   trust-mark accept    publish a Trust Mark somebody granted this entity
@@ -762,6 +765,7 @@ func run(args []string) (err error) {
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
 	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate or anchor gave you, as a JWK Set (federation add-subordinate, add-anchor)")
 	fedTrustMarks := fs.String("trust-marks", "", "`federation add-anchor`: Trust Mark types a relying party must hold, comma separated")
+	metadataPrefix := fs.String("url-prefix", "", "an https URL ending in /, which a client_id is under (client-metadata allow, forget)")
 	fedPolicyFile := fs.String("metadata-policy-file", "", "what this entity requires of a subordinate's metadata (federation add-subordinate)")
 	fedMaxPath := fs.Int("max-path-length", 0, "how many Intermediates may stand below a subordinate (federation add-subordinate)")
 	fedIntermediate := fs.Bool("intermediate", false, "the subordinate has subordinates of its own (federation add-subordinate)")
@@ -1887,6 +1891,12 @@ func run(args []string) (err error) {
 		return federationAnchors(ctx, conn, *outputFormat)
 	case "federation remove-anchor":
 		return federationRemoveAnchor(ctx, conn, *entityID)
+	case "client-metadata allow":
+		return clientMetadataAllow(ctx, conn, *metadataPrefix, *orgID, *tokenScopes)
+	case "client-metadata rules":
+		return clientMetadataRules(ctx, conn, *outputFormat)
+	case "client-metadata forget":
+		return clientMetadataForget(ctx, conn, *metadataPrefix)
 	case "federation subordinates":
 		return federationSubordinates(ctx, conn, *outputFormat)
 	case "federation remove-subordinate":

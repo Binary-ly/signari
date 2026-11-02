@@ -139,6 +139,12 @@ export class SignariAdmin {
     return this.call<DeleteInstancesInstanceIDBrandResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/brand`, undefined, opts)
   }
 
+  // DELETE /admin/instances/{instanceID}/client-metadata-rules: Stop, and delete the clients the
+  // rule admitted. Needs organizations:write.
+  deleteInstancesInstanceIDClientMetadataRules(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDClientMetadataRulesResponse>> {
+    return this.call<DeleteInstancesInstanceIDClientMetadataRulesResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/client-metadata-rules`, undefined, opts)
+  }
+
   // DELETE /admin/instances/{instanceID}/federation/anchors: Stop accepting a Trust Anchor,
   // deleting the clients it admitted. Needs organizations:write.
   deleteInstancesInstanceIDFederationAnchors(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDFederationAnchorsResponse>> {
@@ -449,6 +455,12 @@ export class SignariAdmin {
   // Needs config:read.
   getInstancesInstanceIDBrand(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDBrandResponse>> {
     return this.call<GetInstancesInstanceIDBrandResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/brand`, undefined, opts)
+  }
+
+  // GET /admin/instances/{instanceID}/client-metadata-rules: Whose client_id URLs the instance
+  // will fetch. Needs config:read.
+  getInstancesInstanceIDClientMetadataRules(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDClientMetadataRulesResponse>> {
+    return this.call<GetInstancesInstanceIDClientMetadataRulesResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/client-metadata-rules`, undefined, opts)
   }
 
   // GET /admin/instances/{instanceID}/federation: Whether the instance is a federation entity, and
@@ -1287,6 +1299,12 @@ export class SignariAdmin {
     return this.call<PutInstancesInstanceIDBrandResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/brand`, body, opts)
   }
 
+  // PUT /admin/instances/{instanceID}/client-metadata-rules: Allow client_id URLs under a prefix.
+  // Needs organizations:write.
+  putInstancesInstanceIDClientMetadataRules(instanceID: string, body: PutInstancesInstanceIDClientMetadataRulesRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDClientMetadataRulesResponse>> {
+    return this.call<PutInstancesInstanceIDClientMetadataRulesResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/client-metadata-rules`, body, opts)
+  }
+
   // PUT /admin/instances/{instanceID}/federation: Make the instance a federation entity, or change
   // what it publishes. Needs organizations:write.
   putInstancesInstanceIDFederation(instanceID: string, body: PutInstancesInstanceIDFederationRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDFederationResponse>> {
@@ -1598,6 +1616,15 @@ export interface DeleteGroupsGroupIDRADIUSResponse {
 export interface DeleteInstancesInstanceIDBrandResponse {
   config_version: number
   removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteInstancesInstanceIDClientMetadataRulesResponse {
+  clients_removed: number
+  config_version: number
+  instance_id: string
+  removed: boolean
+  url_prefix: string
 }
 
 /** A JSON object of the Admin API. */
@@ -1967,6 +1994,7 @@ export interface GetClientsClientIDResponse {
   backchannel_token_delivery_mode?: string
   claims_redirect_uris?: string[] | null
   client_id: string
+  client_metadata_prefix?: string | null
   client_type: string
   consent_lifetime_s?: number | null
   created_at: string
@@ -2108,6 +2136,19 @@ export interface GetInstancesInstanceIDBrandResponse {
   logo_url: string
   product_name: string
   support_url: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDClientMetadataRulesResponse {
+  instance_id: string
+  rules: GetInstancesInstanceIDClientMetadataRulesResponseRulesItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDClientMetadataRulesResponseRulesItem {
+  org_id: string
+  scopes: string[]
+  url_prefix: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4630,6 +4671,20 @@ export interface PutInstancesInstanceIDBrandResponse {
   logo_url: string
   product_name: string
   support_url: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDClientMetadataRulesRequest {
+  org_id?: string
+  scopes?: string[]
+  url_prefix?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDClientMetadataRulesResponse {
+  config_version: number
+  instance_id: string
+  url_prefix: string
 }
 
 /** A JSON object of the Admin API. */

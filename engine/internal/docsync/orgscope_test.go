@@ -54,6 +54,8 @@ var globalNameKeys = map[string]string{
 var globalPairKeys = map[string]struct{ with, reason string }{
 	"federation_trust_anchors.entity_id": {"instance_id", "an instance's list of whose word to take, whatever " +
 		"organisation each anchor's clients land in"},
+	"client_metadata_rules.url_prefix": {"instance_id", "an instance's list of whose URLs to fetch, whatever " +
+		"organisation each rule's clients land in"},
 	"federation_subordinates.entity_id": {"instance_id", "a federation entity is an instance, and no organisation holdswhat it says"},
 	"ssf_sources.issuer": {"audience", "unique with lower(audience) across organisations " +
 		"since migration 0138: two tenants can trust one transmitter, and the audience is " +

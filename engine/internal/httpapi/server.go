@@ -1256,6 +1256,14 @@ func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
 	}
 
+	// A client with no registration can try this only where a rule covers it, and a
+	// server with none has nothing to say to one (client ID metadata document §6).
+	if rules, rerr := store.ClientMetadataRules(ctx, s.db, s.instanceID); rerr != nil {
+		s.log.ErrorContext(ctx, "reading the client metadata rules", "err", rerr)
+	} else if len(rules) > 0 {
+		md.ClientIDMetadataDocumentSupported = true
+	}
+
 	// Operator-declared scopes, for organisations that have any.
 	//
 	// The same rule as everything else in this document: advertised only when a

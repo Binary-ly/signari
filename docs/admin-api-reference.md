@@ -38,6 +38,7 @@ refused with `412` when the configuration moved since the version it names.
 | [identity-providers](#identity-providers) | 13 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
+| [instances / client-metadata-rules](#instances--client-metadata-rules) | 3 |
 | [instances / credential-encryption-key](#instances--credential-encryption-key) | 1 |
 | [instances / federation](#instances--federation) | 8 |
 | [instances / held-trust-marks](#instances--held-trust-marks) | 2 |
@@ -616,6 +617,7 @@ Answers:
 | `backchannel_token_delivery_mode` | string |  |
 | `claims_redirect_uris` | list of string or null |  |
 | `client_id` | string | always |
+| `client_metadata_prefix` | string or null |  |
 | `client_type` | string | always |
 | `consent_lifetime_s` | integer or null |  |
 | `created_at` | string | always |
@@ -1982,6 +1984,59 @@ Answers:
 | `logo_url` | string | always |
 | `product_name` | string | always |
 | `support_url` | string | always |
+
+## instances / client-metadata-rules
+
+### `DELETE /admin/instances/{instanceID}/client-metadata-rules`
+
+Stop, and delete the clients the rule admitted. Needs organizations:write.
+
+Go `DeleteInstancesInstanceIDClientMetadataRules`, TypeScript `deleteInstancesInstanceIDClientMetadataRules`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `clients_removed` | integer | always |
+| `config_version` | integer | always |
+| `instance_id` | string | always |
+| `removed` | boolean | always |
+| `url_prefix` | string | always |
+
+### `GET /admin/instances/{instanceID}/client-metadata-rules`
+
+Whose client_id URLs the instance will fetch. Needs config:read.
+
+Go `GetInstancesInstanceIDClientMetadataRules`, TypeScript `getInstancesInstanceIDClientMetadataRules`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `instance_id` | string | always |
+| `rules` | list of object | always |
+
+### `PUT /admin/instances/{instanceID}/client-metadata-rules`
+
+Allow client_id URLs under a prefix. Needs organizations:write.
+
+Go `PutInstancesInstanceIDClientMetadataRules`, TypeScript `putInstancesInstanceIDClientMetadataRules`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `org_id` | string |  |
+| `scopes` | list of string |  |
+| `url_prefix` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `instance_id` | string | always |
+| `url_prefix` | string | always |
 
 ## instances / credential-encryption-key
 

@@ -177,9 +177,11 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 	// OpenID Federation §12.1.3: failing to establish trust means the redirect URI is
 	// "invalid", so this is shown and not sent. A chain that resolved is looked at before
-	// here, so what reaches this one is a client nothing vouches for any more.
+	// here, so what reaches this one is a client nothing vouches for any more. A client
+	// from a metadata document the same: what it last said has run out and it could not
+	// be asked again, and §5.1 has that abort the request.
 	if c.FederationExpiry != nil && time.Now().After(*c.FederationExpiry) {
-		return direct("invalid_client", "this client's federation registration has expired")
+		return direct("invalid_client", "this client's registration has expired")
 	}
 	if c.OrgSuspended {
 		return direct("unauthorized_client", "this organisation is suspended")

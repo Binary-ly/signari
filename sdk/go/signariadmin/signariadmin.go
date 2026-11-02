@@ -601,6 +601,9 @@ type GetClientsClientIDResponse struct {
 	IDTokenEncryptedResponseEnc           *string        `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedAlg                      string         `json:"id_token_signed_alg,omitempty"`
 	InitiateLoginURI                      *string        `json:"initiate_login_uri,omitempty"`
+	IntrospectionEncryptedResponseAlg     *string        `json:"introspection_encrypted_response_alg,omitempty"`
+	IntrospectionEncryptedResponseEnc     *string        `json:"introspection_encrypted_response_enc,omitempty"`
+	IntrospectionSignedResponseAlg        *string        `json:"introspection_signed_response_alg,omitempty"`
 	IssuerAlias                           *string        `json:"issuer_alias,omitempty"`
 	JWKS                                  map[string]any `json:"jwks,omitempty"`
 	JWTBearerProviders                    []string       `json:"jwt_bearer_providers,omitempty"`
@@ -1917,6 +1920,9 @@ type PatchClientsClientIDRequest struct {
 	IDTokenEncryptedResponseEnc           *string         `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedResponseAlg              *string         `json:"id_token_signed_response_alg,omitempty"`
 	InitiateLoginURI                      *string         `json:"initiate_login_uri,omitempty"`
+	IntrospectionEncryptedResponseAlg     *string         `json:"introspection_encrypted_response_alg,omitempty"`
+	IntrospectionEncryptedResponseEnc     *string         `json:"introspection_encrypted_response_enc,omitempty"`
+	IntrospectionSignedResponseAlg        *string         `json:"introspection_signed_response_alg,omitempty"`
 	IssuerAlias                           *string         `json:"issuer_alias,omitempty"`
 	JWKS                                  json.RawMessage `json:"jwks,omitempty"`
 	JWTBearerProviders                    *[]string       `json:"jwt_bearer_providers,omitempty"`
@@ -1970,6 +1976,9 @@ type PatchClientsClientIDResponse struct {
 	IDTokenEncryptedResponseAlg        string   `json:"id_token_encrypted_response_alg,omitempty"`
 	IDTokenEncryptedResponseEnc        string   `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedResponseAlg           string   `json:"id_token_signed_response_alg,omitempty"`
+	IntrospectionEncryptedResponseAlg  string   `json:"introspection_encrypted_response_alg,omitempty"`
+	IntrospectionEncryptedResponseEnc  string   `json:"introspection_encrypted_response_enc,omitempty"`
+	IntrospectionSignedResponseAlg     string   `json:"introspection_signed_response_alg,omitempty"`
 	IssuerAlias                        string   `json:"issuer_alias,omitempty"`
 	LoginUiURL                         string   `json:"login_ui_url,omitempty"`
 	MayExchange                        bool     `json:"may_exchange,omitempty"`

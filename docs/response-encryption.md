@@ -9,6 +9,7 @@ both, so that it can be held by something in between without being readable ther
 | ID token | always | `id_token_encrypted_response_alg` |
 | Userinfo | `userinfo_signed_response_alg` | `userinfo_encrypted_response_alg` |
 | Authorization response | [`authorization_signed_response_alg`](jarm.md) | `authorization_encrypted_response_alg` |
+| Introspection | [when asked for](#signed-introspection), with `introspection_signed_response_alg` | `introspection_encrypted_response_alg` |
 
 Each one is the client's choice, and with none set nothing changes.
 
@@ -47,11 +48,12 @@ nothing about which side wrote it.
 signari client set-encryption -client-id app -for id_token -alg ECDH-ES
 signari client set-encryption -client-id app -for userinfo -alg RSA-OAEP-256 -enc A256GCM
 signari client set-encryption -client-id app -for authorization -alg ECDH-ES
+signari client set-encryption -client-id app -for introspection -alg ECDH-ES
 signari client set-encryption -client-id app -for userinfo -alg ""     # off
 ```
 
 The same settings are `id_token_encrypted_response_alg`, `id_token_encrypted_response_enc`
-and their `userinfo_` and `authorization_` counterparts, on the client PATCH, in `apply`
+and their `userinfo_`, `authorization_` and `introspection_` counterparts, on the client PATCH, in `apply`
 and in dynamic registration. Discovery lists what is offered as
 `id_token_encryption_alg_values_supported` and its counterparts.
 
@@ -83,11 +85,48 @@ the same `response` parameter. Asking for that holds the client to signed respon
 setting a signing algorithm does. `query.jwt` stays refused for a hybrid response even
 encrypted, because a query string is still written down.
 
+## Signed introspection
+
+A resource server that has to show what it was told asks for a JWT (RFC 9701):
+
+```
+POST /oauth2/introspect
+Accept: application/token-introspection+jwt
+
+token=...&client_assertion=...
+```
+
+The answer is `application/token-introspection+jwt`, with that as the JWT's `typ`, and
+what RFC 7662 would have said goes under its own claim so that nothing reads it as a
+token. There is no `sub` or `exp` at the top level:
+
+```json
+{
+  "iss": "https://id.example.com",
+  "aud": "resource-server",
+  "iat": 1793640000,
+  "token_introspection": {"active": true, "sub": "...", "scope": "read"}
+}
+```
+
+A token that is not active gets `{"active": false}` and nothing else. A caller that does
+not authenticate gets a 400, not the 401 the JSON form answers, as the RFC requires.
+
+It is signed RS256 unless the client sets another, which RFC 9701 says is the default:
+
+```sh
+signari client set-alg -client-id rs -introspection-alg ES256
+```
+
+The `Accept` header decides, so a resource server that does not ask gets JSON whatever
+is set. Discovery lists `introspection_signing_alg_values_supported` and its encryption
+counterparts.
+
 ## When it cannot be done
 
-Nothing is sent in the clear instead. The token endpoint, userinfo and the authorization
-endpoint answer a 500, because a client that asked for encryption has said it will not
-take these claims any other way.
+Nothing is sent in the clear instead. The token endpoint, userinfo, introspection and the
+authorization endpoint answer a 500, because a client that asked for this has said it
+will not take these claims any other way.
 
 ## What is not here
 

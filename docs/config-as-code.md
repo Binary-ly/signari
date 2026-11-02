@@ -41,8 +41,9 @@ clients:
     id_token_signed_response_alg: RS256   # ES256 (default), or one the instance holds a key for
     authorization_signed_response_alg: ES256   # JARM: signs its responses and holds it to asking; "" lets go
     userinfo_signed_response_alg: ES256        # "" goes back to JSON
+    introspection_signed_response_alg: ES256   # RFC 9701, when it asks for a JWT; "" goes back to RS256
     id_token_encrypted_response_alg: ECDH-ES   # needs a key `client set-keys` registered; "" stops
-    id_token_encrypted_response_enc: A256GCM   # A128CBC-HS256 by default; also userinfo_ and authorization_
+    id_token_encrypted_response_enc: A256GCM   # A128CBC-HS256 by default; also userinfo_, authorization_, introspection_
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
     require_signed_request_object: true           # RFC 9101; omit to leave as it is
     first_party: false           # true skips the consent screen

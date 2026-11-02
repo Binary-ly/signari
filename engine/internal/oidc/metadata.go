@@ -72,6 +72,10 @@ type Metadata struct {
 	UserinfoSigningAlgValuesSupported         []string `json:"userinfo_signing_alg_values_supported,omitempty"`
 	UserinfoEncryptionAlgValuesSupported      []string `json:"userinfo_encryption_alg_values_supported,omitempty"`
 	UserinfoEncryptionEncValuesSupported      []string `json:"userinfo_encryption_enc_values_supported,omitempty"`
+	// RFC 9701 §7.
+	IntrospectionSigningAlgValuesSupported    []string `json:"introspection_signing_alg_values_supported,omitempty"`
+	IntrospectionEncryptionAlgValuesSupported []string `json:"introspection_encryption_alg_values_supported,omitempty"`
+	IntrospectionEncryptionEncValuesSupported []string `json:"introspection_encryption_enc_values_supported,omitempty"`
 	GrantTypesSupported                       []string `json:"grant_types_supported"`
 	// RFC 9396 §10. Populated per deployment at request time, because the
 	// registered types are a deployment's own list -- so this is empty in the
@@ -347,6 +351,9 @@ func Build(cfg Config) (*Metadata, error) {
 		UserinfoSigningAlgValuesSupported:         algNames,
 		UserinfoEncryptionAlgValuesSupported:      tokens.EncryptionAlgorithms,
 		UserinfoEncryptionEncValuesSupported:      tokens.ContentEncryptions,
+		IntrospectionSigningAlgValuesSupported:    algNames,
+		IntrospectionEncryptionAlgValuesSupported: tokens.EncryptionAlgorithms,
+		IntrospectionEncryptionEncValuesSupported: tokens.ContentEncryptions,
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.

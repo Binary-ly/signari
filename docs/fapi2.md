@@ -60,7 +60,31 @@ everywhere; and there is no password grant.
   for you: it has to check the DPoP proof or the certificate binding on every call.
 - **The whole server.** Discovery still advertises everything the deployment does, because
   other clients use it. A deployment that must offer nothing else has to turn it off.
-- **FAPI 2.0 Message Signing.** A separate profile, which needs signed requests and responses.
+
+## FAPI 2.0 Message Signing
+
+A separate profile on top of this one, for when each side has to be able to prove what
+the other sent. `fapi2-message-signing` is everything above and the following:
+
+```sh
+signari client set-signed-requests -client-id bank-api
+signari client set-alg -client-id bank-api -response-alg ES256
+signari client set-profile -client-id bank-api -security-profile fapi2-message-signing
+```
+
+It is refused until the client requires signed requests and has a response algorithm of
+PS256, ES256 or EdDSA, and a client that stops meeting that is refused as above.
+
+| | |
+|---|---|
+| **Requests** | [Signed](jar.md), at the pushed authorization endpoint alone, with PS256, ES256 or EdDSA. `aud` is the issuer, and `nbf` and `exp` are both required, at most 60 minutes apart |
+| **Responses** | [Signed](jarm.md), with `response_mode=jwt`. Anything else is refused |
+| **Introspection** | A resource server asks for [a signed answer](response-encryption.md#signed-introspection) with its `Accept` header. It is signed as the client's tokens are unless it sets otherwise, because RFC 9701's default of RS256 is one this profile rules out |
+| **ID tokens** | Signed already |
+
+Not here is `response_modes`, the client metadata that lists the modes a client may use.
+It is optional, and a client held to this profile is limited to signed ones anyway.
 
 [The review](security-review-fapi2.md) goes through the specification requirement by
-requirement.
+requirement. It covers the Security Profile. The OpenID Foundation's Message Signing plan
+has not been run either.

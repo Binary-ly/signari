@@ -166,6 +166,8 @@ type Client struct {
 	AuthorizationResponseAlg *string `yaml:"authorization_signed_response_alg"`
 	// UserinfoSignedAlg signs its userinfo responses; "" goes back to JSON.
 	UserinfoSignedAlg *string `yaml:"userinfo_signed_response_alg"`
+	// IntrospectionSignedAlg signs an introspection answer it asks for as a JWT.
+	IntrospectionSignedAlg *string `yaml:"introspection_signed_response_alg"`
 	// What is encrypted to it, each needing a key it has registered already. An alg
 	// alone comes with the default enc, "" turns it off, and absent leaves it.
 	IDTokenEncryptedAlg       *string `yaml:"id_token_encrypted_response_alg"`
@@ -174,6 +176,8 @@ type Client struct {
 	UserinfoEncryptedEnc      *string `yaml:"userinfo_encrypted_response_enc"`
 	AuthorizationEncryptedAlg *string `yaml:"authorization_encrypted_response_alg"`
 	AuthorizationEncryptedEnc *string `yaml:"authorization_encrypted_response_enc"`
+	IntrospectionEncryptedAlg *string `yaml:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedEnc *string `yaml:"introspection_encrypted_response_enc"`
 	// RolesClaim is the claim its tokens carry a person's roles in the application
 	// under, "" for none; absent leaves it.
 	RolesClaim *string `yaml:"roles_claim"`
@@ -210,8 +214,9 @@ func (c Client) settings() store.ClientSettings {
 		UserinfoSignedAlg: c.UserinfoSignedAlg, IDTokenEncryptedAlg: c.IDTokenEncryptedAlg,
 		IDTokenEncryptedEnc: c.IDTokenEncryptedEnc, UserinfoEncryptedAlg: c.UserinfoEncryptedAlg,
 		UserinfoEncryptedEnc: c.UserinfoEncryptedEnc, AuthorizationEncryptedAlg: c.AuthorizationEncryptedAlg,
-		AuthorizationEncryptedEnc: c.AuthorizationEncryptedEnc,
-		RolesClaim:                c.RolesClaim, LoginUI: c.LoginUI,
+		AuthorizationEncryptedEnc: c.AuthorizationEncryptedEnc, IntrospectionSignedAlg: c.IntrospectionSignedAlg,
+		IntrospectionEncryptedAlg: c.IntrospectionEncryptedAlg, IntrospectionEncryptedEnc: c.IntrospectionEncryptedEnc,
+		RolesClaim: c.RolesClaim, LoginUI: c.LoginUI,
 		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector,
 		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR, RequireSignedRequest: c.RequireSignedRequest,
 		RequireState: c.RequireState, FirstParty: c.FirstParty,

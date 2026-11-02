@@ -44,12 +44,16 @@ type ClientSettings struct {
 	// UserinfoSignedAlg signs the client's userinfo responses, which are then a JWT;
 	// "" goes back to JSON. The same rules.
 	UserinfoSignedAlg *string
+	// IntrospectionSignedAlg signs an introspection answer the client asks for as a
+	// JWT; "" goes back to RS256, the default RFC 9701 gives it. The same rules.
+	IntrospectionSignedAlg *string
 	// What the client has encrypted to it, each an algorithm and a content encryption.
 	// An algorithm alone comes with the default, "" turns it off, and the client has to
 	// hold a key for it already: a response nobody can encrypt is a response not sent.
 	IDTokenEncryptedAlg, IDTokenEncryptedEnc             *string
 	UserinfoEncryptedAlg, UserinfoEncryptedEnc           *string
 	AuthorizationEncryptedAlg, AuthorizationEncryptedEnc *string
+	IntrospectionEncryptedAlg, IntrospectionEncryptedEnc *string
 	// RolesClaim names the claim the client's tokens carry a person's roles in
 	// the application under; "" carries none.
 	RolesClaim *string
@@ -223,6 +227,17 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if a := s.IntrospectionSignedAlg; a != nil {
+		if *a != "" {
+			if err := held(*a); err != nil {
+				return err
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET introspection_signed_response_alg = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *a)); err != nil {
+			return err
+		}
+	}
 	for _, e := range []struct {
 		alg, enc *string
 		update   string
@@ -233,6 +248,8 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			userinfo_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
 		{s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc, `UPDATE core.clients SET authorization_encrypted_response_alg = NULLIF($2, ''),
 			authorization_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
+		{s.IntrospectionEncryptedAlg, s.IntrospectionEncryptedEnc, `UPDATE core.clients SET introspection_encrypted_response_alg = NULLIF($2, ''),
+			introspection_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
 	} {
 		if e.alg == nil {
 			continue
@@ -401,8 +418,13 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if a := s.IntrospectionSignedAlg; a != nil && *a != "" && !slices.Contains(ClientAlgorithms, *a) {
+		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
+			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
 	for _, e := range [][2]*string{{s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc},
-		{s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc}, {s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc}} {
+		{s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc}, {s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc},
+		{s.IntrospectionEncryptedAlg, s.IntrospectionEncryptedEnc}} {
 		alg, enc := e[0], e[1]
 		if alg != nil && *alg != "" && !slices.Contains(tokens.EncryptionAlgorithms, *alg) {
 			return fmt.Errorf("%w: %q is not an encryption algorithm a client may use (%s)",
@@ -425,9 +447,9 @@ func CheckClientSettings(s ClientSettings) error {
 	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
 		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
 	}
-	if v := s.SecurityProfile; v != nil && *v != "none" && *v != clients.ProfileFAPI2 {
-		return fmt.Errorf("%w: a security profile is none or %s, not %q", ErrInvalidClientSetting,
-			clients.ProfileFAPI2, *v)
+	if v := s.SecurityProfile; v != nil && *v != "none" && *v != clients.ProfileFAPI2 && *v != clients.ProfileFAPI2MessageSigning {
+		return fmt.Errorf("%w: a security profile is none, %s or %s, not %q", ErrInvalidClientSetting,
+			clients.ProfileFAPI2, clients.ProfileFAPI2MessageSigning, *v)
 	}
 	if v := s.SubjectType; v != nil && *v != "public" && *v != "pairwise" {
 		return fmt.Errorf("%w: a subject is public or pairwise, not %q", ErrInvalidClientSetting, *v)
@@ -557,9 +579,11 @@ type ClientSettingsView struct {
 	AuthorizationResponseAlg string
 	// UserinfoSignedAlg is "" for a userinfo response in JSON.
 	UserinfoSignedAlg string
-	// IDTokenEncryption, UserinfoEncryption and AuthorizationEncryption are what is
-	// encrypted to the client.
+	// IntrospectionSignedAlg is "" for the default, RS256.
+	IntrospectionSignedAlg string
+	// These are what is encrypted to the client.
 	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
+	IntrospectionEncryption                                        tokens.Encryption
 	// ConsentLifetime is 0 for a consent that does not expire.
 	ConsentLifetime time.Duration
 }
@@ -579,13 +603,16 @@ func ClientSettingsOf(ctx context.Context, q interface {
 		       COALESCE(userinfo_signed_response_alg, ''),
 		       COALESCE(id_token_encrypted_response_alg, ''), COALESCE(id_token_encrypted_response_enc, ''),
 		       COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(userinfo_encrypted_response_enc, ''),
-		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, '')
+		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, ''),
+		       COALESCE(introspection_signed_response_alg, ''),
+		       COALESCE(introspection_encrypted_response_alg, ''), COALESCE(introspection_encrypted_response_enc, '')
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
 			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent,
 			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest, &v.AuthorizationResponseAlg, &v.UserinfoSignedAlg,
 			&v.IDTokenEncryption.Alg, &v.IDTokenEncryption.Enc, &v.UserinfoEncryption.Alg, &v.UserinfoEncryption.Enc,
-			&v.AuthorizationEncryption.Alg, &v.AuthorizationEncryption.Enc)
+			&v.AuthorizationEncryption.Alg, &v.AuthorizationEncryption.Enc, &v.IntrospectionSignedAlg,
+			&v.IntrospectionEncryption.Alg, &v.IntrospectionEncryption.Enc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

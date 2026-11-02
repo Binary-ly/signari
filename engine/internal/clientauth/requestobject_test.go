@@ -47,8 +47,54 @@ func TestAKeyMarkedForEncryptionVerifiesNothing(t *testing.T) {
 	now := time.Now()
 	object := signObject(t, k.priv, map[string]any{"iss": "app", "aud": "https://id.test", "client_id": "app",
 		"exp": now.Add(time.Minute).Unix(), "scope": "openid"})
-	if _, err := VerifyRequestObject(object, "app", k.jwks(t), []string{"https://id.test"}, now); err == nil {
+	if _, err := VerifyRequestObject(object, "app", k.jwks(t), []string{"https://id.test"}, now, RequestObjectRules{}); err == nil {
 		t.Error("a request object verified against a key marked for encryption")
+	}
+}
+
+// FAPI 2.0 Message Signing §5.3.1, on top of what every request object is held to.
+func TestAProfileAddsToWhatARequestObjectIsHeldTo(t *testing.T) {
+	k := newKey(t, "k1")
+	now := time.Now()
+	claims := func(extra map[string]any) map[string]any {
+		out := map[string]any{"iss": "app", "aud": "https://id.test", "client_id": "app", "scope": "openid",
+			"nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix()}
+		for name, value := range extra {
+			if value == nil {
+				delete(out, name)
+				continue
+			}
+			out[name] = value
+		}
+		return out
+	}
+	verify := func(rules RequestObjectRules, extra map[string]any) error {
+		t.Helper()
+		_, err := VerifyRequestObject(signObject(t, k.priv, claims(extra)), "app", k.jwks(t),
+			[]string{"https://id.test"}, now, rules)
+		return err
+	}
+	strict := RequestObjectRules{Dated: true, Algorithms: []string{"ES256"}}
+	if err := verify(strict, nil); err != nil {
+		t.Fatalf("what the rules ask for: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		rules RequestObjectRules
+		extra map[string]any
+		says  string
+	}{
+		"no nbf":           {strict, map[string]any{"nbf": nil}, "both nbf and exp"},
+		"no exp":           {strict, map[string]any{"exp": nil}, "both nbf and exp"},
+		"nbf long ago":     {strict, map[string]any{"nbf": now.Add(-61 * time.Minute).Unix()}, "over the"},
+		"the wrong signer": {RequestObjectRules{Algorithms: []string{"PS256"}}, nil, "signed with ES256"},
+	} {
+		if err := verify(tc.rules, tc.extra); err == nil || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// None of which anybody else is held to.
+	if err := verify(RequestObjectRules{}, map[string]any{"nbf": nil, "exp": nil}); err != nil {
+		t.Errorf("no profile: %v", err)
 	}
 }
 
@@ -68,7 +114,7 @@ func TestARequestObjectBecomesItsParameters(t *testing.T) {
 		"scope": "openid", "max_age": 600, "resource": []string{"https://a.test", "https://b.test"},
 		"claims":                map[string]any{"userinfo": map[string]any{"email": nil}},
 		"authorization_details": []any{map[string]any{"type": "payment"}},
-	}), "app", string(jwks), []string{"https://id.test"}, now)
+	}), "app", string(jwks), []string{"https://id.test"}, now, RequestObjectRules{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,12 +147,12 @@ func TestARequestObjectIsHeldToTheClientsKeys(t *testing.T) {
 		{"not json", "did not parse"},
 		{string(private), "private key material"},
 	} {
-		_, err := VerifyRequestObject(object, "app", c.jwks, []string{"https://id.test"}, time.Now())
+		_, err := VerifyRequestObject(object, "app", c.jwks, []string{"https://id.test"}, time.Now(), RequestObjectRules{})
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("with keys %q it gave %v, want %q", c.jwks, err, c.want)
 		}
 	}
-	if _, err := VerifyRequestObject(strings.Repeat("x", maxRequestObjectBytes+1), "app", string(private), nil, time.Now()); err == nil {
+	if _, err := VerifyRequestObject(strings.Repeat("x", maxRequestObjectBytes+1), "app", string(private), nil, time.Now(), RequestObjectRules{}); err == nil {
 		t.Error("an enormous object was read")
 	}
 }

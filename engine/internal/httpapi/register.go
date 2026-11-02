@@ -105,6 +105,9 @@ type registrationRequest struct {
 	UserinfoEncryptedResponseEnc      string          `json:"userinfo_encrypted_response_enc"`
 	AuthorizationEncryptedResponseAlg string          `json:"authorization_encrypted_response_alg"`
 	AuthorizationEncryptedResponseEnc string          `json:"authorization_encrypted_response_enc"`
+	IntrospectionSignedResponseAlg    string          `json:"introspection_signed_response_alg"`
+	IntrospectionEncryptedResponseAlg string          `json:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedResponseEnc string          `json:"introspection_encrypted_response_enc"`
 	JWKS                              json.RawMessage `json:"jwks"`
 }
 
@@ -252,6 +255,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if a := strings.TrimSpace(req.UserinfoSignedResponseAlg); a != "" {
 		settings.UserinfoSignedAlg = &a
 	}
+	if a := strings.TrimSpace(req.IntrospectionSignedResponseAlg); a != "" {
+		settings.IntrospectionSignedAlg = &a
+	}
 	for _, e := range []struct {
 		from [2]string
 		alg  **string
@@ -260,6 +266,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		{[2]string{req.IDTokenEncryptedResponseAlg, req.IDTokenEncryptedResponseEnc}, &settings.IDTokenEncryptedAlg, &settings.IDTokenEncryptedEnc},
 		{[2]string{req.UserinfoEncryptedResponseAlg, req.UserinfoEncryptedResponseEnc}, &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc},
 		{[2]string{req.AuthorizationEncryptedResponseAlg, req.AuthorizationEncryptedResponseEnc}, &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc},
+		{[2]string{req.IntrospectionEncryptedResponseAlg, req.IntrospectionEncryptedResponseEnc}, &settings.IntrospectionEncryptedAlg, &settings.IntrospectionEncryptedEnc},
 	} {
 		if alg := strings.TrimSpace(e.from[0]); alg != "" {
 			*e.alg = &alg
@@ -348,6 +355,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			"userinfo_encrypted_response_enc":      st.UserinfoEncryption.Enc,
 			"authorization_encrypted_response_alg": st.AuthorizationEncryption.Alg,
 			"authorization_encrypted_response_enc": st.AuthorizationEncryption.Enc,
+			"introspection_signed_response_alg":    st.IntrospectionSignedAlg,
+			"introspection_encrypted_response_alg": st.IntrospectionEncryption.Alg,
+			"introspection_encrypted_response_enc": st.IntrospectionEncryption.Enc,
 		} {
 			if value != "" {
 				body[name] = value

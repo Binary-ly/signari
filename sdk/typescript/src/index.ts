@@ -1940,6 +1940,9 @@ export interface GetClientsClientIDResponse {
   id_token_encrypted_response_enc?: string | null
   id_token_signed_alg?: string
   initiate_login_uri?: string | null
+  introspection_encrypted_response_alg?: string | null
+  introspection_encrypted_response_enc?: string | null
+  introspection_signed_response_alg?: string | null
   issuer_alias?: string | null
   jwks?: Record<string, unknown> | null
   jwt_bearer_providers?: string[]
@@ -3256,6 +3259,9 @@ export interface PatchClientsClientIDRequest {
   id_token_encrypted_response_enc?: string
   id_token_signed_response_alg?: string
   initiate_login_uri?: string
+  introspection_encrypted_response_alg?: string
+  introspection_encrypted_response_enc?: string
+  introspection_signed_response_alg?: string
   issuer_alias?: string
   jwks?: unknown
   jwt_bearer_providers?: string[]
@@ -3309,6 +3315,9 @@ export interface PatchClientsClientIDResponse {
   id_token_encrypted_response_alg?: string
   id_token_encrypted_response_enc?: string
   id_token_signed_response_alg?: string
+  introspection_encrypted_response_alg?: string
+  introspection_encrypted_response_enc?: string
+  introspection_signed_response_alg?: string
   issuer_alias?: string
   login_ui_url?: string
   may_exchange?: boolean

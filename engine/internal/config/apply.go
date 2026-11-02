@@ -133,6 +133,8 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		cl.IDTokenEncryptedAlg, cl.IDTokenEncryptedEnc = &st.IDTokenEncryption.Alg, &st.IDTokenEncryption.Enc
 		cl.UserinfoEncryptedAlg, cl.UserinfoEncryptedEnc = &st.UserinfoEncryption.Alg, &st.UserinfoEncryption.Enc
 		cl.AuthorizationEncryptedAlg, cl.AuthorizationEncryptedEnc = &st.AuthorizationEncryption.Alg, &st.AuthorizationEncryption.Enc
+		cl.IntrospectionSignedAlg = &st.IntrospectionSignedAlg
+		cl.IntrospectionEncryptedAlg, cl.IntrospectionEncryptedEnc = &st.IntrospectionEncryption.Alg, &st.IntrospectionEncryption.Enc
 		cl.MinimumACR = &st.MinimumACR
 		c.clients[id] = cl
 	}
@@ -489,6 +491,9 @@ func clientDiff(have, want Client) string {
 		"userinfo_encrypted_response_enc":      {want.UserinfoEncryptedEnc, have.UserinfoEncryptedEnc},
 		"authorization_encrypted_response_alg": {want.AuthorizationEncryptedAlg, have.AuthorizationEncryptedAlg},
 		"authorization_encrypted_response_enc": {want.AuthorizationEncryptedEnc, have.AuthorizationEncryptedEnc},
+		"introspection_signed_response_alg":    {want.IntrospectionSignedAlg, have.IntrospectionSignedAlg},
+		"introspection_encrypted_response_alg": {want.IntrospectionEncryptedAlg, have.IntrospectionEncryptedAlg},
+		"introspection_encrypted_response_enc": {want.IntrospectionEncryptedEnc, have.IntrospectionEncryptedEnc},
 	} {
 		if w, h := values[0], values[1]; w != nil && h != nil && *w != *h {
 			d = append(d, name)

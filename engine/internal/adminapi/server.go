@@ -883,6 +883,8 @@ type patchClientRequest struct {
 	AuthorizationSignedResponseAlg *string `json:"authorization_signed_response_alg"`
 	// UserinfoSignedResponseAlg signs its userinfo responses; "" goes back to JSON.
 	UserinfoSignedResponseAlg *string `json:"userinfo_signed_response_alg"`
+	// IntrospectionSignedResponseAlg signs an introspection answer it asks for as a JWT.
+	IntrospectionSignedResponseAlg *string `json:"introspection_signed_response_alg"`
 	// What is encrypted to it. An alg alone comes with the default enc, and "" stops.
 	IDTokenEncryptedResponseAlg       *string `json:"id_token_encrypted_response_alg"`
 	IDTokenEncryptedResponseEnc       *string `json:"id_token_encrypted_response_enc"`
@@ -890,6 +892,8 @@ type patchClientRequest struct {
 	UserinfoEncryptedResponseEnc      *string `json:"userinfo_encrypted_response_enc"`
 	AuthorizationEncryptedResponseAlg *string `json:"authorization_encrypted_response_alg"`
 	AuthorizationEncryptedResponseEnc *string `json:"authorization_encrypted_response_enc"`
+	IntrospectionEncryptedResponseAlg *string `json:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedResponseEnc *string `json:"introspection_encrypted_response_enc"`
 	// RolesClaim names the claim its tokens carry a person's roles in it under;
 	// "" carries none.
 	RolesClaim *string `json:"roles_claim"`
@@ -1143,6 +1147,8 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc = r.IDTokenEncryptedResponseAlg, r.IDTokenEncryptedResponseEnc
 	s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc = r.UserinfoEncryptedResponseAlg, r.UserinfoEncryptedResponseEnc
 	s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc = r.AuthorizationEncryptedResponseAlg, r.AuthorizationEncryptedResponseEnc
+	s.IntrospectionSignedAlg = r.IntrospectionSignedResponseAlg
+	s.IntrospectionEncryptedAlg, s.IntrospectionEncryptedEnc = r.IntrospectionEncryptedResponseAlg, r.IntrospectionEncryptedResponseEnc
 	s.RolesClaim, s.LoginUI, s.AccessTokenFormat = r.RolesClaim, r.LoginUIURL, r.AccessTokenFormat
 	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
@@ -1315,6 +1321,9 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"userinfo_encrypted_response_enc":       got.UserinfoEncryption.Enc,
 				"authorization_encrypted_response_alg":  got.AuthorizationEncryption.Alg,
 				"authorization_encrypted_response_enc":  got.AuthorizationEncryption.Enc,
+				"introspection_signed_response_alg":     got.IntrospectionSignedAlg,
+				"introspection_encrypted_response_alg":  got.IntrospectionEncryption.Alg,
+				"introspection_encrypted_response_enc":  got.IntrospectionEncryption.Enc,
 				"roles_claim":                           got.RolesClaim,
 				"login_ui_url":                          got.LoginUI,
 				"access_token_format":                   got.AccessTokenFormat,

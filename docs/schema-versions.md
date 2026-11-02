@@ -7,6 +7,18 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0275 message_signing_profile
+
+Not compatible with the release before: stop it before migrating.
+
+FAPI 2.0 Message Signing as a security profile, the Security Profile and signed requests and responses besides. Not compatible with the previous release in the one way that matters: a client set to it is not a profile that release knows.
+
+## 0274 introspection_responses
+
+Compatible with the release before: its binary may still serve this schema.
+
+What signs a client's introspection responses when it asks for a JWT (RFC 9701), and what they are encrypted to it with. A resource server keeps what it was told, and an answer in plain JSON proves nothing to anybody it shows that to afterwards.
+
 ## 0273 client_response_encryption
 
 Compatible with the release before: its binary may still serve this schema.

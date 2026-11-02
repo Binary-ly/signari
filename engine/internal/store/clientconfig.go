@@ -230,10 +230,11 @@ func checkClientKeys(ctx context.Context, q clientWriter, clientID string, raw [
 			return 0, invalidSetting("the key set holds a key that is not usable")
 		}
 	}
-	var encrypted [3]string
+	var encrypted [4]string
 	err := q.QueryRow(ctx, `SELECT COALESCE(id_token_encrypted_response_alg, ''),
-		COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_alg, '')
-		FROM core.clients WHERE client_id = $1`, clientID).Scan(&encrypted[0], &encrypted[1], &encrypted[2])
+		COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_alg, ''),
+		COALESCE(introspection_encrypted_response_alg, '')
+		FROM core.clients WHERE client_id = $1`, clientID).Scan(&encrypted[0], &encrypted[1], &encrypted[2], &encrypted[3])
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}

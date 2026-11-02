@@ -165,6 +165,7 @@ var columnClass = map[string]string{
 	"clients.id_token_encrypted_response_enc":      "public",
 	"clients.userinfo_encrypted_response_enc":      "public",
 	"clients.authorization_encrypted_response_enc": "public",
+	"clients.introspection_encrypted_response_enc": "public",
 	// A token's identifier, not the token: it is in the token's own claims,
 	// and knowing it lets nobody present the token.
 	"preauthorized_codes.access_token_jti": "public",

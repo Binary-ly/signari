@@ -551,10 +551,12 @@ func run(args []string) (err error) {
 		"responses, holding it to asking for them signed; empty lets go of both")
 	clientUserinfoAlg := fs.String("userinfo-alg", "", "`client set-alg`: what signs the client's userinfo "+
 		"responses; empty goes back to JSON")
+	clientIntrospectionAlg := fs.String("introspection-alg", "", "`client set-alg`: what signs an introspection "+
+		"answer the client asks for as a JWT; empty goes back to RS256")
 	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
 		"resource server introspects")
-	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, or fapi2 to hold the "+
-		"client to the FAPI 2.0 Security Profile")
+	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, fapi2 to hold the "+
+		"client to the FAPI 2.0 Security Profile, or fapi2-message-signing for that and signed requests and responses")
 	subjectType := fs.String("subject-type", "public", "`client set-subject-type`: public, or pairwise for a "+
 		"subject that means nothing outside the client's sector")
 	sector := fs.String("sector", "", "`client set-subject-type`: the host name of the clients that share a "+
@@ -906,7 +908,8 @@ func run(args []string) (err error) {
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
 	keepAuth := fs.Bool("keep-auth", false, "`client set-keys`: keep how the client authenticates, the keys being "+
 		"for what it signs and what is encrypted to it")
-	encryptFor := fs.String("for", "", "`client set-encryption`: what is encrypted, id_token, userinfo or authorization")
+	encryptFor := fs.String("for", "", "`client set-encryption`: what is encrypted, id_token, userinfo, authorization "+
+		"or introspection")
 	contentEnc := fs.String("enc", "", "`client set-encryption`: the content encryption (default "+
 		tokens.DefaultContentEncryption+")")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
@@ -1501,7 +1504,7 @@ func run(args []string) (err error) {
 		})
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
 	case "client set-alg":
-		var accessAlg, responseAlg, userinfoAlg *string
+		var accessAlg, responseAlg, userinfoAlg, introspectionAlg *string
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "access-alg" {
 				accessAlg = clientAccessAlg
@@ -1512,8 +1515,11 @@ func run(args []string) (err error) {
 			if f.Name == "userinfo-alg" {
 				userinfoAlg = clientUserinfoAlg
 			}
+			if f.Name == "introspection-alg" {
+				introspectionAlg = clientIntrospectionAlg
+			}
 		})
-		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg, userinfoAlg)
+		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg, userinfoAlg, introspectionAlg)
 	case "client set-issuer-alias":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
 			map[bool]string{true: "tokens are minted under this instance's own issuer",
@@ -5175,8 +5181,10 @@ func clientSetEncryption(ctx context.Context, conn *pgx.Conn, clientID, what, al
 		algOf, encOf = &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc
 	case "authorization":
 		algOf, encOf = &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc
+	case "introspection":
+		algOf, encOf = &settings.IntrospectionEncryptedAlg, &settings.IntrospectionEncryptedEnc
 	default:
-		return fmt.Errorf("give -for, one of id_token, userinfo or authorization")
+		return fmt.Errorf("give -for, one of id_token, userinfo, authorization or introspection")
 	}
 	*algOf = &alg
 	if encGiven {
@@ -10178,12 +10186,12 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 	return nil
 }
 
-// clientSetAlg sets the algorithms the client's ID and access tokens and its
-// authorization responses are signed with, refusing one the instance holds no
-// active key for.
-func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg, responseAlg, userinfoAlg *string) error {
-	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil && userinfoAlg == nil {
-		return fmt.Errorf("give -client-id and -alg, -access-alg, -response-alg or -userinfo-alg (%s)",
+// clientSetAlg sets the algorithms what the client is sent is signed with, refusing
+// one the instance holds no active key for. alg is its ID and access tokens.
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string,
+	accessAlg, responseAlg, userinfoAlg, introspectionAlg *string) error {
+	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil && userinfoAlg == nil && introspectionAlg == nil {
+		return fmt.Errorf("give -client-id and -alg, -access-alg, -response-alg, -userinfo-alg or -introspection-alg (%s)",
 			strings.Join(store.ClientAlgorithms, ", "))
 	}
 	tx, err := conn.Begin(ctx)
@@ -10192,7 +10200,7 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, acc
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	settings := store.ClientSettings{AccessTokenAlg: accessAlg, AuthorizationResponseAlg: responseAlg,
-		UserinfoSignedAlg: userinfoAlg}
+		UserinfoSignedAlg: userinfoAlg, IntrospectionSignedAlg: introspectionAlg}
 	if alg != "" {
 		settings.IDTokenAlg = &alg
 	}
@@ -10223,6 +10231,11 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, acc
 		fmt.Printf("%s: userinfo answers in JSON\n", clientID)
 	} else if userinfoAlg != nil {
 		fmt.Printf("%s: userinfo answers in a JWT signed with %s\n", clientID, *userinfoAlg)
+	}
+	if introspectionAlg != nil && *introspectionAlg == "" {
+		fmt.Printf("%s: an introspection answer as a JWT is signed RS256\n", clientID)
+	} else if introspectionAlg != nil {
+		fmt.Printf("%s: an introspection answer as a JWT is signed with %s\n", clientID, *introspectionAlg)
 	}
 	return nil
 }

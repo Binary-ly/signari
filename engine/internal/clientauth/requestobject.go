@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,15 @@ const MaxRequestObjectLifetime = 60 * time.Minute
 // requestObjectClaims are the JWT's own, and not parameters of the request.
 var requestObjectClaims = map[string]bool{"iss": true, "aud": true, "exp": true, "nbf": true, "iat": true, "jti": true}
 
+// RequestObjectRules are what a security profile adds to what every Request Object is
+// held to. The zero value adds nothing.
+type RequestObjectRules struct {
+	// Dated requires `nbf` and `exp`: FAPI 2.0 Message Signing §5.3.1.
+	Dated bool
+	// Algorithms narrows what may have signed it, when it is not nil.
+	Algorithms []string
+}
+
 // VerifyRequestObject checks a signed Request Object and answers the parameters in it.
 //
 // clientID is the `client_id` the request came with, and jwksJSON that client's
@@ -38,7 +48,8 @@ var requestObjectClaims = map[string]bool{"iss": true, "aud": true, "exp": true,
 // `iss` and `aud` are required here, where §4 says SHOULD. Without `aud` an object
 // signed for another authorization server is good at this one, which is the
 // confused-deputy case; a client that signs already has them to hand.
-func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now time.Time) (url.Values, error) {
+func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now time.Time,
+	rules RequestObjectRules) (url.Values, error) {
 	if len(raw) > maxRequestObjectBytes {
 		return nil, fmt.Errorf("the request object is %d bytes, over the limit", len(raw))
 	}
@@ -62,6 +73,10 @@ func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now
 	}
 	if len(tok.Signatures) != 1 {
 		return nil, fmt.Errorf("the request object has %d signatures, want one", len(tok.Signatures))
+	}
+	if alg := tok.Signatures[0].Header.Algorithm; rules.Algorithms != nil && !slices.Contains(rules.Algorithms, alg) {
+		return nil, fmt.Errorf("the request object is signed with %s, want one of %s", alg,
+			strings.Join(rules.Algorithms, ", "))
 	}
 
 	// §6.2: "If a 'kid' Header Parameter is present, the key identified MUST be the
@@ -102,7 +117,7 @@ func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now
 	if err := decoder.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("the request object's claims did not parse: %w", err)
 	}
-	if err := checkRequestObject(claims, clientID, audiences, now); err != nil {
+	if err := checkRequestObject(claims, clientID, audiences, now, rules); err != nil {
 		return nil, err
 	}
 
@@ -120,7 +135,8 @@ func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now
 	return params, nil
 }
 
-func checkRequestObject(claims map[string]any, clientID string, audiences []string, now time.Time) error {
+func checkRequestObject(claims map[string]any, clientID string, audiences []string, now time.Time,
+	rules RequestObjectRules) error {
 	// §4: "'request' and 'request_uri' parameters MUST NOT be included in Request Objects."
 	for _, name := range []string{"request", "request_uri"} {
 		if _, present := claims[name]; present {
@@ -146,6 +162,12 @@ func checkRequestObject(claims map[string]any, clientID string, audiences []stri
 	exp, hasExpiry, err := numericDate(claims, "exp")
 	if err != nil {
 		return err
+	}
+	// §5.3.1: "shall require the request object to contain an nbf claim that is no longer
+	// than 60 minutes in the past" and "an exp claim". The limit below on an object's
+	// lifetime sees to the 60 minutes: one still good cannot have begun further back.
+	if rules.Dated && (!hasNotBefore || !hasExpiry) {
+		return fmt.Errorf("the request object needs both nbf and exp")
 	}
 	if hasNotBefore && nbf.After(now.Add(MaxClockSkew)) {
 		return fmt.Errorf("the request object is not valid until %s", nbf.UTC().Format(time.RFC3339))

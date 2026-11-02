@@ -199,10 +199,14 @@ type Client struct {
 	AuthorizationResponseAlg string
 	// UserinfoSignedAlg signs the client's userinfo responses; "" answers in JSON.
 	UserinfoSignedAlg string
-	// IDTokenEncryption, UserinfoEncryption and AuthorizationEncryption are what the
-	// client asked to have encrypted to it. EncryptionKeys is its key set to do that
-	// with, read only for a client that asked, being the one document here of any size.
+	// IntrospectionSignedAlg signs an introspection answer it asks for as a JWT, RS256
+	// when "" as RFC 9701 §6 says.
+	IntrospectionSignedAlg string
+	// These are what the client asked to have encrypted to it. EncryptionKeys is its key
+	// set to do that with, read only for a client that asked, being the one document
+	// here of any size.
 	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
+	IntrospectionEncryption                                        tokens.Encryption
 	EncryptionKeys                                                 string
 	// RequireState refuses an authorization request with no `state`.
 	RequireState bool
@@ -312,9 +316,12 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       COALESCE(id_token_encrypted_response_alg, ''), COALESCE(id_token_encrypted_response_enc, ''),
 		       COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(userinfo_encrypted_response_enc, ''),
 		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, ''),
+		       COALESCE(introspection_signed_response_alg, ''),
+		       COALESCE(introspection_encrypted_response_alg, ''), COALESCE(introspection_encrypted_response_enc, ''),
 		       COALESCE(CASE WHEN id_token_encrypted_response_alg IS NOT NULL
 		                       OR userinfo_encrypted_response_alg IS NOT NULL
-		                       OR authorization_encrypted_response_alg IS NOT NULL THEN jwks::text END, ''),
+		                       OR authorization_encrypted_response_alg IS NOT NULL
+		                       OR introspection_encrypted_response_alg IS NOT NULL THEN jwks::text END, ''),
 		       require_state, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
@@ -349,7 +356,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.AuthorizationResponseAlg, &c.UserinfoSignedAlg,
 			&c.IDTokenEncryption.Alg, &c.IDTokenEncryption.Enc,
 			&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
-			&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.EncryptionKeys,
+			&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.IntrospectionSignedAlg,
+			&c.IntrospectionEncryption.Alg, &c.IntrospectionEncryption.Enc, &c.EncryptionKeys,
 			&c.RequireState, &c.MinimumACR, &c.AdminAPI,
 			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
 			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)

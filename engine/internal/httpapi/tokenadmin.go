@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -321,6 +323,11 @@ func (a audienceValue) MarshalJSON() ([]byte, error) {
 // could use this endpoint to validate tokens it stole from another, which turns
 // a debugging aid into an attack tool.
 func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
+	// RFC 9701 §4: a resource server asks for a JWT with its Accept header.
+	asJWT := strings.Contains(r.Header.Get("Accept"), introspectionJWT)
+	if asJWT {
+		w = unauthenticatedIs400{w}
+	}
 	c, ok := s.authenticateTokenEndpointClient(w, r)
 	if !ok {
 		return
@@ -346,17 +353,85 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	// RFC 7662 §2.1: a hint is an optimisation, so one that misses still searches
 	// everything (specs/rfc7662.txt:204-212). Told it is a refresh token, the lookup
 	// comes first and no signature is checked against a string that is not a JWT.
+	answer := func(resp *introspectionResponse) {
+		if asJWT {
+			s.writeIntrospectionJWT(w, r, c, resp)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
 	if r.PostForm.Get("token_type_hint") == "refresh_token" {
 		if resp := s.introspectRefreshToken(ctx, c, raw); resp.Active {
-			writeJSON(w, http.StatusOK, resp)
+			answer(resp)
 			return
 		}
 	}
 	if resp := s.introspectAccessToken(ctx, c, raw); resp != nil {
-		writeJSON(w, http.StatusOK, resp)
+		answer(resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.introspectRefreshToken(ctx, c, raw))
+	answer(s.introspectRefreshToken(ctx, c, raw))
+}
+
+// introspectionJWT is RFC 9701's media type, and the JWT's `typ` less the prefix.
+const introspectionJWT = "application/token-introspection+jwt"
+
+// unauthenticatedIs400 is RFC 9701 §5: "An AS compliant with this specification MUST
+// refuse to serve introspection requests that don't authenticate the caller and return
+// an HTTP status code 400."
+type unauthenticatedIs400 struct{ http.ResponseWriter }
+
+func (w unauthenticatedIs400) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w unauthenticatedIs400) WriteHeader(status int) {
+	if status == http.StatusUnauthorized {
+		w.Header().Del("WWW-Authenticate")
+		status = http.StatusBadRequest
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// writeIntrospectionJWT answers as RFC 9701 §5 has it. What cannot be signed is not sent
+// as JSON instead: a resource server asked for this so as to have proof of the answer.
+func (s *Server) writeIntrospectionJWT(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	resp *introspectionResponse) {
+	ctx := r.Context()
+	body, err := s.introspectionJWT(c, resp)
+	if err != nil {
+		s.log.ErrorContext(ctx, "signing an introspection response", "err", err, "client", c.ClientID)
+		http.Error(w, "the response could not be signed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", introspectionJWT)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(body)); err != nil {
+		s.log.InfoContext(ctx, "writing an introspection response", "err", err)
+	}
+}
+
+func (s *Server) introspectionJWT(c *clients.Client, resp *introspectionResponse) (string, error) {
+	// §6: "The default, if omitted, is RS256." Not for a client held to FAPI, whose
+	// §5.4.1 rules that out, and whose tokens are signed with something it does allow.
+	alg := keys.RS256
+	if c.FAPI2() {
+		alg = keys.Algorithm(c.IDTokenAlg)
+	}
+	if c.IntrospectionSignedAlg != "" {
+		alg = keys.Algorithm(c.IntrospectionSignedAlg)
+	}
+	key, err := s.cfg.Keys.Active(alg)
+	if err != nil {
+		return "", err
+	}
+	// §5: sub and exp are left out, the JWT not being a token, and what it says goes
+	// under its own claim so that nothing reads it as one.
+	signed, err := tokens.NewSigner(key).SignJSON(map[string]any{
+		"iss": s.issuerFor(c), "aud": c.ClientID, "iat": time.Now().Unix(), "token_introspection": resp,
+	}, strings.TrimPrefix(introspectionJWT, "application/"))
+	if err != nil || c.IntrospectionEncryption.Alg == "" {
+		return signed, err
+	}
+	return tokens.EncryptTo([]byte(signed), true, c.EncryptionKeys, c.IntrospectionEncryption)
 }
 
 // introspectAccessToken returns nil when raw is not one of our access tokens, so

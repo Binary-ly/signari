@@ -631,6 +631,9 @@ Answers:
 | `id_token_encrypted_response_enc` | string or null |  |
 | `id_token_signed_alg` | string |  |
 | `initiate_login_uri` | string or null |  |
+| `introspection_encrypted_response_alg` | string or null |  |
+| `introspection_encrypted_response_enc` | string or null |  |
+| `introspection_signed_response_alg` | string or null |  |
 | `issuer_alias` | string or null |  |
 | `jwks` | object or null |  |
 | `jwt_bearer_providers` | list of string |  |
@@ -705,6 +708,9 @@ Takes:
 | `id_token_encrypted_response_enc` | string |  |
 | `id_token_signed_response_alg` | string |  |
 | `initiate_login_uri` | string |  |
+| `introspection_encrypted_response_alg` | string |  |
+| `introspection_encrypted_response_enc` | string |  |
+| `introspection_signed_response_alg` | string |  |
 | `issuer_alias` | string |  |
 | `jwks` | any |  |
 | `jwt_bearer_providers` | list of string |  |
@@ -759,6 +765,9 @@ Answers:
 | `id_token_encrypted_response_alg` | string |  |
 | `id_token_encrypted_response_enc` | string |  |
 | `id_token_signed_response_alg` | string |  |
+| `introspection_encrypted_response_alg` | string |  |
+| `introspection_encrypted_response_enc` | string |  |
+| `introspection_signed_response_alg` | string |  |
 | `issuer_alias` | string |  |
 | `login_ui_url` | string |  |
 | `may_exchange` | boolean |  |

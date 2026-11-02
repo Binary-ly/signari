@@ -10,12 +10,19 @@ import (
 // ProfileFAPI2 is the FAPI 2.0 Security Profile (specs/fapi2.txt).
 const ProfileFAPI2 = "fapi2"
 
+// ProfileFAPI2MessageSigning is that, with requests and responses signed as FAPI 2.0
+// Message Signing has them (specs/fapi2-message-signing.txt).
+const ProfileFAPI2MessageSigning = "fapi2-message-signing"
+
 // FAPI2Algorithms are what §5.4.1 lets sign a JWT, Ed25519 being the only EdDSA a
 // key here can be: "use PS256, ES256, or EdDSA (using the Ed25519 variant)".
 var FAPI2Algorithms = []string{"PS256", "ES256", "EdDSA"}
 
 // FAPI2 reports that the client is held to the profile.
-func (c *Client) FAPI2() bool { return c.SecurityProfile == ProfileFAPI2 }
+func (c *Client) FAPI2() bool { return c.SecurityProfile == ProfileFAPI2 || c.MessageSigning() }
+
+// MessageSigning reports that it is held to Message Signing as well.
+func (c *Client) MessageSigning() bool { return c.SecurityProfile == ProfileFAPI2MessageSigning }
 
 // ProfileProblems says what keeps a client from meeting its security profile. One
 // answer for where it is set, where it is used and doctor, because a client can move
@@ -45,8 +52,8 @@ func (c *Client) ProfileProblems() []string {
 	if c.AllowHybrid || slices.ContainsFunc(c.ResponseTypes, func(t string) bool { return t != "code" }) {
 		out = append(out, "it may use a response_type other than code (§5.3.2.2)")
 	}
-	for _, alg := range []string{c.IDTokenAlg, c.AccessTokenAlg()} {
-		if !slices.Contains(FAPI2Algorithms, alg) {
+	for _, alg := range []string{c.IDTokenAlg, c.AccessTokenAlg(), c.UserinfoSignedAlg, c.IntrospectionSignedAlg} {
+		if alg != "" && !slices.Contains(FAPI2Algorithms, alg) {
 			out = append(out, "its tokens are signed with "+alg+", not "+strings.Join(FAPI2Algorithms, ", ")+" (§5.4.1)")
 			break
 		}
@@ -54,6 +61,18 @@ func (c *Client) ProfileProblems() []string {
 	for _, uri := range c.RedirectURIs {
 		if u, err := url.Parse(uri); err == nil && u.Scheme == "http" && !loopback(u.Hostname()) {
 			out = append(out, uri+" is an http redirect URI that is not a loopback address (§5.3.2.2)")
+		}
+	}
+	if c.MessageSigning() {
+		// §5.3.1: "shall support, require use of, and verify signed request objects".
+		if !c.RequireSignedRequest {
+			out = append(out, "it does not require signed request objects (Message Signing §5.3.1)")
+		}
+		// §5.4.1: "shall support, require use of, and issue signed authorization
+		// responses", which an algorithm is what holds it to.
+		if !slices.Contains(FAPI2Algorithms, c.AuthorizationResponseAlg) {
+			out = append(out, "its authorization responses are not held to signing with "+
+				strings.Join(FAPI2Algorithms, ", ")+" (Message Signing §5.4.1)")
 		}
 	}
 	return out

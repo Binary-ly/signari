@@ -164,6 +164,15 @@
         "id_token_signed_response_alg": {
           "type": "string"
         },
+        "introspection_encrypted_response_alg": {
+          "type": "string"
+        },
+        "introspection_encrypted_response_enc": {
+          "type": "string"
+        },
+        "introspection_signed_response_alg": {
+          "type": "string"
+        },
         "issuer_alias": {
           "type": "string"
         },

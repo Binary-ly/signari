@@ -349,7 +349,11 @@ func (s *Server) requestObjectParams(ctx context.Context, c *clients.Client, obj
 	if err != nil {
 		return nil, fmt.Errorf("reading the client's keys: %w", err)
 	}
-	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now())
+	var rules clientauth.RequestObjectRules
+	if c.MessageSigning() {
+		rules = clientauth.RequestObjectRules{Dated: true, Algorithms: clients.FAPI2Algorithms}
+	}
+	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now(), rules)
 }
 
 // parkRequestObject verifies a Request Object sent by value and parks what it says,

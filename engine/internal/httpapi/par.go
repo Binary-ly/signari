@@ -126,6 +126,9 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := creds.ClientID
+	if object := r.PostForm.Get("request"); object != "" {
+		s.admitFederatedClient(r, clientID, object)
+	}
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		// writeTokenError, not writeError.
@@ -349,11 +352,8 @@ func (s *Server) requestObjectParams(ctx context.Context, c *clients.Client, obj
 	if err != nil {
 		return nil, fmt.Errorf("reading the client's keys: %w", err)
 	}
-	var rules clientauth.RequestObjectRules
-	if c.MessageSigning() {
-		rules = clientauth.RequestObjectRules{Dated: true, Algorithms: clients.FAPI2Algorithms}
-	}
-	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now(), rules)
+	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now(),
+		s.requestObjectRules(ctx, c))
 }
 
 // parkRequestObject verifies a Request Object sent by value and parks what it says,
@@ -366,6 +366,7 @@ func (s *Server) parkRequestObject(r *http.Request, clientID, requestURI, object
 	if requestURI != "" {
 		return "", "send request or request_uri, not both"
 	}
+	s.admitFederatedClient(r, clientID, object)
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		return "", "unknown client"

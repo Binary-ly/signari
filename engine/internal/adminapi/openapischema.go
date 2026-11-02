@@ -295,7 +295,8 @@ var (
 			"introspection_signed_response_alg":    nullable(str()),
 			"introspection_encrypted_response_alg": nullable(str()),
 			"introspection_encrypted_response_enc": nullable(str()),
-			"roles_claim":                          nullable(str()), "login_ui_url": nullable(str()), "access_token_format": str(),
+			"federation_anchor":                    nullable(str()), "federation_expires_at": nullable(dateTime()),
+			"roles_claim": nullable(str()), "login_ui_url": nullable(str()), "access_token_format": str(),
 			"subject_type": str(), "sector": str(), "security_profile": str(),
 			"initiate_login_uri": nullable(str()), "issuer_alias": nullable(str()), "jwks": nullable(openObject()),
 			"jwt_bearer_providers": arrayOf(str()), "logo_uri": nullable(str()),
@@ -803,6 +804,17 @@ var opSchemas = map[string]opSchema{
 	"DELETE /admin/instances/{instanceID}/federation/subordinates": {http.StatusOK, nil,
 		object([]string{"instance_id", "entity_id", "removed", "config_version"}, withVersion(map[string]jsonSchema{
 			"instance_id": uuidStr(), "entity_id": str(), "removed": boolean()}))},
+	"GET /admin/instances/{instanceID}/federation/anchors": {http.StatusOK, nil,
+		object([]string{"instance_id", "anchors"}, map[string]jsonSchema{"instance_id": uuidStr(),
+			"anchors": arrayOf(object([]string{"entity_id", "org_id", "jwks", "trust_marks"},
+				map[string]jsonSchema{"entity_id": str(), "org_id": uuidStr(), "jwks": openObject(),
+					"trust_marks": arrayOf(str())}))})},
+	"PUT /admin/instances/{instanceID}/federation/anchors": {http.StatusOK, typeOf[putAnchorRequest](),
+		object([]string{"instance_id", "entity_id", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "entity_id": str()}))},
+	"DELETE /admin/instances/{instanceID}/federation/anchors": {http.StatusOK, nil,
+		object([]string{"instance_id", "entity_id", "removed", "clients_removed", "config_version"}, withVersion(map[string]jsonSchema{
+			"instance_id": uuidStr(), "entity_id": str(), "removed": boolean(), "clients_removed": integer()}))},
 	"GET /admin/instances/{instanceID}/federation": {http.StatusOK, nil, object([]string{"instance_id", "entity_id",
 		"enabled", "authority_hints", "trust_anchor_hints", "organization_name", "homepage_uri", "contacts",
 		"lifetime_s"}, map[string]jsonSchema{"instance_id": uuidStr(), "entity_id": str(), "enabled": boolean(),

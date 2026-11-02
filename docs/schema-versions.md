@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0278 federation_trust_anchors
+
+Compatible with the release before: its binary may still serve this schema.
+
+OpenID Federation Automatic Registration (§12.1), an RP using this OP with no prior step because a federation vouches for it. Nothing does that here until an operator writes down whose word to take: with no rows, nobody is admitted. Each anchor names the organisation the RPs it vouches for land in, since a client has to be somebody's.
+
 ## 0277 security_events_skip_removed_subjects
 
 Not compatible with the release before: stop it before migrating.

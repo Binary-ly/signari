@@ -1000,6 +1000,28 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `` },
 		},
 		{
+			name: "PUT /admin/instances/{instanceID}/federation/anchors", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/anchors"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return `{"entity_id":"https://anchor.example.test","org_id":"` + newDriftOrg(t, s) +
+					`","jwks":{"keys":[` + driftJWK + `]}}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/federation/anchors", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				if err := store.SetFederationAnchor(context.Background(), s.db, id, store.FederationAnchor{
+					EntityID: "https://anchor.example.test", OrgID: newDriftOrg(t, s), JWKS: []byte(`{"keys":[` + driftJWK + `]}`)}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/federation/anchors?entity_id=https://anchor.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return `` },
+		},
+		{
 			name: "POST /admin/instances/{instanceID}/trust-marks", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-marks"

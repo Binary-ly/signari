@@ -225,6 +225,15 @@ type DeleteInstancesInstanceIDBrandResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteInstancesInstanceIDFederationAnchorsResponse is a JSON object of the Admin API.
+type DeleteInstancesInstanceIDFederationAnchorsResponse struct {
+	ClientsRemoved int64  `json:"clients_removed"`
+	ConfigVersion  int64  `json:"config_version"`
+	EntityID       string `json:"entity_id"`
+	InstanceID     string `json:"instance_id"`
+	Removed        bool   `json:"removed"`
+}
+
 // DeleteInstancesInstanceIDFederationSubordinatesResponse is a JSON object of the Admin API.
 type DeleteInstancesInstanceIDFederationSubordinatesResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -592,6 +601,8 @@ type GetClientsClientIDResponse struct {
 	Enabled                               bool           `json:"enabled"`
 	ExchangeAudiences                     []string       `json:"exchange_audiences,omitempty"`
 	ExchangeRequiresAudienceMatch         bool           `json:"exchange_requires_audience_match,omitempty"`
+	FederationAnchor                      *string        `json:"federation_anchor,omitempty"`
+	FederationExpiresAt                   *string        `json:"federation_expires_at,omitempty"`
 	FirstParty                            bool           `json:"first_party,omitempty"`
 	FrontchannelLogoutSessionRequired     bool           `json:"frontchannel_logout_session_required,omitempty"`
 	FrontchannelLogoutURI                 *string        `json:"frontchannel_logout_uri,omitempty"`
@@ -735,6 +746,20 @@ type GetInstancesInstanceIDFederationResponse struct {
 	LifetimeS        int64    `json:"lifetime_s"`
 	OrganizationName string   `json:"organization_name"`
 	TrustAnchorHints []string `json:"trust_anchor_hints"`
+}
+
+// GetInstancesInstanceIDFederationAnchorsResponse is a JSON object of the Admin API.
+type GetInstancesInstanceIDFederationAnchorsResponse struct {
+	Anchors    []GetInstancesInstanceIDFederationAnchorsResponseAnchorsItem `json:"anchors"`
+	InstanceID string                                                       `json:"instance_id"`
+}
+
+// GetInstancesInstanceIDFederationAnchorsResponseAnchorsItem is a JSON object of the Admin API.
+type GetInstancesInstanceIDFederationAnchorsResponseAnchorsItem struct {
+	EntityID   string         `json:"entity_id"`
+	JWKS       map[string]any `json:"jwks"`
+	OrgID      string         `json:"org_id"`
+	TrustMarks []string       `json:"trust_marks"`
 }
 
 // GetInstancesInstanceIDFederationSubordinatesResponse is a JSON object of the Admin API.
@@ -3212,6 +3237,21 @@ type PutInstancesInstanceIDFederationResponse struct {
 	RestartRequired bool   `json:"restart_required"`
 }
 
+// PutInstancesInstanceIDFederationAnchorsRequest is a JSON object of the Admin API.
+type PutInstancesInstanceIDFederationAnchorsRequest struct {
+	EntityID   *string         `json:"entity_id,omitempty"`
+	JWKS       json.RawMessage `json:"jwks,omitempty"`
+	OrgID      *string         `json:"org_id,omitempty"`
+	TrustMarks *[]string       `json:"trust_marks,omitempty"`
+}
+
+// PutInstancesInstanceIDFederationAnchorsResponse is a JSON object of the Admin API.
+type PutInstancesInstanceIDFederationAnchorsResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	EntityID      string `json:"entity_id"`
+	InstanceID    string `json:"instance_id"`
+}
+
 // PutInstancesInstanceIDFederationSubordinatesRequest is a JSON object of the Admin API.
 type PutInstancesInstanceIDFederationSubordinatesRequest struct {
 	EntityID       *string         `json:"entity_id,omitempty"`
@@ -3988,6 +4028,18 @@ func (c *Client) DeleteInstancesInstanceIDBrand(ctx context.Context, instanceID 
 	return &out, v, nil
 }
 
+// DeleteInstancesInstanceIDFederationAnchors is DELETE
+// /admin/instances/{instanceID}/federation/anchors: Stop accepting a Trust Anchor, deleting the
+// clients it admitted. Needs organizations:write.
+func (c *Client) DeleteInstancesInstanceIDFederationAnchors(ctx context.Context, instanceID string, opts ...Option) (*DeleteInstancesInstanceIDFederationAnchorsResponse, int64, error) {
+	var out DeleteInstancesInstanceIDFederationAnchorsResponse
+	v, err := c.call(ctx, "DELETE", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/anchors", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteInstancesInstanceIDFederationSubordinates is DELETE
 // /admin/instances/{instanceID}/federation/subordinates: Stop speaking for an entity. Needs
 // organizations:write.
@@ -4587,6 +4639,17 @@ func (c *Client) GetInstancesInstanceIDBrand(ctx context.Context, instanceID str
 func (c *Client) GetInstancesInstanceIDFederation(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDFederationResponse, int64, error) {
 	var out GetInstancesInstanceIDFederationResponse
 	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/federation", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetInstancesInstanceIDFederationAnchors is GET /admin/instances/{instanceID}/federation/anchors:
+// The Trust Anchors whose relying parties are admitted. Needs config:read.
+func (c *Client) GetInstancesInstanceIDFederationAnchors(ctx context.Context, instanceID string, opts ...Option) (*GetInstancesInstanceIDFederationAnchorsResponse, int64, error) {
+	var out GetInstancesInstanceIDFederationAnchorsResponse
+	v, err := c.call(ctx, "GET", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/anchors", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6126,6 +6189,17 @@ func (c *Client) PutInstancesInstanceIDBrand(ctx context.Context, instanceID str
 func (c *Client) PutInstancesInstanceIDFederation(ctx context.Context, instanceID string, body PutInstancesInstanceIDFederationRequest, opts ...Option) (*PutInstancesInstanceIDFederationResponse, int64, error) {
 	var out PutInstancesInstanceIDFederationResponse
 	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/federation", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutInstancesInstanceIDFederationAnchors is PUT /admin/instances/{instanceID}/federation/anchors:
+// Accept a Trust Anchor's word for relying parties. Needs organizations:write.
+func (c *Client) PutInstancesInstanceIDFederationAnchors(ctx context.Context, instanceID string, body PutInstancesInstanceIDFederationAnchorsRequest, opts ...Option) (*PutInstancesInstanceIDFederationAnchorsResponse, int64, error) {
+	var out PutInstancesInstanceIDFederationAnchorsResponse
+	v, err := c.call(ctx, "PUT", "/admin/instances/"+url.PathEscape(instanceID)+"/federation/anchors", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

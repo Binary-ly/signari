@@ -208,6 +208,9 @@ type Client struct {
 	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
 	IntrospectionEncryption                                        tokens.Encryption
 	EncryptionKeys                                                 string
+	// FederationExpiry is when what a Trust Chain said of the client stops holding, and
+	// nil for a client an operator made. Past it a request has to be vouched for again.
+	FederationExpiry *time.Time
 	// RequireState refuses an authorization request with no `state`.
 	RequireState bool
 	// MinimumACR is the weakest authentication the client accepts, "1" to
@@ -322,7 +325,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		                       OR userinfo_encrypted_response_alg IS NOT NULL
 		                       OR authorization_encrypted_response_alg IS NOT NULL
 		                       OR introspection_encrypted_response_alg IS NOT NULL THEN jwks::text END, ''),
-		       require_state, minimum_acr, admin_api,
+		       federation_expires_at, require_state, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
 		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
@@ -358,7 +361,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
 			&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.IntrospectionSignedAlg,
 			&c.IntrospectionEncryption.Alg, &c.IntrospectionEncryption.Enc, &c.EncryptionKeys,
-			&c.RequireState, &c.MinimumACR, &c.AdminAPI,
+			&c.FederationExpiry, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
 			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
 			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {

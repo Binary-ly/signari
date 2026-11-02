@@ -282,18 +282,64 @@ test suite full of passing tests said nothing about it.
 
 ## Automatic Registration (§12.1)
 
-`oidfed.Register` turns a resolved chain into a usable client: an RP's Entity
-Identifier becomes its `client_id`, and everything the OP needs — redirect URIs,
-keys, scopes — comes from metadata resolved through a Trust Chain rather than from
-a registration request.
-
-**Not wired yet.** Client lookup does not call it, so an RP in the federation must
-still be registered here before it can sign anyone in. What follows describes the
-built and tested function, not a path a request can take today. This page used to
-say a federation RP needed no prior registration.
+An RP in a federation can use this OP with no registration step: its Entity Identifier
+is its `client_id`, and everything the OP needs — redirect URIs, keys, scopes — comes
+from metadata resolved through a Trust Chain rather than from a registration request.
 
 This is the feature that makes the rest of the federation work pay off for an
 OpenID Provider.
+
+### Whose word to take
+
+**Nobody is admitted until an operator writes down whose word to take.** Being in a
+federation is not enough: a federation is somebody else's opinion, and with an empty list
+this server does not so much as fetch anything for a stranger.
+
+```sh
+signari federation add-anchor -entity-id https://anchor.example \
+  -org <org-uuid> -jwks-file anchor-keys.json \
+  -trust-marks https://marks.example/accredited     # optional
+signari federation anchors
+signari federation remove-anchor -entity-id https://anchor.example
+```
+
+The keys are the anchor's Federation Entity Keys, and they come from the operator, not
+from the anchor's address: fetched, the anchor would be whoever answers there. `-org` is
+where the RPs it vouches for are registered. `-trust-marks` are types an RP has to hold
+besides, each valid under §7.3: issued to it, by an issuer the anchor allows for that
+type where it says, signed by keys established through a chain of its own.
+
+The same list is `/admin/instances/{instanceID}/federation/anchors` on the Admin API.
+
+**Removing an anchor deletes the clients it admitted**, with their sessions and tokens.
+They had no other standing here. One the federation still vouches for through another
+listed anchor is registered again by its next request.
+
+### What a first request does
+
+An `https` `client_id` nobody has registered, with a signed `request` at the authorization
+endpoint or the pushed authorization endpoint, is taken to be an RP:
+
+1. The chain is resolved to a listed anchor, with the metadata policy along it applied.
+2. Any Trust Marks the anchor asks for are checked.
+3. The request is verified with the keys the chain published.
+4. It becomes a client: confidential, `private_key_jwt`, no secret, and required to sign
+   every request. Its consent screen is shown like any other.
+
+Failing any of these leaves it unknown, and nothing is written. §12.1.3 is why that is
+shown to the person and not sent to the redirect URI: *"it MUST treat the redirection URI
+as invalid and not perform redirection"*. One address can make the server walk 30 chains
+a minute.
+
+Its requests are held to §12.1.1.1 from then on: `aud` this server and nobody else, `exp`
+and `jti` required, no `sub`, and each one good once. The registration lasts as long as
+the chain, and the first request after that resolves it again. If it no longer resolves,
+the client stops signing people in. Tokens already issued go on working until they end.
+
+A client an operator made is never touched, whatever a chain says about the same name.
+
+Not here: an RP proving itself at a push with `private_key_jwt` alone, with no Request
+Object, which §12.1.1.2 also allows, and the `trust_chain` header, which is a hint.
 
 ### The chain is not the whole story
 

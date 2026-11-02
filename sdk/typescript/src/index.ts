@@ -139,6 +139,12 @@ export class SignariAdmin {
     return this.call<DeleteInstancesInstanceIDBrandResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/brand`, undefined, opts)
   }
 
+  // DELETE /admin/instances/{instanceID}/federation/anchors: Stop accepting a Trust Anchor,
+  // deleting the clients it admitted. Needs organizations:write.
+  deleteInstancesInstanceIDFederationAnchors(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDFederationAnchorsResponse>> {
+    return this.call<DeleteInstancesInstanceIDFederationAnchorsResponse>("DELETE", `/admin/instances/${encodeURIComponent(instanceID)}/federation/anchors`, undefined, opts)
+  }
+
   // DELETE /admin/instances/{instanceID}/federation/subordinates: Stop speaking for an entity.
   // Needs organizations:write.
   deleteInstancesInstanceIDFederationSubordinates(instanceID: string, opts: CallOptions = {}): Promise<Answer<DeleteInstancesInstanceIDFederationSubordinatesResponse>> {
@@ -449,6 +455,12 @@ export class SignariAdmin {
   // whatit publishes. Needs config:read.
   getInstancesInstanceIDFederation(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDFederationResponse>> {
     return this.call<GetInstancesInstanceIDFederationResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/federation`, undefined, opts)
+  }
+
+  // GET /admin/instances/{instanceID}/federation/anchors: The Trust Anchors whose relying parties
+  // are admitted. Needs config:read.
+  getInstancesInstanceIDFederationAnchors(instanceID: string, opts: CallOptions = {}): Promise<Answer<GetInstancesInstanceIDFederationAnchorsResponse>> {
+    return this.call<GetInstancesInstanceIDFederationAnchorsResponse>("GET", `/admin/instances/${encodeURIComponent(instanceID)}/federation/anchors`, undefined, opts)
   }
 
   // GET /admin/instances/{instanceID}/federation/subordinates: The entities the instance speaks
@@ -1263,6 +1275,12 @@ export class SignariAdmin {
     return this.call<PutInstancesInstanceIDFederationResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/federation`, body, opts)
   }
 
+  // PUT /admin/instances/{instanceID}/federation/anchors: Accept a Trust Anchor's word for relying
+  // parties. Needs organizations:write.
+  putInstancesInstanceIDFederationAnchors(instanceID: string, body: PutInstancesInstanceIDFederationAnchorsRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDFederationAnchorsResponse>> {
+    return this.call<PutInstancesInstanceIDFederationAnchorsResponse>("PUT", `/admin/instances/${encodeURIComponent(instanceID)}/federation/anchors`, body, opts)
+  }
+
   // PUT /admin/instances/{instanceID}/federation/subordinates: Speak for an entity, with the keys
   // it gave you. Needs organizations:write.
   putInstancesInstanceIDFederationSubordinates(instanceID: string, body: PutInstancesInstanceIDFederationSubordinatesRequest, opts: CallOptions = {}): Promise<Answer<PutInstancesInstanceIDFederationSubordinatesResponse>> {
@@ -1561,6 +1579,15 @@ export interface DeleteGroupsGroupIDRADIUSResponse {
 /** A JSON object of the Admin API. */
 export interface DeleteInstancesInstanceIDBrandResponse {
   config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteInstancesInstanceIDFederationAnchorsResponse {
+  clients_removed: number
+  config_version: number
+  entity_id: string
+  instance_id: string
   removed: boolean
 }
 
@@ -1931,6 +1958,8 @@ export interface GetClientsClientIDResponse {
   enabled: boolean
   exchange_audiences?: string[]
   exchange_requires_audience_match?: boolean
+  federation_anchor?: string | null
+  federation_expires_at?: string | null
   first_party?: boolean
   frontchannel_logout_session_required?: boolean
   frontchannel_logout_uri?: string | null
@@ -2074,6 +2103,20 @@ export interface GetInstancesInstanceIDFederationResponse {
   lifetime_s: number
   organization_name: string
   trust_anchor_hints: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDFederationAnchorsResponse {
+  anchors: GetInstancesInstanceIDFederationAnchorsResponseAnchorsItem[]
+  instance_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetInstancesInstanceIDFederationAnchorsResponseAnchorsItem {
+  entity_id: string
+  jwks: Record<string, unknown>
+  org_id: string
+  trust_marks: string[]
 }
 
 /** A JSON object of the Admin API. */
@@ -4549,6 +4592,21 @@ export interface PutInstancesInstanceIDFederationResponse {
   generated_key: string
   instance_id: string
   restart_required: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDFederationAnchorsRequest {
+  entity_id?: string
+  jwks?: unknown
+  org_id?: string
+  trust_marks?: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface PutInstancesInstanceIDFederationAnchorsResponse {
+  config_version: number
+  entity_id: string
+  instance_id: string
 }
 
 /** A JSON object of the Admin API. */

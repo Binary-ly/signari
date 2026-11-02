@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"signari.dev/engine/internal/clients"
 )
@@ -173,6 +174,12 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 
 	if !c.Enabled {
 		return direct("unauthorized_client", "client is disabled")
+	}
+	// OpenID Federation §12.1.3: failing to establish trust means the redirect URI is
+	// "invalid", so this is shown and not sent. A chain that resolved is looked at before
+	// here, so what reaches this one is a client nothing vouches for any more.
+	if c.FederationExpiry != nil && time.Now().After(*c.FederationExpiry) {
+		return direct("invalid_client", "this client's federation registration has expired")
 	}
 	if c.OrgSuspended {
 		return direct("unauthorized_client", "this organisation is suspended")

@@ -37,7 +37,7 @@ refused with `412` when the configuration moved since the version it names.
 | [identity-providers](#identity-providers) | 13 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
-| [instances / federation](#instances--federation) | 5 |
+| [instances / federation](#instances--federation) | 8 |
 | [instances / held-trust-marks](#instances--held-trust-marks) | 2 |
 | [instances / issuer-aliases](#instances--issuer-aliases) | 3 |
 | [instances / keys](#instances--keys) | 3 |
@@ -622,6 +622,8 @@ Answers:
 | `enabled` | boolean | always |
 | `exchange_audiences` | list of string |  |
 | `exchange_requires_audience_match` | boolean |  |
+| `federation_anchor` | string or null |  |
+| `federation_expires_at` | string or null |  |
 | `first_party` | boolean |  |
 | `frontchannel_logout_session_required` | boolean |  |
 | `frontchannel_logout_uri` | string or null |  |
@@ -2002,6 +2004,58 @@ Answers:
 | `generated_key` | string | always |
 | `instance_id` | string | always |
 | `restart_required` | boolean | always |
+
+### `DELETE /admin/instances/{instanceID}/federation/anchors`
+
+Stop accepting a Trust Anchor, deleting the clients it admitted. Needs organizations:write.
+
+Go `DeleteInstancesInstanceIDFederationAnchors`, TypeScript `deleteInstancesInstanceIDFederationAnchors`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `clients_removed` | integer | always |
+| `config_version` | integer | always |
+| `entity_id` | string | always |
+| `instance_id` | string | always |
+| `removed` | boolean | always |
+
+### `GET /admin/instances/{instanceID}/federation/anchors`
+
+The Trust Anchors whose relying parties are admitted. Needs config:read.
+
+Go `GetInstancesInstanceIDFederationAnchors`, TypeScript `getInstancesInstanceIDFederationAnchors`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `anchors` | list of object | always |
+| `instance_id` | string | always |
+
+### `PUT /admin/instances/{instanceID}/federation/anchors`
+
+Accept a Trust Anchor's word for relying parties. Needs organizations:write.
+
+Go `PutInstancesInstanceIDFederationAnchors`, TypeScript `putInstancesInstanceIDFederationAnchors`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `entity_id` | string |  |
+| `jwks` | any |  |
+| `org_id` | string |  |
+| `trust_marks` | list of string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `entity_id` | string | always |
+| `instance_id` | string | always |
 
 ### `DELETE /admin/instances/{instanceID}/federation/subordinates`
 

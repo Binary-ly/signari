@@ -48,6 +48,8 @@ var notConfiguration = map[string]string{
 		"file that a token holding organizations:write may apply",
 	"relation_delegations": "between two organisations, and made by a deployment-wide caller: a file describes one " +
 		"organisation, and a token that may apply it does not reach another",
+	"federation_trust_anchors": "an instance's, kept by a deployment-wide caller, as its subordinates are: an " +
+		"anchor decides who may become a client, which is not an organisation's to declare for itself",
 	"admin_tokens": credential, "registration_tokens": credential, "saml_source_keys": credential,
 	"kerberos_realms": credential,
 	"relations": "authorization data the application writes as people and objects come and go, as group " +

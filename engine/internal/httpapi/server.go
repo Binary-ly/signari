@@ -46,6 +46,9 @@ import (
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
+	// fetchFederation stands in for how a Trust Chain is fetched, in a test.
+	fetchFederation func() *oidfed.Fetcher
+
 	cfg  oidc.Config
 	log  *slog.Logger
 	jwks *ratelimit.Bucket

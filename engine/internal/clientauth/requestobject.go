@@ -35,6 +35,13 @@ type RequestObjectRules struct {
 	Dated bool
 	// Algorithms narrows what may have signed it, when it is not nil.
 	Algorithms []string
+	// Federated is OpenID Federation §12.1.1.1, for a client with no other way to show
+	// it is who it says: `aud` this server and nobody else, `exp` and `jti` required,
+	// and no `sub`, which "prevents reuse of the statement for private_key_jwt".
+	Federated bool
+	// Claim spends a Federated object's `jti`, nil not to yet. §12.1.1.1: "A Request
+	// Object MUST only be used once".
+	Claim func(jti string, expires time.Time) error
 }
 
 // VerifyRequestObject checks a signed Request Object and answers the parameters in it.
@@ -185,7 +192,23 @@ func checkRequestObject(claims map[string]any, clientID string, audiences []stri
 				exp.Sub(from).Round(time.Second), MaxRequestObjectLifetime)
 		}
 	}
-	return nil
+	if !rules.Federated {
+		return nil
+	}
+	if _, present := claims["sub"]; present {
+		return fmt.Errorf("a request object for automatic registration may not have a sub")
+	}
+	if list, many := claims["aud"].([]any); many && len(list) != 1 {
+		return fmt.Errorf("a request object for automatic registration has this server as its only audience")
+	}
+	jti, _ := claims["jti"].(string)
+	if jti == "" || !hasExpiry {
+		return fmt.Errorf("a request object for automatic registration needs both jti and exp")
+	}
+	if rules.Claim == nil {
+		return nil
+	}
+	return rules.Claim(jti, exp)
 }
 
 func numericDate(claims map[string]any, name string) (time.Time, bool, error) {

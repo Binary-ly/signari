@@ -259,6 +259,9 @@ var summaries = map[string]string{
 	"GET /admin/instances/{instanceID}/federation/subordinates":    "The entities the instance speaks for in its federation.",
 	"PUT /admin/instances/{instanceID}/federation/subordinates":    "Speak for an entity, with the keys it gave you.",
 	"DELETE /admin/instances/{instanceID}/federation/subordinates": "Stop speaking for an entity.",
+	"GET /admin/instances/{instanceID}/federation/anchors":         "The Trust Anchors whose relying parties are admitted.",
+	"PUT /admin/instances/{instanceID}/federation/anchors":         "Accept a Trust Anchor's word for relying parties.",
+	"DELETE /admin/instances/{instanceID}/federation/anchors":      "Stop accepting a Trust Anchor, deleting the clients it admitted.",
 
 	"GET /admin/instances/{instanceID}/federation":              "Whether the instance is a federation entity, and whatit publishes.",
 	"PUT /admin/instances/{instanceID}/federation":              "Make the instance a federation entity, or change what it publishes.",

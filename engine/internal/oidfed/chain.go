@@ -67,6 +67,12 @@ type Statement struct {
 	// -- so an issuer saying "do not use this statement unless you process X"
 	// was answered by using it without processing X.
 	Crit []string `json:"crit,omitempty"`
+
+	// TrustMarks are those an Entity Configuration holds, and TrustMarkIssuers and
+	// TrustMarkOwners what a Trust Anchor's says of them, read by RequireTrustMarks.
+	TrustMarks       []TrustMarkEntry `json:"trust_marks,omitempty"`
+	TrustMarkIssuers TrustMarkIssuers `json:"trust_mark_issuers,omitempty"`
+	TrustMarkOwners  TrustMarkOwners  `json:"trust_mark_owners,omitempty"`
 }
 
 // ChainResult is a validated chain.

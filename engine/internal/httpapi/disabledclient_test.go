@@ -68,10 +68,12 @@ func TestADisabledClientIsRefusedEverywhere(t *testing.T) {
 // its state, each with why that is safe. Every other load goes through
 // lookupClient, which refuses a disabled one.
 var lookupsThatAdmitADisabledClient = map[string]string{
-	"flow.go lookupClient":               "the choke point itself, which refuses what this returns disabled",
-	"flow.go lookupClientAnyState":       "the loader the declared callers share",
-	"flow.go handleAuthorize":            "oauth.ValidateAuthz refuses a disabled client first, telling the person why",
-	"accounts.go errorToClient":          "oauth.ValidateAuthz again, before any redirect to the client",
+	"flow.go lookupClient":         "the choke point itself, which refuses what this returns disabled",
+	"flow.go lookupClientAnyState": "the loader the declared callers share",
+	"flow.go handleAuthorize":      "oauth.ValidateAuthz refuses a disabled client first, telling the person why",
+	"accounts.go errorToClient":    "oauth.ValidateAuthz again, before any redirect to the client",
+	"oidfedregister.go admitFederatedClient": "only asks whether a client exists to register; the caller's own lookup " +
+		"is the one that admits or refuses it, and a disabled one is left as it is",
 	"account.go clientOrg":               "only which organisation's page to show; nothing is granted",
 	"connected.go handleConnectedRevoke": "the person removing the application, which reads its token lifetime to say when its tokens stop",
 }

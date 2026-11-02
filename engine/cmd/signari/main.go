@@ -384,6 +384,9 @@ authorization and federation:
   federation add-subordinate     speak for an entity, with the keys it gave you
   federation subordinates        who this instance speaks for
   federation remove-subordinate  stop speaking for one
+  federation add-anchor          take a Trust Anchor's word for relying parties
+  federation anchors             whose word this instance takes
+  federation remove-anchor       stop, and delete the clients it admitted
   trust-mark issue     issue an OpenID Federation Trust Mark to an entity
   trust-mark revoke    withdraw a Trust Mark this entity issued
   trust-mark list      Trust Marks this entity issues and holds
@@ -754,7 +757,8 @@ func run(args []string) (err error) {
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
-	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate gave you, as a JWK Set (federation add-subordinate)")
+	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate or anchor gave you, as a JWK Set (federation add-subordinate, add-anchor)")
+	fedTrustMarks := fs.String("trust-marks", "", "`federation add-anchor`: Trust Mark types a relying party must hold, comma separated")
 	fedPolicyFile := fs.String("metadata-policy-file", "", "what this entity requires of a subordinate's metadata (federation add-subordinate)")
 	fedMaxPath := fs.Int("max-path-length", 0, "how many Intermediates may stand below a subordinate (federation add-subordinate)")
 	fedIntermediate := fs.Bool("intermediate", false, "the subordinate has subordinates of its own (federation add-subordinate)")
@@ -1862,6 +1866,12 @@ func run(args []string) (err error) {
 			maxPath = fedMaxPath
 		}
 		return federationAddSubordinate(ctx, conn, *entityID, *fedJWKSFile, *fedPolicyFile, maxPath, *fedIntermediate)
+	case "federation add-anchor":
+		return federationAddAnchor(ctx, conn, *entityID, *orgID, *fedJWKSFile, *fedTrustMarks)
+	case "federation anchors":
+		return federationAnchors(ctx, conn, *outputFormat)
+	case "federation remove-anchor":
+		return federationRemoveAnchor(ctx, conn, *entityID)
 	case "federation subordinates":
 		return federationSubordinates(ctx, conn, *outputFormat)
 	case "federation remove-subordinate":
@@ -9286,6 +9296,88 @@ func federationAddSubordinate(ctx context.Context, conn *pgx.Conn, entityID, jwk
 		return err
 	}
 	fmt.Printf("%s speaks for %s from the next request\n", issuer, entityID)
+	return nil
+}
+
+// federationAddAnchor takes an anchor's word for relying parties, which land in org.
+func federationAddAnchor(ctx context.Context, conn *pgx.Conn, entityID, org, jwksFile, marks string) error {
+	if entityID == "" || org == "" || jwksFile == "" {
+		return fmt.Errorf("-entity-id, -org and -jwks-file are required; take the keys from the anchor in some " +
+			"way that is not the address you are about to trust")
+	}
+	jwks, err := os.ReadFile(jwksFile)
+	if err != nil {
+		return err
+	}
+	anchor := store.FederationAnchor{EntityID: entityID, OrgID: org, JWKS: jwks}
+	for _, mark := range strings.Split(marks, ",") {
+		if mark = strings.TrimSpace(mark); mark != "" {
+			anchor.TrustMarks = append(anchor.TrustMarks, mark)
+		}
+	}
+	if err := anchor.Validate(); err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := store.SetFederationAnchor(ctx, conn, instanceID, anchor); err != nil {
+		return err
+	}
+	fmt.Printf("relying parties %s vouches for sign in to organisation %s from the next request\n", entityID, org)
+	return nil
+}
+
+// federationAnchors lists whose word this instance takes.
+func federationAnchors(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	rows, err := store.FederationAnchors(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && out.text() {
+		fmt.Println("no trust anchors, so no relying party is admitted by a federation")
+		return nil
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"entity_id": r.EntityID, "org_id": r.OrgID, "trust_marks": r.TrustMarks})
+		if out.text() {
+			fmt.Printf("%s  organisation %s  trust marks %v\n", r.EntityID, r.OrgID, r.TrustMarks)
+		}
+	}
+	return out.flush()
+}
+
+// federationRemoveAnchor stops taking an anchor's word.
+func federationRemoveAnchor(ctx context.Context, conn *pgx.Conn, entityID string) error {
+	if entityID == "" {
+		return fmt.Errorf("-entity-id is required")
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	gone, err := store.RemoveFederationAnchor(ctx, tx, instanceID, entityID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("no longer taking %s's word; %d client(s) it admitted deleted\n", entityID, gone)
 	return nil
 }
 

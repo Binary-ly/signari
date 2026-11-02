@@ -214,6 +214,11 @@ func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSe
 		if raw, merr := json.Marshal(doc); merr == nil {
 			if json.Unmarshal(raw, &op) == nil {
 				md["openid_provider"] = op
+				// §12.1: "MUST include the automatic keyword", and only once an
+				// operator has said whose word to take does it mean anything.
+				if anchors, aerr := store.FederationAnchors(ctx, s.db, s.instanceID); aerr == nil && len(anchors) > 0 {
+					op["client_registration_types_supported"] = []string{"automatic"}
+				}
 			}
 		}
 	}

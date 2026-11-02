@@ -291,6 +291,119 @@ func (s *Server) deleteSubordinate(w http.ResponseWriter, r *http.Request) {
 		"config_version": version})
 }
 
+// anchorView is a Trust Anchor an operator accepts.
+type anchorView struct {
+	EntityID   string          `json:"entity_id"`
+	OrgID      string          `json:"org_id"`
+	JWKS       json.RawMessage `json:"jwks"`
+	TrustMarks []string        `json:"trust_marks"`
+}
+
+// putAnchorRequest is `federation add-anchor`.
+type putAnchorRequest struct {
+	EntityID   string          `json:"entity_id"`
+	OrgID      string          `json:"org_id"`
+	JWKS       json.RawMessage `json:"jwks"`
+	TrustMarks []string        `json:"trust_marks"`
+}
+
+// listAnchors says whose word this instance takes for a relying party it has not met.
+func (s *Server) listAnchors(w http.ResponseWriter, r *http.Request) {
+	instanceID, _, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	got, err := store.FederationAnchors(r.Context(), s.db, instanceID)
+	if err != nil {
+		s.log.Error("listing trust anchors", "instance_id", instanceID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	out := make([]anchorView, 0, len(got))
+	for _, anchor := range got {
+		out = append(out, anchorView{EntityID: anchor.EntityID, OrgID: anchor.OrgID, JWKS: anchor.JWKS, TrustMarks: anchor.TrustMarks})
+	}
+	s.writeList(w, r, map[string]any{"instance_id": instanceID, "anchors": out})
+}
+
+// putAnchor adds a Trust Anchor to the list, as `signari federation add-anchor` does.
+func (s *Server) putAnchor(w http.ResponseWriter, r *http.Request) {
+	instanceID, _, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	var req putAnchorRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	anchor := store.FederationAnchor{EntityID: strings.TrimSpace(req.EntityID), OrgID: req.OrgID, JWKS: req.JWKS,
+		TrustMarks: req.TrustMarks}
+	if err := anchor.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_anchor", "detail": err.Error()})
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, anchor.OrgID); err != nil {
+			return err
+		}
+		if err := store.SetFederationAnchor(ctx, tx, instanceID, anchor); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.federation_anchor_set", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "entity_id": anchor.EntityID, "org_id": anchor.OrgID}})
+	})
+	if writeOrgRefusal(w, err) || s.writeFederationFailure(w, err, instanceID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "entity_id": anchor.EntityID,
+		"config_version": version})
+}
+
+// deleteAnchor takes the Trust Anchor ?entity_id= names off the list, and with it every
+// client it admitted.
+func (s *Server) deleteAnchor(w http.ResponseWriter, r *http.Request) {
+	instanceID, _, ok := s.federationInstance(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	entity := r.URL.Query().Get("entity_id")
+	if entity == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_anchor",
+			"detail": "name the anchor with ?entity_id="})
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	var gone int64
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		var rerr error
+		if gone, rerr = store.RemoveFederationAnchor(ctx, tx, instanceID, entity); rerr != nil {
+			return rerr
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.federation_anchor_removed", AdminTokenID: TokenIDFrom(ctx),
+			Detail: map[string]any{"instance_id": instanceID, "entity_id": entity, "clients_removed": gone}})
+	})
+	if errors.Is(err, store.ErrFederationAnchorUnknown) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "anchor_not_found"})
+		return
+	}
+	if s.writeFederationFailure(w, err, instanceID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"instance_id": instanceID, "entity_id": entity, "removed": true,
+		"clients_removed": gone, "config_version": version})
+}
+
 func (s *Server) listTrustMarks(w http.ResponseWriter, r *http.Request) {
 	instanceID, entityID, ok := s.federationInstance(w, r)
 	if !ok {

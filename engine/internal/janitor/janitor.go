@@ -231,6 +231,7 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		// being expired before this table is ever consulted, so the row would only
 		// be storing which workloads authenticated and when.
 		{"used assertions", sweepBatch, &st.AssertionsSwept, store.SweepUsedAssertions},
+		{"used request objects", sweepBatch, &st.AssertionsSwept, store.SweepRequestObjectReplay},
 		// Pushed authorization requests nobody redeemed.
 		{"pushed requests", sweepBatch, &st.PushedRequestsSwept, store.SweepExpiredPushedRequests},
 		// DPoP proof identifiers past their replay window.

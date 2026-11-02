@@ -308,6 +308,9 @@ var cliAPI = map[string]string{
 	"external-factor remove": "DELETE /admin/organizations/{orgID}/external-factors/{name}",
 
 	// Who this instance speaks for in a federation.
+	"federation anchors":            reads,
+	"federation add-anchor":         "PUT /admin/instances/{instanceID}/federation/anchors",
+	"federation remove-anchor":      "DELETE /admin/instances/{instanceID}/federation/anchors",
 	"federation subordinates":       reads,
 	"federation add-subordinate":    "PUT /admin/instances/{instanceID}/federation/subordinates",
 	"federation remove-subordinate": "DELETE /admin/instances/{instanceID}/federation/subordinates",

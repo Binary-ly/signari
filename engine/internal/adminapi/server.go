@@ -353,6 +353,7 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/access-policy", ScopeConfigRead, s.getAccessPolicy)
 	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
 	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
+	route("GET /admin/organizations/{orgID}/sign-in-flow/paths", ScopeConfigRead, s.getSignInFlowPaths)
 	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
 	// Upstream identity providers' settings, `signari idp` (idps.go).
 	route("GET /admin/organizations/{orgID}/identity-providers", ScopeConfigRead, s.listIdentityProviders)

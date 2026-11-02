@@ -16,6 +16,23 @@ func newDriftOrg(t *testing.T, s *Server) string {
 	return newDriftMigrationOrg(t, s, false)
 }
 
+// With no flow of its own an organisation is told the built-in journeys, and says
+// so; a flow's stages are what a person would walk, in order.
+func TestTheJourneysAreTheFlowsOwn(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftOrg(t, s)
+	rec := call(t, s, http.MethodGet, "/admin/organizations/"+org+"/sign-in-flow/paths", testToken, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"applied":false`) ||
+		!strings.Contains(rec.Body.String(), `"stages":["`) {
+		t.Fatalf("the paths answered %d: %.300s", rec.Code, rec.Body)
+	}
+	other := newDriftOrg(t, s)
+	mine := mintToken(t, s, "paths-"+org, org, []string{ScopeConfigRead}, nil)
+	if got := call(t, s, http.MethodGet, "/admin/organizations/"+other+"/sign-in-flow/paths", mine, nil); got.Code != http.StatusForbidden {
+		t.Errorf("a token of one organisation read another's: %d %s", got.Code, got.Body)
+	}
+}
+
 func TestAnOrganisationBrandsItself(t *testing.T) {
 	s, _ := newTestServer(t)
 	ctx := context.Background()

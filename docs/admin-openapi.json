@@ -24524,6 +24524,131 @@
         "summary": "Apply a flow document once it loads and its tests pass."
       }
     },
+    "/admin/organizations/{orgID}/sign-in-flow/paths": {
+      "get": {
+        "operationId": "get_organizations_orgID_sign_in_flow_paths",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "applied": {
+                      "type": "boolean"
+                    },
+                    "flows": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "on": {
+                            "type": "string"
+                          },
+                          "paths": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "stages": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "when": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "stages",
+                                "when"
+                              ],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "on",
+                          "paths"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "applied",
+                    "flows"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "Every journey the flows in force can take, and the situation that takes it."
+      }
+    },
     "/admin/organizations/{orgID}/signup": {
       "delete": {
         "operationId": "delete_organizations_orgID_signup",

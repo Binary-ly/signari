@@ -341,6 +341,7 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/relations":             "Grant a subject a relation on an object.",
 	"DELETE /admin/organizations/{orgID}/relations":          "Revoke a relation named by subject, relation and object.",
 
+	"GET /admin/organizations/{orgID}/sign-in-flow/paths":                               "Every journey the flows in force can take, and the situation that takes it.",
 	"GET /admin/organizations/{orgID}/relation-delegations":                             "The delegations the organisation is either side of.",
 	"POST /admin/organizations/{orgID}/relation-delegations":                            "Let another organisation hand out relations on this one's objects; deployment-wide tokens only.",
 	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}":           "Take a delegation away, and all that was handed out under it; deployment-wide tokens only.",

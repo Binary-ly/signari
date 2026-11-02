@@ -1588,6 +1588,26 @@ type GetOrganizationsOrgIDSignInFlowResponse struct {
 	OrgID     string  `json:"org_id"`
 }
 
+// GetOrganizationsOrgIDSignInFlowPathsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDSignInFlowPathsResponse struct {
+	Applied bool                                                    `json:"applied"`
+	Flows   []GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItem `json:"flows"`
+	OrgID   string                                                  `json:"org_id"`
+}
+
+// GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItem struct {
+	Name  string                                                           `json:"name"`
+	On    string                                                           `json:"on"`
+	Paths []GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItemPathsItem `json:"paths"`
+}
+
+// GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItemPathsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItemPathsItem struct {
+	Stages []string `json:"stages"`
+	When   []string `json:"when"`
+}
+
 // GetOrganizationsOrgIDSignupResponse is a JSON object of the Admin API.
 type GetOrganizationsOrgIDSignupResponse struct {
 	AllowedDomains       []string `json:"allowed_domains"`
@@ -5091,6 +5111,17 @@ func (c *Client) GetOrganizationsOrgIDSettings(ctx context.Context, orgID string
 func (c *Client) GetOrganizationsOrgIDSignInFlow(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDSignInFlowResponse, int64, error) {
 	var out GetOrganizationsOrgIDSignInFlowResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/sign-in-flow", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDSignInFlowPaths is GET /admin/organizations/{orgID}/sign-in-flow/paths:
+// Every journey the flows in force can take, and the situation that takes it. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDSignInFlowPaths(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDSignInFlowPathsResponse, int64, error) {
+	var out GetOrganizationsOrgIDSignInFlowPathsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/sign-in-flow/paths", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\EngineUsers\Tables;
 
 use App\Services\EngineAdminApi;
+use App\Services\SignariSignIn;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -106,6 +107,7 @@ class EngineUsersTable
                 self::setPasswordAction(),
                 self::removeFactorAction(),
                 self::sendPasskeyLinkAction(),
+                self::eraseAction(),
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
@@ -259,6 +261,39 @@ class EngineUsersTable
      * link's token never reaches the console; the engine mints it as it sends
      * the email.
      */
+    /**
+     * Erasure cannot be undone, so it asks for the address as well as a yes, and it
+     * has a scope of its own: somebody who may manage people may not thereby erase
+     * them.
+     */
+    private static function eraseAction(): Action
+    {
+        return Action::make('erase')
+            ->label(__('Erase'))
+            ->icon('heroicon-m-trash')
+            ->color('danger')
+            ->visible(fn (): bool => SignariSignIn::may('subjects:erase'))
+            ->modalDescription(__('Their key is destroyed, their sessions end and their account goes. This cannot be undone. The audit trail stays, naming them only by id.'))
+            ->schema([TextInput::make('confirm')->label(__('Type their email to confirm'))->required()])
+            ->action(function (array $data, $record, $livewire): void {
+                if ($data['confirm'] !== (string) $record->email) {
+                    Notification::make()->title(__('Nothing was changed'))->body(__('That is not their address.'))
+                        ->danger()->send();
+
+                    return;
+                }
+                try {
+                    EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)->eraseSubject($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was changed'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Person erased'))->success()->send();
+            });
+    }
+
     private static function sendPasskeyLinkAction(): Action
     {
         return Action::make('sendPasskeyLink')

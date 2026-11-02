@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0269 console_views
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the console's remaining screens read (6.13): an organisation's scopes, claim mappers, attributes, directories and inbound SCIM sources. Each leaves out what it would not show anyway, so that no credential is a column the admin role can select: a directory's sealed credentials and a source's token hash stay in core, and a screen cannot reach what is not here.
+
 ## 0268 login_ui
 
 Compatible with the release before: its binary may still serve this schema.

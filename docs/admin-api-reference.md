@@ -69,7 +69,7 @@ refused with `412` when the configuration moved since the version it names.
 | [scopes](#scopes) | 3 |
 | [sessions](#sessions) | 1 |
 | [settings](#settings) | 2 |
-| [sign-in-flow](#sign-in-flow) | 2 |
+| [sign-in-flow](#sign-in-flow) | 3 |
 | [signup](#signup) | 3 |
 | [ssf-sources](#ssf-sources) | 3 |
 | [ssf-streams](#ssf-streams) | 2 |
@@ -4034,6 +4034,20 @@ Answers:
 | `not_executed` | list of string | always |
 | `org_id` | string | always |
 | `summary` | string | always |
+
+### `GET /admin/organizations/{orgID}/sign-in-flow/paths`
+
+Every journey the flows in force can take, and the situation that takes it. Needs config:read.
+
+Go `GetOrganizationsOrgIDSignInFlowPaths`, TypeScript `getOrganizationsOrgIDSignInFlowPaths`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `applied` | boolean | always |
+| `flows` | list of object | always |
+| `org_id` | string | always |
 
 ## signup
 

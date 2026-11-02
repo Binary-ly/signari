@@ -41,6 +41,68 @@ func (s *Server) getSignInFlow(w http.ResponseWriter, r *http.Request) {
 	s.getDocument(w, r, "flow")
 }
 
+// flowPathView is one way through a flow and the situation that takes it.
+type flowPathView struct {
+	Stages []string `json:"stages"`
+	When   []string `json:"when"`
+}
+
+type flowView struct {
+	Name  string         `json:"name"`
+	On    string         `json:"on"`
+	Paths []flowPathView `json:"paths"`
+}
+
+// getSignInFlowPaths is every journey the flow in force can take, as
+// `signari flow paths` prints them, or the built-in flows' when none is applied.
+func (s *Server) getSignInFlowPaths(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	got, err := store.SignInFlowOf(ctx, s.db, orgID)
+	var file *flow.File
+	if err == nil {
+		if got.Document == "" {
+			file, err = flow.Default()
+		} else {
+			file, err = flow.Parse([]byte(got.Document))
+		}
+	}
+	if err != nil {
+		s.log.Error("reading a sign-in flow's paths", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	flows := make([]flowView, 0, len(file.Flows))
+	for i := range file.Flows {
+		fl := &file.Flows[i]
+		paths, err := fl.Paths()
+		if err != nil {
+			s.log.Error("walking a sign-in flow", "org_id", orgID, "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+			return
+		}
+		view := flowView{Name: fl.Name, On: string(fl.On), Paths: make([]flowPathView, 0, len(paths))}
+		for _, p := range paths {
+			one := flowPathView{Stages: make([]string, 0, len(p.Stages)), When: []string{}}
+			for _, st := range p.Stages {
+				one.Stages = append(one.Stages, string(st))
+			}
+			for _, c := range fl.Conditions() {
+				if p.Given[c] {
+					one.When = append(one.When, c)
+				}
+			}
+			view.Paths = append(view.Paths, one)
+		}
+		flows = append(flows, view)
+	}
+	s.writeList(w, r, map[string]any{"org_id": orgID, "applied": got.Document != "", "flows": flows})
+}
+
 // getDocument answers the document in force, empty with no applied_at when
 // there is none: then everything is allowed, or the built-in flows run.
 func (s *Server) getDocument(w http.ResponseWriter, r *http.Request, kind string) {

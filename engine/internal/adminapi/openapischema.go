@@ -861,6 +861,10 @@ var opSchemas = map[string]opSchema{
 		[]string{"org_id", "summary", "config_version"}, withVersion(map[string]jsonSchema{"org_id": uuidStr(),
 			"summary": str()}))},
 	"GET /admin/organizations/{orgID}/sign-in-flow": {http.StatusOK, nil, appliedDocumentSchema},
+	"GET /admin/organizations/{orgID}/sign-in-flow/paths": {http.StatusOK, nil, object([]string{"org_id", "applied", "flows"}, map[string]jsonSchema{
+		"org_id": uuidStr(), "applied": boolean(), "flows": arrayOf(object([]string{"name", "on", "paths"}, map[string]jsonSchema{
+			"name": str(), "on": str(), "paths": arrayOf(object([]string{"stages", "when"}, map[string]jsonSchema{
+				"stages": arrayOf(str()), "when": arrayOf(str())}))}))})},
 	"PUT /admin/organizations/{orgID}/sign-in-flow": {http.StatusOK, typeOf[putDocumentRequest](), object(
 		[]string{"org_id", "summary", "not_executed", "config_version"}, withVersion(map[string]jsonSchema{
 			"org_id": uuidStr(), "summary": str(), "not_executed": arrayOf(str())}))},

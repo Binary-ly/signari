@@ -234,6 +234,37 @@ class EngineAdminApi
         return (int) $this->request('delete', "/admin/organizations/{$orgId}/brand", [], $this->readAt())['config_version'];
     }
 
+    /** Every journey the organisation's sign-in flow can take. */
+    public function signInFlowPaths(string $orgId): array
+    {
+        return $this->request('get', "/admin/organizations/{$orgId}/sign-in-flow/paths");
+    }
+
+    /** End one session. The person is out on their next request (ADR-007). */
+    public function endSession(string $sid): int
+    {
+        return (int) $this->request('delete', '/admin/sessions/'.rawurlencode($sid), [], $this->readAt())['config_version'];
+    }
+
+    public function addGroupMember(string $groupId, string $userId): int
+    {
+        return (int) $this->request('put', "/admin/groups/{$groupId}/members/{$userId}", [], $this->readAt())['config_version'];
+    }
+
+    public function removeGroupMember(string $groupId, string $userId): int
+    {
+        return (int) $this->request('delete', "/admin/groups/{$groupId}/members/{$userId}", [], $this->readAt())['config_version'];
+    }
+
+    /**
+     * Erase a person. The engine shreds their key, ends their sessions and removes
+     * the row, and cannot undo any of that; the confirmation is its own check too.
+     */
+    public function eraseSubject(string $userId): array
+    {
+        return $this->request('post', "/admin/subjects/{$userId}/erase", ['confirm_subject_id' => $userId], $this->readAt());
+    }
+
     /** Reword one message for the organisation, in one language, as plain text. */
     public function setOrganisationMessage(string $orgId, string $locale, string $key, string $text): int
     {

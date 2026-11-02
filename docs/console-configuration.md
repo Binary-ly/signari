@@ -15,6 +15,20 @@ reports are exactly the ones that go unnoticed for months.
 | Admin tokens | scopes, expiry, last use — for this organisation only |
 | Relations | who holds what on what, directly and in force. A relation held through a parent or a team has no row of its own, and the screen says so |
 | Authorization model | the file in force, as it was written. None means nothing is permitted, which is worth seeing before an application reports it |
+| Scopes, Attributes, Claim mappers | what the organisation declares, so a token's contents can be read without a configuration file to hand |
+| Directories, Inbound SCIM | where people come from, and how the last sync went. Credentials are not in the views |
+| Sign-in journeys | every path through the flow in force, from the engine's own walker |
+| Brand, Messages | what its [pages look like](brands.md#an-organisations-own) and [say](brands.md#an-organisations-words) |
+| Sessions, Audit trail | who is signed in, and what happened |
+
+Some screens act, through the Admin API and held to the version the page showed: **End
+session**, **Add a member** and **Remove a member** on a group, found by address among the
+organisation's own people, and **Erase** on a person, which asks for their address as well as
+a yes and needs `subjects:erase`.
+
+The console is one organisation's. There is no organisation switcher, because which
+organisation a request is scoped to comes from the operator's record and a selector the caller
+could set would be no boundary. Work across organisations is the Admin API's.
 
 ## Read-only, on purpose
 

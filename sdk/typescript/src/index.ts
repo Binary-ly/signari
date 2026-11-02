@@ -750,6 +750,12 @@ export class SignariAdmin {
     return this.call<GetOrganizationsOrgIDSignInFlowResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/sign-in-flow`, undefined, opts)
   }
 
+  // GET /admin/organizations/{orgID}/sign-in-flow/paths: Every journey the flows in force can
+  // take, and the situation that takes it. Needs config:read.
+  getOrganizationsOrgIDSignInFlowPaths(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDSignInFlowPathsResponse>> {
+    return this.call<GetOrganizationsOrgIDSignInFlowPathsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/sign-in-flow/paths`, undefined, opts)
+  }
+
   // GET /admin/organizations/{orgID}/signup: Whether people may make their own accounts, from
   // which addresses, and into which groups. Needs config:read.
   getOrganizationsOrgIDSignup(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDSignupResponse>> {
@@ -2919,6 +2925,26 @@ export interface GetOrganizationsOrgIDSignInFlowResponse {
   applied_at: string | null
   document: string
   org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDSignInFlowPathsResponse {
+  applied: boolean
+  flows: GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItem[]
+  org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItem {
+  name: string
+  on: string
+  paths: GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItemPathsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDSignInFlowPathsResponseFlowsItemPathsItem {
+  stages: string[]
+  when: string[]
 }
 
 /** A JSON object of the Admin API. */

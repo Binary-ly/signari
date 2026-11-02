@@ -58,7 +58,7 @@ func TestAuditedTransactionRate(t *testing.T) {
 			t.Fatal(err)
 		}
 		var orgID string
-		if err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&orgID); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()

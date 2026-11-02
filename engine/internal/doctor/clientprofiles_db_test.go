@@ -101,7 +101,7 @@ func TestAClientOutOfItsSecurityProfileIsReported(t *testing.T) {
 	for id, profile := range map[string]string{held: "fapi2", free: "none"} {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash, security_profile)
-			SELECT $1, id, 'P', 'public', '', $2 FROM core.organizations LIMIT 1`, id, profile); err != nil {
+			SELECT $1, id, 'P', 'public', '', $2 FROM core.organizations ORDER BY created_at, id LIMIT 1`, id, profile); err != nil {
 			t.Fatal(err)
 		}
 	}

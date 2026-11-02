@@ -21,7 +21,7 @@ func TestAPublicClientWithoutPKCEIsRefusedByTheSchema(t *testing.T) {
 	id := fmt.Sprintf("pkce-probe-%d", time.Now().UnixNano())
 	_, err := pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash, require_pkce)
-		SELECT $1, id, 'probe', 'public', '', false FROM core.organizations LIMIT 1`, id)
+		SELECT $1, id, 'probe', 'public', '', false FROM core.organizations ORDER BY created_at, id LIMIT 1`, id)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, id)
 	})
@@ -33,7 +33,7 @@ func TestAPublicClientWithoutPKCEIsRefusedByTheSchema(t *testing.T) {
 	// clients, and they authenticate with a secret.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash, require_pkce)
-		SELECT $1, id, 'probe', 'confidential', 'x', false FROM core.organizations LIMIT 1`, id); err != nil {
+		SELECT $1, id, 'probe', 'confidential', 'x', false FROM core.organizations ORDER BY created_at, id LIMIT 1`, id); err != nil {
 		t.Fatalf("a confidential client without PKCE was refused: %v", err)
 	}
 }

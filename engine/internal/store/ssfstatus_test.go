@@ -93,7 +93,7 @@ func TestAStreamStatusChangeTellsTheReceiverAndHoldsOrDrops(t *testing.T) {
 				t.Error("a status SSF does not define was accepted")
 			}
 			var otherOrg string
-			must(t, tx.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE id <> $1::uuid LIMIT 1`,
+			must(t, tx.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE id <> $1::uuid ORDER BY created_at, id LIMIT 1`,
 				orgID).Scan(&otherOrg))
 			if _, err := SetStreamStatus(ctx, tx, otherOrg, clientID, "paused", ""); !errors.Is(err, ErrStreamUnknown) {
 				t.Errorf("another organisation paused this stream: %v", err)

@@ -47,7 +47,7 @@ func TestAnOutpostThatStoppedCallingIsReported(t *testing.T) {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.outposts (org_id, name, kind, token_hash, enabled, last_seen_at)
 			SELECT id, $1::text, $2, sha256(convert_to($1::text, 'UTF8')), $3, `+o.seen+`
-			  FROM core.organizations LIMIT 1`,
+			  FROM core.organizations ORDER BY created_at, id LIMIT 1`,
 			name(o.tag), o.kind, o.enabled); err != nil {
 			t.Fatal(err)
 		}

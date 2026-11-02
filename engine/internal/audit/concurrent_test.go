@@ -152,6 +152,6 @@ func TestConcurrentAppendsDoNotForkTheChain(t *testing.T) {
 
 func anyOrg(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var id string
-	err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&id)
+	err := pool.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&id)
 	return id, err
 }

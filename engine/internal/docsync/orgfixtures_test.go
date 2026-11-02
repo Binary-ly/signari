@@ -20,6 +20,7 @@ func TestEveryOrganisationATestMakesIsRemoved(t *testing.T) {
 	engine := filepath.Join(root, "engine")
 	fn := regexp.MustCompile(`(?m)^func `)
 	insert := "INSERT INTO core.organizations"
+	anyOrganisation := regexp.MustCompile(`FROM core\.organizations( WHERE [^\n]*?)? LIMIT 1`)
 	checked := 0
 
 	err := filepath.Walk(engine, func(path string, info os.FileInfo, err error) error {
@@ -31,10 +32,15 @@ func TestEveryOrganisationATestMakesIsRemoved(t *testing.T) {
 			return err
 		}
 		src := string(raw)
+		rel, _ := filepath.Rel(root, path)
+		if m := anyOrganisation.FindString(src); m != "" && !strings.Contains(m, "ORDER BY") &&
+			!strings.HasSuffix(path, "orgfixtures_test.go") {
+			t.Errorf("%s takes whichever organisation comes first, and in a shared database that is one another "+
+				"test is about to remove: order it by created_at for the oldest, or make one. Near: %s", rel, m)
+		}
 		if !strings.Contains(src, insert) {
 			return nil
 		}
-		rel, _ := filepath.Rel(root, path)
 		starts := append(fn.FindAllStringIndex(src, -1), []int{len(src), len(src)})
 		for i := 0; i+1 < len(starts); i++ {
 			body := src[starts[i][0]:starts[i+1][0]]

@@ -221,7 +221,7 @@ func TestAnotherOrganisationsInvitationCannotBeRevoked(t *testing.T) {
 	org := anyOrgID(t, s)
 	id := newDriftInvitation(t, s)
 	var other string
-	if err := s.db.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE id <> $1::uuid LIMIT 1`, org).Scan(&other); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE id <> $1::uuid ORDER BY created_at, id LIMIT 1`, org).Scan(&other); err != nil {
 		t.Skip("needs a second organisation")
 	}
 	elsewhere := narrowedToken(t, s, other, []string{ScopeUsersWrite}, nil, nil)

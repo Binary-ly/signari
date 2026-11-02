@@ -35,7 +35,7 @@ func TestImportedClientSecretIsHashedAndStillVerifies(t *testing.T) {
 	}
 
 	var orgID string
-	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&orgID); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
 		t.Skip("no organisation seeded")
 	}
 
@@ -114,7 +114,7 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	var orgID string
-	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&orgID); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
 		t.Skip("no organisation seeded")
 	}
 	tx, err := conn.Begin(ctx)

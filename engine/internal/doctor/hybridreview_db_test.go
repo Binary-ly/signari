@@ -40,7 +40,7 @@ func TestAnOverdueHybridExemptionIsReported(t *testing.T) {
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, allow_hybrid, hybrid_review_by)
 			SELECT $1, id, 'T', 'confidential', 'x', true, $2::date
-			  FROM core.organizations LIMIT 1`, c.id, c.due); err != nil {
+			  FROM core.organizations ORDER BY created_at, id LIMIT 1`, c.id, c.due); err != nil {
 			t.Fatal(err)
 		}
 	}

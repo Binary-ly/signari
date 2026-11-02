@@ -21,6 +21,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 type scimFixture struct {
@@ -103,8 +104,8 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(c, `DELETE FROM core.scim_sources WHERE id = $1::uuid`, f.srcID)
-		_, _ = pool.Exec(c, `DELETE FROM core.organizations WHERE id = $1::uuid`, f.orgID)
 	})
+	storetest.Forget(t, pool, f.orgID)
 
 	// Two users, provisioned through the endpoint itself rather than planted, so
 	// the resource ids are the ones an upstream would actually hold.

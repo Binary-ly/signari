@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // CIBA Core 1.0, end to end and adversarially.
@@ -110,6 +111,7 @@ func newCIBAFixture(t *testing.T) *cibaFixture {
 		Scan(&f.orgID, &f.userID, &f.email); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, email, user_handle)
 		VALUES ($1::uuid, 'other'||substr(gen_random_uuid()::text,1,8)||'@example.test',

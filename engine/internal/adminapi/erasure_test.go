@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Erasure is the only operation in this API that nobody can undo, so the tests
@@ -37,6 +39,11 @@ func seedSubject(t *testing.T, s *Server, active bool) string {
 	if err != nil {
 		t.Fatalf("seeding a user: %v", err)
 	}
+	var org string
+	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`, subjectID).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, s.db, org)
 	// A subject key, as the MFA path would mint.
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO core.subject_keys (subject_id, wrapped_dek, wrap_key_ref)

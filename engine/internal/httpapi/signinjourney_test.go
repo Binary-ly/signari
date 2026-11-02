@@ -21,6 +21,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The browser sign-in journey, end to end.
@@ -114,6 +115,7 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		Scan(&f.orgID, &f.userID, &f.email); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 
 	// A real Argon2id hash, produced by the same hasher the handler verifies
 	// with. A hand-written constant here would test the constant.

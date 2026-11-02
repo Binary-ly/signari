@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef" // 32 chars
@@ -124,6 +125,7 @@ func TestMutationBumpsConfigVersion(t *testing.T) {
 		RETURNING id::text`).Scan(&orgID); err != nil {
 		t.Fatalf("fixture org: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	clientID := "admin-api-" + orgID[:8]
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash)

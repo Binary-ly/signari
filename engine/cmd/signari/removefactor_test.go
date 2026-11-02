@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // `user remove-factor` removes a method, as the Admin API does, and queues the
@@ -37,6 +38,7 @@ func TestRemoveFactorRemovesAndTellsTheHolder(t *testing.T) {
 		Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, db, org)
 	email := fmt.Sprintf("rmfactor-%d@example.test", time.Now().UnixNano())
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, email)

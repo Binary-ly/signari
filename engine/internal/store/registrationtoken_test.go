@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // RFC 7591 initial access tokens, ASVS 5.0 V10.4.7.
@@ -67,6 +69,7 @@ func plantRegistrationToken(t *testing.T, pool *pgxpool.Pool, enabled bool,
 		instanceID, "reg-"+itoa(suffix)).Scan(&orgID); err != nil {
 		t.Fatalf("org: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.registration_policies (org_id, enabled) VALUES ($1::uuid, $2)`,
 		orgID, enabled); err != nil {

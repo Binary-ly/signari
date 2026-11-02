@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The database half of retirement: what the loader will and will not publish,
@@ -233,6 +235,7 @@ func TestTheDwellFollowsTheLongestCredentialLifetime(t *testing.T) {
 		inst, "retire-"+NewKID()).Scan(&orgID); err != nil {
 		t.Skipf("could not seed an organisation: %v", err)
 	}
+	storetest.Forget(t, conn, orgID)
 
 	// One short and one long, so the result must be a maximum rather than
 	// whichever row the query happened to reach first.

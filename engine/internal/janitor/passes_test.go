@@ -295,7 +295,7 @@ func TestABatchOfSessionsTakesNoMoreStatementsThanOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	plantBacklog(t, pool, 400)
 	tx, err := pool.Begin(ctx)
 	if err != nil {

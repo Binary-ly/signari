@@ -14,6 +14,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // WS-Federation reached the assertion with neither of the checks the SAML
@@ -71,6 +72,7 @@ func newRealmFixture(t *testing.T) *realmFixture {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	for _, sp := range []struct {
 		org, entity string
 		enabled     bool

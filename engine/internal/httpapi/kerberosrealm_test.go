@@ -22,6 +22,7 @@ import (
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // testRealm is an organisation's realm, and the service key a KDC of it would hold.
@@ -129,6 +130,7 @@ func TestATicketSignsInToTheOrganisationOfItsRealm(t *testing.T) {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	alpha := newTestRealm(t, f, f.orgID, "ALPHA", false, "HTTP/another.service.test")
 	beta := newTestRealm(t, f, otherOrg, "BETA", true)
 

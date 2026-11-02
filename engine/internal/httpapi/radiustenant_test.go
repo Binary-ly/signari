@@ -10,6 +10,7 @@ import (
 
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // One user name in two organisations. User names are unique per organisation
@@ -45,6 +46,8 @@ func newTwinFixture(t *testing.T) *twinFixture {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&tf.otherOrg); err != nil {
 		t.Fatal(err)
 	}
+
+	storetest.Forget(t, f.pool, tf.otherOrg)
 
 	// Two fresh twins, the other organisation's created first and with the
 	// lowest ids, so it comes first in the heap and in every index a plan might

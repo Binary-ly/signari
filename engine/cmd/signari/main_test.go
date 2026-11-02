@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A group with no verb, and no command at all, print the usage rather than
@@ -138,6 +140,7 @@ func TestCreateCommandsActInTheOrganisationNamed(t *testing.T) {
 		Scan(&second); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, db, second)
 	stamp := time.Now().UnixNano()
 	email := fmt.Sprintf("cli-org-%d@example.test", stamp)
 	client := fmt.Sprintf("cli-org-%d", stamp)

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // What a connection signs in with reaches the command in a file and never on its
@@ -38,6 +39,7 @@ func TestRACAddReadsItsSecretsFromFiles(t *testing.T) {
 		Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, db, org)
 	dir := t.TempDir()
 	write := func(name, content string) string {
 		t.Helper()

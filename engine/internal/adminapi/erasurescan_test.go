@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A person's whole life through the API, created, renamed, re-addressed,
@@ -28,6 +30,7 @@ func TestAnErasedPersonLeavesNoIdentifierInTheAuditTrail(t *testing.T) {
 		RETURNING id::text`).Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, s.db, org)
 	var start int64
 	if err := s.db.QueryRow(ctx, `SELECT COALESCE(max(id), 0) FROM core.audit_events`).Scan(&start); err != nil {
 		t.Fatal(err)
@@ -143,6 +146,7 @@ func TestAnErasedPersonLeavesNoIdentifierAnywhere(t *testing.T) {
 		RETURNING id::text`).Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, s.db, org)
 	tag := fmt.Sprint(time.Now().UnixNano())
 	identifiers := []string{"grace" + tag + "@example.test", "ghopper" + tag, "Grace Hopper" + tag, "Brewster" + tag}
 	rec := call(t, s, http.MethodPost, "/admin/users", testToken, map[string]any{

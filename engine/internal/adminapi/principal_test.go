@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // mintToken creates a real token row and returns the secret.
@@ -230,9 +232,7 @@ func makeOrg(t *testing.T, s *Server, name string) string {
 		// one in the summary, and this is the check the whole change exists for.
 		t.Fatalf("cannot create an organisation: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.organizations WHERE id = $1::uuid`, id)
-	})
+	storetest.Forget(t, s.db, id)
 	return id
 }
 

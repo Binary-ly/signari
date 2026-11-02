@@ -46,6 +46,9 @@ func TestEngineRoleCanReadItsOwnTables(t *testing.T) {
 		t.Fatalf("connected as %q, not signari_engine -- this test proves nothing", who)
 	}
 
+	// Rows of its own, so an empty table can only mean row security hid them.
+	fixture(t, connect(t))
+
 	// No app.org_id is set, exactly as the engine runs.
 	for _, table := range []string{"core.users", "core.clients", "core.sessions"} {
 		var n int

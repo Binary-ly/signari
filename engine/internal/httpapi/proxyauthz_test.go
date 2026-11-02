@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/store/storetest"
 	"signari.dev/engine/internal/tokens"
 )
 
@@ -44,6 +45,7 @@ func newProxyAuthz(t *testing.T) *proxyAuthz {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	for _, h := range []struct {
 		org, host string
 		enabled   bool

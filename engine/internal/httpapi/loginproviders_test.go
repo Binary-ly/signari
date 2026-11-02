@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The sign-in page offered every tenant's identity providers to every tenant's
@@ -37,6 +39,7 @@ func newProviderPage(t *testing.T) *providerPage {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := f.pool.Exec(ctx, sql, args...); err != nil {

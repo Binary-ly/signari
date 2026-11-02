@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A connection with a cap has room for that many and no more (8.29): one that has
@@ -25,7 +27,7 @@ func TestACappedConnectionHoldsItsCapAndGivesPlacesBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	n := time.Now().UnixNano()
 	var instance, org, user string
 	if err := pool.QueryRow(ctx, `INSERT INTO core.instances (issuer, display_name) VALUES ($1, 'probe')
@@ -37,14 +39,10 @@ func TestACappedConnectionHoldsItsCapAndGivesPlacesBack(t *testing.T) {
 		Scan(&org); err != nil {
 		t.Fatal(err)
 	}
-	// Users first: users.org_id does not cascade.
 	t.Cleanup(func() {
-		ctx := context.Background()
-		_, _ = pool.Exec(ctx, `DELETE FROM core.rac_sessions WHERE org_id = $1::uuid`, org)
-		_, _ = pool.Exec(ctx, `DELETE FROM core.users WHERE org_id = $1::uuid`, org)
-		_, _ = pool.Exec(ctx, `DELETE FROM core.organizations WHERE id = $1::uuid`, org)
-		_, _ = pool.Exec(ctx, `DELETE FROM core.instances WHERE id = $1::uuid`, instance)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM core.rac_sessions WHERE org_id = $1::uuid`, org)
 	})
+	storetest.Forget(t, pool, org)
 	if err := pool.QueryRow(ctx, `INSERT INTO core.users (org_id, user_handle, email) VALUES ($1::uuid,
 		sha256(gen_random_uuid()::text::bytea) || sha256(gen_random_uuid()::text::bytea), $2) RETURNING id::text`,
 		org, fmt.Sprintf("racreserve-%d@example.test", n)).Scan(&user); err != nil {

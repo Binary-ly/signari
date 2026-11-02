@@ -16,6 +16,7 @@ import (
 
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Two organisations trusting one transmitter: a shared upstream issues every
@@ -46,6 +47,7 @@ func newSSFTenant(t *testing.T, pool *pgxpool.Pool, x *txServer, issuer, audienc
 		VALUES ($1,'ssf') RETURNING id::text`, fmt.Sprintf("https://ssfr-%d.test", n)).Scan(&instanceID))
 	must(pool.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
 		VALUES ($1,$2,'SSF') RETURNING id::text`, instanceID, fmt.Sprintf("ssfr%d", n)).Scan(&tn.orgID))
+	storetest.Forget(t, pool, tn.orgID)
 	must(pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, user_handle, email)
 		VALUES ($1, sha256($2::bytea)||sha256($3::bytea), $4) RETURNING id::text`,

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // These tests need a real PostgreSQL with the core schema applied. The
@@ -57,6 +58,7 @@ func fixture(t *testing.T, conn *pgx.Conn) (orgID, userID, clientID, sid string)
 		INSERT INTO core.organizations (instance_id, slug, display_name)
 		VALUES ($1, $2, 'Test') RETURNING id::text`,
 		instanceID, "org"+itoa(suffix)).Scan(&orgID))
+	storetest.Forget(t, conn, orgID)
 
 	must(t, conn.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, user_handle, email)

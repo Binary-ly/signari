@@ -16,6 +16,7 @@ import (
 
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 type directoryFixture struct {
@@ -61,16 +62,7 @@ func newDirectoryFixture(t *testing.T, n int) *directoryFixture {
 		RETURNING id::text`).Scan(&f.orgID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx := context.Background()
-		for _, q := range []string{`DELETE FROM core.users WHERE org_id = $1::uuid`,
-			`DELETE FROM core.groups WHERE org_id = $1::uuid`,
-			`DELETE FROM core.organizations WHERE id = $1::uuid`} {
-			if _, err := pool.Exec(ctx, q, f.orgID); err != nil {
-				t.Errorf("removing what the test made: %v", err)
-			}
-		}
-	})
+	storetest.Forget(t, pool, f.orgID)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.users (org_id, user_handle, username, email, display_name)
 		SELECT $1::uuid, sha256(convert_to($1::text || i::text, 'UTF8')), 'p' || i,

@@ -29,6 +29,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // RFC 7523 §2.1, end to end and adversarially.
@@ -128,6 +129,7 @@ func newAssertionFixture(t *testing.T) *assertionFixture {
 		FROM o RETURNING org_id::text, id::text`).Scan(&f.orgID, &f.userID); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 
 	// The trusted provider, opted in to this grant.
 	if err := pool.QueryRow(ctx, `

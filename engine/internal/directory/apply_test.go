@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 func testDB(t *testing.T) *pgxpool.Pool {
@@ -54,10 +56,7 @@ func fixture(t *testing.T, pool *pgxpool.Pool) (orgID, sourceID string) {
 		t.Fatalf("creating a source: %v", err)
 	}
 
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM core.users WHERE org_id = $1::uuid`, orgID)
-		_, _ = pool.Exec(ctx, `DELETE FROM core.organizations WHERE id = $1::uuid`, orgID)
-	})
+	storetest.Forget(t, pool, orgID)
 	return orgID, sourceID
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/prompts"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // An edit to what a prompt says makes it pending again, and the earlier answer
@@ -99,7 +100,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx, "SET ROLE signari_maintenance"); err != nil {
 		t.Fatalf("assuming signari_maintenance: %v", err)
 	}
@@ -112,10 +113,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 		RETURNING id::text`).Scan(&orgID); err != nil {
 		t.Fatalf("creating an organisation: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DELETE FROM core.organizations WHERE id = $1::uuid`, orgID)
-	})
+	storetest.Forget(t, pool, orgID)
 
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, user_handle, email)

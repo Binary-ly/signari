@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // What the portal must never list.
@@ -21,7 +23,7 @@ func TestPortalExcludesWhatItMust(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx, "SET ROLE signari_maintenance"); err != nil {
 		t.Fatalf("assuming signari_maintenance: %v", err)
 	}
@@ -34,10 +36,7 @@ func TestPortalExcludesWhatItMust(t *testing.T) {
 		RETURNING id::text`).Scan(&orgID); err != nil {
 		t.Fatalf("creating an organisation: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DELETE FROM core.organizations WHERE id = $1::uuid`, orgID)
-	})
+	storetest.Forget(t, pool, orgID)
 
 	// Unique per run. A test that only passes against a clean database is one
 	// that fails for whoever runs it second.
@@ -108,7 +107,7 @@ func TestPortalDoesNotCrossOrganisations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx, "SET ROLE signari_maintenance"); err != nil {
 		t.Fatalf("assuming signari_maintenance: %v", err)
 	}
@@ -128,10 +127,7 @@ func TestPortalDoesNotCrossOrganisations(t *testing.T) {
 			t.Fatalf("creating an organisation: %v", err)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DELETE FROM core.organizations WHERE id = ANY(ARRAY[$1,$2]::uuid[])`, a, b)
-	})
+	storetest.Forget(t, pool, a, b)
 
 	for i, org := range []string{a, b} {
 		id := "pt-tenant-a-" + suffixB

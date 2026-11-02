@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/mfa"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A hardware token is assigned only with codes its seed produces (4.12): a
@@ -42,6 +43,7 @@ func TestAssignOTPStoresOnlyASeedItsCodesProve(t *testing.T) {
 		Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, db, org)
 	email := fmt.Sprintf("assign-otp-%d@example.test", time.Now().UnixNano())
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, email)

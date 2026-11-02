@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // writeCommandFlags writes the table the dispatch implies to this path, for
@@ -480,6 +482,7 @@ func TestPlanExitsThreeOnDrift(t *testing.T) {
 		 ORDER BY created_at LIMIT 1 RETURNING id::text`).Scan(&org); err != nil {
 		t.Skipf("no organisation: %v", err)
 	}
+	storetest.Forget(t, conn, org)
 	if _, err := captureStdout(t, func() error { return run([]string{"plan", "-dsn", dsn, "-org", org, "-f", same}) }); err != nil {
 		t.Errorf("a plan with nothing to do answered %v (exit %d)", err, exitCode(err))
 	}

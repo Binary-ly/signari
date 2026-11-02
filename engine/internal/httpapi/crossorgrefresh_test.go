@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A refresh lineage minted under another organisation than its client's is
@@ -25,6 +26,7 @@ func TestARefreshFromAnotherOrganisationsLineageIsRefused(t *testing.T) {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 
 	raw, hash, err := store.NewCode()
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 	"signari.dev/engine/internal/uma"
 )
 
@@ -269,6 +270,7 @@ func TestATicketFromAnotherOrganisationIsRefused(t *testing.T) {
 		RETURNING id::text`).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(context.Background(),
 			`DELETE FROM core.uma_permission_tickets WHERE org_id = $1::uuid`, otherOrg)

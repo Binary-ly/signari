@@ -15,6 +15,7 @@ import (
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A process serving several instances (6.12) signs each logout token as the
@@ -56,9 +57,11 @@ func instanceWithClient(t *testing.T, pool *pgxpool.Pool) (instanceID, clientID 
 		RETURNING (SELECT instance_id::text FROM o)`, clientID).Scan(&instanceID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, clientID)
-	})
+	var org string
+	if err := pool.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, pool, org)
 	return instanceID, clientID
 }
 

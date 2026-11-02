@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // What a transmitter says about an account, and pulling what it says rather than waiting
@@ -134,6 +135,7 @@ func newSignalled(t *testing.T, pool *pgxpool.Pool, jwksURI string, events ...st
 		"https://ssf-"+n+".test").Scan(&p.instanceID))
 	must(pool.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
 		VALUES ($1,$2,'SSF') RETURNING id::text`, p.instanceID, "ssf"+strings.ReplaceAll(n, "-", "")).Scan(&p.orgID))
+	storetest.Forget(t, pool, p.orgID)
 	must(pool.QueryRow(ctx, `INSERT INTO core.users (org_id, user_handle, email)
 		VALUES ($1, sha256($2::bytea)||sha256($3::bytea), $4) RETURNING id::text`,
 		p.orgID, n, n+"x", "u"+n+"@ssf.test").Scan(&p.userID))

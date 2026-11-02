@@ -1464,8 +1464,11 @@ func allMutatingRoutes() []mutatingRoute {
 				// instance_id is named rather than inferred: the handler only
 				// infers it when a deployment has exactly one instance, and a
 				// test database accumulates several.
-				return fmt.Sprintf(`{"slug":"drift-%d","display_name":"Drift","instance_id":%q}`,
-					time.Now().UnixNano(), anyInstanceID(t, s))
+				slug := fmt.Sprintf("drift-%d", time.Now().UnixNano())
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.organizations WHERE slug = $1`, slug)
+				})
+				return fmt.Sprintf(`{"slug":%q,"display_name":"Drift","instance_id":%q}`, slug, anyInstanceID(t, s))
 			},
 		},
 		{

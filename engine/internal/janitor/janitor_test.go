@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 func newPool(t *testing.T) *pgxpool.Pool {
@@ -221,6 +223,7 @@ func plantExpiredSession(t *testing.T, pool *pgxpool.Pool) string {
 	if err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 
 	clientID := "janitor-" + orgID[:8]
 	if _, err := pool.Exec(ctx, `

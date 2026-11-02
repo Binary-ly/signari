@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // One address in two organisations, with a different password in each. Sign-in
@@ -37,6 +38,7 @@ func newTwoTenantLogin(t *testing.T) *twoTenantLogin {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&tl.otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, tl.otherOrg)
 	hash, err := passwords.NewHasher(passwords.MemoryBudgetMiB).Hash(ctx, tl.otherPassword)
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +157,7 @@ func TestASessionFromAnotherOrganisationIsNoSignInForThisClient(t *testing.T) {
 		  FROM core.organizations WHERE id = $1::uuid RETURNING id::text`, f.orgID).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	otherClient := fmt.Sprintf("xo-%d", time.Now().UnixNano())
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,

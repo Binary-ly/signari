@@ -624,6 +624,12 @@ export class SignariAdmin {
     return this.call<GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys`, undefined, opts)
   }
 
+  // GET /admin/organizations/{orgID}/issued-credentials: What has been issued and can be revoked.
+  // Needs config:read.
+  getOrganizationsOrgIDIssuedCredentials(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDIssuedCredentialsResponse>> {
+    return this.call<GetOrganizationsOrgIDIssuedCredentialsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/issued-credentials`, undefined, opts)
+  }
+
   // GET /admin/organizations/{orgID}/kerberos-realms: An organisation's Kerberos realms, without
   // their keytabs Needs config:read.
   getOrganizationsOrgIDKerberosRealms(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDKerberosRealmsResponse>> {
@@ -1043,6 +1049,12 @@ export class SignariAdmin {
   // transaction. Needs organizations:write.
   postOrganizationsOrgIDConfig(orgID: string, body: PostOrganizationsOrgIDConfigRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDConfigResponse>> {
     return this.call<PostOrganizationsOrgIDConfigResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/config`, body, opts)
+  }
+
+  // POST /admin/organizations/{orgID}/credential-revocations: Take back a credential, or all a
+  // person holds. Needs organizations:write.
+  postOrganizationsOrgIDCredentialRevocations(orgID: string, body: PostOrganizationsOrgIDCredentialRevocationsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDCredentialRevocationsResponse>> {
+    return this.call<PostOrganizationsOrgIDCredentialRevocationsResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/credential-revocations`, body, opts)
   }
 
   // POST /admin/organizations/{orgID}/directories: Register a Google, Entra or LDAP source; it
@@ -2398,6 +2410,7 @@ export interface GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurat
   id: string
   lifetime_s: number
   require_key_attestation: boolean
+  revocable: boolean
   selective: string[]
   vct: string
   wallet_initiated: boolean
@@ -2571,6 +2584,24 @@ export interface GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysI
   id: string
   purpose: string
   retired_at: string | null
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDIssuedCredentialsResponse {
+  credentials: GetOrganizationsOrgIDIssuedCredentialsResponseCredentialsItem[]
+  next_cursor: string
+  org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDIssuedCredentialsResponseCredentialsItem {
+  configuration: string
+  email: string
+  expires_at: string | null
+  id: string
+  issued_at: string
+  revoked_at: string | null
+  user_id: string
 }
 
 /** A JSON object of the Admin API. */
@@ -3912,6 +3943,19 @@ export interface PostOrganizationsOrgIDConfigResponseMintedItem {
 }
 
 /** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDCredentialRevocationsRequest {
+  credential_id?: string
+  user_id?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDCredentialRevocationsResponse {
+  config_version: number
+  org_id: string
+  revoked: number
+}
+
+/** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDDirectoriesRequest {
   credentials?: unknown
   domain?: string
@@ -4790,6 +4834,7 @@ export interface PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest {
   format?: string
   lifetime_s?: number
   require_key_attestation?: boolean
+  revocable?: boolean
   selective?: string[]
   vct?: string
   wallet_initiated?: boolean

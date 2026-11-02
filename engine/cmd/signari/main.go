@@ -259,7 +259,9 @@ verifiable credentials:
   credential untrust-root  stop trusting a CA for x5c key proofs
   credential roots         the CAs x5c key proofs may verify to
   credential encryption-key  make a new key for wallets to encrypt to
-  attester add            trust a Client Attester's public keys
+  credential issued        what has been issued and can be revoked
+  credential revoke        take back one credential, or all a person holds
+  attester add           trust a Client Attester's public keys
   attester list            the trusted Client Attesters
   external-factor add      register a service an external_factor stage may ask
   external-factor list     the registered services
@@ -984,6 +986,9 @@ func run(args []string) (err error) {
 	credDeferred := fs.Bool("deferred", false, "hold each request for this credential for a decision (credential define)")
 	credWalletInitiated := fs.Bool("wallet-initiated", false,
 		"let anybody signed in ask for this credential from a wallet, with no offer naming them (credential define)")
+	credRevocable := fs.Bool("revocable", false,
+		"give each credential a place in a status list, so that it can be revoked (credential define)")
+	credIssued := fs.String("credential", "", "the id `credential issued` shows (credential revoke)")
 	credRequest := fs.String("request", "", "the id `credential requests` shows (credential decide)")
 	credDecision := fs.String("decision", "", "approve or deny (credential decide)")
 	localeTag := fs.String("locale", "",
@@ -1824,7 +1829,7 @@ func run(args []string) (err error) {
 	case "credential define":
 		given := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
-		var requireAttestation, deferred, walletInitiated *bool
+		var requireAttestation, deferred, walletInitiated, revocable *bool
 		if given["require-key-attestation"] {
 			requireAttestation = credRequireAttestation
 		}
@@ -1834,8 +1839,15 @@ func run(args []string) (err error) {
 		if given["wallet-initiated"] {
 			walletInitiated = credWalletInitiated
 		}
+		if given["revocable"] {
+			revocable = credRevocable
+		}
 		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credFormat, *credVCT,
-			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred, walletInitiated)
+			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred, walletInitiated, revocable)
+	case "credential issued":
+		return credentialIssued(ctx, conn, *orgID, *email, *outputFormat)
+	case "credential revoke":
+		return credentialRevoke(ctx, conn, *orgID, *credIssued, *email)
 	case "credential list":
 		return credentialList(ctx, conn, *outputFormat)
 	case "credential requests":
@@ -9761,7 +9773,7 @@ func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
 // quietly drop a requirement somebody set.
 func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, format, vct,
 	always, selective string, lifetime time.Duration, displayName string,
-	requireAttestation, deferred, walletInitiated *bool) error {
+	requireAttestation, deferred, walletInitiated, revocable *bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -9785,7 +9797,8 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, form
 	// checked in store.CredentialSpec, as the Admin API checks them.
 	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, Format: format, VCT: vct,
 		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
-		RequireKeyAttestation: requireAttestation, Deferred: deferred, WalletInitiated: walletInitiated})
+		RequireKeyAttestation: requireAttestation, Deferred: deferred, WalletInitiated: walletInitiated,
+		Revocable: revocable})
 	if err != nil {
 		return err
 	}
@@ -9811,6 +9824,10 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, form
 	}
 	if walletInitiated != nil && *walletInitiated {
 		fmt.Printf("  who       : anybody who signs in here may ask for it from a wallet\n")
+	}
+	if revocable != nil && *revocable {
+		fmt.Printf("  status    : each credential carries a place in a status list, and\n")
+		fmt.Printf("              `signari credential revoke` takes it back\n")
 	}
 	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
 	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")
@@ -9984,6 +10001,85 @@ func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name stri
 		return err
 	}
 	fmt.Printf("no longer trusted for x5c key proofs: %q\n", name)
+	return nil
+}
+
+// credentialIssued shows what can be revoked, an organisation's or one person's. Only a
+// `-revocable` configuration leaves a record of what it issued.
+func credentialIssued(ctx context.Context, conn *pgx.Conn, orgID, email, format string) error {
+	if orgID == "" {
+		return fmt.Errorf("credential issued needs -org")
+	}
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	userID := ""
+	if email != "" {
+		if userID, _, err = oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID, "user with address"); err != nil {
+			return err
+		}
+	}
+	const pageSize = 500
+	after, found := "", false
+	for {
+		page, err := store.IssuedCredentialsPage(ctx, conn, orgID, userID, after, pageSize)
+		if err != nil {
+			return err
+		}
+		for _, c := range page {
+			found = true
+			out.add(map[string]any{"id": c.ID, "configuration": c.Configuration, "user_id": c.UserID, "email": c.Email,
+				"issued_at": c.IssuedAt.UTC(), "expires_at": utcPtr(c.ExpiresAt), "revoked_at": utcPtr(c.RevokedAt)})
+			if out.text() {
+				state := "valid"
+				if c.RevokedAt != nil || c.UserID == "" {
+					state = "revoked"
+				}
+				holder := c.Email
+				if c.UserID == "" {
+					holder = "(person removed)"
+				}
+				fmt.Printf("%s  %s  %s  %s  issued %s\n", c.ID, state, c.Configuration, holder,
+					c.IssuedAt.UTC().Format(time.DateOnly))
+			}
+		}
+		if len(page) < pageSize {
+			break
+		}
+		after = page[len(page)-1].ID
+	}
+	if !found && out.text() {
+		fmt.Println("nothing that can be revoked: only a revocable configuration keeps a record")
+	}
+	return out.flush()
+}
+
+// credentialRevoke takes back one credential or everything a person holds. It cannot be
+// undone: a wallet that should hold one again is issued a new one, at a new place.
+func credentialRevoke(ctx context.Context, conn *pgx.Conn, orgID, credentialID, email string) error {
+	if orgID == "" || (credentialID == "") == (email == "") {
+		return fmt.Errorf("credential revoke needs -org, and either -credential or -email")
+	}
+	var revoked int64
+	var err error
+	if email != "" {
+		var userID string
+		if userID, _, err = oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID, "user with address"); err != nil {
+			return err
+		}
+		revoked, err = store.RevokeCredentialsOf(ctx, conn, orgID, userID)
+	} else {
+		revoked, err = store.RevokeCredential(ctx, conn, orgID, credentialID)
+	}
+	if errors.Is(err, store.ErrIssuedCredentialUnknown) {
+		return fmt.Errorf("no credential %s in organisation %s; `signari credential issued` shows them", credentialID, orgID)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("revoked %d. The status list says so from now; a verifier holding a copy may keep it for %s\n",
+		revoked, oid4vci.StatusTokenTTL)
 	return nil
 }
 

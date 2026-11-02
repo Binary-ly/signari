@@ -635,6 +635,14 @@ func (s *Server) issueCredential(ctx context.Context, orgID string, claims *toke
 			return tokens.NewSigner(key).SignRaw(payload, typ)
 		},
 	}
+	if cfg.Revocable {
+		// A place of its own, batch or not: §13.2, "every Referenced Token MUST have a
+		// dedicated Status List entry". Taken before signing, because a place left over
+		// is a decoy and a credential with no place could never be taken back.
+		if issuer.Status, err = s.credentialStatusPlace(ctx, orgID, claims.Subject, cfg, now); err != nil {
+			return "", err
+		}
+	}
 	return issuer.Issue(cfg, subject, holderKey, now)
 }
 

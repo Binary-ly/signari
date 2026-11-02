@@ -1035,6 +1035,7 @@ type GetOrganizationsOrgIDCredentialConfigurationsResponseConfigurationsItem str
 	ID                    string   `json:"id"`
 	LifetimeS             int64    `json:"lifetime_s"`
 	RequireKeyAttestation bool     `json:"require_key_attestation"`
+	Revocable             bool     `json:"revocable"`
 	Selective             []string `json:"selective"`
 	Vct                   string   `json:"vct"`
 	WalletInitiated       bool     `json:"wallet_initiated"`
@@ -1208,6 +1209,24 @@ type GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeysResponseKeysItem struct {
 	ID          string  `json:"id"`
 	Purpose     string  `json:"purpose"`
 	RetiredAt   *string `json:"retired_at"`
+}
+
+// GetOrganizationsOrgIDIssuedCredentialsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDIssuedCredentialsResponse struct {
+	Credentials []GetOrganizationsOrgIDIssuedCredentialsResponseCredentialsItem `json:"credentials"`
+	NextCursor  string                                                          `json:"next_cursor"`
+	OrgID       string                                                          `json:"org_id"`
+}
+
+// GetOrganizationsOrgIDIssuedCredentialsResponseCredentialsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDIssuedCredentialsResponseCredentialsItem struct {
+	Configuration string  `json:"configuration"`
+	Email         string  `json:"email"`
+	ExpiresAt     *string `json:"expires_at"`
+	ID            string  `json:"id"`
+	IssuedAt      string  `json:"issued_at"`
+	RevokedAt     *string `json:"revoked_at"`
+	UserID        string  `json:"user_id"`
 }
 
 // GetOrganizationsOrgIDKerberosRealmsResponse is a JSON object of the Admin API.
@@ -2548,6 +2567,19 @@ type PostOrganizationsOrgIDConfigResponseMintedItem struct {
 	Secret string `json:"secret"`
 }
 
+// PostOrganizationsOrgIDCredentialRevocationsRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDCredentialRevocationsRequest struct {
+	CredentialID *string `json:"credential_id,omitempty"`
+	UserID       *string `json:"user_id,omitempty"`
+}
+
+// PostOrganizationsOrgIDCredentialRevocationsResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDCredentialRevocationsResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	OrgID         string `json:"org_id"`
+	Revoked       int64  `json:"revoked"`
+}
+
 // PostOrganizationsOrgIDDirectoriesRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDDirectoriesRequest struct {
 	Credentials    json.RawMessage `json:"credentials,omitempty"`
@@ -3427,6 +3459,7 @@ type PutOrganizationsOrgIDCredentialConfigurationsConfigIDRequest struct {
 	Format                *string   `json:"format,omitempty"`
 	LifetimeS             *int64    `json:"lifetime_s,omitempty"`
 	RequireKeyAttestation *bool     `json:"require_key_attestation,omitempty"`
+	Revocable             *bool     `json:"revocable,omitempty"`
 	Selective             *[]string `json:"selective,omitempty"`
 	Vct                   *string   `json:"vct,omitempty"`
 	WalletInitiated       *bool     `json:"wallet_initiated,omitempty"`
@@ -4968,6 +5001,17 @@ func (c *Client) GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.
 	return &out, v, nil
 }
 
+// GetOrganizationsOrgIDIssuedCredentials is GET /admin/organizations/{orgID}/issued-credentials:
+// What has been issued and can be revoked. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDIssuedCredentials(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDIssuedCredentialsResponse, int64, error) {
+	var out GetOrganizationsOrgIDIssuedCredentialsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/issued-credentials", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // GetOrganizationsOrgIDKerberosRealms is GET /admin/organizations/{orgID}/kerberos-realms: An
 // organisation's Kerberos realms, without their keytabs Needs config:read.
 func (c *Client) GetOrganizationsOrgIDKerberosRealms(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDKerberosRealmsResponse, int64, error) {
@@ -5756,6 +5800,18 @@ func (c *Client) PostOrganizationsOrgIDClaimMappers(ctx context.Context, orgID s
 func (c *Client) PostOrganizationsOrgIDConfig(ctx context.Context, orgID string, body PostOrganizationsOrgIDConfigRequest, opts ...Option) (*PostOrganizationsOrgIDConfigResponse, int64, error) {
 	var out PostOrganizationsOrgIDConfigResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/config", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDCredentialRevocations is POST
+// /admin/organizations/{orgID}/credential-revocations: Take back a credential, or all a person
+// holds. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDCredentialRevocations(ctx context.Context, orgID string, body PostOrganizationsOrgIDCredentialRevocationsRequest, opts ...Option) (*PostOrganizationsOrgIDCredentialRevocationsResponse, int64, error) {
+	var out PostOrganizationsOrgIDCredentialRevocationsResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/credential-revocations", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

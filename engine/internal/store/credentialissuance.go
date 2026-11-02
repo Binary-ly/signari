@@ -25,7 +25,7 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 	rows, err := db.Query(ctx, `
 		SELECT config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(EXTRACT(EPOCH FROM lifetime), 0)::bigint,
-		       COALESCE(display_name, ''), require_key_attestation, deferred, wallet_initiated
+		       COALESCE(display_name, ''), require_key_attestation, deferred, wallet_initiated, revocable
 		FROM core.credential_configurations
 		WHERE org_id = $1::uuid
 		ORDER BY config_id`, orgID)
@@ -40,7 +40,7 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 		var seconds int64
 		if err := rows.Scan(&c.ID, &c.Format, &c.VCT, &c.AlwaysClaims,
 			&c.SelectiveClaims, &seconds, &c.DisplayName, &c.RequireKeyAttestation, &c.Deferred,
-			&c.WalletInitiated); err != nil {
+			&c.WalletInitiated, &c.Revocable); err != nil {
 			return nil, err
 		}
 		c.Lifetime = time.Duration(seconds) * time.Second

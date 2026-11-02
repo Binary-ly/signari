@@ -99,6 +99,8 @@ type Configuration struct {
 	// WalletInitiated lets anybody signed in ask for this at the authorization
 	// endpoint, with no offer naming them.
 	WalletInitiated bool
+	// Revocable gives each credential a place in a status list.
+	Revocable bool
 }
 
 // ValidateRequest applies §8.2's parameter rules.
@@ -173,6 +175,9 @@ type Issuer struct {
 	CredentialIssuer string
 	// Sign produces a compact JWS over the payload with the given typ.
 	Sign func(payload []byte, typ string) (string, error)
+	// Status is the credential's place in a status list, for a configuration that can
+	// be revoked.
+	Status *StatusPlace
 }
 
 // Issue returns the credential in the configuration's format: the combined SD-JWT VC
@@ -212,6 +217,9 @@ func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 	}
 	if cfg.Lifetime > 0 {
 		always["exp"] = now.Add(cfg.Lifetime).Unix()
+	}
+	if i.Status != nil {
+		always["status"] = i.Status.claim()
 	}
 
 	// Claims are split by the configuration, and a claim the subject does not

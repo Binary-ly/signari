@@ -58,6 +58,10 @@ var factorTables = map[string]bool{
 	// A count of wrong recovery codes, not a credential. It removes a way in
 	// (the recovery codes, at the ceiling); it is never a way in itself.
 	"recovery_code_failures": false,
+
+	// A record of verifiable credentials issued to people's wallets. Those are claims
+	// the holder shows somebody else, and nothing here signs anybody in with one.
+	"issued_credentials": false,
 }
 
 // TestEveryFactorTableIsChecked fails when a second-factor table exists that

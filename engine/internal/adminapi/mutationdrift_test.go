@@ -934,6 +934,15 @@ func allMutatingRoutes() []mutatingRoute {
 			},
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/credential-revocations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/credential-revocations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"user_id":"00000000-0000-4000-8000-000000000000"}`
+			},
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/credential-requests/{requestID}", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				org := newDriftMigrationOrg(t, s, false)

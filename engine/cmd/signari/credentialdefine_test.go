@@ -43,7 +43,7 @@ func TestCredentialDefineKeepsTheAttestationRequirementUnlessTold(t *testing.T) 
 	define := func(require *bool) {
 		t.Helper()
 		if err := credentialDefine(ctx, conn, org, config, "", "https://cli-test.example/attested",
-			"", "email", time.Hour, "", require, nil, nil); err != nil {
+			"", "email", time.Hour, "", require, nil, nil, nil); err != nil {
 			t.Fatalf("credential define: %v", err)
 		}
 	}

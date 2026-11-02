@@ -27,6 +27,7 @@ refused with `412` when the configuration moved since the version it names.
 | [credential-configurations](#credential-configurations) | 2 |
 | [credential-proof-roots](#credential-proof-roots) | 3 |
 | [credential-requests](#credential-requests) | 2 |
+| [credential-revocations](#credential-revocations) | 1 |
 | [directories](#directories) | 7 |
 | [duo](#duo) | 2 |
 | [event-subscriptions](#event-subscriptions) | 6 |
@@ -46,6 +47,7 @@ refused with `412` when the configuration moved since the version it names.
 | [instances / trust-marks](#instances--trust-marks) | 3 |
 | [instances / webauthn](#instances--webauthn) | 2 |
 | [invitations](#invitations) | 3 |
+| [issued-credentials](#issued-credentials) | 1 |
 | [kerberos-realms](#kerberos-realms) | 3 |
 | [me](#me) | 1 |
 | [messages](#messages) | 3 |
@@ -953,6 +955,7 @@ Takes:
 | `format` | string |  |
 | `lifetime_s` | integer |  |
 | `require_key_attestation` | boolean |  |
+| `revocable` | boolean |  |
 | `selective` | list of string |  |
 | `vct` | string |  |
 | `wallet_initiated` | boolean |  |
@@ -1049,6 +1052,29 @@ Answers:
 | `config_version` | integer | always |
 | `decision` | string | always |
 | `id` | string | always |
+
+## credential-revocations
+
+### `POST /admin/organizations/{orgID}/credential-revocations`
+
+Take back a credential, or all a person holds. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDCredentialRevocations`, TypeScript `postOrganizationsOrgIDCredentialRevocations`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `credential_id` | string |  |
+| `user_id` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `org_id` | string | always |
+| `revoked` | integer | always |
 
 ## directories
 
@@ -2452,6 +2478,22 @@ Answers:
 Revoke an open invitation. Needs users:write.
 
 Go `DeleteInvitationsInvitationID`, TypeScript `deleteInvitationsInvitationID`.
+
+## issued-credentials
+
+### `GET /admin/organizations/{orgID}/issued-credentials`
+
+What has been issued and can be revoked. Needs config:read.
+
+Go `GetOrganizationsOrgIDIssuedCredentials`, TypeScript `getOrganizationsOrgIDIssuedCredentials`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `credentials` | list of object | always |
+| `next_cursor` | string | always |
+| `org_id` | string | always |
 
 ## kerberos-realms
 

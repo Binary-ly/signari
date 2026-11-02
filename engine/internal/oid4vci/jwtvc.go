@@ -69,6 +69,9 @@ func (i Issuer) issueJWTVC(cfg Configuration, subject map[string]any, holderKey 
 		claims["exp"] = expires.Unix()
 		vc["expirationDate"] = expires.UTC().Format(time.RFC3339)
 	}
+	if i.Status != nil {
+		claims["status"] = i.Status.claim()
+	}
 	body, err := json.Marshal(claims)
 	if err != nil {
 		return "", err

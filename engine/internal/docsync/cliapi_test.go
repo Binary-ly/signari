@@ -150,6 +150,8 @@ var cliAPI = map[string]string{
 	"credential trust-root":     "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
 	"credential roots":          reads,
 	"credential encryption-key": "POST /admin/instances/{instanceID}/credential-encryption-key",
+	"credential issued":         reads,
+	"credential revoke":         "POST /admin/organizations/{orgID}/credential-revocations",
 	"credential untrust-root":   "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}",
 
 	// Keys and the audit trail.

@@ -335,6 +335,8 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/credential-requests", ScopeConfigRead, s.listCredentialRequests)
 	route("PUT /admin/organizations/{orgID}/credential-requests/{requestID}", ScopeOrganizationsWrite,
 		s.decideOnCredentialRequest)
+	route("GET /admin/organizations/{orgID}/issued-credentials", ScopeConfigRead, s.listIssuedCredentials)
+	route("POST /admin/organizations/{orgID}/credential-revocations", ScopeOrganizationsWrite, s.revokeCredentials)
 	route("GET /admin/organizations/{orgID}/credential-proof-roots", ScopeConfigRead, s.listCredentialProofRoots)
 	route("PUT /admin/organizations/{orgID}/credential-proof-roots/{name}", ScopeOrganizationsWrite,
 		s.putCredentialProofRoot)

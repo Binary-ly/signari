@@ -58,6 +58,8 @@ type CredentialSpec struct {
 	Deferred *bool
 	// WalletInitiated nil keeps a configuration's setting, for the same reason.
 	WalletInitiated *bool
+	// Revocable nil keeps a configuration's setting, for the same reason.
+	Revocable *bool
 }
 
 // format is what the configuration is signed as.
@@ -124,9 +126,9 @@ func DefineCredential(ctx context.Context, q outpostDB, orgID string, c Credenti
 	if err := q.QueryRow(ctx, `
 		INSERT INTO core.credential_configurations
 			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name,
-			 require_key_attestation, format, deferred, wallet_initiated)
+			 require_key_attestation, format, deferred, wallet_initiated, revocable)
 		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''), COALESCE($8::boolean, false), $9,
-		        COALESCE($10::boolean, false), COALESCE($11::boolean, false))
+		        COALESCE($10::boolean, false), COALESCE($11::boolean, false), COALESCE($12::boolean, false))
 		ON CONFLICT (org_id, config_id) DO UPDATE
 		SET format = EXCLUDED.format, vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
 		    selective_claims = EXCLUDED.selective_claims,
@@ -134,11 +136,12 @@ func DefineCredential(ctx context.Context, q outpostDB, orgID string, c Credenti
 		    require_key_attestation = COALESCE($8::boolean,
 		        credential_configurations.require_key_attestation),
 		    deferred = COALESCE($10::boolean, credential_configurations.deferred),
-		    wallet_initiated = COALESCE($11::boolean, credential_configurations.wallet_initiated)
+		    wallet_initiated = COALESCE($11::boolean, credential_configurations.wallet_initiated),
+		    revocable = COALESCE($12::boolean, credential_configurations.revocable)
 		RETURNING require_key_attestation`,
 		orgID, strings.TrimSpace(c.ConfigID), strings.TrimSpace(c.VCT), nonNil(c.Always), nonNil(c.Selective),
 		interval, c.DisplayName, c.RequireKeyAttestation, c.format(), c.Deferred,
-		c.WalletInitiated).Scan(&required); err != nil {
+		c.WalletInitiated, c.Revocable).Scan(&required); err != nil {
 		return false, fmt.Errorf("defining the credential: %w", err)
 	}
 	return required, nil

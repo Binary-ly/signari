@@ -123,6 +123,7 @@ var exportSections = []exportSection{
 	{table: "rac_sessions", by: "user_id"},
 	{table: "credential_notifications", by: "user_id"},
 	{table: "credential_requests", by: "user_id"},
+	{table: "issued_credentials", by: "user_id"},
 
 	// What applications were given.
 	{table: "consents", by: "user_id"},

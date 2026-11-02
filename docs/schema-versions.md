@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0280 credential_status
+
+Compatible with the release before: its binary may still serve this schema.
+
+Taking a credential back once it has been issued, with a Token Status List: a configuration asks for it, each credential then carries a place in a list, and the list is signed for anybody to fetch. Until this nothing issued could be revoked, because nothing issued was remembered.
+
 ## 0279 encryption_keys
 
 Not compatible with the release before: stop it before migrating.

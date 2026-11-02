@@ -65,6 +65,7 @@ var notConfiguration = map[string]string{
 
 	"attestation_challenges": running, "audit_events": running, "authorization_codes": running,
 	"credential_notifications": running, "credential_offers": running, "credential_requests": running,
+	"credential_status_lists": running, "issued_credentials": running,
 	"device_authorizations": running, "duo_challenges": running, "email_sign_in_codes": running,
 	"external_factor_challenges": running, "email_verifications": running, "event_deliveries": running, "federated_logins": running,
 	"impersonations": running, "invitations": running, "opaque_access_tokens": running, "preauthorized_codes": running,

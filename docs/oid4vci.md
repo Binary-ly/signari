@@ -565,6 +565,58 @@ recorded as `keys.rotated`, with `purpose` saying which key.
 
 Under `fips140=only` the offered `enc` values are the CBC ones ([FIPS 140-3](fips.md)).
 
+## Taking a credential back
+
+A credential is signed and handed over, and after that the holder has it. To be able to
+take one back, ask for that when defining it:
+
+```sh
+signari credential define -org <uuid> -credential-configuration Employee ... -revocable
+```
+
+Each credential then carries a place in a
+[Token Status List](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/), the
+`status` claim, and is remembered: who it was issued to, from which configuration, when, and
+where its bit is. Without `-revocable` nothing about a credential is kept and it can only
+expire, so turning it on covers credentials issued from then on.
+
+```sh
+signari credential issued -org <uuid> -email ada@example.com
+signari credential revoke -org <uuid> -credential <id>     # one
+signari credential revoke -org <uuid> -email ada@example.com   # everything they hold
+```
+
+A revocation cannot be undone. There is no suspended state: the draft warns (§12.8) that
+any status besides valid and invalid tells whoever reads the list more than it needs to, and
+revoking and issuing a new one comes to the same. A new credential gets a new place.
+
+**A verifier fetches `GET /oid4vci/status/{list}`**, anonymously, from the `uri` in the
+credential, and gets a `statuslist+jwt` signed with the same key as the credential. It has
+one bit per place, 131,072 of them, and `sub` equal to that `uri`. The token is made from the
+database at each request, so the moment a revocation commits it is in the next fetch. It
+carries a `ttl` of five minutes and an `exp` of an hour, and a verifier that follows the `ttl`
+learns within five minutes. That wait is the verifier's, and how far behind one is willing to
+be is up to it.
+
+**The list is what keeps the holder private.** A verifier asks about one credential by
+fetching all of them, so the issuer learns that somebody looked at a list and not which
+credential. That is why there are not more lists than needed: an organisation has one
+filling at a time, and it stops taking credentials at half full. The other half are never
+handed out, which hides how many are real, and each place is chosen at random, since one
+handed out in order says how many came before it. Each credential of a batch gets its own
+(§13.2), so revoking a batch shows up as a batch.
+
+**A person who is deleted takes their credentials with them.** However a person goes, by
+erasure, SCIM, the Admin API or anything else, their places read as revoked in the next
+fetch, because a place with nobody behind it counts as revoked. Deactivating somebody does
+not do this: an operator who wants it says so with `credential revoke`.
+
+A list goes away once it is full and everything in it expired a day ago, which the janitor
+sees to. One holding a credential with no expiry stays for good, so give a revocable
+credential a `-valid-for`. Credentials are JWT only, as SD-JWT VC requires of a status list,
+so there is no CWT form. `?time=` asks about the past (§8.4) and answers `501`: only the
+present is kept.
+
 ## What is still not built
 
 - **ISO mdoc** (`mso_mdoc`), which needs COSE, and **`ldp_vc`**, which needs JSON-LD

@@ -131,6 +131,8 @@ type Stats struct {
 	NotificationsSwept int64
 	// CredentialRequestsSwept are parked requests no token can come back for.
 	CredentialRequestsSwept int64
+	// CredentialStatusListsSwept are full status lists whose credentials have all expired.
+	CredentialStatusListsSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
@@ -253,6 +255,11 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		}},
 		{"credential requests", sweepBatch, &st.CredentialRequestsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
 			return store.SweepCredentialRequests(ctx, tx, tokens.MaxAccessTokenTTL, limit)
+		}},
+		// A list whose credentials have all expired. A day's grace for a clock that
+		// runs behind the one an expired credential is judged by.
+		{"credential status lists", sweepBatch, &st.CredentialStatusListsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+			return store.SweepCredentialStatusLists(ctx, tx, 24*time.Hour, limit)
 		}},
 		// Duo prompts nobody finished. Each row holds a live challenge state, so
 		// keeping them past expiry stores flow state for a flow nobody will finish.
@@ -535,6 +542,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("persisted_claims_swept", s.PersistedClaimsSwept)
 	add("notifications_swept", s.NotificationsSwept)
 	add("credential_requests_swept", s.CredentialRequestsSwept)
+	add("credential_status_lists_swept", s.CredentialStatusListsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)

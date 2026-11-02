@@ -283,6 +283,9 @@
         "require_key_attestation": {
           "type": "boolean"
         },
+        "revocable": {
+          "type": "boolean"
+        },
         "selective_claims": {
           "items": {
             "type": "string"

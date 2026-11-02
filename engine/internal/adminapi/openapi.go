@@ -221,6 +221,8 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/credential-configurations/{configID}": "Define a credential, or redefine it.",
 	"GET /admin/organizations/{orgID}/credential-requests":                  "What wallets have asked for and is waiting on a decision.",
 	"PUT /admin/organizations/{orgID}/credential-requests/{requestID}":      "Approve or deny a waiting request.",
+	"GET /admin/organizations/{orgID}/issued-credentials":                   "What has been issued and can be revoked.",
+	"POST /admin/organizations/{orgID}/credential-revocations":              "Take back a credential, or all a person holds.",
 	"GET /admin/organizations/{orgID}/credential-proof-roots":               "The roots an x5c key proof may verify to.",
 	"PUT /admin/organizations/{orgID}/credential-proof-roots/{name}":        "Trust a CA for x5c key proofs.",
 	"DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}":     "Stop trusting a CA for x5c key proofs.",

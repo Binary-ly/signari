@@ -526,6 +526,9 @@ func Sync(ctx context.Context, db DB, t scim.Target, hc *http.Client, apply bool
 			r.Deactivated++
 		}
 	}
+	if apply {
+		countLinks(ctx, db, r.Created)
+	}
 	// Groups, after the users. A membership references an account, so pushing
 	// one before the account exists at the target is a request the target
 	// refuses -- and refuses per member, which reads as a flaky integration
@@ -533,6 +536,21 @@ func Sync(ctx context.Context, db DB, t scim.Target, hc *http.Client, apply bool
 	groups, err := syncGroups(ctx, db, t, hc, apply)
 	r.Groups = groups
 	return r, err
+}
+
+// countAfter is how many links a sync writes before it counts them.
+const countAfter = 1000
+
+// countLinks has the planner count the links a sync has just written. The next sync
+// joins them to every person, and on a table nothing has counted the planner takes it
+// for a handful and walks all of it per person: with 100,000 linked a sync that had
+// nothing to do took 325 seconds, and 262 milliseconds counted (0.86). Autovacuum gets
+// there in its own time, so a failure here costs that and no more, and everybody has
+// been provisioned whatever it answers.
+func countLinks(ctx context.Context, db DB, created int) {
+	if created >= countAfter {
+		_, _ = db.Exec(ctx, `ANALYZE core.scim_links`)
+	}
 }
 
 // syncGroups reconciles the membership of the groups this deployment created

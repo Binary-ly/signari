@@ -375,6 +375,15 @@ class EngineAdminApi
                 // whose only visible effect is another config_version bump.
                 ->acceptJson();
 
+            // For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
+            $certificate = (string) env('SIGNARI_ADMIN_CLIENT_CERT', '');
+            if ($certificate !== '') {
+                $request = $request->withOptions([
+                    'cert' => $certificate,
+                    'ssl_key' => (string) env('SIGNARI_ADMIN_CLIENT_KEY', ''),
+                ]);
+            }
+
             if ($this->operator !== null) {
                 $request = $request->withHeaders(['Signari-Operator' => $this->operator]);
             }

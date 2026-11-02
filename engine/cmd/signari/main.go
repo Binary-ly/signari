@@ -2949,6 +2949,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				"and -tls-key, or -admin-insecure if it is bound to loopback behind a " +
 				"terminator you control")
 		}
+		adminTLS, err := adminClientAuth(os.Getenv("SIGNARI_ADMIN_CLIENT_CA"), tlsCert)
+		if err != nil {
+			return err
+		}
 
 		go func() {
 			scheme := "https"
@@ -2962,6 +2966,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			ah := &http.Server{
 				Addr:              adminAddr,
 				Handler:           adminSrv.Routes(),
+				TLSConfig:         adminTLS,
 				ReadHeaderTimeout: httpapi.PublicReadHeaderTimeout,
 				ReadTimeout:       httpapi.PublicReadTimeout,
 				WriteTimeout:      httpapi.PublicWriteTimeout,

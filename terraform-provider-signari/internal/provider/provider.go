@@ -3,7 +3,10 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -113,10 +116,19 @@ func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureR
 		conditional = cfg.ConditionalWrites.ValueBool()
 	}
 
-	data := &providerData{
-		client:      &signari.Client{Endpoint: endpoint, Token: token},
-		conditional: conditional,
+	client := &signari.Client{Endpoint: endpoint, Token: token}
+	// For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
+	if cert := os.Getenv("SIGNARI_ADMIN_CLIENT_CERT"); cert != "" {
+		pair, err := tls.LoadX509KeyPair(cert, os.Getenv("SIGNARI_ADMIN_CLIENT_KEY"))
+		if err != nil {
+			resp.Diagnostics.AddError("the Admin API client certificate cannot be read", err.Error())
+			return
+		}
+		client.HTTP = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}}
 	}
+
+	data := &providerData{client: client, conditional: conditional}
 	resp.DataSourceData = data
 	resp.ResourceData = data
 }

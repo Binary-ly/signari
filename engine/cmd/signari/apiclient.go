@@ -70,10 +70,19 @@ func newAPIClient(adminURL, tokenFile string) (*apiClient, error) {
 	if token == "" {
 		return nil, usageError{errors.New("set SIGNARI_ADMIN_TOKEN to an admin token, or give -token-file")}
 	}
+	tlsConfig := &tls.Config{RootCAs: safedial.Roots(), MinVersion: tls.VersionTLS12}
+	// For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
+	if cert := os.Getenv("SIGNARI_ADMIN_CLIENT_CERT"); cert != "" {
+		pair, err := tls.LoadX509KeyPair(cert, os.Getenv("SIGNARI_ADMIN_CLIENT_KEY"))
+		if err != nil {
+			return nil, fmt.Errorf("SIGNARI_ADMIN_CLIENT_CERT and SIGNARI_ADMIN_CLIENT_KEY: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{pair}
+	}
 	return &apiClient{base: u, token: token, hc: &http.Client{
 		Transport: &http.Transport{
 			Proxy:           http.ProxyFromEnvironment,
-			TLSClientConfig: &tls.Config{RootCAs: safedial.Roots(), MinVersion: tls.VersionTLS12},
+			TLSClientConfig: tlsConfig,
 		},
 		// A redirect would carry the token somewhere the operator did not name.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

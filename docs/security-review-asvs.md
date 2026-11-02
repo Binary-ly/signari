@@ -1209,7 +1209,7 @@ for one.
 | V12.3.1 encrypted in and out, no insecure fallback | met |
 | V12.3.2 TLS clients validate certificates | met — **one** `InsecureSkipVerify` in the entire tree, in the `proxycheck` diagnostic, opt-in via a flag, and when it is on the report's first line reads "DISABLED by -insecure; nothing below says anything about TLS" |
 | V12.3.3 / V12.3.4 internal service TLS | met where applicable; `directory/ldapsource` pins `RootCAs` and its comment records that `InsecureSkipVerify` is deliberately absent |
-| V12.3.5 mutual authentication between services | L3, not implemented |
+| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the admin listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the DSN. Webhooks and outbound calls to third parties are authenticated at the application layer |
 
 **V12.1.2 is the one worth writing down.** The L3 requirement is "must only
 support cipher suites which provide forward secrecy", and no `tls.Config` here

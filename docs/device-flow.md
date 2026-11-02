@@ -64,6 +64,13 @@ now pins the rule.
 The verification endpoint is rate limited (3/s, burst 10), which is what RFC 8628
 §5.1 asks for.
 
+Starting a sign-in is paced too, before anything is stored: 60 a minute from one
+address for a public client, and 6,000 a minute for a confidential one, which is paced
+as itself once it has authenticated. Each start is a row for ten minutes, and a public
+client authenticates nothing while its id is on every device running it, so without
+this anybody could have the server write as many as they liked. Past the limit the
+answer is `429` with `Retry-After`.
+
 A per-record attempt counter was drafted first — `failed_attempts` on the table,
 with the record destroyed after five wrong guesses. It was removed before it
 shipped, because **it cannot work**: when somebody types a wrong code there is no

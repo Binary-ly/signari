@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/oauth"
 )
 
 // PAR wrote a row for anybody with no limit; dynamic registration spent its
@@ -86,6 +88,86 @@ func TestAConfidentialClientIsPacedAsItselfNotByAddress(t *testing.T) {
 	}
 	if after := charged(); after != before {
 		t.Errorf("an authenticated client's pushes were charged to its address (%d -> %d)", before, after)
+	}
+}
+
+// A device's start wrote a row for anybody as a pushed request did, and a public
+// client's id is printed on every television running it. Nothing is stored past the
+// limit: the row is what the limit is for, so the refusal alone would prove nothing.
+func TestDeviceStartsArePacedPerAddress(t *testing.T) {
+	f := newTokenFixture(t)
+	clearOfWindowEdge(t, deviceStartWindow)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = ARRAY[$2] WHERE client_id = $1`,
+		f.clientID, oauth.GrantTypeDeviceCode); err != nil {
+		t.Fatal(err)
+	}
+	addr := freshAddress()
+	start := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/device_authorization", strings.NewReader(url.Values{
+			"client_id": {f.clientID}, "scope": {"openid"},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = addr + ":443"
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	stored := func() int {
+		t.Helper()
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM core.device_authorizations WHERE client_id = $1`,
+			f.clientID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for i := 0; i < deviceStartsPerAddress; i++ {
+		if code := start(); code != http.StatusOK {
+			t.Fatalf("device start %d answered %d", i+1, code)
+		}
+	}
+	before := stored()
+	if code := start(); code != http.StatusTooManyRequests {
+		t.Fatalf("device start %d from one address in a minute gave %d, want 429", deviceStartsPerAddress+1, code)
+	}
+	if after := stored(); after != before {
+		t.Errorf("a refused device start stored a row (%d -> %d)", before, after)
+	}
+}
+
+// A confidential client has shown who it is, and is paced as itself: its devices may
+// all start from one address, and a limit on the address would be a limit on it.
+func TestAConfidentialDeviceClientIsPacedAsItself(t *testing.T) {
+	f := newTokenFixture(t)
+	clearOfWindowEdge(t, deviceStartWindow)
+	secret, hash := newTestSecret(t)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE core.clients SET client_type = 'confidential', client_secret_hash = $2, grant_types = ARRAY[$3]
+		 WHERE client_id = $1`, f.clientID, hash, oauth.GrantTypeDeviceCode); err != nil {
+		t.Fatal(err)
+	}
+	addr := freshAddress()
+	for i := 0; i < deviceStartsPerAddress+5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/device_authorization", strings.NewReader(url.Values{
+			"client_id": {f.clientID}, "client_secret": {secret}, "scope": {"openid"},
+		}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = addr + ":443"
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("start %d from one address answered %d: %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	var charged int
+	if err := f.pool.QueryRow(ctx, `SELECT COALESCE(sum(count), 0) FROM core.rate_limits WHERE bucket_key = $1`,
+		"device:start:client:"+f.clientID).Scan(&charged); err != nil {
+		t.Fatal(err)
+	}
+	if charged == 0 {
+		t.Error("a confidential client's starts were not charged to it")
 	}
 }
 

@@ -54,6 +54,14 @@ const (
 	deviceAttemptsPerUser = 8
 
 	deviceAttemptWindow = 10 * time.Minute
+
+	// deviceStartsPerAddress device sign-ins may start from one address per
+	// deviceStartWindow for a public client, and deviceStartsPerClient for a
+	// confidential one once it has authenticated, as a pushed request is paced
+	// (par.go). One person starts one, so neither is near what a device needs.
+	deviceStartsPerAddress = 60
+	deviceStartsPerClient  = 6000
+	deviceStartWindow      = time.Minute
 )
 
 // handleDeviceAuthorization answers a device asking to be authorised.
@@ -113,6 +121,29 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 			"client_id", clientID, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "unauthorized_client",
 			"this client is not registered for the device grant")
+		return
+	}
+
+	// Paced before anything is stored, as a pushed request is. Every start is a row
+	// that lives ten minutes, and a public client authenticates nothing here while
+	// its id is printed on every television running it, so there was no limit on how
+	// many rows a stranger could have this server write: measuring it found 3,000 a
+	// second. A failed authentication stores nothing and has its own budgets.
+	key, limit, why := "device:start:ip:"+budgetIP(clientIP(r)), deviceStartsPerAddress,
+		"too many device sign-ins from this address"
+	if c.Type == "confidential" {
+		key, limit, why = "device:start:client:"+c.ClientID, deviceStartsPerClient,
+			"too many device sign-ins from this client"
+	}
+	res, rerr := store.AllowRate(ctx, s.db, key, limit, deviceStartWindow)
+	if rerr != nil {
+		s.log.ErrorContext(ctx, "checking the device start rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", why)
 		return
 	}
 

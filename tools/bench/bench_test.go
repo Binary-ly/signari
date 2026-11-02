@@ -124,7 +124,8 @@ func fakeProvider(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"authorization_endpoint": srv.URL + "/authorize", "token_endpoint": srv.URL + "/token",
 			"introspection_endpoint": srv.URL + "/introspect", "jwks_uri": srv.URL + "/jwks",
-			"userinfo_endpoint": srv.URL + "/userinfo",
+			"userinfo_endpoint": srv.URL + "/userinfo", "revocation_endpoint": srv.URL + "/revoke",
+			"pushed_authorization_request_endpoint": srv.URL + "/par",
 		})
 	})
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"keys":[]}`)) })
@@ -194,6 +195,25 @@ func fakeProvider(t *testing.T) *httptest.Server {
 		}
 		_, _ = w.Write([]byte(`{"sub":"alice"}`))
 	})
+	mux.HandleFunc("POST /revoke", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.Form.Get("token") != "at" {
+			http.Error(w, "no", http.StatusBadRequest)
+		}
+	})
+	// A push is created, as the engine answers it: a driver that took only a 200
+	// counted every one of these as a failure.
+	mux.HandleFunc("POST /par", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"request_uri":"urn:ietf:params:oauth:request_uri:r1","expires_in":300}`))
+	})
+	mux.HandleFunc("GET /admin/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sgnadm" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"users":[]}`))
+	})
 	// Remember the authorization request's state for the consent redirect.
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/authorize" {
@@ -211,8 +231,10 @@ func TestTheHTTPScenariosMeasureAProvider(t *testing.T) {
 	srv := fakeProvider(t)
 	c := &config{Issuer: srv.URL, ClientID: "bench", ClientSecret: "s+1",
 		RedirectURI: "https://bench.invalid/cb", Scope: "openid offline_access",
-		Username: "alice", Password: "pw", Concurrency: 2, Duration: 150 * time.Millisecond}
-	for _, name := range []string{"discovery", "jwks", "client-credentials", "introspect", "signin", "refresh", "userinfo"} {
+		Username: "alice", Password: "pw", Concurrency: 2, Duration: 150 * time.Millisecond,
+		AdminURL: srv.URL, AdminToken: "sgnadm"}
+	for _, name := range []string{"discovery", "jwks", "client-credentials", "introspect", "signin", "refresh", "userinfo",
+		"revoke", "par", "admin-list"} {
 		res, err := measure(context.Background(), c, name, scenarios[name])
 		if err != nil {
 			t.Errorf("%s: %v", name, err)

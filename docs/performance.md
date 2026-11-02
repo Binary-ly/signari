@@ -166,6 +166,54 @@ row for every statement, which a transaction cannot prune behind itself, so each
 past all the ones before it. A first directory sync is one such statement, and an import is
 what a migration begins with, so a new deployment was the worst place for this to be slow.
 
+## A page of the Admin API
+
+The same laptop, four workers over loopback TLS, one organisation of 100,000 people, a page of
+100 at a time, and the per-token limit raised out of the way. Several runs of each, code before
+and after, on the same setup.
+
+| | before | after |
+|---|---|---|
+| pages a second | 4-18 | 2,070-2,970 |
+| p50 | 236-795 ms | 1.3-1.6 ms |
+| p99 | 444-2,356 ms | 3-7 ms |
+| buffers read for a page | 2,703 | 104 |
+| buffers for a page halfway through | 2,619 | 105 |
+
+Every page read all 100,000 people and sorted them, for one row or a hundred. `SELECT id::text
+... ORDER BY id` orders by what the select list calls `id`, which is the text, and no index
+holds that. And `id::text > $1` is not a seek, so a later page walked from the start. Neither
+shows on a table a test can fill, and the first run of the load driver found both. The people,
+group, group member, invitation and client lists all page by the key now, and a test runs every
+read the Admin API has past the planner.
+
+By default a token gets 50 requests a second (`SIGNARI_ADMIN_TOKEN_RATE`), so that is what a
+deployment will see, and it is now the limit and not the database.
+
+That test found three more that a page never showed. A deployment-wide read of the audit trail
+sorted the whole trail, because nothing led with its time, the list of event subscriptions
+counted its way through every delivery once for each subscription, and a Duo integration
+counted its enrolments through the whole table. All three have indexes now.
+
+Two things went wrong measuring this, and they are the reason for "the same setup". The first
+runs of the fixed code answered 44 a second: nothing had analysed the table since it was filled,
+so the planner took 100,000 rows for a handful. A real table has statistics by then and a load
+test run straight after a bulk load does not, so analyse first. And a batch of three runs read a
+quarter of the others, for no reason we found, which is why two builds are measured in turn and
+more than once before anything is believed. Recording a token's use on every request looked
+like the cause of the 44. It was not: with it and without it, in turn, the runs overlap, and it
+stayed as it was.
+
+Two more that had never been measured, on the same machine:
+
+```
+Revocation, a token issued and revoked   496-550 pairs/s   p50  7-8 ms   p99 16-19 ms
+A pushed authorization request           919-1,932/s       p50  1-2 ms   p99  2-6 ms
+```
+
+A pushed request is paced at 6,000 a minute per client, which is 100 sign-ins a second through
+one application, so the second line is a short window under that and not a rate to sustain.
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

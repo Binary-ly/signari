@@ -2,10 +2,10 @@
 
 A load driver for an identity provider. It measures throughput and latency
 per operation and prints one JSON object per scenario. Every scenario except
-`signin` speaks a published protocol and finds its endpoints in the provider's
-discovery document. So a comparison between two deployments is the same command
-run twice with a different `-issuer`, at the same concurrency, from the same
-machine.
+`signin` and `admin-list` speaks a published protocol and finds its endpoints in
+the provider's discovery document. So a comparison between two deployments is the
+same command run twice with a different `-issuer`, at the same concurrency, from
+the same machine.
 
 ```sh
 cd tools/bench && go build .
@@ -26,6 +26,9 @@ cd tools/bench && go build .
 | `ldap-bind`, `ldap-search` | a simple bind on an open connection; a subtree search for one person |
 | `radius-pap` | an Access-Request with PAP and a Message-Authenticator, answered Access-Accept |
 | `scim-list` | the first hundred SCIM users |
+| `revoke` | an access token issued and revoked (RFC 7009), the pair, as a token revokes once |
+| `par` | a pushed authorization request (RFC 9126), which nothing redeems. Signari paces these at 6,000 a minute per client, so a longer window measures the pacing and `shed` says so |
+| `admin-list` | a page of the Admin API's people, with `-admin` and `-admin-token` |
 | `authzen` | one AuthZEN access evaluation |
 
 Each scenario runs a warm-up (`-warmup`, default 5 s), then a measured window
@@ -66,3 +69,8 @@ nothing is ever mailed to one.
 - **Rate limits are configuration.** One source address hits per-address
   limits quickly (JWKS is limited per address, for example). Either raise them
   for the benchmark and say so, or read `shed` as the result.
+- **Analyse after loading.** A table filled a moment ago has no statistics until
+  autovacuum gets to it, and a planner that takes 100,000 rows for a handful makes
+  a good query look like a bad one. `ANALYZE` first: a real table has them.
+- **Take turns.** To compare two builds, alternate them, and run each more than
+  once. One run here read a quarter of the others, for nothing in the code.

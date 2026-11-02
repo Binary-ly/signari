@@ -30,6 +30,8 @@ type discovery struct {
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
+	RevocationEndpoint    string `json:"revocation_endpoint"`
+	PAREndpoint           string `json:"pushed_authorization_request_endpoint"`
 }
 
 type env struct {
@@ -110,6 +112,61 @@ var scenarios = map[string]scenario{
 					return fmt.Errorf("introspection did not say active: %s", trim(body))
 				}
 				return nil
+			}, nil
+		},
+	},
+	"revoke": {
+		help: "issue an access token and revoke it (RFC 7009): the pair, since a token revokes once", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.RevocationEndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no revocation endpoint")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				tok, err := clientCredentials(ctx, hc, e)
+				if err != nil {
+					return err
+				}
+				_, err = postForm(ctx, hc, e.md.RevocationEndpoint, e.cfg, url.Values{"token": {tok.AccessToken}})
+				return err
+			}, nil
+		},
+	},
+	"par": {
+		help: "push an authorization request (RFC 9126), which the client names and nothing redeems", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.PAREndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no pushed authorization endpoint")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				body, err := postForm(ctx, hc, e.md.PAREndpoint, e.cfg, url.Values{"response_type": {"code"},
+					"redirect_uri": {e.cfg.RedirectURI}, "scope": {"openid"}, "state": {"bench"},
+					"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+					"code_challenge_method": {"S256"}})
+				if err != nil {
+					return err
+				}
+				var out struct {
+					RequestURI string `json:"request_uri"`
+				}
+				if err := json.Unmarshal(body, &out); err != nil || out.RequestURI == "" {
+					return fmt.Errorf("no request_uri came back: %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"admin-list": {
+		help: "a page of the Admin API's people, as an operator's tool reads it",
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.AdminURL == "" {
+				return nil, fmt.Errorf("give -admin")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				_, err := get(ctx, hc, strings.TrimRight(e.cfg.AdminURL, "/")+"/admin/users?limit=100", e.cfg.AdminToken)
+				return err
 			}, nil
 		},
 	},
@@ -327,7 +384,7 @@ func do(hc *http.Client, req *http.Request) ([]byte, error) {
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, shedError{fmt.Sprintf("%s answered 429: %s", req.URL.Path, trim(body))}
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// A bearer refusal says why in its challenge and has no body at all.
 		return nil, fmt.Errorf("%s answered %d: %s %s", req.URL.Path, resp.StatusCode,
 			resp.Header.Get("WWW-Authenticate"), trim(body))

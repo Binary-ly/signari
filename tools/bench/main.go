@@ -3,14 +3,15 @@
 //
 // # What it measures, and against what
 //
-// Every scenario but one speaks a published protocol and finds its endpoints in
+// Every scenario but two speaks a published protocol and finds its endpoints in
 // the provider's discovery document: OpenID Connect discovery and JWKS, the
 // OAuth token endpoint (client credentials, refresh chains), introspection
-// (RFC 7662), userinfo, LDAP bind and search, RADIUS PAP (RFC 2865), SCIM
-// (RFC 7644) and AuthZEN evaluation. So the same binary measures any deployment
-// it is pointed at, and a comparison is the same command with a different
-// -issuer. The one exception is `signin`, which drives Signari's own login and
-// consent forms to an authorization code; `refresh` and `userinfo` start from
+// (RFC 7662), revocation (RFC 7009), pushed requests (RFC 9126), userinfo, LDAP
+// bind and search, RADIUS PAP (RFC 2865), SCIM (RFC 7644) and AuthZEN evaluation.
+// So the same binary measures any deployment it is pointed at, and a comparison
+// is the same command with a different -issuer. The exceptions are `admin-list`,
+// which reads Signari's Admin API, and `signin`, which drives Signari's own login
+// and consent forms to an authorization code; `refresh` and `userinfo` start from
 // it, since no published protocol obtains a person's tokens without a browser.
 //
 // # Why it is committed
@@ -80,6 +81,7 @@ type config struct {
 	LDAPAddr, LDAPDNTemplate, LDAPBase                 string
 	RADIUSAddr, RADIUSSecret                           string
 	SCIMURL, SCIMToken, PDPURL, PDPToken               string
+	AdminURL, AdminToken                               string
 	AuthZENBody                                        string
 	Concurrency                                        int
 	Duration, Warmup                                   time.Duration
@@ -105,6 +107,8 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.RADIUSSecret, "radius-secret", "", "its shared secret")
 	fs.StringVar(&c.SCIMURL, "scim", "", "SCIM base URL, e.g. https://id.example.com/scim/v2")
 	fs.StringVar(&c.SCIMToken, "scim-token", "", "bearer token for SCIM")
+	fs.StringVar(&c.AdminURL, "admin", "", "the Admin API's base URL, e.g. https://127.0.0.1:8090")
+	fs.StringVar(&c.AdminToken, "admin-token", "", "bearer token for the Admin API")
 	fs.StringVar(&c.PDPURL, "pdp", "", "AuthZEN PDP base URL (defaults to -issuer)")
 	fs.StringVar(&c.PDPToken, "pdp-token", "", "bearer token for the PDP")
 	fs.StringVar(&c.AuthZENBody, "authzen-body", `{"subject":{"type":"user","id":"bench"},`+

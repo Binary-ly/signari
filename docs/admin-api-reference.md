@@ -20,6 +20,7 @@ refused with `412` when the configuration moved since the version it names.
 | [claim-mappers](#claim-mappers) | 3 |
 | [clients](#clients) | 5 |
 | [clients / group-release](#clients--group-release) | 3 |
+| [clients / id-jag-audiences](#clients--id-jag-audiences) | 3 |
 | [clients / rotate-secret](#clients--rotate-secret) | 1 |
 | [clients / ssf-stream](#clients--ssf-stream) | 1 |
 | [config](#config) | 1 |
@@ -842,6 +843,60 @@ Answers:
 | `config_version` | integer | always |
 | `only_groups` | list of string | always |
 | `released` | boolean | always |
+
+## clients / id-jag-audiences
+
+### `DELETE /admin/clients/{clientID}/id-jag-audiences`
+
+Stop issuing grants for an authorization server. Needs clients:write. A target that may impersonate others also needs privileged-users:write.
+
+Go `DeleteClientsClientIDIDJagAudiences`, TypeScript `deleteClientsClientIDIDJagAudiences`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `audience` | string | always |
+| `client_id` | string | always |
+| `config_version` | integer | always |
+| `removed` | boolean | always |
+
+### `GET /admin/clients/{clientID}/id-jag-audiences`
+
+The authorization servers a client may have a grant for. Needs clients:read.
+
+Go `GetClientsClientIDIDJagAudiences`, TypeScript `getClientsClientIDIDJagAudiences`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `audiences` | list of object | always |
+| `client_id` | string | always |
+
+### `PUT /admin/clients/{clientID}/id-jag-audiences`
+
+Let a client have a grant for an authorization server. Needs clients:write. A target that may impersonate others also needs privileged-users:write.
+
+Go `PutClientsClientIDIDJagAudiences`, TypeScript `putClientsClientIDIDJagAudiences`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `alg` | string |  |
+| `audience` | string |  |
+| `remote_client_id` | string |  |
+| `resources` | list of string |  |
+| `scopes` | list of string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `audience` | string | always |
+| `client_id` | string | always |
+| `config_version` | integer | always |
 
 ## clients / rotate-secret
 

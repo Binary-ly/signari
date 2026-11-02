@@ -991,6 +991,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			s.handleTxnToken(w, r, c)
 			return
 		}
+		if firstForm(r, "requested_token_type") == oauth.TokenTypeIDJAG {
+			s.handleIDJAGExchange(w, r, c)
+			return
+		}
 		s.handleTokenExchange(w, r, c)
 		return
 	}

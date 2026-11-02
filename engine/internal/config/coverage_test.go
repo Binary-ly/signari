@@ -50,6 +50,8 @@ var notConfiguration = map[string]string{
 		"organisation, and a token that may apply it does not reach another",
 	"federation_trust_anchors": "an instance's, kept by a deployment-wide caller, as its subordinates are: an " +
 		"anchor decides who may become a client, which is not an organisation's to declare for itself",
+	"id_jag_audiences": "what a client may reach somewhere else with nobody asked, set on that client by name by " +
+		"somebody who may administer it, rather than carried in a file a token that may apply it could widen",
 	"client_metadata_rules": "an instance's, kept by a deployment-wide caller: a rule decides who may become a " +
 		"client and has this server fetch from them, which is not an organisation's to declare for itself",
 	"admin_tokens": credential, "registration_tokens": credential, "saml_source_keys": credential,

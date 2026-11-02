@@ -1263,6 +1263,11 @@ func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
 	} else if len(rules) > 0 {
 		md.ClientIDMetadataDocumentSupported = true
 	}
+	if issues, ierr := store.AnyIDJAGAudience(ctx, s.db, s.instanceID); ierr != nil {
+		s.log.ErrorContext(ctx, "reading the id-jag audiences", "err", ierr)
+	} else if issues {
+		md.IdentityChainingRequestedTokenTypesSupported = []string{idJAGTokenType}
+	}
 
 	// Operator-declared scopes, for organisations that have any.
 	//

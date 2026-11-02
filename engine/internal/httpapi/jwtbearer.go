@@ -83,7 +83,19 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	userID := statement.userID
 
 	scopes := c.Scopes
-	if raw := firstForm(r, "scope"); raw != "" {
+	audience := []string{c.ClientID}
+	if oauth.IsIDJAG(assertion) {
+		// What a grant says decides, so a scope parameter beside it is not read.
+		granted, resources, ok := s.idJAGGrant(ctx, w, c, statement)
+		if !ok {
+			return
+		}
+		scopes = granted
+		// §4.4.1: "The access token MUST be restricted" to the resources it names.
+		if len(resources) > 0 {
+			audience = resources
+		}
+	} else if raw := firstForm(r, "scope"); raw != "" {
 		scopes = splitScopes(raw)
 		if unknown := c.UnknownScopes(scopes); len(unknown) > 0 {
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
@@ -160,7 +172,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	at, err := issueAccessToken(ctx, tx, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  userID,
-		Audience: []string{c.ClientID},
+		Audience: audience,
 		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,

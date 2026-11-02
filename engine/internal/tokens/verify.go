@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -169,6 +170,30 @@ func VerifyIDTokenHint(set *keys.Set, issuer, raw string) (subject, audience str
 		return "", "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
 	}
 	return c.Subject, c.Audience, nil
+}
+
+// VerifyIDToken verifies an ID token that is being spent, so unlike a hint it has to be
+// in date. `typ` on its own does not make one: OpenID Connect gives ID tokens no type of
+// their own, and a signed userinfo response or a W3C credential comes out of here as a
+// plain JWT with a subject too, which the `exp` rule and a caller's `sid` lookup leave out.
+func VerifyIDToken(set *keys.Set, issuers []string, raw string, now time.Time) (*IDTokenClaims, error) {
+	payload, err := verifiedPayload(set, raw, TypIDToken)
+	if err != nil {
+		return nil, err
+	}
+	var c IDTokenClaims
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return nil, fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	switch {
+	case !slices.Contains(issuers, c.Issuer):
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, ErrWrongIssuer)
+	case c.Subject == "" || c.Audience == "":
+		return nil, fmt.Errorf("%w: not an ID token", ErrInvalidToken)
+	case c.Expiry == 0, now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
+		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
+	}
+	return &c, nil
 }
 
 // VerifyTyped verifies a token this server issued for its own internal use and

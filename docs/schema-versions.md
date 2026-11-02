@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0282 id_jag
+
+Compatible with the release before: its binary may still serve this schema.
+
+Cross-app access: a client that signed somebody in here asks for an Identity Assertion JWT Authorization Grant, and another authorization server gives it an access token for that person on the strength of it, with no redirect and no consent screen. So nothing is issued until an operator writes down which client may ask, for which server, and what the most it may carry there is.
+
 ## 0281 client_metadata_documents
 
 Compatible with the release before: its binary may still serve this schema.

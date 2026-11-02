@@ -1615,6 +1615,27 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/clients/{clientID}/id-jag-audiences", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/clients/" + newPreconditionClient(t, s) + "/id-jag-audiences"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"audience":"https://as.example.test/","remote_client_id":"drift","alg":"ES256"}`
+			},
+		},
+		{
+			name: "DELETE /admin/clients/{clientID}/id-jag-audiences", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				client := newPreconditionClient(t, s)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.id_jag_audiences (client_id, audience, org_id, remote_client_id)
+					SELECT client_id, 'https://as.example.test/', org_id, 'drift' FROM core.clients WHERE client_id = $1`, client); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/id-jag-audiences?audience=" + url.QueryEscape("https://as.example.test/")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/clients/{clientID}/group-release", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/clients/" + newPreconditionClient(t, s) + "/group-release"

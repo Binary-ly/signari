@@ -196,6 +196,14 @@ type DeleteClientsClientIDGroupReleaseResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteClientsClientIDIDJagAudiencesResponse is a JSON object of the Admin API.
+type DeleteClientsClientIDIDJagAudiencesResponse struct {
+	Audience      string `json:"audience"`
+	ClientID      string `json:"client_id"`
+	ConfigVersion int64  `json:"config_version"`
+	Removed       bool   `json:"removed"`
+}
+
 // DeleteGroupsGroupIDResponse is a JSON object of the Admin API.
 type DeleteGroupsGroupIDResponse struct {
 	ConfigVersion  int64  `json:"config_version"`
@@ -666,6 +674,21 @@ type GetClientsClientIDGroupReleaseResponse struct {
 	ClientID   string   `json:"client_id"`
 	OnlyGroups []string `json:"only_groups"`
 	Released   bool     `json:"released"`
+}
+
+// GetClientsClientIDIDJagAudiencesResponse is a JSON object of the Admin API.
+type GetClientsClientIDIDJagAudiencesResponse struct {
+	Audiences []GetClientsClientIDIDJagAudiencesResponseAudiencesItem `json:"audiences"`
+	ClientID  string                                                  `json:"client_id"`
+}
+
+// GetClientsClientIDIDJagAudiencesResponseAudiencesItem is a JSON object of the Admin API.
+type GetClientsClientIDIDJagAudiencesResponseAudiencesItem struct {
+	Alg            string   `json:"alg"`
+	Audience       string   `json:"audience"`
+	RemoteClientID string   `json:"remote_client_id"`
+	Resources      []string `json:"resources"`
+	Scopes         []string `json:"scopes"`
 }
 
 // GetConfigVersionResponse is a JSON object of the Admin API.
@@ -3223,6 +3246,22 @@ type PutClientsClientIDGroupReleaseResponse struct {
 	Released      bool     `json:"released"`
 }
 
+// PutClientsClientIDIDJagAudiencesRequest is a JSON object of the Admin API.
+type PutClientsClientIDIDJagAudiencesRequest struct {
+	Alg            *string   `json:"alg,omitempty"`
+	Audience       *string   `json:"audience,omitempty"`
+	RemoteClientID *string   `json:"remote_client_id,omitempty"`
+	Resources      *[]string `json:"resources,omitempty"`
+	Scopes         *[]string `json:"scopes,omitempty"`
+}
+
+// PutClientsClientIDIDJagAudiencesResponse is a JSON object of the Admin API.
+type PutClientsClientIDIDJagAudiencesResponse struct {
+	Audience      string `json:"audience"`
+	ClientID      string `json:"client_id"`
+	ConfigVersion int64  `json:"config_version"`
+}
+
 // PutGroupsGroupIDMembersUserIDResponse is a JSON object of the Admin API.
 type PutGroupsGroupIDMembersUserIDResponse struct {
 	Changed       bool   `json:"changed"`
@@ -4059,6 +4098,18 @@ func (c *Client) DeleteClientsClientIDGroupRelease(ctx context.Context, clientID
 	return &out, v, nil
 }
 
+// DeleteClientsClientIDIDJagAudiences is DELETE /admin/clients/{clientID}/id-jag-audiences: Stop
+// issuing grants for an authorization server. Needs clients:write. A target that may impersonate
+// others also needs privileged-users:write.
+func (c *Client) DeleteClientsClientIDIDJagAudiences(ctx context.Context, clientID string, opts ...Option) (*DeleteClientsClientIDIDJagAudiencesResponse, int64, error) {
+	var out DeleteClientsClientIDIDJagAudiencesResponse
+	v, err := c.call(ctx, "DELETE", "/admin/clients/"+url.PathEscape(clientID)+"/id-jag-audiences", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteGroupsGroupID is DELETE /admin/groups/{groupID}: Delete a group and its memberships. Needs
 // groups:write. A target that may impersonate others also needs privileged-users:write.
 func (c *Client) DeleteGroupsGroupID(ctx context.Context, groupID string, opts ...Option) (*DeleteGroupsGroupIDResponse, int64, error) {
@@ -4653,6 +4704,17 @@ func (c *Client) GetClientsClientID(ctx context.Context, clientID string, opts .
 func (c *Client) GetClientsClientIDGroupRelease(ctx context.Context, clientID string, opts ...Option) (*GetClientsClientIDGroupReleaseResponse, int64, error) {
 	var out GetClientsClientIDGroupReleaseResponse
 	v, err := c.call(ctx, "GET", "/admin/clients/"+url.PathEscape(clientID)+"/group-release", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetClientsClientIDIDJagAudiences is GET /admin/clients/{clientID}/id-jag-audiences: The
+// authorization servers a client may have a grant for. Needs clients:read.
+func (c *Client) GetClientsClientIDIDJagAudiences(ctx context.Context, clientID string, opts ...Option) (*GetClientsClientIDIDJagAudiencesResponse, int64, error) {
+	var out GetClientsClientIDIDJagAudiencesResponse
+	v, err := c.call(ctx, "GET", "/admin/clients/"+url.PathEscape(clientID)+"/id-jag-audiences", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6280,6 +6342,18 @@ func (c *Client) PostUsersUserIDPasskeyLink(ctx context.Context, userID string, 
 func (c *Client) PutClientsClientIDGroupRelease(ctx context.Context, clientID string, body PutClientsClientIDGroupReleaseRequest, opts ...Option) (*PutClientsClientIDGroupReleaseResponse, int64, error) {
 	var out PutClientsClientIDGroupReleaseResponse
 	v, err := c.call(ctx, "PUT", "/admin/clients/"+url.PathEscape(clientID)+"/group-release", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutClientsClientIDIDJagAudiences is PUT /admin/clients/{clientID}/id-jag-audiences: Let a client
+// have a grant for an authorization server. Needs clients:write. A target that may impersonate
+// others also needs privileged-users:write.
+func (c *Client) PutClientsClientIDIDJagAudiences(ctx context.Context, clientID string, body PutClientsClientIDIDJagAudiencesRequest, opts ...Option) (*PutClientsClientIDIDJagAudiencesResponse, int64, error) {
+	var out PutClientsClientIDIDJagAudiencesResponse
+	v, err := c.call(ctx, "PUT", "/admin/clients/"+url.PathEscape(clientID)+"/id-jag-audiences", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

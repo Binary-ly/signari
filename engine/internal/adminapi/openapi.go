@@ -194,6 +194,11 @@ var summaries = map[string]string{
 	// What a wallet encrypts to.
 	"POST /admin/instances/{instanceID}/credential-encryption-key": "Make a new key for wallets to encrypt to.",
 
+	// Which authorization servers a client may have an ID-JAG for.
+	"GET /admin/clients/{clientID}/id-jag-audiences":    "The authorization servers a client may have a grant for.",
+	"PUT /admin/clients/{clientID}/id-jag-audiences":    "Let a client have a grant for an authorization server.",
+	"DELETE /admin/clients/{clientID}/id-jag-audiences": "Stop issuing grants for an authorization server.",
+
 	// Whose client_id URLs to fetch a metadata document from.
 	"GET /admin/instances/{instanceID}/client-metadata-rules":    "Whose client_id URLs the instance will fetch.",
 	"PUT /admin/instances/{instanceID}/client-metadata-rules":    "Allow client_id URLs under a prefix.",

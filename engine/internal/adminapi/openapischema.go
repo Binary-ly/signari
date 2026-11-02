@@ -956,6 +956,16 @@ var opSchemas = map[string]opSchema{
 			"instance_id": uuidStr(), "steps": arrayOf(object([]string{"algorithm"}, map[string]jsonSchema{
 				"algorithm": str(), "published": str(), "promoted": str(), "demoted": str(), "forced": boolean(),
 				"wait_s": integer()}))}))},
+	"GET /admin/clients/{clientID}/id-jag-audiences": {http.StatusOK, nil, object([]string{"client_id", "audiences"},
+		map[string]jsonSchema{"client_id": str(), "audiences": arrayOf(object(
+			[]string{"audience", "remote_client_id", "resources", "scopes", "alg"}, map[string]jsonSchema{"audience": str(),
+				"remote_client_id": str(), "resources": arrayOf(str()), "scopes": arrayOf(str()), "alg": str()}))})},
+	"PUT /admin/clients/{clientID}/id-jag-audiences": {http.StatusOK, typeOf[putIDJAGAudienceRequest](), object(
+		[]string{"client_id", "audience", "config_version"}, withVersion(map[string]jsonSchema{
+			"client_id": str(), "audience": str()}))},
+	"DELETE /admin/clients/{clientID}/id-jag-audiences": {http.StatusOK, nil, object(
+		[]string{"client_id", "audience", "removed", "config_version"}, withVersion(map[string]jsonSchema{
+			"client_id": str(), "audience": str(), "removed": boolean()}))},
 	"GET /admin/instances/{instanceID}/client-metadata-rules": {http.StatusOK, nil, object([]string{"instance_id", "rules"},
 		map[string]jsonSchema{"instance_id": uuidStr(), "rules": arrayOf(object([]string{"url_prefix", "org_id", "scopes"},
 			map[string]jsonSchema{"url_prefix": str(), "org_id": uuidStr(), "scopes": arrayOf(str())}))})},

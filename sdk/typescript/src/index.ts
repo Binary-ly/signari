@@ -115,6 +115,13 @@ export class SignariAdmin {
     return this.call<DeleteClientsClientIDGroupReleaseResponse>("DELETE", `/admin/clients/${encodeURIComponent(clientID)}/group-release`, undefined, opts)
   }
 
+  // DELETE /admin/clients/{clientID}/id-jag-audiences: Stop issuing grants for an authorization
+  // server. Needs clients:write. A target that may impersonate others also needs
+  // privileged-users:write.
+  deleteClientsClientIDIDJagAudiences(clientID: string, opts: CallOptions = {}): Promise<Answer<DeleteClientsClientIDIDJagAudiencesResponse>> {
+    return this.call<DeleteClientsClientIDIDJagAudiencesResponse>("DELETE", `/admin/clients/${encodeURIComponent(clientID)}/id-jag-audiences`, undefined, opts)
+  }
+
   // DELETE /admin/groups/{groupID}: Delete a group and its memberships. Needs groups:write. A
   // target that may impersonate others also needs privileged-users:write.
   deleteGroupsGroupID(groupID: string, opts: CallOptions = {}): Promise<Answer<DeleteGroupsGroupIDResponse>> {
@@ -422,6 +429,12 @@ export class SignariAdmin {
   // groups claim. Needs clients:read.
   getClientsClientIDGroupRelease(clientID: string, opts: CallOptions = {}): Promise<Answer<GetClientsClientIDGroupReleaseResponse>> {
     return this.call<GetClientsClientIDGroupReleaseResponse>("GET", `/admin/clients/${encodeURIComponent(clientID)}/group-release`, undefined, opts)
+  }
+
+  // GET /admin/clients/{clientID}/id-jag-audiences: The authorization servers a client may have a
+  // grant for. Needs clients:read.
+  getClientsClientIDIDJagAudiences(clientID: string, opts: CallOptions = {}): Promise<Answer<GetClientsClientIDIDJagAudiencesResponse>> {
+    return this.call<GetClientsClientIDIDJagAudiencesResponse>("GET", `/admin/clients/${encodeURIComponent(clientID)}/id-jag-audiences`, undefined, opts)
   }
 
   // GET /admin/config-version: The current configuration version, for conditional writes. Needs
@@ -1281,6 +1294,13 @@ export class SignariAdmin {
     return this.call<PutClientsClientIDGroupReleaseResponse>("PUT", `/admin/clients/${encodeURIComponent(clientID)}/group-release`, body, opts)
   }
 
+  // PUT /admin/clients/{clientID}/id-jag-audiences: Let a client have a grant for an authorization
+  // server. Needs clients:write. A target that may impersonate others also needs
+  // privileged-users:write.
+  putClientsClientIDIDJagAudiences(clientID: string, body: PutClientsClientIDIDJagAudiencesRequest, opts: CallOptions = {}): Promise<Answer<PutClientsClientIDIDJagAudiencesResponse>> {
+    return this.call<PutClientsClientIDIDJagAudiencesResponse>("PUT", `/admin/clients/${encodeURIComponent(clientID)}/id-jag-audiences`, body, opts)
+  }
+
   // PUT /admin/groups/{groupID}/members/{userID}: Add a member. Needs groups:write. A target that
   // may impersonate others also needs privileged-users:write.
   putGroupsGroupIDMembersUserID(groupID: string, userID: string, opts: CallOptions = {}): Promise<Answer<PutGroupsGroupIDMembersUserIDResponse>> {
@@ -1585,6 +1605,14 @@ export interface DeleteClientsClientIDResponse {
 
 /** A JSON object of the Admin API. */
 export interface DeleteClientsClientIDGroupReleaseResponse {
+  config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteClientsClientIDIDJagAudiencesResponse {
+  audience: string
+  client_id: string
   config_version: number
   removed: boolean
 }
@@ -2059,6 +2087,21 @@ export interface GetClientsClientIDGroupReleaseResponse {
   client_id: string
   only_groups: string[]
   released: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface GetClientsClientIDIDJagAudiencesResponse {
+  audiences: GetClientsClientIDIDJagAudiencesResponseAudiencesItem[]
+  client_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetClientsClientIDIDJagAudiencesResponseAudiencesItem {
+  alg: string
+  audience: string
+  remote_client_id: string
+  resources: string[]
+  scopes: string[]
 }
 
 /** A JSON object of the Admin API. */
@@ -4614,6 +4657,22 @@ export interface PutClientsClientIDGroupReleaseResponse {
   config_version: number
   only_groups: string[]
   released: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PutClientsClientIDIDJagAudiencesRequest {
+  alg?: string
+  audience?: string
+  remote_client_id?: string
+  resources?: string[]
+  scopes?: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface PutClientsClientIDIDJagAudiencesResponse {
+  audience: string
+  client_id: string
+  config_version: number
 }
 
 /** A JSON object of the Admin API. */

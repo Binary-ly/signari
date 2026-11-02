@@ -58,6 +58,10 @@ type Metadata struct {
 	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
 	// The client ID metadata document draft's §6, once a rule says whose to fetch.
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+	// ID-JAG §7.1, once something can be issued, and §7.2, which says only that this
+	// server implements the profile and so never names who it would take one from.
+	IdentityChainingRequestedTokenTypesSupported []string `json:"identity_chaining_requested_token_types_supported,omitempty"`
+	AuthorizationGrantProfilesSupported          []string `json:"authorization_grant_profiles_supported,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.
@@ -367,6 +371,7 @@ func Build(cfg Config) (*Metadata, error) {
 		// token endpoint dispatches it, a wallet can redeem an offer without
 		// sending client_id at all, and `signari credential offer` mints one. It
 		// was deliberately absent while only the rules existed.
+		AuthorizationGrantProfilesSupported: []string{"urn:ietf:params:oauth:grant-profile:id-jag"},
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",

@@ -235,6 +235,9 @@ clients:
   client set-grants                set which grant types a client may use
   client set-exchange              grant RFC 8693 token exchange, for itself and audiences
   client set-exchange-containment  exchange only tokens the client holds or is the audience of
+  client id-jag-allow              let a client have an ID-JAG for another authorization server
+  client id-jag-audiences          the authorization servers a client may have one for
+  client id-jag-forget             stop issuing them for one
   client set-hybrid                permit hybrid response types
   client set-claims-redirects      where UMA claims gathering may return a requesting party
   client set-ciba                  the CIBA delivery mode: poll, ping or push
@@ -717,6 +720,9 @@ func run(args []string) (err error) {
 			"logout (empty clears; left alone when not given)")
 	backchannelSID := fs.Bool("backchannel-sid", true,
 		"`client set-logout`: put the session's sid in the logout token (left alone when not given)")
+	idJAGAudience := fs.String("audience", "", "the issuer identifier of another authorization server (client id-jag-allow, forget)")
+	idJAGRemoteClient := fs.String("remote-client-id", "", "what that server calls this client (client id-jag-allow)")
+	idJAGResources := fs.String("resources", "", "resources a grant may name there, comma separated (client id-jag-allow)")
 	exchangeAudiences := fs.String("exchange-audiences", "",
 		"`client set-exchange`: comma-separated audiences this client may exchange tokens for, besides itself")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
@@ -1491,6 +1497,12 @@ func run(args []string) (err error) {
 		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
+	case "client id-jag-allow":
+		return clientIDJAGAllow(ctx, conn, *clientID, *idJAGAudience, *idJAGRemoteClient, *idJAGResources, *tokenScopes, *alg)
+	case "client id-jag-audiences":
+		return clientIDJAGAudiences(ctx, conn, *clientID, *outputFormat)
+	case "client id-jag-forget":
+		return clientIDJAGForget(ctx, conn, *clientID, *idJAGAudience)
 	case "client set-exchange":
 		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
 	case "client set-logout":

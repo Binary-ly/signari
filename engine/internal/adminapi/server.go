@@ -248,6 +248,8 @@ func (s *Server) Routes() http.Handler {
 	// Which groups it is told of (grouprelease.go).
 	privileged("PUT /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.putGroupRelease)
 	privileged("DELETE /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.deleteGroupRelease)
+	privileged("PUT /admin/clients/{clientID}/id-jag-audiences", ScopeClientsWrite, targetClient, s.putIDJAGAudience)
+	privileged("DELETE /admin/clients/{clientID}/id-jag-audiences", ScopeClientsWrite, targetClient, s.deleteIDJAGAudience)
 	// A client's Shared Signals stream paused, disabled or enabled (ssf.go).
 	privileged("PATCH /admin/clients/{clientID}/ssf-stream", ScopeClientsWrite, targetClient, s.setStreamStatus)
 	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
@@ -472,6 +474,7 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/clients", ScopeClientsRead, s.listClients)
 	route("GET /admin/clients/{clientID}", ScopeClientsRead, s.getClient)
 	route("GET /admin/clients/{clientID}/group-release", ScopeClientsRead, s.getGroupRelease)
+	route("GET /admin/clients/{clientID}/id-jag-audiences", ScopeClientsRead, s.listIDJAGAudiences)
 	route("GET /admin/users", ScopeUsersRead, s.listUsers)
 	route("GET /admin/users/{userID}", ScopeUsersRead, s.getUser)
 

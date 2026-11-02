@@ -194,7 +194,9 @@ func terminate(ctx context.Context, tx pgx.Tx, sids []string, userID string, rea
 		  AND ($2::uuid IS NULL OR s.user_id = $2)
 		  AND st.status IN ('enabled', 'paused')
 		  AND st.delivery_method = 'push'
-		  AND $3::text = ANY(st.events_requested)`,
+		  AND $3::text = ANY(st.events_requested)
+		  AND NOT EXISTS (SELECT 1 FROM core.ssf_removed_subjects r
+		                   WHERE r.stream_id = st.id AND r.user_id = s.user_id)`,
 		sids, nullIf(userID),
 		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
 		string(reason)); err != nil {
@@ -224,6 +226,8 @@ func terminate(ctx context.Context, tx pgx.Tx, sids []string, userID string, rea
 			  AND st.status IN ('enabled', 'paused')
 			  AND st.delivery_method = 'poll'
 			  AND $3::text = ANY(st.events_requested)
+			  AND NOT EXISTS (SELECT 1 FROM core.ssf_removed_subjects r
+			                   WHERE r.stream_id = st.id AND r.user_id = s.user_id)
 		) d`,
 		sids, nullIf(userID),
 		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",

@@ -116,7 +116,7 @@ var EventTypes = []string{
 	"scim.user_replaced",
 	"session.logout", "session.user_revoked",
 	"sms.refused",
-	"ssf.received",
+	"ssf.received", "ssf.stream_changed",
 	"token.vetoed",
 	"txntoken.issued",
 	"uma.claims_gathered", "uma.denied", "uma.granted", "uma.submitted",

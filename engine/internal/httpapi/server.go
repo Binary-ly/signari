@@ -610,6 +610,16 @@ func (s *Server) mux() *http.ServeMux {
 	// client. See internal/httpapi/ssfpoll.go.
 	mux.HandleFunc("POST /ssf/poll", s.handleSSFPoll)
 	mux.HandleFunc("POST "+ssf.VerifyPath, s.handleSSFVerify)
+	// And what a receiver may do with its own stream (ssfmanage.go).
+	mux.HandleFunc("GET "+ssf.StreamPath, s.handleSSFStreamRead)
+	mux.HandleFunc("PATCH "+ssf.StreamPath, s.handleSSFStreamChange(false))
+	mux.HandleFunc("PUT "+ssf.StreamPath, s.handleSSFStreamChange(true))
+	mux.HandleFunc("POST "+ssf.StreamPath, s.handleSSFStreamNotYours)
+	mux.HandleFunc("DELETE "+ssf.StreamPath, s.handleSSFStreamNotYours)
+	mux.HandleFunc("GET "+ssf.StatusPath, s.handleSSFStatusRead)
+	mux.HandleFunc("POST "+ssf.StatusPath, s.handleSSFStatusUpdate)
+	mux.HandleFunc("POST "+ssf.AddSubjectPath, s.handleSSFSubject(false))
+	mux.HandleFunc("POST "+ssf.RemoveSubjectPath, s.handleSSFSubject(true))
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
 	mux.HandleFunc("GET /.well-known/webauthn", s.handleWebAuthnWellKnown)

@@ -134,8 +134,43 @@ is queued and not that it arrived, and receiving it is the proof.
 | a second request for a stream within 30 seconds | `429`, with `Retry-After` |
 
 A paused stream answers `204` and holds the event with the rest of what it is
-holding. The 30 seconds would be `min_verification_interval`, which belongs to a
-stream configuration this engine does not serve, so it is stated here.
+holding. The 30 seconds is the stream's `min_verification_interval`.
+
+## What a receiver can do with its stream
+
+An operator makes a stream and says where it delivers, because that decides who hears
+about whom. A receiver reads and changes the rest of its own, authenticating as it does
+to poll and to verify, as the stream's client with HTTP Basic or a certificate:
+
+| Request | What it does |
+|---|---|
+| `GET /ssf/stream`, `?stream_id=<id>` | The configuration, or a list of the one stream a client has, which is `[]` for a client with none |
+| `PATCH /ssf/stream` | Changes `events_requested` and `description`, and leaves alone what it does not name |
+| `PUT /ssf/stream` | Replaces them, so what it leaves out is gone |
+| `GET /ssf/status?stream_id=<id>` | `enabled`, `paused` or `disabled` |
+| `POST /ssf/status` | Sets it, with what [pausing](#pausing-and-disabling-a-stream) does from here |
+| `POST /ssf/subjects:add`, `:remove` | Says whether it wants to hear about a person |
+| `POST`, `DELETE /ssf/stream` | `403`. A stream is made and deleted with `signari ssf add-stream` or the Admin API |
+
+An event type this server does not understand is dropped from `events_requested`, as the
+specification says. A property the server supplies may be sent back but has to match, or
+the answer is `400`. A `delivery` that differs is `403`, whatever a receiver sends: a
+stolen client secret should not be enough to send people's events somewhere else.
+
+Each change is in the audit trail as `ssf.stream_changed` and moves the configuration
+version, because it is a change to the operator's stream as well. `signari plan` will show
+it as drift from a file that says otherwise.
+
+### Subjects
+
+A stream carries events about the people its client has met, and that does not change.
+So adding a subject asks for nothing more: it takes back a removal. Removing one stops
+events about that person on this stream, push or poll, until it is added back. A person
+is named as this server's events name them, `{"format": "iss_sub", "iss", "sub"}`, or by
+`email`, or either under `user` in a `complex` subject.
+
+The answer is an empty `200` whoever the subject is, in any format, known or not. An answer
+that differed would tell a receiver who has an account here.
 
 ## The token that was never sent
 

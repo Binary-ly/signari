@@ -79,14 +79,15 @@ func TestUnimplementedEndpointsAreOmittedEntirely(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{
-		"configuration_endpoint", "status_endpoint", "add_subject_endpoint",
-		"remove_subject_endpoint", "authorization_schemes",
-	} {
-		if v, present := doc[k]; present {
-			t.Errorf("%s is present (%v) but this engine has no management API; "+
-				"advertising an endpoint that 404s is worse than advertising "+
-				"nothing, because the receiver's next move is to call it", k, v)
+	// A receiver authenticates as its client, which no value here can say.
+	if v, present := doc["authorization_schemes"]; present {
+		t.Errorf("authorization_schemes is present (%v) with nothing to name", v)
+	}
+	// And the ones that are built are there, httpapi holding them to a route.
+	for _, k := range []string{"configuration_endpoint", "status_endpoint", "add_subject_endpoint",
+		"remove_subject_endpoint", "verification_endpoint"} {
+		if v, _ := doc[k].(string); !strings.HasPrefix(v, "https://idp.example/ssf/") {
+			t.Errorf("%s is %v", k, doc[k])
 		}
 	}
 }

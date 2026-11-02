@@ -7,6 +7,18 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0277 security_events_skip_removed_subjects
+
+Not compatible with the release before: stop it before migrating.
+
+A subject a receiver removed from its stream stops being queued for it. Apart from that this is the function 0212 made. Replacing it is what the compatibility declaration refuses, so this is apart from 0276: the release before would go on queuing them, which a receiver has to tolerate anyway (SSF 1.0 §9.3).
+
+## 0276 ssf_stream_management
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a receiver may change of its own stream (SSF 1.0 §8.1). A stream here carries events about the people its client has met, so "adding" a subject asks for nothing more than that, and removing one is the row worth keeping: a person this receiver would rather not hear about. A description is the receiver's own note on the stream.
+
 ## 0275 message_signing_profile
 
 Not compatible with the release before: stop it before migrating.

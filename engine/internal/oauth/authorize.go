@@ -346,6 +346,8 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	//     hybrid flow puts a signed, non-single-use assertion in the front
 	//     channel, and form_post is what keeps it out of URLs -- see
 	//     responsemode.go for the nonce-guarded auto-submitting form.
+	//   - The `.jwt` modes and `jwt` are those again with the response signed
+	//     (JARM), and a client with a signing algorithm set takes nothing else.
 	//   - Anything else is refused rather than accepted-and-ignored, because a
 	//     client that asked for form_post and silently got query loses exactly
 	//     the protection it asked for.
@@ -363,39 +365,47 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 				"response_mode \"query\" cannot carry an id_token; use \"fragment\" "+
 					"or \"form_post\"")
 		}
-	case "fragment", "form_post":
+	case "fragment", "form_post", "fragment.jwt", "form_post.jwt", "jwt":
+	case "query.jwt":
+		if hybrid {
+			// JARM §2.3.1: "MUST NOT be used in conjunction with response types that
+			// contain "token" or "id_token" unless the response JWT is encrypted".
+			return redirectErr("invalid_request",
+				"response_mode \"query.jwt\" cannot carry an id_token; use \"jwt\", "+
+					"\"fragment.jwt\" or \"form_post.jwt\"")
+		}
 	default:
 		return redirectErr("invalid_request",
-			fmt.Sprintf("response_mode %q is not supported; use query, fragment or form_post",
-				req.ResponseMode))
+			fmt.Sprintf("response_mode %q is not supported; use query, fragment, form_post, "+
+				"query.jwt, fragment.jwt, form_post.jwt or jwt", req.ResponseMode))
+	}
+	if _, signed := req.ResponseEncoding(); c.AuthorizationResponseAlg != "" && !signed {
+		// Otherwise a request the browser has changed gets the client an unsigned
+		// response, which is the one thing it set this to avoid.
+		return redirectErr("invalid_request",
+			"this client's authorization responses are signed; ask for one with "+
+				"response_mode \"jwt\", \"query.jwt\", \"fragment.jwt\" or \"form_post.jwt\"")
 	}
 
 	return nil
 }
 
-// ErrorRedirect builds the URL an authorization error is sent to.
-//
-// `state` is echoed exactly as received, and `iss` is always included (RFC 9207)
-// so a client can tell which provider answered -- the mix-up attack defence.
-func ErrorRedirect(redirectURI, issuer, state string, e *AuthzError) (string, error) {
-	if e.Disposition != DispositionRedirect {
-		return "", fmt.Errorf("refusing to redirect a %s error: it has no verified redirect target", e.Code)
+// ResponseEncoding is how the response to this request travels, query, fragment or
+// form_post, and whether as a JWT. The default differs by response type, as OIDC says,
+// and JARM §2.3.4's `jwt` is that default, signed. A mode nobody knows is the default
+// too, since that is how its refusal has to reach the client.
+func (req AuthzRequest) ResponseEncoding() (encoding string, signed bool) {
+	switch req.ResponseMode {
+	case "query", "fragment", "form_post":
+		return req.ResponseMode, false
+	case "query.jwt", "fragment.jwt", "form_post.jwt":
+		return strings.TrimSuffix(req.ResponseMode, ".jwt"), true
 	}
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		return "", err
+	encoding = "query"
+	if NormaliseResponseType(req.ResponseType) == "code id_token" {
+		encoding = "fragment"
 	}
-	q := u.Query()
-	q.Set("error", e.Code)
-	if e.Description != "" {
-		q.Set("error_description", e.Description)
-	}
-	if state != "" {
-		q.Set("state", state)
-	}
-	q.Set("iss", issuer)
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return encoding, req.ResponseMode == "jwt"
 }
 
 // validChallenge checks the RFC 7636 shape: 43-128 characters drawn from the

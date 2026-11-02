@@ -103,7 +103,7 @@ func TestTheErrorAndCodePagesCarryTheBrandsPolicy(t *testing.T) {
 			s.renderMFA(w, r, j.userID, "", "That code is not valid.")
 		}},
 		"err": {http.StatusBadRequest, func(w http.ResponseWriter, r *http.Request) {
-			s.writeAuthzError(w, r, oauth.AuthzRequest{}, &oauth.AuthzError{
+			s.writeAuthzError(w, r, oauth.AuthzRequest{}, nil, &oauth.AuthzError{
 				Code: "invalid_request", Description: "probe", Disposition: oauth.DispositionDirect})
 		}},
 		"federr (federation)": {http.StatusBadRequest, func(w http.ResponseWriter, r *http.Request) {

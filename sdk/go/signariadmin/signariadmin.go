@@ -574,6 +574,7 @@ type GetClientsClientIDResponse struct {
 	AdminAPI                              bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           bool           `json:"allow_hybrid,omitempty"`
 	AuthorizationDetailTypes              []string       `json:"authorization_detail_types,omitempty"`
+	AuthorizationSignedResponseAlg        *string        `json:"authorization_signed_response_alg,omitempty"`
 	BackchannelClientNotificationEndpoint *string        `json:"backchannel_client_notification_endpoint,omitempty"`
 	BackchannelLogoutSessionRequired      bool           `json:"backchannel_logout_session_required,omitempty"`
 	BackchannelLogoutURI                  *string        `json:"backchannel_logout_uri,omitempty"`
@@ -1886,6 +1887,7 @@ type PatchClientsClientIDRequest struct {
 	AdminAPI                              *bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           *bool           `json:"allow_hybrid,omitempty"`
 	AuthorizationDetailTypes              *[]string       `json:"authorization_detail_types,omitempty"`
+	AuthorizationSignedResponseAlg        *string         `json:"authorization_signed_response_alg,omitempty"`
 	BackchannelClientNotificationEndpoint *string         `json:"backchannel_client_notification_endpoint,omitempty"`
 	BackchannelLogoutSessionRequired      *bool           `json:"backchannel_logout_session_required,omitempty"`
 	BackchannelLogoutURI                  *string         `json:"backchannel_logout_uri,omitempty"`
@@ -1939,6 +1941,7 @@ type PatchClientsClientIDResponse struct {
 	AccessTokenFormat                  string   `json:"access_token_format,omitempty"`
 	AccessTokenSignedResponseAlg       string   `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                    int64    `json:"access_token_ttl_s,omitempty"`
+	AuthorizationSignedResponseAlg     string   `json:"authorization_signed_response_alg,omitempty"`
 	ClientID                           string   `json:"client_id"`
 	ConfigVersion                      int64    `json:"config_version"`
 	ConsentLifetimeS                   int64    `json:"consent_lifetime_s,omitempty"`

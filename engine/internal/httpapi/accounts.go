@@ -332,9 +332,9 @@ func (s *Server) errorToClient(w http.ResponseWriter, r *http.Request, authz, co
 	// In any state: ValidateAuthz refuses a disabled client, saying so.
 	c, lookupErr := s.lookupClientAnyState(r.Context(), req.ClientID)
 	if aerr := oauth.ValidateAuthz(req, c, lookupErr); aerr != nil && aerr.Disposition != oauth.DispositionRedirect {
-		s.writeAuthzError(w, r, req, aerr)
+		s.writeAuthzError(w, r, req, c, aerr)
 		return
 	}
-	s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: code, Description: description,
+	s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: code, Description: description,
 		Disposition: oauth.DispositionRedirect})
 }

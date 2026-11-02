@@ -220,7 +220,7 @@ clients:
   client set-state                 refuse an authorization request with no state
   client set-logout                post-logout redirects and front- and back-channel logout
   client set-lifetimes             token lifetimes, and how long consent lasts
-  client set-alg                   what signs the client's ID and access tokens
+  client set-alg                   what signs the client's ID and access tokens and responses
   client set-issuer-alias          mint the client's tokens under a legacy issuer
   client set-admin-api             let the client obtain tokens for the Admin API
   client set-first-party           skip the consent screen for a client that is yours
@@ -545,6 +545,8 @@ func run(args []string) (err error) {
 		"(default: the size of the key it replaces)")
 	clientAccessAlg := fs.String("access-alg", "", "`client set-alg`: what signs the client's access tokens alone; "+
 		"empty goes back to what signs its ID tokens")
+	clientResponseAlg := fs.String("response-alg", "", "`client set-alg`: what signs the client's authorization "+
+		"responses, holding it to asking for them signed; empty lets go of both")
 	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
 		"resource server introspects")
 	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, or fapi2 to hold the "+
@@ -1490,13 +1492,16 @@ func run(args []string) (err error) {
 		})
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
 	case "client set-alg":
-		var accessAlg *string
+		var accessAlg, responseAlg *string
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "access-alg" {
 				accessAlg = clientAccessAlg
 			}
+			if f.Name == "response-alg" {
+				responseAlg = clientResponseAlg
+			}
 		})
-		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg)
+		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg)
 	case "client set-issuer-alias":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
 			map[bool]string{true: "tokens are minted under this instance's own issuer",
@@ -10101,18 +10106,20 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 	return nil
 }
 
-// clientSetAlg sets the algorithm the client's ID and access tokens are signed
-// with, refusing one the instance holds no active key for.
-func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg *string) error {
-	if clientID == "" || alg == "" && accessAlg == nil {
-		return fmt.Errorf("give -client-id and -alg or -access-alg (%s)", strings.Join(store.ClientAlgorithms, ", "))
+// clientSetAlg sets the algorithms the client's ID and access tokens and its
+// authorization responses are signed with, refusing one the instance holds no
+// active key for.
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg, responseAlg *string) error {
+	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil {
+		return fmt.Errorf("give -client-id and -alg, -access-alg or -response-alg (%s)",
+			strings.Join(store.ClientAlgorithms, ", "))
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	settings := store.ClientSettings{AccessTokenAlg: accessAlg}
+	settings := store.ClientSettings{AccessTokenAlg: accessAlg, AuthorizationResponseAlg: responseAlg}
 	if alg != "" {
 		settings.IDTokenAlg = &alg
 	}
@@ -10125,13 +10132,19 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, acc
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	switch {
-	case accessAlg == nil:
+	if alg != "" {
 		fmt.Printf("%s: ID tokens are signed with %s, and access tokens unless they are set apart\n", clientID, alg)
-	case *accessAlg == "":
+	}
+	if accessAlg != nil && *accessAlg == "" {
 		fmt.Printf("%s: access tokens are signed as its ID tokens are\n", clientID)
-	default:
+	} else if accessAlg != nil {
 		fmt.Printf("%s: access tokens are signed with %s\n", clientID, *accessAlg)
+	}
+	if responseAlg != nil && *responseAlg == "" {
+		fmt.Printf("%s: authorization responses are signed when a request asks, with RS256\n", clientID)
+	} else if responseAlg != nil {
+		fmt.Printf("%s: authorization responses are signed with %s, and a request has to ask for that\n",
+			clientID, *responseAlg)
 	}
 	return nil
 }

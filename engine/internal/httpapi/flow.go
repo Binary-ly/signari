@@ -137,7 +137,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// disabled; it refuses one before anything else is read.
 	c, lookupErr := s.lookupClientAnyState(ctx, req.ClientID)
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
-		s.writeAuthzError(w, r, req, authzErr)
+		s.writeAuthzError(w, r, req, c, authzErr)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// that does not conform to this specification", or the signature is something an
 	// attacker chooses not to send. Redirected, the redirect_uri being valid by now.
 	if c != nil && c.RequireSignedRequest && !wasSigned {
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
 			Description: "this client must sign its authorization requests", Disposition: oauth.DispositionRedirect})
 		return
 	}
@@ -156,7 +156,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// request says it is for.
 	wantSubject, cerr := oauth.CompileClaims(query, c)
 	if cerr != nil {
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request", Description: cerr.Error(),
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request", Description: cerr.Error(),
 			Disposition: oauth.DispositionRedirect})
 		return
 	}
@@ -170,7 +170,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if req.IDTokenHint != "" {
 		subject, audience, herr := tokens.VerifyIDTokenHint(s.cfg.Keys, s.cfg.Issuer, req.IDTokenHint)
 		if herr != nil || audience != c.ClientID || (wantSubject != "" && wantSubject != subject) {
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
 				Description: "id_token_hint is not an ID token this server issued to this client for this person",
 				Disposition: oauth.DispositionRedirect})
 			return
@@ -187,7 +187,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				s.log.ErrorContext(ctx, "checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
 				aerr.Code, aerr.Description = "temporarily_unavailable", "please try again shortly"
 			}
-			s.writeAuthzError(w, r, req, aerr)
+			s.writeAuthzError(w, r, req, c, aerr)
 			return
 		}
 	}
@@ -195,7 +195,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// A client held to `state` (9.13): redirected, the redirect_uri being valid, so
 	// the relying party hears of it rather than a person seeing a dead end.
 	if c != nil && c.RequireState && req.State == "" {
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
 			Description: "this client must send state", Disposition: oauth.DispositionRedirect})
 		return
 	}
@@ -211,7 +211,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if c != nil && req.RawAuthorizationDetails != "" {
 		details, aerr := s.parseAuthorizationDetails(ctx, c, req.RawAuthorizationDetails)
 		if aerr != nil {
-			s.writeAuthzError(w, r, req, aerr)
+			s.writeAuthzError(w, r, req, c, aerr)
 			return
 		}
 		req.AuthorizationDetails = details
@@ -269,7 +269,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		session, err = store.ResolveBrowserSession(ctx, s.db, store.HashToken(cookie), s.instanceID)
 		if err != nil {
 			s.log.ErrorContext(ctx, "checking session", "err", err)
-			s.writeAuthzError(w, r, req,
+			s.writeAuthzError(w, r, req, c,
 				&oauth.AuthzError{Code: "server_error", Description: "could not verify session",
 					Disposition: oauth.DispositionRedirect})
 			return
@@ -296,7 +296,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		named, err := subjectFor(ctx, s.db, c, session.UserID)
 		if err != nil {
 			s.log.ErrorContext(ctx, "reading how this client knows them", "err", err)
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
 				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 			return
 		}
@@ -326,7 +326,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			// prompt=none plus an unmet requirement is unsatisfiable by
 			// definition: the client forbade interaction and we need some.
 			if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-				s.writeAuthzError(w, r, req, &oauth.AuthzError{
+				s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 					Code:        stepUpErrorCode(reason),
 					Description: detail,
 					Disposition: oauth.DispositionRedirect})
@@ -356,7 +356,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					case kerr != nil:
 						s.log.ErrorContext(ctx, "checking for a key at a step-up", "err", kerr)
 					case !held:
-						s.writeAuthzError(w, r, req, &oauth.AuthzError{
+						s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 							Code: "unmet_authentication_requirements",
 							Description: "the requested authentication context needs a passkey or " +
 								"security key, and this account has none that reaches it",
@@ -371,7 +371,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				} else if !enrolled {
 					s.log.InfoContext(ctx, "step-up is unsatisfiable: no second factor is enrolled",
 						"sid", sid, "correlation_id", correlationID(ctx))
-					s.writeAuthzError(w, r, req, &oauth.AuthzError{
+					s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 						Code: "unmet_authentication_requirements",
 						Description: "this account has no second factor enrolled, so the " +
 							"requested authentication context cannot be reached",
@@ -382,7 +382,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 					// the sign-in flow never asks a password sign-in for it.
 					s.log.InfoContext(ctx, "step-up is unsatisfiable: the sign-in flow asks for no second factor",
 						"sid", sid, "correlation_id", correlationID(ctx))
-					s.writeAuthzError(w, r, req, &oauth.AuthzError{
+					s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 						Code: "unmet_authentication_requirements",
 						Description: "this organisation's sign-in flow does not ask for a second " +
 							"factor, so the requested authentication context cannot be reached",
@@ -401,7 +401,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			if somebodyElse {
 				description = "the session here is not the person this request names, and prompt=none was requested"
 			}
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "login_required", Description: description,
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "login_required", Description: description,
 				Disposition: oauth.DispositionRedirect})
 			return
 		}
@@ -442,7 +442,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.log.InfoContext(ctx, "a session from another organisation asked for this client",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "login_required",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "login_required",
 				Description: "the active session does not belong to this client's organisation",
 				Disposition: oauth.DispositionRedirect})
 			return
@@ -478,12 +478,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		if oerr != nil {
 			s.log.ErrorContext(ctx, "reading whether a credential is open to a person", "err", oerr,
 				"correlation_id", correlationID(ctx))
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
 				Description: "unavailable", Disposition: oauth.DispositionRedirect})
 			return
 		}
 		if !open {
-			s.writeAuthzError(w, r, req, credentialNotOpen())
+			s.writeAuthzError(w, r, req, c, credentialNotOpen())
 			return
 		}
 	}
@@ -491,7 +491,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	decision, ask, err := s.needsConsent(r, c, session.UserID, req)
 	if err != nil {
 		s.log.ErrorContext(ctx, "checking consent", "err", err)
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
 			Description: "could not check consent", Disposition: oauth.DispositionRedirect})
 		return
 	}
@@ -499,7 +499,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// prompt=none forbade interaction, and consent is interaction. The client
 		// gets an error it can act on rather than a screen it cannot show.
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "consent_required",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "consent_required",
 				Description: consentRequiredReason(req),
 				Disposition: oauth.DispositionRedirect})
 			return
@@ -629,7 +629,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		}
 		if !spent {
 			_ = tx.Rollback(ctx)
-			s.writeAuthzError(w, r, req, credentialNotOpen())
+			s.writeAuthzError(w, r, req, c, credentialNotOpen())
 			return
 		}
 	}
@@ -678,7 +678,7 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		out.IDToken = idt
 	}
 
-	s.deliverAuthzResponse(w, r, req.RedirectURI, req.ResponseMode, out)
+	s.deliverAuthzResponse(w, r, req, c, out)
 }
 
 // withRoles adds a person's roles in the application to a token's claims, when the
@@ -2859,17 +2859,19 @@ func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*cl
 
 // writeAuthzError delivers an authorization error by whichever route its
 // disposition permits. A direct error renders here; only a redirect-disposition
-// error is sent to the client.
+// error is sent to the client, and a client is what vouches for the redirect URI.
+//
+// It goes the way a code would have. OIDC Core §3.3.2.6 asks that of the hybrid flow,
+// "unless a different Response Mode was specified", and JARM §2.1 of every response
+// "even in case of an error response". `state` is echoed exactly as received, and `iss`
+// is included (RFC 9207) so a client can tell which provider answered.
 func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
-	req oauth.AuthzRequest, e *oauth.AuthzError) {
+	req oauth.AuthzRequest, c *clients.Client, e *oauth.AuthzError) {
 
-	if e.Disposition == oauth.DispositionRedirect {
-		target, err := oauth.ErrorRedirect(req.RedirectURI, s.cfg.Issuer, req.State, e)
-		if err == nil {
-			http.Redirect(w, r, target, http.StatusSeeOther)
-			return
-		}
-		s.log.ErrorContext(r.Context(), "building error redirect", "err", err)
+	if e.Disposition == oauth.DispositionRedirect && c != nil {
+		s.deliverAuthzResponse(w, r, req, c, responseParams{Error: e.Code, ErrorDescription: e.Description,
+			State: req.State, Issuer: s.issuerFor(c)})
+		return
 	}
 	s.renderPageStatus(w, r, http.StatusBadRequest, "err", map[string]any{
 		"Code":        e.Code,

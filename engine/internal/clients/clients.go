@@ -193,6 +193,10 @@ type Client struct {
 	// RequireSignedRequest is RFC 9101 §10.5's require_signed_request_object: the
 	// client's authorization requests are refused unless they are signed.
 	RequireSignedRequest bool
+	// AuthorizationResponseAlg is JARM §3's authorization_signed_response_alg. Set, a
+	// request must ask for a signed response and this signs it; "" leaves that to the
+	// request, and a signed response is then RS256, as §3 says.
+	AuthorizationResponseAlg string
 	// RequireState refuses an authorization request with no `state`.
 	RequireState bool
 	// MinimumACR is the weakest authentication the client accepts, "1" to
@@ -290,7 +294,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       coalesce(backchannel_client_notification_endpoint, ''),
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
 		       access_token_ttl_s, refresh_reuse_grace_s, require_pushed_authorization,
-		       require_signed_request_object, require_state, minimum_acr, admin_api,
+		       require_signed_request_object, COALESCE(authorization_signed_response_alg, ''),
+		       require_state, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
 		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
@@ -320,8 +325,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelTokenDeliveryMode,
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest, &c.RequireState,
-			&c.MinimumACR, &c.AdminAPI,
+			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest,
+			&c.AuthorizationResponseAlg, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
 			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
 			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {

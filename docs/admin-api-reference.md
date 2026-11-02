@@ -604,6 +604,7 @@ Answers:
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
 | `authorization_detail_types` | list of string |  |
+| `authorization_signed_response_alg` | string or null |  |
 | `backchannel_client_notification_endpoint` | string or null |  |
 | `backchannel_logout_session_required` | boolean |  |
 | `backchannel_logout_uri` | string or null |  |
@@ -674,6 +675,7 @@ Takes:
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
 | `authorization_detail_types` | list of string |  |
+| `authorization_signed_response_alg` | string |  |
 | `backchannel_client_notification_endpoint` | string |  |
 | `backchannel_logout_session_required` | boolean |  |
 | `backchannel_logout_uri` | string |  |
@@ -728,6 +730,7 @@ Answers:
 | `access_token_format` | string |  |
 | `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
+| `authorization_signed_response_alg` | string |  |
 | `client_id` | string | always |
 | `config_version` | integer | always |
 | `consent_lifetime_s` | integer |  |

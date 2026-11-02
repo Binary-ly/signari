@@ -206,17 +206,8 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// receive a handle, and discover the problem in a browser -- where the error
 	// has to be rendered to a person instead of returned to the caller that can
 	// act on it.
-	req := oauth.AuthzRequest{
-		ClientID:            clientID,
-		RedirectURI:         r.PostForm.Get("redirect_uri"),
-		ResponseType:        r.PostForm.Get("response_type"),
-		Scope:               r.PostForm.Get("scope"),
-		State:               r.PostForm.Get("state"),
-		Nonce:               r.PostForm.Get("nonce"),
-		CodeChallenge:       r.PostForm.Get("code_challenge"),
-		CodeChallengeMethod: r.PostForm.Get("code_challenge_method"),
-		Resources:           r.PostForm["resource"],
-	}
+	req := oauth.ParseAuthz(r.PostForm)
+	req.ClientID = clientID
 	if aerr := oauth.ValidateAuthz(req, c, nil); aerr != nil {
 		// Returned as a normal error response, NOT as a redirect. There is no
 		// browser here, and redirecting a back-channel caller would be

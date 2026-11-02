@@ -39,6 +39,7 @@ clients:
     access_token_ttl: 10m        # 1m to 1h; omit to leave as it is (default 5m)
     refresh_token_ttl: 168h      # 5m to 8760h (default 720h)
     id_token_signed_response_alg: RS256   # ES256 (default), or one the instance holds a key for
+    authorization_signed_response_alg: ES256   # JARM: signs its responses and holds it to asking; "" lets go
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
     require_signed_request_object: true           # RFC 9101; omit to leave as it is
     first_party: false           # true skips the consent screen

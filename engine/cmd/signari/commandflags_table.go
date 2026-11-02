@@ -33,7 +33,7 @@ var commandFlags = map[string][]string{
 	"client create":                   {"client-id", "launch-url", "logo-url", "name", "org", "portal-hidden", "public", "redirect", "require-pkce"},
 	"client set-acr":                  {"client-id", "minimum-acr"},
 	"client set-admin-api":            {"admin-api", "client-id"},
-	"client set-alg":                  {"access-alg", "alg", "client-id"},
+	"client set-alg":                  {"access-alg", "alg", "client-id", "response-alg"},
 	"client set-assertion-issuers":    {"client-id", "issuers"},
 	"client set-ciba":                 {"client-id", "delivery", "notification-endpoint"},
 	"client set-claims-redirects":     {"claims-redirect-uris", "client-id"},

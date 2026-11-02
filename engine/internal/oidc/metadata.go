@@ -61,7 +61,9 @@ type Metadata struct {
 	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	ResponseModesSupported                     []string `json:"response_modes_supported"`
-	GrantTypesSupported                        []string `json:"grant_types_supported"`
+	// JARM §4, and only what this deployment holds an active key for.
+	AuthorizationSigningAlgValuesSupported []string `json:"authorization_signing_alg_values_supported,omitempty"`
+	GrantTypesSupported                    []string `json:"grant_types_supported"`
 	// RFC 9396 §10. Populated per deployment at request time, because the
 	// registered types are a deployment's own list -- so this is empty in the
 	// static document and filled in by the discovery handler.
@@ -325,8 +327,10 @@ func Build(cfg Config) (*Metadata, error) {
 		// list was shorter than it is. The invariant itself holds --
 		// `ValidateAuthz` accepts query, fragment and form_post, and
 		// `internal/httpapi/responsemode.go` renders all three, form_post as a
-		// self-posting HTML page.
-		ResponseModesSupported: []string{"query", "fragment", "form_post"},
+		// self-posting HTML page, and each of them again signed (JARM §4).
+		ResponseModesSupported: []string{"query", "fragment", "form_post",
+			"query.jwt", "fragment.jwt", "form_post.jwt", "jwt"},
+		AuthorizationSigningAlgValuesSupported: algNames,
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.

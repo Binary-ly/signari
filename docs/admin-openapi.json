@@ -681,6 +681,12 @@
                       },
                       "type": "array"
                     },
+                    "authorization_signed_response_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "backchannel_client_notification_endpoint": {
                       "type": [
                         "string",
@@ -1028,6 +1034,9 @@
                     },
                     "type": "array"
                   },
+                  "authorization_signed_response_alg": {
+                    "type": "string"
+                  },
                   "backchannel_client_notification_endpoint": {
                     "type": "string"
                   },
@@ -1207,6 +1216,9 @@
                     },
                     "access_token_ttl_s": {
                       "type": "integer"
+                    },
+                    "authorization_signed_response_alg": {
+                      "type": "string"
                     },
                     "client_id": {
                       "type": "string"

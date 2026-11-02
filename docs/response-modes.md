@@ -7,7 +7,12 @@ For applications being migrated in that cannot be changed first.
 | `response_mode=query` | The default for `code`. Unchanged |
 | `response_mode=fragment` | The default when an `id_token` is returned |
 | `response_mode=form_post` | An auto-submitting form, for keeping the response out of URLs |
+| `response_mode=jwt`, `query.jwt`, `fragment.jwt`, `form_post.jwt` | The same three with the response signed: see [JARM](jarm.md) |
 | `response_type=code id_token` | Off per client, enabled deliberately |
+
+A refusal travels the way the response would have: in the fragment for a hybrid request
+unless another mode was asked for, and through the form for `form_post`. It used to go
+in the query whatever was asked, where a client listening at a fragment saw nothing.
 
 ## What is refused, permanently
 

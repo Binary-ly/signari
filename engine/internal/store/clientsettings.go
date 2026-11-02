@@ -38,6 +38,9 @@ type ClientSettings struct {
 	// AccessTokenAlg signs the client's access tokens alone, for a resource server
 	// that takes something else; "" goes back to IDTokenAlg. The same rules.
 	AccessTokenAlg *string
+	// AuthorizationResponseAlg signs the client's authorization responses (JARM §3)
+	// and holds it to asking for them signed; "" lets go of both. The same rules.
+	AuthorizationResponseAlg *string
 	// RolesClaim names the claim the client's tokens carry a person's roles in
 	// the application under; "" carries none.
 	RolesClaim *string
@@ -189,6 +192,17 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if a := s.AuthorizationResponseAlg; a != nil {
+		if *a != "" {
+			if err := held(*a); err != nil {
+				return err
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET authorization_signed_response_alg = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *a)); err != nil {
+			return err
+		}
+	}
 	if v := s.RolesClaim; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET roles_claim = NULLIF($2, ''),
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
@@ -331,6 +345,10 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if a := s.AuthorizationResponseAlg; a != nil && *a != "" && !slices.Contains(ClientAlgorithms, *a) {
+		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
+			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
 	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
 		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
 	}
@@ -462,6 +480,8 @@ type ClientSettingsView struct {
 	MinimumACR        string
 	// RequireSignedRequest is RFC 9101's require_signed_request_object.
 	RequireSignedRequest bool
+	// AuthorizationResponseAlg is JARM's authorization_signed_response_alg.
+	AuthorizationResponseAlg string
 	// ConsentLifetime is 0 for a consent that does not expire.
 	ConsentLifetime time.Duration
 }
@@ -477,11 +497,11 @@ func ClientSettingsOf(ctx context.Context, q interface {
 		       subject_type, sector, security_profile,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
 		       COALESCE(consent_lifetime_s, 0), require_state, COALESCE(login_ui_url, ''),
-		       require_signed_request_object
+		       require_signed_request_object, COALESCE(authorization_signed_response_alg, '')
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
 			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent,
-			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest)
+			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest, &v.AuthorizationResponseAlg)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

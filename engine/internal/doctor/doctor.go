@@ -708,7 +708,8 @@ func checkClients(ctx context.Context, conn interface {
 		SELECT c.client_id, a.alg FROM core.clients c
 		  JOIN core.organizations o ON o.id = c.org_id
 		 CROSS JOIN LATERAL (SELECT DISTINCT unnest(ARRAY[c.id_token_signed_alg,
-		                            COALESCE(c.access_token_signed_alg, c.id_token_signed_alg)]) AS alg) a
+		                            COALESCE(c.access_token_signed_alg, c.id_token_signed_alg),
+		                            COALESCE(c.authorization_signed_response_alg, c.id_token_signed_alg)]) AS alg) a
 		 WHERE c.enabled AND NOT EXISTS (
 		       SELECT 1 FROM core.signing_keys k
 		        WHERE k.instance_id = o.instance_id AND k.algorithm = a.alg

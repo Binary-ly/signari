@@ -64,6 +64,8 @@ command or an environment variable exists in code and not on its page.
 | [mutual-tls.md](mutual-tls.md) | RFC 8705 — certificate-bound tokens |
 | [attestation-based-client-auth.md](attestation-based-client-auth.md) | Client attestation, current draft |
 | [par.md](par.md) | RFC 9126 — Pushed Authorization Requests |
+| [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |
+| [jarm.md](jarm.md) | Signed authorization responses, and holding a client to them |
 | [dpop.md](dpop.md) | RFC 9449 — sender-constrained tokens |
 | [resource-indicators.md](resource-indicators.md) | RFC 8707 — which APIs a token may be audienced to |
 | [opaque-access-tokens.md](opaque-access-tokens.md) | Access tokens that say nothing to whoever holds them, introspected per client |
@@ -156,7 +158,6 @@ command or an environment variable exists in code and not on its page.
 | [audit-chain-fork.md](audit-chain-fork.md) | How the hash chain forked under concurrency, and the fix |
 | [logging-inventory.md](logging-inventory.md) | What is logged where (ASVS V16.1.1) |
 | [egress-inventory.md](egress-inventory.md) | Every outbound connection (ASVS V13.1.1) |
-| [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |
 | [security-inventories.md](security-inventories.md) | The cryptography, the ways to authenticate, the session rules, the limits and the data, each in one place |
 
 ## Compliance evidence

@@ -93,6 +93,8 @@ type registrationRequest struct {
 	RequirePushedAuthorizationRequests bool `json:"require_pushed_authorization_requests"`
 	// RFC 9101 §10.5, a client constraining itself in the same way.
 	RequireSignedRequestObject bool `json:"require_signed_request_object"`
+	// JARM §3, and another: with one, the client takes only signed responses.
+	AuthorizationSignedResponseAlg string `json:"authorization_signed_response_alg"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +235,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if a := strings.TrimSpace(req.IDTokenSignedResponseAlg); a != "" {
 		settings.IDTokenAlg = &a
 	}
+	if a := strings.TrimSpace(req.AuthorizationSignedResponseAlg); a != "" {
+		settings.AuthorizationResponseAlg = &a
+	}
 	if req.RequirePushedAuthorizationRequests {
 		settings.RequirePAR = &req.RequirePushedAuthorizationRequests
 	}
@@ -303,6 +308,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		body["id_token_signed_response_alg"] = st.IDTokenAlg
 		body["require_pushed_authorization_requests"] = st.RequirePAR
 		body["require_signed_request_object"] = st.RequireSignedRequest
+		if st.AuthorizationResponseAlg != "" {
+			body["authorization_signed_response_alg"] = st.AuthorizationResponseAlg
+		}
 	}
 	if req.FrontchannelLogoutURI != "" {
 		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI

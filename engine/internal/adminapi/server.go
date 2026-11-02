@@ -878,6 +878,9 @@ type patchClientRequest struct {
 	// AccessTokenSignedResponseAlg signs its access tokens alone; "" goes back
 	// to the above.
 	AccessTokenSignedResponseAlg *string `json:"access_token_signed_response_alg"`
+	// AuthorizationSignedResponseAlg is JARM §3's name. It signs the client's
+	// authorization responses and holds it to asking for them signed; "" lets go of both.
+	AuthorizationSignedResponseAlg *string `json:"authorization_signed_response_alg"`
 	// RolesClaim names the claim its tokens carry a person's roles in it under;
 	// "" carries none.
 	RolesClaim *string `json:"roles_claim"`
@@ -1119,6 +1122,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		s.RefreshReuseGrace = &d
 	}
 	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
+	s.AuthorizationResponseAlg = r.AuthorizationSignedResponseAlg
 	s.RolesClaim, s.LoginUI, s.AccessTokenFormat = r.RolesClaim, r.LoginUIURL, r.AccessTokenFormat
 	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
@@ -1283,6 +1287,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"refresh_reuse_grace_s":                 int(got.RefreshReuseGrace.Seconds()),
 				"id_token_signed_response_alg":          got.IDTokenAlg,
 				"access_token_signed_response_alg":      got.AccessTokenAlg,
+				"authorization_signed_response_alg":     got.AuthorizationResponseAlg,
 				"roles_claim":                           got.RolesClaim,
 				"login_ui_url":                          got.LoginUI,
 				"access_token_format":                   got.AccessTokenFormat,

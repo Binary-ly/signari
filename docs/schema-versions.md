@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0272 authorization_signed_response_alg
+
+Compatible with the release before: its binary may still serve this schema.
+
+What signs a client's authorization responses (JARM §3), and with one set, a client held to asking for them signed. A response a client only hopes is signed is one anybody between the browser and the client can send it unsigned.
+
 ## 0271 require_signed_request_object
 
 Compatible with the release before: its binary may still serve this schema.

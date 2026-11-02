@@ -42,7 +42,12 @@ func (f *signInFixture) redeemPlain(t *testing.T, rec *httptest.ResponseRecorder
 	if err != nil || loc.Query().Get("code") == "" {
 		t.Fatalf("no code came back (%d, %q): %.300s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 	}
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {loc.Query().Get("code")},
+	return f.redeemCode(t, loc.Query().Get("code"))
+}
+
+func (f *signInFixture) redeemCode(t *testing.T, code string) map[string]any {
+	t.Helper()
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
 		"code_verifier": {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"}}
 	req := httptest.NewRequest(http.MethodPost, oidc.PathToken, strings.NewReader(form.Encode()))

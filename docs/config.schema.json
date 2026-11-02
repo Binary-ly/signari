@@ -131,6 +131,9 @@
           "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
           "type": "string"
         },
+        "authorization_signed_response_alg": {
+          "type": "string"
+        },
         "client_id": {
           "type": "string"
         },

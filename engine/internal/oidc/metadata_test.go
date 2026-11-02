@@ -179,6 +179,16 @@ func TestWhatIsRefusedIsSaidRatherThanOmitted(t *testing.T) {
 	if doc["authorization_response_iss_parameter_supported"] != true {
 		t.Errorf("RFC 9207's iss parameter is not advertised")
 	}
+	// JARM §4, and only what this deployment can sign with.
+	for _, mode := range []string{"query.jwt", "fragment.jwt", "form_post.jwt", "jwt"} {
+		if !slices.Contains(md.ResponseModesSupported, mode) {
+			t.Errorf("response_modes_supported leaves out %s: %q", mode, md.ResponseModesSupported)
+		}
+	}
+	if !slices.Equal(md.AuthorizationSigningAlgValuesSupported, []string{"ES256"}) {
+		t.Errorf("authorization_signing_alg_values_supported is %q with an ES256 key alone",
+			md.AuthorizationSigningAlgValuesSupported)
+	}
 
 	if !slices.Equal(md.CodeChallengeMethodsSupported, []string{"S256"}) {
 		t.Errorf("code_challenge_methods_supported is %q; plain is not accepted", md.CodeChallengeMethodsSupported)

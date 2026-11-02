@@ -1913,6 +1913,7 @@ export interface GetClientsClientIDResponse {
   admin_api?: boolean
   allow_hybrid?: boolean
   authorization_detail_types?: string[]
+  authorization_signed_response_alg?: string | null
   backchannel_client_notification_endpoint?: string | null
   backchannel_logout_session_required?: boolean
   backchannel_logout_uri?: string | null
@@ -3225,6 +3226,7 @@ export interface PatchClientsClientIDRequest {
   admin_api?: boolean
   allow_hybrid?: boolean
   authorization_detail_types?: string[]
+  authorization_signed_response_alg?: string
   backchannel_client_notification_endpoint?: string
   backchannel_logout_session_required?: boolean
   backchannel_logout_uri?: string
@@ -3278,6 +3280,7 @@ export interface PatchClientsClientIDResponse {
   access_token_format?: string
   access_token_signed_response_alg?: string
   access_token_ttl_s?: number
+  authorization_signed_response_alg?: string
   client_id: string
   config_version: number
   consent_lifetime_s?: number

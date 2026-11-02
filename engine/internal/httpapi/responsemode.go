@@ -7,6 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/tokens"
 )
 
 // Delivering an authorization response by query, fragment or form_post.
@@ -33,13 +39,28 @@ import (
 //
 // The noscript fallback is a real button rather than an apology. A browser with
 // script disabled still completes the sign-in, one click later.
+//
+// # Signed responses
+//
+// A code in a query string says nothing about where it came from. JARM puts the whole
+// response in a JWT this server signs, for the client to verify before it reads any of
+// it, and the three encodings above carry that one `response` parameter instead.
+
+// authzResponseLifetime is how long a signed response stays good. JARM §2.1: "A maximum
+// JWT lifetime of 10 minutes is RECOMMENDED." It arrives in a moment, so what this
+// leaves room for is a client whose clock disagrees.
+const authzResponseLifetime = 5 * time.Minute
 
 // responseParams is what an authorization response carries.
 type responseParams struct {
-	Code    string
-	IDToken string
-	State   string
-	Issuer  string
+	Code             string
+	IDToken          string
+	Error            string
+	ErrorDescription string
+	State            string
+	Issuer           string
+	// Response is JARM's one parameter, and everything above is inside it.
+	Response string
 }
 
 func (p responseParams) values() url.Values {
@@ -50,6 +71,12 @@ func (p responseParams) values() url.Values {
 	if p.IDToken != "" {
 		v.Set("id_token", p.IDToken)
 	}
+	if p.Error != "" {
+		v.Set("error", p.Error)
+	}
+	if p.ErrorDescription != "" {
+		v.Set("error_description", p.ErrorDescription)
+	}
 	if p.State != "" {
 		v.Set("state", p.State)
 	}
@@ -57,30 +84,59 @@ func (p responseParams) values() url.Values {
 	if p.Issuer != "" {
 		v.Set("iss", p.Issuer)
 	}
+	if p.Response != "" {
+		v.Set("response", p.Response)
+	}
 	return v
 }
 
-// deliverAuthzResponse sends the response by the mode the client asked for.
-//
-// mode may be empty, in which case the default depends on what is being
-// carried: `query` for a bare code, `fragment` for anything with an id_token,
-// which is what OIDC specifies and what keeps assertions out of server logs.
-func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
-	redirectURI, mode string, p responseParams) {
+// signAuthzResponse is the response as a JARM JWT. §2.1: the JWT "MUST furthermore
+// contain the authorization endpoint response parameters as defined for the particular
+// response types, even in case of an error response", and that includes RFC 9207's
+// `iss`, which FAPI 2.0 Message Signing §5.4.1 keeps inside it for the same reason.
+func (s *Server) signAuthzResponse(c *clients.Client, p responseParams) (string, error) {
+	// §3: "If unspecified, the default algorithm to use for signing authorization
+	// responses is RS256."
+	alg := keys.RS256
+	if c.AuthorizationResponseAlg != "" {
+		alg = keys.Algorithm(c.AuthorizationResponseAlg)
+	}
+	key, err := s.cfg.Keys.Active(alg)
+	if err != nil {
+		return "", err
+	}
+	claims := map[string]any{"aud": c.ClientID, "exp": time.Now().Add(authzResponseLifetime).Unix()}
+	for name, values := range p.values() {
+		claims[name] = values[0]
+	}
+	return tokens.NewSigner(key).SignJSON(claims, "JWT")
+}
 
-	if mode == "" {
-		mode = "query"
-		if p.IDToken != "" {
-			mode = "fragment"
+// deliverAuthzResponse sends a response, a code or an error, the way the request asked:
+// oauth.AuthzRequest.ResponseEncoding says which, and what it defaults to.
+func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
+	req oauth.AuthzRequest, c *clients.Client, p responseParams) {
+
+	mode, signed := req.ResponseEncoding()
+	// A client held to signing gets nothing else, the refusal of a plain mode included.
+	if signed || c.AuthorizationResponseAlg != "" {
+		response, err := s.signAuthzResponse(c, p)
+		if err != nil {
+			// Never the same thing unsigned: the client asked for a signature so as
+			// to refuse a response without one.
+			s.log.ErrorContext(r.Context(), "signing an authorization response", "err", err, "client", c.ClientID)
+			http.Error(w, "the authorization response could not be signed", http.StatusInternalServerError)
+			return
 		}
+		p = responseParams{Response: response}
 	}
 
 	if mode == "form_post" {
-		s.postAuthzResponse(w, r, redirectURI, p)
+		s.postAuthzResponse(w, r, req.RedirectURI, p)
 		return
 	}
 
-	u, err := url.Parse(redirectURI)
+	u, err := url.Parse(req.RedirectURI)
 	if err != nil {
 		http.Error(w, "bad redirect_uri", http.StatusInternalServerError)
 		return

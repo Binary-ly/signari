@@ -126,6 +126,7 @@ func fakeProvider(t *testing.T) *httptest.Server {
 			"introspection_endpoint": srv.URL + "/introspect", "jwks_uri": srv.URL + "/jwks",
 			"userinfo_endpoint": srv.URL + "/userinfo", "revocation_endpoint": srv.URL + "/revoke",
 			"pushed_authorization_request_endpoint": srv.URL + "/par",
+			"device_authorization_endpoint":         srv.URL + "/device",
 		})
 	})
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"keys":[]}`)) })
@@ -183,7 +184,17 @@ func fakeProvider(t *testing.T) *httptest.Server {
 		case "refresh_token":
 			n := refreshes.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "at", "refresh_token": "rt" + string(rune('0'+n%10))})
+		case "urn:ietf:params:oauth:grant-type:token-exchange":
+			if r.Form.Get("subject_token") != "at" ||
+				r.Form.Get("subject_token_type") != "urn:ietf:params:oauth:token-type:access_token" {
+				http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"exchanged"}`))
 		}
+	})
+	mux.HandleFunc("POST /device", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"device_code":"d1","user_code":"U1"}`))
 	})
 	mux.HandleFunc("POST /introspect", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"active":true}`))
@@ -234,7 +245,7 @@ func TestTheHTTPScenariosMeasureAProvider(t *testing.T) {
 		Username: "alice", Password: "pw", Concurrency: 2, Duration: 150 * time.Millisecond,
 		AdminURL: srv.URL, AdminToken: "sgnadm"}
 	for _, name := range []string{"discovery", "jwks", "client-credentials", "introspect", "signin", "refresh", "userinfo",
-		"revoke", "par", "admin-list"} {
+		"revoke", "par", "admin-list", "device-start", "token-exchange"} {
 		res, err := measure(context.Background(), c, name, scenarios[name])
 		if err != nil {
 			t.Errorf("%s: %v", name, err)

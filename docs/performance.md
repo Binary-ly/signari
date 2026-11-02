@@ -204,15 +204,20 @@ more than once before anything is believed. Recording a token's use on every req
 like the cause of the 44. It was not: with it and without it, in turn, the runs overlap, and it
 stayed as it was.
 
-Two more that had never been measured, on the same machine:
+Four more that had never been measured, on the same machine:
 
 ```
 Revocation, a token issued and revoked   496-550 pairs/s   p50  7-8 ms   p99 16-19 ms
+A person's access token exchanged        338-958/s         p50  3-11 ms  p99 17-37 ms
 A pushed authorization request           919-1,932/s       p50  1-2 ms   p99  2-6 ms
+A device sign-in started                 719-1,627/s       p50  1-2 ms   p99  4-15 ms
 ```
 
-A pushed request is paced at 6,000 a minute per client, which is 100 sign-ins a second through
-one application, so the second line is a short window under that and not a rate to sustain.
+The last two are paced at 6,000 a minute per client, which is 100 a second through one
+application, so they are short windows under that and not rates to sustain. The device line
+found something too. It was answering 3,000 a second with no limit at all, each one a row, from
+a client that authenticates nothing when it is public. A pushed request had been fixed for
+exactly that and this had not. It is paced the same way now.
 
 ## Reproducing
 

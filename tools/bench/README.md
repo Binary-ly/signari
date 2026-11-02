@@ -29,6 +29,8 @@ cd tools/bench && go build .
 | `revoke` | an access token issued and revoked (RFC 7009), the pair, as a token revokes once |
 | `par` | a pushed authorization request (RFC 9126), which nothing redeems. Signari paces these at 6,000 a minute per client, so a longer window measures the pacing and `shed` says so |
 | `admin-list` | a page of the Admin API's people, with `-admin` and `-admin-token` |
+| `device-start` | a device authorization started (RFC 8628), which nobody approves |
+| `token-exchange` | a person's access token exchanged for another (RFC 8693), after one `signin` per worker |
 | `authzen` | one AuthZEN access evaluation |
 
 Each scenario runs a warm-up (`-warmup`, default 5 s), then a measured window

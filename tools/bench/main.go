@@ -6,8 +6,9 @@
 // Every scenario but two speaks a published protocol and finds its endpoints in
 // the provider's discovery document: OpenID Connect discovery and JWKS, the
 // OAuth token endpoint (client credentials, refresh chains), introspection
-// (RFC 7662), revocation (RFC 7009), pushed requests (RFC 9126), userinfo, LDAP
-// bind and search, RADIUS PAP (RFC 2865), SCIM (RFC 7644) and AuthZEN evaluation.
+// (RFC 7662), revocation (RFC 7009), pushed requests (RFC 9126), device
+// authorization (RFC 8628), token exchange (RFC 8693), userinfo, LDAP bind and
+// search, RADIUS PAP (RFC 2865), SCIM (RFC 7644) and AuthZEN evaluation.
 // So the same binary measures any deployment it is pointed at, and a comparison
 // is the same command with a different -issuer. The exceptions are `admin-list`,
 // which reads Signari's Admin API, and `signin`, which drives Signari's own login

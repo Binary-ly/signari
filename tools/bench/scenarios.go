@@ -32,6 +32,7 @@ type discovery struct {
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 	RevocationEndpoint    string `json:"revocation_endpoint"`
 	PAREndpoint           string `json:"pushed_authorization_request_endpoint"`
+	DeviceEndpoint        string `json:"device_authorization_endpoint"`
 }
 
 type env struct {
@@ -152,6 +153,53 @@ var scenarios = map[string]scenario{
 				}
 				if err := json.Unmarshal(body, &out); err != nil || out.RequestURI == "" {
 					return fmt.Errorf("no request_uri came back: %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"device-start": {
+		help: "start a device authorization (RFC 8628), which nobody approves", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.DeviceEndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no device authorization endpoint")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				body, err := postForm(ctx, hc, e.md.DeviceEndpoint, e.cfg, url.Values{"scope": {"openid"}})
+				if err != nil {
+					return err
+				}
+				var out struct {
+					DeviceCode string `json:"device_code"`
+				}
+				if err := json.Unmarshal(body, &out); err != nil || out.DeviceCode == "" {
+					return fmt.Errorf("no device_code came back: %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"token-exchange": {
+		help: "exchange a person's access token for another (RFC 8693), after one signin per worker", needsDiscovery: true,
+		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
+			hc := httpClient(e.cfg)
+			tok, err := signIn(ctx, hc, e)
+			if err != nil {
+				return nil, err
+			}
+			return func(ctx context.Context) error {
+				body, err := postForm(ctx, hc, e.md.TokenEndpoint, e.cfg, url.Values{
+					"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+					"subject_token":      {tok.AccessToken},
+					"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+				})
+				if err != nil {
+					return err
+				}
+				var next tokenResponse
+				if err := json.Unmarshal(body, &next); err != nil || next.AccessToken == "" {
+					return fmt.Errorf("the exchange answered %s", trim(body))
 				}
 				return nil
 			}, nil

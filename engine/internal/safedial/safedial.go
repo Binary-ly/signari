@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -347,6 +349,37 @@ func controlWith(extra []netip.Prefix) func(string, string, syscall.RawConn) err
 	}
 }
 
+// maxOutboundURI is the longest address this engine will ask for. RFC 9110 §4.1
+// (specs/rfc9110.txt:1059-1060) recommends "that all senders and recipients support,
+// at a minimum, URIs with lengths of 8000 octets", so past this a receiver owes us
+// nothing. maxOutboundHeader holds the fields to the same figure each, which is more
+// than a long bearer token or a cookie comes to: RFC 9110 sets no number for a field.
+const (
+	maxOutboundURI    = 8000
+	maxOutboundHeader = 8000
+)
+
+// ErrOverlong is a request too long to send. Refused here rather than sent, or what
+// comes back is a 414, or a connection closed, from somebody else's server, which says
+// nothing of why, or a truncated value a receiver then acts on.
+var ErrOverlong = errors.New("outbound request too long")
+
+func refuseOverlong(r *http.Request) (*url.URL, error) {
+	if n := len(r.URL.String()); n > maxOutboundURI {
+		return nil, fmt.Errorf("%w: a URI of %d octets to %s, over %d", ErrOverlong, n, r.URL.Host, maxOutboundURI)
+	}
+	for name, values := range r.Header {
+		for _, v := range values {
+			if len(name)+len(v) > maxOutboundHeader {
+				// The value is not said: it may be a credential.
+				return nil, fmt.Errorf("%w: a %s field of %d octets to %s, over %d", ErrOverlong, name,
+					len(name)+len(v), r.URL.Host, maxOutboundHeader)
+			}
+		}
+	}
+	return nil, nil
+}
+
 // Transport returns an http.Transport that will not reach private addresses.
 func Transport() *http.Transport { return transportWith(nil) }
 
@@ -371,6 +404,10 @@ func transportWith(extra []netip.Prefix) *http.Transport {
 		// goroutine; an outbox drain that stalls stops delivering everything.
 		ExpectContinueTimeout: 1 * time.Second,
 		MaxIdleConnsPerHost:   2,
+		// Not a proxy: the one hook a transport calls for every request, and it can
+		// refuse. Every client built here passes through it, and a wrapper round the
+		// transport would not reach the callers holding it as an *http.Transport.
+		Proxy: refuseOverlong,
 	}
 	if pool := roots.Load(); pool != nil {
 		t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}

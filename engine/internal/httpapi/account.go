@@ -55,6 +55,45 @@ func (s *Server) findLoginOrg(ctx context.Context, authzQuery string) string {
 	if s.db == nil {
 		return ""
 	}
+	if org := s.clientOrg(ctx, authzQuery); org != "" {
+		return org
+	}
+	return s.onlyOrg(ctx)
+}
+
+// pageOrg is the organisation a page belongs to: the client of the authorization
+// request it is answering, then the sign-in it is part way through or the session
+// it came with, then the instance's only one. A person signed in at one
+// organisation who follows another's application to its sign-in page is reading
+// that other organisation's page.
+//
+// Empty for a bare page on a deployment of several, which wears the instance's
+// appearance rather than a guess: a wrong guess shows one customer another's logo.
+func (s *Server) pageOrg(r *http.Request) string {
+	if s.db == nil || r == nil {
+		return ""
+	}
+	ctx := r.Context()
+	for _, authz := range []string{r.URL.Query().Get("authz"), postForm(r, "authz"), r.URL.RawQuery} {
+		if authz == "" {
+			continue
+		}
+		if org := s.clientOrg(ctx, authz); org != "" {
+			return org
+		}
+	}
+	if p, err := s.readPending(r); err == nil {
+		return p.OrgID
+	}
+	if _, _, org, ok := s.currentSession(r); ok {
+		return org
+	}
+	return s.onlyOrg(ctx)
+}
+
+// clientOrg is the organisation of the client an authorization query names,
+// directly or through a parked return.
+func (s *Server) clientOrg(ctx context.Context, authzQuery string) string {
 	clientID := ""
 	if q, err := url.ParseQuery(authzQuery); err == nil {
 		clientID = q.Get("client_id")
@@ -75,6 +114,11 @@ func (s *Server) findLoginOrg(ctx context.Context, authzQuery string) string {
 			return c.OrgID
 		}
 	}
+	return ""
+}
+
+// onlyOrg is the instance's organisation when it has exactly one.
+func (s *Server) onlyOrg(ctx context.Context) string {
 	// The only organisation of this instance (6.12): another instance's are
 	// another issuer's, and counting them made a page of a one-organisation
 	// instance ask whose it was. Two are enough to know it is not one, and this is

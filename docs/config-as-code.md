@@ -132,6 +132,15 @@ uma:                          # resource-owner intervention
   owner_intervention: true
   poll_interval: 30s
 
+brand:                        # written whole; what it leaves out is the instance's
+  product_name: Acme
+  logo_url: https://acme.example/logo.svg
+  support_url: https://help.acme.example
+  colour_primary: '#0b5fff'   # the four colours are all set or none
+  colour_on_primary: '#ffffff'
+  colour_background: '#ffffff'
+  colour_text: '#18181b'
+
 group_releases:               # which groups an application is told a person is in
   - client_id: wiki
     groups: [platform]        # or all_groups: true, never assumed

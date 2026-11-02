@@ -168,6 +168,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDAuthorizationDetailTypesResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/authorization-detail-types`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/brand: Return the organisation to its instance's
+  // appearance. Needs organizations:write.
+  deleteOrganizationsOrgIDBrand(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDBrandResponse>> {
+    return this.call<DeleteOrganizationsOrgIDBrandResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/brand`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}: Stop releasing an attribute as a
   // claim. Needs organizations:write.
   deleteOrganizationsOrgIDClaimMappersMapperID(orgID: string, mapperID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDClaimMappersMapperIDResponse>> {
@@ -513,6 +519,12 @@ export class SignariAdmin {
   // as written; none permits nothing. Needs config:read.
   getOrganizationsOrgIDAuthorizationModel(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDAuthorizationModelResponse>> {
     return this.call<GetOrganizationsOrgIDAuthorizationModelResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/authorization-model`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/brand: The organisation's own name, logo, support link and
+  // colours. Needs config:read.
+  getOrganizationsOrgIDBrand(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDBrandResponse>> {
+    return this.call<GetOrganizationsOrgIDBrandResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/brand`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/budgets: The tokens and sign-ins the organisation may take a
@@ -1250,6 +1262,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDAuthorizationModelResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/authorization-model`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/brand: Brand the organisation's pages and mail over its
+  // instance's, checked for contrast. Needs organizations:write.
+  putOrganizationsOrgIDBrand(orgID: string, body: PutOrganizationsOrgIDBrandRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDBrandResponse>> {
+    return this.call<PutOrganizationsOrgIDBrandResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/brand`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/budgets: Set the organisation's budgets; deployment-wide
   // tokens only. Needs organizations:write.
   putOrganizationsOrgIDBudgets(orgID: string, body: PutOrganizationsOrgIDBudgetsRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDBudgetsResponse>> {
@@ -1509,6 +1527,12 @@ export interface DeleteOrganizationsOrgIDAttestersNameResponse {
 
 /** A JSON object of the Admin API. */
 export interface DeleteOrganizationsOrgIDAuthorizationDetailTypesResponse {
+  config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDBrandResponse {
   config_version: number
   removed: boolean
 }
@@ -2169,6 +2193,19 @@ export interface GetOrganizationsOrgIDAuthorizationExplainResponse {
 export interface GetOrganizationsOrgIDAuthorizationModelResponse {
   org_id: string
   source: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDBrandResponse {
+  branded: boolean
+  colour_background: string
+  colour_on_primary: string
+  colour_primary: string
+  colour_text: string
+  logo_url: string
+  org_id: string
+  product_name: string
+  support_url: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4430,6 +4467,31 @@ export interface PutOrganizationsOrgIDAuthorizationModelResponse {
   org_id: string
   tests_passed: number
   types: number
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDBrandRequest {
+  colour_background?: string
+  colour_on_primary?: string
+  colour_primary?: string
+  colour_text?: string
+  logo_url?: string
+  product_name?: string
+  support_url?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDBrandResponse {
+  branded: boolean
+  colour_background: string
+  colour_on_primary: string
+  colour_primary: string
+  colour_text: string
+  config_version: number
+  logo_url: string
+  org_id: string
+  product_name: string
+  support_url: string
 }
 
 /** A JSON object of the Admin API. */

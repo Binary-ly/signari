@@ -120,6 +120,16 @@ func brandProps() map[string]jsonSchema {
 var brandFields = []string{"instance_id", "branded", "product_name", "logo_url", "support_url",
 	"colour_primary", "colour_on_primary", "colour_background", "colour_text"}
 
+// orgBrandProps is an organisation's own appearance (10.09).
+func orgBrandProps() map[string]jsonSchema {
+	props := brandProps()
+	delete(props, "instance_id")
+	props["org_id"] = uuidStr()
+	return props
+}
+
+var orgBrandFields = append([]string{"org_id"}, brandFields[1:]...)
+
 // registrationProps is an organisation's registration policy (6.07).
 func registrationProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"org_id": uuidStr(), "enabled": boolean(), "open": boolean(),
@@ -466,6 +476,10 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/instances/{instanceID}/brand": {http.StatusOK, typeOf[putBrandRequest](), object(
 		append(append([]string{}, brandFields...), "config_version"), withVersion(brandProps()))},
 	"DELETE /admin/instances/{instanceID}/brand": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/brand":     {http.StatusOK, nil, object(orgBrandFields, orgBrandProps())},
+	"PUT /admin/organizations/{orgID}/brand": {http.StatusOK, typeOf[putBrandRequest](), object(
+		append(append([]string{}, orgBrandFields...), "config_version"), withVersion(orgBrandProps()))},
+	"DELETE /admin/organizations/{orgID}/brand": {http.StatusOK, nil, removedSchema},
 	"GET /admin/instances/{instanceID}/webauthn": {http.StatusOK, nil, object(
 		[]string{"instance_id", "rp_id", "rp_display_name", "related_origins"}, webauthnProps())},
 	"PUT /admin/instances/{instanceID}/webauthn": {http.StatusOK, typeOf[putWebAuthnRequest](), object(

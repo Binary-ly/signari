@@ -50,6 +50,33 @@
       },
       "type": "object"
     },
+    "Brand": {
+      "additionalProperties": false,
+      "properties": {
+        "colour_background": {
+          "type": "string"
+        },
+        "colour_on_primary": {
+          "type": "string"
+        },
+        "colour_primary": {
+          "type": "string"
+        },
+        "colour_text": {
+          "type": "string"
+        },
+        "logo_url": {
+          "type": "string"
+        },
+        "product_name": {
+          "type": "string"
+        },
+        "support_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ClaimMapper": {
       "additionalProperties": false,
       "properties": {
@@ -1441,6 +1468,9 @@
     },
     "authorization_model": {
       "type": "string"
+    },
+    "brand": {
+      "$ref": "#/$defs/Brand"
     },
     "claim_mappers": {
       "items": {

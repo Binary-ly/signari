@@ -100,6 +100,63 @@ func RemoveBrand(ctx context.Context, tx Execer, instanceID string) (bool, error
 	return tag.RowsAffected() > 0, nil
 }
 
+// SaveOrgBrand writes an organisation's appearance, replacing whatever it had.
+// What it leaves out falls through to its instance's (brand.Over).
+func SaveOrgBrand(ctx context.Context, db Execer, orgID string, b *brand.Brand) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	_, err := db.Exec(ctx, `
+		INSERT INTO core.org_brands (org_id, product_name, logo_url, support_url,
+		                             colour_primary, colour_on_primary,
+		                             colour_background, colour_text)
+		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''),
+		        NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''))
+		ON CONFLICT (org_id) DO UPDATE SET
+			product_name = EXCLUDED.product_name,
+			logo_url = EXCLUDED.logo_url,
+			support_url = EXCLUDED.support_url,
+			colour_primary = EXCLUDED.colour_primary,
+			colour_on_primary = EXCLUDED.colour_on_primary,
+			colour_background = EXCLUDED.colour_background,
+			colour_text = EXCLUDED.colour_text,
+			updated_at = now()`,
+		orgID, b.ProductName, b.LogoURL, b.SupportURL,
+		b.Primary, b.OnPrimary, b.Background, b.Text)
+	return err
+}
+
+// OrgBrandOf reads an organisation's own appearance, nil when it has none.
+func OrgBrandOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (*brand.Brand, error) {
+	var b brand.Brand
+	err := q.QueryRow(ctx, `
+		SELECT COALESCE(product_name,''), COALESCE(logo_url,''), COALESCE(support_url,''),
+		       COALESCE(colour_primary,''), COALESCE(colour_on_primary,''),
+		       COALESCE(colour_background,''), COALESCE(colour_text,'')
+		FROM core.org_brands WHERE org_id = $1::uuid`, orgID).
+		Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
+			&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// RemoveOrgBrand returns an organisation to its instance's appearance,
+// reporting whether it had its own.
+func RemoveOrgBrand(ctx context.Context, tx Execer, orgID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.org_brands WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // InstanceSummary is one issuer this deployment serves or could.
 type InstanceSummary struct {
 	ID, Issuer, DisplayName string

@@ -77,17 +77,19 @@ func OrgMailSender(ctx context.Context, q interface {
 	return s, err
 }
 
-// UserMailSender is OrgMailSender for the organisation a person belongs to.
+// UserMailSender is OrgMailSender for the organisation a person belongs to, and
+// says which that is.
 func UserMailSender(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, userID string) (MailSender, error) {
+}, userID string) (MailSender, string, error) {
 	var s MailSender
+	var orgID string
 	err := q.QueryRow(ctx, `
-		SELECT COALESCE(o.mail_from, ''), COALESCE(o.mail_from_name, '')
+		SELECT COALESCE(o.mail_from, ''), COALESCE(o.mail_from_name, ''), o.id::text
 		  FROM core.users u JOIN core.organizations o ON o.id = u.org_id
-		 WHERE u.id = $1::uuid`, userID).Scan(&s.From, &s.Name)
+		 WHERE u.id = $1::uuid`, userID).Scan(&s.From, &s.Name, &orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MailSender{}, nil
+		return MailSender{}, "", nil
 	}
-	return s, err
+	return s, orgID, err
 }

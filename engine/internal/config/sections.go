@@ -62,6 +62,7 @@ var sections = []section{
 	registrationSection{},
 	webauthnSection{},
 	umaSection{},
+	brandSection{},
 	releaseSection{},
 	radiusAuthSection{},
 	detailTypeSection{},

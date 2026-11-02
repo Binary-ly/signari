@@ -217,6 +217,23 @@ class EngineAdminApi
         return $this->request('post', "/admin/clients/{$clientId}/rotate-secret", [], $this->readAt());
     }
 
+    /**
+     * Replace the organisation's own appearance. The engine refuses a palette
+     * nobody can read, and its reason is what the operator is shown.
+     *
+     * @param  array<string, string>  $brand
+     */
+    public function setOrganisationBrand(string $orgId, array $brand): int
+    {
+        return (int) $this->request('put', "/admin/organizations/{$orgId}/brand", $brand, $this->readAt())['config_version'];
+    }
+
+    /** Return the organisation to its instance's appearance. */
+    public function removeOrganisationBrand(string $orgId): int
+    {
+        return (int) $this->request('delete', "/admin/organizations/{$orgId}/brand", [], $this->readAt())['config_version'];
+    }
+
     /** The engine's current config version, for showing propagation state. */
     public function configVersion(): int
     {

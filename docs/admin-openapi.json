@@ -8172,6 +8172,370 @@
         "summary": "How a question would come out on relations, and whose grant answers it."
       }
     },
+    "/admin/organizations/{orgID}/brand": {
+      "delete": {
+        "operationId": "delete_organizations_orgID_brand",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "removed",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Return the organisation to its instance's appearance."
+      },
+      "get": {
+        "operationId": "get_organizations_orgID_brand",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "branded": {
+                      "type": "boolean"
+                    },
+                    "colour_background": {
+                      "type": "string"
+                    },
+                    "colour_on_primary": {
+                      "type": "string"
+                    },
+                    "colour_primary": {
+                      "type": "string"
+                    },
+                    "colour_text": {
+                      "type": "string"
+                    },
+                    "logo_url": {
+                      "type": "string"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "product_name": {
+                      "type": "string"
+                    },
+                    "support_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "branded",
+                    "product_name",
+                    "logo_url",
+                    "support_url",
+                    "colour_primary",
+                    "colour_on_primary",
+                    "colour_background",
+                    "colour_text"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "The organisation's own name, logo, support link and colours."
+      },
+      "put": {
+        "operationId": "put_organizations_orgID_brand",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "colour_background": {
+                    "type": "string"
+                  },
+                  "colour_on_primary": {
+                    "type": "string"
+                  },
+                  "colour_primary": {
+                    "type": "string"
+                  },
+                  "colour_text": {
+                    "type": "string"
+                  },
+                  "logo_url": {
+                    "type": "string"
+                  },
+                  "product_name": {
+                    "type": "string"
+                  },
+                  "support_url": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "branded": {
+                      "type": "boolean"
+                    },
+                    "colour_background": {
+                      "type": "string"
+                    },
+                    "colour_on_primary": {
+                      "type": "string"
+                    },
+                    "colour_primary": {
+                      "type": "string"
+                    },
+                    "colour_text": {
+                      "type": "string"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "logo_url": {
+                      "type": "string"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "product_name": {
+                      "type": "string"
+                    },
+                    "support_url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "branded",
+                    "product_name",
+                    "logo_url",
+                    "support_url",
+                    "colour_primary",
+                    "colour_on_primary",
+                    "colour_background",
+                    "colour_text",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Brand the organisation's pages and mail over its instance's, checked for contrast."
+      }
+    },
     "/admin/organizations/{orgID}/budgets": {
       "get": {
         "operationId": "get_organizations_orgID_budgets",

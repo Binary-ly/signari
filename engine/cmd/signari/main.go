@@ -436,8 +436,9 @@ policy, prompts and branding:
   prompt list     the organisation's prompts and how many answered each
   prompt enable   ask a prompt again
   prompt disable  stop asking a prompt, keeping its answers
-  brand set       an instance's name, logo, support link and colours
-  brand show      the brand in force
+  brand set       an instance's or an organisation's name, logo, support link and colours
+  brand show      the brand set on an instance or an organisation
+  brand remove    take a brand off an instance or an organisation
   brand check     would this palette be readable (no database needed)
   theme eject     write the built-in HTML pages out so they can be edited
   theme check     validate a theme directory; non-zero if anything is refused
@@ -1921,10 +1922,12 @@ func run(args []string) (err error) {
 	case "apply":
 		return configPlan(ctx, conn, *orgID, *configFile, *prune, true)
 	case "brand set":
-		return brandSet(ctx, conn, *issuer, *brandName, *brandLogo, *brandSupport,
+		return brandSet(ctx, conn, *issuer, *orgID, *brandName, *brandLogo, *brandSupport,
 			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
 	case "brand show":
-		return brandShow(ctx, conn, *issuer)
+		return brandShow(ctx, conn, *issuer, *orgID)
+	case "brand remove":
+		return brandRemove(ctx, conn, *issuer, *orgID)
 	case "saml attribute-release":
 		return samlAttributeRelease(ctx, conn, *orgID, *entityID, *upstreamClaim, *localAttribute, *removeMember)
 	case "saml signing":
@@ -7095,11 +7098,11 @@ func verdictFor(r float64) string {
 	}
 }
 
-func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
+func brandSet(ctx context.Context, conn *pgx.Conn, issuer, orgID, name, logo, support,
 	primary, onPrimary, background, text string) error {
 
-	if issuer == "" {
-		return fmt.Errorf("give -issuer, the issuer URL of the instance to brand")
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance to brand")
 	}
 	b := &brand.Brand{ProductName: name, LogoURL: logo, SupportURL: support,
 		Primary: primary, OnPrimary: onPrimary, Background: background, Text: text}
@@ -7107,16 +7110,23 @@ func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
 		return err
 	}
 
-	var instanceID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
-		return fmt.Errorf("no instance is registered with issuer %q", issuer)
+	// The writers the Admin API shares.
+	if orgID != "" {
+		if err := store.SaveOrgBrand(ctx, conn, orgID, b); err != nil {
+			return err
+		}
+		fmt.Printf("branded organisation %s\n", orgID)
+	} else {
+		var instanceID string
+		if err := conn.QueryRow(ctx,
+			`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
+			return fmt.Errorf("no instance is registered with issuer %q", issuer)
+		}
+		if err := store.SaveBrand(ctx, conn, instanceID, b); err != nil {
+			return err
+		}
+		fmt.Printf("branded %s\n", issuer)
 	}
-	// The writer the Admin API shares.
-	if err := store.SaveBrand(ctx, conn, instanceID, b); err != nil {
-		return err
-	}
-	fmt.Printf("branded %s\n", issuer)
 	if primary != "" {
 		r, _ := brand.Contrast(text, background)
 		fmt.Printf("  text contrast %.1f:1 (%s)\n", r, verdictFor(r))
@@ -7125,33 +7135,72 @@ func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
 	return nil
 }
 
-func brandShow(ctx context.Context, conn *pgx.Conn, issuer string) error {
-	if issuer == "" {
-		return fmt.Errorf("give -issuer, the issuer URL of the instance")
+func brandShow(ctx context.Context, conn *pgx.Conn, issuer, orgID string) error {
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance")
 	}
-	var name, logo, support, p, op, bg, tx *string
-	err := conn.QueryRow(ctx, `
-		SELECT product_name, logo_url, support_url, colour_primary,
-		       colour_on_primary, colour_background, colour_text
-		FROM core.brands b JOIN core.instances i ON i.id = b.instance_id
-		WHERE i.issuer = $1`, issuer).Scan(&name, &logo, &support, &p, &op, &bg, &tx)
-	if err != nil {
-		fmt.Printf("%s has no brand set; pages use the default appearance\n", issuer)
-		return nil
-	}
-	show := func(label string, v *string) {
-		if v != nil && *v != "" {
-			fmt.Printf("  %-14s %s\n", label, *v)
+	var b *brand.Brand
+	var err error
+	who, otherwise := issuer, "pages use the default appearance"
+	if orgID != "" {
+		who, otherwise = "organisation "+orgID, "its pages wear its instance's appearance"
+		b, err = store.OrgBrandOf(ctx, conn, orgID)
+	} else {
+		var instanceID string
+		err = conn.QueryRow(ctx, `SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID)
+		if err == nil {
+			b, err = store.BrandOf(ctx, conn, instanceID)
 		}
 	}
-	fmt.Printf("%s\n", issuer)
-	show("name", name)
-	show("logo", logo)
-	show("support", support)
-	show("primary", p)
-	show("on-primary", op)
-	show("background", bg)
-	show("text", tx)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if b == nil {
+		fmt.Printf("%s has no brand set; %s\n", who, otherwise)
+		return nil
+	}
+	show := func(label, v string) {
+		if v != "" {
+			fmt.Printf("  %-14s %s\n", label, v)
+		}
+	}
+	fmt.Printf("%s\n", who)
+	show("name", b.ProductName)
+	show("logo", b.LogoURL)
+	show("support", b.SupportURL)
+	show("primary", b.Primary)
+	show("on-primary", b.OnPrimary)
+	show("background", b.Background)
+	show("text", b.Text)
+	return nil
+}
+
+func brandRemove(ctx context.Context, conn *pgx.Conn, issuer, orgID string) error {
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance")
+	}
+	var removed bool
+	var err error
+	who := issuer
+	if orgID != "" {
+		who = "organisation " + orgID
+		removed, err = store.RemoveOrgBrand(ctx, conn, orgID)
+	} else {
+		var instanceID string
+		if err := conn.QueryRow(ctx,
+			`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
+			return fmt.Errorf("no instance is registered with issuer %q", issuer)
+		}
+		removed, err = store.RemoveBrand(ctx, conn, instanceID)
+	}
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("%s had no brand set\n", who)
+		return nil
+	}
+	fmt.Printf("removed the brand of %s; takes effect on the next page render\n", who)
 	return nil
 }
 

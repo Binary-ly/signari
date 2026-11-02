@@ -15,6 +15,7 @@ refused with `412` when the configuration moved since the version it names.
 | [authorization-detail-types](#authorization-detail-types) | 3 |
 | [authorization-model](#authorization-model) | 2 |
 | [batch](#batch) | 1 |
+| [brand](#brand) | 3 |
 | [budgets](#budgets) | 2 |
 | [claim-mappers](#claim-mappers) | 3 |
 | [clients](#clients) | 5 |
@@ -359,6 +360,74 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `results` | list of object | always |
+
+## brand
+
+### `DELETE /admin/organizations/{orgID}/brand`
+
+Return the organisation to its instance's appearance. Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDBrand`, TypeScript `deleteOrganizationsOrgIDBrand`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `removed` | boolean | always |
+
+### `GET /admin/organizations/{orgID}/brand`
+
+The organisation's own name, logo, support link and colours. Needs config:read.
+
+Go `GetOrganizationsOrgIDBrand`, TypeScript `getOrganizationsOrgIDBrand`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `branded` | boolean | always |
+| `colour_background` | string | always |
+| `colour_on_primary` | string | always |
+| `colour_primary` | string | always |
+| `colour_text` | string | always |
+| `logo_url` | string | always |
+| `org_id` | string | always |
+| `product_name` | string | always |
+| `support_url` | string | always |
+
+### `PUT /admin/organizations/{orgID}/brand`
+
+Brand the organisation's pages and mail over its instance's, checked for contrast. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDBrand`, TypeScript `putOrganizationsOrgIDBrand`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `colour_background` | string |  |
+| `colour_on_primary` | string |  |
+| `colour_primary` | string |  |
+| `colour_text` | string |  |
+| `logo_url` | string |  |
+| `product_name` | string |  |
+| `support_url` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `branded` | boolean | always |
+| `colour_background` | string | always |
+| `colour_on_primary` | string | always |
+| `colour_primary` | string | always |
+| `colour_text` | string | always |
+| `config_version` | integer | always |
+| `logo_url` | string | always |
+| `org_id` | string | always |
+| `product_name` | string | always |
+| `support_url` | string | always |
 
 ## budgets
 

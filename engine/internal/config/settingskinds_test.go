@@ -9,8 +9,8 @@ import (
 
 // The settings an organisation has one of (6.25): dynamic registration turned
 // off rather than deleted, a WebAuthn policy compared as stored so an AAGUID
-// typed in capitals is not a change on every plan, UMA's intervention, and
-// all three carried by an export to another organisation.
+// typed in capitals is not a change on every plan, UMA's intervention, a brand,
+// and all four carried by an export to another organisation.
 func TestTheOrganisationsSettingsAreDeclaredAndRoundTrip(t *testing.T) {
 	ctx, pool, _ := applyFixture(t)
 	tx, err := pool.Begin(ctx)
@@ -42,8 +42,12 @@ func TestTheOrganisationsSettingsAreDeclaredAndRoundTrip(t *testing.T) {
 	const settings = `registration: {max_clients: 5}
 webauthn_policy: {attestation: direct, allowed_aaguids: [EE882879-721C-4913-9775-3DFCCE97072A], timeout_seconds: 120}
 uma: {owner_intervention: true, poll_interval: 10s}
+brand: {product_name: Acme, logo_url: 'https://acme.example.test/logo.svg', colour_primary: '#aa0000', colour_on_primary: '#ffffff', colour_background: '#fafafa', colour_text: '#101010'}
 `
 	apply(org, settings, false)
+	if b, err := store.OrgBrandOf(ctx, tx, org); err != nil || b == nil || b.ProductName != "Acme" || b.Primary != "#aa0000" {
+		t.Errorf("the brand is %+v (%v)", b, err)
+	}
 	reg, err := store.LoadRegistrationPolicy(ctx, tx, org)
 	if err != nil || !reg.Enabled || reg.MaxClients != 5 || !sameSet(reg.AllowedScopes, store.DefaultRegistrationScopes) {
 		t.Errorf("registration is %+v (%v)", reg, err)
@@ -86,7 +90,8 @@ uma: {owner_intervention: true, poll_interval: 10s}
 	// Pruned: registration turned off, the policy back to the defaults (which
 	// admits any model, so the plan says so), UMA's refusals final again.
 	p := apply(other, "", true)
-	for _, want := range []string{registrationOff, "any model admitted", "a refused request is final again"} {
+	for _, want := range []string{registrationOff, "any model admitted", "a refused request is final again",
+		"its pages wear the instance's appearance again"} {
 		if !strings.Contains(p.String(), want) {
 			t.Errorf("the pruned plan does not say %q:\n%s", want, p)
 		}
@@ -104,6 +109,9 @@ uma: {owner_intervention: true, poll_interval: 10s}
 		"a ceremony too short":              "webauthn_policy: {timeout_seconds: 10}",
 		"polling every second":              "uma: {owner_intervention: true, poll_interval: 1s}",
 		"a negative ceiling":                "registration: {max_clients: -1}",
+		"a palette nobody can read":         "brand: {colour_primary: '#000000', colour_on_primary: '#ffffff', colour_background: '#777777', colour_text: '#888888'}",
+		"half a palette":                    "brand: {colour_primary: '#000000'}",
+		"a logo over plain http":            "brand: {logo_url: 'http://acme.example.test/logo.svg'}",
 	} {
 		if _, err := Parse([]byte("version: 1\n" + raw + "\n")); err == nil {
 			t.Errorf("%s was accepted", name)

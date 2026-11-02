@@ -289,6 +289,9 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/budgets", ScopeConfigRead, s.getBudgets)
 	route("PUT /admin/organizations/{orgID}/budgets", ScopeOrganizationsWrite, s.putBudgets)
 	// Its sign-in and session policy, the `instance` commands' (orgsettings.go).
+	route("GET /admin/organizations/{orgID}/brand", ScopeConfigRead, s.getOrgBrand)
+	route("PUT /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.putOrgBrand)
+	route("DELETE /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.deleteOrgBrand)
 	route("GET /admin/organizations/{orgID}/settings", ScopeConfigRead, s.getOrgSettings)
 	route("PATCH /admin/organizations/{orgID}/settings", ScopeOrganizationsWrite, s.patchOrgSettings)
 	// Self-sign-up, `signari signup` (signup.go).

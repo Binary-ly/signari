@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0265 org_brands
+
+Compatible with the release before: its binary may still serve this schema.
+
+An organisation's appearance over its instance's (10.09). Two tenants on one hostname shared one brand, so the second to set a logo replaced the first. This no longer guesses before identity: a page takes the organisation of the client whose request it is answering, or of the session it is answering, and a bare page on a deployment of several wears the instance's.
+
 ## 0264 group_members_view
 
 Compatible with the release before: its binary may still serve this schema.

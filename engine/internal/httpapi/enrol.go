@@ -434,7 +434,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status int,
 	name string, data map[string]any) {
 
-	b := s.brandNow(r.Context())
+	b := s.brandOf(r.Context(), s.pageOrg(r))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -661,13 +661,14 @@ func brandImgSrc(b *brand.Brand) string {
 	return ""
 }
 
-// brandNow reads the instance's brand.
+// brandOf reads what an organisation's pages and mail wear: its own appearance
+// over its instance's. orgID may be empty, for a page that is nobody's yet.
 //
 // Read per render rather than cached at startup, so `signari brand set` takes
-// effect immediately. These are sign-in pages, not a hot path, and one indexed
-// row by primary key is cheaper than the class of bug where an operator changes
+// effect immediately. These are sign-in pages, not a hot path, and two indexed
+// rows by primary key are cheaper than the class of bug where an operator changes
 // a colour and cannot tell whether it worked.
-func (s *Server) brandNow(ctx context.Context) *brand.Brand {
+func (s *Server) brandOf(ctx context.Context, orgID string) *brand.Brand {
 	if s.cfg.Issuer == "" {
 		return nil
 	}
@@ -676,7 +677,15 @@ func (s *Server) brandNow(ctx context.Context) *brand.Brand {
 		s.log.Error("reading the brand", "err", err)
 		return nil
 	}
-	return b
+	if orgID == "" {
+		return b
+	}
+	own, err := store.OrgBrandOf(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Error("reading an organisation's brand", "org_id", orgID, "err", err)
+		return b
+	}
+	return own.Over(b)
 }
 
 // handleEmailOTPEnrol turns on email as a second factor.

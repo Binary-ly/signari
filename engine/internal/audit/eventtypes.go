@@ -34,6 +34,7 @@ var EventTypes = []string{
 	"admin.invitation_revoked", "admin.issuer_alias_added", "admin.issuer_alias_retired",
 	"admin.kerberos_realm_added", "admin.kerberos_realm_removed",
 	"admin.migration_source_removed", "admin.migration_source_set", "admin.migration_source_tested",
+	"admin.org_brand_removed", "admin.org_brand_set",
 	"admin.organization_budgets_set",
 	"admin.organization_created", "admin.organization_deleted",
 	"admin.organization_reactivated", "admin.organization_suspended",

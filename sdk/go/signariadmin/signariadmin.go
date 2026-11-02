@@ -253,6 +253,12 @@ type DeleteOrganizationsOrgIDAuthorizationDetailTypesResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteOrganizationsOrgIDBrandResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDBrandResponse struct {
+	ConfigVersion int64 `json:"config_version"`
+	Removed       bool  `json:"removed"`
+}
+
 // DeleteOrganizationsOrgIDClaimMappersMapperIDResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDClaimMappersMapperIDResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -909,6 +915,19 @@ type GetOrganizationsOrgIDAuthorizationExplainResponse struct {
 type GetOrganizationsOrgIDAuthorizationModelResponse struct {
 	OrgID  string `json:"org_id"`
 	Source string `json:"source"`
+}
+
+// GetOrganizationsOrgIDBrandResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDBrandResponse struct {
+	Branded          bool   `json:"branded"`
+	ColourBackground string `json:"colour_background"`
+	ColourOnPrimary  string `json:"colour_on_primary"`
+	ColourPrimary    string `json:"colour_primary"`
+	ColourText       string `json:"colour_text"`
+	LogoURL          string `json:"logo_url"`
+	OrgID            string `json:"org_id"`
+	ProductName      string `json:"product_name"`
+	SupportURL       string `json:"support_url"`
 }
 
 // GetOrganizationsOrgIDBudgetsResponse is a JSON object of the Admin API.
@@ -3172,6 +3191,31 @@ type PutOrganizationsOrgIDAuthorizationModelResponse struct {
 	Types         int64  `json:"types"`
 }
 
+// PutOrganizationsOrgIDBrandRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDBrandRequest struct {
+	ColourBackground *string `json:"colour_background,omitempty"`
+	ColourOnPrimary  *string `json:"colour_on_primary,omitempty"`
+	ColourPrimary    *string `json:"colour_primary,omitempty"`
+	ColourText       *string `json:"colour_text,omitempty"`
+	LogoURL          *string `json:"logo_url,omitempty"`
+	ProductName      *string `json:"product_name,omitempty"`
+	SupportURL       *string `json:"support_url,omitempty"`
+}
+
+// PutOrganizationsOrgIDBrandResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDBrandResponse struct {
+	Branded          bool   `json:"branded"`
+	ColourBackground string `json:"colour_background"`
+	ColourOnPrimary  string `json:"colour_on_primary"`
+	ColourPrimary    string `json:"colour_primary"`
+	ColourText       string `json:"colour_text"`
+	ConfigVersion    int64  `json:"config_version"`
+	LogoURL          string `json:"logo_url"`
+	OrgID            string `json:"org_id"`
+	ProductName      string `json:"product_name"`
+	SupportURL       string `json:"support_url"`
+}
+
 // PutOrganizationsOrgIDBudgetsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDBudgetsRequest struct {
 	SignInsPerMinute *int64 `json:"sign_ins_per_minute,omitempty"`
@@ -3825,6 +3869,17 @@ func (c *Client) DeleteOrganizationsOrgIDAttestersName(ctx context.Context, orgI
 func (c *Client) DeleteOrganizationsOrgIDAuthorizationDetailTypes(ctx context.Context, orgID string, opts ...Option) (*DeleteOrganizationsOrgIDAuthorizationDetailTypesResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDAuthorizationDetailTypesResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/authorization-detail-types", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDBrand is DELETE /admin/organizations/{orgID}/brand: Return the
+// organisation to its instance's appearance. Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDBrand(ctx context.Context, orgID string, opts ...Option) (*DeleteOrganizationsOrgIDBrandResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDBrandResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/brand", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4494,6 +4549,17 @@ func (c *Client) GetOrganizationsOrgIDAuthorizationExplain(ctx context.Context, 
 func (c *Client) GetOrganizationsOrgIDAuthorizationModel(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDAuthorizationModelResponse, int64, error) {
 	var out GetOrganizationsOrgIDAuthorizationModelResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/authorization-model", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDBrand is GET /admin/organizations/{orgID}/brand: The organisation's own
+// name, logo, support link and colours. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDBrand(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDBrandResponse, int64, error) {
+	var out GetOrganizationsOrgIDBrandResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/brand", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5885,6 +5951,17 @@ func (c *Client) PutOrganizationsOrgIDAuthorizationDetailTypes(ctx context.Conte
 func (c *Client) PutOrganizationsOrgIDAuthorizationModel(ctx context.Context, orgID string, body PutOrganizationsOrgIDAuthorizationModelRequest, opts ...Option) (*PutOrganizationsOrgIDAuthorizationModelResponse, int64, error) {
 	var out PutOrganizationsOrgIDAuthorizationModelResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/authorization-model", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDBrand is PUT /admin/organizations/{orgID}/brand: Brand the organisation's
+// pages and mail over its instance's, checked for contrast. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDBrand(ctx context.Context, orgID string, body PutOrganizationsOrgIDBrandRequest, opts ...Option) (*PutOrganizationsOrgIDBrandResponse, int64, error) {
+	var out PutOrganizationsOrgIDBrandResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/brand", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

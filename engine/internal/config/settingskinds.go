@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/brand"
 	"signari.dev/engine/internal/store"
 )
 
@@ -304,5 +305,75 @@ func (umaSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) 
 		return err
 	}
 	f.UMA = &UMA{OwnerIntervention: have.OwnerIntervention, PollInterval: have.PollInterval}
+	return nil
+}
+
+// Brand is the organisation's appearance over its instance's: what it leaves
+// out is the instance's, and the four colours are all set or none.
+type Brand struct {
+	ProductName      string `yaml:"product_name,omitempty"`
+	LogoURL          string `yaml:"logo_url,omitempty"`
+	SupportURL       string `yaml:"support_url,omitempty"`
+	ColourPrimary    string `yaml:"colour_primary,omitempty"`
+	ColourOnPrimary  string `yaml:"colour_on_primary,omitempty"`
+	ColourBackground string `yaml:"colour_background,omitempty"`
+	ColourText       string `yaml:"colour_text,omitempty"`
+}
+
+func (b Brand) brand() *brand.Brand {
+	return &brand.Brand{ProductName: b.ProductName, LogoURL: b.LogoURL, SupportURL: b.SupportURL,
+		Primary: b.ColourPrimary, OnPrimary: b.ColourOnPrimary, Background: b.ColourBackground, Text: b.ColourText}
+}
+
+type brandSection struct{}
+
+func (brandSection) kind() string { return "brand" }
+func (brandSection) first() bool  { return false }
+
+func (brandSection) validate(f *File, add func(string, ...any)) {
+	if b := f.Brand; b != nil {
+		if err := b.brand().Validate(); err != nil {
+			add("brand: %v", err)
+		}
+	}
+}
+
+func (brandSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, p *Plan) error {
+	have, err := store.OrgBrandOf(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
+	switch want := f.Brand; {
+	case want == nil && prune && have != nil:
+		p.Add(Change{Action: "delete", Kind: "brand", Name: "brand", Detail: "its pages wear the instance's appearance again"})
+	case want == nil:
+	case have == nil:
+		p.Add(Change{Action: "create", Kind: "brand", Name: "brand"})
+	case *have != *want.brand():
+		p.Add(Change{Action: "update", Kind: "brand", Name: "brand"})
+	}
+	return nil
+}
+
+func (brandSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
+	if c, ok := p.planned("brand", "brand"); !ok || c.Action == "delete" {
+		return nil
+	}
+	return store.SaveOrgBrand(ctx, tx, orgID, f.Brand.brand())
+}
+
+func (brandSection) remove(ctx context.Context, tx pgx.Tx, orgID, _ string) error {
+	_, err := store.RemoveOrgBrand(ctx, tx, orgID)
+	return err
+}
+
+func (brandSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) error {
+	have, err := store.OrgBrandOf(ctx, tx, orgID)
+	if err != nil || have == nil {
+		return err
+	}
+	f.Brand = &Brand{ProductName: have.ProductName, LogoURL: have.LogoURL, SupportURL: have.SupportURL,
+		ColourPrimary: have.Primary, ColourOnPrimary: have.OnPrimary,
+		ColourBackground: have.Background, ColourText: have.Text}
 	return nil
 }

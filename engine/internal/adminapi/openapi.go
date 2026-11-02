@@ -157,6 +157,10 @@ var summaries = map[string]string{
 	"PUT /admin/instances/{instanceID}/brand":    "Brand the instance's pages, checked for contrast.",
 	"DELETE /admin/instances/{instanceID}/brand": "Return the instance's pages to the built-in appearance.",
 
+	"GET /admin/organizations/{orgID}/brand":    "The organisation's own name, logo, support link and colours.",
+	"PUT /admin/organizations/{orgID}/brand":    "Brand the organisation's pages and mail over its instance's, checked for contrast.",
+	"DELETE /admin/organizations/{orgID}/brand": "Return the organisation to its instance's appearance.",
+
 	"GET /admin/instances/{instanceID}/webauthn":         "The Relying Party ID the instance's passkeys are bound to, and its related origins.",
 	"PUT /admin/instances/{instanceID}/webauthn":         "Set the RP ID, its name and related origins; changing a set RP ID must be confirmed.",
 	"GET /admin/instances/{instanceID}/issuer-aliases":   "Legacy issuers the instance also claims, and who is pinned to each.",

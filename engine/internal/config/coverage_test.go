@@ -21,7 +21,7 @@ var declaredBy = map[string]string{
 	"radius_clients": "radius_client", "resource_servers": "resource", "saml_providers": "saml_provider",
 	"scim_targets": "scim_target", "scim_target_scope_groups": "scim_target", "scopes": "scope", "sign_in_flows": "sign_in_flow", "signup_rules": "signup",
 	"user_attribute_schema": "attribute", "registration_policies": "registration", "webauthn_policy": "webauthn_policy",
-	"uma_settings": "uma", "client_group_release": "group_release", "saml_group_release": "group_release",
+	"uma_settings": "uma", "org_brands": "brand", "client_group_release": "group_release", "saml_group_release": "group_release",
 	"radius_group_authorization": "radius_authorization", "authorization_detail_types": "authorization_detail_type",
 	"client_authorization_detail_types": "authorization_detail_type", "client_attesters": "client_attester",
 	"credential_configurations": "credential_configuration", "credential_proof_roots": "credential_proof_root",

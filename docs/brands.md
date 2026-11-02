@@ -1,7 +1,8 @@
 # Brands
 
-An instance's appearance on the pages a user sees: a product name, a logo, a
-support link, and four colours.
+An appearance on the pages a user sees: a product name, a logo, a support link,
+and four colours. An instance has one, and each organisation on it may have its
+own over it.
 
 ```sh
 signari brand check \
@@ -72,16 +73,37 @@ A partial palette is refused. A custom background against a default text colour
 is the most common way a page becomes unreadable, and it happens because setting
 one colour feels like a small change.
 
-## Why this is per instance
+## An organisation's own
 
-An instance is one issuer on one hostname, which is the same unit other products
-key branding on when they key it on domain. Serving two brands from one hostname
-means guessing which one a visitor should see before they have identified
-themselves — and guessing wrong shows one customer another customer's logo.
+```sh
+signari brand set -org <uuid> -brand-name "Bravo" -brand-logo https://bravo.example/logo.svg
+signari brand show -org <uuid>
+signari brand remove -org <uuid>
+```
 
-To brand separately, run an instance per hostname. That is what the instance
-model is for. One process can serve several, each on its own hostname
-([`SIGNARI_ADDITIONAL_ISSUERS`](configuration.md#several-instances-in-one-process)).
+The same through `PUT /admin/organizations/{orgID}/brand`, which a token of that
+organisation may call, under `brand:` in a [configuration file](config-as-code.md),
+and on the console's Brand screen. Contrast is checked the same way on all of them.
+
+What an organisation leaves out falls through to its instance: the name, the logo
+and the support link one at a time, the four colours together, because a background
+of one brand under the text of another is a pair nobody checked. Above, Bravo keeps
+the instance's colours.
+
+A page takes the organisation of what it is answering, in this order:
+
+1. the client of the authorization request it is part of, so a person signed in at
+   one organisation who follows another's application reads that other one's page;
+2. the sign-in it is part way through, which is how the second-factor page knows;
+3. the session it came with;
+4. the instance's organisation, when it has only one.
+
+A bare `/login` on a deployment of several matches none of these and wears the
+instance's appearance. It does not guess: a wrong guess shows one customer another
+customer's logo. Mail wears the look of the organisation it is sent for.
+
+A separate hostname still needs [a separate instance](configuration.md#several-instances-in-one-process):
+this changes what a page looks like, not whose address it is at.
 
 ## What it touches
 

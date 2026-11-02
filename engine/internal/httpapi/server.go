@@ -1018,7 +1018,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 			connect += " " + origins
 		}
 	}
-	b := s.brandNow(r.Context())
+	b := s.brandOf(r.Context(), s.loginOrg(r.Context(), authzQuery))
 	setCSP(w, `default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
 		`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
 		` form-action 'self'; frame-ancestors 'none'`)

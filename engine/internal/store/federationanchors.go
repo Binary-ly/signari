@@ -118,12 +118,14 @@ type FederatedClient struct {
 	JWKS                          []byte
 	// Expiry is when what the chain said stops holding, and it is looked at again.
 	Expiry time.Time
+	// RequestsSigned holds it to signed requests: an automatic registration's only proof
+	// of who it is. One that registered explicitly proved that by registering.
+	RequestsSigned bool
 }
 
 // RegisterFederatedClient writes one, or brings one it wrote before up to date. It
-// authenticates with its keys and has no secret, as §12.1 says, and every request has
-// to be signed, as that is the proof it is who it says. A client somebody here made is
-// never touched, whatever a chain says about its name.
+// authenticates with its keys and has no secret, as §12.1 says. A client somebody here
+// made is never touched, whatever a chain says about its name.
 func RegisterFederatedClient(ctx context.Context, tx pgx.Tx, c FederatedClient) error {
 	for _, uri := range c.RedirectURIs {
 		if err := clients.ValidateRedirectURI(uri); err != nil {
@@ -133,13 +135,14 @@ func RegisterFederatedClient(ctx context.Context, tx pgx.Tx, c FederatedClient) 
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type, scopes, token_endpoint_auth_method,
 			jwks, require_signed_request_object, federation_anchor, federation_expires_at)
-		VALUES ($1, $2::uuid, $3, 'confidential', $4, 'private_key_jwt', $5::jsonb, true, $6, $7)
+		VALUES ($1, $2::uuid, $3, 'confidential', $4, 'private_key_jwt', $5::jsonb, $6, $7, $8)
 		ON CONFLICT (client_id) DO UPDATE
 		   SET display_name = EXCLUDED.display_name, scopes = EXCLUDED.scopes, jwks = EXCLUDED.jwks,
+		       require_signed_request_object = EXCLUDED.require_signed_request_object,
 		       federation_anchor = EXCLUDED.federation_anchor, federation_expires_at = EXCLUDED.federation_expires_at,
 		       updated_at = now()
 		 WHERE core.clients.federation_anchor IS NOT NULL`,
-		c.ClientID, c.OrgID, c.Name, c.Scopes, string(c.JWKS), c.Anchor, c.Expiry)
+		c.ClientID, c.OrgID, c.Name, c.Scopes, string(c.JWKS), c.RequestsSigned, c.Anchor, c.Expiry)
 	if err != nil {
 		return fmt.Errorf("registering a federated client: %w", err)
 	}

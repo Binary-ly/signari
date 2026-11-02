@@ -660,6 +660,8 @@ func (s *Server) mux() *http.ServeMux {
 		mux.HandleFunc("GET "+federationFetchPath, s.handleFederationFetch)
 		mux.HandleFunc("GET "+federationListPath, s.handleFederationList)
 		mux.HandleFunc("GET "+federationResolvePath, s.handleFederationResolve)
+		// §12.2, and it answers 404 until an operator has listed a trust anchor.
+		mux.HandleFunc("POST "+federationRegisterPath, s.handleFederationRegister)
 	}
 	// UMA 2.0. The permission endpoint authenticates the resource server; the
 	// grant is dispatched from the token endpoint; the claims interaction

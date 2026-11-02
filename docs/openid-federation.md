@@ -338,6 +338,24 @@ the client stops signing people in. Tokens already issued go on working until th
 
 A client an operator made is never touched, whatever a chain says about the same name.
 
+### Explicit Registration (§12.2)
+
+An RP can also register first. It POSTs its Entity Configuration, addressed to this OP in
+`aud`, to `/federation/register`, as `application/entity-statement+jwt`, or a Trust Chain
+as `application/trust-chain+json`, of which the first statement is read. The anchor list
+governs this just as it does the other: with nothing on it the endpoint answers `404`, and
+neither registration is advertised.
+
+What it sent is what counts, so it can tailor its metadata for this OP. A configuration is
+only as good as its signature, and anybody can sign one naming an RP, so the keys in it
+have to be the keys its superior attests to.
+
+It keeps its Entity Identifier as its `client_id` and gets no secret, as an automatic one
+does, and the answer is a signed `application/explicit-registration-response+jwt`, whose
+`exp` is the registration's and never later than the chain's. Unlike an automatic client
+it is not held to signed requests, having proved who it is by registering. To renew, it
+registers again before `exp`.
+
 Not here: an RP proving itself at a push with `private_key_jwt` alone, with no Request
 Object, which §12.1.1.2 also allows, and the `trust_chain` header, which is a hint.
 

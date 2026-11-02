@@ -52,6 +52,8 @@ type Statement struct {
 	IssuedAt int64           `json:"iat"`
 	Expiry   int64           `json:"exp"`
 	JWKS     json.RawMessage `json:"jwks"`
+	// Audience is on an Explicit Registration request and nothing else here.
+	Audience json.RawMessage `json:"aud,omitempty"`
 
 	// Constraints is §6.2, present only on Subordinate Statements. See
 	// constraints.go: §10.2 makes enforcing these a MUST, and this engine

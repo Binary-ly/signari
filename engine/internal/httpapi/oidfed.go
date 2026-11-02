@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
@@ -109,15 +108,7 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	key, err := s.fedKeys.Active(keys.ES256)
-	if err != nil {
-		for _, alg := range s.fedKeys.Algorithms() {
-			if k, e := s.fedKeys.Active(alg); e == nil {
-				key, err = k, nil
-				break
-			}
-		}
-	}
+	key, err := s.federationKey()
 	if err != nil {
 		s.log.ErrorContext(ctx, "no active federation signing key", "err", err)
 		http.Error(w, "no federation key", http.StatusInternalServerError)
@@ -214,10 +205,11 @@ func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSe
 		if raw, merr := json.Marshal(doc); merr == nil {
 			if json.Unmarshal(raw, &op) == nil {
 				md["openid_provider"] = op
-				// §12.1: "MUST include the automatic keyword", and only once an
-				// operator has said whose word to take does it mean anything.
+				// §12.1 and §12.2: "MUST include" each keyword, and only once an
+				// operator has said whose word to take does either mean anything.
 				if anchors, aerr := store.FederationAnchors(ctx, s.db, s.instanceID); aerr == nil && len(anchors) > 0 {
-					op["client_registration_types_supported"] = []string{"automatic"}
+					op["client_registration_types_supported"] = []string{"automatic", "explicit"}
+					op["federation_registration_endpoint"] = strings.TrimRight(s.cfg.Issuer, "/") + federationRegisterPath
 				}
 			}
 		}

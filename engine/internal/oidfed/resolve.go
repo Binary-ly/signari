@@ -117,7 +117,11 @@ func (r *Resolver) resolveWithChain(ctx context.Context, entityID string,
 	if err != nil {
 		return nil, nil, err
 	}
+	return r.resolveFrom(ctx, leaf, entityID, now)
+}
 
+// resolveFrom is the same from a configuration already in hand.
+func (r *Resolver) resolveFrom(ctx context.Context, leaf Statement, entityID string, now time.Time) (*ChainResult, []Statement, error) {
 	var best *ChainResult
 	var bestChain []Statement
 	var firstErr error

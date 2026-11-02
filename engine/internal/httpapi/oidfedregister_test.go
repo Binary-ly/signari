@@ -19,6 +19,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"signari.dev/engine/internal/clientauth"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
@@ -442,6 +443,212 @@ func TestAChainDoesNotTakeOverAClient(t *testing.T) {
 	if err := store.RegisterFederatedClient(ctx, tx, store.FederatedClient{ClientID: rp.id, OrgID: rp.orgID, Name: "Taken",
 		Anchor: rp.anchorID, Scopes: []string{"openid"}, JWKS: publicJWKS(t, rp.protocolKey, "x"), Expiry: time.Now().Add(time.Hour)}); err == nil {
 		t.Error("the writer overwrote a client somebody made")
+	}
+}
+
+// configuration is the Entity Configuration an RP sends to register, tailored to this OP.
+func (rp *federatedRP) configuration(t *testing.T, key *ecdsa.PrivateKey, kid string, change map[string]any) string {
+	t.Helper()
+	claims := map[string]any{"iss": rp.id, "sub": rp.id, "aud": rp.srv.cfg.Issuer, "iat": time.Now().Add(-time.Minute).Unix(),
+		"exp": time.Now().Add(time.Hour).Unix(), "jwks": publicJWKS(t, key, kid), "authority_hints": []string{rp.anchorID},
+		"metadata": map[string]any{"openid_relying_party": map[string]any{
+			"client_name": "Tailored for this OP", "redirect_uris": []string{"https://rp.test/tailored"},
+			"scope": "openid", "jwks": publicJWKS(t, rp.protocolKey, "rp-protocol"),
+		}}}
+	for name, value := range change {
+		claims[name] = value
+	}
+	return signStatement(t, key, kid, oidfed.Typ, claims)
+}
+
+func (rp *federatedRP) register(t *testing.T, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, federationRegisterPath, strings.NewReader(body))
+	req.RemoteAddr = freshAddress() + ":443"
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	rp.srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+// federate gives the instance its federation keys, as `signari federation enable` does.
+func (rp *federatedRP) federate(t *testing.T) {
+	t.Helper()
+	generated, err := keys.Generate(keys.NewKID(), keys.ES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, _ := keys.WithState(generated, keys.StateActive)
+	set, err := keys.NewSet(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp.srv.SetFederationKeys(set)
+}
+
+// §12.2, by both shapes of request, and what comes back is what the RP has to rely on.
+func TestARelyingPartyRegistersExplicitly(t *testing.T) {
+	rp := newFederatedRP(t)
+	rp.federate(t)
+	rp.trustAnchor(t)
+	ctx := context.Background()
+
+	chain, err := json.Marshal([]string{rp.configuration(t, rp.entityKey, "rp-entity", nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, request := range map[string][2]string{
+		"a configuration": {"application/entity-statement+jwt", rp.configuration(t, rp.entityKey, "rp-entity", nil)},
+		"a trust chain":   {"application/trust-chain+json", string(chain)},
+	} {
+		rec := rp.register(t, request[0], request[1])
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != registrationResponseType {
+			t.Fatalf("%s answered %d %q: %.300s", name, rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+		}
+		token, err := jose.ParseSigned(rec.Body.String(), []jose.SignatureAlgorithm{jose.ES256})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// §12.2.3: "MUST sign ... with a current Federation Entity Key".
+		key, found := rp.srv.fedKeys.ByKID(token.Signatures[0].Header.KeyID)
+		if !found {
+			t.Fatalf("%s was signed with a key that is not a federation key", name)
+		}
+		payload, err := token.Verify(key.Signer().Public())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ := token.Signatures[0].Protected.ExtraHeaders[jose.HeaderType]; typ != "explicit-registration-response+jwt" {
+			t.Errorf("typ is %v", typ)
+		}
+		var claims struct {
+			Issuer, Subject, Audience string
+			Anchor                    string   `json:"trust_anchor"`
+			Hints                     []string `json:"authority_hints"`
+			Expiry                    int64    `json:"exp"`
+			JWKS                      json.RawMessage
+			Metadata                  map[string]map[string]any
+		}
+		if err := json.Unmarshal(payload, &claims); err != nil {
+			t.Fatal(err)
+		}
+		var named map[string]any
+		if err := json.Unmarshal(payload, &named); err != nil {
+			t.Fatal(err)
+		}
+		if named["iss"] != rp.srv.cfg.Issuer || named["sub"] != rp.id || named["aud"] != rp.id {
+			t.Errorf("%s: iss %v sub %v aud %v", name, named["iss"], named["sub"], named["aud"])
+		}
+		if claims.Anchor != rp.anchorID || len(claims.Hints) != 1 || claims.Hints[0] != rp.anchorID {
+			t.Errorf("%s: anchor %q hints %q", name, claims.Anchor, claims.Hints)
+		}
+		if got := claims.Metadata["openid_relying_party"]["client_id"]; got != rp.id {
+			t.Errorf("%s: client_id is %v", name, got)
+		}
+		// §12.3: "MUST NOT exceed the lifetime of the Trust Chain".
+		if left := time.Until(time.Unix(claims.Expiry, 0)); left <= 0 || left > time.Hour {
+			t.Errorf("%s: it lasts %v", name, left)
+		}
+		if !strings.Contains(string(claims.JWKS), "rp-entity") {
+			t.Errorf("%s: jwks is not the RP's: %s", name, claims.JWKS)
+		}
+	}
+
+	// What it sent is what counts, tailored as §12.2.2 says it may be.
+	var title string
+	var signedOnly, secret bool
+	if err := rp.pool.QueryRow(ctx, `SELECT display_name, require_signed_request_object, client_secret_hash IS NOT NULL
+		FROM core.clients WHERE client_id = $1`, rp.id).Scan(&title, &signedOnly, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Tailored for this OP" || signedOnly || secret {
+		t.Errorf("registered as %q, signed requests %v, secret %v", title, signedOnly, secret)
+	}
+	var redirect string
+	if err := rp.pool.QueryRow(ctx, `SELECT redirect_uri FROM core.client_redirect_uris WHERE client_id = $1`,
+		rp.id).Scan(&redirect); err != nil || redirect != "https://rp.test/tailored" {
+		t.Errorf("redirect is %q (%v)", redirect, err)
+	}
+}
+
+// Anybody can sign an Entity Configuration that names an RP. What makes it the RP's is
+// that the keys are the ones its superior attests to.
+func TestAnExplicitRegistrationHasToBeTheRPs(t *testing.T) {
+	rp := newFederatedRP(t)
+	rp.federate(t)
+	stranger, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const statement = "application/entity-statement+jwt"
+	good := rp.configuration(t, rp.entityKey, "rp-entity", nil)
+
+	if rec := rp.register(t, statement, good); rec.Code != http.StatusNotFound || rp.registered(t) {
+		t.Errorf("with nothing on the list it answered %d", rec.Code)
+	}
+	rp.trustAnchor(t)
+	for name, tc := range map[string]struct {
+		contentType, body string
+		code              int
+	}{
+		"self-signed by a stranger": {statement, rp.configuration(t, stranger, "rp-entity", nil), http.StatusBadRequest},
+		"addressed to somebody else": {statement, rp.configuration(t, rp.entityKey, "rp-entity",
+			map[string]any{"aud": "https://other.test"}), http.StatusBadRequest},
+		"addressed to nobody": {statement, signStatement(t, rp.entityKey, "rp-entity", oidfed.Typ, map[string]any{
+			"iss": rp.id, "sub": rp.id, "exp": time.Now().Add(time.Hour).Unix()}), http.StatusBadRequest},
+		"about somebody else": {statement, rp.configuration(t, rp.entityKey, "rp-entity",
+			map[string]any{"sub": "https://other.test"}), http.StatusBadRequest},
+		"sent as something else": {"application/json", good, http.StatusBadRequest},
+		"an empty chain":         {"application/trust-chain+json", "[]", http.StatusBadRequest},
+		"not even a statement":   {statement, "nonsense", http.StatusBadRequest},
+	} {
+		if rec := rp.register(t, tc.contentType, tc.body); rec.Code != tc.code {
+			t.Errorf("%s answered %d, want %d: %.200s", name, rec.Code, tc.code, rec.Body)
+		}
+		if rp.registered(t) {
+			t.Fatalf("%s registered a client", name)
+		}
+	}
+}
+
+// The rules Automatic Registration has, because they are the same code.
+func TestAnExplicitRegistrationIsHeldToWhatTheAnchorAsks(t *testing.T) {
+	rp := newFederatedRP(t)
+	rp.federate(t)
+	rp.trustAnchor(t, "https://marks.test/accredited")
+	if rec := rp.register(t, "application/entity-statement+jwt", rp.configuration(t, rp.entityKey, "rp-entity", nil)); rec.Code != http.StatusBadRequest || rp.registered(t) {
+		t.Errorf("no mark answered %d", rec.Code)
+	}
+	ctx := context.Background()
+	rp.trustAnchor(t)
+	if _, err := rp.pool.Exec(ctx, `INSERT INTO core.clients (client_id, org_id, display_name, client_type)
+		VALUES ($1, $2::uuid, 'Made here', 'public')`, rp.id, rp.orgID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := rp.register(t, "application/entity-statement+jwt", rp.configuration(t, rp.entityKey, "rp-entity", nil)); rec.Code != http.StatusBadRequest {
+		t.Errorf("registering over a client made here answered %d", rec.Code)
+	}
+}
+
+// §12.1 and §12.2: "MUST include" the keyword, once it means something.
+func TestRegistrationIsAdvertisedOnceAnAnchorIsListed(t *testing.T) {
+	rp := newFederatedRP(t)
+	rp.federate(t)
+	read := func() map[string]any {
+		t.Helper()
+		op, _ := rp.srv.federationMetadata(context.Background(), &store.FederationSettings{})["openid_provider"].(map[string]any)
+		return op
+	}
+	if got := read()["client_registration_types_supported"]; got != nil {
+		t.Errorf("with no anchors it offers %v", got)
+	}
+	rp.trustAnchor(t)
+	op := read()
+	if got, _ := op["client_registration_types_supported"].([]string); len(got) != 2 {
+		t.Errorf("client_registration_types_supported is %v", op["client_registration_types_supported"])
+	}
+	if op["federation_registration_endpoint"] != strings.TrimRight(rp.srv.cfg.Issuer, "/")+federationRegisterPath {
+		t.Errorf("federation_registration_endpoint is %v", op["federation_registration_endpoint"])
 	}
 }
 

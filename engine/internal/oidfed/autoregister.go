@@ -58,6 +58,13 @@ type RegisteredClient struct {
 	chain []Statement
 }
 
+// ImmediateSuperior is the entity above this one in its chain.
+func (c *RegisteredClient) ImmediateSuperior() string { return c.chain[1].Issuer }
+
+// EntityJWKS is the `jwks` claim of the client's Entity Configuration, which an
+// Explicit Registration answer hands back as it came.
+func (c *RegisteredClient) EntityJWKS() json.RawMessage { return c.chain[0].JWKS }
+
 // RequireTrustMarks holds a client to a Trust Mark of each type given, valid under §7.3:
 // genuinely issued to it, by an issuer the Trust Anchor lets issue that type where it
 // says, and with trust in that issuer established first. A mark that fails any of it
@@ -130,7 +137,40 @@ func Register(ctx context.Context, r *Resolver, clientID string, now time.Time) 
 	if err != nil {
 		return nil, err
 	}
+	return registered(res, chain)
+}
 
+// RegisterExplicitly is §12.2: an RP sends its Entity Configuration, perhaps tailored
+// to this OP, so what it sent is what is resolved and not what it publishes. Its
+// signature is checked by ValidateChain, against the keys its superior attests to:
+// §12.2.2 has that happen "After validating at least one Trust Chain", as the keys in
+// the statement mean nothing before. entityID is this OP, which it has to be addressed
+// to or it could be replayed at another.
+func RegisterExplicitly(ctx context.Context, r *Resolver, raw, entityID string, now time.Time) (*RegisteredClient, error) {
+	leaf, err := ParseStatement(raw)
+	if err != nil {
+		return nil, err
+	}
+	if leaf.Issuer == "" || leaf.Issuer != leaf.Subject {
+		return nil, fmt.Errorf("an Explicit Registration request is the RP's own Entity Configuration")
+	}
+	var one string
+	var many []string
+	if json.Unmarshal(leaf.Audience, &one) != nil && json.Unmarshal(leaf.Audience, &many) == nil && len(many) == 1 {
+		one = many[0]
+	}
+	if one != entityID {
+		return nil, fmt.Errorf("the request's aud is not this entity")
+	}
+	res, chain, err := r.resolveFrom(ctx, leaf, leaf.Subject, now)
+	if err != nil {
+		return nil, err
+	}
+	return registered(res, chain)
+}
+
+// registered is what a resolved chain says of a relying party.
+func registered(res *ChainResult, chain []Statement) (*RegisteredClient, error) {
 	md, err := MetadataOf(chain, TypeRelyingParty)
 	if err != nil {
 		return nil, err

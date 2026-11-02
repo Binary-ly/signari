@@ -204,20 +204,50 @@ more than once before anything is believed. Recording a token's use on every req
 like the cause of the 44. It was not: with it and without it, in turn, the runs overlap, and it
 stayed as it was.
 
-Four more that had never been measured, on the same machine:
+## Everything else a deployment does
+
+None of this had ever been measured. The same machine, 100,000 people, against the engine and
+a real upstream built into the load driver: an OpenID provider, a SCIM server and a directory.
+Two or three runs of each with no errors, but for the two long runs at the end.
 
 ```
-Revocation, a token issued and revoked   496-550 pairs/s   p50  7-8 ms   p99 16-19 ms
-A person's access token exchanged        338-958/s         p50  3-11 ms  p99 17-37 ms
-A pushed authorization request           919-1,932/s       p50  1-2 ms   p99  2-6 ms
-A device sign-in started                 719-1,627/s       p50  1-2 ms   p99  4-15 ms
+Revocation, a token issued and revoked   496-550 pairs/s    p50  7-8 ms    p99 16-19 ms
+A person's access token exchanged        338-958/s          p50  3-11 ms   p99 17-37 ms
+A pushed authorization request           919-1,932/s        p50  1-2 ms    p99  2-6 ms
+A device sign-in started                 719-1,627/s        p50  1-2 ms    p99  4-15 ms
+A poll of a device nobody has approved   1,977-2,057/s      p50  2 ms      p99  5-6 ms
+An approval asked for over CIBA          1,394-1,428/s      p50  3 ms      p99  7-8 ms
+An assertion traded for a token          906-910/s          p50  2 ms      p99  5 ms
+A sign-in with a passkey, begin to end   452-462/s          p50  4 ms      p99  9-15 ms
+A sign-in through an upstream provider   119-123/s          p50 16 ms      p99 28-32 ms
+A TOTP code spent                                           p50  4 ms      p99 10-13 ms
+A sign-out                                                  p50  4 ms      p99 13-16 ms
+
+100,000 people pushed out over SCIM      37-39 s, then 262 ms with nothing to do
+100,000 people read in from a directory  11.8 s, then 2.1 s with nothing to do, one run
 ```
 
-The last two are paced at 6,000 a minute per client, which is 100 a second through one
-application, so they are short windows under that and not rates to sustain. The device line
-found something too. It was answering 3,000 a second with no limit at all, each one a row, from
-a client that authenticates nothing when it is public. A pushed request had been fixed for
-exactly that and this had not. It is paced the same way now.
+The two lines with no rate are the one request of a sign-in, with the password hash before it
+kept out of the time. A pushed request and a device start are paced at 6,000 a minute per client,
+which is 100 a second through one application, so those lines are short windows under that and
+not rates to sustain.
+
+Measuring these found three things that were wrong, which is more than the numbers did.
+
+**A sign-in through a provider that began at an application ended at a 404.** After the person
+had signed in upstream, the engine sent them to `/authorize`, and it serves `/oauth2/authorize`.
+Every earlier check of a provider stopped at the session, and the test beside the code had the
+same wrong path written out, so it passed. It took a driver that insists on a redeemed code at
+the end. The router now vouches for every path written down for a browser.
+
+**Starting a device sign-in had no limit.** It answered 3,000 a second, each one a row that
+lives ten minutes, from a client that authenticates nothing when it is public. A pushed request
+had been fixed for exactly that and this had not. It is paced the same way now.
+
+**A SCIM sync with nothing to do took 325 seconds.** Eight times what creating everybody had
+just taken, because the links it had written had not been counted yet, and the planner took
+100,000 rows for a handful and walked all of them per person. A sync that writes many links
+counts them now, and the same run takes 262 milliseconds.
 
 ## Reproducing
 

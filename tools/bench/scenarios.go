@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -33,6 +36,8 @@ type discovery struct {
 	RevocationEndpoint    string `json:"revocation_endpoint"`
 	PAREndpoint           string `json:"pushed_authorization_request_endpoint"`
 	DeviceEndpoint        string `json:"device_authorization_endpoint"`
+	BackchannelEndpoint   string `json:"backchannel_authentication_endpoint"`
+	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
 type env struct {
@@ -166,15 +171,202 @@ var scenarios = map[string]scenario{
 			}
 			hc := httpClient(e.cfg)
 			return func(ctx context.Context) error {
-				body, err := postForm(ctx, hc, e.md.DeviceEndpoint, e.cfg, url.Values{"scope": {"openid"}})
+				_, err := startDevice(ctx, hc, e)
+				return err
+			}, nil
+		},
+	},
+	"device-poll": {
+		help: "poll for a device authorization nobody has approved, which is what a waiting fleet does", needsDiscovery: true,
+		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.DeviceEndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no device authorization endpoint")
+			}
+			hc := httpClient(e.cfg)
+			code, err := startDevice(ctx, hc, e)
+			if err != nil {
+				return nil, err
+			}
+			return func(ctx context.Context) error {
+				status, body, err := postFormStatus(ctx, hc, e.md.TokenEndpoint, e.cfg, url.Values{
+					"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {code},
+				})
 				if err != nil {
 					return err
 				}
 				var out struct {
-					DeviceCode string `json:"device_code"`
+					Error string `json:"error"`
 				}
-				if err := json.Unmarshal(body, &out); err != nil || out.DeviceCode == "" {
-					return fmt.Errorf("no device_code came back: %s", trim(body))
+				// RFC 8628 §3.5: waiting is an error response, and these are the two
+				// a client polling an unapproved code is meant to get.
+				if json.Unmarshal(body, &out) != nil || status != http.StatusBadRequest ||
+					(out.Error != "authorization_pending" && out.Error != "slow_down") {
+					return fmt.Errorf("the poll answered %d: %s", status, trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"ciba-start": {
+		help: "ask for a person's approval over the back channel (CIBA), taking turns through -people", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.BackchannelEndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no backchannel authentication endpoint")
+			}
+			if e.cfg.People < 1 {
+				return nil, fmt.Errorf("give -people: a provider limits the prompts in front of one person")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				n := int(nextPerson.Add(1))%e.cfg.People + 1
+				body, err := postForm(ctx, hc, e.md.BackchannelEndpoint, e.cfg, url.Values{"scope": {"openid"},
+					"login_hint": {fmt.Sprintf("bench-%d@%s", n, benchDomain)}})
+				if err != nil {
+					return err
+				}
+				var out struct {
+					ID string `json:"auth_req_id"`
+				}
+				if err := json.Unmarshal(body, &out); err != nil || out.ID == "" {
+					return fmt.Errorf("no auth_req_id came back: %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"jwt-bearer": {
+		help: "trade an assertion for a token (RFC 7523 §2.1), each with a jti of its own", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			key, err := readSigningKey(e.cfg.AssertionKey)
+			if err != nil {
+				return nil, fmt.Errorf("-assertion-key: %w", err)
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				now := time.Now()
+				assertion, err := signES256(key, map[string]any{
+					"iss": e.cfg.AssertionIssuer, "sub": e.cfg.AssertionSubject, "aud": e.cfg.Issuer,
+					"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "jti": randomString(16),
+				})
+				if err != nil {
+					return err
+				}
+				form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"}, "assertion": {assertion}}
+				if e.cfg.CCScope != "" {
+					form.Set("scope", e.cfg.CCScope)
+				}
+				body, err := postForm(ctx, hc, e.md.TokenEndpoint, e.cfg, form)
+				if err != nil {
+					return err
+				}
+				var tok tokenResponse
+				if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
+					return fmt.Errorf("no access token in %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
+	"federated": {
+		help: "sign in through an upstream OpenID provider, -via naming it, with no session to start from", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.Via == "" {
+				return nil, fmt.Errorf("give -via, the slug of the upstream provider")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				// A browser of its own each time, on the same connections, or the second
+				// sign-in finds the first's session and never leaves the engine.
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					return err
+				}
+				fresh := *hc
+				fresh.Jar = jar
+				_, err = signIn(ctx, &fresh, e)
+				return err
+			}, nil
+		},
+	},
+	"passkey": {
+		help: "sign in with a passkey from a software authenticator, enrolled after one signin per worker", needsDiscovery: true,
+		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
+			hc := httpClient(e.cfg)
+			// A person of its own, past those -people names: a passkey is a second
+			// factor, so a second worker's password sign-in would be asked for one.
+			person := *e.cfg
+			person.Username = fmt.Sprintf("bench-%d@%s", e.cfg.People+int(nextWorker.Add(1)), benchDomain)
+			key, err := enrolPasskey(ctx, hc, &env{cfg: &person, md: e.md})
+			if err != nil {
+				return nil, fmt.Errorf("enrolling a passkey: %w", err)
+			}
+			return func(ctx context.Context) error {
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					return err
+				}
+				fresh := *hc
+				fresh.Jar = jar
+				return key.signIn(ctx, &fresh, e)
+			}, nil
+		},
+	},
+	"mfa": {
+		help: "spend a TOTP code at sign-in, -people taking turns as a code is good once; the password is outside the latency", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.TOTPSeed == "" || e.cfg.People < 1 {
+				return nil, fmt.Errorf("give -totp-seed and -people")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					return err
+				}
+				fresh := *hc
+				fresh.Jar = jar
+				person := *e.cfg
+				person.Username = fmt.Sprintf("bench-%d@%s", int(nextPerson.Add(1))%e.cfg.People+1, benchDomain)
+				tok, err := signIn(ctx, &fresh, &env{cfg: &person, md: e.md})
+				if err != nil {
+					return err
+				}
+				if !tok.spentCode {
+					return fmt.Errorf("%s signed in and was never asked for a code", person.Username)
+				}
+				return nil
+			}, nil
+		},
+	},
+	"end-session": {
+		help: "sign out (RP-Initiated Logout), each from a sign-in kept out of the latency", needsDiscovery: true,
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.md.EndSessionEndpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no end session endpoint")
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				var tok tokenResponse
+				if err := outside(ctx, func() (err error) {
+					tok, err = signIn(ctx, hc, e)
+					return err
+				}); err != nil {
+					return err
+				}
+				if tok.IDToken == "" {
+					return fmt.Errorf("the sign-in issued no ID token; ask for openid with -scope")
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.md.EndSessionEndpoint+"?"+url.Values{
+					"id_token_hint": {tok.IDToken}, "client_id": {e.cfg.ClientID}}.Encode(), nil)
+				if err != nil {
+					return err
+				}
+				status, body, err := doStatus(hc, req)
+				if err != nil {
+					return err
+				}
+				if status >= 400 {
+					return fmt.Errorf("the sign-out answered %d: %s", status, trim(body))
 				}
 				return nil
 			}, nil
@@ -368,6 +560,10 @@ type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IDToken      string `json:"id_token"`
+
+	// spentCode says a TOTP code was asked for on the way. Without it a sign-in that
+	// was never asked for one reads as a result, timed as the whole sign-in.
+	spentCode bool
 }
 
 func clientCredentials(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error) {
@@ -386,9 +582,46 @@ func clientCredentials(ctx context.Context, hc *http.Client, e *env) (tokenRespo
 	return tok, nil
 }
 
+// nextPerson is shared by the workers, so that they do not take the same turns, and
+// nextWorker numbers them where each needs a person of its own.
+var nextPerson, nextWorker atomic.Int64
+
+// startDevice starts a device authorization and answers its device code.
+func startDevice(ctx context.Context, hc *http.Client, e *env) (string, error) {
+	body, err := postForm(ctx, hc, e.md.DeviceEndpoint, e.cfg, url.Values{"scope": {"openid"}})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		DeviceCode string `json:"device_code"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.DeviceCode == "" {
+		return "", fmt.Errorf("no device_code came back: %s", trim(body))
+	}
+	return out.DeviceCode, nil
+}
+
 // postForm posts to an OAuth endpoint with the client's credentials: HTTP
 // Basic when it has a secret, client_id in the body when it is public.
 func postForm(ctx context.Context, hc *http.Client, endpoint string, c *config, form url.Values) ([]byte, error) {
+	req, err := formRequest(ctx, endpoint, c, form)
+	if err != nil {
+		return nil, err
+	}
+	return do(hc, req)
+}
+
+// postFormStatus is postForm for a scenario whose success is not a 200: waiting on a
+// device is a 400, by RFC 8628.
+func postFormStatus(ctx context.Context, hc *http.Client, endpoint string, c *config, form url.Values) (int, []byte, error) {
+	req, err := formRequest(ctx, endpoint, c, form)
+	if err != nil {
+		return 0, nil, err
+	}
+	return doStatus(hc, req)
+}
+
+func formRequest(ctx context.Context, endpoint string, c *config, form url.Values) (*http.Request, error) {
 	if c.ClientSecret == "" {
 		form.Set("client_id", c.ClientID)
 	}
@@ -403,7 +636,7 @@ func postForm(ctx context.Context, hc *http.Client, endpoint string, c *config, 
 		// sent raw would otherwise arrive as a different secret.
 		req.SetBasicAuth(url.QueryEscape(c.ClientID), url.QueryEscape(c.ClientSecret))
 	}
-	return do(hc, req)
+	return req, nil
 }
 
 func get(ctx context.Context, hc *http.Client, u, bearer string) ([]byte, error) {
@@ -419,6 +652,24 @@ func get(ctx context.Context, hc *http.Client, u, bearer string) ([]byte, error)
 
 // do sends the request and returns the body of a 200, or an error naming the
 // status and the start of the body.
+// doStatus answers a response whatever its status, but for a 429, which is load shed
+// in every scenario.
+func doStatus(hc *http.Client, req *http.Request) (int, []byte, error) {
+	resp, err := hc.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return 0, nil, shedError{fmt.Sprintf("%s answered 429: %s", req.URL.Path, trim(body))}
+	}
+	return resp.StatusCode, body, nil
+}
+
 func do(hc *http.Client, req *http.Request) ([]byte, error) {
 	resp, err := hc.Do(req)
 	if err != nil {

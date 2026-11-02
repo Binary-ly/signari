@@ -25,6 +25,7 @@
 //
 //	bench run -issuer https://id.example.com -client-id bench -client-secret ... client-credentials introspect
 //	bench seed -dsn postgres://signari_engine@localhost/signari -org <uuid> -template alice@example.com -users 100000
+//	bench upstream -tls-cert cert.pem -tls-key key.pem
 //	bench scenarios
 package main
 
@@ -53,13 +54,26 @@ func main() {
 
 func dispatch(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("give a command: run, seed or scenarios")
+		return fmt.Errorf("give a command: run, seed, upstream or scenarios")
 	}
 	switch args[0] {
 	case "run":
 		return runCommand(args[1:])
 	case "seed":
 		return seedCommand(args[1:])
+	case "upstream":
+		return upstreamCommand(args[1:])
+	case "totp":
+		// For a script enrolling the people of the mfa scenario.
+		if len(args) != 2 {
+			return fmt.Errorf("give the base32 seed")
+		}
+		code, err := totpCode(args[1], time.Now())
+		if err != nil {
+			return err
+		}
+		fmt.Println(code)
+		return nil
 	case "scenarios":
 		names := make([]string, 0, len(scenarios))
 		for n := range scenarios {
@@ -71,7 +85,7 @@ func dispatch(args []string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("unknown command %q: run, seed or scenarios", args[0])
+	return fmt.Errorf("unknown command %q: run, seed, upstream or scenarios", args[0])
 }
 
 // config is everything a scenario may need. Most use a handful of fields.
@@ -83,8 +97,9 @@ type config struct {
 	RADIUSAddr, RADIUSSecret                           string
 	SCIMURL, SCIMToken, PDPURL, PDPToken               string
 	AdminURL, AdminToken                               string
-	AuthZENBody                                        string
-	Concurrency                                        int
+	AuthZENBody, Via, TOTPSeed                         string
+	AssertionKey, AssertionIssuer, AssertionSubject    string
+	Concurrency, People                                int
 	Duration, Warmup                                   time.Duration
 	Insecure                                           bool
 }
@@ -114,6 +129,12 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.PDPToken, "pdp-token", "", "bearer token for the PDP")
 	fs.StringVar(&c.AuthZENBody, "authzen-body", `{"subject":{"type":"user","id":"bench"},`+
 		`"action":{"name":"read"},"resource":{"type":"document","id":"1"}}`, "evaluation request")
+	fs.IntVar(&c.People, "people", 0, "how many seeded people to take turns with (ciba-start); see `bench seed`")
+	fs.StringVar(&c.Via, "via", "", "the slug of the upstream provider to sign in through (federated)")
+	fs.StringVar(&c.TOTPSeed, "totp-seed", "", "the base32 seed the -people hold, each as `user assign-otp` gave it (mfa)")
+	fs.StringVar(&c.AssertionKey, "assertion-key", "", "PKCS#8 P-256 key that signs assertions (jwt-bearer)")
+	fs.StringVar(&c.AssertionIssuer, "assertion-issuer", "", "the assertions' iss")
+	fs.StringVar(&c.AssertionSubject, "assertion-subject", "", "the assertions' sub, linked to a person")
 	fs.IntVar(&c.Concurrency, "c", 8, "concurrent workers")
 	fs.DurationVar(&c.Duration, "d", 20*time.Second, "measured duration per scenario")
 	fs.DurationVar(&c.Warmup, "warmup", 5*time.Second, "unmeasured run before each scenario")
@@ -213,6 +234,26 @@ type tally struct {
 	took        time.Duration
 }
 
+type setupKey struct{}
+
+// outside runs what an operation needs but did not come to measure, and keeps its
+// time out of the latency. A sign-out needs a sign-in first, and timing the pair would
+// report the password hash. The throughput still pays for it, so read such a
+// scenario's latency and not its per_second.
+func outside(ctx context.Context, f func() error) error {
+	t := time.Now()
+	err := f()
+	return errors.Join(err, outsideFor(ctx, time.Since(t)))
+}
+
+// outsideFor is outside for time already spent.
+func outsideFor(ctx context.Context, d time.Duration) error {
+	if setup, ok := ctx.Value(setupKey{}).(*time.Duration); ok {
+		*setup += d
+	}
+	return nil
+}
+
 // run calls every op as fast as it answers until d has passed.
 func run(ctx context.Context, ops []func(context.Context) error, d time.Duration) tally {
 	deadline := time.Now().Add(d)
@@ -226,12 +267,14 @@ func run(ctx context.Context, ops []func(context.Context) error, d time.Duration
 			defer wg.Done()
 			var mine tally
 			for time.Now().Before(deadline) {
+				setup := new(time.Duration)
 				t := time.Now()
-				err := op(ctx)
+				err := op(context.WithValue(ctx, setupKey{}, setup))
+				took := time.Since(t) - *setup
 				var shed shedError
 				switch {
 				case err == nil:
-					mine.lat = append(mine.lat, time.Since(t))
+					mine.lat = append(mine.lat, took)
 				case errors.As(err, &shed):
 					mine.shed++
 					if mine.shd1 == "" {

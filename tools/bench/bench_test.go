@@ -127,7 +127,22 @@ func fakeProvider(t *testing.T) *httptest.Server {
 			"userinfo_endpoint": srv.URL + "/userinfo", "revocation_endpoint": srv.URL + "/revoke",
 			"pushed_authorization_request_endpoint": srv.URL + "/par",
 			"device_authorization_endpoint":         srv.URL + "/device",
+			"backchannel_authentication_endpoint":   srv.URL + "/backchannel",
+			"end_session_endpoint":                  srv.URL + "/logout",
 		})
+	})
+	mux.HandleFunc("POST /backchannel", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if !strings.HasSuffix(r.Form.Get("login_hint"), "@"+benchDomain) {
+			http.Error(w, `{"error":"unknown_user_id"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"auth_req_id":"r1","expires_in":120}`))
+	})
+	mux.HandleFunc("GET /logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id_token_hint") != "it" {
+			http.Error(w, "no hint", http.StatusBadRequest)
+		}
 	})
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"keys":[]}`)) })
 	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +195,9 @@ func fakeProvider(t *testing.T) *httptest.Server {
 				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 				return
 			}
-			_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt0"}`))
+			_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt0","id_token":"it"}`))
+		case "urn:ietf:params:oauth:grant-type:device_code":
+			http.Error(w, `{"error":"authorization_pending"}`, http.StatusBadRequest)
 		case "refresh_token":
 			n := refreshes.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "at", "refresh_token": "rt" + string(rune('0'+n%10))})
@@ -236,6 +253,30 @@ func fakeProvider(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// What an operation needs and did not come to measure stays out of its latency: a
+// sign-out timed with its sign-in would report the password hash.
+func TestSetupIsKeptOutOfTheLatency(t *testing.T) {
+	op := func(ctx context.Context) error {
+		if err := outside(ctx, func() error {
+			time.Sleep(40 * time.Millisecond)
+			return nil
+		}); err != nil {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+		return nil
+	}
+	got := run(context.Background(), []func(context.Context) error{op}, 200*time.Millisecond)
+	if len(got.lat) == 0 {
+		t.Fatal("nothing was measured")
+	}
+	for _, d := range got.lat {
+		if d >= 30*time.Millisecond {
+			t.Errorf("an operation of a millisecond measured %s with its setup in it", d)
+		}
+	}
+}
+
 // Every HTTP scenario runs against the fake for a moment, with no errors, and
 // reports what it measured.
 func TestTheHTTPScenariosMeasureAProvider(t *testing.T) {
@@ -243,9 +284,9 @@ func TestTheHTTPScenariosMeasureAProvider(t *testing.T) {
 	c := &config{Issuer: srv.URL, ClientID: "bench", ClientSecret: "s+1",
 		RedirectURI: "https://bench.invalid/cb", Scope: "openid offline_access",
 		Username: "alice", Password: "pw", Concurrency: 2, Duration: 150 * time.Millisecond,
-		AdminURL: srv.URL, AdminToken: "sgnadm"}
+		AdminURL: srv.URL, AdminToken: "sgnadm", People: 3}
 	for _, name := range []string{"discovery", "jwks", "client-credentials", "introspect", "signin", "refresh", "userinfo",
-		"revoke", "par", "admin-list", "device-start", "token-exchange"} {
+		"revoke", "par", "admin-list", "device-start", "token-exchange", "device-poll", "ciba-start", "end-session"} {
 		res, err := measure(context.Background(), c, name, scenarios[name])
 		if err != nil {
 			t.Errorf("%s: %v", name, err)

@@ -30,7 +30,14 @@ cd tools/bench && go build .
 | `par` | a pushed authorization request (RFC 9126), which nothing redeems. Signari paces these at 6,000 a minute per client, so a longer window measures the pacing and `shed` says so |
 | `admin-list` | a page of the Admin API's people, with `-admin` and `-admin-token` |
 | `device-start` | a device authorization started (RFC 8628), which nobody approves |
+| `device-poll` | one poll of a device nobody has approved, which is what a waiting fleet does |
 | `token-exchange` | a person's access token exchanged for another (RFC 8693), after one `signin` per worker |
+| `ciba-start` | a person's approval asked for over the back channel (CIBA), taking turns through `-people`, as a provider limits the prompts in front of one person |
+| `end-session` | a sign-out (RP-Initiated Logout). The sign-in before each is kept out of the latency, so read the latency and not `per_second` |
+| `jwt-bearer` | an assertion traded for a token (RFC 7523 §2.1), with `-assertion-key`, `-assertion-issuer`, `-assertion-subject` |
+| `federated` | a whole sign-in through an upstream provider, `-via` naming it, from a browser with nothing in it, to a redeemed code |
+| `passkey` | a passkey sign-in from a software authenticator, begin to finish. Each worker enrols one for a seeded person of its own, past `-people`, as a passkey is a second factor. The instance needs an RP ID, which cannot be an address, so the issuer needs a name |
+| `mfa` | the one request that spends a TOTP code at sign-in. The password before it is kept out of the latency, and a code is good once, so `-people` take turns, each holding `-totp-seed` |
 | `authzen` | one AuthZEN access evaluation |
 
 Each scenario runs a warm-up (`-warmup`, default 5 s), then a measured window
@@ -57,6 +64,43 @@ password. It writes the database directly as `signari_engine`: it is for a
 benchmark database, and none of it is audited. It never writes or removes an
 address outside `bench.invalid`, which is reserved and resolves nowhere, so
 nothing is ever mailed to one.
+
+## Something on the far side
+
+```sh
+./bench upstream -addr 127.0.0.1:18991 -tls-cert cert.pem -tls-key key.pem -people 1000
+```
+
+An OpenID provider, a SCIM server and, with `-ldap-addr`, a directory, for what the
+engine does outward. The provider has discovery, a key set and signed ID tokens, and
+signs in whoever comes next at once, as a person's minutes at somebody else's password
+page are no part of what the engine does. The SCIM server keeps what it is sent, so a
+second sync finds it there. The directory answers a bind and a paged search over
+`-directory` people. `/stats` counts tokens issued and people created and replaced.
+
+The key must be a PKCS#8 P-256 key, which also signs ID tokens, and is what
+`-assertion-key` takes. The engine has to trust the certificate and be allowed to
+reach the address, with `SIGNARI_CA_BUNDLE` and `SIGNARI_OUTBOUND_ALLOW_PRIVATE`:
+
+```sh
+signari idp add -org <uuid> -slug up -name Up -kind oidc -issuer https://127.0.0.1:18991 \
+  -client-id-ext ext -client-secret s -trust-email-verification
+./bench run -issuer https://id.example.com -insecure -client-id bench -client-secret "$SECRET" \
+  -scope openid -via up federated
+
+signari scim add -org <uuid> -slug sink -name Sink -base-url https://127.0.0.1:18991/scim/v2 -token t
+time signari scim sync -slug sink -apply
+
+signari dir add -org <uuid> -kind ldap -slug corp -name Corp -ldap-url ldaps://127.0.0.1:18992 \
+  -ldap-ca cert.pem -ldap-bind-dn cn=reader,dc=load,dc=test -ldap-password x \
+  -ldap-base-dn dc=load,dc=test -ldap-flavour openldap
+signari dir set -org <uuid> -slug corp -dry-run=false
+time signari dir sync -slug corp -apply
+```
+
+Those two have no scenario here, as each is one long run and not many short ones: time
+the command. `bench totp <seed>` prints the code a seed gives now, for a script
+enrolling the people of the `mfa` scenario, as `user assign-otp` asks for one.
 
 ## Making a measurement worth comparing
 

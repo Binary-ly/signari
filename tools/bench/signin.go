@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // signIn takes a person from the authorization endpoint to redeemed tokens the
@@ -20,7 +21,7 @@ import (
 // allow the consent form if there is one, and redeem the code with its PKCE
 // verifier. The forms are Signari's (login.html, consent.html): a hidden-field
 // form posting `username` and `password`, and one posting `decision=allow`.
-func signIn(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error) {
+func signIn(ctx context.Context, hc *http.Client, e *env) (tok tokenResponse, err error) {
 	c := e.cfg
 	verifier := randomString(32)
 	state := randomString(16)
@@ -34,14 +35,31 @@ func signIn(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error)
 		return tokenResponse{}, err
 	}
 
-	// A sign-in is a handful of hops; a loop of them is a misconfiguration.
-	for hop := 0; hop < 10; hop++ {
+	// With a TOTP seed the one request measured is the one that spends the code: all
+	// the rest of a sign-in is a password hash and a redirect, measured by `signin`.
+	started := time.Now()
+	var spending bool
+	var spent time.Duration
+	defer func() {
+		tok.spentCode = spent > 0
+		if spent > 0 {
+			_ = outsideFor(ctx, time.Since(started)-spent)
+		}
+	}()
+
+	// A sign-in is a handful of hops, more through a provider; a loop of them is a
+	// misconfiguration.
+	for hop := 0; hop < 16; hop++ {
+		sent := time.Now()
 		resp, err := hc.Do(next)
 		if err != nil {
 			return tokenResponse{}, err
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
+		if spending {
+			spent, spending = time.Since(sent), false
+		}
 
 		switch {
 		case resp.StatusCode >= 300 && resp.StatusCode < 400:
@@ -60,12 +78,35 @@ func signIn(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error)
 			if !ok {
 				return tokenResponse{}, fmt.Errorf("a page at %s with no form to submit", next.URL.Path)
 			}
+			if _, isLogin := fields["username"]; isLogin && c.Via != "" {
+				// The provider's link on the page, as a person would take it.
+				link := regexp.MustCompile(`href="(/login/with/` + regexp.QuoteMeta(c.Via) + `[^"]*)"`).FindStringSubmatch(string(body))
+				if link == nil {
+					return tokenResponse{}, fmt.Errorf("the sign-in page offers no provider %q", c.Via)
+				}
+				target, err := next.URL.Parse(html.UnescapeString(link[1]))
+				if err != nil {
+					return tokenResponse{}, err
+				}
+				if next, err = http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil); err != nil {
+					return tokenResponse{}, err
+				}
+				continue
+			}
 			if _, isLogin := fields["username"]; isLogin {
 				fields.Set("username", c.Username)
 				fields.Set("password", c.Password)
 			}
 			if fields.Has("decision") {
 				fields.Set("decision", "allow")
+			}
+			if fields.Has("code") && c.TOTPSeed != "" {
+				code, err := totpCode(c.TOTPSeed, time.Now())
+				if err != nil {
+					return tokenResponse{}, err
+				}
+				fields.Set("code", code)
+				spending = true
 			}
 			target, err := next.URL.Parse(action)
 			if err != nil {
@@ -77,10 +118,10 @@ func signIn(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error)
 			}
 			next.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		default:
-			return tokenResponse{}, fmt.Errorf("%s answered %d: %s", next.URL.Path, resp.StatusCode, trim(body))
+			return tokenResponse{}, fmt.Errorf("%s%s answered %d: %s", next.URL.Host, next.URL.Path, resp.StatusCode, trim(body))
 		}
 	}
-	return tokenResponse{}, fmt.Errorf("no authorization code after ten hops")
+	return tokenResponse{}, fmt.Errorf("no authorization code after sixteen hops")
 }
 
 func redeem(ctx context.Context, hc *http.Client, e *env, back url.Values, state, verifier string) (tokenResponse, error) {

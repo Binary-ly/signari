@@ -91,6 +91,8 @@ type registrationRequest struct {
 	// initiate authorization requests." A client constraining itself, so safe
 	// from open registration like dpop_bound_access_tokens.
 	RequirePushedAuthorizationRequests bool `json:"require_pushed_authorization_requests"`
+	// RFC 9101 §10.5, a client constraining itself in the same way.
+	RequireSignedRequestObject bool `json:"require_signed_request_object"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +236,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.RequirePushedAuthorizationRequests {
 		settings.RequirePAR = &req.RequirePushedAuthorizationRequests
 	}
+	if req.RequireSignedRequestObject {
+		settings.RequireSignedRequest = &req.RequireSignedRequestObject
+	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
 		Settings:     settings,
 		OrgID:        orgID,
@@ -297,6 +302,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if st, serr := store.ClientSettingsOf(ctx, s.db, reg.ClientID); serr == nil {
 		body["id_token_signed_response_alg"] = st.IDTokenAlg
 		body["require_pushed_authorization_requests"] = st.RequirePAR
+		body["require_signed_request_object"] = st.RequireSignedRequest
 	}
 	if req.FrontchannelLogoutURI != "" {
 		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI

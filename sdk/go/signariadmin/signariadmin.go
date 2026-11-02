@@ -611,6 +611,7 @@ type GetClientsClientIDResponse struct {
 	RegisteredAt                          *string        `json:"registered_at,omitempty"`
 	RequirePkce                           bool           `json:"require_pkce,omitempty"`
 	RequirePushedAuthorization            bool           `json:"require_pushed_authorization,omitempty"`
+	RequireSignedRequestObject            bool           `json:"require_signed_request_object,omitempty"`
 	RequireState                          bool           `json:"require_state,omitempty"`
 	ResponseTypes                         []string       `json:"response_types,omitempty"`
 	RolesClaim                            *string        `json:"roles_claim,omitempty"`
@@ -1917,6 +1918,7 @@ type PatchClientsClientIDRequest struct {
 	RefreshTokenTTLS                      *int64          `json:"refresh_token_ttl_s,omitempty"`
 	RequirePkce                           *bool           `json:"require_pkce,omitempty"`
 	RequirePushedAuthorizationRequests    *bool           `json:"require_pushed_authorization_requests,omitempty"`
+	RequireSignedRequestObject            *bool           `json:"require_signed_request_object,omitempty"`
 	RequireState                          *bool           `json:"require_state,omitempty"`
 	RolesClaim                            *string         `json:"roles_claim,omitempty"`
 	Scopes                                *[]string       `json:"scopes,omitempty"`
@@ -1954,6 +1956,7 @@ type PatchClientsClientIDResponse struct {
 	RefreshTokenTTLS                   int64    `json:"refresh_token_ttl_s,omitempty"`
 	RequirePkce                        bool     `json:"require_pkce"`
 	RequirePushedAuthorizationRequests bool     `json:"require_pushed_authorization_requests,omitempty"`
+	RequireSignedRequestObject         bool     `json:"require_signed_request_object,omitempty"`
 	RequireState                       bool     `json:"require_state,omitempty"`
 	RolesClaim                         string   `json:"roles_claim,omitempty"`
 	Sector                             string   `json:"sector,omitempty"`

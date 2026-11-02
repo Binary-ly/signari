@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0271 require_signed_request_object
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client that may start an authorization only with a signed Request Object (RFC 9101 §10.5). Without it the signature is optional, and anybody who can reach the authorization endpoint simply sends the same request unsigned.
+
 ## 0270 admin_read_indexes
 
 Compatible with the release before: its binary may still serve this schema.

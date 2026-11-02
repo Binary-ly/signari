@@ -641,6 +641,7 @@ Answers:
 | `registered_at` | string or null |  |
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization` | boolean |  |
+| `require_signed_request_object` | boolean |  |
 | `require_state` | boolean |  |
 | `response_types` | list of string |  |
 | `roles_claim` | string or null |  |
@@ -705,6 +706,7 @@ Takes:
 | `refresh_token_ttl_s` | integer |  |
 | `require_pkce` | boolean |  |
 | `require_pushed_authorization_requests` | boolean |  |
+| `require_signed_request_object` | boolean |  |
 | `require_state` | boolean |  |
 | `roles_claim` | string |  |
 | `scopes` | list of string |  |
@@ -743,6 +745,7 @@ Answers:
 | `refresh_token_ttl_s` | integer |  |
 | `require_pkce` | boolean | always |
 | `require_pushed_authorization_requests` | boolean |  |
+| `require_signed_request_object` | boolean |  |
 | `require_state` | boolean |  |
 | `roles_claim` | string |  |
 | `sector` | string |  |

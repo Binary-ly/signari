@@ -40,6 +40,7 @@ clients:
     refresh_token_ttl: 168h      # 5m to 8760h (default 720h)
     id_token_signed_response_alg: RS256   # ES256 (default), or one the instance holds a key for
     require_pushed_authorization_requests: true   # RFC 9126; omit to leave as it is
+    require_signed_request_object: true           # RFC 9101; omit to leave as it is
     first_party: false           # true skips the consent screen
     issuer_alias: https://old.example.com   # a live alias of the instance; "" clears
     minimum_acr: "2"             # require multi-factor; "1" accepts one factor

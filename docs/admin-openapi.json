@@ -847,6 +847,9 @@
                     "require_pushed_authorization": {
                       "type": "boolean"
                     },
+                    "require_signed_request_object": {
+                      "type": "boolean"
+                    },
                     "require_state": {
                       "type": "boolean"
                     },
@@ -1137,6 +1140,9 @@
                   "require_pushed_authorization_requests": {
                     "type": "boolean"
                   },
+                  "require_signed_request_object": {
+                    "type": "boolean"
+                  },
                   "require_state": {
                     "type": "boolean"
                   },
@@ -1257,6 +1263,9 @@
                       "type": "boolean"
                     },
                     "require_pushed_authorization_requests": {
+                      "type": "boolean"
+                    },
+                    "require_signed_request_object": {
                       "type": "boolean"
                     },
                     "require_state": {

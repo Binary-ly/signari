@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/clientauth"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -170,19 +172,32 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// client is paced per address. An authenticated confidential client is
 	// paced as itself (parPerClientLimit). A failed authentication stores
 	// nothing and is metered by the client-authentication budgets.
-	key, limit, why := "par:ip:"+budgetIP(clientIP(r)), parPerAddressLimit, "too many pushed requests from this address"
-	if c.Type == "confidential" {
-		key, limit, why = "par:client:"+c.ClientID, parPerClientLimit, "too many pushed requests from this client"
-	}
-	res, rerr := store.AllowRate(ctx, s.db, key, limit, parPerAddressWindow)
+	why, rerr := s.pushPaced(ctx, r, c)
 	if rerr != nil {
 		s.log.ErrorContext(ctx, "checking the PAR rate limit", "err", rerr)
 		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
-	if !res.Allowed {
+	if why != "" {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", why)
+		return
+	}
+
+	// A push may be a signed Request Object, whose parameters are then the only ones
+	// there are: RFC 9101 §6.3, which is what the client signed.
+	signed := false
+	if object := r.PostForm.Get("request"); object != "" {
+		params, perr := s.requestObjectParams(ctx, c, object)
+		if perr != nil {
+			s.log.InfoContext(ctx, "pushed request object refused", "client_id", clientID, "err", perr,
+				"correlation_id", correlationID(ctx))
+			writeError(w, http.StatusBadRequest, "invalid_request_object", perr.Error())
+			return
+		}
+		r.PostForm, signed = params, true
+	} else if c.RequireSignedRequest {
+		writeError(w, http.StatusBadRequest, "invalid_request", "this client must sign its authorization requests")
 		return
 	}
 
@@ -268,32 +283,23 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	params := map[string][]string{}
 	for k, v := range r.PostForm {
 		switch k {
-		case "client_secret", "client_assertion", "client_assertion_type":
+		case "client_secret", "client_assertion", "client_assertion_type", signedRequestMark:
 			// Never stored. These authenticate the push and have no business
 			// surviving into the authorization, where they would sit in a jsonb
-			// column being a credential nobody remembers is there.
+			// column being a credential nobody remembers is there. And the mark is
+			// this server's to set: a client sending it would be saying it signed.
 			continue
 		}
 		if len(v) > 0 {
 			params[k] = v
 		}
 	}
+	if signed {
+		params[signedRequestMark] = []string{"1"}
+	}
 
-	handle, err := newRequestURI()
+	handle, err := s.parkRequest(ctx, c, params, jkt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	blob, err := json.Marshal(params)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	if _, err := s.db.Exec(ctx, `
-		INSERT INTO core.pushed_requests
-			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
-		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
-		pushedHash(handle), c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
 		s.log.ErrorContext(ctx, "storing a pushed request", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
@@ -304,6 +310,94 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		"request_uri": handle,
 		"expires_in":  int(parLifetime.Seconds()),
 	})
+}
+
+// signedRequestMark is how a parked request remembers it was a signed Request Object,
+// among its parameters, so that a client held to signing is held at the redemption too.
+const signedRequestMark = "signari_signed_request_object"
+
+// pushPaced says why a request may not be parked now, empty when it may.
+func (s *Server) pushPaced(ctx context.Context, r *http.Request, c *clients.Client) (string, error) {
+	key, limit, why := "par:ip:"+budgetIP(clientIP(r)), parPerAddressLimit, "too many pushed requests from this address"
+	if c.Type == "confidential" {
+		key, limit, why = "par:client:"+c.ClientID, parPerClientLimit, "too many pushed requests from this client"
+	}
+	res, err := store.AllowRate(ctx, s.db, key, limit, parPerAddressWindow)
+	if err != nil {
+		return "", err
+	}
+	if !res.Allowed {
+		return why, nil
+	}
+	return "", nil
+}
+
+// parkRequest stores a request's parameters behind a new handle.
+func (s *Server) parkRequest(ctx context.Context, c *clients.Client, params map[string][]string, jkt string) (string, error) {
+	handle, err := newRequestURI()
+	if err != nil {
+		return "", err
+	}
+	blob, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.pushed_requests
+			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
+		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
+		pushedHash(handle), c.OrgID, c.ClientID, blob, parLifetime.String(), jkt); err != nil {
+		return "", err
+	}
+	return handle, nil
+}
+
+// requestObjectParams verifies a client's signed Request Object.
+func (s *Server) requestObjectParams(ctx context.Context, c *clients.Client, object string) (url.Values, error) {
+	jwks, err := store.ClientJWKS(ctx, s.db, c.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the client's keys: %w", err)
+	}
+	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now())
+}
+
+// parkRequestObject verifies a Request Object sent by value and parks what it says,
+// answering the handle, or the problem to tell the client. Paced as a push is: it is a
+// row each time, and a captured URL can be sent again.
+func (s *Server) parkRequestObject(r *http.Request, clientID, requestURI, object string) (handle, problem string) {
+	ctx := r.Context()
+	// §5: "'request_uri' MUST NOT be present" with `request`, and it would be a handle
+	// beside an object, naming two requests.
+	if requestURI != "" {
+		return "", "send request or request_uri, not both"
+	}
+	c, err := s.lookupClient(ctx, clientID)
+	if err != nil || c == nil {
+		return "", "unknown client"
+	}
+	params, err := s.requestObjectParams(ctx, c, object)
+	if err != nil {
+		s.log.InfoContext(ctx, "request object refused", "client_id", clientID, "err", err,
+			"correlation_id", correlationID(ctx))
+		return "", err.Error()
+	}
+	why, err := s.pushPaced(ctx, r, c)
+	if err != nil {
+		s.log.ErrorContext(ctx, "checking the PAR rate limit", "err", err)
+		return "", "please try again shortly"
+	}
+	if why != "" {
+		return "", why
+	}
+	params.Del(signedRequestMark)
+	stored := map[string][]string(params)
+	stored[signedRequestMark] = []string{"1"}
+	handle, err = s.parkRequest(ctx, c, stored, "")
+	if err != nil {
+		s.log.ErrorContext(ctx, "storing a request object", "err", err)
+		return "", "please try again shortly"
+	}
+	return handle, ""
 }
 
 // errPushedRequestSpent is a handle that has given a code, or run out.

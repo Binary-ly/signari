@@ -76,6 +76,9 @@ nobody remembers is there.
 handles make the parameters that will be authorized depend on a lookup chain,
 which is the indirection this endpoint removes.
 
+**A pushed request may be signed**, with the parameters in a `request` object and
+nothing beside it but the client's own authentication. See [jar.md](jar.md).
+
 **`require_pushed_authorization`** can be set per client, with `signari client
 set-par`, the client PATCH and `apply` (`require_pushed_authorization_requests`),
 or by the client itself at dynamic registration under that RFC 9126 §6 name. Off

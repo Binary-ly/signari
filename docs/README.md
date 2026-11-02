@@ -156,6 +156,7 @@ command or an environment variable exists in code and not on its page.
 | [audit-chain-fork.md](audit-chain-fork.md) | How the hash chain forked under concurrency, and the fix |
 | [logging-inventory.md](logging-inventory.md) | What is logged where (ASVS V16.1.1) |
 | [egress-inventory.md](egress-inventory.md) | Every outbound connection (ASVS V13.1.1) |
+| [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |
 | [security-inventories.md](security-inventories.md) | The cryptography, the ways to authenticate, the session rules, the limits and the data, each in one place |
 
 ## Compliance evidence

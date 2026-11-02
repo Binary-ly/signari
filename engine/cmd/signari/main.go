@@ -216,6 +216,7 @@ clients:
   client set-dpop                  require a DPoP proof on every token request
   client set-pkce                  whether its authorization requests must carry PKCE
   client set-par                   refuse an authorization request not pushed first
+  client set-signed-requests       refuse an authorization request that is not signed
   client set-state                 refuse an authorization request with no state
   client set-logout                post-logout redirects and front- and back-channel logout
   client set-lifetimes             token lifetimes, and how long consent lasts
@@ -679,6 +680,8 @@ func run(args []string) (err error) {
 		"`client set-state`: refuse an authorization request with no state (false lifts it)")
 	requirePAR := fs.Bool("require-par", true,
 		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
+	requireSigned := fs.Bool("require-signed", true,
+		"`client set-signed-requests`: refuse an authorization that is not a signed request object (false lifts it)")
 	firstParty := fs.Bool("first-party", true,
 		"`client set-first-party`: skip the consent screen for this client (false restores it)")
 	adminAPI := fs.Bool("admin-api", true,
@@ -1502,6 +1505,10 @@ func run(args []string) (err error) {
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
 			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
 				false: "authorization may start without pushing"}[*requirePAR])
+	case "client set-signed-requests":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequireSignedRequest: requireSigned},
+			map[bool]string{true: "authorization must be a signed request object (RFC 9101)",
+				false: "authorization may be unsigned"}[*requireSigned])
 	case "client set-state":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequireState: requireState},
 			map[bool]string{true: "an authorization request must carry state",

@@ -101,8 +101,6 @@ identity provider is *defined* by connecting to places its relying parties name.
 |---|---|---|
 | `backchannel_logout_uri` | the client, at registration | a session ends |
 | Webhook endpoint | an operator, per subscription | an event fires |
-| `jwks_uri` | the client, at registration | verifying a signed request object or client assertion |
-| `request_uri` | the client, per request | a request object is passed by reference |
 | Federation entity statements | the trust chain | resolving a chain |
 
 ### What bounds it

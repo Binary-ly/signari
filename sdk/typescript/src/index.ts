@@ -1950,6 +1950,7 @@ export interface GetClientsClientIDResponse {
   registered_at?: string | null
   require_pkce?: boolean
   require_pushed_authorization?: boolean
+  require_signed_request_object?: boolean
   require_state?: boolean
   response_types?: string[]
   roles_claim?: string | null
@@ -3256,6 +3257,7 @@ export interface PatchClientsClientIDRequest {
   refresh_token_ttl_s?: number
   require_pkce?: boolean
   require_pushed_authorization_requests?: boolean
+  require_signed_request_object?: boolean
   require_state?: boolean
   roles_claim?: string
   scopes?: string[]
@@ -3293,6 +3295,7 @@ export interface PatchClientsClientIDResponse {
   refresh_token_ttl_s?: number
   require_pkce: boolean
   require_pushed_authorization_requests?: boolean
+  require_signed_request_object?: boolean
   require_state?: boolean
   roles_claim?: string
   sector?: string

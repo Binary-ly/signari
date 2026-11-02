@@ -178,9 +178,10 @@ type Client struct {
 	// leaves it.
 	SecurityProfile *string `yaml:"security_profile"`
 	// RequirePAR and FirstParty are the switches; each absent leaves it.
-	RequirePAR   *bool `yaml:"require_pushed_authorization_requests"`
-	RequireState *bool `yaml:"require_state"`
-	FirstParty   *bool `yaml:"first_party"`
+	RequirePAR           *bool `yaml:"require_pushed_authorization_requests"`
+	RequireSignedRequest *bool `yaml:"require_signed_request_object"`
+	RequireState         *bool `yaml:"require_state"`
+	FirstParty           *bool `yaml:"first_party"`
 	// IssuerAlias pins the client to a legacy issuer the instance claims;
 	// empty clears it, absent leaves it.
 	IssuerAlias *string `yaml:"issuer_alias"`
@@ -194,7 +195,7 @@ func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
 		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RolesClaim: c.RolesClaim, LoginUI: c.LoginUI,
 		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector,
-		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR,
+		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR, RequireSignedRequest: c.RequireSignedRequest,
 		RequireState: c.RequireState, FirstParty: c.FirstParty,
 		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
 }

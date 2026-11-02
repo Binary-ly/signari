@@ -137,6 +137,8 @@ type Metadata struct {
 
 	RequestParameterSupported    bool `json:"request_parameter_supported"`
 	RequestURIParameterSupported bool `json:"request_uri_parameter_supported"`
+	// RFC 9101 §4, and asymmetric only, as §10.1 needs a signature that says who.
+	RequestObjectSigningAlgValuesSupported []string `json:"request_object_signing_alg_values_supported,omitempty"`
 }
 
 // Config is what the engine knows about itself when rendering metadata.
@@ -399,11 +401,8 @@ func Build(cfg Config) (*Metadata, error) {
 		BackchannelLogoutSupported:        true,
 		BackchannelLogoutSessionSupported: true,
 
-		// Both false, for two different reasons that must not be conflated.
-		//
-		// request_parameter_supported: we accept no inline `request` JWT (RFC 9101
-		// JAR). Advertising true and rejecting it is the Config OP failure this
-		// file exists to avoid.
+		// request_parameter_supported: an inline `request` JWT (RFC 9101) is taken,
+		// signed by a key the client has registered.
 		//
 		// request_uri_parameter_supported: we fetch no remote request object from
 		// a `request_uri` URL -- that is an SSRF surface we deliberately do not
@@ -414,8 +413,12 @@ func Build(cfg Config) (*Metadata, error) {
 		// pushed_authorization_request_endpoint above. So a PAR client is not
 		// misled by this false, and flipping it to true would falsely claim we
 		// fetch remote request objects.
-		RequestParameterSupported:    false,
+		RequestParameterSupported:    true,
 		RequestURIParameterSupported: false,
+		RequestObjectSigningAlgValuesSupported: []string{
+			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+			"ES256", "ES384", "ES512", "EdDSA",
+		},
 	}, nil
 }
 

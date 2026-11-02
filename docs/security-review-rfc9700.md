@@ -286,15 +286,14 @@ Requirement sweeps find what a checklist thought to ask about. These three were
 re-derived from the code instead, because each closes off a whole family of
 published attacks by construction rather than by a check that could be forgotten.
 
-- **No request objects are accepted, at all.** `request_parameter_supported` is
-  false and nothing parses an inline `request` JWT.
-  `request_uri_parameter_supported` is also false, because we fetch no remote
-  request object — an SSRF surface we decline to open. The only `request_uri`
-  accepted is a PAR handle, which is an opaque database reference and not a URL.
-  RFC 9126 §5 confirms `false` is the correct advertisement for a PAR-supporting
-  server; the metadata comment now says so, rather than misattributing the flag
-  to JAR. With no request object there is no signing-algorithm enforcement left
-  to bypass.
+- **No request object is fetched from a URL.** `request_uri_parameter_supported`
+  is false, because we fetch no remote request object — an SSRF surface we
+  decline to open. The only `request_uri` accepted is a PAR handle, which is an
+  opaque database reference and not a URL. RFC 9126 §5 confirms `false` is the
+  correct advertisement for a PAR-supporting server; the metadata comment says
+  so. Since November 2026 an inline `request` JWT is taken, signed by a key the
+  client registered and never by a shared secret or `none`: see
+  [jar.md](jar.md).
 - **Authorization compares relation tuples for exact identity**
   (`internal/authzen`), never URI paths by prefix. There is no path to normalize,
   so trailing-slash and matrix-parameter normalisation bypasses have nothing to

@@ -75,6 +75,21 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A signed Request Object goes where a pushed request goes, so that from here on
+	// there is one way a protected request travels. The pages after this hand a request
+	// on through the browser, and spread over a URL it would be open to anybody there:
+	// the whole of what a signature buys. Parked, the browser carries a handle, and a
+	// short `exp` does not run out while somebody looks for their phone.
+	objectProblem, byValue := "", false
+	if object := query.Get("request"); object != "" {
+		handle, problem := s.parkRequestObject(r, query.Get("client_id"), query.Get("request_uri"), object)
+		if objectProblem = problem; problem == "" {
+			byValue = true
+			query.Del("request")
+			query.Set("request_uri", handle)
+		}
+	}
+
 	// # Redeeming a pushed request
 	//
 	// When request_uri is present, the pushed parameters REPLACE the query
@@ -84,8 +99,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Merging the two would undo the whole feature: whoever controls the browser
 	// could append `scope=admin` to a URL whose other parameters are protected,
 	// and the request would be authorized with a scope the client never pushed.
-	wasPushed := false
-	if requestURI := query.Get("request_uri"); requestURI != "" {
+	wasPushed, wasSigned := false, false
+	if requestURI := query.Get("request_uri"); requestURI != "" && objectProblem == "" {
 		wasPushed = true
 		pushed, err := s.readPushedRequest(ctx, requestURI, query.Get("client_id"))
 		if err != nil {
@@ -98,6 +113,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pushed.Set("client_id", query.Get("client_id"))
+		wasSigned = pushed.Get(signedRequestMark) != ""
+		pushed.Del(signedRequestMark)
 
 		// What the pages from here carry through the browser is the handle, and
 		// the three things they read to choose what to show, which come from the
@@ -114,12 +131,22 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := oauth.ParseAuthz(query)
+	req.RequestObjectProblem = objectProblem
 
 	// In any state, so ValidateAuthz can tell the person the client is
 	// disabled; it refuses one before anything else is read.
 	c, lookupErr := s.lookupClientAnyState(ctx, req.ClientID)
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
 		s.writeAuthzError(w, r, req, authzErr)
+		return
+	}
+
+	// RFC 9101 §10.5: "the server MUST reject the authorization request from the client
+	// that does not conform to this specification", or the signature is something an
+	// attacker chooses not to send. Redirected, the redirect_uri being valid by now.
+	if c != nil && c.RequireSignedRequest && !wasSigned {
+		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "invalid_request",
+			Description: "this client must sign its authorization requests", Disposition: oauth.DispositionRedirect})
 		return
 	}
 
@@ -198,8 +225,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// requirement whenever that query failed. And decided by whether the request
 	// was redeemed from a push: the redeemed parameters have replaced the query
 	// by now, so asking the query for request_uri refused every request from
-	// such a client, the pushed ones included.
-	if c != nil && c.RequirePAR && !wasPushed {
+	// such a client, the pushed ones included. A request object sent by value is parked
+	// the same way and is not a push: RFC 9126 keeps the parameters off the browser
+	// altogether, and that one came through it.
+	if c != nil && c.RequirePAR && (!wasPushed || byValue) {
 		s.log.InfoContext(ctx, "plain authorization request refused for a PAR-only client",
 			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 		s.renderAuthzFailure(w, r,

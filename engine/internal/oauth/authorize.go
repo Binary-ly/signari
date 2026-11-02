@@ -55,16 +55,17 @@ type AuthzRequest struct {
 	// to be signed in.
 	IDTokenHint string
 
-	// RequestObject and RequestURI are RFC 9101 `request` / `request_uri`, kept
-	// only so they can be REFUSED.
+	// RequestObject is RFC 9101's `request`, which the handler verifies and takes off
+	// the query before this is parsed, and RequestURI its `request_uri`, which is taken
+	// only as a pushed request's handle, so neither is here for a request that is in
+	// order. They are read so that one that is not can be REFUSED.
 	//
-	// Discovery advertises `request_parameter_supported: false`, and until this
-	// existed the parameters were simply not read -- which is not the same thing
-	// as saying no. A client that puts state, nonce, scope or redirect_uri inside
-	// a request object and has it ignored gets an authorization that proceeded on
-	// the unprotected query parameters instead, with no indication that the
-	// integrity protection it asked for was never applied. That is a silent
-	// downgrade of the one guarantee a request object exists to provide.
+	// These parameters were once simply not read -- which is not the same thing as
+	// saying no. A client that puts state, nonce, scope or redirect_uri inside a
+	// request object and has it ignored gets an authorization that proceeded on the
+	// unprotected query parameters instead, with no indication that the integrity
+	// protection it asked for was never applied. That is a silent downgrade of the
+	// one guarantee a request object exists to provide.
 	//
 	// Found by the conformance suite
 	// (oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported),
@@ -72,6 +73,8 @@ type AuthzRequest struct {
 	// symptoms of the object being dropped, several steps from the cause.
 	RequestObject string
 	RequestURI    string
+	// RequestObjectProblem says why the handler could not take RequestObject.
+	RequestObjectProblem string
 }
 
 // ParseAuthz reads the query parameters. It does no validation: parsing and
@@ -187,6 +190,29 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 
 	// --- From here the redirect target is trusted. ---
 
+	// 4a. Request objects, refused rather than ignored. A client whose request object is
+	// silently dropped proceeds on the query parameters believing the signed copy was
+	// authoritative, so every value it protected -- state, nonce, redirect_uri, scope --
+	// is quietly taken from the unprotected side instead.
+	//
+	// Before the parameters are read, as a client signing sends them nowhere else, so
+	// `response_type is required` would be all it ever heard. And after the client and
+	// redirect_uri are known, so the error can go back over the redirect rather than
+	// being rendered at our own origin. Still here means the handler could not take it.
+	// RFC 9101 §6.2 names the code, and the redirect_uri is the query's, so it says
+	// nothing of the object, but it is one this client registered.
+	if req.RequestObject != "" {
+		problem := req.RequestObjectProblem
+		if problem == "" {
+			problem = "this request object was not read"
+		}
+		return redirectErr("invalid_request_object", problem)
+	}
+	if req.RequestURI != "" {
+		return redirectErr("request_uri_not_supported",
+			"this server does not fetch remote request objects; send the parameters directly")
+	}
+
 	// 5. Code flow, and hybrid `code id_token` where a client is explicitly
 	// permitted it.
 	//
@@ -229,27 +255,6 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 	if !c.AllowsGrantType("authorization_code") {
 		return redirectErr("unauthorized_client", "client may not use the authorization_code grant")
-	}
-
-	// 5a. Request objects, refused rather than ignored.
-	//
-	// Discovery says `request_parameter_supported: false` and
-	// `request_uri_parameter_supported: false`. OIDC Core 6.1/6.2 gives the
-	// matching error codes for exactly this case, and sending one is the whole
-	// point: a client whose request object is silently dropped proceeds on the
-	// query parameters believing the signed copy was authoritative, so every
-	// value it protected -- state, nonce, redirect_uri, scope -- is quietly
-	// taken from the unprotected side instead.
-	//
-	// Refused AFTER the client and redirect_uri are known, so the error can go
-	// back over the redirect rather than being rendered at our own origin.
-	if req.RequestObject != "" {
-		return redirectErr("request_not_supported",
-			"this server does not accept a request object; send the parameters directly")
-	}
-	if req.RequestURI != "" {
-		return redirectErr("request_uri_not_supported",
-			"this server does not fetch remote request objects; send the parameters directly")
 	}
 
 	// 6. PKCE. Required for every client, public and confidential alike, per

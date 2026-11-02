@@ -166,12 +166,15 @@ func TestWhatIsRefusedIsSaidRatherThanOmitted(t *testing.T) {
 	}
 	for _, field := range []string{
 		"backchannel_user_code_parameter_supported",
-		"request_parameter_supported",
 		"request_uri_parameter_supported",
 	} {
 		if v, ok := doc[field]; !ok || v != false {
 			t.Errorf("%s is %v (present %v), want an explicit false", field, v, ok)
 		}
+	}
+	// RFC 9101's default is true, and an inline Request Object is taken (9.01).
+	if doc["request_parameter_supported"] != true {
+		t.Errorf("an inline request object is taken and request_parameter_supported does not say so")
 	}
 	if doc["authorization_response_iss_parameter_supported"] != true {
 		t.Errorf("RFC 9207's iss parameter is not advertised")

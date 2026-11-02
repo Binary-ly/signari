@@ -60,6 +60,9 @@ type ClientSettings struct {
 	// RequirePAR refuses any authorization the client did not push first (RFC
 	// 9126 §6, require_pushed_authorization_requests).
 	RequirePAR *bool
+	// RequireSignedRequest refuses any authorization that is not a signed Request
+	// Object (RFC 9101 §10.5, require_signed_request_object).
+	RequireSignedRequest *bool
 	// RequireState refuses an authorization request with no `state` (0210).
 	RequireState *bool
 	// FirstParty skips the consent screen for the client (migration 0010). An
@@ -211,6 +214,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 	}
 	if v := s.RequirePAR; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_pushed_authorization = $2,
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
+	if v := s.RequireSignedRequest; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET require_signed_request_object = $2,
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
 			return err
 		}
@@ -451,6 +460,8 @@ type ClientSettingsView struct {
 	FirstParty        bool
 	IssuerAlias       string
 	MinimumACR        string
+	// RequireSignedRequest is RFC 9101's require_signed_request_object.
+	RequireSignedRequest bool
 	// ConsentLifetime is 0 for a consent that does not expire.
 	ConsentLifetime time.Duration
 }
@@ -465,10 +476,12 @@ func ClientSettingsOf(ctx context.Context, q interface {
 		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), access_token_format,
 		       subject_type, sector, security_profile,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
-		       COALESCE(consent_lifetime_s, 0), require_state, COALESCE(login_ui_url, '')
+		       COALESCE(consent_lifetime_s, 0), require_state, COALESCE(login_ui_url, ''),
+		       require_signed_request_object
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
-			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState, &v.LoginUI)
+			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent,
+			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

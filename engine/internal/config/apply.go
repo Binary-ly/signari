@@ -127,6 +127,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		cl.SubjectType, cl.Sector, cl.SecurityProfile = &st.SubjectType, &st.Sector, &st.SecurityProfile
 		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
 		cl.RequireState = &st.RequireState
+		cl.RequireSignedRequest = &st.RequireSignedRequest
 		cl.MinimumACR = &st.MinimumACR
 		c.clients[id] = cl
 	}
@@ -492,6 +493,9 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.RequirePAR, have.RequirePAR; w != nil && h != nil && *w != *h {
 		d = append(d, "require_pushed_authorization_requests")
+	}
+	if w, h := want.RequireSignedRequest, have.RequireSignedRequest; w != nil && h != nil && *w != *h {
+		d = append(d, "require_signed_request_object")
 	}
 	if w, h := want.RequireState, have.RequireState; w != nil && h != nil && *w != *h {
 		d = append(d, "require_state")

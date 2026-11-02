@@ -895,8 +895,10 @@ type patchClientRequest struct {
 	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
 	// skips the consent screen.
 	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
-	RequireState                       *bool `json:"require_state"`
-	FirstParty                         *bool `json:"first_party"`
+	// RequireSignedRequestObject is RFC 9101 §10.5's name.
+	RequireSignedRequestObject *bool `json:"require_signed_request_object"`
+	RequireState               *bool `json:"require_state"`
+	FirstParty                 *bool `json:"first_party"`
 	// AdminAPI designates the client for the Admin API (6.01): it may obtain
 	// tokens that act with their holder's roles. Needs privileged-users:write,
 	// as every later write on such a client does (targetClient).
@@ -1121,6 +1123,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	s.RequireState = r.RequireState
+	s.RequireSignedRequest = r.RequireSignedRequestObject
 	s.MinimumACR = r.MinimumACR
 	if r.ConsentLifetimeSeconds != nil {
 		d := time.Duration(*r.ConsentLifetimeSeconds) * time.Second
@@ -1287,6 +1290,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"sector":                                got.Sector,
 				"security_profile":                      got.SecurityProfile,
 				"require_pushed_authorization_requests": got.RequirePAR,
+				"require_signed_request_object":         got.RequireSignedRequest,
 				"require_state":                         got.RequireState,
 				"first_party":                           got.FirstParty,
 				"issuer_alias":                          got.IssuerAlias,

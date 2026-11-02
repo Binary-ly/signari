@@ -52,6 +52,7 @@ var commandFlags = map[string][]string{
 	"client set-pkce":                 {"client-id", "require-pkce"},
 	"client set-profile":              {"client-id", "security-profile"},
 	"client set-roles-claim":          {"claim", "client-id"},
+	"client set-signed-requests":      {"client-id", "require-signed"},
 	"client set-state":                {"client-id", "require-state"},
 	"client set-subject-type":         {"client-id", "sector", "subject-type"},
 	"client set-tls":                  {"client-id", "sp-cert", "tls-bound-tokens", "tls-san-dns", "tls-san-email", "tls-san-ip", "tls-san-uri", "tls-subject-dn"},

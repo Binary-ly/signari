@@ -361,6 +361,49 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/relation-delegations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftOrg(t, s) + "/relation-delegations"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"grantee_org_id":%q,"object":"app:*","relations":["user"]}`, newDriftOrg(t, s))
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				return "/admin/organizations/" + d.OrgID + "/relation-delegations/" + d.ID
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				delegationSubject[d.GranteeOrgID] = newDelegationPerson(t, s, d.GranteeOrgID)
+				return "/admin/organizations/" + d.GranteeOrgID + "/relation-delegations/" + d.ID + "/relations"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return fmt.Sprintf(`{"subject":"user:%s","relation":"user","object":"app:one"}`,
+					delegationSubject[strings.Split(path, "/")[3]])
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				person := newDelegationPerson(t, s, d.GranteeOrgID)
+				if err := store.GrantDelegated(context.Background(), s.db, d, store.Relation{SubjectType: "user",
+					SubjectID: person, Relation: "user", ObjectType: "app", ObjectID: "one"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + d.GranteeOrgID + "/relation-delegations/" + d.ID +
+					"/relations?subject=user:" + person + "&relation=user&object=app:one"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/instances/{instanceID}/webauthn", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"

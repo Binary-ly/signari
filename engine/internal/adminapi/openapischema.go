@@ -130,6 +130,19 @@ func orgBrandProps() map[string]jsonSchema {
 
 var orgBrandFields = append([]string{"org_id"}, brandFields[1:]...)
 
+// delegationProps is what one organisation lets another hand out (11.11).
+func delegationProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "grantee_org_id": uuidStr(), "object": str(),
+		"relations": arrayOf(str()), "created_at": dateTime()}
+}
+
+var delegationFields = []string{"id", "org_id", "grantee_org_id", "object", "relations", "created_at"}
+
+// delegatedRelationSchema is a grantee's change to the owner's relations.
+var delegatedRelationSchema = object([]string{"subject", "relation", "object", "org_id", "granted", "config_version"},
+	map[string]jsonSchema{"subject": str(), "relation": str(), "object": str(), "org_id": uuidStr(),
+		"granted": boolean(), "config_version": integer()})
+
 // orgMessageProps is one message an organisation has reworded (10.09).
 func orgMessageProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"locale": str(), "key": str(), "text": str()}
@@ -826,6 +839,16 @@ var opSchemas = map[string]opSchema{
 				"relation": str(), "object": str(), "expires_at": nullable(dateTime())}))})},
 	"PUT /admin/organizations/{orgID}/relations":    {http.StatusOK, typeOf[relationRequest](), relationSchema},
 	"DELETE /admin/organizations/{orgID}/relations": {http.StatusOK, nil, relationSchema},
+	"GET /admin/organizations/{orgID}/relation-delegations": {http.StatusOK, nil, object([]string{"delegations"}, map[string]jsonSchema{
+		"delegations": arrayOf(object(delegationFields, delegationProps()))})},
+	"POST /admin/organizations/{orgID}/relation-delegations": {http.StatusCreated, typeOf[createRelationDelegationRequest](), object(
+		append(append([]string{}, delegationFields...), "config_version"), withVersion(delegationProps()))},
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations": {http.StatusOK, nil, object([]string{"relations"}, map[string]jsonSchema{
+		"relations": arrayOf(object([]string{"subject", "relation", "object"}, map[string]jsonSchema{
+			"subject": str(), "relation": str(), "object": str(), "expires_at": nullable(dateTime())}))})},
+	"PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations":    {http.StatusOK, typeOf[relationRequest](), delegatedRelationSchema},
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations": {http.StatusOK, nil, delegatedRelationSchema},
 	"POST /admin/organizations/{orgID}/config": {http.StatusOK, typeOf[applyConfigRequest](), object(
 		[]string{"dry_run", "changes", "create", "update", "delete", "config_version"}, withVersion(
 			map[string]jsonSchema{"dry_run": boolean(), "changes": arrayOf(object([]string{"action", "kind", "name",

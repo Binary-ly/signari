@@ -59,6 +59,7 @@ refused with `412` when the configuration moved since the version it names.
 | [radius-clients](#radius-clients) | 3 |
 | [registration](#registration) | 3 |
 | [registration-tokens](#registration-tokens) | 3 |
+| [relation-delegations](#relation-delegations) | 6 |
 | [relations](#relations) | 3 |
 | [resource-servers](#resource-servers) | 3 |
 | [role-bindings](#role-bindings) | 3 |
@@ -3192,6 +3193,114 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `removed` | boolean | always |
+
+## relation-delegations
+
+### `GET /admin/organizations/{orgID}/relation-delegations`
+
+The delegations the organisation is either side of. Needs relations:read.
+
+Go `GetOrganizationsOrgIDRelationDelegations`, TypeScript `getOrganizationsOrgIDRelationDelegations`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `delegations` | list of object | always |
+
+### `POST /admin/organizations/{orgID}/relation-delegations`
+
+Let another organisation hand out relations on this one's objects; deployment-wide tokens only. Needs relations:write.
+
+Go `PostOrganizationsOrgIDRelationDelegations`, TypeScript `postOrganizationsOrgIDRelationDelegations`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `grantee_org_id` | string |  |
+| `object` | string |  |
+| `relations` | list of string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `created_at` | string | always |
+| `grantee_org_id` | string | always |
+| `id` | string | always |
+| `object` | string | always |
+| `org_id` | string | always |
+| `relations` | list of string | always |
+
+### `DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}`
+
+Take a delegation away, and all that was handed out under it; deployment-wide tokens only. Needs relations:write.
+
+Go `DeleteOrganizationsOrgIDRelationDelegationsDelegationID`, TypeScript `deleteOrganizationsOrgIDRelationDelegationsDelegationID`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `removed` | boolean | always |
+
+### `DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations`
+
+As the grantee, take a delegated relation back. Needs relations:write.
+
+Go `DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelations`, TypeScript `deleteOrganizationsOrgIDRelationDelegationsDelegationIDRelations`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `granted` | boolean | always |
+| `object` | string | always |
+| `org_id` | string | always |
+| `relation` | string | always |
+| `subject` | string | always |
+
+### `GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations`
+
+What a delegation has handed out. Needs relations:read.
+
+Go `GetOrganizationsOrgIDRelationDelegationsDelegationIDRelations`, TypeScript `getOrganizationsOrgIDRelationDelegationsDelegationIDRelations`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `relations` | list of object | always |
+
+### `PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations`
+
+As the grantee, hand a delegated relation to one of its own people. Needs relations:write.
+
+Go `PutOrganizationsOrgIDRelationDelegationsDelegationIDRelations`, TypeScript `putOrganizationsOrgIDRelationDelegationsDelegationIDRelations`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `expires_at` | object |  |
+| `object` | string |  |
+| `relation` | string |  |
+| `subject` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `granted` | boolean | always |
+| `object` | string | always |
+| `org_id` | string | always |
+| `relation` | string | always |
+| `subject` | string | always |
 
 ## relations
 

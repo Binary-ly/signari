@@ -368,6 +368,22 @@ type DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse struct {
 	Removed       bool  `json:"removed"`
 }
 
+// DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse struct {
+	ConfigVersion int64 `json:"config_version"`
+	Removed       bool  `json:"removed"`
+}
+
+// DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Granted       bool   `json:"granted"`
+	Object        string `json:"object"`
+	OrgID         string `json:"org_id"`
+	Relation      string `json:"relation"`
+	Subject       string `json:"subject"`
+}
+
 // DeleteOrganizationsOrgIDRelationsResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDRelationsResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -1374,6 +1390,34 @@ type GetOrganizationsOrgIDRegistrationTokensResponseRegistrationTokensItem struc
 	Name      string  `json:"name"`
 	Remaining *int64  `json:"remaining"`
 	RevokedAt *string `json:"revoked_at"`
+}
+
+// GetOrganizationsOrgIDRelationDelegationsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationDelegationsResponse struct {
+	Delegations []GetOrganizationsOrgIDRelationDelegationsResponseDelegationsItem `json:"delegations"`
+}
+
+// GetOrganizationsOrgIDRelationDelegationsResponseDelegationsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationDelegationsResponseDelegationsItem struct {
+	CreatedAt    string   `json:"created_at"`
+	GranteeOrgID string   `json:"grantee_org_id"`
+	ID           string   `json:"id"`
+	Object       string   `json:"object"`
+	OrgID        string   `json:"org_id"`
+	Relations    []string `json:"relations"`
+}
+
+// GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse struct {
+	Relations []GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponseRelationsItem `json:"relations"`
+}
+
+// GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponseRelationsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponseRelationsItem struct {
+	ExpiresAt *string `json:"expires_at,omitempty"`
+	Object    string  `json:"object"`
+	Relation  string  `json:"relation"`
+	Subject   string  `json:"subject"`
 }
 
 // GetOrganizationsOrgIDRelationsResponse is a JSON object of the Admin API.
@@ -2713,6 +2757,24 @@ type PostOrganizationsOrgIDRegistrationTokensResponse struct {
 	Token         string `json:"token"`
 }
 
+// PostOrganizationsOrgIDRelationDelegationsRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDRelationDelegationsRequest struct {
+	GranteeOrgID *string   `json:"grantee_org_id,omitempty"`
+	Object       *string   `json:"object,omitempty"`
+	Relations    *[]string `json:"relations,omitempty"`
+}
+
+// PostOrganizationsOrgIDRelationDelegationsResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDRelationDelegationsResponse struct {
+	ConfigVersion int64    `json:"config_version"`
+	CreatedAt     string   `json:"created_at"`
+	GranteeOrgID  string   `json:"grantee_org_id"`
+	ID            string   `json:"id"`
+	Object        string   `json:"object"`
+	OrgID         string   `json:"org_id"`
+	Relations     []string `json:"relations"`
+}
+
 // PostOrganizationsOrgIDRoleBindingsRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDRoleBindingsRequest struct {
 	ClientID *string `json:"client_id,omitempty"`
@@ -3549,6 +3611,24 @@ type PutOrganizationsOrgIDRegistrationResponse struct {
 	OrgID             string   `json:"org_id"`
 }
 
+// PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsRequest struct {
+	ExpiresAt *map[string]any `json:"expires_at,omitempty"`
+	Object    *string         `json:"object,omitempty"`
+	Relation  *string         `json:"relation,omitempty"`
+	Subject   *string         `json:"subject,omitempty"`
+}
+
+// PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Granted       bool   `json:"granted"`
+	Object        string `json:"object"`
+	OrgID         string `json:"org_id"`
+	Relation      string `json:"relation"`
+	Subject       string `json:"subject"`
+}
+
 // PutOrganizationsOrgIDRelationsRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDRelationsRequest struct {
 	ExpiresAt *map[string]any `json:"expires_at,omitempty"`
@@ -4099,6 +4179,30 @@ func (c *Client) DeleteOrganizationsOrgIDRegistration(ctx context.Context, orgID
 func (c *Client) DeleteOrganizationsOrgIDRegistrationTokensTokenID(ctx context.Context, orgID string, tokenID string, opts ...Option) (*DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/registration-tokens/"+url.PathEscape(tokenID), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDRelationDelegationsDelegationID is DELETE
+// /admin/organizations/{orgID}/relation-delegations/{delegationID}: Take a delegation away, and
+// all that was handed out under it; deployment-wide tokens only. Needs relations:write.
+func (c *Client) DeleteOrganizationsOrgIDRelationDelegationsDelegationID(ctx context.Context, orgID string, delegationID string, opts ...Option) (*DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations/"+url.PathEscape(delegationID), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelations is DELETE
+// /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: As the grantee, take
+// a delegated relation back. Needs relations:write.
+func (c *Client) DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelations(ctx context.Context, orgID string, delegationID string, opts ...Option) (*DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations/"+url.PathEscape(delegationID)+"/relations", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4861,6 +4965,30 @@ func (c *Client) GetOrganizationsOrgIDRegistration(ctx context.Context, orgID st
 func (c *Client) GetOrganizationsOrgIDRegistrationTokens(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDRegistrationTokensResponse, int64, error) {
 	var out GetOrganizationsOrgIDRegistrationTokensResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/registration-tokens", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDRelationDelegations is GET
+// /admin/organizations/{orgID}/relation-delegations: The delegations the organisation is either
+// side of. Needs relations:read.
+func (c *Client) GetOrganizationsOrgIDRelationDelegations(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDRelationDelegationsResponse, int64, error) {
+	var out GetOrganizationsOrgIDRelationDelegationsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDRelationDelegationsDelegationIDRelations is GET
+// /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: What a delegation
+// has handed out. Needs relations:read.
+func (c *Client) GetOrganizationsOrgIDRelationDelegationsDelegationIDRelations(ctx context.Context, orgID string, delegationID string, opts ...Option) (*GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse, int64, error) {
+	var out GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations/"+url.PathEscape(delegationID)+"/relations", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -5692,6 +5820,18 @@ func (c *Client) PostOrganizationsOrgIDRegistrationTokens(ctx context.Context, o
 	return &out, v, nil
 }
 
+// PostOrganizationsOrgIDRelationDelegations is POST
+// /admin/organizations/{orgID}/relation-delegations: Let another organisation hand out relations
+// on this one's objects; deployment-wide tokens only. Needs relations:write.
+func (c *Client) PostOrganizationsOrgIDRelationDelegations(ctx context.Context, orgID string, body PostOrganizationsOrgIDRelationDelegationsRequest, opts ...Option) (*PostOrganizationsOrgIDRelationDelegationsResponse, int64, error) {
+	var out PostOrganizationsOrgIDRelationDelegationsResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // PostOrganizationsOrgIDRoleBindings is POST /admin/organizations/{orgID}/role-bindings: Give a
 // person or an application a role, a user manager optionally over one group's members. Needs
 // organizations:write.
@@ -6227,6 +6367,18 @@ func (c *Client) PutOrganizationsOrgIDProxyHosts(ctx context.Context, orgID stri
 func (c *Client) PutOrganizationsOrgIDRegistration(ctx context.Context, orgID string, body PutOrganizationsOrgIDRegistrationRequest, opts ...Option) (*PutOrganizationsOrgIDRegistrationResponse, int64, error) {
 	var out PutOrganizationsOrgIDRegistrationResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/registration", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDRelationDelegationsDelegationIDRelations is PUT
+// /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: As the grantee, hand
+// a delegated relation to one of its own people. Needs relations:write.
+func (c *Client) PutOrganizationsOrgIDRelationDelegationsDelegationIDRelations(ctx context.Context, orgID string, delegationID string, body PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsRequest, opts ...Option) (*PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse, int64, error) {
+	var out PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/relation-delegations/"+url.PathEscape(delegationID)+"/relations", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

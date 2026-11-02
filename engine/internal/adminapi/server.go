@@ -411,6 +411,12 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/relations", ScopeRelationsRead, s.listRelations)
 	route("PUT /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.grantRelation)
 	route("DELETE /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.revokeRelation)
+	route("GET /admin/organizations/{orgID}/relation-delegations", ScopeRelationsRead, s.listRelationDelegations)
+	route("POST /admin/organizations/{orgID}/relation-delegations", ScopeRelationsWrite, s.createRelationDelegation)
+	route("DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}", ScopeRelationsWrite, s.deleteRelationDelegation)
+	route("GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsRead, s.listDelegatedRelations)
+	route("PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsWrite, s.grantDelegatedRelation)
+	route("DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsWrite, s.revokeDelegatedRelation)
 	// Configuration as code, `signari plan` and `signari apply`
 	// (configapply.go). Each change also needs the scope its own route takes.
 	route("POST /admin/organizations/{orgID}/config", ScopeOrganizationsWrite, s.applyConfig)

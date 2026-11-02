@@ -363,6 +363,9 @@ authorization and federation:
   authz test           check a model file and run its tests, with no database
   authz grant          grant a relation, for good or for -expires-in
   authz revoke         revoke a relation
+  authz delegate       let another organisation hand out relations on this one's objects
+  authz delegations    the delegations an organisation is either side of
+  authz undelegate     take a delegation away, and what was handed out under it
   authz check          answer an authorization question, with the reason
   authz list           the relations a subject holds, or that are held on an object
   authz expand         who may do something to an object
@@ -792,6 +795,9 @@ func run(args []string) (err error) {
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
 	relObject := fs.String("object", "", "type:id, e.g. document:42")
+	relRelations := fs.String("relations", "", "comma-separated, what a delegation hands out (authz delegate)")
+	granteeOrg := fs.String("grantee-org", "", "the organisation a delegation lets hand them out (authz delegate)")
+	delegationID := fs.String("delegation", "", "the id `authz delegations` prints (authz undelegate)")
 	relAction := fs.String("action", "", "e.g. write")
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
 	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins, or a protected host may hear of")
@@ -1848,6 +1854,12 @@ func run(args []string) (err error) {
 		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject, *tokenExpires)
 	case "authz revoke":
 		return authzRevoke(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+	case "authz delegate":
+		return authzDelegate(ctx, conn, *orgID, *granteeOrg, *relObject, *relRelations)
+	case "authz delegations":
+		return authzDelegations(ctx, conn, *orgID)
+	case "authz undelegate":
+		return authzUndelegate(ctx, conn, *orgID, *delegationID)
 	case "authz check":
 		return authzCheck(ctx, conn, *orgID, *relSubject, *relAction, *relObject)
 	case "authz list":
@@ -8630,6 +8642,63 @@ func grantExpiry(expiresIn time.Duration) (*time.Time, error) {
 	}
 	at := time.Now().Add(expiresIn).UTC()
 	return &at, nil
+}
+
+func authzDelegate(ctx context.Context, conn *pgx.Conn, orgID, grantee, object, relations string) error {
+	if orgID == "" || grantee == "" || object == "" || relations == "" {
+		return fmt.Errorf("-org, -grantee-org, -object and -relations are all required")
+	}
+	if orgID == grantee {
+		return fmt.Errorf("an organisation already holds what it owns")
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	id, err := store.NewRelationDelegation(ctx, conn, store.RelationDelegation{OrgID: orgID, GranteeOrgID: grantee,
+		ObjectType: otyp, ObjectID: oid, Relations: splitList(relations)})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("delegation %s\n", id)
+	return nil
+}
+
+func authzDelegations(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	got, err := store.RelationDelegationsOf(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Println("no delegations")
+		return nil
+	}
+	for _, d := range got {
+		fmt.Printf("%s  %s:%s  %s  owned by %s, handed out by %s\n", d.ID, d.ObjectType, d.ObjectID,
+			strings.Join(d.Relations, ","), d.OrgID, d.GranteeOrgID)
+	}
+	return nil
+}
+
+func authzUndelegate(ctx context.Context, conn *pgx.Conn, orgID, id string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("-org and -delegation are required")
+	}
+	d, err := store.RelationDelegationByID(ctx, conn, id)
+	if err != nil {
+		return err
+	}
+	if d == nil || d.OrgID != orgID {
+		return fmt.Errorf("the organisation that owns the objects has no such delegation")
+	}
+	if _, err := store.RemoveRelationDelegation(ctx, conn, id); err != nil {
+		return err
+	}
+	fmt.Println("removed, with everything handed out under it")
+	return nil
 }
 
 func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string, expiresIn time.Duration) error {

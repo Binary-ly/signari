@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0267 relation_delegations
+
+Not compatible with the release before: stop it before migrating.
+
+One organisation letting another hand out a relation on what it owns (11.11): a software company's application, and each customer deciding which of its own people may use it. Every relation stays where the object is, in the owner's core.relations, so the owner's decisions read what they always read and a decision crosses no tenant. What crosses is only who may write the row, and that is the engine alone: a tenant reaches another's rows through nothing but a delegation an operator made, for the people of its own organisation.
+
 ## 0266 org_messages
 
 Compatible with the release before: its binary may still serve this schema.

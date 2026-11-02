@@ -341,6 +341,13 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/relations":             "Grant a subject a relation on an object.",
 	"DELETE /admin/organizations/{orgID}/relations":          "Revoke a relation named by subject, relation and object.",
 
+	"GET /admin/organizations/{orgID}/relation-delegations":                             "The delegations the organisation is either side of.",
+	"POST /admin/organizations/{orgID}/relation-delegations":                            "Let another organisation hand out relations on this one's objects; deployment-wide tokens only.",
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}":           "Take a delegation away, and all that was handed out under it; deployment-wide tokens only.",
+	"GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations":    "What a delegation has handed out.",
+	"PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations":    "As the grantee, hand a delegated relation to one of its own people.",
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations": "As the grantee, take a delegated relation back.",
+
 	// Configuration as code (6.07).
 	"POST /admin/organizations/{orgID}/config": "Plan a configuration file, or apply it in one transaction.",
 

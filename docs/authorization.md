@@ -420,6 +420,48 @@ To refuse a sign-in without one, say so in the [access policy](policy.md):
 That holds at every grant the policy is asked about, so a role taken away stops a refresh
 too.
 
+## Relations another organisation hands out
+
+A company whose application its customers use owns the objects and does not know the
+customers' people. A delegation lets a customer decide who holds what, for its own people,
+on what the company owns:
+
+```sh
+signari authz delegate -org <owner> -grantee-org <customer> -object application:wiki -relations viewer,editor
+signari authz delegations -org <owner>
+signari authz undelegate -org <owner> -delegation <id>
+```
+
+`-object application:*` covers every object of the type. Only a deployment-wide caller
+makes or removes one, through these commands or
+`POST /admin/organizations/{orgID}/relation-delegations`: no tenant reaches another on its
+own say, the owner included. Under it, a token of the customer with `relations:write`
+writes through the Admin API:
+
+```sh
+curl -X PUT $ADMIN/admin/organizations/$CUSTOMER/relation-delegations/$ID/relations \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"subject": "user:<their user id>", "relation": "viewer", "object": "application:wiki"}'
+```
+
+The relation is stored in the owner's relations and nowhere else, so the owner's decisions
+read what they always read, and nothing about a decision crosses a tenant. Everything else
+is held to what the delegation says. The relation and the object have to be ones it names.
+The subject has to be a person of the customer, by id: a person of the owner, of a third
+organisation, or an address is refused with `403 outside_delegation`, and so is a group,
+because a group is resolved in the organisation that holds the relation. The customer reads
+back what it handed out and nothing else of the owner's. A relation the owner gave the same
+person itself stays the owner's, and neither a revocation nor removing the delegation takes
+it away.
+
+Removing the delegation removes everything handed out under it, and a person who is deleted
+loses what they held. A person who is deactivated in their own organisation still has a row
+in the owner's, as anybody does: what stops them is their sign-in. They hold a relation
+rather than an account, so a decision about them has no session facts and a condition that
+wants one fails, and these relations go into no token: a person signs in to their own
+organisation's applications, and an application's `roles` claim is read from the
+organisation it belongs to.
+
 ## Things the wire format gets wrong elsewhere
 
 **A denial is `200 {"decision": false}`.** Not 403. The HTTP status says whether

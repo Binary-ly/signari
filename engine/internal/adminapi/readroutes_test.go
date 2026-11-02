@@ -38,6 +38,13 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/organizations/{orgID}/messages", func(t *testing.T, s *Server) string {
 			return "/admin/organizations/" + newDriftOrg(t, s) + "/messages"
 		}},
+		{"GET /admin/organizations/{orgID}/relation-delegations", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftOrg(t, s) + "/relation-delegations"
+		}},
+		{"GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", func(t *testing.T, s *Server) string {
+			d := newDriftDelegation(t, s)
+			return "/admin/organizations/" + d.OrgID + "/relation-delegations/" + d.ID + "/relations"
+		}},
 		{"GET /admin/instances/{instanceID}/keys", func(t *testing.T, s *Server) string {
 			return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys"
 		}},

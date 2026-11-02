@@ -270,6 +270,19 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/registration-tokens/${encodeURIComponent(tokenID)}`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}: Take a delegation
+  // away, and all that was handed out under it; deployment-wide tokens only. Needs
+  // relations:write.
+  deleteOrganizationsOrgIDRelationDelegationsDelegationID(orgID: string, delegationID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse>> {
+    return this.call<DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations/${encodeURIComponent(delegationID)}`, undefined, opts)
+  }
+
+  // DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: As the
+  // grantee, take a delegated relation back. Needs relations:write.
+  deleteOrganizationsOrgIDRelationDelegationsDelegationIDRelations(orgID: string, delegationID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>> {
+    return this.call<DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations/${encodeURIComponent(delegationID)}/relations`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/relations: Revoke a relation named by subject, relation
   // and object. Needs relations:write.
   deleteOrganizationsOrgIDRelations(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDRelationsResponse>> {
@@ -669,6 +682,18 @@ export class SignariAdmin {
   // tokens, never their secrets. Needs config:read.
   getOrganizationsOrgIDRegistrationTokens(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDRegistrationTokensResponse>> {
     return this.call<GetOrganizationsOrgIDRegistrationTokensResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/registration-tokens`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/relation-delegations: The delegations the organisation is
+  // either side of. Needs relations:read.
+  getOrganizationsOrgIDRelationDelegations(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDRelationDelegationsResponse>> {
+    return this.call<GetOrganizationsOrgIDRelationDelegationsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: What a
+  // delegation has handed out. Needs relations:read.
+  getOrganizationsOrgIDRelationDelegationsDelegationIDRelations(orgID: string, delegationID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>> {
+    return this.call<GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations/${encodeURIComponent(delegationID)}/relations`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/relations: The live relations, paged by id, by subject,
@@ -1105,6 +1130,12 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDRegistrationTokensResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/registration-tokens`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/relation-delegations: Let another organisation hand out
+  // relations on this one's objects; deployment-wide tokens only. Needs relations:write.
+  postOrganizationsOrgIDRelationDelegations(orgID: string, body: PostOrganizationsOrgIDRelationDelegationsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDRelationDelegationsResponse>> {
+    return this.call<PostOrganizationsOrgIDRelationDelegationsResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations`, body, opts)
+  }
+
   // POST /admin/organizations/{orgID}/role-bindings: Give a person or an application a role, a
   // user manager optionally over one group's members. Needs organizations:write.
   postOrganizationsOrgIDRoleBindings(orgID: string, body: PostOrganizationsOrgIDRoleBindingsRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDRoleBindingsResponse>> {
@@ -1388,6 +1419,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDRegistrationResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/registration`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations: As the
+  // grantee, hand a delegated relation to one of its own people. Needs relations:write.
+  putOrganizationsOrgIDRelationDelegationsDelegationIDRelations(orgID: string, delegationID: string, body: PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>> {
+    return this.call<PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/relation-delegations/${encodeURIComponent(delegationID)}/relations`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/relations: Grant a subject a relation on an object. Needs
   // relations:write.
   putOrganizationsOrgIDRelations(orgID: string, body: PutOrganizationsOrgIDRelationsRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDRelationsResponse>> {
@@ -1662,6 +1699,22 @@ export interface DeleteOrganizationsOrgIDRegistrationResponse {
 export interface DeleteOrganizationsOrgIDRegistrationTokensTokenIDResponse {
   config_version: number
   removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDRelationDelegationsDelegationIDResponse {
+  config_version: number
+  removed: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse {
+  config_version: number
+  granted: boolean
+  object: string
+  org_id: string
+  relation: string
+  subject: string
 }
 
 /** A JSON object of the Admin API. */
@@ -2670,6 +2723,34 @@ export interface GetOrganizationsOrgIDRegistrationTokensResponseRegistrationToke
   name: string
   remaining: number | null
   revoked_at: string | null
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationDelegationsResponse {
+  delegations: GetOrganizationsOrgIDRelationDelegationsResponseDelegationsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationDelegationsResponseDelegationsItem {
+  created_at: string
+  grantee_org_id: string
+  id: string
+  object: string
+  org_id: string
+  relations: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse {
+  relations: GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponseRelationsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponseRelationsItem {
+  expires_at?: string | null
+  object: string
+  relation: string
+  subject: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4010,6 +4091,24 @@ export interface PostOrganizationsOrgIDRegistrationTokensResponse {
 }
 
 /** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDRelationDelegationsRequest {
+  grantee_org_id?: string
+  object?: string
+  relations?: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDRelationDelegationsResponse {
+  config_version: number
+  created_at: string
+  grantee_org_id: string
+  id: string
+  object: string
+  org_id: string
+  relations: string[]
+}
+
+/** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDRoleBindingsRequest {
   client_id?: string
   group_id?: string
@@ -4843,6 +4942,24 @@ export interface PutOrganizationsOrgIDRegistrationResponse {
   max_clients: number
   open: boolean
   org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsRequest {
+  expires_at?: Record<string, unknown>
+  object?: string
+  relation?: string
+  subject?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDRelationDelegationsDelegationIDRelationsResponse {
+  config_version: number
+  granted: boolean
+  object: string
+  org_id: string
+  relation: string
+  subject: string
 }
 
 /** A JSON object of the Admin API. */

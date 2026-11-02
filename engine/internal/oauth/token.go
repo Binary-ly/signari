@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -145,11 +146,38 @@ func ParseClientCredentials(header http.Header, form url.Values) (ClientCredenti
 		c.ClientID, c.ClientSecret, c.AuthMethod = bodyID, bodySecret, "client_secret_post"
 	case c.ClientAssertion != "":
 		c.ClientID, c.AuthMethod = bodyID, "private_key_jwt"
+		if c.ClientID == "" {
+			c.ClientID = assertionSubject(c.ClientAssertion)
+		}
 	default:
 		// A public client authenticates with PKCE, not a secret.
 		c.ClientID, c.AuthMethod = bodyID, "none"
 	}
 	return c, nil
+}
+
+// assertionSubject is who a client assertion says it is from. RFC 7523 §3: "the subject
+// MUST be the "client_id" of the OAuth client", and §2.2's example sends no other.
+//
+// Read before anything has verified it, and that is all right: it is no more than a
+// `client_id` in the form would be, a name saying whose keys to try. Whatever it says,
+// clientauth.VerifyPrivateKeyJWT then has to find that client's signature on it.
+func assertionSubject(assertion string) string {
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Subject
 }
 
 // parseBasic decodes RFC 6749 §2.3.1 client_secret_basic. The userid and password

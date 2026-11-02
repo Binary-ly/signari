@@ -66,9 +66,12 @@ export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
 cd engine
 go build -o signari ./cmd/signari
 ./signari migrate all                      # roles, schemas, tables, policies
-./signari instance create -issuer http://localhost:8080
+./signari bootstrap -issuer http://localhost:8080 -email you@example.com
 ./signari serve -addr 127.0.0.1:8080
 ```
+
+`bootstrap` prints a one-time link. Open it to set your password, and you have a
+deployment with an organisation and somebody in it, with no SQL.
 
 `SIGNARI_ROOT_KEY` seals every stored secret and is not kept in the database it
 protects. Lose it and the sealed data — signing keys, bind passwords, RADIUS

@@ -84,6 +84,7 @@ a class of failure that shows up as data corruption rather than an error.
 
 | | |
 |---|---|
+| `signari bootstrap` | `-issuer <url> -email <first person> [-slug default] [-name Default]`: a first run. An instance with its signing keys, an organisation, and a one-time link, good for 72 hours, for the first person to set up their account. Safe on every start: what exists is left alone, a link nobody has used is replaced by a new one, and once the organisation has anybody in it nothing is printed |
 | `signari instance create` | An issuer and its first signing keys |
 | `signari instance add-alias` | `-alias https://old.example.com [-retire-after 2026-12-31]`: a legacy issuer this instance also claims while relying parties move across, for the instance `SIGNARI_ISSUER` names. Accepted by userinfo, introspection and the other token checks from the next request, until its retirement. See [migrating](migrate-from-authentik.md#issuer-aliasing-for-the-applications-you-cannot-reconfigure) |
 | `signari instance retire-alias` | `-alias <url> [-retire-after <when>]`: stop accepting an alias, now unless told when. Clients pinned to it get the instance's own issuer from then on |

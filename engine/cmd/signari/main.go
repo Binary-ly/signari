@@ -137,6 +137,7 @@ schema:
   migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
   migrate up           apply 0002+ (tables, policies, views) as signari_engine
   migrate all          bootstrap then up, in one invocation (for containers)
+  bootstrap            a first run: instance, keys, organisation and a link for its first person
   migrate status       applied version, pending migrations, live fingerprint, ledger
   migrate fingerprint  print only the schema fingerprint, for pinning a build
   verify               run the startup schema gate and exit
@@ -1560,6 +1561,8 @@ func run(args []string) (err error) {
 	case "client create":
 		return clientCreate(ctx, conn, *orgID, *clientID, *name, *redirect, *public,
 			*launchURL, *logoURL, *portalHidden, *requirePKCE)
+	case "bootstrap":
+		return bootstrap(ctx, conn, *issuer, *name, *slug, *email)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
 	case "janitor once":

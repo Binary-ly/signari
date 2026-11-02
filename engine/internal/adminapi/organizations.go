@@ -60,6 +60,9 @@ import (
 // to escape it and one of them will not.
 var slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// ValidSlug says whether a slug is one this deployment would take, for the CLI.
+func ValidSlug(slug string) bool { return slugPattern.MatchString(slug) }
+
 type createOrganizationRequest struct {
 	Slug        string `json:"slug"`
 	DisplayName string `json:"display_name"`

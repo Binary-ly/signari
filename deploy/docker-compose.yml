@@ -45,6 +45,25 @@ services:
     command: ["migrate", "all"]
     restart: "no"
 
+  # A first run, on request, so that the conformance flows sharing this file are not
+  # given one. The log carries a one-time link for the first person:
+  #
+  #   SIGNARI_ROOT_KEY=... SIGNARI_FIRST_EMAIL=you@example.com \
+  #     docker compose --profile first-run up bootstrap
+  bootstrap:
+    profiles: ["first-run"]
+    build:
+      context: ../engine
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
+      SIGNARI_ROOT_KEY: ${SIGNARI_ROOT_KEY:?set SIGNARI_ROOT_KEY -- head -c 32 /dev/urandom | base64}
+      SIGNARI_ROOT_KEY_REF: ${SIGNARI_ROOT_KEY_REF:-dev}
+    command: ["bootstrap", "-issuer", "${SIGNARI_ISSUER:-https://localhost:8099}", "-email", "${SIGNARI_FIRST_EMAIL:?set SIGNARI_FIRST_EMAIL, the first person's address}"]
+    restart: "no"
+
   engine:
     build:
       context: ../engine

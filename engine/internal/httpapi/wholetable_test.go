@@ -16,6 +16,7 @@ import (
 
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/plancheck"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // requestReadsWhole are the tables a request may read whole, each with why.
@@ -68,6 +69,32 @@ func TestNoRequestReadsATableWhole(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	f.srv.db = pool
+
+	// More than one organisation, and counted. With a table of one in its statistics
+	// the planner walks the primary key and filters, which is what this looks for and
+	// costs nothing there. Fixtures tidy enough to leave one row, and autovacuum
+	// counting it part-way through a run, turned that into a failure on a clean tree.
+	rows, err := f.pool.Query(ctx, `
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT instance_id, 'o' || substr(gen_random_uuid()::text, 1, 8), 'Others'
+		  FROM core.organizations, generate_series(1, 20) WHERE id = $1::uuid
+		RETURNING id::text`, f.orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	others, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, f.pool, others...)
+	owner, err := pgx.Connect(ctx, os.Getenv("SIGNARI_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close(ctx) }()
+	if _, err := owner.Exec(ctx, `ANALYZE core.organizations`); err != nil {
+		t.Fatal(err)
+	}
 
 	b := newTestBrowser(t, f.srv.Routes())
 	wrong := b.post("/login", b.get("/login"), url.Values{"username": {f.email}, "password": {"not-the-password"}})

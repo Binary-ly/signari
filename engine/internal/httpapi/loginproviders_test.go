@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store/storetest"
 )
 
@@ -86,9 +88,23 @@ func TestTheSignInPageOffersOnlyItsOwnOrganisationsProviders(t *testing.T) {
 	if strings.Contains(page, p.issuer) {
 		t.Error("an assertion issuer, which has no sign-in route, was offered as a sign-in button")
 	}
-	ret := url.Values{"return": {"/authorize?" + authz}}.Encode()
+	ret := url.Values{"return": {oidc.PathAuthorize + "?" + authz}}.Encode()
 	if want := "/login/with/" + p.oidc + "?" + ret; !strings.Contains(page, want) {
 		t.Errorf("the OIDC button does not carry the authorization request back:\nwant %s", want)
+	}
+
+	// And where it carries the person is somewhere. This test once spelled the wrong
+	// path out as well, so it passed while every sign-in through a provider that began
+	// at an application ended at a 404, after the person had signed in upstream.
+	link := regexp.MustCompile(`/login/with/` + regexp.QuoteMeta(p.oidc) + `\?[^"]*`).FindString(page)
+	offered, err := url.Parse(html.UnescapeString(link))
+	if err != nil || offered.Query().Get("return") == "" {
+		t.Fatalf("no return on the button: %q, %v", link, err)
+	}
+	back := httptest.NewRecorder()
+	p.f.srv.Routes().ServeHTTP(back, httptest.NewRequest(http.MethodGet, offered.Query().Get("return"), nil))
+	if back.Code == http.StatusNotFound {
+		t.Errorf("a sign-in through a provider ends at a page nothing serves: %s", offered.Query().Get("return"))
 	}
 	samlHref := "/saml/source/" + p.saml + "/start?" + ret
 	if !strings.Contains(page, samlHref) {

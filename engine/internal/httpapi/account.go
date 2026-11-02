@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
 )
 
@@ -147,7 +148,7 @@ func federationReturn(authzQuery string) string {
 		return dest
 	}
 	if q, err := url.ParseQuery(authzQuery); err == nil && q.Get("client_id") != "" {
-		return "/authorize?" + authzQuery
+		return oidc.PathAuthorize + "?" + authzQuery
 	}
 	return ""
 }

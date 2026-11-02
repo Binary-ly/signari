@@ -312,7 +312,7 @@ than claimed.
 | **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
 | **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
-| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here; concurrent-session policy is not |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [security-inventories.md](security-inventories.md) |
 
 ### V7.2.4: the half that was missing
 
@@ -433,7 +433,7 @@ succeed by querying the wrong schema.
 | **V8.3.1** enforced at a trusted service layer | met |
 | **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
 | **V8.4.1** cross-tenant controls | met, and now uniform |
-| **V8.1.x** documentation of the rules | partial — the rules are in code comments and these reviews rather than in one document |
+| **V8.1.x** documentation of the rules | **met, November 2026** — [security-inventories.md](security-inventories.md) says where each boundary is enforced and which page holds its rules |
 | **V8.2.3** field-level (BOPLA) | partial — SCIM releases a fixed attribute set; there is no per-field permission model |
 | **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
 
@@ -452,7 +452,7 @@ succeed by querying the wrong schema.
 | **V11.4.3** collision-resistant hashes ≥256 bits for signatures | met — SHA-256 and above throughout; SHA-1 refused on inbound SAML |
 | **V11.5.1** CSPRNG, ≥128 bits of entropy | **exceeded** — `crypto/rand`, 256 bits for session and device codes |
 | **V11.6.1** approved algorithms for key generation and signatures | met — P-256, Ed25519, RSA |
-| **V11.1.x** documented key policy and inventory | partial — key lifecycle is documented in ADR-005 and the keys package; there is no single cryptographic inventory document |
+| **V11.1.x** documented key policy and inventory | **met, November 2026** — [security-inventories.md](security-inventories.md) |
 | **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
 
 ### V11.2.3: we were generating the weaker key
@@ -566,9 +566,9 @@ address.
   practical gap is narrow, because spending it still requires the first factor,
   and binding to a session does not stop the relay attack people actually run
   (persuading someone to read a code aloud). Recorded rather than changed.
-- **V6.1.x, V6.3.4** — documentation of every authentication pathway and its
-  strength. The pathways are documented individually across these reviews; there
-  is no single document listing all of them side by side.
+- ~~**V6.1.x, V6.3.4** — documentation of every authentication pathway and its
+  strength~~ — **met, November 2026**: all of them side by side, with what each
+  records, in [security-inventories.md](security-inventories.md).
 - **V6.4.4** — identity proofing at enrolment level when a factor is lost. We
   have recovery codes and delay-and-notify recovery; we do not do identity
   proofing, which is an IAL question rather than an AAL one.
@@ -750,7 +750,7 @@ for relying parties — would be scoring a checklist rather than securing anythi
 
 | Section | Verdict |
 |---|---|
-| V3.1.1 documentation of expected browser features | L3, partially — the headers are documented here and in the middleware, the "behave when unavailable" half is not |
+| V3.1.1 documentation of expected browser features | **met, November 2026** — [security-inventories.md](security-inventories.md), with what happens without each |
 | V3.2.1 / V3.2.2 content interpretation | met — `nosniff` now, and all rendering goes through `html/template`, which escapes by context |
 | V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
 | V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
@@ -1092,7 +1092,7 @@ and nothing had ever sent one.
 
 | Requirement | Verdict |
 |---|---|
-| V14.1.1 / V14.1.2 data classified, protection documented | partial — `retention_class` classifies audit data and `docs/logging-inventory.md` now documents the log layer, but there is no single inventory of every sensitive field and its protection level |
+| V14.1.1 / V14.1.2 data classified, protection documented | partial — [security-inventories.md](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
 | V14.2.1 no sensitive data in URLs | **partial, and deliberately** — invitation and password-reset links carry a token in the query string, which is how an emailed link works. Mitigated by single use, short expiry, and the `Referrer-Policy: no-referrer` added in the V3 pass |
 | V14.2.2 not cached in server components | met — `no-store` now on every HTML response and every token response |
 | V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
@@ -1253,7 +1253,7 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | Requirement | Verdict |
 |---|---|
 | V13.1.1 communication needs documented | **was not — now `docs/egress-inventory.md`** |
-| V13.1.2 / V13.1.3 connection limits and resource strategy documented | partial — timeouts and retry behaviour are now written down; database pool sizing is not, and that is stated in the document rather than implied |
+| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [security-inventories.md](security-inventories.md), the pools among them |
 | V13.1.4 secret rotation schedule documented | partial — key rotation is implemented and documented; there is no written rotation schedule for the root key or admin tokens |
 | V13.2.1 backend auth: individual, short-term, not shared | met for the admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
 | V13.2.2 least privilege | met — `signari_admin` holds no grants on `core`, reading 15 views in `core_v1` |

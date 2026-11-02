@@ -324,6 +324,12 @@ type DeleteOrganizationsOrgIDKerberosRealmsRealmResponse struct {
 	Removed       string `json:"removed"`
 }
 
+// DeleteOrganizationsOrgIDMessagesLocaleKeyResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDMessagesLocaleKeyResponse struct {
+	ConfigVersion int64 `json:"config_version"`
+	Removed       bool  `json:"removed"`
+}
+
 // DeleteOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDMigrationSourceResponse struct {
 	ConfigVersion int64 `json:"config_version"`
@@ -1165,6 +1171,18 @@ type GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem struct {
 	ServicePrincipal string   `json:"service_principal"`
 	StripRealm       bool     `json:"strip_realm"`
 	TrustedRealms    []string `json:"trusted_realms"`
+}
+
+// GetOrganizationsOrgIDMessagesResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDMessagesResponse struct {
+	Messages []GetOrganizationsOrgIDMessagesResponseMessagesItem `json:"messages"`
+}
+
+// GetOrganizationsOrgIDMessagesResponseMessagesItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDMessagesResponseMessagesItem struct {
+	Key    string `json:"key"`
+	Locale string `json:"locale"`
+	Text   string `json:"text"`
 }
 
 // GetOrganizationsOrgIDMigrationSourceResponse is a JSON object of the Admin API.
@@ -3381,6 +3399,19 @@ type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// PutOrganizationsOrgIDMessagesLocaleKeyRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDMessagesLocaleKeyRequest struct {
+	Text *string `json:"text,omitempty"`
+}
+
+// PutOrganizationsOrgIDMessagesLocaleKeyResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDMessagesLocaleKeyResponse struct {
+	ConfigVersion int64  `json:"config_version"`
+	Key           string `json:"key"`
+	Locale        string `json:"locale"`
+	Text          string `json:"text"`
+}
+
 // PutOrganizationsOrgIDMigrationSourceRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDMigrationSourceRequest struct {
 	BindDNTemplate *string `json:"bind_dn_template,omitempty"`
@@ -3988,6 +4019,18 @@ func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID(ctx 
 func (c *Client) DeleteOrganizationsOrgIDKerberosRealmsRealm(ctx context.Context, orgID string, realm string, opts ...Option) (*DeleteOrganizationsOrgIDKerberosRealmsRealmResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDKerberosRealmsRealmResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/kerberos-realms/"+url.PathEscape(realm), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDMessagesLocaleKey is DELETE
+// /admin/organizations/{orgID}/messages/{locale}/{key}: Return one message to the catalogue's
+// wording. Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDMessagesLocaleKey(ctx context.Context, orgID string, locale string, key string, opts ...Option) (*DeleteOrganizationsOrgIDMessagesLocaleKeyResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDMessagesLocaleKeyResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/messages/"+url.PathEscape(locale)+"/"+url.PathEscape(key), nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -4696,6 +4739,17 @@ func (c *Client) GetOrganizationsOrgIDIdentityProvidersSlugSAMLKeys(ctx context.
 func (c *Client) GetOrganizationsOrgIDKerberosRealms(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDKerberosRealmsResponse, int64, error) {
 	var out GetOrganizationsOrgIDKerberosRealmsResponse
 	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/kerberos-realms", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetOrganizationsOrgIDMessages is GET /admin/organizations/{orgID}/messages: The messages the
+// organisation has reworded. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDMessages(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDMessagesResponse, int64, error) {
+	var out GetOrganizationsOrgIDMessagesResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/messages", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6092,6 +6146,18 @@ func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse(ctx contex
 func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugTokenAuth(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse, int64, error) {
 	var out PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/token-auth", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDMessagesLocaleKey is PUT
+// /admin/organizations/{orgID}/messages/{locale}/{key}: Reword one message in one language, as
+// plain text. Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDMessagesLocaleKey(ctx context.Context, orgID string, locale string, key string, body PutOrganizationsOrgIDMessagesLocaleKeyRequest, opts ...Option) (*PutOrganizationsOrgIDMessagesLocaleKeyResponse, int64, error) {
+	var out PutOrganizationsOrgIDMessagesLocaleKeyResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/messages/"+url.PathEscape(locale)+"/"+url.PathEscape(key), body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

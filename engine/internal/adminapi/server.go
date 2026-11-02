@@ -292,6 +292,9 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/organizations/{orgID}/brand", ScopeConfigRead, s.getOrgBrand)
 	route("PUT /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.putOrgBrand)
 	route("DELETE /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.deleteOrgBrand)
+	route("GET /admin/organizations/{orgID}/messages", ScopeConfigRead, s.listOrgMessages)
+	route("PUT /admin/organizations/{orgID}/messages/{locale}/{key}", ScopeOrganizationsWrite, s.putOrgMessage)
+	route("DELETE /admin/organizations/{orgID}/messages/{locale}/{key}", ScopeOrganizationsWrite, s.deleteOrgMessage)
 	route("GET /admin/organizations/{orgID}/settings", ScopeConfigRead, s.getOrgSettings)
 	route("PATCH /admin/organizations/{orgID}/settings", ScopeOrganizationsWrite, s.patchOrgSettings)
 	// Self-sign-up, `signari signup` (signup.go).

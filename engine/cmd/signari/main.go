@@ -99,7 +99,7 @@ func main() {
 var twoWordCommands = map[string]bool{
 	"migrate": true, "instance": true, "user": true, "client": true, "duo": true,
 	"janitor": true, "keys": true, "import": true, "proxy": true,
-	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
+	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true, "message": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
 	"provider": true, "migration-source": true, "restore": true, "external-factor": true,
@@ -440,6 +440,9 @@ policy, prompts and branding:
   brand show      the brand set on an instance or an organisation
   brand remove    take a brand off an instance or an organisation
   brand check     would this palette be readable (no database needed)
+  message set     reword one message for an organisation, in one language
+  message list    the messages an organisation has reworded
+  message remove  return one message to the catalogue's wording
   theme eject     write the built-in HTML pages out so they can be edited
   theme check     validate a theme directory; non-zero if anything is refused
   theme list      which page is built-in and which is overridden
@@ -955,7 +958,10 @@ func run(args []string) (err error) {
 	credDecision := fs.String("decision", "", "approve or deny (credential decide)")
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
-			"Empty clears it, which returns them to the deployment default")
+			"Empty clears it, which returns them to the deployment default. "+
+			"For a message, the language it is reworded in")
+	messageKey := fs.String("message-key", "", "the message to reword; `signari i18n keys` prints every key (message set|remove)")
+	messageText := fs.String("message-text", "", "what it says instead, as plain text (message set)")
 	attestation := fs.String("attestation", "none",
 		"WebAuthn attestation conveyance: none, indirect, direct or enterprise. "+
 			"Anything but none is required before -aaguids means anything")
@@ -1928,6 +1934,12 @@ func run(args []string) (err error) {
 		return brandShow(ctx, conn, *issuer, *orgID)
 	case "brand remove":
 		return brandRemove(ctx, conn, *issuer, *orgID)
+	case "message set":
+		return messageSet(ctx, conn, *orgID, *localeTag, *messageKey, *messageText)
+	case "message list":
+		return messageList(ctx, conn, *orgID)
+	case "message remove":
+		return messageRemove(ctx, conn, *orgID, *localeTag, *messageKey)
 	case "saml attribute-release":
 		return samlAttributeRelease(ctx, conn, *orgID, *entityID, *upstreamClaim, *localAttribute, *removeMember)
 	case "saml signing":
@@ -7201,6 +7213,52 @@ func brandRemove(ctx context.Context, conn *pgx.Conn, issuer, orgID string) erro
 		return nil
 	}
 	fmt.Printf("removed the brand of %s; takes effect on the next page render\n", who)
+	return nil
+}
+
+func messageSet(ctx context.Context, conn *pgx.Conn, orgID, locale, key, text string) error {
+	if orgID == "" || locale == "" || key == "" || text == "" {
+		return fmt.Errorf("give -org, -locale, -message-key and -message-text")
+	}
+	// The writer the Admin API shares.
+	if err := store.SetOrgMessage(ctx, conn, orgID, store.OrgMessage{Locale: locale, Key: key, Body: text}); err != nil {
+		return err
+	}
+	fmt.Printf("reworded %s in %s; takes effect on the next page render\n", key, locale)
+	return nil
+}
+
+func messageList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	got, err := store.OrgMessages(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Println("the organisation says what the catalogue says")
+		return nil
+	}
+	for _, m := range got {
+		fmt.Printf("%-8s %-32s %s\n", m.Locale, m.Key, m.Body)
+	}
+	return nil
+}
+
+func messageRemove(ctx context.Context, conn *pgx.Conn, orgID, locale, key string) error {
+	if orgID == "" || locale == "" || key == "" {
+		return fmt.Errorf("give -org, -locale and -message-key")
+	}
+	removed, err := store.RemoveOrgMessage(ctx, conn, orgID, locale, key)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("%s in %s was not reworded\n", key, locale)
+		return nil
+	}
+	fmt.Printf("%s in %s says what the catalogue says again\n", key, locale)
 	return nil
 }
 

@@ -43,8 +43,14 @@ func TestTheOrganisationsSettingsAreDeclaredAndRoundTrip(t *testing.T) {
 webauthn_policy: {attestation: direct, allowed_aaguids: [EE882879-721C-4913-9775-3DFCCE97072A], timeout_seconds: 120}
 uma: {owner_intervention: true, poll_interval: 10s}
 brand: {product_name: Acme, logo_url: 'https://acme.example.test/logo.svg', colour_primary: '#aa0000', colour_on_primary: '#ffffff', colour_background: '#fafafa', colour_text: '#101010'}
+messages:
+  - {locale: en, key: login.heading, text: 'Welcome to Acme'}
+  - {locale: ar, key: login.heading, text: 'مرحبا'}
 `
 	apply(org, settings, false)
+	if w, err := store.OrgWords(ctx, tx, org, "ar"); err != nil || w["login.heading"] != "مرحبا" {
+		t.Errorf("the words are %+v (%v)", w, err)
+	}
 	if b, err := store.OrgBrandOf(ctx, tx, org); err != nil || b == nil || b.ProductName != "Acme" || b.Primary != "#aa0000" {
 		t.Errorf("the brand is %+v (%v)", b, err)
 	}
@@ -91,7 +97,7 @@ brand: {product_name: Acme, logo_url: 'https://acme.example.test/logo.svg', colo
 	// admits any model, so the plan says so), UMA's refusals final again.
 	p := apply(other, "", true)
 	for _, want := range []string{registrationOff, "any model admitted", "a refused request is final again",
-		"its pages wear the instance's appearance again"} {
+		"its pages wear the instance's appearance again", "says what the catalogue says again"} {
 		if !strings.Contains(p.String(), want) {
 			t.Errorf("the pruned plan does not say %q:\n%s", want, p)
 		}
@@ -112,6 +118,8 @@ brand: {product_name: Acme, logo_url: 'https://acme.example.test/logo.svg', colo
 		"a palette nobody can read":         "brand: {colour_primary: '#000000', colour_on_primary: '#ffffff', colour_background: '#777777', colour_text: '#888888'}",
 		"half a palette":                    "brand: {colour_primary: '#000000'}",
 		"a logo over plain http":            "brand: {logo_url: 'http://acme.example.test/logo.svg'}",
+		"a message nobody renders":          "messages: [{locale: en, key: login.haeding, text: Hi}]",
+		"a message said twice":              "messages: [{locale: en, key: login.heading, text: A}, {locale: en, key: login.heading, text: B}]",
 	} {
 		if _, err := Parse([]byte("version: 1\n" + raw + "\n")); err == nil {
 			t.Errorf("%s was accepted", name)

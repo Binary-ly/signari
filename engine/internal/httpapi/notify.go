@@ -111,20 +111,20 @@ func (s *Server) accountChannels(ctx context.Context, userID string) ([]notifyCh
 // messages are the opposite case and deliberately use the request instead: a
 // sign-in code is read by whoever just submitted the form.
 func (s *Server) notifierFor(ctx context.Context, userID string) *i18n.Printer {
-	bundle := s.pageSet().Bundle()
 	var locale *string
+	var orgID string
 	if err := s.db.QueryRow(ctx,
-		`SELECT locale FROM core.users WHERE id = $1::uuid`, userID).Scan(&locale); err != nil {
+		`SELECT locale, org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&locale, &orgID); err != nil {
 		// A notice in the default language beats no notice. This runs on the
 		// path that tells somebody their account was touched, and failing it
 		// over a missing preference would be the wrong trade every time.
 		s.log.Warn("reading a user's locale for a notice", "user_id", userID, "err", err)
-		return bundle.For(i18n.Default)
+		return s.pageSet().Bundle().For(i18n.Default)
 	}
 	if locale == nil || *locale == "" {
-		return bundle.For(i18n.Default)
+		return s.printerFor(ctx, orgID, i18n.Default)
 	}
-	return bundle.For(*locale)
+	return s.printerFor(ctx, orgID, *locale)
 }
 
 func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, smsBody string) error {

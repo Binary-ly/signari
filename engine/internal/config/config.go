@@ -69,6 +69,7 @@ type File struct {
 	WebAuthnPolicy *WebAuthnPolicy `yaml:"webauthn_policy,omitempty"`
 	UMA            *UMA            `yaml:"uma,omitempty"`
 	Brand          *Brand          `yaml:"brand,omitempty"`
+	Messages       []Message       `yaml:"messages,omitempty"`
 
 	// What is told of group membership (releasekinds.go).
 	GroupReleases        []GroupRelease        `yaml:"group_releases,omitempty"`

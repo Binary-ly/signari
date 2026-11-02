@@ -26,18 +26,23 @@
 // catalogue -- so it may contain markup, and T returns template.HTML.
 // Everything substituted INTO a message is data, and is HTML-escaped first.
 // That split is the whole safety argument, and TestAnArgumentCannotInjectMarkup
-// is what holds it.
+// is what holds it. An organisation's own words (Printer.With) are not ours: a
+// tenant wrote them, so they are data too.
 package i18n
 
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/text/language"
 )
@@ -107,7 +112,8 @@ type Bundle struct {
 	matcher language.Matcher
 }
 
-// Load reads the built-in catalogues, then merges an operator's over them.
+// Load reads the built-in catalogues, then merges an operator's over them, later
+// directories over earlier ones.
 //
 // An operator directory is a THEME directory's locales/ subdirectory, and it is
 // merged key by key rather than replacing a file. Rewording one sentence should
@@ -117,7 +123,7 @@ type Bundle struct {
 // Problems with an operator's file are returned rather than fatal, for the same
 // reason a refused page override is: a typo in a JSON file at four in the
 // afternoon must not stop everybody signing in.
-func Load(overrideDir string) (*Bundle, []error, error) {
+func Load(overrideDirs ...string) (*Bundle, []error, error) {
 	b := &Bundle{msgs: map[string]map[string]*entry{}}
 
 	entries, err := fs.ReadDir(builtin, "locales")
@@ -142,12 +148,70 @@ func Load(overrideDir string) (*Bundle, []error, error) {
 	}
 
 	var problems []error
-	if overrideDir != "" {
-		problems = b.mergeOverrides(overrideDir)
+	for _, dir := range overrideDirs {
+		if dir != "" {
+			problems = append(problems, b.mergeOverrides(dir)...)
+		}
 	}
 
 	b.index()
 	return b, problems, nil
+}
+
+// Shipped is the built-in catalogues, for checking a message before it is stored.
+var Shipped = sync.OnceValue(func() *Bundle {
+	b, _, err := Load()
+	if err != nil {
+		// The catalogues are embedded, so this is a broken build. CheckWords
+		// answers a nil Bundle with a refusal rather than a panic.
+		return nil
+	}
+	return b
+})
+
+// The longest an organisation's own message may be, as core.org_messages holds it.
+const maxWords = 2000
+
+// placeholder finds {Name} in a message.
+var placeholder = regexp.MustCompile(`\{([^{}]*)\}`)
+
+// CheckWords says why an organisation may not reword a message this way, or nil.
+//
+// A key nobody renders and a language nothing is rendered in are both refused,
+// because either would be stored, reported as saved and change nothing. So is a
+// placeholder the message is never given, which would print `{Name}` on the page:
+// the catalogue's own text says which there are. A message that counts something
+// has a form per number, and one line of text cannot say which it is.
+func (b *Bundle) CheckWords(lang, key, text string) error {
+	if b == nil {
+		return errors.New("the built-in catalogues did not load")
+	}
+	if !b.Has(lang) {
+		return fmt.Errorf("no catalogue for %q: there are %s", lang, strings.Join(b.Languages(), ", "))
+	}
+	e, ok := b.msgs[Default][key]
+	if !ok {
+		return fmt.Errorf("%q is not a message this server renders; `signari i18n keys` prints every key", key)
+	}
+	if len(e.forms) > 1 {
+		return fmt.Errorf("%s counts something and has a form for each number, so it cannot be one line of text",
+			key)
+	}
+	if text == "" || utf8.RuneCountInString(text) > maxWords {
+		return fmt.Errorf("a message is 1 to %d characters", maxWords)
+	}
+	given := map[string]bool{}
+	for _, form := range e.forms {
+		for _, m := range placeholder.FindAllStringSubmatch(form, -1) {
+			given[m[1]] = true
+		}
+	}
+	for _, m := range placeholder.FindAllStringSubmatch(text, -1) {
+		if !given[m[1]] {
+			return fmt.Errorf("%s is never given {%s}", key, m[1])
+		}
+	}
+	return nil
 }
 
 // mergeOverrides layers an operator's catalogues on top of the built-in ones.

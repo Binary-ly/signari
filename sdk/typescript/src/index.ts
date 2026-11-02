@@ -228,6 +228,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDKerberosRealmsRealmResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/kerberos-realms/${encodeURIComponent(realm)}`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/messages/{locale}/{key}: Return one message to the
+  // catalogue's wording. Needs organizations:write.
+  deleteOrganizationsOrgIDMessagesLocaleKey(orgID: string, locale: string, key: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDMessagesLocaleKeyResponse>> {
+    return this.call<DeleteOrganizationsOrgIDMessagesLocaleKeyResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/messages/${encodeURIComponent(locale)}/${encodeURIComponent(key)}`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/migration-source: Remove the migration source. Needs
   // organizations:write.
   deleteOrganizationsOrgIDMigrationSource(orgID: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDMigrationSourceResponse>> {
@@ -597,6 +603,12 @@ export class SignariAdmin {
   // their keytabs Needs config:read.
   getOrganizationsOrgIDKerberosRealms(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDKerberosRealmsResponse>> {
     return this.call<GetOrganizationsOrgIDKerberosRealmsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/kerberos-realms`, undefined, opts)
+  }
+
+  // GET /admin/organizations/{orgID}/messages: The messages the organisation has reworded. Needs
+  // config:read.
+  getOrganizationsOrgIDMessages(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDMessagesResponse>> {
+    return this.call<GetOrganizationsOrgIDMessagesResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/messages`, undefined, opts)
   }
 
   // GET /admin/organizations/{orgID}/migration-source: The provider this organisation is migrating
@@ -1334,6 +1346,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/token-auth`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/messages/{locale}/{key}: Reword one message in one language,
+  // as plain text. Needs organizations:write.
+  putOrganizationsOrgIDMessagesLocaleKey(orgID: string, locale: string, key: string, body: PutOrganizationsOrgIDMessagesLocaleKeyRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDMessagesLocaleKeyResponse>> {
+    return this.call<PutOrganizationsOrgIDMessagesLocaleKeyResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/messages/${encodeURIComponent(locale)}/${encodeURIComponent(key)}`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/migration-source: Configure the old directory or provider
   // that verifies a migrating person's password. Needs organizations:write.
   putOrganizationsOrgIDMigrationSource(orgID: string, body: PutOrganizationsOrgIDMigrationSourceRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDMigrationSourceResponse>> {
@@ -1600,6 +1618,12 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDRespo
 export interface DeleteOrganizationsOrgIDKerberosRealmsRealmResponse {
   config_version: number
   removed: string
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDMessagesLocaleKeyResponse {
+  config_version: number
+  removed: boolean
 }
 
 /** A JSON object of the Admin API. */
@@ -2443,6 +2467,18 @@ export interface GetOrganizationsOrgIDKerberosRealmsResponseRealmsItem {
   service_principal: string
   strip_realm: boolean
   trusted_realms: string[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDMessagesResponse {
+  messages: GetOrganizationsOrgIDMessagesResponseMessagesItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDMessagesResponseMessagesItem {
+  key: string
+  locale: string
+  text: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4657,6 +4693,19 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse {
   config_version: number
   method: string
   slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDMessagesLocaleKeyRequest {
+  text?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDMessagesLocaleKeyResponse {
+  config_version: number
+  key: string
+  locale: string
+  text: string
 }
 
 /** A JSON object of the Admin API. */

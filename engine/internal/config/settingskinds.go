@@ -3,11 +3,13 @@ package config
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/store"
 )
 
@@ -375,5 +377,78 @@ func (brandSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File
 	f.Brand = &Brand{ProductName: have.ProductName, LogoURL: have.LogoURL, SupportURL: have.SupportURL,
 		ColourPrimary: have.Primary, ColourOnPrimary: have.OnPrimary,
 		ColourBackground: have.Background, ColourText: have.Text}
+	return nil
+}
+
+// Message is one catalogue message reworded for the organisation, in one
+// language, as plain text.
+type Message struct {
+	Locale string `yaml:"locale"`
+	Key    string `yaml:"key"`
+	Text   string `yaml:"text"`
+}
+
+func (m Message) name() string { return m.Locale + "/" + m.Key }
+
+type messageSection struct{}
+
+func (messageSection) kind() string { return "message" }
+func (messageSection) first() bool  { return false }
+
+func (messageSection) validate(f *File, add func(string, ...any)) {
+	once := seen(add, "messages")
+	for i, m := range f.Messages {
+		if !once(i, m.name()) {
+			continue
+		}
+		if err := i18n.Shipped().CheckWords(m.Locale, m.Key, m.Text); err != nil {
+			add("messages[%s]: %v", m.name(), err)
+		}
+	}
+}
+
+func (messageSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, p *Plan) error {
+	have, err := store.OrgMessages(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
+	planKeyed(p, "message", keyBy(f.Messages, Message.name),
+		keyBy(have, func(m store.OrgMessage) string { return m.Locale + "/" + m.Key }), prune,
+		func(h store.OrgMessage, w Message) string {
+			if h.Body != w.Text {
+				return "text"
+			}
+			return ""
+		}, "says what the catalogue says again")
+	return nil
+}
+
+func (messageSection) apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, p *Plan) error {
+	for _, m := range f.Messages {
+		if c, ok := p.planned("message", m.name()); !ok || c.Action == "delete" {
+			continue
+		}
+		if err := store.SetOrgMessage(ctx, tx, orgID,
+			store.OrgMessage{Locale: m.Locale, Key: m.Key, Body: m.Text}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (messageSection) remove(ctx context.Context, tx pgx.Tx, orgID, name string) error {
+	locale, key, _ := strings.Cut(name, "/")
+	_, err := store.RemoveOrgMessage(ctx, tx, orgID, locale, key)
+	return err
+}
+
+func (messageSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File) error {
+	have, err := store.OrgMessages(ctx, tx, orgID)
+	if err != nil {
+		return err
+	}
+	for _, m := range have {
+		f.Messages = append(f.Messages, Message{Locale: m.Locale, Key: m.Key, Text: m.Body})
+	}
 	return nil
 }

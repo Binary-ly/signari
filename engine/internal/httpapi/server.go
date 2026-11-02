@@ -343,6 +343,18 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	for _, p := range themeProblems {
 		log.Warn("a themed page was refused and the built-in is being used", "err", p)
 	}
+	// A directory naming no organisation is a typo, and it themes nobody.
+	if slugs := pageSet.OrgThemes(); len(slugs) > 0 && db != nil {
+		known, err := store.OrgSlugsKnown(context.Background(), db, slugs)
+		if err != nil {
+			log.Warn("checking the organisations' themes", "err", err)
+		}
+		for _, slug := range slugs {
+			if err == nil && !known[slug] {
+				log.Warn("a theme directory names no organisation, so nobody sees it", "slug", slug)
+			}
+		}
+	}
 
 	// Discovery advertises the languages the pages actually loaded with,
 	// including any an operator added. Set after Load rather than by the caller
@@ -1018,7 +1030,8 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 			connect += " " + origins
 		}
 	}
-	b := s.brandOf(r.Context(), s.loginOrg(r.Context(), authzQuery))
+	pageOrg := s.loginOrg(r.Context(), authzQuery)
+	b := s.brandOf(r.Context(), pageOrg)
 	setCSP(w, `default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
 		`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
 		` form-action 'self'; frame-ancestors 'none'`)
@@ -1068,7 +1081,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		data["BrandLogo"] = b.LogoURL
 		data["BrandSupport"] = b.SupportURL
 	}
-	s.writeBranded(w, s.langFor(r), "login", data, b)
+	s.writeBranded(w, r, pageOrg, "login", data, b)
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it

@@ -342,6 +342,25 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/messages/{locale}/{key}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftOrg(t, s) + "/messages/en/login.submit"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"text":"Drift"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/messages/{locale}/{key}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftOrg(t, s)
+				if err := store.SetOrgMessage(context.Background(), s.db, id,
+					store.OrgMessage{Locale: "en", Key: "login.submit", Body: "Drift"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + id + "/messages/en/login.submit"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/instances/{instanceID}/webauthn", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"

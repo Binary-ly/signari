@@ -234,6 +234,23 @@ class EngineAdminApi
         return (int) $this->request('delete', "/admin/organizations/{$orgId}/brand", [], $this->readAt())['config_version'];
     }
 
+    /** Reword one message for the organisation, in one language, as plain text. */
+    public function setOrganisationMessage(string $orgId, string $locale, string $key, string $text): int
+    {
+        return (int) $this->request('put', $this->messagePath($orgId, $locale, $key), ['text' => $text], $this->readAt())['config_version'];
+    }
+
+    /** Return one message to the catalogue's wording. */
+    public function removeOrganisationMessage(string $orgId, string $locale, string $key): int
+    {
+        return (int) $this->request('delete', $this->messagePath($orgId, $locale, $key), [], $this->readAt())['config_version'];
+    }
+
+    private function messagePath(string $orgId, string $locale, string $key): string
+    {
+        return "/admin/organizations/{$orgId}/messages/".rawurlencode($locale).'/'.rawurlencode($key);
+    }
+
     /** The engine's current config version, for showing propagation state. */
     public function configVersion(): int
     {

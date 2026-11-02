@@ -434,7 +434,8 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status int,
 	name string, data map[string]any) {
 
-	b := s.brandOf(r.Context(), s.pageOrg(r))
+	orgID := s.pageOrg(r)
+	b := s.brandOf(r.Context(), orgID)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -481,7 +482,7 @@ func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status
 	if status != 0 {
 		w.WriteHeader(status)
 	}
-	s.writeBranded(w, s.langFor(r), name, data, b)
+	s.writeBranded(w, r, orgID, name, data, b)
 }
 
 // langFor decides which language a request is answered in.
@@ -496,6 +497,10 @@ func (s *Server) langFor(r *http.Request) string {
 	bundle := s.pageSet().Bundle()
 	if bundle == nil || r == nil {
 		return i18n.Default
+	}
+	// An organisation's theme may speak a language the deployment's does not.
+	if len(s.pageSet().OrgThemes()) > 0 {
+		bundle = s.pagesFor(r.Context(), s.pageOrg(r)).Bundle()
 	}
 	ui := uiLocalesFrom(r)
 	// The language the person chose (language.go), after what an application
@@ -518,7 +523,44 @@ func (s *Server) langFor(r *http.Request) string {
 // the reader's language right up until something goes wrong, which is the
 // moment it matters most.
 func (s *Server) tr(r *http.Request) *i18n.Printer {
-	return s.pageSet().Bundle().For(s.langFor(r))
+	return s.printerFor(r.Context(), s.pageOrg(r), s.langFor(r))
+}
+
+// printerFor is a printer in a language, saying what an organisation has
+// reworded. orgID may be empty, for a page that is nobody's yet.
+func (s *Server) printerFor(ctx context.Context, orgID, lang string) *i18n.Printer {
+	p := s.pagesFor(ctx, orgID).Bundle().For(lang)
+	if orgID == "" {
+		return p
+	}
+	words, err := store.OrgWords(ctx, s.db, orgID, p.Lang())
+	if err != nil {
+		// The catalogue's wording beats no page.
+		s.log.Warn("reading an organisation's words", "org_id", orgID, "err", err)
+		return p
+	}
+	return p.With(words)
+}
+
+// pagesFor is the pages an organisation's people read: its theme, when
+// SIGNARI_THEME_DIR has one for it, and otherwise everybody's.
+func (s *Server) pagesFor(ctx context.Context, orgID string) *pages.Set {
+	set := s.pageSet()
+	if orgID == "" || len(set.OrgThemes()) == 0 {
+		return set
+	}
+	slug, err := store.OrgSlug(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Warn("reading an organisation's slug", "org_id", orgID, "err", err)
+		return set
+	}
+	return set.For(slug)
+}
+
+// writePage renders a page in its organisation's theme and words.
+func (s *Server) writePage(w io.Writer, r *http.Request, orgID, name string, data map[string]any) error {
+	ctx := r.Context()
+	return s.pagesFor(ctx, orgID).ExecuteWith(w, s.printerFor(ctx, orgID, s.langFor(r)), name, data)
 }
 
 // uiLocalesFrom digs the OIDC ui_locales parameter out of a request.
@@ -608,7 +650,13 @@ func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
 	setCSP(w, policy)
-	if err := s.pageSet().ExecuteIn(w, s.langFor(r), name, data); err != nil {
+	// A theme where there are any, and not an organisation's words: nobody reads
+	// these, and each statement here is on the path that signs a person in.
+	orgID := ""
+	if len(s.pageSet().OrgThemes()) > 0 {
+		orgID = s.pageOrg(r)
+	}
+	if err := s.pagesFor(r.Context(), orgID).ExecuteIn(w, s.langFor(r), name, data); err != nil {
 		s.log.Error("rendering a bridge page", "page", name, "err", err)
 	}
 }
@@ -620,19 +668,19 @@ func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
 // followed by a consent page in the customer's colours does not read as a
 // missing feature -- it reads as though one of the two pages is not really
 // ours, which is the opposite of what branding is for.
-func (s *Server) writeBranded(w io.Writer, lang, name string, data map[string]any, b *brand.Brand) {
+func (s *Server) writeBranded(w io.Writer, r *http.Request, orgID, name string, data map[string]any, b *brand.Brand) {
 	css := ""
 	if b != nil {
 		css = b.CSS()
 	}
 	if css == "" {
-		if err := s.pageSet().ExecuteIn(w, lang, name, data); err != nil {
+		if err := s.writePage(w, r, orgID, name, data); err != nil {
 			s.log.Error("rendering a page", "page", name, "err", err)
 		}
 		return
 	}
 	var buf bytes.Buffer
-	if err := s.pageSet().ExecuteIn(&buf, lang, name, data); err != nil {
+	if err := s.writePage(&buf, r, orgID, name, data); err != nil {
 		s.log.Error("rendering a page", "page", name, "err", err)
 		return
 	}

@@ -141,6 +141,11 @@ brand:                        # written whole; what it leaves out is the instanc
   colour_background: '#ffffff'
   colour_text: '#18181b'
 
+messages:                     # the organisation's own words, as plain text
+  - locale: en
+    key: login.heading        # signari i18n keys prints every key
+    text: Sign in to Acme
+
 group_releases:               # which groups an application is told a person is in
   - client_id: wiki
     groups: [platform]        # or all_groups: true, never assumed

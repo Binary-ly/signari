@@ -130,6 +130,11 @@ func orgBrandProps() map[string]jsonSchema {
 
 var orgBrandFields = append([]string{"org_id"}, brandFields[1:]...)
 
+// orgMessageProps is one message an organisation has reworded (10.09).
+func orgMessageProps() map[string]jsonSchema {
+	return map[string]jsonSchema{"locale": str(), "key": str(), "text": str()}
+}
+
 // registrationProps is an organisation's registration policy (6.07).
 func registrationProps() map[string]jsonSchema {
 	return map[string]jsonSchema{"org_id": uuidStr(), "enabled": boolean(), "open": boolean(),
@@ -480,6 +485,11 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/brand": {http.StatusOK, typeOf[putBrandRequest](), object(
 		append(append([]string{}, orgBrandFields...), "config_version"), withVersion(orgBrandProps()))},
 	"DELETE /admin/organizations/{orgID}/brand": {http.StatusOK, nil, removedSchema},
+	"GET /admin/organizations/{orgID}/messages": {http.StatusOK, nil, object([]string{"messages"}, map[string]jsonSchema{
+		"messages": arrayOf(object([]string{"locale", "key", "text"}, orgMessageProps()))})},
+	"PUT /admin/organizations/{orgID}/messages/{locale}/{key}": {http.StatusOK, typeOf[putOrgMessageRequest](), object(
+		[]string{"locale", "key", "text", "config_version"}, withVersion(orgMessageProps()))},
+	"DELETE /admin/organizations/{orgID}/messages/{locale}/{key}": {http.StatusOK, nil, removedSchema},
 	"GET /admin/instances/{instanceID}/webauthn": {http.StatusOK, nil, object(
 		[]string{"instance_id", "rp_id", "rp_display_name", "related_origins"}, webauthnProps())},
 	"PUT /admin/instances/{instanceID}/webauthn": {http.StatusOK, typeOf[putWebAuthnRequest](), object(

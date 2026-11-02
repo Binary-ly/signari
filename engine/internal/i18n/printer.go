@@ -21,7 +21,28 @@ type Printer struct {
 	b    *Bundle
 	lang string
 	tag  language.Tag
+	// words are an organisation's own, key by key (With). Plain text, where the
+	// catalogue's messages may carry markup.
+	words map[string]string
 }
+
+// With is this printer saying an organisation's own words where it has any.
+//
+// They are a tenant's rather than ours, so T escapes them whole: where a
+// catalogue message may hold a link, one of these can only ever be text. They
+// stay plain for Text, which goes into mail and into page data that the page
+// escapes itself.
+func (p *Printer) With(words map[string]string) *Printer {
+	if len(words) == 0 {
+		return p
+	}
+	own := *p
+	own.words = words
+	return &own
+}
+
+// Worded reports whether this printer carries an organisation's own words.
+func (p *Printer) Worded() bool { return len(p.words) > 0 }
 
 // For returns a printer for a named language, falling back to the default.
 func (b *Bundle) For(lang string) *Printer {
@@ -134,6 +155,9 @@ var rtlScript = map[string]bool{
 // have to be three template fragments in English clause order. Anything
 // substituted in is data and is escaped on the way; see subst.
 func (p *Printer) T(key string, data ...any) template.HTML {
+	if own, ok := p.words[key]; ok {
+		return p.render(key, template.HTMLEscapeString(own), nil, data...)
+	}
 	return p.render(key, p.form(key, "other"), nil, data...)
 }
 
@@ -160,6 +184,9 @@ func (p *Printer) T(key string, data ...any) template.HTML {
 // the HTML direction is a scripting hole.
 func (p *Printer) Text(key string, data ...any) string {
 	text := p.form(key, "other")
+	if own, ok := p.words[key]; ok {
+		text = own
+	}
 	if !strings.ContainsRune(text, '{') {
 		return text
 	}

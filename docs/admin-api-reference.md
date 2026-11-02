@@ -47,6 +47,7 @@ refused with `412` when the configuration moved since the version it names.
 | [invitations](#invitations) | 3 |
 | [kerberos-realms](#kerberos-realms) | 3 |
 | [me](#me) | 1 |
+| [messages](#messages) | 3 |
 | [migration-source](#migration-source) | 4 |
 | [organizations](#organizations) | 4 |
 | [outposts](#outposts) | 5 |
@@ -2419,6 +2420,54 @@ Answers:
 | `org_id` | string or null | always |
 | `scopes` | list of string | always |
 | `user` | object |  |
+
+## messages
+
+### `GET /admin/organizations/{orgID}/messages`
+
+The messages the organisation has reworded. Needs config:read.
+
+Go `GetOrganizationsOrgIDMessages`, TypeScript `getOrganizationsOrgIDMessages`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `messages` | list of object | always |
+
+### `DELETE /admin/organizations/{orgID}/messages/{locale}/{key}`
+
+Return one message to the catalogue's wording. Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDMessagesLocaleKey`, TypeScript `deleteOrganizationsOrgIDMessagesLocaleKey`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `removed` | boolean | always |
+
+### `PUT /admin/organizations/{orgID}/messages/{locale}/{key}`
+
+Reword one message in one language, as plain text. Needs organizations:write.
+
+Go `PutOrganizationsOrgIDMessagesLocaleKey`, TypeScript `putOrganizationsOrgIDMessagesLocaleKey`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `text` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `config_version` | integer | always |
+| `key` | string | always |
+| `locale` | string | always |
+| `text` | string | always |
 
 ## migration-source
 

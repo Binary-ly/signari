@@ -161,6 +161,10 @@ var summaries = map[string]string{
 	"PUT /admin/organizations/{orgID}/brand":    "Brand the organisation's pages and mail over its instance's, checked for contrast.",
 	"DELETE /admin/organizations/{orgID}/brand": "Return the organisation to its instance's appearance.",
 
+	"GET /admin/organizations/{orgID}/messages":                   "The messages the organisation has reworded.",
+	"PUT /admin/organizations/{orgID}/messages/{locale}/{key}":    "Reword one message in one language, as plain text.",
+	"DELETE /admin/organizations/{orgID}/messages/{locale}/{key}": "Return one message to the catalogue's wording.",
+
 	"GET /admin/instances/{instanceID}/webauthn":         "The Relying Party ID the instance's passkeys are bound to, and its related origins.",
 	"PUT /admin/instances/{instanceID}/webauthn":         "Set the RP ID, its name and related origins; changing a set RP ID must be confirmed.",
 	"GET /admin/instances/{instanceID}/issuer-aliases":   "Legacy issuers the instance also claims, and who is pinned to each.",

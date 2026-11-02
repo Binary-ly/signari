@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0266 org_messages
+
+Compatible with the release before: its binary may still serve this schema.
+
+An organisation's own words on its pages and in its mail (10.09), one row a message and a language, over the catalogue. Every other way to reword a page is a file on the operator's disk, read at startup, which a tenant cannot reach. These are stored text rather than a catalogue entry: a catalogue message may carry markup because it is ours, and this one is a tenant's, so it is escaped on the way to a page and can only ever be words.
+
 ## 0265 org_brands
 
 Compatible with the release before: its binary may still serve this schema.

@@ -105,6 +105,68 @@ customer's logo. Mail wears the look of the organisation it is sent for.
 A separate hostname still needs [a separate instance](configuration.md#several-instances-in-one-process):
 this changes what a page looks like, not whose address it is at.
 
+## An organisation's words
+
+```sh
+signari message set -org <uuid> -locale en -message-key login.heading -message-text "Sign in to Bravo"
+signari message list -org <uuid>
+signari message remove -org <uuid> -locale en -message-key login.heading
+```
+
+`signari i18n keys` prints every key. The same through
+`PUT /admin/organizations/{orgID}/messages/{locale}/{key}`, a token of that
+organisation may call it, under `messages:` in a [configuration file](config-as-code.md),
+and on the console's Messages screen. It takes effect on the next render, on the
+pages and in the mail of that organisation alone.
+
+These are a tenant's, so they are not trusted the way the catalogue is: a message
+in the catalogue may carry a link, and one of these is plain text, escaped on the
+way to the page, so whoever may set it can change what a page says and not what it
+does. It may use the placeholders the message it replaces is given, as
+`{Client}` in `consent.title`. These are refused rather than stored: a key nothing
+renders, a language with no catalogue, a placeholder the message is never given, and
+a message that counts something, as it has a form for each number and this is one
+line. Reword those, and add a language, in a theme instead.
+
+The pages a browser reads rather than a person do not say them: the SAML POST form,
+`form_post`, WS-Federation and front-channel logout. Each is on the path that signs
+somebody in to an application, and a theme can still reword them.
+
+## An organisation's pages
+
+A theme directory (see [theming](theming.md)) may hold a directory per organisation,
+named by its slug, laid over the deployment's theme page by page and message by
+message:
+
+```
+theme/
+  layout.html               everybody's
+  locales/en.json
+  orgs/
+    bravo/
+      layout.html           Bravo's people, and nobody else's
+      locales/en.json
+      locales/de.json       a language only Bravo's readers are offered
+```
+
+```sh
+signari theme eject -theme-dir ./theme/orgs/bravo -theme-page layout
+signari theme check -theme-dir ./theme        # checks every organisation's too
+```
+
+It is the operator's disk rather than a tenant's token, read once at startup, and
+it follows every rule of a theme. A file that fails validation is refused for that
+page, and the deployment's page is served in its place. A directory that fails
+altogether costs that organisation its theme and nobody else anything. A directory
+naming no organisation is logged at startup. Two instances served by one process
+read one theme directory, so organisations of theirs that share a slug share a
+directory.
+
+On a page, an organisation's stored words are said over its theme's. Rendering them
+parses that page for the render, because a template's `T` is bound when it is parsed
+and the parsed pages are shared: a page's worth of parsing, on pages people read, and
+only for an organisation that has reworded something.
+
 ## What it touches
 
 Every page rendered by the engine: sign-in, consent, MFA enrolment and

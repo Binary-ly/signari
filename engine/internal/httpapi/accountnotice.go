@@ -92,7 +92,7 @@ func (s *Server) deliverInvitation(ctx context.Context, n store.AccountNotice) e
 		orgID).Scan(&org); err != nil {
 		return err
 	}
-	tr := s.pageSet().Bundle().For(i18n.Default)
+	tr := s.printerFor(ctx, orgID, i18n.Default)
 	return s.sendMail(ctx, orgID, mail.Message{
 		To:      email,
 		Subject: tr.Text("mail.invitation.subject", map[string]any{"Org": org}),

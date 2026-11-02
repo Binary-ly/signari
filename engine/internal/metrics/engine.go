@@ -64,6 +64,8 @@ type Engine struct {
 	// stopped, and a climbing send count with no matching sign-ins is the same
 	// attack not being stopped.
 	SMS *Counter
+	// CSPViolations are pages a browser reported its policy refusing something on.
+	CSPViolations *Counter
 
 	// Providers counts extension-provider calls by hook and outcome. A provider
 	// failing open is a control quietly not applied, and the only other sign of
@@ -194,6 +196,15 @@ func NewEngine() *Engine {
 		[]string{"outcome"},
 		[]ValueSet{
 			set("sent", "failed", "refused_country", "refused_number_budget", "refused_org_budget"),
+		})
+
+	e.CSPViolations = r.NewCounter("signari_csp_violations_total",
+		"Content-Security-Policy violations browsers reported, by directive. Anybody can "+
+			"post one, so a rise is a reason to look and not a proof.",
+		[]string{"directive"},
+		[]ValueSet{
+			set("default-src", "script-src", "style-src", "img-src", "font-src", "connect-src",
+				"frame-src", "frame-ancestors", "form-action", "base-uri", "object-src", "other"),
 		})
 
 	return e

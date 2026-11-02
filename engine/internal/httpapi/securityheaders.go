@@ -99,7 +99,9 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 // this is a hardening gap rather than a live hole -- but it is one directive, the
 // standard asks for it by name, and the protection it provides is exactly the
 // protection that disappears the next time somebody widens a policy.
-const cspInvariants = "base-uri 'none'; object-src 'none'"
+//
+// `report-uri` is V3.4.7's location, on every policy so that no page goes unwatched.
+const cspInvariants = "base-uri 'none'; object-src 'none'; report-uri " + cspReportPath
 
 // setCSP sends a Content-Security-Policy with the invariant directives appended.
 //

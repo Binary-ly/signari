@@ -755,7 +755,7 @@ for relying parties — would be scoring a checklist rather than securing anythi
 | V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
 | V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
 | V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
-| V3.4.7 CSP report location | L3, not set |
+| V3.4.7 CSP report location | **met, November 2026** — every policy carries `report-uri /csp-report`, from the one helper that sets a policy. A report is counted by directive and nothing from it is logged or kept, since it can name a URL carrying a code. Proved in Chrome 156: an injected script was refused and its report arrived at the counter |
 | V3.5.1 / V3.5.3 origin separation, CSRF, safe methods | met — per-session CSRF tokens, `POST` for every sensitive operation |
 | V3.5.2 preflight cannot be bypassed | ~~met~~ **was NOT met — fixed 21 August, see below** |
 | V3.5.5 postMessage | not applicable — zero uses |
@@ -957,7 +957,7 @@ it.
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
 | V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JARM, which is not built) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
-| V4.2.5 over-long outbound URIs and headers | partial — outbound requests are bounded by what we construct, but no explicit length ceiling is enforced |
+| V4.2.5 over-long outbound URIs and headers | **met, November 2026** — every client `safedial` builds refuses a URI or a header field over 8,000 octets before it is sent, RFC 9110 §4.1's figure for a URI (`specs/rfc9110.txt:1059-1060`), and says which and to where without repeating a value that may be a credential |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |
 | V4.4.1 WSS | deployment; TLS terminates ahead of the engine |
 | V4.4.2 Origin checked at the handshake | **was checked too late — fixed** |

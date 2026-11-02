@@ -779,6 +779,7 @@ password. See [desktop-login.md](desktop-login.md).
 | `signari_http_request_duration_seconds{route}` | latency by route pattern |
 | `signari_signins_total{outcome}`, `signari_auth_failures_total{mechanism}` | sign-ins, and failed authentications by mechanism |
 | `signari_tokens_issued_total{grant}`, `signari_sms_total{outcome}` | tokens by grant type; text messages by outcome |
+| `signari_csp_violations_total{directive}` | what browsers reported a page's policy refusing, at `POST /csp-report`. Nothing from a report is logged or kept, as it can name a URL carrying a code. Anybody can post one, so a rise is a reason to look and not a proof |
 | `signari_provider_calls_total{hook,outcome}` | extension-provider calls: `answered`, `timeout`, `unreachable`, `bad_status`, `bad_answer`, and for a failure `failed_open` or `failed_closed` |
 | `signari_outbox_pending`, `signari_outbox_oldest_pending_seconds` | logout notices and security events still being retried, and how long the oldest has waited |
 | `signari_outbox_parked` | notices that failed every attempt and will not be retried; kept so an operator can see which relying party missed a logout |

@@ -534,6 +534,7 @@ func (s *Server) mux() *http.ServeMux {
 		s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("POST "+cspReportPath, s.handleCSPReport)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)

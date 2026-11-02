@@ -43,8 +43,6 @@ var knownUnindexedFKs = map[string]string{
 	"directory_group_map.org_id":                unindexedOrg,
 	"directory_links.org_id":                    unindexedOrg,
 	"duo_challenges.org_id":                     unindexedOrg,
-	"duo_enrollments.org_id":                    unindexedOrg,
-	"event_deliveries.subscription_id":          unindexedBacklog,
 	"federated_identities.org_id":               unindexedOrg,
 	"federated_logins.org_id":                   unindexedOrg,
 	"federated_logins.provider_id":              unindexedBacklog,

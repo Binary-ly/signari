@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Read endpoints.
@@ -56,6 +58,56 @@ func pageParams(r *http.Request) (limit int, cursor string) {
 	return limit, r.URL.Query().Get("cursor")
 }
 
+// idCursor refuses a cursor that cannot be the identifier a page ended on, which
+// a list keyed by a uuid now compares as one. As text anything at all was a place
+// to start from.
+func idCursor(w http.ResponseWriter, cursor string) bool {
+	if cursor == "" || store.ExactUUID(cursor) {
+		return true
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor",
+		"detail": "a cursor is the value returned by the previous page, not a value to construct"})
+	return false
+}
+
+// listing is a page's statement, built up from the conditions a request has. One it
+// does not have is left out and not written to hold when its parameter is empty,
+// because a statement reads the same that way and stops seeking once it is planned
+// generically, which pgx's are after a few calls: the OR is a filter there, and a
+// small organisation's page walks the primary key past everybody else's rows.
+//
+// A page is a seek and a stop. So the cursor is compared as the key and not as its
+// text, or each page walks from the start, and the order names its table, or `id`
+// in `SELECT id::text ... ORDER BY id` is that text, which no index holds, and every
+// page sorts the whole of the organisation to find its hundred rows (0.83).
+type listing struct {
+	where []string
+	args  []any
+}
+
+// add appends a condition, $? standing for the number of its argument.
+func (l *listing) add(cond string, v any) {
+	l.args = append(l.args, v)
+	l.where = append(l.where, strings.ReplaceAll(cond, "$?", "$"+strconv.Itoa(len(l.args))))
+}
+
+// inOrg keeps the page to the organisation orgFilter answers, nil being all of them.
+func (l *listing) inOrg(org *string) {
+	if org != nil {
+		l.add("org_id = $?::uuid", org)
+	}
+}
+
+// page is the end of the statement: the conditions, the order and the limit.
+func (l *listing) page(order string, limit int) string {
+	l.args = append(l.args, limit)
+	tail := " ORDER BY " + order + " LIMIT $" + strconv.Itoa(len(l.args))
+	if len(l.where) == 0 {
+		return tail
+	}
+	return " WHERE " + strings.Join(l.where, " AND ") + tail
+}
+
 // clientSummary is what a list returns per client.
 //
 // Deliberately NOT the whole row. `client_secret_hash` must never leave this
@@ -75,18 +127,21 @@ func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
 
+	var l listing
+	if cursor != "" {
+		l.add("client_id > $?", cursor)
+	}
+	l.inOrg(orgFilter(ctx))
+	if only := clientFilter(ctx); only != nil {
+		l.add("client_id = ANY($?::text[])", only)
+	}
+
 	// One row beyond the page, so "is there more" is answered without a second
 	// query and without a COUNT over the whole table.
 	rows, err := s.db.Query(ctx, `
 		SELECT client_id, org_id::text, display_name, client_type, enabled,
 		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM') AS created
-		  FROM core.clients
-		 WHERE ($1 = '' OR client_id > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		   AND ($4::text[] IS NULL OR client_id = ANY($4::text[]))
-		 ORDER BY client_id
-		 LIMIT $3`,
-		cursor, orgFilter(ctx), limit+1, clientFilter(ctx))
+		  FROM core.clients`+l.page("client_id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing clients", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -192,6 +247,9 @@ type userSummary struct {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
 	// Filters (6.08), each in the WHERE clause beside the organisation, and
 	// each served by an index (0199): ?email= exactly, ?q= a prefix of the
 	// address or the user name, ?status= one of the statuses. Case does not
@@ -244,41 +302,34 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // userListQuery is the user list's query with only the filters given, each its
-// own condition. A condition that also holds when its parameter is empty reads
-// the same and stops using the index once the prepared statement is planned
-// generically, which pgx's are after a few calls. The plan test reads the same
-// text.
-func userListQuery(cursor string, org any, limit int, email, prefix, status string, reach []string) (string, []any) {
-	where := []string{"($1 = '' OR id::text > $1)", "($2::uuid IS NULL OR org_id = $2::uuid)"}
-	args := []any{cursor, org, limit}
-	add := func(cond string, v any) {
-		args = append(args, v)
-		where = append(where, strings.ReplaceAll(cond, "$?", "$"+strconv.Itoa(len(args))))
+// own condition, as listing says why. The plan test reads the same text.
+func userListQuery(cursor string, org *string, limit int, email, prefix, status string, reach []string) (string, []any) {
+	var l listing
+	if cursor != "" {
+		l.add("id > $?::uuid", cursor)
 	}
+	l.inOrg(org)
 	if email != "" {
-		add("email_fold = $?", email)
+		l.add("email_fold = $?", email)
 	}
 	if prefix != "" {
 		// A range rather than LIKE, whose function is not leakproof, so under
 		// row security it could use no index (0.52). The end is past anything
 		// the prefix can be followed by.
-		add("((email_fold ~>=~ lower($?) AND email_fold ~<~ (lower($?) || chr(1114111))) OR "+
+		l.add("((email_fold ~>=~ lower($?) AND email_fold ~<~ (lower($?) || chr(1114111))) OR "+
 			"(username_fold ~>=~ lower($?) AND username_fold ~<~ (lower($?) || chr(1114111))))", prefix)
 	}
 	if status != "" {
-		add("status = $?", status)
+		l.add("status = $?", status)
 	}
 	// A role delegated over groups lists their members only (6.01).
 	if reach != nil {
-		add("EXISTS (SELECT 1 FROM core.group_members gm WHERE gm.user_id = core.users.id AND gm.group_id = ANY($?::uuid[]))", reach)
+		l.add("EXISTS (SELECT 1 FROM core.group_members gm WHERE gm.user_id = core.users.id AND gm.group_id = ANY($?::uuid[]))", reach)
 	}
 	return `
 		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
 		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
-		  FROM core.users
-		 WHERE ` + strings.Join(where, " AND ") + `
-		 ORDER BY id
-		 LIMIT $3`, args
+		  FROM core.users` + l.page("core.users.id", limit), l.args
 }
 
 // userDetail is one user read: the summary and every field PATCH sets or

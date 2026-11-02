@@ -160,27 +160,34 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listInvitations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
+	var l listing
+	if cursor != "" {
+		l.add("id > $?::uuid", cursor)
+	}
+	l.inOrg(orgFilter(ctx))
+	// One the caller names, which matches nothing if it could not be one.
+	if only := r.URL.Query().Get("org_id"); only != "" {
+		l.add("org_id = $?::uuid", store.ExactUUIDOrNil(only))
+	}
+	// A role delegated over groups sees the invitations into them (6.01), and a
+	// token narrowed to named groups the invitations into those, as it may make only
+	// those (0.26): it listed every one.
+	for _, groups := range [][]string{reachFilter(ctx, ScopeUsersRead), groupFilter(ctx)} {
+		if groups != nil {
+			l.add(`EXISTS (SELECT 1 FROM core.groups g
+			        WHERE g.id = ANY($?::uuid[]) AND g.org_id = core.invitations.org_id
+			          AND g.name = ANY(core.invitations.grant_groups))`, groups)
+		}
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, org_id::text, COALESCE(email, ''), grant_groups, created_at, expires_at,
 		       CASE WHEN used_at IS NOT NULL THEN 'used' WHEN revoked_at IS NOT NULL THEN 'revoked'
 		            WHEN expires_at <= now() THEN 'expired' ELSE 'open' END,
 		       COALESCE(used_by::text, '')
-		  FROM core.invitations
-		 WHERE ($1 = '' OR id::text > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		   AND ($4 = '' OR org_id::text = $4)
-		   -- A role delegated over groups sees the invitations into them (6.01),
-		   -- and a token narrowed to named groups the invitations into those,
-		   -- as it may make only those (0.26): it listed every one.
-		   AND ($5::uuid[] IS NULL OR EXISTS (SELECT 1 FROM core.groups g
-		        WHERE g.id = ANY($5::uuid[]) AND g.org_id = core.invitations.org_id
-		          AND g.name = ANY(core.invitations.grant_groups)))
-		   AND ($6::uuid[] IS NULL OR EXISTS (SELECT 1 FROM core.groups g
-		        WHERE g.id = ANY($6::uuid[]) AND g.org_id = core.invitations.org_id
-		          AND g.name = ANY(core.invitations.grant_groups)))
-		 ORDER BY id
-		 LIMIT $3`, cursor, orgFilter(ctx), limit+1, r.URL.Query().Get("org_id"),
-		reachFilter(ctx, ScopeUsersRead), groupFilter(ctx))
+		  FROM core.invitations`+l.page("core.invitations.id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing invitations", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

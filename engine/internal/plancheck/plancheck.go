@@ -127,6 +127,35 @@ func explain(ctx context.Context, pool *pgxpool.Pool, s Statement, off []string)
 	return strings.Join(lines, "\n"), err
 }
 
+var sortNode = regexp.MustCompile(`(?m)^\s*(?:->\s+)?Sort\s+\(`)
+
+// SortsToPage answers the statements with an ORDER BY and a LIMIT that must sort what
+// they found to know which rows are the page, as "statement\nplan". ReadWhole cannot
+// see these: an index finds an organisation's people well enough, and it is the sort
+// of all of them that the page then costs. With sorting turned off a Sort still in
+// the plan is one no index can spare it. allowed says which are all right, and why is
+// the caller's to record.
+func SortsToPage(ctx context.Context, pool *pgxpool.Pool, sent []Statement, allowed func(sql string) bool) ([]string, int, error) {
+	seen := map[string]bool{}
+	var found []string
+	for _, s := range sent {
+		upper := strings.ToUpper(s.SQL)
+		if !strings.Contains(s.SQL, "core.") || !strings.Contains(upper, "ORDER BY") ||
+			!strings.Contains(upper, "LIMIT") || seen[s.SQL] {
+			continue
+		}
+		seen[s.SQL] = true
+		plan, err := explain(ctx, pool, s, walkFree)
+		if err != nil {
+			return found, len(seen), fmt.Errorf("explaining %s: %w", strings.Join(strings.Fields(s.SQL), " "), err)
+		}
+		if sortNode.MatchString(plan) && !allowed(s.SQL) {
+			found = append(found, strings.Join(strings.Fields(s.SQL), " ")+"\n"+plan)
+		}
+	}
+	return found, len(seen), nil
+}
+
 // Find explains each distinct statement on a core table and answers those reading a
 // table whole, as "table: statement", with how many it looked at. allowed says which
 // of them are all right, and why is the caller's to record.

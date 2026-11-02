@@ -770,6 +770,10 @@ Lists are cursor-paged on the identifier, never `OFFSET`. Offset paging re-scans
 what it skips and drifts when rows are inserted mid-run, so an operator paging
 through users during a provisioning run would see some twice and miss others.
 
+A page is a seek and a stop, so the last page of a directory costs what the first
+does. Give back the `next_cursor` you were given: a cursor that could not be one is
+refused with `400 invalid_cursor`.
+
 `limit` is clamped to 200 whatever is asked for. An unbounded administrative list
 is a memory amplifier in both the server and the client, and `?limit=100000` is
 what somebody types when a page looks short.

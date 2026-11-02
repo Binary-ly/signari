@@ -57,15 +57,21 @@ func scanGroup(row pgx.Row, g *groupSummary) error {
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
 
+	var l listing
+	if cursor != "" {
+		l.add("id > $?::uuid", cursor)
+	}
+	l.inOrg(orgFilter(ctx))
+	if only := groupFilter(ctx); only != nil {
+		l.add("id::text = ANY($?::text[])", only)
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT `+groupColumns+`
-		  FROM core.groups
-		 WHERE ($1 = '' OR id::text > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		   AND ($4::text[] IS NULL OR id::text = ANY($4::text[]))
-		 ORDER BY id
-		 LIMIT $3`, cursor, orgFilter(ctx), limit+1, groupFilter(ctx))
+		  FROM core.groups`+l.page("core.groups.id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing groups", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -356,6 +362,9 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
 
 	var orgID string
 	if err := s.db.QueryRow(ctx,
@@ -372,14 +381,16 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var l listing
+	l.add("m.group_id = $?::uuid", groupID)
+	if cursor != "" {
+		l.add("m.user_id > $?::uuid", cursor)
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text, coalesce(u.email, ''), coalesce(u.username, ''),
 		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.group_members m
-		  JOIN core.users u ON u.id = m.user_id
-		 WHERE m.group_id = $1::uuid AND ($2 = '' OR u.id::text > $2)
-		 ORDER BY u.id
-		 LIMIT $3`, groupID, cursor, limit+1)
+		  JOIN core.users u ON u.id = m.user_id`+l.page("m.user_id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing group members", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

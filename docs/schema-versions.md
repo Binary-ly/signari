@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0270 admin_read_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the Admin API's reads need to stop at the page (0.83). A page of an organisation's people read and sorted all of them; a deployment-wide read of the audit trail sorted the whole trail, because nothing led with its time; and the list of event subscriptions and a Duo integration each counted through a table with no index for what they counted.
+
 ## 0269 console_views
 
 Compatible with the release before: its binary may still serve this schema.

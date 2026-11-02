@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/tokens"
 )
 
 const goodChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -276,6 +277,21 @@ func TestAnIDTokenCannotGoInASignedQuery(t *testing.T) {
 	req.ResponseMode = "jwt"
 	if err := ValidateAuthz(req, c, nil); err != nil {
 		t.Errorf("jwt with an id_token is a fragment and should pass: %+v", err)
+	}
+}
+
+// An encrypted response is signed first, so a client that asked for one alone has asked
+// for both, and a plain mode would give it neither.
+func TestAskingForAnEncryptedResponseHoldsAClientToo(t *testing.T) {
+	c := testClient()
+	c.AuthorizationEncryption = tokens.Encryption{Alg: "ECDH-ES", Enc: "A256GCM"}
+	if err := ValidateAuthz(goodRequest(), c, nil); err == nil || err.Code != "invalid_request" {
+		t.Errorf("no mode at all for a client that encrypts: %+v", err)
+	}
+	req := goodRequest()
+	req.ResponseMode = "jwt"
+	if err := ValidateAuthz(req, c, nil); err != nil {
+		t.Errorf("jwt for a client that encrypts: %+v", err)
 	}
 }
 

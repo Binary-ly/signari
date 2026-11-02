@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -201,7 +205,65 @@ func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *
 		}
 	}
 
+	if person.AsJWT {
+		s.writeUserinfoJWT(w, r, claims.ClientID, out)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// writeUserinfoJWT answers a client that asked for its claims signed, encrypted or both,
+// in OIDC Core §5.3.2's terms: "the content-type MUST be application/jwt", "the response
+// MUST be signed then encrypted", and "The response MAY be encrypted without also being
+// signed". What fails to sign or encrypt is not sent as JSON instead: that is the form
+// the client said it would not take these claims in.
+func (s *Server) writeUserinfoJWT(w http.ResponseWriter, r *http.Request, clientID string, out map[string]any) {
+	ctx := r.Context()
+	body, err := s.userinfoJWT(ctx, clientID, out)
+	if err != nil {
+		s.log.ErrorContext(ctx, "preparing a userinfo response", "err", err, "client", clientID)
+		http.Error(w, "the response could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/jwt")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		s.log.InfoContext(ctx, "writing a userinfo response", "err", err)
+	}
+}
+
+func (s *Server) userinfoJWT(ctx context.Context, clientID string, out map[string]any) ([]byte, error) {
+	c, err := s.lookupClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, clients.ErrNotFound
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	signed := c.UserinfoSignedAlg != ""
+	if signed {
+		key, kerr := s.cfg.Keys.Active(keys.Algorithm(c.UserinfoSignedAlg))
+		if kerr != nil {
+			return nil, kerr
+		}
+		// §5.3.2: "If signed, the UserInfo Response MUST contain the Claims iss
+		// (issuer) and aud (audience) as members."
+		out["iss"], out["aud"] = s.issuerFor(c), c.ClientID
+		jwt, serr := tokens.NewSigner(key).SignJSON(out, "JWT")
+		if serr != nil {
+			return nil, serr
+		}
+		body = []byte(jwt)
+	}
+	if c.UserinfoEncryption.Alg == "" {
+		return body, nil
+	}
+	sealed, err := tokens.EncryptTo(body, signed, c.EncryptionKeys, c.UserinfoEncryption)
+	return []byte(sealed), err
 }
 
 // bearerToken reads the access token from the Authorization header (RFC 6750

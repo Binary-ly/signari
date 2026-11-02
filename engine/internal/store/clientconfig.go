@@ -19,6 +19,7 @@ import (
 
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/tokens"
 )
 
 // The validated writers for client settings that more than one surface sets.
@@ -167,10 +168,51 @@ func SetClientExchangeContainment(ctx context.Context, q clientWriter, clientID 
 
 // SetClientKeys registers a client's PUBLIC key set and moves it to
 // private_key_jwt, dropping its secret, which would otherwise remain a working
-// credential beside the keys meant to retire it. Every key must be public and
-// usable: an unusable set found at someone's first token request is a worse
-// discovery than one refused here. Returns how many keys it holds.
+// credential beside the keys meant to retire it. Returns how many keys it holds.
 func SetClientKeys(ctx context.Context, q clientWriter, clientID string, raw []byte) (int, error) {
+	n, err := checkClientKeys(ctx, q, clientID, raw)
+	if err != nil {
+		return 0, err
+	}
+	return n, oneClient(q.Exec(ctx, `UPDATE core.clients
+		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
+		    client_secret_hash = NULL, updated_at = now()
+		WHERE client_id = $1`, clientID, string(raw)))
+}
+
+// SetClientMessageKeys registers a client's PUBLIC key set for what it signs to this
+// server and what this server encrypts to it, and leaves how it authenticates alone.
+func SetClientMessageKeys(ctx context.Context, q clientWriter, clientID string, raw []byte) (int, error) {
+	n, err := checkClientKeys(ctx, q, clientID, raw)
+	if err != nil {
+		return 0, err
+	}
+	return n, oneClient(q.Exec(ctx, `UPDATE core.clients SET jwks = $2::jsonb, updated_at = now()
+		WHERE client_id = $1`, clientID, string(raw)))
+}
+
+// encryptableTo refuses an encryption the client holds no key for, as a signing
+// algorithm is refused with no key to sign with: every response would fail.
+func encryptableTo(ctx context.Context, q clientWriter, clientID, alg string) error {
+	var jwks string
+	err := q.QueryRow(ctx, `SELECT COALESCE(jwks::text, '') FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&jwks)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrClientNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tokens.EncryptionKey(jwks, alg); err != nil {
+		return invalidSetting("%v; register one with `signari client set-keys -keep-auth`", err)
+	}
+	return nil
+}
+
+// checkClientKeys says how many keys a set holds. Every one must be public and usable:
+// an unusable set found at someone's first token request is a worse discovery than one
+// refused here. And it has to go on covering what is encrypted to the client.
+func checkClientKeys(ctx context.Context, q clientWriter, clientID string, raw []byte) (int, error) {
 	var set jose.JSONWebKeySet
 	if err := json.Unmarshal(raw, &set); err != nil {
 		return 0, invalidSetting("not a JWKS document: %v", err)
@@ -188,10 +230,22 @@ func SetClientKeys(ctx context.Context, q clientWriter, clientID string, raw []b
 			return 0, invalidSetting("the key set holds a key that is not usable")
 		}
 	}
-	return len(set.Keys), oneClient(q.Exec(ctx, `UPDATE core.clients
-		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
-		    client_secret_hash = NULL, updated_at = now()
-		WHERE client_id = $1`, clientID, string(raw)))
+	var encrypted [3]string
+	err := q.QueryRow(ctx, `SELECT COALESCE(id_token_encrypted_response_alg, ''),
+		COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_alg, '')
+		FROM core.clients WHERE client_id = $1`, clientID).Scan(&encrypted[0], &encrypted[1], &encrypted[2])
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	for _, alg := range encrypted {
+		if alg == "" {
+			continue
+		}
+		if _, err := tokens.EncryptionKey(string(raw), alg); err != nil {
+			return 0, invalidSetting("%v, and this client's responses are encrypted with it", err)
+		}
+	}
+	return len(set.Keys), nil
 }
 
 // ClientTLS is a client's mutual-TLS registration (RFC 8705): exactly one

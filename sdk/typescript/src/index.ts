@@ -1913,6 +1913,8 @@ export interface GetClientsClientIDResponse {
   admin_api?: boolean
   allow_hybrid?: boolean
   authorization_detail_types?: string[]
+  authorization_encrypted_response_alg?: string | null
+  authorization_encrypted_response_enc?: string | null
   authorization_signed_response_alg?: string | null
   backchannel_client_notification_endpoint?: string | null
   backchannel_logout_session_required?: boolean
@@ -1934,6 +1936,8 @@ export interface GetClientsClientIDResponse {
   frontchannel_logout_uri?: string | null
   grant_types: string[]
   hybrid_review_by?: string | null
+  id_token_encrypted_response_alg?: string | null
+  id_token_encrypted_response_enc?: string | null
   id_token_signed_alg?: string
   initiate_login_uri?: string | null
   issuer_alias?: string | null
@@ -1967,6 +1971,9 @@ export interface GetClientsClientIDResponse {
   tls_subject_dn?: string | null
   tls_thumbprint?: string | null
   token_endpoint_auth_method?: string
+  userinfo_encrypted_response_alg?: string | null
+  userinfo_encrypted_response_enc?: string | null
+  userinfo_signed_response_alg?: string | null
 }
 
 /** A JSON object of the Admin API. */
@@ -3226,6 +3233,8 @@ export interface PatchClientsClientIDRequest {
   admin_api?: boolean
   allow_hybrid?: boolean
   authorization_detail_types?: string[]
+  authorization_encrypted_response_alg?: string
+  authorization_encrypted_response_enc?: string
   authorization_signed_response_alg?: string
   backchannel_client_notification_endpoint?: string
   backchannel_logout_session_required?: boolean
@@ -3243,11 +3252,14 @@ export interface PatchClientsClientIDRequest {
   frontchannel_logout_uri?: string
   grant_types?: string[]
   hybrid_review_by?: string
+  id_token_encrypted_response_alg?: string
+  id_token_encrypted_response_enc?: string
   id_token_signed_response_alg?: string
   initiate_login_uri?: string
   issuer_alias?: string
   jwks?: unknown
   jwt_bearer_providers?: string[]
+  keep_auth_method?: boolean
   login_ui_url?: string
   logo_uri?: string
   may_exchange?: boolean
@@ -3273,6 +3285,9 @@ export interface PatchClientsClientIDRequest {
   tls_san_ip?: string
   tls_san_uri?: string
   tls_subject_dn?: string
+  userinfo_encrypted_response_alg?: string
+  userinfo_encrypted_response_enc?: string
+  userinfo_signed_response_alg?: string
 }
 
 /** A JSON object of the Admin API. */
@@ -3280,6 +3295,8 @@ export interface PatchClientsClientIDResponse {
   access_token_format?: string
   access_token_signed_response_alg?: string
   access_token_ttl_s?: number
+  authorization_encrypted_response_alg?: string
+  authorization_encrypted_response_enc?: string
   authorization_signed_response_alg?: string
   client_id: string
   config_version: number
@@ -3289,6 +3306,8 @@ export interface PatchClientsClientIDResponse {
   first_party?: boolean
   frontchannel_logout_session_required?: boolean
   frontchannel_logout_uri?: string
+  id_token_encrypted_response_alg?: string
+  id_token_encrypted_response_enc?: string
   id_token_signed_response_alg?: string
   issuer_alias?: string
   login_ui_url?: string
@@ -3304,6 +3323,9 @@ export interface PatchClientsClientIDResponse {
   sector?: string
   security_profile?: string
   subject_type?: string
+  userinfo_encrypted_response_alg?: string
+  userinfo_encrypted_response_enc?: string
+  userinfo_signed_response_alg?: string
 }
 
 /** A JSON object of the Admin API. */

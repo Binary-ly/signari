@@ -68,6 +68,8 @@ var mustBeReachable = []capability{
 	{"groupIDs", "an Entra source never reports a group, so its mappings change " +
 		"nothing (2.02: no source fetched one)"},
 	{"groupEmails", "the same for a Google Workspace source"},
+	{"EncryptTo", "a client that asked for encryption is told it has it and is sent the " +
+		"plaintext it asked not to get"},
 	{"addNestedMembers", "somebody in a group nested inside a mapped Active Directory " +
 		"group reads as outside it"},
 	{"VerifyLDAP", "a migration configured to verify against the old directory " +

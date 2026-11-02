@@ -161,6 +161,15 @@ cost is all CPU, which is what guessing hardware is best at. If a FIPS boundary
 around password storage is the requirement, that trade needs stating explicitly
 to whoever is asking for it.
 
+### AES-GCM in an encrypted response
+
+[Encrypting a response to a client](response-encryption.md) goes through the JOSE
+library, which chooses GCM's nonce itself, and the module refuses a nonce the caller
+chose. So under `fips140=only` the content encryptions on offer are `A128CBC-HS256` and
+`A256CBC-HS512`, in discovery and in the setting alike. `RSA-OAEP-256` and `ECDH-ES` work
+with both, and the encryption tests pass in that mode. A client set to a GCM value before
+the move answers a 500 rather than send anything in the clear.
+
 ## What was fixed rather than documented
 
 ### SAML assertion encryption — `internal/saml`

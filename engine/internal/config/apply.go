@@ -129,6 +129,10 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		cl.RequireState = &st.RequireState
 		cl.RequireSignedRequest = &st.RequireSignedRequest
 		cl.AuthorizationResponseAlg = &st.AuthorizationResponseAlg
+		cl.UserinfoSignedAlg = &st.UserinfoSignedAlg
+		cl.IDTokenEncryptedAlg, cl.IDTokenEncryptedEnc = &st.IDTokenEncryption.Alg, &st.IDTokenEncryption.Enc
+		cl.UserinfoEncryptedAlg, cl.UserinfoEncryptedEnc = &st.UserinfoEncryption.Alg, &st.UserinfoEncryption.Enc
+		cl.AuthorizationEncryptedAlg, cl.AuthorizationEncryptedEnc = &st.AuthorizationEncryption.Alg, &st.AuthorizationEncryption.Enc
 		cl.MinimumACR = &st.MinimumACR
 		c.clients[id] = cl
 	}
@@ -476,6 +480,19 @@ func clientDiff(have, want Client) string {
 	}
 	if w, h := want.AuthorizationResponseAlg, have.AuthorizationResponseAlg; w != nil && h != nil && *w != *h {
 		d = append(d, "authorization_signed_response_alg")
+	}
+	for name, values := range map[string][2]*string{
+		"userinfo_signed_response_alg":         {want.UserinfoSignedAlg, have.UserinfoSignedAlg},
+		"id_token_encrypted_response_alg":      {want.IDTokenEncryptedAlg, have.IDTokenEncryptedAlg},
+		"id_token_encrypted_response_enc":      {want.IDTokenEncryptedEnc, have.IDTokenEncryptedEnc},
+		"userinfo_encrypted_response_alg":      {want.UserinfoEncryptedAlg, have.UserinfoEncryptedAlg},
+		"userinfo_encrypted_response_enc":      {want.UserinfoEncryptedEnc, have.UserinfoEncryptedEnc},
+		"authorization_encrypted_response_alg": {want.AuthorizationEncryptedAlg, have.AuthorizationEncryptedAlg},
+		"authorization_encrypted_response_enc": {want.AuthorizationEncryptedEnc, have.AuthorizationEncryptedEnc},
+	} {
+		if w, h := values[0], values[1]; w != nil && h != nil && *w != *h {
+			d = append(d, name)
+		}
 	}
 	if w, h := want.RolesClaim, have.RolesClaim; w != nil && h != nil && *w != *h {
 		d = append(d, "roles_claim")

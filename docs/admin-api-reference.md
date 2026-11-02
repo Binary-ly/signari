@@ -604,6 +604,8 @@ Answers:
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
 | `authorization_detail_types` | list of string |  |
+| `authorization_encrypted_response_alg` | string or null |  |
+| `authorization_encrypted_response_enc` | string or null |  |
 | `authorization_signed_response_alg` | string or null |  |
 | `backchannel_client_notification_endpoint` | string or null |  |
 | `backchannel_logout_session_required` | boolean |  |
@@ -625,6 +627,8 @@ Answers:
 | `frontchannel_logout_uri` | string or null |  |
 | `grant_types` | list of string | always |
 | `hybrid_review_by` | string or null |  |
+| `id_token_encrypted_response_alg` | string or null |  |
+| `id_token_encrypted_response_enc` | string or null |  |
 | `id_token_signed_alg` | string |  |
 | `initiate_login_uri` | string or null |  |
 | `issuer_alias` | string or null |  |
@@ -658,6 +662,9 @@ Answers:
 | `tls_subject_dn` | string or null |  |
 | `tls_thumbprint` | string or null |  |
 | `token_endpoint_auth_method` | string |  |
+| `userinfo_encrypted_response_alg` | string or null |  |
+| `userinfo_encrypted_response_enc` | string or null |  |
+| `userinfo_signed_response_alg` | string or null |  |
 
 ### `PATCH /admin/clients/{clientID}`
 
@@ -675,6 +682,8 @@ Takes:
 | `admin_api` | boolean |  |
 | `allow_hybrid` | boolean |  |
 | `authorization_detail_types` | list of string |  |
+| `authorization_encrypted_response_alg` | string |  |
+| `authorization_encrypted_response_enc` | string |  |
 | `authorization_signed_response_alg` | string |  |
 | `backchannel_client_notification_endpoint` | string |  |
 | `backchannel_logout_session_required` | boolean |  |
@@ -692,11 +701,14 @@ Takes:
 | `frontchannel_logout_uri` | string |  |
 | `grant_types` | list of string |  |
 | `hybrid_review_by` | string |  |
+| `id_token_encrypted_response_alg` | string |  |
+| `id_token_encrypted_response_enc` | string |  |
 | `id_token_signed_response_alg` | string |  |
 | `initiate_login_uri` | string |  |
 | `issuer_alias` | string |  |
 | `jwks` | any |  |
 | `jwt_bearer_providers` | list of string |  |
+| `keep_auth_method` | boolean |  |
 | `login_ui_url` | string |  |
 | `logo_uri` | string |  |
 | `may_exchange` | boolean |  |
@@ -722,6 +734,9 @@ Takes:
 | `tls_san_ip` | string |  |
 | `tls_san_uri` | string |  |
 | `tls_subject_dn` | string |  |
+| `userinfo_encrypted_response_alg` | string |  |
+| `userinfo_encrypted_response_enc` | string |  |
+| `userinfo_signed_response_alg` | string |  |
 
 Answers:
 
@@ -730,6 +745,8 @@ Answers:
 | `access_token_format` | string |  |
 | `access_token_signed_response_alg` | string |  |
 | `access_token_ttl_s` | integer |  |
+| `authorization_encrypted_response_alg` | string |  |
+| `authorization_encrypted_response_enc` | string |  |
 | `authorization_signed_response_alg` | string |  |
 | `client_id` | string | always |
 | `config_version` | integer | always |
@@ -739,6 +756,8 @@ Answers:
 | `first_party` | boolean |  |
 | `frontchannel_logout_session_required` | boolean |  |
 | `frontchannel_logout_uri` | string |  |
+| `id_token_encrypted_response_alg` | string |  |
+| `id_token_encrypted_response_enc` | string |  |
 | `id_token_signed_response_alg` | string |  |
 | `issuer_alias` | string |  |
 | `login_ui_url` | string |  |
@@ -754,6 +773,9 @@ Answers:
 | `sector` | string |  |
 | `security_profile` | string |  |
 | `subject_type` | string |  |
+| `userinfo_encrypted_response_alg` | string |  |
+| `userinfo_encrypted_response_enc` | string |  |
+| `userinfo_signed_response_alg` | string |  |
 
 ## clients / group-release
 

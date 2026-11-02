@@ -95,6 +95,17 @@ type registrationRequest struct {
 	RequireSignedRequestObject bool `json:"require_signed_request_object"`
 	// JARM §3, and another: with one, the client takes only signed responses.
 	AuthorizationSignedResponseAlg string `json:"authorization_signed_response_alg"`
+
+	// How its responses are signed and encrypted, and the keys to encrypt them to.
+	// Dropped silently, a client that asked for encryption would get plaintext.
+	UserinfoSignedResponseAlg         string          `json:"userinfo_signed_response_alg"`
+	IDTokenEncryptedResponseAlg       string          `json:"id_token_encrypted_response_alg"`
+	IDTokenEncryptedResponseEnc       string          `json:"id_token_encrypted_response_enc"`
+	UserinfoEncryptedResponseAlg      string          `json:"userinfo_encrypted_response_alg"`
+	UserinfoEncryptedResponseEnc      string          `json:"userinfo_encrypted_response_enc"`
+	AuthorizationEncryptedResponseAlg string          `json:"authorization_encrypted_response_alg"`
+	AuthorizationEncryptedResponseEnc string          `json:"authorization_encrypted_response_enc"`
+	JWKS                              json.RawMessage `json:"jwks"`
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +249,25 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if a := strings.TrimSpace(req.AuthorizationSignedResponseAlg); a != "" {
 		settings.AuthorizationResponseAlg = &a
 	}
+	if a := strings.TrimSpace(req.UserinfoSignedResponseAlg); a != "" {
+		settings.UserinfoSignedAlg = &a
+	}
+	for _, e := range []struct {
+		from [2]string
+		alg  **string
+		enc  **string
+	}{
+		{[2]string{req.IDTokenEncryptedResponseAlg, req.IDTokenEncryptedResponseEnc}, &settings.IDTokenEncryptedAlg, &settings.IDTokenEncryptedEnc},
+		{[2]string{req.UserinfoEncryptedResponseAlg, req.UserinfoEncryptedResponseEnc}, &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc},
+		{[2]string{req.AuthorizationEncryptedResponseAlg, req.AuthorizationEncryptedResponseEnc}, &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc},
+	} {
+		if alg := strings.TrimSpace(e.from[0]); alg != "" {
+			*e.alg = &alg
+		}
+		if enc := strings.TrimSpace(e.from[1]); enc != "" {
+			*e.enc = &enc
+		}
+	}
 	if req.RequirePushedAuthorizationRequests {
 		settings.RequirePAR = &req.RequirePushedAuthorizationRequests
 	}
@@ -246,6 +276,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
 		Settings:     settings,
+		JWKS:         req.JWKS,
 		OrgID:        orgID,
 		DisplayName:  displayNameFor(req.ClientName),
 		RedirectURIs: req.RedirectURIs,
@@ -308,8 +339,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		body["id_token_signed_response_alg"] = st.IDTokenAlg
 		body["require_pushed_authorization_requests"] = st.RequirePAR
 		body["require_signed_request_object"] = st.RequireSignedRequest
-		if st.AuthorizationResponseAlg != "" {
-			body["authorization_signed_response_alg"] = st.AuthorizationResponseAlg
+		for name, value := range map[string]string{
+			"authorization_signed_response_alg":    st.AuthorizationResponseAlg,
+			"userinfo_signed_response_alg":         st.UserinfoSignedAlg,
+			"id_token_encrypted_response_alg":      st.IDTokenEncryption.Alg,
+			"id_token_encrypted_response_enc":      st.IDTokenEncryption.Enc,
+			"userinfo_encrypted_response_alg":      st.UserinfoEncryption.Alg,
+			"userinfo_encrypted_response_enc":      st.UserinfoEncryption.Enc,
+			"authorization_encrypted_response_alg": st.AuthorizationEncryption.Alg,
+			"authorization_encrypted_response_enc": st.AuthorizationEncryption.Enc,
+		} {
+			if value != "" {
+				body[name] = value
+			}
 		}
 	}
 	if req.FrontchannelLogoutURI != "" {

@@ -80,8 +80,7 @@ asked for a signature will rightly refuse them, and the code would have crossed 
 browser for nothing. `signari doctor` reports a client set to an algorithm with no
 active key.
 
-## What is not here
+## Encrypting it
 
-**Encrypted responses.** `authorization_encrypted_response_alg` is not taken. The
-signature is what proves where a response came from, and encryption would only hide a
-code that PKCE already binds to the client.
+A client can have the signed response [encrypted to a key of its own](response-encryption.md)
+as well, which holds it to signed responses in the same way.

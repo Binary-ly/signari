@@ -41,6 +41,15 @@ type ClientSettings struct {
 	// AuthorizationResponseAlg signs the client's authorization responses (JARM §3)
 	// and holds it to asking for them signed; "" lets go of both. The same rules.
 	AuthorizationResponseAlg *string
+	// UserinfoSignedAlg signs the client's userinfo responses, which are then a JWT;
+	// "" goes back to JSON. The same rules.
+	UserinfoSignedAlg *string
+	// What the client has encrypted to it, each an algorithm and a content encryption.
+	// An algorithm alone comes with the default, "" turns it off, and the client has to
+	// hold a key for it already: a response nobody can encrypt is a response not sent.
+	IDTokenEncryptedAlg, IDTokenEncryptedEnc             *string
+	UserinfoEncryptedAlg, UserinfoEncryptedEnc           *string
+	AuthorizationEncryptedAlg, AuthorizationEncryptedEnc *string
 	// RolesClaim names the claim the client's tokens carry a person's roles in
 	// the application under; "" carries none.
 	RolesClaim *string
@@ -203,6 +212,45 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 			return err
 		}
 	}
+	if a := s.UserinfoSignedAlg; a != nil {
+		if *a != "" {
+			if err := held(*a); err != nil {
+				return err
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET userinfo_signed_response_alg = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *a)); err != nil {
+			return err
+		}
+	}
+	for _, e := range []struct {
+		alg, enc *string
+		update   string
+	}{
+		{s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc, `UPDATE core.clients SET id_token_encrypted_response_alg = NULLIF($2, ''),
+			id_token_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
+		{s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc, `UPDATE core.clients SET userinfo_encrypted_response_alg = NULLIF($2, ''),
+			userinfo_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
+		{s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc, `UPDATE core.clients SET authorization_encrypted_response_alg = NULLIF($2, ''),
+			authorization_encrypted_response_enc = NULLIF($3, ''), updated_at = now() WHERE client_id = $1`},
+	} {
+		if e.alg == nil {
+			continue
+		}
+		enc := ""
+		if *e.alg != "" {
+			enc = tokens.DefaultContentEncryption
+			if e.enc != nil {
+				enc = *e.enc
+			}
+			if err := encryptableTo(ctx, tx, clientID, *e.alg); err != nil {
+				return err
+			}
+		}
+		if err := clientUpdated(tx.Exec(ctx, e.update, clientID, *e.alg, enc)); err != nil {
+			return err
+		}
+	}
 	if v := s.RolesClaim; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET roles_claim = NULLIF($2, ''),
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
@@ -349,6 +397,31 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
 			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
 	}
+	if a := s.UserinfoSignedAlg; a != nil && *a != "" && !slices.Contains(ClientAlgorithms, *a) {
+		return fmt.Errorf("%w: %q is not a signing algorithm a client may use (%s)",
+			ErrInvalidClientSetting, *a, strings.Join(ClientAlgorithms, ", "))
+	}
+	for _, e := range [][2]*string{{s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc},
+		{s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc}, {s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc}} {
+		alg, enc := e[0], e[1]
+		if alg != nil && *alg != "" && !slices.Contains(tokens.EncryptionAlgorithms, *alg) {
+			return fmt.Errorf("%w: %q is not an encryption algorithm a client may use (%s)",
+				ErrInvalidClientSetting, *alg, strings.Join(tokens.EncryptionAlgorithms, ", "))
+		}
+		if enc == nil {
+			continue
+		}
+		// JARM §3: "When authorization_encrypted_response_enc is included,
+		// authorization_encrypted_response_alg MUST also be provided."
+		if alg == nil || *alg == "" && *enc != "" {
+			return fmt.Errorf("%w: a content encryption means nothing without the algorithm beside it",
+				ErrInvalidClientSetting)
+		}
+		if *alg != "" && !slices.Contains(tokens.ContentEncryptions, *enc) {
+			return fmt.Errorf("%w: %q is not a content encryption a client may use (%s)",
+				ErrInvalidClientSetting, *enc, strings.Join(tokens.ContentEncryptions, ", "))
+		}
+	}
 	if v := s.AccessTokenFormat; v != nil && *v != "jwt" && *v != "opaque" {
 		return fmt.Errorf("%w: an access token is jwt or opaque, not %q", ErrInvalidClientSetting, *v)
 	}
@@ -482,6 +555,11 @@ type ClientSettingsView struct {
 	RequireSignedRequest bool
 	// AuthorizationResponseAlg is JARM's authorization_signed_response_alg.
 	AuthorizationResponseAlg string
+	// UserinfoSignedAlg is "" for a userinfo response in JSON.
+	UserinfoSignedAlg string
+	// IDTokenEncryption, UserinfoEncryption and AuthorizationEncryption are what is
+	// encrypted to the client.
+	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
 	// ConsentLifetime is 0 for a consent that does not expire.
 	ConsentLifetime time.Duration
 }
@@ -497,11 +575,17 @@ func ClientSettingsOf(ctx context.Context, q interface {
 		       subject_type, sector, security_profile,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
 		       COALESCE(consent_lifetime_s, 0), require_state, COALESCE(login_ui_url, ''),
-		       require_signed_request_object, COALESCE(authorization_signed_response_alg, '')
+		       require_signed_request_object, COALESCE(authorization_signed_response_alg, ''),
+		       COALESCE(userinfo_signed_response_alg, ''),
+		       COALESCE(id_token_encrypted_response_alg, ''), COALESCE(id_token_encrypted_response_enc, ''),
+		       COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(userinfo_encrypted_response_enc, ''),
+		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, '')
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
 			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent,
-			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest, &v.AuthorizationResponseAlg)
+			&v.RequireState, &v.LoginUI, &v.RequireSignedRequest, &v.AuthorizationResponseAlg, &v.UserinfoSignedAlg,
+			&v.IDTokenEncryption.Alg, &v.IDTokenEncryption.Enc, &v.UserinfoEncryption.Alg, &v.UserinfoEncryption.Enc,
+			&v.AuthorizationEncryption.Alg, &v.AuthorizationEncryption.Enc)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

@@ -109,7 +109,12 @@ func (s *Server) signAuthzResponse(c *clients.Client, p responseParams) (string,
 	for name, values := range p.values() {
 		claims[name] = values[0]
 	}
-	return tokens.NewSigner(key).SignJSON(claims, "JWT")
+	signed, err := tokens.NewSigner(key).SignJSON(claims, "JWT")
+	if err != nil || c.AuthorizationEncryption.Alg == "" {
+		return signed, err
+	}
+	// §2.2: "the JSON document will be signed then encrypted".
+	return tokens.EncryptTo([]byte(signed), true, c.EncryptionKeys, c.AuthorizationEncryption)
 }
 
 // deliverAuthzResponse sends a response, a code or an error, the way the request asked:
@@ -119,7 +124,7 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 
 	mode, signed := req.ResponseEncoding()
 	// A client held to signing gets nothing else, the refusal of a plain mode included.
-	if signed || c.AuthorizationResponseAlg != "" {
+	if signed || c.HeldToSignedResponses() {
 		response, err := s.signAuthzResponse(c, p)
 		if err != nil {
 			// Never the same thing unsigned: the client asked for a signature so as

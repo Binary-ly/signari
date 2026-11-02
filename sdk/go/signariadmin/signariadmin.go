@@ -574,6 +574,8 @@ type GetClientsClientIDResponse struct {
 	AdminAPI                              bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           bool           `json:"allow_hybrid,omitempty"`
 	AuthorizationDetailTypes              []string       `json:"authorization_detail_types,omitempty"`
+	AuthorizationEncryptedResponseAlg     *string        `json:"authorization_encrypted_response_alg,omitempty"`
+	AuthorizationEncryptedResponseEnc     *string        `json:"authorization_encrypted_response_enc,omitempty"`
 	AuthorizationSignedResponseAlg        *string        `json:"authorization_signed_response_alg,omitempty"`
 	BackchannelClientNotificationEndpoint *string        `json:"backchannel_client_notification_endpoint,omitempty"`
 	BackchannelLogoutSessionRequired      bool           `json:"backchannel_logout_session_required,omitempty"`
@@ -595,6 +597,8 @@ type GetClientsClientIDResponse struct {
 	FrontchannelLogoutURI                 *string        `json:"frontchannel_logout_uri,omitempty"`
 	GrantTypes                            []string       `json:"grant_types"`
 	HybridReviewBy                        *string        `json:"hybrid_review_by,omitempty"`
+	IDTokenEncryptedResponseAlg           *string        `json:"id_token_encrypted_response_alg,omitempty"`
+	IDTokenEncryptedResponseEnc           *string        `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedAlg                      string         `json:"id_token_signed_alg,omitempty"`
 	InitiateLoginURI                      *string        `json:"initiate_login_uri,omitempty"`
 	IssuerAlias                           *string        `json:"issuer_alias,omitempty"`
@@ -628,6 +632,9 @@ type GetClientsClientIDResponse struct {
 	TlsSubjectDN                          *string        `json:"tls_subject_dn,omitempty"`
 	TlsThumbprint                         *string        `json:"tls_thumbprint,omitempty"`
 	TokenEndpointAuthMethod               string         `json:"token_endpoint_auth_method,omitempty"`
+	UserinfoEncryptedResponseAlg          *string        `json:"userinfo_encrypted_response_alg,omitempty"`
+	UserinfoEncryptedResponseEnc          *string        `json:"userinfo_encrypted_response_enc,omitempty"`
+	UserinfoSignedResponseAlg             *string        `json:"userinfo_signed_response_alg,omitempty"`
 }
 
 // GetClientsClientIDGroupReleaseResponse is a JSON object of the Admin API.
@@ -1887,6 +1894,8 @@ type PatchClientsClientIDRequest struct {
 	AdminAPI                              *bool           `json:"admin_api,omitempty"`
 	AllowHybrid                           *bool           `json:"allow_hybrid,omitempty"`
 	AuthorizationDetailTypes              *[]string       `json:"authorization_detail_types,omitempty"`
+	AuthorizationEncryptedResponseAlg     *string         `json:"authorization_encrypted_response_alg,omitempty"`
+	AuthorizationEncryptedResponseEnc     *string         `json:"authorization_encrypted_response_enc,omitempty"`
 	AuthorizationSignedResponseAlg        *string         `json:"authorization_signed_response_alg,omitempty"`
 	BackchannelClientNotificationEndpoint *string         `json:"backchannel_client_notification_endpoint,omitempty"`
 	BackchannelLogoutSessionRequired      *bool           `json:"backchannel_logout_session_required,omitempty"`
@@ -1904,11 +1913,14 @@ type PatchClientsClientIDRequest struct {
 	FrontchannelLogoutURI                 *string         `json:"frontchannel_logout_uri,omitempty"`
 	GrantTypes                            *[]string       `json:"grant_types,omitempty"`
 	HybridReviewBy                        *string         `json:"hybrid_review_by,omitempty"`
+	IDTokenEncryptedResponseAlg           *string         `json:"id_token_encrypted_response_alg,omitempty"`
+	IDTokenEncryptedResponseEnc           *string         `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedResponseAlg              *string         `json:"id_token_signed_response_alg,omitempty"`
 	InitiateLoginURI                      *string         `json:"initiate_login_uri,omitempty"`
 	IssuerAlias                           *string         `json:"issuer_alias,omitempty"`
 	JWKS                                  json.RawMessage `json:"jwks,omitempty"`
 	JWTBearerProviders                    *[]string       `json:"jwt_bearer_providers,omitempty"`
+	KeepAuthMethod                        *bool           `json:"keep_auth_method,omitempty"`
 	LoginUiURL                            *string         `json:"login_ui_url,omitempty"`
 	LogoURI                               *string         `json:"logo_uri,omitempty"`
 	MayExchange                           *bool           `json:"may_exchange,omitempty"`
@@ -1934,6 +1946,9 @@ type PatchClientsClientIDRequest struct {
 	TlsSanIP                              *string         `json:"tls_san_ip,omitempty"`
 	TlsSanURI                             *string         `json:"tls_san_uri,omitempty"`
 	TlsSubjectDN                          *string         `json:"tls_subject_dn,omitempty"`
+	UserinfoEncryptedResponseAlg          *string         `json:"userinfo_encrypted_response_alg,omitempty"`
+	UserinfoEncryptedResponseEnc          *string         `json:"userinfo_encrypted_response_enc,omitempty"`
+	UserinfoSignedResponseAlg             *string         `json:"userinfo_signed_response_alg,omitempty"`
 }
 
 // PatchClientsClientIDResponse is a JSON object of the Admin API.
@@ -1941,6 +1956,8 @@ type PatchClientsClientIDResponse struct {
 	AccessTokenFormat                  string   `json:"access_token_format,omitempty"`
 	AccessTokenSignedResponseAlg       string   `json:"access_token_signed_response_alg,omitempty"`
 	AccessTokenTTLS                    int64    `json:"access_token_ttl_s,omitempty"`
+	AuthorizationEncryptedResponseAlg  string   `json:"authorization_encrypted_response_alg,omitempty"`
+	AuthorizationEncryptedResponseEnc  string   `json:"authorization_encrypted_response_enc,omitempty"`
 	AuthorizationSignedResponseAlg     string   `json:"authorization_signed_response_alg,omitempty"`
 	ClientID                           string   `json:"client_id"`
 	ConfigVersion                      int64    `json:"config_version"`
@@ -1950,6 +1967,8 @@ type PatchClientsClientIDResponse struct {
 	FirstParty                         bool     `json:"first_party,omitempty"`
 	FrontchannelLogoutSessionRequired  bool     `json:"frontchannel_logout_session_required,omitempty"`
 	FrontchannelLogoutURI              string   `json:"frontchannel_logout_uri,omitempty"`
+	IDTokenEncryptedResponseAlg        string   `json:"id_token_encrypted_response_alg,omitempty"`
+	IDTokenEncryptedResponseEnc        string   `json:"id_token_encrypted_response_enc,omitempty"`
 	IDTokenSignedResponseAlg           string   `json:"id_token_signed_response_alg,omitempty"`
 	IssuerAlias                        string   `json:"issuer_alias,omitempty"`
 	LoginUiURL                         string   `json:"login_ui_url,omitempty"`
@@ -1965,6 +1984,9 @@ type PatchClientsClientIDResponse struct {
 	Sector                             string   `json:"sector,omitempty"`
 	SecurityProfile                    string   `json:"security_profile,omitempty"`
 	SubjectType                        string   `json:"subject_type,omitempty"`
+	UserinfoEncryptedResponseAlg       string   `json:"userinfo_encrypted_response_alg,omitempty"`
+	UserinfoEncryptedResponseEnc       string   `json:"userinfo_encrypted_response_enc,omitempty"`
+	UserinfoSignedResponseAlg          string   `json:"userinfo_signed_response_alg,omitempty"`
 }
 
 // PatchClientsClientIDSSFStreamRequest is a JSON object of the Admin API.

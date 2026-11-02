@@ -131,6 +131,12 @@
           "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
           "type": "string"
         },
+        "authorization_encrypted_response_alg": {
+          "type": "string"
+        },
+        "authorization_encrypted_response_enc": {
+          "type": "string"
+        },
         "authorization_signed_response_alg": {
           "type": "string"
         },
@@ -147,6 +153,12 @@
           "type": "boolean"
         },
         "frontchannel_logout_uri": {
+          "type": "string"
+        },
+        "id_token_encrypted_response_alg": {
+          "type": "string"
+        },
+        "id_token_encrypted_response_enc": {
           "type": "string"
         },
         "id_token_signed_response_alg": {
@@ -221,6 +233,15 @@
         },
         "token_exchange": {
           "$ref": "#/$defs/TokenExchange"
+        },
+        "userinfo_encrypted_response_alg": {
+          "type": "string"
+        },
+        "userinfo_encrypted_response_enc": {
+          "type": "string"
+        },
+        "userinfo_signed_response_alg": {
+          "type": "string"
         }
       },
       "type": "object"

@@ -37,6 +37,21 @@ func signObject(t *testing.T, key *ecdsa.PrivateKey, claims map[string]any) stri
 // §4: a string stays one, a number is a number, and what is structured stays JSON, as
 // `claims` and `authorization_details` are read as, but for `resource`, which repeats.
 // The JWT's own claims are not parameters, or `exp` would reach the sign-in as one.
+// A key marked for encryption is not a key the client signs with, whatever it signed.
+func TestAKeyMarkedForEncryptionVerifiesNothing(t *testing.T) {
+	k := newKey(t, "k1")
+	k.pub.Use, k.pub.Algorithm = "enc", ""
+	if _, err := VerifyPrivateKeyJWT(k.sign(t, goodClaims()), testClientID, k.jwks(t), testAudiences, time.Now()); err == nil {
+		t.Error("an assertion verified against a key marked for encryption")
+	}
+	now := time.Now()
+	object := signObject(t, k.priv, map[string]any{"iss": "app", "aud": "https://id.test", "client_id": "app",
+		"exp": now.Add(time.Minute).Unix(), "scope": "openid"})
+	if _, err := VerifyRequestObject(object, "app", k.jwks(t), []string{"https://id.test"}, now); err == nil {
+		t.Error("a request object verified against a key marked for encryption")
+	}
+}
+
 func TestARequestObjectBecomesItsParameters(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

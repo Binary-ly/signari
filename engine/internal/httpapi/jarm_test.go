@@ -74,6 +74,18 @@ func carried(t *testing.T, rec *httptest.ResponseRecorder) (string, url.Values) 
 // opened is §2.4, for a response expected from issuer.
 func (f *signInFixture) opened(t *testing.T, raw, issuer string) map[string]any {
 	t.Helper()
+	claims := f.verified(t, raw, issuer)
+	exp, _ := claims["exp"].(float64)
+	// §2.1: "A maximum JWT lifetime of 10 minutes is RECOMMENDED."
+	if left := time.Until(time.Unix(int64(exp), 0)); left <= 0 || left > 10*time.Minute {
+		t.Errorf("exp is %v from now", left)
+	}
+	return claims
+}
+
+// verified checks a JWT from this server to this client: who signed it, and for whom.
+func (f *signInFixture) verified(t *testing.T, raw, issuer string) map[string]any {
+	t.Helper()
 	token, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{jose.ES256, jose.RS256})
 	if err != nil {
 		t.Fatalf("no signed response in %q: %v", raw, err)
@@ -95,11 +107,6 @@ func (f *signInFixture) opened(t *testing.T, raw, issuer string) map[string]any 
 	}
 	if claims["aud"] != f.clientID {
 		t.Errorf("aud is %v, want the client", claims["aud"])
-	}
-	exp, _ := claims["exp"].(float64)
-	// §2.1: "A maximum JWT lifetime of 10 minutes is RECOMMENDED."
-	if left := time.Until(time.Unix(int64(exp), 0)); left <= 0 || left > 10*time.Minute {
-		t.Errorf("exp is %v from now", left)
 	}
 	return claims
 }

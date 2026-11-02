@@ -160,6 +160,11 @@ var columnClass = map[string]string{
 	"rate_limits.bucket_key":                  "public",
 	"scim_targets.oauth_token_url":            "public",
 	"webauthn_policy.resident_key":            "public",
+	// The names of algorithms a client is encrypted to with, not anything encrypted.
+	"clients.id_token_encrypted_response_alg":      "public",
+	"clients.id_token_encrypted_response_enc":      "public",
+	"clients.userinfo_encrypted_response_enc":      "public",
+	"clients.authorization_encrypted_response_enc": "public",
 	// A token's identifier, not the token: it is in the token's own claims,
 	// and knowing it lets nobody present the token.
 	"preauthorized_codes.access_token_jti": "public",

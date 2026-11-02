@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0273 client_response_encryption
+
+Compatible with the release before: its binary may still serve this schema.
+
+Signed userinfo, and encrypting an ID token, a userinfo response and an authorization response to a key the client registered. Each is the client's own choice and the default stays as it was: a client that asked for encryption gets it or gets nothing.
+
 ## 0272 authorization_signed_response_alg
 
 Compatible with the release before: its binary may still serve this schema.

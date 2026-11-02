@@ -197,11 +197,24 @@ type Client struct {
 	// request must ask for a signed response and this signs it; "" leaves that to the
 	// request, and a signed response is then RS256, as §3 says.
 	AuthorizationResponseAlg string
+	// UserinfoSignedAlg signs the client's userinfo responses; "" answers in JSON.
+	UserinfoSignedAlg string
+	// IDTokenEncryption, UserinfoEncryption and AuthorizationEncryption are what the
+	// client asked to have encrypted to it. EncryptionKeys is its key set to do that
+	// with, read only for a client that asked, being the one document here of any size.
+	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
+	EncryptionKeys                                                 string
 	// RequireState refuses an authorization request with no `state`.
 	RequireState bool
 	// MinimumACR is the weakest authentication the client accepts, "1" to
 	// "4" (migrations 0166, 0174; oauth.Meets), whatever its request asks for.
 	MinimumACR string
+}
+
+// HeldToSignedResponses is whether a plain authorization response would go against what
+// the client set. An encrypted one is signed first, so asking for that asks for both.
+func (c *Client) HeldToSignedResponses() bool {
+	return c.AuthorizationResponseAlg != "" || c.AuthorizationEncryption.Alg != ""
 }
 
 // AccessTokenAlg is what signs the client's access tokens.
@@ -295,6 +308,13 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
 		       access_token_ttl_s, refresh_reuse_grace_s, require_pushed_authorization,
 		       require_signed_request_object, COALESCE(authorization_signed_response_alg, ''),
+		       COALESCE(userinfo_signed_response_alg, ''),
+		       COALESCE(id_token_encrypted_response_alg, ''), COALESCE(id_token_encrypted_response_enc, ''),
+		       COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(userinfo_encrypted_response_enc, ''),
+		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, ''),
+		       COALESCE(CASE WHEN id_token_encrypted_response_alg IS NOT NULL
+		                       OR userinfo_encrypted_response_alg IS NOT NULL
+		                       OR authorization_encrypted_response_alg IS NOT NULL THEN jwks::text END, ''),
 		       require_state, minimum_acr, admin_api,
 		       -- store.OrgInService's question, which this package cannot import.
 		       NOT EXISTS (SELECT 1 FROM core.organizations o
@@ -326,7 +346,11 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.BackchannelClientNotificationEndpoint,
 			&c.ClaimsRedirectURIs,
 			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest,
-			&c.AuthorizationResponseAlg, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
+			&c.AuthorizationResponseAlg, &c.UserinfoSignedAlg,
+			&c.IDTokenEncryption.Alg, &c.IDTokenEncryption.Enc,
+			&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
+			&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.EncryptionKeys,
+			&c.RequireState, &c.MinimumACR, &c.AdminAPI,
 			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
 			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -66,6 +66,7 @@ command or an environment variable exists in code and not on its page.
 | [par.md](par.md) | RFC 9126 — Pushed Authorization Requests |
 | [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |
 | [jarm.md](jarm.md) | Signed authorization responses, and holding a client to them |
+| [response-encryption.md](response-encryption.md) | Signed userinfo, and encrypting ID tokens, userinfo and authorization responses to a client's key |
 | [dpop.md](dpop.md) | RFC 9449 — sender-constrained tokens |
 | [resource-indicators.md](resource-indicators.md) | RFC 8707 — which APIs a token may be audienced to |
 | [opaque-access-tokens.md](opaque-access-tokens.md) | Access tokens that say nothing to whoever holds them, introspected per client |

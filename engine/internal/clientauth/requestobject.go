@@ -79,6 +79,9 @@ func VerifyRequestObject(raw, clientID, jwksJSON string, audiences []string, now
 			return nil, fmt.Errorf("the client's registered key set contains private key material; " +
 				"register the PUBLIC keys only")
 		}
+		if k.Use == "enc" {
+			continue
+		}
 		if p, verr := tok.Verify(k); verr == nil {
 			payload = p
 			key := k

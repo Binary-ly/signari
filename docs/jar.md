@@ -29,7 +29,8 @@ both, and the same.
 ```
 
 Register the public key first, with `signari client set-keys -client-id app -jwks
-keys.json`, and sign with RS, PS or ES at 256, 384 or 512, or EdDSA. What this server
+keys.json`, adding `-keep-auth` if the client should go on authenticating as it does, and
+sign with RS, PS or ES at 256, 384 or 512, or EdDSA. What this server
 takes is in discovery, as `request_object_signing_alg_values_supported`.
 
 ## What is checked

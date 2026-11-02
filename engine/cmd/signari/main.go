@@ -81,6 +81,7 @@ import (
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 func main() {
@@ -212,6 +213,7 @@ people:
 clients:
   client create                    register an OAuth client
   client set-keys                  switch a client to private_key_jwt with its public JWKS
+  client set-encryption            encrypt an ID token, userinfo or a response to the client's key
   client set-tls                   authenticate a client by TLS certificate (RFC 8705)
   client set-dpop                  require a DPoP proof on every token request
   client set-pkce                  whether its authorization requests must carry PKCE
@@ -547,6 +549,8 @@ func run(args []string) (err error) {
 		"empty goes back to what signs its ID tokens")
 	clientResponseAlg := fs.String("response-alg", "", "`client set-alg`: what signs the client's authorization "+
 		"responses, holding it to asking for them signed; empty lets go of both")
+	clientUserinfoAlg := fs.String("userinfo-alg", "", "`client set-alg`: what signs the client's userinfo "+
+		"responses; empty goes back to JSON")
 	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
 		"resource server introspects")
 	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, or fapi2 to hold the "+
@@ -900,6 +904,11 @@ func run(args []string) (err error) {
 	flowFile := fs.String("flow-file", "", "path to a sign-in flow file")
 	flowName := fs.String("flow", "", "which flow in the file (default: every one)")
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
+	keepAuth := fs.Bool("keep-auth", false, "`client set-keys`: keep how the client authenticates, the keys being "+
+		"for what it signs and what is encrypted to it")
+	encryptFor := fs.String("for", "", "`client set-encryption`: what is encrypted, id_token, userinfo or authorization")
+	contentEnc := fs.String("enc", "", "`client set-encryption`: the content encryption (default "+
+		tokens.DefaultContentEncryption+")")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
 	grantTypes := fs.String("grant-types", "",
@@ -1492,7 +1501,7 @@ func run(args []string) (err error) {
 		})
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
 	case "client set-alg":
-		var accessAlg, responseAlg *string
+		var accessAlg, responseAlg, userinfoAlg *string
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "access-alg" {
 				accessAlg = clientAccessAlg
@@ -1500,8 +1509,11 @@ func run(args []string) (err error) {
 			if f.Name == "response-alg" {
 				responseAlg = clientResponseAlg
 			}
+			if f.Name == "userinfo-alg" {
+				userinfoAlg = clientUserinfoAlg
+			}
 		})
-		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg)
+		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg, userinfoAlg)
 	case "client set-issuer-alias":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
 			map[bool]string{true: "tokens are minted under this instance's own issuer",
@@ -1567,7 +1579,14 @@ func run(args []string) (err error) {
 	case "client set-hybrid":
 		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
-		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
+		return clientSetKeys(ctx, conn, *clientID, *jwksPath, *keepAuth)
+	case "client set-encryption":
+		var algGiven, encGiven bool
+		fs.Visit(func(f *flag.Flag) {
+			algGiven = algGiven || f.Name == "alg"
+			encGiven = encGiven || f.Name == "enc"
+		})
+		return clientSetEncryption(ctx, conn, *clientID, *encryptFor, *alg, *contentEnc, algGiven, encGiven)
 	case "client set-grants":
 		return clientSetGrants(ctx, conn, *clientID, *grantTypes)
 	case "client create":
@@ -5104,7 +5123,7 @@ func groupList(ctx context.Context, conn *pgx.Conn, format string) error {
 }
 
 // clientSetKeys configures a client for private_key_jwt.
-func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath string) error {
+func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath string, keepAuth bool) error {
 	if clientID == "" || jwksPath == "" {
 		return fmt.Errorf("give -client-id and -jwks (a file containing the client's PUBLIC JWKS)")
 	}
@@ -5116,12 +5135,20 @@ func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath strin
 	// Parsed and checked by store.SetClientKeys, which the Admin API shares
 	// (6.03), rather than at first use: a key set that turns out to be unusable
 	// at somebody's first token request is a much worse discovery.
-	n, err := store.SetClientKeys(ctx, conn, clientID, raw)
+	set := store.SetClientKeys
+	if keepAuth {
+		set = store.SetClientMessageKeys
+	}
+	n, err := set(ctx, conn, clientID, raw)
 	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client with id %q", clientID)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", jwksPath, err)
+	}
+	if keepAuth {
+		fmt.Printf("%s holds %d key(s), and authenticates as it did\n", clientID, n)
+		return nil
 	}
 
 	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, n)
@@ -5129,6 +5156,51 @@ func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath strin
 	// obtained it keep authenticating -- the exact thing this change retires.
 	fmt.Println("\n  The client secret has been REMOVED. It would otherwise remain a")
 	fmt.Println("  working credential, which is what moving to keys was meant to end.")
+	return nil
+}
+
+// clientSetEncryption has something sent to a client encrypted to a key it registered.
+// -alg "" stops, and -enc alone means nothing, as JARM §3 says of its own.
+func clientSetEncryption(ctx context.Context, conn *pgx.Conn, clientID, what, alg, enc string,
+	algGiven, encGiven bool) error {
+	if clientID == "" || !algGiven {
+		return fmt.Errorf("give -client-id, -for, and -alg (%s, or empty to stop)",
+			strings.Join(tokens.EncryptionAlgorithms, ", "))
+	}
+	var settings store.ClientSettings
+	algOf, encOf := &settings.IDTokenEncryptedAlg, &settings.IDTokenEncryptedEnc
+	switch what {
+	case "id_token":
+	case "userinfo":
+		algOf, encOf = &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc
+	case "authorization":
+		algOf, encOf = &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc
+	default:
+		return fmt.Errorf("give -for, one of id_token, userinfo or authorization")
+	}
+	*algOf = &alg
+	if encGiven {
+		*encOf = &enc
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if alg == "" {
+		fmt.Printf("%s: %s is no longer encrypted\n", clientID, what)
+		return nil
+	}
+	fmt.Printf("%s: %s is encrypted to its key with %s\n", clientID, what, alg)
 	return nil
 }
 
@@ -10109,9 +10181,9 @@ func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, ac
 // clientSetAlg sets the algorithms the client's ID and access tokens and its
 // authorization responses are signed with, refusing one the instance holds no
 // active key for.
-func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg, responseAlg *string) error {
-	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil {
-		return fmt.Errorf("give -client-id and -alg, -access-alg or -response-alg (%s)",
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, accessAlg, responseAlg, userinfoAlg *string) error {
+	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil && userinfoAlg == nil {
+		return fmt.Errorf("give -client-id and -alg, -access-alg, -response-alg or -userinfo-alg (%s)",
 			strings.Join(store.ClientAlgorithms, ", "))
 	}
 	tx, err := conn.Begin(ctx)
@@ -10119,7 +10191,8 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, acc
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	settings := store.ClientSettings{AccessTokenAlg: accessAlg, AuthorizationResponseAlg: responseAlg}
+	settings := store.ClientSettings{AccessTokenAlg: accessAlg, AuthorizationResponseAlg: responseAlg,
+		UserinfoSignedAlg: userinfoAlg}
 	if alg != "" {
 		settings.IDTokenAlg = &alg
 	}
@@ -10145,6 +10218,11 @@ func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string, acc
 	} else if responseAlg != nil {
 		fmt.Printf("%s: authorization responses are signed with %s, and a request has to ask for that\n",
 			clientID, *responseAlg)
+	}
+	if userinfoAlg != nil && *userinfoAlg == "" {
+		fmt.Printf("%s: userinfo answers in JSON\n", clientID)
+	} else if userinfoAlg != nil {
+		fmt.Printf("%s: userinfo answers in a JWT signed with %s\n", clientID, *userinfoAlg)
 	}
 	return nil
 }

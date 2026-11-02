@@ -107,6 +107,7 @@ var cliAPI = map[string]string{
 	// Applications.
 	"client create":                   "POST /admin/clients",
 	"client set-keys":                 "PATCH /admin/clients/{clientID}",
+	"client set-encryption":           "PATCH /admin/clients/{clientID}",
 	"client set-tls":                  "PATCH /admin/clients/{clientID}",
 	"client set-dpop":                 "PATCH /admin/clients/{clientID}",
 	"client set-pkce":                 "PATCH /admin/clients/{clientID}",

@@ -681,6 +681,18 @@
                       },
                       "type": "array"
                     },
+                    "authorization_encrypted_response_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "authorization_encrypted_response_enc": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "authorization_signed_response_alg": {
                       "type": [
                         "string",
@@ -770,6 +782,18 @@
                       "type": "array"
                     },
                     "hybrid_review_by": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "id_token_encrypted_response_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "id_token_encrypted_response_enc": {
                       "type": [
                         "string",
                         "null"
@@ -927,6 +951,24 @@
                     },
                     "token_endpoint_auth_method": {
                       "type": "string"
+                    },
+                    "userinfo_encrypted_response_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "userinfo_encrypted_response_enc": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "userinfo_signed_response_alg": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -1034,6 +1076,12 @@
                     },
                     "type": "array"
                   },
+                  "authorization_encrypted_response_alg": {
+                    "type": "string"
+                  },
+                  "authorization_encrypted_response_enc": {
+                    "type": "string"
+                  },
                   "authorization_signed_response_alg": {
                     "type": "string"
                   },
@@ -1094,6 +1142,12 @@
                   "hybrid_review_by": {
                     "type": "string"
                   },
+                  "id_token_encrypted_response_alg": {
+                    "type": "string"
+                  },
+                  "id_token_encrypted_response_enc": {
+                    "type": "string"
+                  },
                   "id_token_signed_response_alg": {
                     "type": "string"
                   },
@@ -1109,6 +1163,9 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  "keep_auth_method": {
+                    "type": "boolean"
                   },
                   "login_ui_url": {
                     "type": "string"
@@ -1193,6 +1250,15 @@
                   },
                   "tls_subject_dn": {
                     "type": "string"
+                  },
+                  "userinfo_encrypted_response_alg": {
+                    "type": "string"
+                  },
+                  "userinfo_encrypted_response_enc": {
+                    "type": "string"
+                  },
+                  "userinfo_signed_response_alg": {
+                    "type": "string"
                   }
                 },
                 "type": "object"
@@ -1216,6 +1282,12 @@
                     },
                     "access_token_ttl_s": {
                       "type": "integer"
+                    },
+                    "authorization_encrypted_response_alg": {
+                      "type": "string"
+                    },
+                    "authorization_encrypted_response_enc": {
+                      "type": "string"
                     },
                     "authorization_signed_response_alg": {
                       "type": "string"
@@ -1245,6 +1317,12 @@
                       "type": "boolean"
                     },
                     "frontchannel_logout_uri": {
+                      "type": "string"
+                    },
+                    "id_token_encrypted_response_alg": {
+                      "type": "string"
+                    },
+                    "id_token_encrypted_response_enc": {
                       "type": "string"
                     },
                     "id_token_signed_response_alg": {
@@ -1293,6 +1371,15 @@
                       "type": "string"
                     },
                     "subject_type": {
+                      "type": "string"
+                    },
+                    "userinfo_encrypted_response_alg": {
+                      "type": "string"
+                    },
+                    "userinfo_encrypted_response_enc": {
+                      "type": "string"
+                    },
+                    "userinfo_signed_response_alg": {
                       "type": "string"
                     }
                   },

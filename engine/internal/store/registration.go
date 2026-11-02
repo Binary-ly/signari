@@ -170,6 +170,10 @@ type NewClientRegistration struct {
 	// tokens outlive their revocation, and whether it skips consent, are the
 	// operator's decisions.
 	Settings ClientSettings
+
+	// JWKS is the registrant's public keys, nil for none: what it signs requests with
+	// and has responses encrypted to. How it authenticates is another matter.
+	JWKS []byte
 }
 
 // RegisteredClient is what came back.
@@ -266,6 +270,11 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		in.Settings.IssuerAlias != nil {
 		return nil, fmt.Errorf("%w: token lifetimes, consent skipping and issuer aliases are not "+
 			"dynamic registration metadata", ErrInvalidClientSetting)
+	}
+	if in.JWKS != nil {
+		if _, err := SetClientMessageKeys(ctx, tx, out.ClientID, in.JWKS); err != nil {
+			return nil, err
+		}
 	}
 	if err := SetClientSettings(ctx, tx, out.ClientID, in.Settings); err != nil {
 		return nil, err

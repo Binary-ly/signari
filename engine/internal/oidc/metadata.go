@@ -10,6 +10,7 @@ import (
 
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/tokens"
 )
 
 // Metadata is the OpenID Provider configuration served at
@@ -63,7 +64,15 @@ type Metadata struct {
 	ResponseModesSupported                     []string `json:"response_modes_supported"`
 	// JARM §4, and only what this deployment holds an active key for.
 	AuthorizationSigningAlgValuesSupported []string `json:"authorization_signing_alg_values_supported,omitempty"`
-	GrantTypesSupported                    []string `json:"grant_types_supported"`
+	// What can be encrypted to a client, and the same for each thing that can.
+	AuthorizationEncryptionAlgValuesSupported []string `json:"authorization_encryption_alg_values_supported,omitempty"`
+	AuthorizationEncryptionEncValuesSupported []string `json:"authorization_encryption_enc_values_supported,omitempty"`
+	IDTokenEncryptionAlgValuesSupported       []string `json:"id_token_encryption_alg_values_supported,omitempty"`
+	IDTokenEncryptionEncValuesSupported       []string `json:"id_token_encryption_enc_values_supported,omitempty"`
+	UserinfoSigningAlgValuesSupported         []string `json:"userinfo_signing_alg_values_supported,omitempty"`
+	UserinfoEncryptionAlgValuesSupported      []string `json:"userinfo_encryption_alg_values_supported,omitempty"`
+	UserinfoEncryptionEncValuesSupported      []string `json:"userinfo_encryption_enc_values_supported,omitempty"`
+	GrantTypesSupported                       []string `json:"grant_types_supported"`
 	// RFC 9396 §10. Populated per deployment at request time, because the
 	// registered types are a deployment's own list -- so this is empty in the
 	// static document and filled in by the discovery handler.
@@ -330,7 +339,14 @@ func Build(cfg Config) (*Metadata, error) {
 		// self-posting HTML page, and each of them again signed (JARM §4).
 		ResponseModesSupported: []string{"query", "fragment", "form_post",
 			"query.jwt", "fragment.jwt", "form_post.jwt", "jwt"},
-		AuthorizationSigningAlgValuesSupported: algNames,
+		AuthorizationSigningAlgValuesSupported:    algNames,
+		AuthorizationEncryptionAlgValuesSupported: tokens.EncryptionAlgorithms,
+		AuthorizationEncryptionEncValuesSupported: tokens.ContentEncryptions,
+		IDTokenEncryptionAlgValuesSupported:       tokens.EncryptionAlgorithms,
+		IDTokenEncryptionEncValuesSupported:       tokens.ContentEncryptions,
+		UserinfoSigningAlgValuesSupported:         algNames,
+		UserinfoEncryptionAlgValuesSupported:      tokens.EncryptionAlgorithms,
+		UserinfoEncryptionEncValuesSupported:      tokens.ContentEncryptions,
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.

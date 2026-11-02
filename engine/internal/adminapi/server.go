@@ -881,6 +881,15 @@ type patchClientRequest struct {
 	// AuthorizationSignedResponseAlg is JARM §3's name. It signs the client's
 	// authorization responses and holds it to asking for them signed; "" lets go of both.
 	AuthorizationSignedResponseAlg *string `json:"authorization_signed_response_alg"`
+	// UserinfoSignedResponseAlg signs its userinfo responses; "" goes back to JSON.
+	UserinfoSignedResponseAlg *string `json:"userinfo_signed_response_alg"`
+	// What is encrypted to it. An alg alone comes with the default enc, and "" stops.
+	IDTokenEncryptedResponseAlg       *string `json:"id_token_encrypted_response_alg"`
+	IDTokenEncryptedResponseEnc       *string `json:"id_token_encrypted_response_enc"`
+	UserinfoEncryptedResponseAlg      *string `json:"userinfo_encrypted_response_alg"`
+	UserinfoEncryptedResponseEnc      *string `json:"userinfo_encrypted_response_enc"`
+	AuthorizationEncryptedResponseAlg *string `json:"authorization_encrypted_response_alg"`
+	AuthorizationEncryptedResponseEnc *string `json:"authorization_encrypted_response_enc"`
 	// RolesClaim names the claim its tokens carry a person's roles in it under;
 	// "" carries none.
 	RolesClaim *string `json:"roles_claim"`
@@ -944,6 +953,9 @@ type patchClientRequest struct {
 	// The key set moves the client to private_key_jwt and drops its secret,
 	// as `client set-keys` does.
 	JWKS *json.RawMessage `json:"jwks"`
+	// KeepAuthMethod registers those keys for signing requests and being encrypted to,
+	// leaving how the client authenticates as it is.
+	KeepAuthMethod bool `json:"keep_auth_method"`
 	// Mutual TLS, as `client set-tls`: any rule field replaces the rule, and
 	// exactly one must then be set; tls_certificate is a self-signed client's
 	// PEM certificate, kept as its thumbprint.
@@ -1083,7 +1095,11 @@ func (req patchClientRequest) applySharedSettings(ctx context.Context, tx pgx.Tx
 		}
 	}
 	if req.JWKS != nil {
-		if _, err := store.SetClientKeys(ctx, tx, clientID, *req.JWKS); err != nil {
+		set := store.SetClientKeys
+		if req.KeepAuthMethod {
+			set = store.SetClientMessageKeys
+		}
+		if _, err := set(ctx, tx, clientID, *req.JWKS); err != nil {
 			return err
 		}
 	}
@@ -1123,6 +1139,10 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	}
 	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
 	s.AuthorizationResponseAlg = r.AuthorizationSignedResponseAlg
+	s.UserinfoSignedAlg = r.UserinfoSignedResponseAlg
+	s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc = r.IDTokenEncryptedResponseAlg, r.IDTokenEncryptedResponseEnc
+	s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc = r.UserinfoEncryptedResponseAlg, r.UserinfoEncryptedResponseEnc
+	s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc = r.AuthorizationEncryptedResponseAlg, r.AuthorizationEncryptedResponseEnc
 	s.RolesClaim, s.LoginUI, s.AccessTokenFormat = r.RolesClaim, r.LoginUIURL, r.AccessTokenFormat
 	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
@@ -1288,6 +1308,13 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"id_token_signed_response_alg":          got.IDTokenAlg,
 				"access_token_signed_response_alg":      got.AccessTokenAlg,
 				"authorization_signed_response_alg":     got.AuthorizationResponseAlg,
+				"userinfo_signed_response_alg":          got.UserinfoSignedAlg,
+				"id_token_encrypted_response_alg":       got.IDTokenEncryption.Alg,
+				"id_token_encrypted_response_enc":       got.IDTokenEncryption.Enc,
+				"userinfo_encrypted_response_alg":       got.UserinfoEncryption.Alg,
+				"userinfo_encrypted_response_enc":       got.UserinfoEncryption.Enc,
+				"authorization_encrypted_response_alg":  got.AuthorizationEncryption.Alg,
+				"authorization_encrypted_response_enc":  got.AuthorizationEncryption.Enc,
 				"roles_claim":                           got.RolesClaim,
 				"login_ui_url":                          got.LoginUI,
 				"access_token_format":                   got.AccessTokenFormat,

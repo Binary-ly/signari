@@ -379,7 +379,7 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 			fmt.Sprintf("response_mode %q is not supported; use query, fragment, form_post, "+
 				"query.jwt, fragment.jwt, form_post.jwt or jwt", req.ResponseMode))
 	}
-	if _, signed := req.ResponseEncoding(); c.AuthorizationResponseAlg != "" && !signed {
+	if _, signed := req.ResponseEncoding(); c.HeldToSignedResponses() && !signed {
 		// Otherwise a request the browser has changed gets the client an unsigned
 		// response, which is the one thing it set this to avoid.
 		return redirectErr("invalid_request",

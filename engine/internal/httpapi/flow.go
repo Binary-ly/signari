@@ -745,7 +745,7 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 	if err != nil {
 		return "", err
 	}
-	return tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
+	idt, err := tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
 		Issuer:          issuer,
 		Subject:         subject,
 		Audience:        c.ClientID,
@@ -759,6 +759,21 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 		AuthorizedParty: c.ClientID,
 		CodeHash:        chash,
 	})
+	if err != nil {
+		return "", err
+	}
+	return sealIDToken(c, idt)
+}
+
+// sealIDToken encrypts a signed ID token to the client, when it asked for that. OIDC
+// Core §2: "If the ID Token is encrypted, it MUST be signed then encrypted". A failure
+// is the caller's to refuse on: an RP told to expect it encrypted "SHOULD reject" one
+// that is not (§3.1.3.7), and it would be sent through the clear to be rejected.
+func sealIDToken(c *clients.Client, signed string) (string, error) {
+	if c.IDTokenEncryption.Alg == "" {
+		return signed, nil
+	}
+	return tokens.EncryptTo([]byte(signed), true, c.EncryptionKeys, c.IDTokenEncryption)
 }
 
 // tokenStatus records the token endpoint's status, a Write without a
@@ -1442,7 +1457,9 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		if err != nil {
 			return nil, nil, err
 		}
-		resp.IDToken = idt
+		if resp.IDToken, err = sealIDToken(c, idt); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	if !containsScope(scopes, "offline_access") || refreshKeptFrom(ctx) {

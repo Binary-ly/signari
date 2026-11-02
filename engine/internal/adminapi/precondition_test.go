@@ -353,18 +353,18 @@ func TestAMalformedIfMatchIsRefusedNotIgnored(t *testing.T) {
 		{"empty quotes", `""`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := currentVersion(t, s)
-			rec := httptest.NewRecorder()
-			s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch,
-				"/admin/clients/"+clientID, `{"enabled":false}`, tc.header))
+			if from, to, held := versionStays(t, s, func() {
+				rec := httptest.NewRecorder()
+				s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch,
+					"/admin/clients/"+clientID, `{"enabled":false}`, tc.header))
 
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("If-Match %s gave %d, want 400. Ignoring a malformed "+
-					"precondition performs an unconditional write for a caller that "+
-					"asked for a conditional one: %s", tc.header, rec.Code, rec.Body.String())
-			}
-			if got := currentVersion(t, s); got != before {
-				t.Errorf("a malformed If-Match still wrote: version %d -> %d", before, got)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("If-Match %s gave %d, want 400. Ignoring a malformed "+
+						"precondition performs an unconditional write for a caller that "+
+						"asked for a conditional one: %s", tc.header, rec.Code, rec.Body.String())
+				}
+			}); !held {
+				t.Errorf("a malformed If-Match still wrote: version %d -> %d", from, to)
 			}
 		})
 	}

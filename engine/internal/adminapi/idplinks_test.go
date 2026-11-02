@@ -79,12 +79,12 @@ func TestAnIdentityLinkIsMadeAndRemovedThroughTheAPI(t *testing.T) {
 		t.Errorf("the links read %s", list.Body.String())
 	}
 	// The same link again changes nothing and moves no version.
-	before := currentVersion(t, s)
-	if out := answer(http.MethodPut, path, map[string]any{"subject": "repo:acme/deploy"}, http.StatusOK); out["changed"] != false {
-		t.Errorf("linking again answered %v", out)
-	}
-	if after := currentVersion(t, s); after != before {
-		t.Errorf("linking again moved the version from %d to %d", before, after)
+	if from, to, held := versionStays(t, s, func() {
+		if out := answer(http.MethodPut, path, map[string]any{"subject": "repo:acme/deploy"}, http.StatusOK); out["changed"] != false {
+			t.Errorf("linking again answered %v", out)
+		}
+	}); !held {
+		t.Errorf("linking again moved the version from %d to %d", from, to)
 	}
 
 	// Another person cannot be given the subject by linking it again, and

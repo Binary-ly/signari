@@ -196,15 +196,36 @@ func TestFailedMutationDoesNotBumpVersion(t *testing.T) {
 // `enabled` silently disables the client.
 func TestAbsentFieldIsNotFalse(t *testing.T) {
 	s, pool := newTestServer(t)
-	before := configVersionOf(t, pool)
 
-	rec := doPatch(t, s, "irrelevant", `{}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("empty patch gave %d, want 400", rec.Code)
+	// One attempt it stays still on is the answer, as for a failed mutation above.
+	var before, after int64
+	for range 5 {
+		before = configVersionOf(t, pool)
+		rec := doPatch(t, s, "irrelevant", `{}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("empty patch gave %d, want 400", rec.Code)
+		}
+		if after = configVersionOf(t, pool); after == before {
+			return
+		}
 	}
-	if after := configVersionOf(t, pool); after != before {
-		t.Fatalf("version moved on a no-op patch: %d -> %d", before, after)
+	t.Fatalf("version moved on a no-op patch: %d -> %d", before, after)
+}
+
+// versionStays says the version held across a request that must not move it. It is one
+// counter for the whole database and other packages write to it meanwhile, but a bump
+// of the request's own would move it every time, so one attempt it holds on is the
+// answer. The request must be one that can be repeated.
+func versionStays(t *testing.T, s *Server, request func()) (from, to int64, held bool) {
+	t.Helper()
+	for range 5 {
+		from = currentVersion(t, s)
+		request()
+		if to = currentVersion(t, s); to == from {
+			return from, to, true
+		}
 	}
+	return from, to, false
 }
 
 func doPatch(t *testing.T, s *Server, clientID, body string) *httptest.ResponseRecorder {

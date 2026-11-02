@@ -128,6 +128,9 @@ func TestEveryRootSealContextIsRotated(t *testing.T) {
 // the value lives and why one sealed before a rotation costs nobody more than
 // starting again.
 var rootSealedOutsideTheDatabase = map[string]string{
+	"signari headless sign-in": "a sign-in walked over JSON, in the application's memory between one step " +
+		"and the next (httpapi/headless.go), ten minutes long: an online rotation's accepted key opens one " +
+		"sealed before it, and after an offline one the person signs in again",
 	"signari email sign-in page": "the emailed sign-in's code page cookie (httpapi/emailsignin.go), " +
 		"fifteen minutes long: an online rotation's accepted key opens one sealed before it, " +
 		"and after an offline one the person asks for the code again",

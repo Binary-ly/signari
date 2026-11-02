@@ -391,6 +391,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// The application's own page, which walks the same stages over JSON. Not for
+		// that walk's own request, or it would be sent to the page it came from.
+		if c.LoginUI != "" && loginMsg == "" && headlessFrom(ctx) == nil {
+			http.Redirect(w, r, loginUIRedirect(c.LoginUI, r.URL.RawQuery), http.StatusSeeOther)
+			return
+		}
 		s.renderLogin(w, r, r.URL.RawQuery, loginMsg)
 		return
 	}

@@ -155,6 +155,9 @@
         "launch_url": {
           "type": "string"
         },
+        "login_ui_url": {
+          "type": "string"
+        },
         "logo_url": {
           "type": "string"
         },

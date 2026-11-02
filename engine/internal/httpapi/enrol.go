@@ -669,6 +669,9 @@ func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
 // missing feature -- it reads as though one of the two pages is not really
 // ours, which is the opposite of what branding is for.
 func (s *Server) writeBranded(w io.Writer, r *http.Request, orgID, name string, data map[string]any, b *brand.Brand) {
+	if note := headlessFrom(r.Context()); note != nil {
+		note.page, note.data = name, data
+	}
 	css := ""
 	if b != nil {
 		css = b.CSS()

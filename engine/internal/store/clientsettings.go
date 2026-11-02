@@ -41,6 +41,10 @@ type ClientSettings struct {
 	// RolesClaim names the claim the client's tokens carry a person's roles in
 	// the application under; "" carries none.
 	RolesClaim *string
+	// LoginUI is the page of the client's own that an authorization request is
+	// sent to for a sign-in, and what lets it walk one over JSON; "" is this
+	// server's page.
+	LoginUI *string
 	// AccessTokenFormat is jwt, or opaque for a handle a resource server
 	// introspects. A token already issued stays what it is.
 	AccessTokenFormat *string
@@ -83,6 +87,9 @@ const (
 
 // ClientACRs are the floors a client may be given, the schema's own CHECK.
 var ClientACRs = []string{"1", "2", "3", "4"}
+
+// loginUIShape is the CHECK on clients.login_ui_url, said here with its reason.
+var loginUIShape = regexp.MustCompile(`^(https://[^#]+|http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/[^#]*)?)$`)
 
 // protocolClaimNames are what no setting may name, the CHECK on clients.roles_claim
 // and on claim_mappers: a relying party reads them to decide who and how strongly.
@@ -181,6 +188,12 @@ func SetClientSettings(ctx context.Context, tx pgx.Tx, clientID string, s Client
 	}
 	if v := s.RolesClaim; v != nil {
 		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET roles_claim = NULLIF($2, ''),
+			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
+			return err
+		}
+	}
+	if v := s.LoginUI; v != nil {
+		if err := clientUpdated(tx.Exec(ctx, `UPDATE core.clients SET login_ui_url = NULLIF($2, ''),
 			updated_at = now() WHERE client_id = $1`, clientID, *v)); err != nil {
 			return err
 		}
@@ -326,6 +339,10 @@ func CheckClientSettings(s ClientSettings) error {
 		return fmt.Errorf("%w: %q is part of the token's own structure, or too long to be a claim's name, so "+
 			"roles cannot be carried in it", ErrInvalidClientSetting, *v)
 	}
+	if v := s.LoginUI; v != nil && *v != "" && !loginUIShape.MatchString(*v) {
+		return fmt.Errorf("%w: a login page is https, or http on this machine, with no fragment, not %q",
+			ErrInvalidClientSetting, *v)
+	}
 	if d := s.ConsentLifetime; d != nil && *d != 0 &&
 		(*d < MinConsentLifetime || *d > MaxConsentLifetime || *d%time.Second != 0) {
 		return fmt.Errorf("%w: a consent lifetime must be whole seconds from %s to %s, or 0 for "+
@@ -424,6 +441,7 @@ type ClientSettingsView struct {
 	IDTokenAlg        string
 	AccessTokenAlg    string
 	RolesClaim        string
+	LoginUI           string
 	AccessTokenFormat string
 	SubjectType       string
 	Sector            string
@@ -447,10 +465,10 @@ func ClientSettingsOf(ctx context.Context, q interface {
 		       COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''), access_token_format,
 		       subject_type, sector, security_profile,
 		       require_pushed_authorization, first_party, COALESCE(issuer_alias, ''), minimum_acr,
-		       COALESCE(consent_lifetime_s, 0), require_state
+		       COALESCE(consent_lifetime_s, 0), require_state, COALESCE(login_ui_url, '')
 		FROM core.clients WHERE client_id = $1`, clientID).
 		Scan(&access, &refresh, &grace, &v.IDTokenAlg, &v.AccessTokenAlg, &v.RolesClaim, &v.AccessTokenFormat,
-			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState)
+			&v.SubjectType, &v.Sector, &v.SecurityProfile, &v.RequirePAR, &v.FirstParty, &v.IssuerAlias, &v.MinimumACR, &consent, &v.RequireState, &v.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrClientNotFound
 	}

@@ -599,6 +599,7 @@ type GetClientsClientIDResponse struct {
 	IssuerAlias                           *string        `json:"issuer_alias,omitempty"`
 	JWKS                                  map[string]any `json:"jwks,omitempty"`
 	JWTBearerProviders                    []string       `json:"jwt_bearer_providers,omitempty"`
+	LoginUiURL                            *string        `json:"login_ui_url,omitempty"`
 	LogoURI                               *string        `json:"logo_uri,omitempty"`
 	MayExchange                           bool           `json:"may_exchange,omitempty"`
 	MinimumACR                            string         `json:"minimum_acr,omitempty"`
@@ -1885,6 +1886,7 @@ type PatchClientsClientIDRequest struct {
 	IssuerAlias                           *string         `json:"issuer_alias,omitempty"`
 	JWKS                                  json.RawMessage `json:"jwks,omitempty"`
 	JWTBearerProviders                    *[]string       `json:"jwt_bearer_providers,omitempty"`
+	LoginUiURL                            *string         `json:"login_ui_url,omitempty"`
 	LogoURI                               *string         `json:"logo_uri,omitempty"`
 	MayExchange                           *bool           `json:"may_exchange,omitempty"`
 	MinimumACR                            *string         `json:"minimum_acr,omitempty"`
@@ -1925,6 +1927,7 @@ type PatchClientsClientIDResponse struct {
 	FrontchannelLogoutURI              string   `json:"frontchannel_logout_uri,omitempty"`
 	IDTokenSignedResponseAlg           string   `json:"id_token_signed_response_alg,omitempty"`
 	IssuerAlias                        string   `json:"issuer_alias,omitempty"`
+	LoginUiURL                         string   `json:"login_ui_url,omitempty"`
 	MayExchange                        bool     `json:"may_exchange,omitempty"`
 	MinimumACR                         string   `json:"minimum_acr,omitempty"`
 	PostLogoutRedirectURIs             []string `json:"post_logout_redirect_uris,omitempty"`

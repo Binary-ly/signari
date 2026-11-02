@@ -164,6 +164,9 @@ type Client struct {
 	// RolesClaim is the claim its tokens carry a person's roles in the application
 	// under, "" for none; absent leaves it.
 	RolesClaim *string `yaml:"roles_claim"`
+	// LoginUI is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; empty for this server's page.
+	LoginUI *string `yaml:"login_ui_url"`
 	// AccessTokenFormat is jwt, or opaque for a handle a resource server
 	// introspects; absent leaves it.
 	AccessTokenFormat *string `yaml:"access_token_format"`
@@ -189,7 +192,7 @@ type Client struct {
 // settings is the client's part for store.SetClientSettings.
 func (c Client) settings() store.ClientSettings {
 	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
-		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RolesClaim: c.RolesClaim,
+		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, RolesClaim: c.RolesClaim, LoginUI: c.LoginUI,
 		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector,
 		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR,
 		RequireState: c.RequireState, FirstParty: c.FirstParty,

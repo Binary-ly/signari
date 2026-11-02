@@ -629,6 +629,7 @@ Answers:
 | `issuer_alias` | string or null |  |
 | `jwks` | object or null |  |
 | `jwt_bearer_providers` | list of string |  |
+| `login_ui_url` | string or null |  |
 | `logo_uri` | string or null |  |
 | `may_exchange` | boolean |  |
 | `minimum_acr` | string |  |
@@ -693,6 +694,7 @@ Takes:
 | `issuer_alias` | string |  |
 | `jwks` | any |  |
 | `jwt_bearer_providers` | list of string |  |
+| `login_ui_url` | string |  |
 | `logo_uri` | string |  |
 | `may_exchange` | boolean |  |
 | `minimum_acr` | string |  |
@@ -734,6 +736,7 @@ Answers:
 | `frontchannel_logout_uri` | string |  |
 | `id_token_signed_response_alg` | string |  |
 | `issuer_alias` | string |  |
+| `login_ui_url` | string |  |
 | `may_exchange` | boolean |  |
 | `minimum_acr` | string |  |
 | `post_logout_redirect_uris` | list of string |  |

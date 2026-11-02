@@ -880,6 +880,9 @@ type patchClientRequest struct {
 	// RolesClaim names the claim its tokens carry a person's roles in it under;
 	// "" carries none.
 	RolesClaim *string `json:"roles_claim"`
+	// LoginUIURL is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; "" is this server's page.
+	LoginUIURL *string `json:"login_ui_url"`
 	// AccessTokenFormat is jwt, or opaque for a handle a resource server introspects.
 	AccessTokenFormat *string `json:"access_token_format"`
 	// SubjectType is public, or pairwise for a subject that means nothing outside
@@ -1113,7 +1116,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 		s.RefreshReuseGrace = &d
 	}
 	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
-	s.RolesClaim, s.AccessTokenFormat = r.RolesClaim, r.AccessTokenFormat
+	s.RolesClaim, s.LoginUI, s.AccessTokenFormat = r.RolesClaim, r.LoginUIURL, r.AccessTokenFormat
 	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
 	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
 	s.RequireState = r.RequireState
@@ -1124,7 +1127,7 @@ func (r patchClientRequest) settings() (store.ClientSettings, bool) {
 	}
 	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
 		r.RefreshReuseGraceSeconds != nil || r.IDTokenSignedResponseAlg != nil ||
-		r.AccessTokenSignedResponseAlg != nil || r.RolesClaim != nil || r.AccessTokenFormat != nil ||
+		r.AccessTokenSignedResponseAlg != nil || r.RolesClaim != nil || r.LoginUIURL != nil || r.AccessTokenFormat != nil ||
 		r.SubjectType != nil || r.Sector != nil || r.SecurityProfile != nil || r.RequirePushedAuthorizationRequests != nil ||
 		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil || r.ConsentLifetimeSeconds != nil
 }
@@ -1277,6 +1280,7 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 				"id_token_signed_response_alg":          got.IDTokenAlg,
 				"access_token_signed_response_alg":      got.AccessTokenAlg,
 				"roles_claim":                           got.RolesClaim,
+				"login_ui_url":                          got.LoginUI,
 				"access_token_format":                   got.AccessTokenFormat,
 				"subject_type":                          got.SubjectType,
 				"sector":                                got.Sector,

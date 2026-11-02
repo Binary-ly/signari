@@ -34,7 +34,7 @@ func corsPolicyFor(path string) corsMode {
 	case oidc.PathDiscovery, oidc.PathJWKS:
 		return corsPublic
 	case oidc.PathToken, oidc.PathUserinfo, oidc.PathRevocation, oidc.PathIntrospection,
-		"/oauth2/par", "/oauth2/device_authorization":
+		"/oauth2/par", "/oauth2/device_authorization", pathHeadlessStart, pathHeadlessSubmit:
 		return corsClientOrigin
 
 		// oidc.PathAuthorize is absent, and must stay absent. RFC 9700 §2.6 makes

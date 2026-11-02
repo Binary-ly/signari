@@ -797,6 +797,12 @@
                       },
                       "type": "array"
                     },
+                    "login_ui_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "logo_uri": {
                       "type": [
                         "string",
@@ -1092,6 +1098,9 @@
                     },
                     "type": "array"
                   },
+                  "login_ui_url": {
+                    "type": "string"
+                  },
                   "logo_uri": {
                     "type": "string"
                   },
@@ -1224,6 +1233,9 @@
                       "type": "string"
                     },
                     "issuer_alias": {
+                      "type": "string"
+                    },
+                    "login_ui_url": {
                       "type": "string"
                     },
                     "may_exchange": {

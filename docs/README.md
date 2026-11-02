@@ -73,6 +73,7 @@ command or an environment variable exists in code and not on its page.
 | [ciba.md](ciba.md) | Backchannel authentication |
 | [dynamic-registration.md](dynamic-registration.md) | RFC 7591/7592 |
 | [response-modes.md](response-modes.md) | `form_post` and hybrid, for migrations |
+| [headless-sign-in.md](headless-sign-in.md) | A sign-in page of the application's own, walked over JSON |
 | [rich-authorization-requests.md](rich-authorization-requests.md) | RFC 9396 — when a scope string is not enough |
 | [jwt-bearer.md](jwt-bearer.md) | RFC 7523 §2.1 — GitHub Actions, Kubernetes |
 | [transaction-tokens.md](transaction-tokens.md) | Per-transaction tokens inside a call chain |

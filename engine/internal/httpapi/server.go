@@ -802,6 +802,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /enrol/passkey/finish", s.handlePasskeyLinkFinish)
 	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
 	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
+	mux.HandleFunc("POST "+pathHeadlessStart, s.handleHeadlessStart)
+	mux.HandleFunc("POST "+pathHeadlessSubmit, s.handleHeadlessSubmit)
 	return mux.ServeMux
 }
 

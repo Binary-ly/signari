@@ -223,6 +223,7 @@ clients:
   client set-admin-api             let the client obtain tokens for the Admin API
   client set-first-party           skip the consent screen for a client that is yours
   client set-roles-claim           the claim a client's tokens carry a person's roles in it under
+  client set-login-ui              the page of its own a client signs people in on, over JSON
   client set-token-format          a client's access tokens as JWTs, or opaque handles to introspect
   client set-subject-type          name people to a client by their id, or by one only its sector knows
   client set-profile               hold a client to the FAPI 2.0 Security Profile
@@ -1522,6 +1523,12 @@ func run(args []string) (err error) {
 			said = "its tokens carry a person's roles in " + *upstreamClaim
 		}
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RolesClaim: upstreamClaim}, said)
+	case "client set-login-ui":
+		said := "a sign-in for it uses this server's page"
+		if *subURL != "" {
+			said = "a sign-in for it goes to " + *subURL + ", and may be walked over JSON"
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{LoginUI: subURL}, said)
 	case "client set-first-party":
 		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
 			map[bool]string{true: "first-party: the consent screen is skipped",

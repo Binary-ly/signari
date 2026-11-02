@@ -1,0 +1,109 @@
+<!doctype html>
+<!-- The smallest application that signs people in on a page of its own. No library and
+     no build: what is here is everything it takes. See docs/headless-sign-in.md. -->
+<meta charset="utf-8">
+<title>Sample application</title>
+<main id="page"></main>
+<script type="module">
+const params = new URLSearchParams(location.search)
+const issuer = document.documentElement.dataset.issuer || params.get('issuer') || localStorage.getItem('issuer')
+const clientId = params.get('client_id') || localStorage.getItem('client_id')
+localStorage.setItem('issuer', issuer)
+localStorage.setItem('client_id', clientId)
+const redirectUri = location.origin + '/'
+const page = document.getElementById('page')
+
+const base64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+async function signIn() {
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)))
+  const challenge = base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))))
+  sessionStorage.setItem('verifier', verifier)
+  location.assign(issuer + '/oauth2/authorize?' + new URLSearchParams({
+    client_id: clientId, response_type: 'code', scope: 'openid', redirect_uri: redirectUri, state: 'sample',
+    code_challenge: challenge, code_challenge_method: 'S256',
+  }))
+}
+
+async function post(path, body) {
+  const answer = await fetch(issuer + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  return answer.json()
+}
+
+function show(step) {
+  if (step.done) {
+    location.assign(step.redirect_to)
+    return
+  }
+  page.replaceChildren()
+  const heading = document.createElement('h1')
+  heading.id = 'stage'
+  heading.textContent = step.page
+  page.append(heading)
+  if (step.message) {
+    const said = document.createElement('p')
+    said.id = 'message'
+    said.textContent = step.message
+    page.append(said)
+  }
+  for (const form of step.forms || []) {
+    const shown = document.createElement('form')
+    for (const field of form.fields) {
+      const input = document.createElement('input')
+      input.name = field.name
+      input.type = field.type === 'password' ? 'password' : 'text'
+      input.value = field.value || ''
+      input.placeholder = field.label || field.name
+      shown.append(input)
+    }
+    const presses = form.buttons?.length ? form.buttons : [{ label: 'Continue' }]
+    for (const button of presses) {
+      const press = document.createElement('button')
+      press.textContent = button.label
+      press.dataset.name = button.name || ''
+      press.dataset.value = button.value || ''
+      shown.append(press)
+    }
+    shown.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const fields = Object.fromEntries(new FormData(shown))
+      const pressed = event.submitter?.dataset
+      if (pressed?.name) fields[pressed.name] = pressed.value
+      show(await post('/login/api/submit', { state: step.state, action: form.action, fields }))
+    })
+    page.append(shown)
+  }
+}
+
+async function redeem(code) {
+  const answer = await fetch(issuer + '/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: redirectUri,
+      code_verifier: sessionStorage.getItem('verifier'),
+    }),
+  })
+  const tokens = await answer.json()
+  const claims = JSON.parse(atob(tokens.id_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+  page.innerHTML = ''
+  const done = document.createElement('p')
+  done.id = 'signed-in'
+  done.textContent = 'signed in as ' + claims.sub
+  page.append(done)
+}
+
+if (params.get('code')) {
+  redeem(params.get('code'))
+} else if (params.get('authz')) {
+  show(await post('/login/api/start', { authz: params.get('authz') }))
+} else {
+  const start = document.createElement('button')
+  start.id = 'start'
+  start.textContent = 'Sign in'
+  start.addEventListener('click', signIn)
+  page.append(start)
+}
+</script>

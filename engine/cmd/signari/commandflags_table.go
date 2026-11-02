@@ -40,6 +40,7 @@ var commandFlags = map[string][]string{
 	"client set-exchange":             {"client-id", "exchange-audiences", "may-exchange"},
 	"client set-exchange-containment": {"client-id", "exchange-audience-match"},
 	"client set-first-party":          {"client-id", "first-party"},
+	"client set-login-ui":             {"client-id", "url"},
 	"client set-roles-claim":          {"claim", "client-id"},
 	"client set-token-format":         {"client-id", "token-format"},
 	"client set-subject-type":         {"client-id", "sector", "subject-type"},

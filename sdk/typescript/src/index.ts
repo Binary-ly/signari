@@ -1932,6 +1932,7 @@ export interface GetClientsClientIDResponse {
   issuer_alias?: string | null
   jwks?: Record<string, unknown> | null
   jwt_bearer_providers?: string[]
+  login_ui_url?: string | null
   logo_uri?: string | null
   may_exchange?: boolean
   minimum_acr?: string
@@ -3218,6 +3219,7 @@ export interface PatchClientsClientIDRequest {
   issuer_alias?: string
   jwks?: unknown
   jwt_bearer_providers?: string[]
+  login_ui_url?: string
   logo_uri?: string
   may_exchange?: boolean
   minimum_acr?: string
@@ -3258,6 +3260,7 @@ export interface PatchClientsClientIDResponse {
   frontchannel_logout_uri?: string
   id_token_signed_response_alg?: string
   issuer_alias?: string
+  login_ui_url?: string
   may_exchange?: boolean
   minimum_acr?: string
   post_logout_redirect_uris?: string[]

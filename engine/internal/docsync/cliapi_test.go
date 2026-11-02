@@ -118,6 +118,7 @@ var cliAPI = map[string]string{
 	"client set-admin-api":            "PATCH /admin/clients/{clientID}",
 	"client set-first-party":          "PATCH /admin/clients/{clientID}",
 	"client set-roles-claim":          "PATCH /admin/clients/{clientID}",
+	"client set-login-ui":             "PATCH /admin/clients/{clientID}",
 	"client set-token-format":         "PATCH /admin/clients/{clientID}",
 	"client set-subject-type":         "PATCH /admin/clients/{clientID}",
 	"client set-profile":              "PATCH /admin/clients/{clientID}",

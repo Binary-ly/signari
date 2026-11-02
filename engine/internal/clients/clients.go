@@ -151,6 +151,9 @@ type Client struct {
 	// RolesClaim is the claim its tokens carry a person's roles in the application
 	// under, empty for none.
 	RolesClaim string
+	// LoginUI is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; empty for this server's page.
+	LoginUI string
 	// AccessFormat is what the client is given as an access token: jwt, or opaque
 	// for a handle a resource server introspects.
 	AccessFormat string
@@ -298,7 +301,8 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       EXISTS (SELECT 1 FROM core.claim_mappers m WHERE m.org_id = core.clients.org_id),
 		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'token_issue'),
 		       EXISTS (SELECT 1 FROM core.access_policies a WHERE a.org_id = core.clients.org_id),
-		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'client_access')
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'client_access'),
+		       COALESCE(login_ui_url, '')
 		FROM core.clients
 		WHERE client_id = $1`, clientID).
 		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
@@ -315,7 +319,7 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 			&c.ClaimsRedirectURIs,
 			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
 			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
-			&c.HasAccessPolicy, &c.HasClientAccessHook)
+			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

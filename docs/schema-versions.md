@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0264 group_members_view
+
+Compatible with the release before: its binary may still serve this schema.
+
+Who is in which group, for the console (0.28). A user manager delegated over some groups was not offered the people screen at all, because it read everybody and nothing in core_v1 said who was in what, so they administered their members through the Admin API alone. Group membership is an organisation's own, and a view of it answers under the same policy as the rest.
+
 ## 0263 jwt_vc_json
 
 Not compatible with the release before: stop it before migrating.

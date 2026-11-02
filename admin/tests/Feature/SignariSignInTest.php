@@ -240,11 +240,11 @@ class SignariSignInTest extends TestCase
         $this->actingAs($user)->withSession($this->kept())->get('/admin/engine-clients')->assertOk();
         $this->actingAs($user)->withSession($this->kept())->get('/admin/engine-users')->assertForbidden();
 
-        // A user manager delegated over a group: the people screen reads
-        // every person, so it is not theirs.
+        // A user manager delegated over a group has the screen, narrowed to its
+        // members: ConfigurationScreensTest holds it to them.
         $this->engine(['scopes' => ['users:read', 'users:write'],
             'delegated' => ['users:read' => [(string) Str::uuid()]]] + $this->me());
-        $this->actingAs($user)->withSession($this->kept())->get('/admin/engine-users')->assertForbidden();
+        $this->actingAs($user)->withSession($this->kept())->get('/admin/engine-users')->assertOk();
         $this->engine($this->me() + ['delegated' => []]);
         $this->answer['scopes'] = ['users:read', 'users:write'];
         $this->actingAs($user)->withSession($this->kept())->get('/admin/engine-users')->assertOk();

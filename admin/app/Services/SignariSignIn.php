@@ -59,16 +59,18 @@ class SignariSignIn
     }
 
     /**
-     * Whether $scope is narrowed to some groups' members for this operator (a
-     * user manager delegated over groups). The console's people screen reads
-     * every person of the organisation, so it is not offered to one: they
-     * administer their members through the Admin API, which holds them to it.
+     * The groups $scope is narrowed to for this operator, a user manager delegated
+     * over them, and an empty list for anybody it reaches the whole organisation
+     * for. The engine's answer: what a screen shows follows it, and the Admin API
+     * holds every write to it whatever a screen shows.
+     *
+     * @return list<string>
      */
-    public static function delegated(string $scope): bool
+    public static function delegatedGroups(string $scope): array
     {
         $me = session(self::ME);
 
-        return is_array($me) && ! empty($me['delegated'][$scope] ?? null);
+        return is_array($me) ? array_values((array) ($me['delegated'][$scope] ?? [])) : [];
     }
 
     /** Refreshed when this close to expiry, so a request does not carry a token that dies under it. */

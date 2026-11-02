@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Services\SignariSignIn;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\Concerns\SeedsEngineState;
@@ -165,6 +166,46 @@ class ConfigurationScreensTest extends TestCase
      * Who holds what is a tenant's business like anything else, and a grant that
      * ran out is not shown as one in force: a decision would not read it.
      */
+    /**
+     * A user manager delegated over a group sees its members on the people screen
+     * and nobody else, and somebody whose scope is not narrowed sees everybody.
+     */
+    public function test_a_delegated_user_manager_sees_their_groups_members(): void
+    {
+        $org = $this->plantOrganisation();
+        $member = $this->plantUser($org);
+        $outsider = $this->plantUser($org);
+        $email = fn (string $id): string => $this->maintenance()
+            ->selectOne('SELECT email FROM core.users WHERE id = ?::uuid', [$id])->email;
+        $group = $this->maintenance()->selectOne(
+            'INSERT INTO core.groups (org_id, name, display_name) VALUES (?::uuid, ?, ?) RETURNING id::text AS id',
+            [$org, 'managed-'.Str::lower(Str::random(8)), 'Managed']
+        )->id;
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_members (group_id, user_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid)',
+            [$group, $member, $org]
+        );
+
+        try {
+            $operator = $this->operatorFor($org);
+            $this->actingAs($operator)
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => ['users:read' => [$group]]]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($member))
+                ->assertDontSee($email($outsider));
+
+            $this->actingAs($operator)
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => []]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($member))
+                ->assertSee($email($outsider));
+        } finally {
+            $this->maintenance()->delete('DELETE FROM core.groups WHERE org_id = ?::uuid', [$org]);
+        }
+    }
+
     public function test_relations_and_the_model_are_scoped_and_live(): void
     {
         $org = $this->plantOrganisation();

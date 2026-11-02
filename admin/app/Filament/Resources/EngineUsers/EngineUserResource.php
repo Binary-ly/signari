@@ -10,6 +10,7 @@ use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Users, read-only.
@@ -27,14 +28,21 @@ class EngineUserResource extends Resource
 {
     protected static ?string $model = EngineUser::class;
 
-    /**
-     * What an operator signed in through Signari needs to see this screen
-     * (6.06). Not offered to a user manager delegated over groups: it reads
-     * every person of the organisation, and they reach only their members.
-     */
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
     public static function canViewAny(): bool
     {
-        return SignariSignIn::may('users:read') && ! SignariSignIn::delegated('users:read');
+        return SignariSignIn::may('users:read');
+    }
+
+    /** A user manager delegated over groups sees those groups' members and nobody else. */
+    public static function getEloquentQuery(): Builder
+    {
+        $groups = SignariSignIn::delegatedGroups('users:read');
+        $query = parent::getEloquentQuery();
+
+        return $groups === [] ? $query : $query->whereIn('id', function ($members) use ($groups) {
+            $members->select('user_id')->from('core_v1.group_members')->whereIn('group_id', $groups);
+        });
     }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUsers;

@@ -333,9 +333,9 @@ screen needs the read scope for what it shows (`users:read` for people,
 for the configuration screens), and a person who holds no role is not an
 operator at all. The console reads its screens from the database views under its
 own role, so this is what keeps an app manager out of the people screen; every
-write is the engine's to refuse besides. A user manager delegated over a group is
-not offered the people screen, which lists everyone in the organisation: they
-administer their members through the Admin API, which holds them to the group.
+write is the engine's to refuse besides. A user manager delegated over a group sees
+that group's members on the people screen and nobody else, and the Admin API holds
+what they change to the group.
 
 An operator signed in this way is not asked to enrol a console TOTP as well:
 Signari required the second factor, and the engine refuses their token unless the

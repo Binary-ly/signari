@@ -123,6 +123,16 @@ for n in 1 2; do
   run client set-dpop -client-id "$c" -dpop-bound
   run client set-par -client-id "$c" -require-par
   run client set-profile -client-id "$c" -security-profile fapi2
+  # And the same for FAPI 2.0 Message Signing (./run.sh fapi2-ms), with the same key:
+  # requests signed, responses signed with ES256 as JARM, held to that profile.
+  m="conformance-fapims-$n"
+  run client create -client-id "$m" -name "FAPI MS $n" -redirect "$CALLBACK"
+  run client set-keys -client-id "$m" -jwks "/tmp/fapi$n.public.json"
+  run client set-dpop -client-id "$m" -dpop-bound
+  run client set-par -client-id "$m" -require-par
+  run client set-signed-requests -client-id "$m"
+  run client set-alg -client-id "$m" -response-alg ES256
+  run client set-profile -client-id "$m" -security-profile fapi2-message-signing
 done
 
 # The second callback carries query parameters on purpose: the suite tests that a
@@ -135,7 +145,9 @@ INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES
  ('conformance-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-fapi-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
- ('conformance-fapi-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
+ ('conformance-fapi-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapims-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapims-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
 ON CONFLICT DO NOTHING;
 UPDATE core.config_version SET version = version + 1 WHERE id = true;
 SQL

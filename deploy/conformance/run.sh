@@ -73,6 +73,7 @@ case "$PLAN" in
   bc-logout) logout "" "$CB/backchannel_logout"; SPEC="oidcc-backchannel-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
   # CONFIG from fapiconfig.py, which carries the two FAPI clients' private keys.
   fapi2)     SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi]" ;;
+  fapi2-ms)  SPEC="fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][fapi_request_method=signed_non_repudiation][sender_constrain=dpop][fapi_profile=plain_fapi][fapi_response_mode=jarm]" ;;
   *)         SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
 esac
 

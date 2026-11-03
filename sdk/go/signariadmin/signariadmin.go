@@ -344,6 +344,14 @@ type DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse struct {
 	Retired       string `json:"retired"`
 }
 
+// DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse is a JSON object of the Admin API.
+type DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse struct {
+	Believed      bool   `json:"believed"`
+	ConfigVersion int64  `json:"config_version"`
+	Issuer        string `json:"issuer"`
+	Slug          string `json:"slug"`
+}
+
 // DeleteOrganizationsOrgIDKerberosRealmsRealmResponse is a JSON object of the Admin API.
 type DeleteOrganizationsOrgIDKerberosRealmsRealmResponse struct {
 	ConfigVersion int64  `json:"config_version"`
@@ -2730,8 +2738,11 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	AllowUnsolicited       *bool     `json:"allow_unsolicited,omitempty"`
 	AuthorizeURL           *string   `json:"authorize_url,omitempty"`
 	Certificate            *string   `json:"certificate,omitempty"`
+	CertificateChain       *string   `json:"certificate_chain,omitempty"`
 	ClientID               *string   `json:"client_id,omitempty"`
+	ClientIDPrefix         *string   `json:"client_id_prefix,omitempty"`
 	ClientSecret           *string   `json:"client_secret,omitempty"`
+	EmailClaim             *string   `json:"email_claim,omitempty"`
 	EntityID               *string   `json:"entity_id,omitempty"`
 	ForceAuthn             *bool     `json:"force_authn,omitempty"`
 	Issuer                 *string   `json:"issuer,omitempty"`
@@ -2742,11 +2753,14 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	MetadataUnsigned       *bool     `json:"metadata_unsigned,omitempty"`
 	MetadataURL            *string   `json:"metadata_url,omitempty"`
 	Name                   *string   `json:"name,omitempty"`
+	NameClaim              *string   `json:"name_claim,omitempty"`
 	NameIDFormat           *string   `json:"name_id_format,omitempty"`
+	RequestKey             *string   `json:"request_key,omitempty"`
 	Scopes                 *[]string `json:"scopes,omitempty"`
 	SkewSeconds            *int64    `json:"skew_seconds,omitempty"`
 	Slug                   *string   `json:"slug,omitempty"`
 	SsoURL                 *string   `json:"sso_url,omitempty"`
+	SubjectClaim           *string   `json:"subject_claim,omitempty"`
 	TokenURL               *string   `json:"token_url,omitempty"`
 	TrustEmailVerification *bool     `json:"trust_email_verification,omitempty"`
 	UserinfoEmail          *string   `json:"userinfo_email,omitempty"`
@@ -2754,6 +2768,8 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	UserinfoName           *string   `json:"userinfo_name,omitempty"`
 	UserinfoSubject        *string   `json:"userinfo_subject,omitempty"`
 	UserinfoURL            *string   `json:"userinfo_url,omitempty"`
+	VctValues              *[]string `json:"vct_values,omitempty"`
+	WalletURL              *string   `json:"wallet_url,omitempty"`
 }
 
 // PostOrganizationsOrgIDIdentityProvidersResponse is a JSON object of the Admin API.
@@ -2766,6 +2782,7 @@ type PostOrganizationsOrgIDIdentityProvidersResponse struct {
 	Keys            int64  `json:"keys,omitempty"`
 	Kind            string `json:"kind"`
 	MetadataPath    string `json:"metadata_path,omitempty"`
+	ResponsePath    string `json:"response_path,omitempty"`
 	SignInPath      string `json:"sign_in_path,omitempty"`
 	Slug            string `json:"slug"`
 }
@@ -3677,6 +3694,20 @@ type PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse struct {
 	Slug          string `json:"slug"`
 }
 
+// PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest struct {
+	Issuer *string         `json:"issuer,omitempty"`
+	JWKS   json.RawMessage `json:"jwks,omitempty"`
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse is a JSON object of the Admin API.
+type PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse struct {
+	Believed      bool   `json:"believed"`
+	ConfigVersion int64  `json:"config_version"`
+	Issuer        string `json:"issuer"`
+	Slug          string `json:"slug"`
+}
+
 // PutOrganizationsOrgIDMessagesLocaleKeyRequest is a JSON object of the Admin API.
 type PutOrganizationsOrgIDMessagesLocaleKeyRequest struct {
 	Text *string `json:"text,omitempty"`
@@ -4339,6 +4370,18 @@ func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMap(ctx conte
 func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyID(ctx context.Context, orgID string, slug string, keyID string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse, int64, error) {
 	var out DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse
 	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/saml-keys/"+url.PathEscape(keyID), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuers is DELETE
+// /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers: Stop believing an issuer for
+// a wallet sign-in Needs organizations:write.
+func (c *Client) DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuers(ctx context.Context, orgID string, slug string, opts ...Option) (*DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse, int64, error) {
+	var out DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse
+	v, err := c.call(ctx, "DELETE", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/vp-issuers", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6653,6 +6696,18 @@ func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugSAMLKeyUse(ctx contex
 func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugTokenAuth(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse, int64, error) {
 	var out PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse
 	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/token-auth", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutOrganizationsOrgIDIdentityProvidersSlugVpIssuers is PUT
+// /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers: Believe an issuer for a
+// wallet sign-in, with its keys Needs organizations:write.
+func (c *Client) PutOrganizationsOrgIDIdentityProvidersSlugVpIssuers(ctx context.Context, orgID string, slug string, body PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest, opts ...Option) (*PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse, int64, error) {
+	var out PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse
+	v, err := c.call(ctx, "PUT", "/admin/organizations/"+url.PathEscape(orgID)+"/identity-providers/"+url.PathEscape(slug)+"/vp-issuers", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

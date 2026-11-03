@@ -386,6 +386,11 @@ func (s *Server) Routes() http.Handler {
 		s.putIdPGroupMap)
 	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map", ScopeOrganizationsWrite,
 		s.deleteIdPGroupMap)
+	// The issuers a wallet sign-in believes (idps.go).
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", ScopeOrganizationsWrite,
+		s.putVPIssuer)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", ScopeOrganizationsWrite,
+		s.deleteVPIssuer)
 	// SAML service providers, `signari saml` (saml.go).
 	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
 	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)

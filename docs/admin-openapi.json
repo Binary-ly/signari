@@ -14208,10 +14208,19 @@
                   "certificate": {
                     "type": "string"
                   },
+                  "certificate_chain": {
+                    "type": "string"
+                  },
                   "client_id": {
                     "type": "string"
                   },
+                  "client_id_prefix": {
+                    "type": "string"
+                  },
                   "client_secret": {
+                    "type": "string"
+                  },
+                  "email_claim": {
                     "type": "string"
                   },
                   "entity_id": {
@@ -14244,7 +14253,13 @@
                   "name": {
                     "type": "string"
                   },
+                  "name_claim": {
+                    "type": "string"
+                  },
                   "name_id_format": {
+                    "type": "string"
+                  },
+                  "request_key": {
                     "type": "string"
                   },
                   "scopes": {
@@ -14260,6 +14275,9 @@
                     "type": "string"
                   },
                   "sso_url": {
+                    "type": "string"
+                  },
+                  "subject_claim": {
                     "type": "string"
                   },
                   "token_url": {
@@ -14281,6 +14299,15 @@
                     "type": "string"
                   },
                   "userinfo_url": {
+                    "type": "string"
+                  },
+                  "vct_values": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "wallet_url": {
                     "type": "string"
                   }
                 },
@@ -14320,6 +14347,9 @@
                       "type": "string"
                     },
                     "metadata_path": {
+                      "type": "string"
+                    },
+                    "response_path": {
                       "type": "string"
                     },
                     "sign_in_path": {
@@ -15840,6 +15870,247 @@
           }
         ],
         "summary": "Say how this engine proves itself at the provider's token endpoint."
+      }
+    },
+    "/admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers": {
+      "delete": {
+        "operationId": "delete_organizations_orgID_identity_providers_slug_vp_issuers",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "believed": {
+                      "type": "boolean"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "issuer": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "slug",
+                    "issuer",
+                    "believed",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Stop believing an issuer for a wallet sign-in"
+      },
+      "put": {
+        "operationId": "put_organizations_orgID_identity_providers_slug_vp_issuers",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "issuer": {
+                    "type": "string"
+                  },
+                  "jwks": {}
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "believed": {
+                      "type": "boolean"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "issuer": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "slug",
+                    "issuer",
+                    "believed",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks organizations:write, or is scoped to another organisation."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "organizations:write"
+            ]
+          }
+        ],
+        "summary": "Believe an issuer for a wallet sign-in, with its keys"
       }
     },
     "/admin/organizations/{orgID}/issued-credentials": {

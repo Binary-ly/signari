@@ -126,6 +126,7 @@ command or an environment variable exists in code and not on its page.
 | [provisioning.md](provisioning.md) | SCIM, Google Workspace and Entra as targets |
 | [directory-sync.md](directory-sync.md) | Google, Entra and LDAP as sources |
 | [social-login.md](social-login.md) | Federated sign-in providers |
+| [wallet-sign-in.md](wallet-sign-in.md) | Signing in with a credential from a digital identity wallet (OpenID4VP) |
 | [groups.md](groups.md) | Membership, and which clients may see it |
 | [erasure.md](erasure.md) | Crypto-shredding a subject |
 | [data-export.md](data-export.md) | Everything kept about a person, for them or for a request on their behalf |

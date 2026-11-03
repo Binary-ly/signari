@@ -241,6 +241,12 @@ export class SignariAdmin {
     return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/saml-keys/${encodeURIComponent(keyID)}`, undefined, opts)
   }
 
+  // DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers: Stop believing an
+  // issuer for a wallet sign-in Needs organizations:write.
+  deleteOrganizationsOrgIDIdentityProvidersSlugVpIssuers(orgID: string, slug: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse>> {
+    return this.call<DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse>("DELETE", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/vp-issuers`, undefined, opts)
+  }
+
   // DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}: Forget a Kerberos realm and its
   // keytab Needs organizations:write.
   deleteOrganizationsOrgIDKerberosRealmsRealm(orgID: string, realm: string, opts: CallOptions = {}): Promise<Answer<DeleteOrganizationsOrgIDKerberosRealmsRealmResponse>> {
@@ -1457,6 +1463,12 @@ export class SignariAdmin {
     return this.call<PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/token-auth`, body, opts)
   }
 
+  // PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers: Believe an issuer for a
+  // wallet sign-in, with its keys Needs organizations:write.
+  putOrganizationsOrgIDIdentityProvidersSlugVpIssuers(orgID: string, slug: string, body: PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse>> {
+    return this.call<PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse>("PUT", `/admin/organizations/${encodeURIComponent(orgID)}/identity-providers/${encodeURIComponent(slug)}/vp-issuers`, body, opts)
+  }
+
   // PUT /admin/organizations/{orgID}/messages/{locale}/{key}: Reword one message in one language,
   // as plain text. Needs organizations:write.
   putOrganizationsOrgIDMessagesLocaleKey(orgID: string, locale: string, key: string, body: PutOrganizationsOrgIDMessagesLocaleKeyRequest, opts: CallOptions = {}): Promise<Answer<PutOrganizationsOrgIDMessagesLocaleKeyResponse>> {
@@ -1755,6 +1767,14 @@ export interface DeleteOrganizationsOrgIDIdentityProvidersSlugGroupMapResponse {
 export interface DeleteOrganizationsOrgIDIdentityProvidersSlugSAMLKeysKeyIDResponse {
   config_version: number
   retired: string
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse {
+  believed: boolean
+  config_version: number
+  issuer: string
+  slug: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4143,8 +4163,11 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   allow_unsolicited?: boolean
   authorize_url?: string
   certificate?: string
+  certificate_chain?: string
   client_id?: string
+  client_id_prefix?: string
   client_secret?: string
+  email_claim?: string
   entity_id?: string
   force_authn?: boolean
   issuer?: string
@@ -4155,11 +4178,14 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   metadata_unsigned?: boolean
   metadata_url?: string
   name?: string
+  name_claim?: string
   name_id_format?: string
+  request_key?: string
   scopes?: string[]
   skew_seconds?: number
   slug?: string
   sso_url?: string
+  subject_claim?: string
   token_url?: string
   trust_email_verification?: boolean
   userinfo_email?: string
@@ -4167,6 +4193,8 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   userinfo_name?: string
   userinfo_subject?: string
   userinfo_url?: string
+  vct_values?: string[]
+  wallet_url?: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4179,6 +4207,7 @@ export interface PostOrganizationsOrgIDIdentityProvidersResponse {
   keys?: number
   kind: string
   metadata_path?: string
+  response_path?: string
   sign_in_path?: string
   slug: string
 }
@@ -5087,6 +5116,20 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthRequest {
 export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse {
   config_version: number
   method: string
+  slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest {
+  issuer?: string
+  jwks?: unknown
+}
+
+/** A JSON object of the Admin API. */
+export interface PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse {
+  believed: boolean
+  config_version: number
+  issuer: string
   slug: string
 }
 

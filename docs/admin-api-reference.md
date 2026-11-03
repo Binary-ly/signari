@@ -36,7 +36,7 @@ refused with `412` when the configuration moved since the version it names.
 | [groups](#groups) | 5 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
-| [identity-providers](#identity-providers) | 13 |
+| [identity-providers](#identity-providers) | 15 |
 | [instances](#instances) | 1 |
 | [instances / brand](#instances--brand) | 3 |
 | [instances / client-metadata-rules](#instances--client-metadata-rules) | 3 |
@@ -1695,8 +1695,11 @@ Takes:
 | `allow_unsolicited` | boolean |  |
 | `authorize_url` | string |  |
 | `certificate` | string |  |
+| `certificate_chain` | string |  |
 | `client_id` | string |  |
+| `client_id_prefix` | string |  |
 | `client_secret` | string |  |
+| `email_claim` | string |  |
 | `entity_id` | string |  |
 | `force_authn` | boolean |  |
 | `issuer` | string |  |
@@ -1707,11 +1710,14 @@ Takes:
 | `metadata_unsigned` | boolean |  |
 | `metadata_url` | string |  |
 | `name` | string |  |
+| `name_claim` | string |  |
 | `name_id_format` | string |  |
+| `request_key` | string |  |
 | `scopes` | list of string |  |
 | `skew_seconds` | integer |  |
 | `slug` | string |  |
 | `sso_url` | string |  |
+| `subject_claim` | string |  |
 | `token_url` | string |  |
 | `trust_email_verification` | boolean |  |
 | `userinfo_email` | string |  |
@@ -1719,6 +1725,8 @@ Takes:
 | `userinfo_name` | string |  |
 | `userinfo_subject` | string |  |
 | `userinfo_url` | string |  |
+| `vct_values` | list of string |  |
+| `wallet_url` | string |  |
 
 Answers:
 
@@ -1732,6 +1740,7 @@ Answers:
 | `keys` | integer |  |
 | `kind` | string | always |
 | `metadata_path` | string |  |
+| `response_path` | string |  |
 | `sign_in_path` | string |  |
 | `slug` | string | always |
 
@@ -1956,6 +1965,43 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `method` | string | always |
+| `slug` | string | always |
+
+### `DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers`
+
+Stop believing an issuer for a wallet sign-in Needs organizations:write.
+
+Go `DeleteOrganizationsOrgIDIdentityProvidersSlugVpIssuers`, TypeScript `deleteOrganizationsOrgIDIdentityProvidersSlugVpIssuers`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `believed` | boolean | always |
+| `config_version` | integer | always |
+| `issuer` | string | always |
+| `slug` | string | always |
+
+### `PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers`
+
+Believe an issuer for a wallet sign-in, with its keys Needs organizations:write.
+
+Go `PutOrganizationsOrgIDIdentityProvidersSlugVpIssuers`, TypeScript `putOrganizationsOrgIDIdentityProvidersSlugVpIssuers`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `issuer` | string |  |
+| `jwks` | any |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `believed` | boolean | always |
+| `config_version` | integer | always |
+| `issuer` | string | always |
 | `slug` | string | always |
 
 ## instances

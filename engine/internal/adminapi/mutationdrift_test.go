@@ -650,6 +650,28 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftVPVerifier(t, s)
+				return p + "/vp-issuers"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				return `{"issuer":"https://pid.example","jwks":` + string(issuerJWKS(t, false)) + `}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftVPVerifier(t, s)
+				if err := store.SetVPTrustedIssuer(context.Background(), s.db, org, slug, "https://pid.example",
+					issuerJWKS(t, false)); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/vp-issuers?issuer=https://pid.example"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations/{orgID}/saml-providers", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"

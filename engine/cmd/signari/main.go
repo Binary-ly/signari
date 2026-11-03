@@ -293,6 +293,7 @@ federation in:
   idp enable                put an upstream provider back in service
   idp assertions            allow or refuse RFC 7523 assertions from a provider
   idp add-issuer            register a key-publishing issuer for the jwt-bearer grant
+  idp vp-issuer             say whose credentials a wallet sign-in believes, with their keys
   idp link                  make an upstream subject act as a person
   idp unlink                detach an upstream subject from its person
   idp links                 a provider's subjects and the people they act as
@@ -869,8 +870,18 @@ func run(args []string) (err error) {
 	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
 	idpAuthMethod := fs.String("method", "", "how to sign in to the provider's token endpoint: client_secret_post, "+
 		"client_secret_basic, private_key_jwt or tls_client_auth")
-	idpClientKeyFile := fs.String("client-key-file", "", "PEM private key for private_key_jwt or tls_client_auth")
-	idpClientCertFile := fs.String("client-cert-file", "", "PEM certificate of that key")
+	idpClientKeyFile := fs.String("client-key-file", "", "PEM private key for private_key_jwt or tls_client_auth, "+
+		"or the key a wallet sign-in signs its requests with")
+	idpClientCertFile := fs.String("client-cert-file", "", "PEM certificate of that key; for a wallet sign-in its whole "+
+		"chain, leaf first")
+	vpPrefix := fs.String("client-id-prefix", "", "`idp add -kind oid4vp`: how wallets know this verifier, "+
+		"x509_san_dns, x509_hash or redirect_uri")
+	vpWallet := fs.String("wallet-url", "openid4vp://", "`idp add -kind oid4vp`: where the browser is sent with the "+
+		"request, openid4vp:// or a wallet's https link")
+	vpSubject := fs.String("subject-claim", "", "`idp add -kind oid4vp`: the credential claim that identifies a "+
+		"person within its issuer, a name or a JSON path such as [\"address\",\"country\"]")
+	vpEmail := fs.String("email-claim", "", "`idp add -kind oid4vp`: the claim holding the address, if any")
+	vpName := fs.String("name-claim", "", "`idp add -kind oid4vp`: the claim holding the name, if any")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
@@ -2114,6 +2125,8 @@ func run(args []string) (err error) {
 		return idpSetEnabled(ctx, conn, *slug, false)
 	case "idp enable":
 		return idpSetEnabled(ctx, conn, *slug, true)
+	case "idp vp-issuer":
+		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *removeMember)
 	case "idp link":
 		return idpLink(ctx, conn, *slug, *subject, *email)
 	case "idp unlink":
@@ -2131,6 +2144,12 @@ func run(args []string) (err error) {
 	case "saml list":
 		return samlListSPs(ctx, conn, *outputFormat)
 	case "idp add":
+		if *kind == "oid4vp" {
+			return idpAddVP(ctx, conn, *orgID, *slug, *name, *allowSignup, *allowLinking, *trustEmail,
+				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, VCTValues: splitList(*credVCT),
+					SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName},
+				*idpClientKeyFile, *idpClientCertFile)
+		}
 		nameID := *nameIDFormat
 		if *metadataSource != "" {
 			nameID = namedOnly(fs, "nameid-format", nameID)

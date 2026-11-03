@@ -241,6 +241,8 @@ var (
 		withVersion(map[string]jsonSchema{"slug": str(), "claim": str(), "attribute": str(), "mapped": boolean()}))
 	groupMapSchema = object([]string{"slug", "remote_group", "group", "mapped", "config_version"},
 		withVersion(map[string]jsonSchema{"slug": str(), "remote_group": str(), "group": str(), "mapped": boolean()}))
+	vpIssuerSchema = object([]string{"slug", "issuer", "believed", "config_version"},
+		withVersion(map[string]jsonSchema{"slug": str(), "issuer": str(), "believed": boolean()}))
 	scimGroupSchema = object([]string{"slug", "group", "remote_id", "provisioned", "config_version"},
 		withVersion(map[string]jsonSchema{"slug": str(), "group": str(), "remote_id": str(), "provisioned": boolean()}))
 	relationSchema = object([]string{"subject", "relation", "object", "granted", "config_version"},
@@ -640,7 +642,7 @@ var opSchemas = map[string]opSchema{
 		typeOf[addIdentityProviderRequest](), object([]string{"id", "slug", "kind", "allow_assertions",
 			"config_version"}, withVersion(map[string]jsonSchema{"id": uuidStr(), "slug": str(), "kind": str(),
 			"allow_assertions": boolean(), "sign_in_path": str(), "callback_path": str(), "acs_path": str(),
-			"metadata_path": str(), "keys": integer()}))},
+			"metadata_path": str(), "response_path": str(), "keys": integer()}))},
 	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}": {http.StatusOK,
 		typeOf[patchIdentityProviderRequest](), object([]string{"slug", "config_version"},
 			withVersion(map[string]jsonSchema{"slug": str()}))},
@@ -652,6 +654,9 @@ var opSchemas = map[string]opSchema{
 	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map": {http.StatusOK,
 		typeOf[idpGroupMapRequest](), groupMapSchema},
 	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map": {http.StatusOK, nil, groupMapSchema},
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers": {http.StatusOK,
+		typeOf[vpIssuerRequest](), vpIssuerSchema},
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers": {http.StatusOK, nil, vpIssuerSchema},
 	"GET /admin/organizations/{orgID}/saml-providers": {http.StatusOK, nil, object([]string{"org_id", "providers"},
 		map[string]jsonSchema{"org_id": uuidStr(), "providers": arrayOf(object([]string{"id", "entity_id", "name",
 			"name_id_format", "name_id_attribute", "signature_alg", "enabled", "sign_assertions", "sign_responses",

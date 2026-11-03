@@ -2,10 +2,15 @@ package adminapi
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/go-jose/go-jose/v4"
 
 	"signari.dev/engine/internal/store"
 )
@@ -28,6 +33,94 @@ func newDriftIdP(t *testing.T, s *Server, kind string) (org, slug, path string) 
 		t.Fatal(err)
 	}
 	return org, slug, "/admin/organizations/" + org + "/identity-providers/" + slug
+}
+
+// newDriftVPVerifier is an organisation of the test's own with a wallet sign-in, and
+// its path. redirect_uri, so it needs no key.
+func newDriftVPVerifier(t *testing.T, s *Server) (org, slug, path string) {
+	t.Helper()
+	org = newDriftMigrationOrg(t, s, false)
+	slug = "drift-vp-" + org[:8]
+	if _, err := store.AddIdentityProvider(context.Background(), s.db, nil, org, store.IdentityProviderSpec{
+		Slug: slug, Name: slug, Kind: "oid4vp", VP: &store.VPSpec{Prefix: "redirect_uri",
+			WalletURL: "openid4vp://", VCTValues: []string{"urn:example:pid:1"}, SubjectClaim: `["sub"]`}}); err != nil {
+		t.Fatal(err)
+	}
+	return org, slug, "/admin/organizations/" + org + "/identity-providers/" + slug
+}
+
+// issuerJWKS is a JWK Set of one fresh public signing key, or with private the key
+// itself, which may not be believed.
+func issuerJWKS(t *testing.T, private bool) json.RawMessage {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwk := jose.JSONWebKey{Key: k.Public(), KeyID: "pid-1", Use: "sig"}
+	if private {
+		jwk.Key = k
+	}
+	b, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// A wallet sign-in is made and told whom to believe through the Admin API, as `idp
+// add -kind oid4vp` and `idp vp-issuer` do (12.12).
+func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	org := newDriftMigrationOrg(t, s, false)
+	base := "/admin/organizations/" + org + "/identity-providers"
+	slug := "vp-" + org[:8]
+
+	rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "oid4vp", "slug": slug,
+		"client_id_prefix": "redirect_uri", "vct_values": []string{"urn:example:pid:1"}, "subject_claim": "sub",
+		"email_claim": "email"})
+	var made map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &made)
+	if rec.Code != http.StatusCreated || made["sign_in_path"] != "/oid4vp/"+slug+"/start" ||
+		made["response_path"] != "/oid4vp/"+slug+"/response" {
+		t.Fatalf("made: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "oid4vp", "slug": slug + "-x",
+		"client_id_prefix": "x509_san_dns", "vct_values": []string{"urn:example:pid:1"}, "subject_claim": "sub"}); rec.Code != http.StatusBadRequest {
+		t.Errorf("x509_san_dns with no key answered %d", rec.Code)
+	}
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "google", "slug": slug + "-g",
+		"client_id": "c", "client_secret": "s", "vct_values": []string{"urn:example:pid:1"}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("a wallet's fields on a google provider answered %d", rec.Code)
+	}
+
+	issuers := base + "/" + slug + "/vp-issuers"
+	if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": "https://pid.example",
+		"jwks": issuerJWKS(t, false)}); rec.Code != http.StatusOK {
+		t.Fatalf("believing an issuer: %d %s", rec.Code, rec.Body)
+	}
+	v, err := store.LoadVPVerifier(context.Background(), s.db, nil, slug)
+	if err != nil || v.Issuers["https://pid.example"] == nil || v.Email == nil {
+		t.Fatalf("loaded %+v %v", v, err)
+	}
+	for name, body := range map[string]map[string]any{
+		"a private key":      {"issuer": "https://pid.example", "jwks": issuerJWKS(t, true)},
+		"an issuer with a |": {"issuer": "https://pid.example|x", "jwks": issuerJWKS(t, false)},
+	} {
+		if rec := call(t, s, http.MethodPut, issuers, testToken, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s answered %d", name, rec.Code)
+		}
+	}
+	if rec := call(t, s, http.MethodPut, base+"/nobody/vp-issuers", testToken, map[string]any{
+		"issuer": "https://pid.example", "jwks": issuerJWKS(t, false)}); rec.Code != http.StatusNotFound {
+		t.Errorf("an unknown slug answered %d", rec.Code)
+	}
+	if rec := call(t, s, http.MethodDelete, issuers+"?issuer=https://pid.example", testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("no longer believing: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, s, http.MethodDelete, issuers+"?issuer=https://pid.example", testToken, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("forgetting it twice answered %d", rec.Code)
+	}
 }
 
 // An upstream provider is taken out of service, allowed its assertions,

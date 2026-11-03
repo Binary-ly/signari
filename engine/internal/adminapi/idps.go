@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -127,6 +128,18 @@ type addIdentityProviderRequest struct {
 	MetadataURL      string `json:"metadata_url"`
 	MetadataSigner   string `json:"metadata_signer"`
 	MetadataUnsigned bool   `json:"metadata_unsigned"`
+	// A wallet sign-in's, kind oid4vp: how wallets know this verifier, where the
+	// browser is sent, the credential types asked for, the claim paths that
+	// identify, address and name the person, and under an x509 prefix the PEM key
+	// requests are signed with and its certificate chain, leaf first.
+	ClientIDPrefix   string   `json:"client_id_prefix"`
+	WalletURL        string   `json:"wallet_url"`
+	VCTValues        []string `json:"vct_values"`
+	SubjectClaim     string   `json:"subject_claim"`
+	EmailClaim       string   `json:"email_claim"`
+	NameClaim        string   `json:"name_claim"`
+	RequestKey       string   `json:"request_key"`
+	CertificateChain string   `json:"certificate_chain"`
 }
 
 func providerHTTPClient() *http.Client { return safedial.Client(15 * time.Second) }
@@ -168,6 +181,19 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 			EmailVerified: req.UserinfoEmailVerified, Name: req.UserinfoName}}
 	if req.SkewSeconds != nil {
 		spec.SkewSeconds = *req.SkewSeconds
+	}
+	vp := &store.VPSpec{Prefix: req.ClientIDPrefix, WalletURL: strings.TrimSpace(req.WalletURL),
+		VCTValues: req.VCTValues, SubjectClaim: req.SubjectClaim, EmailClaim: req.EmailClaim,
+		NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain}
+	switch {
+	case req.Kind == "oid4vp":
+		spec.VP = vp
+	case vp.Prefix != "" || vp.WalletURL != "" || len(vp.VCTValues) > 0 || vp.SubjectClaim != "" ||
+		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
+			"detail": "client_id_prefix, wallet_url, vct_values, the claim paths, request_key and certificate_chain " +
+				"are a wallet sign-in's, kind oid4vp"})
+		return
 	}
 	if req.Metadata != "" || req.MetadataURL != "" {
 		if req.Kind != "saml" || req.SSOURL != "" || req.Certificate != "" {
@@ -248,6 +274,9 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		out["metadata_path"] = "/saml/source/" + spec.Slug + "/metadata"
 	case "assertion":
 		out["keys"] = keyCount
+	case "oid4vp":
+		out["sign_in_path"] = "/oid4vp/" + spec.Slug + "/start"
+		out["response_path"] = "/oid4vp/" + spec.Slug + "/response"
 	default:
 		out["sign_in_path"] = "/login/with/" + spec.Slug
 		out["callback_path"] = "/login/callback/" + spec.Slug
@@ -412,6 +441,63 @@ func (s *Server) putIdPTokenAuth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "method": req.Method, "config_version": version})
 }
 
+// vpIssuerRequest is an issuer a wallet sign-in believes, with the public keys its
+// credentials are signed with, as `signari idp vp-issuer` gives them.
+type vpIssuerRequest struct {
+	Issuer string          `json:"issuer"`
+	JWKS   json.RawMessage `json:"jwks"`
+}
+
+func (s *Server) putVPIssuer(w http.ResponseWriter, r *http.Request) {
+	var req vpIssuerRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	s.changeVPIssuer(w, r, req, true)
+}
+
+func (s *Server) deleteVPIssuer(w http.ResponseWriter, r *http.Request) {
+	s.changeVPIssuer(w, r, vpIssuerRequest{Issuer: r.URL.Query().Get("issuer")}, false)
+}
+
+// changeVPIssuer believes an issuer for a wallet sign-in, with its keys, or stops
+// believing it, as `signari idp vp-issuer` does.
+func (s *Server) changeVPIssuer(w http.ResponseWriter, r *http.Request, req vpIssuerRequest, believe bool) {
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	if narrowedTokenRefused(w, r, idpRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		detail := map[string]any{"provider": slug, "issuer": req.Issuer}
+		if believe {
+			if err := store.SetVPTrustedIssuer(ctx, tx, orgID, slug, req.Issuer, req.JWKS); err != nil {
+				return err
+			}
+			return audit.Write(ctx, tx, audit.Event{Type: "admin.idp_vp_issuer_set", AdminTokenID: TokenIDFrom(ctx),
+				OrgID: orgID, Detail: detail})
+		}
+		if err := store.RemoveVPTrustedIssuer(ctx, tx, orgID, slug, req.Issuer); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.idp_vp_issuer_removed", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: detail})
+	})
+	if s.writeIdPFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "issuer": req.Issuer, "believed": believe,
+		"config_version": version})
+}
+
 func (s *Server) putIdPAttributeMap(w http.ResponseWriter, r *http.Request) {
 	var req idpAttributeMapRequest
 	if !decodeStrict(w, r, &req) {
@@ -544,6 +630,8 @@ func (s *Server) writeIdPFailure(w http.ResponseWriter, err error, orgID string)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "provider_not_found"})
 	case errors.Is(err, store.ErrIdPMappingUnknown):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "mapping_not_found"})
+	case errors.Is(err, store.ErrVPIssuerUnknown):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "issuer_not_found"})
 	case errors.Is(err, store.ErrIdPGroupUnknown):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown_group", "detail": err.Error()})
 	case errors.Is(err, store.ErrIdPGroupImpersonates):

@@ -127,6 +127,16 @@ any other build refuses `SIGNARI_PKCS11_MODULE` rather than ignoring it. See
 | `SIGNARI_PKCS11_PIN` | The token's user PIN |
 | `SIGNARI_PKCS11_PIN_FILE` | The PIN from a file instead, on the same terms as `SIGNARI_ROOT_KEY_FILE` |
 
+Or a Vault or OpenBao transit engine, in every build. Set with a module as well, the
+process refuses to start: new keys are made in one place.
+
+| | |
+|---|---|
+| `SIGNARI_VAULT_ADDR` | The server, `https://vault.internal:8200`. Set, every new signing key is made in its transit engine, not exportable, and signs there. Plain `http` is refused except to a loopback address |
+| `SIGNARI_VAULT_TOKEN` | A token allowed to create, read and sign with keys on the mount |
+| `SIGNARI_VAULT_TOKEN_FILE` | The token from a file instead, read again for every request, so one Vault Agent renews into it keeps working. On the same terms as `SIGNARI_ROOT_KEY_FILE`, so give the agent's sink `mode = 0600` |
+| `SIGNARI_VAULT_TRANSIT_MOUNT` | Where the transit engine is mounted. `transit` unless set |
+
 ## Build-time, not runtime
 
 | | |
@@ -874,5 +884,6 @@ them as undocumented and so nobody sets them in production expecting an effect.
 | `SIGNARI_DNS_CHECK`, `SIGNARI_DNS_DOMAIN` | Gate the live DNS deliverability test |
 | `SIGNARI_SMS_TWILIO_BASE_URL` | Points the Twilio client at a local server |
 | `SIGNARI_TEST_PKCS11_MODULE` | The SoftHSM module for the tests built with `-tags pkcs11`, where it is not in one of the places SoftHSM installs it |
+| `SIGNARI_TEST_VAULT_ADDR`, `SIGNARI_TEST_VAULT_TOKEN` | A Vault or OpenBao server, and a token that may mount and unmount, for the transit tests. Each test mounts a transit engine of its own and removes it. Unset, they skip |
 | `SIGNARI_ALLOW_SKIPPED_DB_TESTS` | Set to `1` to run the suite without a database. Most tests then skip, and the run proves almost nothing — the flag exists so that is a stated choice rather than the accident of an unset `SIGNARI_TEST_DSN`, which once let a mutation harness report eight covered guards as uncovered |
 | `SIGNARI_PAGE_PREVIEW_DIR` | Directory to write a rendered copy of every sign-in page into, for looking at. Four variants each — your system setting, light, dark, and one carrying brand colours — plus an `index.html` contact sheet per variant. `SIGNARI_PAGE_PREVIEW_DIR=/tmp/pages go test ./internal/pages/ -run Preview`. Use it when changing a page or writing a theme: validation proves the CSRF token survived, not that the button is still visible |

@@ -2330,7 +2330,7 @@ func keysList(ctx context.Context, conn *pgx.Conn, format string) error {
 	}
 
 	if out.text() {
-		fmt.Printf("%-24s %-8s %-8s %-9s %-22s %s\n", "KID", "ALG", "STATE", "HELD IN", "PUBLISHED", "NOTE")
+		fmt.Printf("%-24s %-8s %-8s %-13s %-22s %s\n", "KID", "ALG", "STATE", "HELD IN", "PUBLISHED", "NOTE")
 	}
 	for _, k := range set.Keys() {
 		note := ""
@@ -2353,7 +2353,7 @@ func keysList(ctx context.Context, conn *pgx.Conn, format string) error {
 		out.add(map[string]any{"kid": k.KID(), "alg": k.Algorithm(), "state": k.State(),
 			"held_in": keys.HeldIn(k), "published_at": k.PublishedAt().UTC(), "note": note})
 		if out.text() {
-			fmt.Printf("%-24s %-8s %-8s %-9s %-22s %s\n",
+			fmt.Printf("%-24s %-8s %-8s %-13s %-22s %s\n",
 				k.KID(), k.Algorithm(), k.State(), keys.HeldIn(k),
 				k.PublishedAt().UTC().Format(time.RFC3339), note)
 		}

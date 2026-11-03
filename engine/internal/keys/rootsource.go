@@ -57,14 +57,22 @@ func secretFile(file, path, why string) (string, error) {
 	return secret, nil
 }
 
-// loadBackend is the module SIGNARI_PKCS11_MODULE names, or nil when none is
-// set. The token is named rather than taken as the first one found, so a module
-// with a second token cannot have keys made in the wrong one.
+// loadBackend is the module SIGNARI_PKCS11_MODULE names, or the transit engine
+// SIGNARI_VAULT_ADDR names, or nil when neither is set. Both set is refused:
+// new keys are made in one place, and nothing would say which.
 func loadBackend(getenv func(string) string) (Backend, error) {
-	module := getenv("SIGNARI_PKCS11_MODULE")
-	if module == "" {
+	module, vault := getenv("SIGNARI_PKCS11_MODULE"), getenv("SIGNARI_VAULT_ADDR")
+	switch {
+	case module != "" && vault != "":
+		return nil, fmt.Errorf("SIGNARI_PKCS11_MODULE and SIGNARI_VAULT_ADDR are both set; new signing " +
+			"keys are made in one place, so set one")
+	case vault != "":
+		return loadVault(getenv, vault)
+	case module == "":
 		return nil, nil
 	}
+	// The token is named rather than taken as the first one found, so a module
+	// with a second token cannot have keys made in the wrong one.
 	token := getenv("SIGNARI_PKCS11_TOKEN")
 	if token == "" {
 		return nil, fmt.Errorf("SIGNARI_PKCS11_MODULE is set and SIGNARI_PKCS11_TOKEN is not; " +
@@ -84,4 +92,30 @@ func loadBackend(getenv func(string) string) (Backend, error) {
 			"SIGNARI_PKCS11_PIN_FILE is; the token's user PIN is needed to sign")
 	}
 	return newPKCS11(module, token, pin)
+}
+
+// loadVault reads the transit engine's settings. A token file is read again
+// for every request, so a token Vault Agent renews into it goes on working;
+// it is read once here too, so a missing or loose one stops the process now
+// rather than at the first signature.
+func loadVault(getenv func(string) string, addr string) (Backend, error) {
+	value, path := getenv("SIGNARI_VAULT_TOKEN"), getenv("SIGNARI_VAULT_TOKEN_FILE")
+	var token func() (string, error)
+	switch {
+	case value != "" && path != "":
+		return nil, fmt.Errorf("SIGNARI_VAULT_TOKEN and SIGNARI_VAULT_TOKEN_FILE are both set; set one")
+	case path != "":
+		token = func() (string, error) {
+			return secretFile("SIGNARI_VAULT_TOKEN_FILE", path, "The token signs as this deployment")
+		}
+		if _, err := token(); err != nil {
+			return nil, err
+		}
+	case value != "":
+		token = func() (string, error) { return value, nil }
+	default:
+		return nil, fmt.Errorf("SIGNARI_VAULT_ADDR is set and neither SIGNARI_VAULT_TOKEN nor " +
+			"SIGNARI_VAULT_TOKEN_FILE is; a token allowed to sign with the transit keys is needed")
+	}
+	return newVault(addr, getenv("SIGNARI_VAULT_TRANSIT_MOUNT"), token)
 }

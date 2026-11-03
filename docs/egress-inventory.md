@@ -96,6 +96,7 @@ named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` (see
 | OpenID Federation trust anchors | `oidfed/fetch` | `safedial`, plus intermediates discovered while resolving a chain |
 | Outpost callbacks | `outpost` | the outpost agent calling its own engine; not a request the engine makes |
 | A URL passed to `signari proxycheck` / logout test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the server |
+| Vault or OpenBao transit engine | `keys` | named only by `SIGNARI_VAULT_ADDR`, and not `safedial`, as the server is the operator's own, usually on their network. Plain http is refused except to loopback, since the token goes with every request. Makes and reads signing keys and asks for signatures; nothing private comes back. See [signing keys in a module](signing-keys-in-a-module.md) |
 | OpenTelemetry collector | `tracing` | named only by `SIGNARI_OTLP_TRACES_ENDPOINT`, and not `safedial`, as a collector is usually on loopback or the cluster network. Receives spans, which carry no identifier, and nothing is read back but a status. See [tracing](tracing.md) |
 
 `TestEveryOutboundClientIsSafedialsOrListed` keeps this true. A client built
@@ -174,6 +175,7 @@ this document is what they need to write it.
 | Back-channel logout / webhooks | retried with capped backoff, up to 10 attempts, then **parked** so an undelivered event is visible rather than silently dropped |
 | Admin token touch | 3 s, out of band |
 | Span export | 10 s a batch; a batch the collector does not take is dropped, not retried |
+| Transit engine | 10 s a call, a minute to make a key; a signature that fails fails the request that needed it, and is not retried |
 
 `V13.1.2` and `V13.1.3` ask for documented connection-pool limits and per-service
 resource strategies. The database pool is `pgxpool`'s default sizing, which is not

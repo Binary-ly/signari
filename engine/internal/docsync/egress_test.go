@@ -50,6 +50,9 @@ var clientsOutsideSafedial = map[string]string{
 		"request. It follows no redirect and sends its token in the clear only to loopback",
 	"engine/internal/sdkgen/golang.go": "text the generator writes into the Go client operators' own " +
 		"programs import (sdk/go), calling their Admin API; the engine makes no request with it",
+	"engine/internal/keys/vault.go": "the operator's own Vault or OpenBao, named only by " +
+		"SIGNARI_VAULT_ADDR in the process's environment and usually on their network, which safedial " +
+		"refuses by design. It follows no redirect, and sends its token in clear only to loopback",
 	"engine/internal/tracing/otlp.go": "the operator's own collector, named only by " +
 		"SIGNARI_OTLP_TRACES_ENDPOINT in the process's environment and usually on loopback or the " +
 		"cluster network, which safedial refuses by design. It posts spans and reads back a status " +

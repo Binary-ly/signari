@@ -114,8 +114,9 @@ func (r *RootKey) openHeld(kid string, alg Algorithm, state State, ref string, p
 		return nil, fmt.Errorf("key %s has neither material nor a module reference (key_ref %q)", kid, ref)
 	}
 	if r.backend == nil || r.backend.Scheme() != scheme {
-		return nil, fmt.Errorf("key %s is held in a %s module, and this node has none configured "+
-			"(SIGNARI_PKCS11_MODULE)", kid, scheme)
+		setting := map[string]string{"pkcs11": "SIGNARI_PKCS11_MODULE", "vault-transit": "SIGNARI_VAULT_ADDR"}[scheme]
+		return nil, fmt.Errorf("key %s is held in a %s module, and this node has none configured (%s)",
+			kid, scheme, setting)
 	}
 	signer, err := r.backend.Open(name)
 	if err != nil {

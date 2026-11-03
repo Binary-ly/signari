@@ -144,8 +144,10 @@ func cryptFormat(h string) string {
 		return "SHA-256 crypt ($5$)"
 	case strings.HasPrefix(h, "$1$"):
 		return "MD5 crypt ($1$)"
-	case strings.HasPrefix(h, "$y$"), strings.HasPrefix(h, "$7$"):
-		return "yescrypt/scrypt crypt (" + h[:3] + ")"
+	case strings.HasPrefix(h, "$y$"):
+		return "yescrypt ($y$)"
+	case strings.HasPrefix(h, "$7$"):
+		return "scrypt crypt ($7$)"
 	case strings.HasPrefix(h, "$2"):
 		return "bcrypt"
 	default:

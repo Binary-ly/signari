@@ -145,6 +145,8 @@ func costRefusal(stored string, budgetKiB int64) error {
 	}
 	parts := strings.Split(stored, "$")
 	switch {
+	case strings.HasPrefix(stored, "$y$"):
+		return yescryptRefusal(stored)
 	case strings.HasPrefix(stored, pbkdf2Prefix) && len(parts) > 2:
 		var iter int
 		if _, err := fmt.Sscanf(parts[2], "i=%d", &iter); err == nil && iter > pbkdf2MaxIterations {
@@ -302,6 +304,10 @@ func (h *Hasher) InFlight() int64 { return h.inFlight.Load() }
 func memoryKiB(stored string) int64 {
 	parts := strings.Split(stored, "$")
 	switch {
+	case strings.HasPrefix(stored, "$y$"):
+		if kib, ok := yescryptCost(stored); ok {
+			return kib
+		}
 	case strings.HasPrefix(stored, pbkdf2Prefix):
 		return 1 // CPU, not memory: it takes a slot and next to no budget
 	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
@@ -565,6 +571,12 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		}
 		return true, nil
 
+	case strings.HasPrefix(stored, "$y$"):
+		if err := verifyYescrypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
 	default:
 		// An unrecognised format is a mismatch, never a pass. Failing open on an
 		// unknown prefix would turn a bad import into an authentication bypass.
@@ -738,6 +750,7 @@ func SupportedPrefixes() []string {
 		"$keycloak$",
 		"$scrypt$",
 		"$5$", "$6$", // glibc SHA-crypt: /etc/shadow, LDAP directories
+		"$y$",           // yescrypt: /etc/shadow on current distributions
 		"$1$", "$apr1$", // md5-crypt, and Apache's
 		"{SSHA}", "{SHA}", "{SMD5}", "{MD5}", "{SSHA256}", "{SHA256}", "{SSHA512}", "{SHA512}",
 		// and {CRYPT} around any of the crypt(3) ones, which CanVerify unwraps

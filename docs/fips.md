@@ -144,16 +144,16 @@ stores a local Argon2id hash — so a migration that uses shadow authentication
 rather than hash import works.
 
 Imported hashes the module refuses fail with an error that says to reset the
-password: phpass and WordPress (MD5), MD5-crypt and Apache's apr1, the LDAP
-`{SSHA}`, `{SHA}`, `{SMD5}` and `{MD5}` schemes, and PBKDF2 imports with SHA-1
+password: phpass and WordPress (MD5), MD5-crypt and Apache's apr1, yescrypt, the
+LDAP `{SSHA}`, `{SHA}`, `{SMD5}` and `{MD5}` schemes, and PBKDF2 imports with SHA-1
 or a salt shorter than 128 bits, as many Django salts are. Each used to panic
 the sign-in under `fips140=only`. SHA-crypt (`$5$`, `$6$`) and the SHA-2 LDAP
 schemes are SHA-2 throughout and verify.
 
 ### Passwords hashed here
 
-Argon2id, bcrypt and scrypt live outside the validated module. They are not
-*refused*; they simply are not covered. So with FIPS enabled (`on` or `only`) a
+Argon2id, bcrypt, scrypt and yescrypt live outside the validated module. They are
+not *refused*; they simply are not covered. So with FIPS enabled (`on` or `only`) a
 new password is hashed with PBKDF2-HMAC-SHA256 through `crypto/pbkdf2`, which is
 inside the module: 600,000 iterations, which took 66 ms where this was measured
 (Argon2id here took 25 ms), a 128-bit salt and a 256-bit key, written

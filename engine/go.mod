@@ -22,6 +22,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jcmturner/goidentity/v6 v6.0.1
 	github.com/jcmturner/gokrb5/v8 v8.4.4
+	github.com/openwall/yescrypt-go v1.0.0
 	github.com/oschwald/maxminddb-golang/v2 v2.5.0
 	github.com/russellhaering/goxmldsig v1.6.1
 	golang.org/x/crypto v0.57.0

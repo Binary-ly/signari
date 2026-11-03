@@ -21,7 +21,7 @@ func TestAnImportedShadowEntrySignsInWithItsOldPassword(t *testing.T) {
 	f := newSignInFixture(t)
 	ctx := context.Background()
 	tag := fmt.Sprint(time.Now().UnixNano() % 1_000_000_000)
-	sha512User, md5User, locked := "sha"+tag, "md5"+tag, "locked"+tag
+	sha512User, md5User, yesUser, locked := "sha"+tag, "md5"+tag, "yes"+tag, "locked"+tag
 	shadow := strings.Join([]string{
 		// openssl passwd -6 -salt saltstring 'Hello world!'
 		sha512User + ":$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1:19000:0:99999:7:::",
@@ -29,7 +29,11 @@ func TestAnImportedShadowEntrySignsInWithItsOldPassword(t *testing.T) {
 		md5User + ":$1$saltsalt$le8lFSqqnPaRFOlmAZpvH1:19000:0:99999:7:::",
 		locked + ":!:19000:0:99999:7:::",
 		"daemon" + tag[:3] + ":*:19000:0:99999:7:::",
-		"yes" + tag + ":$y$j9T$abc$def:19000:0:99999:7:::",
+		// libxcrypt's crypt 'Hello world!' at the default cost, what a current
+		// distribution writes.
+		yesUser + ":$y$j9T$bAOcUEuFnXynvA/resb001$80xKlB.7cD.dmA9zdFN7783zXW8PkJMU/gU7xcKfto8:19000:0:99999:7:::",
+		// A cost this server will not spend on a stranger's hash.
+		"costly" + tag + ":$y$jFT$bAOcUEuFnXynvA/resb001$80xKlB.7cD.dmA9zdFN7783zXW8PkJMU/gU7xcKfto8:19000:0:99999:7:::",
 	}, "\n")
 	entries, err := importer.ParseShadow(strings.NewReader(shadow))
 	if err != nil {
@@ -48,14 +52,14 @@ func TestAnImportedShadowEntrySignsInWithItsOldPassword(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.users WHERE org_id = $1::uuid
-			AND username = ANY($2)`, f.orgID, []string{sha512User, md5User})
+			AND username = ANY($2)`, f.orgID, []string{sha512User, md5User, yesUser})
 	})
-	if res.UsersCreated != 2 || len(res.UsersSkipped) != 3 {
-		t.Fatalf("created %d, skipped %v; want the two with verifiable passwords created and the "+
-			"locked, system and yescrypt entries named", res.UsersCreated, res.UsersSkipped)
+	if res.UsersCreated != 3 || len(res.UsersSkipped) != 3 {
+		t.Fatalf("created %d, skipped %v; want the three with verifiable passwords created and the "+
+			"locked, system and too costly entries named", res.UsersCreated, res.UsersSkipped)
 	}
 
-	for _, name := range []string{sha512User, md5User} {
+	for _, name := range []string{sha512User, md5User, yesUser} {
 		get := httptest.NewRecorder()
 		f.srv.handleLoginGet(get, httptest.NewRequest(http.MethodGet, "/login", nil))
 		m := csrfValue.FindStringSubmatch(get.Body.String())

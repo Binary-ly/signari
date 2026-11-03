@@ -31,6 +31,7 @@ package outpost
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,7 @@ import (
 
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/safedial"
 )
 
 // VersionHeader is how a call says which release made it (8.31).
@@ -80,7 +82,13 @@ func New(core, token string, timeout time.Duration) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Client{core: core, token: token, http: &http.Client{Timeout: timeout}}, nil
+	// The default transport with the system's roots and SIGNARI_CA_BUNDLE's, as every
+	// other call out of this binary trusts. It had the system's alone, so a core whose
+	// certificate an internal authority issued could not be reached at all; running
+	// the compose template in docs/outposts.md found it (November 2026).
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: safedial.Roots(), MinVersion: tls.VersionTLS12}
+	return &Client{core: core, token: token, http: &http.Client{Timeout: timeout, Transport: transport}}, nil
 }
 
 // Check verifies the outpost can reach the core and that its token works.

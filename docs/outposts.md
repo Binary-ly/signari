@@ -172,6 +172,13 @@ limit on the outpost still hold.
 RADIUS sends no address, because the peer there is the device, and one budget
 across everybody on an access point would lock a building out.
 
+Each password an outpost checks is recorded once in the audit trail, as
+`login.succeeded` or `login.failed` with `via` set to the protocol it arrived on
+(`ldap` or `radius`), `outpost` to the outpost's name, and for a failure the
+`reason`. Until November 2026 a RADIUS outpost's sign-ins were recorded as LDAP
+binds naming no outpost, and every wrong password twice, which the sign-in counts
+on `/metrics` doubled too.
+
 ## RADIUS
 
 ```sh
@@ -239,6 +246,15 @@ secrets:
   devices:
     file: ./devices.conf
 ```
+
+A core whose certificate an internal authority issued needs that authority given
+to the outpost: one more secret, `ca`, from its PEM file, and
+`SIGNARI_CA_BUNDLE: /run/secrets/ca` beside the token. Until November 2026 the
+outpost trusted the system's roots alone and could not reach such a core at all.
+This template was run that way, in a Linux VM against a core on its host: a RADIUS
+client's right password was answered Access-Accept and a wrong one Access-Reject,
+each with a correct Response Authenticator and Message-Authenticator, and a
+request under the wrong shared secret was not answered.
 
 ## What is not run
 

@@ -119,6 +119,18 @@ func (s *Server) issuanceToken(w http.ResponseWriter, r *http.Request) *tokens.A
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil
 	}
+	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
+	// endpoint checked neither, so a token its client had revoked went on
+	// minting credentials until it expired. Before the proof, as there, because
+	// the proof is held to the client's profile.
+	standing := s.standing(ctx, claims, "the credential endpoint")
+	if ended := endedDescription(standing); ended != "" {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="`+ended+`"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return nil
+	}
+
 	// The same two-step enforcement userinfo performs: the SCHEME rule first
 	// (RFC 9449 §7.1 and §7.2 both key on it, which is why checking `cnf` alone
 	// misses them), then the proof itself when the token is bound.
@@ -128,17 +140,7 @@ func (s *Server) issuanceToken(w http.ResponseWriter, r *http.Request) *tokens.A
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil
 	}
-	if s.boundTokenRefused(w, r, raw, claims.Cnf, "credential") {
-		return nil
-	}
-
-	// Revoked and ended are read now, as userinfo reads them (ADR-007). This
-	// endpoint checked neither, so a token its client had revoked went on
-	// minting credentials until it expired.
-	if ended := endedDescription(s.standing(ctx, claims, "the credential endpoint")); ended != "" {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="`+ended+`"`)
-		w.WriteHeader(http.StatusUnauthorized)
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, "credential", standing.HeldToProfile) {
 		return nil
 	}
 	return claims

@@ -83,7 +83,8 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	// endpoint where /revoke earns its 200: we are the resource server, so there
 	// is no excuse for honouring a token the client told us to drop. The session
 	// must still be live, and the client the token was issued to still enabled.
-	if ended := endedDescription(s.standing(ctx, claims, where)); ended != "" {
+	standing := s.standing(ctx, claims, where)
+	if ended := endedDescription(standing); ended != "" {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="`+ended+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
@@ -110,7 +111,7 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	}
 
 	// The proof for a DPoP-bound token, the certificate for one bound to it.
-	if s.boundTokenRefused(w, r, raw, claims.Cnf, where) {
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, where, standing.HeldToProfile) {
 		return
 	}
 	return claims, true

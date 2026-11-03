@@ -78,13 +78,22 @@ func bearerOrDPoP(jkt string) string {
 // resource leaves out. The credential endpoint checked that a valid proof
 // came with the token and never that the proof's key was the token's, so a
 // stolen bound token minted credentials with the thief's own proof.
-func (s *Server) proofForBoundToken(r *http.Request, accessToken, tokenJKT string) error {
+//
+// fapi2 says the token's client is held to FAPI 2.0, whose §5.4.1 has "resource
+// servers when ... processing JWTs" use PS256, ES256 or EdDSA (specs/fapi2.txt:2023-
+// 2027). The token endpoint held a proof to that and a resource did not, so a token
+// it issued was honoured here behind an RS256 proof (13.01, the FAPI 2.0 plan).
+func (s *Server) proofForBoundToken(r *http.Request, accessToken, tokenJKT string, fapi2 bool) error {
 	jkt, err := s.verifyDPoPForRequest(r, accessToken)
 	if err != nil {
 		return err
 	}
 	if jkt == "" {
 		return fmt.Errorf("a DPoP proof is required for this token")
+	}
+	if fapi2 && !slices.Contains(clients.FAPI2Algorithms, dpop.Algorithm(r.Header.Get("DPoP"))) {
+		return fmt.Errorf("the token's client is held to FAPI 2.0, which accepts proofs signed with %s",
+			strings.Join(clients.FAPI2Algorithms, ", "))
 	}
 	return dpop.BoundTo(&dpop.Confirmation{JKT: tokenJKT}, &dpop.Proof{JKT: jkt})
 }
@@ -118,15 +127,16 @@ func certificateForBoundToken(r *http.Request, tokenThumbprint string) error {
 // RFC 6750 / RFC 9449 refusal and reports true when possession is not shown.
 //
 // The scheme rule (dpop.CheckPresentation) is the caller's, before this:
-// it decides how the token was presented, which comes first.
+// it decides how the token was presented, which comes first. fapi2 is the
+// token's store.TokenStanding.HeldToProfile.
 func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw string,
-	cnf *tokens.Confirmation, where string) bool {
+	cnf *tokens.Confirmation, where string, fapi2 bool) bool {
 
 	switch {
 	case cnf == nil:
 		return false
 	case cnf.JKT != "":
-		if derr := s.proofForBoundToken(r, raw, cnf.JKT); derr != nil {
+		if derr := s.proofForBoundToken(r, raw, cnf.JKT, fapi2); derr != nil {
 			s.log.InfoContext(r.Context(), "DPoP enforcement refused a request", "at", where, "reason", derr,
 				"correlation_id", correlationID(r.Context()))
 			if errors.Is(derr, errDPoPNonce) {

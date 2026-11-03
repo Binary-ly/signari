@@ -29,6 +29,11 @@ type TokenStanding struct {
 	// active person or, for a token a client holds for itself, an enabled client.
 	// A token with none of the above behind it has nothing else to end it.
 	HolderGone bool
+	// HeldToProfile: its client is held to a security profile. Every profile there is
+	// is FAPI 2.0's, whose §5.4.1 binds resource servers as well as the token endpoint
+	// (specs/fapi2.txt:2023-2027), so a resource holds the request to it too. It ends
+	// nothing, and Live does not read it.
+	HeldToProfile bool
 }
 
 // Live is whether the token may still be honoured.
@@ -93,9 +98,10 @@ func TokenStandingOf(ctx context.Context, q interface {
 		                    THEN EXISTS (SELECT 1 FROM core.users u WHERE u.id = $5::uuid AND u.status = 'active'
 		                                  AND `+OrgInService("u.org_id")+`)
 		                  ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $6 AND enabled)
-		                END)`,
+		                END),
+		       EXISTS (SELECT 1 FROM core.clients WHERE client_id = $4 AND security_profile <> 'none')`,
 		c.JTI, c.GrantID, c.SessionID, c.ClientID, person, c.Subject).
-		Scan(&st.GrantRevoked, &st.JTIRevoked, &st.SessionEnded, &st.HolderGone)
+		Scan(&st.GrantRevoked, &st.JTIRevoked, &st.SessionEnded, &st.HolderGone, &st.HeldToProfile)
 	if err != nil {
 		return endedForAll, fmt.Errorf("reading what has become of a token: %w", err)
 	}

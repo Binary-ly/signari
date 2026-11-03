@@ -128,7 +128,7 @@ func TestAResourceAsksForANonceToo(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/oauth2/userinfo", nil)
 	r.Header.Set("DPoP", p.resourceProof(t, f.srv.cfg.Issuer+"/oauth2/userinfo", "a-token"))
 	rec := httptest.NewRecorder()
-	if !f.srv.boundTokenRefused(rec, r, "a-token", &tokens.Confirmation{JKT: p.thumbprint(t)}, "test") {
+	if !f.srv.boundTokenRefused(rec, r, "a-token", &tokens.Confirmation{JKT: p.thumbprint(t)}, "test", false) {
 		t.Fatal("a proof with no nonce was accepted")
 	}
 	if rec.Code != http.StatusUnauthorized || rec.Header().Get("DPoP-Nonce") == "" ||

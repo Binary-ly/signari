@@ -213,6 +213,9 @@ Nothing here needs a database, or anything from the core but the token:
 [Unit]
 Description=Signari outpost
 After=network-online.target
+# An outpost exits when it cannot reach its core. Without this, five quick
+# failures and systemd stops trying, and a core back a minute later finds it dead.
+StartLimitIntervalSec=0
 
 [Service]
 # SIGNARI_OUTPOST_TOKEN=..., owned by root and mode 600
@@ -223,10 +226,20 @@ ExecStart=/usr/local/bin/signari outpost run -core https://auth.example.com \
 User=signari
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+The key `-tls-key` names is read as `User=signari`, so it is that user's, mode 600.
+This unit was run as written on Ubuntu 24.04 with systemd 255, against a core on
+another machine: LDAPS binds were answered, an outpost killed was started again,
+and with its core unreachable for thirty seconds it kept trying and served again
+when the core came back. Until November 2026 the unit had neither
+`StartLimitIntervalSec=0` nor `RestartSec`, and in that run systemd stopped after
+five quick failures ("Start request repeated too quickly") and left the outpost
+down after the core returned.
 
 ```yaml
 # compose.yaml, with the image built from engine/Dockerfile

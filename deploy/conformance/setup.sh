@@ -160,6 +160,19 @@ for c in conformance-1 conformance-2 conformance-post; do
   run client set-hybrid -client-id "$c" -review-by 2031-01-01
 done
 
+# OID4VCI (./run.sh vci): the FAPI clients as wallets, asking with authorization details
+# for a credential anybody signed in may hold. Its vct is not an https URL, because the
+# suite then fetches Type Metadata from it, which this issuer does not serve.
+ORG="$(docker compose exec -T postgres psql -U signari_superuser -d signari -At \
+  -c "SELECT id FROM core.organizations ORDER BY created_at LIMIT 1")"
+run credential define -org "$ORG" -credential-configuration IdentityCredential \
+  -vct urn:signari:conformance:identity -always sub -selective email,email_verified \
+  -valid-for 720h -wallet-initiated
+run rar register -org "$ORG" -type openid_credential -fields locations
+for n in 1 2; do
+  run rar allow -client-id "conformance-fapi-$n" -type openid_credential
+done
+
 # The password must not contain the username: the engine's own policy refuses
 # "conformance-password-1" for a user named conformance@test.local, which is the
 # control working as intended and not a bug to route around.

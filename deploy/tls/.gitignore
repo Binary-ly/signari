@@ -5,4 +5,5 @@ suite.crt
 suite.key
 fapi*.json
 fapitls*
+fapica*
 vp-*

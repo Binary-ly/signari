@@ -74,6 +74,9 @@ case "$PLAN" in
   # CONFIG from fapiconfig.py, which carries the two FAPI clients' private keys.
   fapi2)     SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi]" ;;
   fapi2-mtls) SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=mtls][sender_constrain=mtls][fapi_profile=plain_fapi]" ;;
+  # The same, the clients holding certificates the conformance CA issued (tls_client_auth);
+  # CONFIG from fapiconfig.py --mtls-ca.
+  fapi2-mtls-ca) SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=mtls][sender_constrain=mtls][fapi_profile=plain_fapi]" ;;
   fapi2-ms)  SPEC="fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][fapi_request_method=signed_non_repudiation][sender_constrain=dpop][fapi_profile=plain_fapi][fapi_response_mode=jarm]" ;;
   # An offer this server mints, delivered by the driver, redeemed as a pre-authorized code.
   vci-offer)

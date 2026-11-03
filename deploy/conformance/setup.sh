@@ -47,6 +47,10 @@ if [ ! -f ../tls/engine.crt ] ||
 fi
 export SIGNARI_TLS_CERT=/tls/engine.crt
 export SIGNARI_TLS_KEY=/tls/engine.key
+# The authority a mutual-TLS client registered by its subject (tls_client_auth, RFC 8705
+# §2.1; ./run.sh fapi2-mtls-ca) holds its certificate from: this CA, which signs the two
+# made below. Self-signed clients are matched by their certificate and unaffected.
+export SIGNARI_TLS_CLIENT_CA=/tls/ca.crt
 
 # For the back-channel logout plan the engine posts logout tokens to the suite, and its
 # outbound guard is right to refuse both halves of that: the suite's nginx serves a
@@ -145,6 +149,20 @@ for n in 1 2; do
   run client set-tls -client-id "$t" -sp-cert "/tmp/fapitls$n.crt" -tls-bound-tokens
   run client set-par -client-id "$t" -require-par
   run client set-profile -client-id "$t" -security-profile fapi2
+  # And by a certificate the conformance CA issued, matched by its subject
+  # (tls_client_auth, ./run.sh fapi2-mtls-ca).
+  a="conformance-fapica-$n"
+  if [ ! -f "../tls/fapica$n.crt" ]; then
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "../tls/fapica$n.key" \
+      -out "../tls/fapica$n.csr" -subj "/CN=$a" 2>/dev/null
+    openssl x509 -req -in "../tls/fapica$n.csr" -CA ../tls/ca.crt -CAkey ../tls/ca.key -CAcreateserial \
+      -out "../tls/fapica$n.crt" -days 3650 2>/dev/null
+    rm -f "../tls/fapica$n.csr" ../tls/ca.srl
+  fi
+  run client create -client-id "$a" -name "FAPI mTLS CA $n" -redirect "$CALLBACK"
+  run client set-tls -client-id "$a" -tls-subject-dn "CN=$a" -tls-bound-tokens
+  run client set-par -client-id "$a" -require-par
+  run client set-profile -client-id "$a" -security-profile fapi2
 done
 
 # The second callback carries query parameters on purpose: the suite tests that a
@@ -161,7 +179,9 @@ INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES
  ('conformance-fapims-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-fapims-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-fapitls-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
- ('conformance-fapitls-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
+ ('conformance-fapitls-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapica-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapica-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
 ON CONFLICT DO NOTHING;
 UPDATE core.config_version SET version = version + 1 WHERE id = true;
 SQL

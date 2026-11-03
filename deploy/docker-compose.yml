@@ -93,6 +93,8 @@ services:
       # host, so sign-in silently fails to persist without it.
       SIGNARI_TLS_CERT: ${SIGNARI_TLS_CERT:-}
       SIGNARI_TLS_KEY: ${SIGNARI_TLS_KEY:-}
+      # Authorities client certificates for mutual-TLS (tls_client_auth) may come from.
+      SIGNARI_TLS_CLIENT_CA: ${SIGNARI_TLS_CLIENT_CA:-}
       # Empty, nothing changes. The conformance back-channel plan sets both, so a
       # logout token can reach the suite on this network under its own CA.
       SIGNARI_OUTBOUND_ALLOW_PRIVATE: ${SIGNARI_OUTBOUND_ALLOW_PRIVATE:-}

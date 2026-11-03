@@ -10,6 +10,8 @@ their private keys from ../tls, and userinfo as the protected resource.
     CONFIG=/elsewhere/vci.json ./run.sh vci
     python3 fapiconfig.py --mtls /elsewhere/fapitls.json
     CONFIG=/elsewhere/fapitls.json ./run.sh fapi2-mtls
+    python3 fapiconfig.py --mtls-ca /elsewhere/fapica.json
+    CONFIG=/elsewhere/fapica.json ./run.sh fapi2-mtls-ca
     python3 fapiconfig.py --vp /elsewhere/vp.json
     CONFIG=/elsewhere/vp.json ./run.sh vp          (and vp-plain)
 
@@ -21,8 +23,10 @@ import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 signing = "--message-signing" in sys.argv[1:]
-mtls = "--mtls" in sys.argv[1:]
-prefix = "conformance-fapims" if signing else "conformance-fapitls" if mtls else "conformance-fapi"
+issued = "--mtls-ca" in sys.argv[1:]
+mtls = "--mtls" in sys.argv[1:] or issued
+prefix = ("conformance-fapims" if signing else "conformance-fapica" if issued
+          else "conformance-fapitls" if mtls else "conformance-fapi")
 cfg = json.load(open(os.path.join(here, "config.json")))
 cfg["description"] = "signari engine -- FAPI 2.0" + (" Message Signing" if signing else "")
 for slot, n in (("client", 1), ("client2", 2)):
@@ -31,10 +35,12 @@ for slot, n in (("client", 1), ("client2", 2)):
 cfg.pop("client_secret_post", None)
 cfg["resource"] = {"resourceUrl": "https://signari-engine:8080/oauth2/userinfo"}
 if mtls:
-    # The certificate and key each mutual-TLS client holds, which the suite presents.
+    # The certificate and key each mutual-TLS client holds, which the suite presents:
+    # self-signed, or issued by the conformance CA under --mtls-ca.
+    stem = "fapica" if issued else "fapitls"
     for tls, n in (("mtls", 1), ("mtls2", 2)):
-        with open(os.path.join(here, "..", "tls", f"fapitls{n}.crt")) as crt, \
-                open(os.path.join(here, "..", "tls", f"fapitls{n}.key")) as key:
+        with open(os.path.join(here, "..", "tls", f"{stem}{n}.crt")) as crt, \
+                open(os.path.join(here, "..", "tls", f"{stem}{n}.key")) as key:
             cfg[tls] = {"cert": crt.read(), "key": key.read()}
 if "--vci" in sys.argv[1:]:
     # The same clients as wallets, and this server as the credential issuer and its

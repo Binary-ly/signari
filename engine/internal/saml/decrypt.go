@@ -99,14 +99,18 @@ func open(wrapper *etree.Element, keys []crypto.Decrypter, authenticated bool) (
 		return nil, err
 	}
 	if gcm {
-		aead, err := cipher.NewGCM(block)
+		// The sender's 96-bit IV ahead of the ciphertext and tag, which is the
+		// layout this AEAD opens. One given an IV by its caller is refused under
+		// GODEBUG=fips140=only, so an encrypted assertion could not be read in
+		// that mode (keys/store.go records the same of the root key).
+		aead, err := cipher.NewGCMWithRandomNonce(block)
 		if err != nil {
 			return nil, err
 		}
-		if len(raw) < aead.NonceSize()+aead.Overhead() {
+		if len(raw) < aead.Overhead() {
 			return nil, errors.New("the ciphertext is too short to be AES-GCM")
 		}
-		plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], nil)
+		plain, err := aead.Open(nil, nil, raw, nil)
 		if err != nil {
 			return nil, errors.New("the ciphertext did not authenticate")
 		}

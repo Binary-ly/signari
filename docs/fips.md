@@ -179,7 +179,22 @@ the move answers a 500 rather than send anything in the clear. A wallet's
 [credential request](oid4vci.md#a-credential-only-the-wallet-can-read) is the same in the
 other direction: the metadata offers the CBC values, and those are what open.
 
+A [wallet sign-in](wallet-sign-in.md) set to `direct_post.jwt` cannot work in this mode:
+the wallet's answer is encrypted with A128GCM or A256GCM, which the JOSE library cannot
+open there, and it offers no other. `direct_post` works.
+
 ## What was fixed rather than documented
+
+### Four seals that chose their own nonce
+
+**Until November 2026 four more seals did what the root key did before October**: gave
+AES-GCM a nonce of their own, so each failed under `fips140=only`. They were an opaque
+access token's handle, a refresh token's successor kept for a client with a retry window,
+a wallet presentation waiting for the browser, and the AES-GCM step of reading an encrypted
+assertion from an upstream SAML provider. All four were added after the measurement below,
+and each was opt-in, so it did not show. They now let the module make the nonce, in the
+same stored layout, and tests re-run themselves under `fips140=only` to seal and open
+them.
 
 ### SAML assertion encryption — `internal/saml`
 

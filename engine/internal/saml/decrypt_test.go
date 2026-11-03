@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -151,6 +152,33 @@ func TestAnEncryptedAssertionIsRead(t *testing.T) {
 				t.Errorf("read %q", got.Subject)
 			}
 		})
+	}
+}
+
+// Under GODEBUG=fips140=only an assertion encrypted with AES-GCM and the SHA-256
+// key transport, the configuration that mode allows, is read. The GCM step gave
+// the module an IV of its own and was refused there until November 2026.
+func TestAnEncryptedAssertionIsReadUnderFIPSOnly(t *testing.T) {
+	if !fips140.Enforced() {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestAnEncryptedAssertionIsReadUnderFIPSOnly$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "GODEBUG=fips140=only")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("under fips140=only: %v\n%s", err, out)
+		}
+		return
+	}
+	u := newUpstream(t)
+	key, certPEM := spKeyFor(t, SPKeyEncryption)
+	p := decrypting(u, key)
+	p.AllowUnsolicited = true
+	raw := u.sealedResponse(t, respOpts{signAssertion: true, audience: p.SPEntityID, nameID: "ada@corp.test"},
+		false, toCert(certPEM, KeyTransportSHA256))
+	got, err := consumeSealed(raw, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Subject != "ada@corp.test" {
+		t.Errorf("read %q", got.Subject)
 	}
 }
 

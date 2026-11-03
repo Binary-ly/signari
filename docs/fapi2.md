@@ -11,8 +11,12 @@ signari client set-profile -client-id bank-api -security-profile fapi2
 ```
 
 This is refused until the client meets the profile, and the refusal says everything that
-is missing. **The OpenID Foundation's conformance plan has not been run against this.**
-Every requirement below has a test here, and the profile is not certified.
+is missing. **The OpenID Foundation's plan has been run against this**, `private_key_jwt`
+with DPoP: 57 modules, one failure, a missing `code_verifier` answered `invalid_request`
+where the suite wants `invalid_grant`. Its first run found four defects, among them that no
+authorization code had been bound to a DPoP key; `deploy/conformance/README.md` has the
+numbers and how to repeat them. The mutual-TLS variants have not been run, and the profile
+is not certified.
 
 ## What a client has to be
 
@@ -86,5 +90,5 @@ Not here is `response_modes`, the client metadata that lists the modes a client 
 It is optional, and a client held to this profile is limited to signed ones anyway.
 
 [The review](security-review-fapi2.md) goes through the specification requirement by
-requirement. It covers the Security Profile. The OpenID Foundation's Message Signing plan
-has not been run either.
+requirement. It covers the Security Profile. The OpenID Foundation's Message Signing plan,
+with signed requests and JARM, ran 71 modules with the same one failure.

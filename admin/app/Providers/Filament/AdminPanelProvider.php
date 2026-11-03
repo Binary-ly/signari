@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\AvatarProviders\InitialsAvatarProvider;
 use App\Http\Middleware\NegotiateLocale;
 use App\Http\Middleware\ScopeToOrganisation;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
@@ -67,6 +68,9 @@ class AdminPanelProvider extends PanelProvider
                 provider: LocalFontProvider::class,
                 preload: [asset('fonts/instrument-sans/instrument-sans-latin-wght-normal.woff2')],
             )
+            // Drawn here, for the same reason: the default sent each operator's
+            // initials to ui-avatars.com on every screen with a user menu.
+            ->defaultAvatarProvider(InitialsAvatarProvider::class)
             /*
              * The engine's accent, so the console and the pages people sign in
              * through are recognisably the same product. An operator moves

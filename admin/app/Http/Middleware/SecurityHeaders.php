@@ -19,11 +19,22 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * frame-ancestors, base-uri, form-action and object-src: the directives that
  * stop framing, base-tag and form-target injection and plugins, none of which
- * the console uses. script-src and style-src are deliberately absent. Livewire
- * and Alpine evaluate expressions at runtime and Filament emits inline styles,
- * so a script-src without 'unsafe-eval' would break every screen, and one with
- * it would protect nothing worth the appearance of protection. That waits for a
- * nonce-based build.
+ * the console uses.
+ *
+ * Everything else loads from here and nowhere else, default-src 'self' with
+ * data: images for the avatar. The console has nothing to fetch from anybody
+ * else, and the two times it did, a font CDN and an avatar service, were
+ * defaults of the framework that told a third party who was administering this
+ * identity provider and when. A third is now refused by the browser rather than
+ * found by reading. connect-src 'self' also means a script that does get to run
+ * cannot post what it read to another origin.
+ *
+ * What it does not do is stop a script injected into the page. Filament 4 writes
+ * thirteen inline scripts with no way to give them a nonce, and the Alpine that
+ * Livewire 3 bundles compiles every expression with `new Function`, so script-src
+ * keeps 'unsafe-inline' and 'unsafe-eval'. Without either, every screen breaks;
+ * the nonce would need Filament's own views copied here and kept in step with
+ * every release of it.
  *
  * HSTS only on a response that arrived over HTTPS, and without
  * includeSubDomains: the console does not own the rest of the operator's
@@ -37,8 +48,17 @@ class SecurityHeaders
         $response = $next($request);
 
         $headers = $response->headers;
-        $headers->set('Content-Security-Policy',
-            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
+        $headers->set('Content-Security-Policy', implode('; ', [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "object-src 'none'",
+        ]));
         // The legacy spelling of frame-ancestors, for anything that predates it.
         $headers->set('X-Frame-Options', 'DENY');
         $headers->set('X-Content-Type-Options', 'nosniff');

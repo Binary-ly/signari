@@ -68,7 +68,8 @@ class ConsoleHardeningTest extends TestCase
         $response = $this->get('/admin/login')->assertOk();
 
         $csp = (string) $response->headers->get('Content-Security-Policy');
-        foreach (["frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'"] as $directive) {
+        foreach (["default-src 'self'", "img-src 'self' data:", "connect-src 'self'",
+            "frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'"] as $directive) {
             $this->assertStringContainsString($directive, $csp);
         }
         $response->assertHeader('X-Frame-Options', 'DENY');

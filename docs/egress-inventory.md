@@ -63,6 +63,15 @@ font provider — which resolves to the Bunny Fonts CDN — is not used. That is
 property worth re-checking rather than assuming: render a page and look for any
 `src` or `href` with a scheme in it.
 
+It was not true of the console until November 2026, and only the sign-in page had
+been looked at. Filament's default avatar provider drew the operator's avatar at
+ui-avatars.com, with their initials in the address, on every screen with a user
+menu. The console now draws it as a data URI, its test reads a signed-in screen as
+well, and the console's content policy is `default-src 'self'` with `data:` images,
+so a fourth default of the kind is refused by the browser rather than found by
+reading. Every one of its 23 screens was swept in headless Chrome with no violation
+and no request to another origin.
+
 ## Operator-configured destinations
 
 An operator names these. That does not make them safe to dial wherever they

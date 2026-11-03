@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0284 oid4vp_verifier
+
+Not compatible with the release before: stop it before migrating.
+
+Signing in with a credential from a wallet (12.12): an identity provider of kind oid4vp is this deployment acting as an OpenID4VP verifier. It asks a wallet for one SD-JWT VC of the types it names, believes the issuers it lists with the keys pinned for each, and signs in the person a claim of that credential identifies, read together with the issuer, because a claim is unique only within the issuer that made it (OID4VP 1.0 §14.4).
+
 ## 0283 grant_management
 
 Compatible with the release before: its binary may still serve this schema.

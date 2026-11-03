@@ -56,6 +56,11 @@ var notConfiguration = map[string]string{
 		"client and has this server fetch from them, which is not an organisation's to declare for itself",
 	"admin_tokens": credential, "registration_tokens": credential, "saml_source_keys": credential,
 	"kerberos_realms": credential,
+	"vp_verifiers": "a wallet sign-in holds the private key its requests are signed with, sealed, which a " +
+		"configuration file would have to carry in clear; `idp add -kind oid4vp` and the Admin API take it",
+	"vp_trusted_issuers": "whose credentials sign people in, each with the keys believed for it, as an anchor " +
+		"is: named one at a time by somebody who may administer the provider, rather than carried in a file a " +
+		"token that may apply it could widen",
 	"relations": "authorization data the application writes as people and objects come and go, as group " +
 		"membership is: the model they are checked against is configuration, the tuples are not",
 

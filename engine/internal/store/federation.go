@@ -288,6 +288,10 @@ type PendingLogin struct {
 	CodeVerifier string
 	LinkUserID   string
 	ReturnTo     string
+	// VPPresented and VPResponseCodeHash are a wallet sign-in's: what the
+	// presentation proved, sealed (PresentVP), and the hash of the code the
+	// browser brings back for it. Nil until the wallet has answered.
+	VPPresented, VPResponseCodeHash []byte
 }
 
 // BeginFederatedLogin records an in-flight login and returns state and the
@@ -339,9 +343,10 @@ func ConsumeFederatedLogin(ctx context.Context, tx pgx.Tx, state, binding string
 		DELETE FROM core.federated_logins
 		WHERE state_hash = $1 AND expires_at > now()
 		RETURNING provider_id::text, org_id::text, nonce, code_verifier,
-		          binding_hash, COALESCE(link_user_id::text,''), COALESCE(return_to,'')`,
+		          binding_hash, COALESCE(link_user_id::text,''), COALESCE(return_to,''),
+		          vp_presented, vp_response_code_hash`,
 		stateHash[:]).Scan(&p.ProviderID, &p.OrgID, &p.Nonce, &p.CodeVerifier,
-		&storedBinding, &p.LinkUserID, &p.ReturnTo)
+		&storedBinding, &p.LinkUserID, &p.ReturnTo, &p.VPPresented, &p.VPResponseCodeHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("this sign-in link has already been used or has expired")

@@ -63,6 +63,9 @@ type IdentityProviderSpec struct {
 	AllowUnsolicited, ForceAuthn bool
 	SkewSeconds                  int
 	Origin                       SAMLMetadataOrigin
+	// VP is a wallet sign-in's, kind oid4vp: this deployment as an OpenID4VP
+	// verifier.
+	VP *VPSpec
 }
 
 func (s *IdentityProviderSpec) invalid(format string, a ...any) error {
@@ -82,6 +85,8 @@ func (s *IdentityProviderSpec) Validate() error {
 	switch s.Kind {
 	case "saml":
 		return s.validateSAML()
+	case "oid4vp":
+		return s.validateVP()
 	case "assertion":
 		switch {
 		case s.Issuer == "":
@@ -260,6 +265,8 @@ func AddIdentityProvider(ctx context.Context, q outpostDB, root *keys.RootKey, o
 				s.CertPEM, s.NameIDFormat, s.ForceAuthn, s.AllowUnsolicited, s.SkewSeconds, s.Origin.URL,
 				s.Origin.SignerPEM, s.Origin.Read)
 		}
+	case "oid4vp":
+		id, err = addVPVerifier(ctx, q, root, orgID, s)
 	case "assertion":
 		// Assertions stay refused until somebody allows them: registering
 		// trust and granting it are two decisions.

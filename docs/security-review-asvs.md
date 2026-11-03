@@ -1261,7 +1261,8 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | V13.2.4 / V13.2.5 outbound allowlist | **partial, stated plainly** — `safedial` is an address-level *denylist*; the effective allowlist is registration. See the egress inventory |
 | V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, not from a vault or HSM. An operator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
 | V13.3.2 least privilege on secrets | met |
-| V13.3.3 / V13.3.4 HSM, rotation schedule | L3, not done |
+| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing-keys-in-a-module.md](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
+| V13.3.4 rotation schedule | L3, not done |
 | V13.4.1 no source-control metadata served | met by construction — **no `http.FileServer`, no `http.Dir`, nothing serves a filesystem path**. The single static asset is `//go:embed`-ed and served by name |
 | V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
 | V13.4.3 no directory listings | met by construction, same reason as V13.4.1 |

@@ -8,6 +8,9 @@ signari keys rotate -alg ES256     # promotes it to active, demotes the old one
 signari keys retire                # the demoted key leaves the JWKS
 ```
 
+With a hardware module configured, each of these keys is made in it; see
+[signing-keys-in-a-module.md](signing-keys-in-a-module.md).
+
 ## The design
 
 Rotation is deliberately staged:

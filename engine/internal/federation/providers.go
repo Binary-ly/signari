@@ -39,6 +39,11 @@ const (
 	// preset, because a SAML upstream's endpoints and certificate come from its
 	// metadata rather than from a list this package could know.
 	KindSAML Kind = "saml"
+	// KindOID4VP is this deployment as an OpenID4VP verifier, signing somebody
+	// in with a credential their wallet presents. Like KindSAML it shares the
+	// linking rules and has no preset: what it asks for and whom it believes are
+	// its own rows.
+	KindOID4VP Kind = "oid4vp"
 	// KindAssertion only publishes signing keys. It is a trust anchor for the
 	// RFC 7523 jwt-bearer grant and is never signed in through: there is no
 	// authorization endpoint to send a browser to and no token endpoint to

@@ -196,9 +196,12 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		if err := rows.Scan(&p.Slug, &p.Name, &kind); err != nil {
 			return out
 		}
-		if kind == "saml" {
+		switch kind {
+		case "saml":
 			p.Href = "/saml/source/" + url.PathEscape(p.Slug) + "/start" + query
-		} else {
+		case "oid4vp":
+			p.Href = "/oid4vp/" + url.PathEscape(p.Slug) + "/start" + query
+		default:
 			p.Href = "/login/with/" + url.PathEscape(p.Slug) + query
 		}
 		out = append(out, p)

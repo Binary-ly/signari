@@ -129,9 +129,13 @@ func TestTheWalletIsSentAReferenceOrEveryParameter(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(ref)
-	if q := u.Query(); len(q) != 3 || q.Get("client_id") != "x509_hash:abc" ||
-		q.Get("request_uri") != "https://v.example/request/s" || q.Get("request_uri_method") != "post" {
+	if q := u.Query(); len(q) != 4 || q.Get("client_id") != "x509_hash:abc" ||
+		q.Get("request_uri") != "https://v.example/request/s" || q.Get("request_uri_method") != "post" ||
+		!strings.Contains(q.Get("client_metadata"), "vp_formats_supported") {
 		t.Errorf("by reference: %s", ref)
+	}
+	if get, _ := req.URL("openid4vp://", "https://v.example/request/s", false); strings.Contains(get, "client_metadata") {
+		t.Errorf("a request fetched by GET carries client_metadata: %s", get)
 	}
 	byValue, err := req.URL("https://wallet.example/authorize", "", false)
 	if err != nil {

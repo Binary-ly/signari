@@ -745,6 +745,14 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
 	mux.HandleFunc("POST /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
 
+	// Signing in with a credential from a wallet: this server as an OpenID4VP
+	// verifier (oid4vp.go).
+	mux.HandleFunc("GET /oid4vp/{slug}/start", s.handleVPStart)
+	mux.HandleFunc("GET /oid4vp/{slug}/request/{state}", s.handleVPRequest)
+	mux.HandleFunc("POST /oid4vp/{slug}/request/{state}", s.handleVPRequest)
+	mux.HandleFunc("POST /oid4vp/{slug}/response", s.handleVPResponse)
+	mux.HandleFunc("GET /oid4vp/{slug}/done", s.handleVPDone)
+
 	// SCIM as a source: an upstream provisions users INTO this engine. The
 	// mirror of internal/scim's client, which pushes them out.
 	mux.HandleFunc("GET /scim/v2/ServiceProviderConfig", s.handleSCIMServiceProviderConfig)

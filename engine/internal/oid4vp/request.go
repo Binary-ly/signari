@@ -166,6 +166,13 @@ func (r Request) URL(wallet, requestURI string, post bool) (string, error) {
 		q.Set("request_uri", requestURI)
 		if post {
 			q.Set("request_uri_method", "post")
+			// With nothing else to say what this verifier can do, the wallet is
+			// told here what to say in its POST (:328-329).
+			b, err := json.Marshal(r.metadata())
+			if err != nil {
+				return "", err
+			}
+			q.Set("client_metadata", string(b))
 		}
 	} else {
 		for k, v := range r.Parameters(time.Time{}) {

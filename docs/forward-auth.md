@@ -437,7 +437,7 @@ with rules, these are refused with `403`, signed in or not, and never compared:
 - a path parameter (`/a;x/b`)
 - anything still encoded once decoded (`/a/%252e`)
 
-Behind the Traefik, Caddy and Envoy configurations on this page, each of those, sent
+Behind the nginx, Traefik, Caddy and Envoy configurations on this page, each of those, sent
 as it is spelled here, was refused before the application saw it, signed in or not.
 Envoy's `normalize_path` resolves some first, and then sends the resolved path to the
 engine and the application alike, so the two still judge one path.

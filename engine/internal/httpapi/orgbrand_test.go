@@ -39,8 +39,8 @@ func newBrandedTenants(t *testing.T) *brandedTenants {
 	b := &brandedTenants{f: f,
 		instance: &brand.Brand{ProductName: "Hostname", Primary: "#112233", OnPrimary: "#ffffff",
 			Background: "#fdfdfd", Text: "#202020"},
-		own: &brand.Brand{ProductName: "Acme", Primary: "#aa0000", OnPrimary: "#ffffff",
-			Background: "#fafafa", Text: "#101010"},
+		own: &brand.Brand{ProductName: "Acme", LogoURL: "https://acme.example.test/logo.svg",
+			Primary: "#aa0000", OnPrimary: "#ffffff", Background: "#fafafa", Text: "#101010"},
 		its: &brand.Brand{ProductName: "Bravo", LogoURL: "https://bravo.example.test/logo.svg"},
 	}
 	if err := store.SaveBrand(ctx, f.pool, instanceID, b.instance); err != nil {
@@ -96,10 +96,13 @@ func (b *brandedTenants) login(t *testing.T, authz string) *httptest.ResponseRec
 	return rec
 }
 
+// wears checks a page for a brand's name and colour. The built-in layout says a
+// brand's name only as its logo's alternative text, so a brand with no logo is
+// told by its colours and name is "".
 func wears(t *testing.T, page *httptest.ResponseRecorder, what string, name, colour string) {
 	t.Helper()
 	body := page.Body.String()
-	if !strings.Contains(body, name) {
+	if name != "" && !strings.Contains(body, name) {
 		t.Errorf("%s does not say %q", what, name)
 	}
 	if colour != "" && !strings.Contains(body, colour) {
@@ -128,22 +131,27 @@ func TestTwoOrganisationsOnOneHostnameRenderDifferently(t *testing.T) {
 	if got := its.Header().Get("Content-Security-Policy"); !strings.Contains(got, "img-src https:") {
 		t.Errorf("the page with a logo has a policy that blocks it: %s", got)
 	}
-	if got := own.Header().Get("Content-Security-Policy"); strings.Contains(got, "img-src") {
-		t.Errorf("a page with no logo was given one in its policy: %s", got)
-	}
 
 	// Nobody has said who this is, and a guess shows one customer another's logo.
 	bare := b.login(t, "")
-	wears(t, bare, "a bare page", "Hostname", "#112233")
-	if body := bare.Body.String(); strings.Contains(body, "Acme") || strings.Contains(body, "Bravo") {
+	wears(t, bare, "a bare page", "", "#112233")
+	if body := bare.Body.String(); strings.Contains(body, "Acme") || strings.Contains(body, "Bravo") ||
+		strings.Contains(body, "#aa0000") {
 		t.Error("a bare page guessed an organisation")
+	}
+	if got := bare.Header().Get("Content-Security-Policy"); strings.Contains(got, "img-src") {
+		t.Errorf("a page with no logo was given one in its policy: %s", got)
 	}
 
 	// Taking the brand off is the instance's appearance on the next render.
 	if _, err := store.RemoveOrgBrand(context.Background(), b.f.pool, b.f.orgID); err != nil {
 		t.Fatal(err)
 	}
-	wears(t, b.login(t, b.f.plainAuthz()), "the unbranded organisation's page", "Hostname", "#112233")
+	unbranded := b.login(t, b.f.plainAuthz())
+	wears(t, unbranded, "the unbranded organisation's page", "", "#112233")
+	if body := unbranded.Body.String(); strings.Contains(body, "Acme") || strings.Contains(body, "#aa0000") {
+		t.Error("the unbranded organisation's page still wears its brand")
+	}
 }
 
 func TestAPageKeepsItsOrganisationAllTheWayThrough(t *testing.T) {

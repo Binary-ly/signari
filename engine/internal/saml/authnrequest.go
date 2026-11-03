@@ -281,6 +281,13 @@ func Unsolicited(p *Provider, now time.Time) (*Validated, error) {
 		NameIDFormat: p.NameIDFormat}, nil
 }
 
+// acsBindings are the bindings a response is delivered by, as an ACS URL's
+// row names them.
+var acsBindings = map[string]string{
+	BindingPOST:     "HTTP-POST",
+	BindingArtifact: "HTTP-Artifact",
+}
+
 // resolveACS decides where the assertion may be delivered.
 //
 // THE most important function in this file. If the request names a URL it must
@@ -293,13 +300,40 @@ func resolveACS(r *AuthnRequest, p *Provider) (string, string, error) {
 			"AssertionConsumerService URL", p.EntityID)
 	}
 
+	// ProtocolBinding is "a SAML protocol binding to be used when returning the
+	// <Response> message" (saml-core-2.0-os lines 2068-2070). Each URL is
+	// registered for one, so a request naming another is refused rather than
+	// answered by a binding it did not ask for, and a request naming one and no
+	// URL is sent to a URL registered for it.
+	wanted := ""
+	if r.ProtocolBinding != "" {
+		var ok bool
+		if wanted, ok = acsBindings[r.ProtocolBinding]; !ok {
+			return "", "", fmt.Errorf("the AuthnRequest asks for its response by %q, which is not "+
+				"HTTP-POST or HTTP-Artifact", r.ProtocolBinding)
+		}
+	}
+
 	if r.AssertionConsumerServiceURL == "" {
-		for _, a := range p.ACSURLs {
+		candidates := p.ACSURLs
+		if wanted != "" {
+			candidates = nil
+			for _, a := range p.ACSURLs {
+				if a.Binding == wanted {
+					candidates = append(candidates, a)
+				}
+			}
+			if len(candidates) == 0 {
+				return "", "", fmt.Errorf("the AuthnRequest asks for its response by %s and %q has "+
+					"no AssertionConsumerService URL registered for it", wanted, p.EntityID)
+			}
+		}
+		for _, a := range candidates {
 			if a.IsDefault {
 				return a.URL, a.Binding, nil
 			}
 		}
-		return p.ACSURLs[0].URL, p.ACSURLs[0].Binding, nil
+		return candidates[0].URL, candidates[0].Binding, nil
 	}
 
 	for _, a := range p.ACSURLs {
@@ -308,6 +342,10 @@ func resolveACS(r *AuthnRequest, p *Provider) (string, string, error) {
 		// slashes and percent-encoding, and every one of those disagreements is a
 		// way to satisfy the check with a URL that resolves elsewhere.
 		if a.URL == r.AssertionConsumerServiceURL {
+			if wanted != "" && a.Binding != wanted {
+				return "", "", fmt.Errorf("the AuthnRequest asks for its response at %q by %s, and "+
+					"that URL is registered for %s", a.URL, wanted, a.Binding)
+			}
 			return a.URL, a.Binding, nil
 		}
 	}

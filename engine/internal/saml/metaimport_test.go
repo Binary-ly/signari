@@ -107,13 +107,16 @@ func TestAServiceProvidersMetadataIsRead(t *testing.T) {
 		t.Fatalf("read %+v", got)
 	}
 	sp := got.SP
-	// The default first, whatever order the file has them in, and what cannot
-	// carry an assertion left out and said so.
+	// The default first, whatever order the file has them in, the artifact
+	// endpoint apart (8.08), and what cannot carry an assertion left out and said so.
 	if len(sp.ACSURLs) != 2 || sp.ACSURLs[0] != "https://sp.example.test/acs" || sp.ACSURLs[1] != "https://sp.example.test/two" {
 		t.Errorf("ACS URLs %v", sp.ACSURLs)
 	}
-	if len(got.Notes) != 2 {
-		t.Errorf("notes %q, wanting the artifact endpoint and the plain one", got.Notes)
+	if len(sp.ArtifactACSURLs) != 1 || sp.ArtifactACSURLs[0] != "https://sp.example.test/artifact" {
+		t.Errorf("artifact ACS URLs %v", sp.ArtifactACSURLs)
+	}
+	if len(got.Notes) != 1 || !strings.Contains(got.Notes[0], "http://sp.example.test/plain") {
+		t.Errorf("notes %q, wanting the plain endpoint alone", got.Notes)
 	}
 	if sp.SLOURL != "https://sp.example.test/slo" || sp.SLOBinding != "HTTP-Redirect" {
 		t.Errorf("logout %q on %q", sp.SLOURL, sp.SLOBinding)

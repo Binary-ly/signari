@@ -1,6 +1,8 @@
 package saml
 
 import (
+	"fmt"
+
 	"github.com/beevik/etree"
 )
 
@@ -29,6 +31,9 @@ type MetadataInput struct {
 	EntityID string
 	SSOURL   string
 	SLOURL   string
+	// ArtifactURL is the artifact resolution service, where a provider taking its
+	// response by artifact fetches it over SOAP.
+	ArtifactURL string
 	// Certificates, newest first. More than one is published DURING ROTATION so
 	// service providers can accept both while they update -- which is the whole
 	// reason rotation is survivable at all.
@@ -94,6 +99,15 @@ func Metadata(in MetadataInput) (string, error) {
 		ki := kd.CreateElement("ds:KeyInfo")
 		xd := ki.CreateElement("ds:X509Data")
 		xd.CreateElement("ds:X509Certificate").SetText(CertificateB64(der))
+	}
+
+	// Before the logout services, where the descriptor's schema puts it.
+	if in.ArtifactURL != "" {
+		ars := idp.CreateElement("md:ArtifactResolutionService")
+		ars.CreateAttr("Binding", BindingSOAP)
+		ars.CreateAttr("Location", in.ArtifactURL)
+		ars.CreateAttr("index", fmt.Sprint(ArtifactIndex))
+		ars.CreateAttr("isDefault", "true")
 	}
 
 	if in.SLOURL != "" {

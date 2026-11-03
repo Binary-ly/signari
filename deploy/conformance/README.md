@@ -20,8 +20,22 @@ suite, `setup.sh`, then each plan below in one run. Static clients throughout.
 | **RP-Initiated Logout OP** (`./run.sh rp-logout`) | 12 modules, **555 conditions, 0 failures, 0 warnings**, runner exit 0. Eight are REVIEW: the error pages a human is asked to look at. The driver logs where each visit ended (`ended at 400 /oauth2/logout …`) so that the look is possible. |
 | **Front-Channel Logout OP** (`./run.sh fc-logout`) | 3 modules, **90 conditions, 0 failures, 0 warnings**, runner exit 0. |
 | **Back-Channel Logout OP** (`./run.sh bc-logout`) | 3 modules, **94 conditions, 0 failures, 0 warnings**, runner exit 0: the logout token arrived from the engine and its signature, `iss`, `aud`, `iat`, `jti`, `events` and `sid` were checked. |
+| **FAPI 2.0 Security Profile** (`python3 fapiconfig.py /elsewhere/fapi.json; CONFIG=/elsewhere/fapi.json ./run.sh fapi2`: `private_key_jwt`, DPoP, plain FAPI) | 57 modules, **4098 conditions, 1 failure, 4 warnings**: 41 PASSED, 9 REVIEW, 2 SKIPPED, 2 WARNING. The failure is `ensure-pkce-code-verifier-required`: a missing `code_verifier` is answered `invalid_request`, which RFC 6749 §5.2 defines as a request "missing a required parameter", and the suite wants `invalid_grant`; that waits on reading RFC 7636 and OAuth 2.1, which are not in `specs/`. One module more, `par-attempt-to-use-expired-request_uri`, is interrupted rather than failed: it sleeps the pushed request's whole 300 seconds and the runner waits 240. The first run had 48 failures; four defects lay behind them, below. |
 | **Dynamic OP** (`oidcc-dynamic-certification-test-plan[response_type=code]`, registering with a token from `signari registration token`) | **Cannot pass, by design.** 24 modules, 19 failures. OIDC Core §15.2 has every dynamic OP support the `id_token` and `id_token token` response types, and nothing containing `token` crosses the front channel here. Ten more are `code_challenge is required`, the profile sending no PKCE, which a registered client cannot opt out of; two want `request_uri`, which is not supported; one wants `sector_identifier_uri` checked, which registration ignores because a registered client is never pairwise; one waits for an operator to rotate the signing keys mid-test; and the suite registers faster than the per-address limit, which answers 429. Measured once and not scripted. |
 | **Hybrid OP** (`./run.sh hybrid`) | 97 modules. **`code id_token`: 34 modules, none failed** (19 PASSED, 5 REVIEW, 5 SKIPPED, 5 WARNING). `code token` and `code id_token token`: 50 failures, every one the authorization endpoint answering `unsupported_response_type`, which is the design: no access token crosses the front channel ([response modes](../../docs/response-modes.md)). The plan cannot pass whole for that reason. |
+
+**What the FAPI 2.0 plan found, the first time it was run.** No authorization code
+had ever been bound to a DPoP key: `dpop_jkt`, and a proof on a pushed request, were
+read, stored and checked at the token endpoint, and the code was issued without
+them, so any key redeemed it. A pushed request was answered `text/plain`, because
+the status went out before the type. Userinfo and the credential endpoint took a
+FAPI 2.0 client's token behind an RS256 proof, which the profile rules out for
+resource servers as well. And a person could not cancel a sign-in at all, so the
+application was never told they had said no. All four are fixed. Two modules need
+the driver to act as a person would differently, and it does, by name: it cancels
+for `user-rejects-authentication`, and for
+`par-ensure-reused-request-uri-prior-to-auth-completion-succeeds` it opens the first
+page and leaves it.
 
 **What the Hybrid plan found, the first time it was run.** Every fragment response
 was encoded twice, so a script reading `location.hash` found `iss` still

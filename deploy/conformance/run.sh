@@ -71,6 +71,8 @@ case "$PLAN" in
   rp-logout) logout "" ""; SPEC="oidcc-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
   fc-logout) logout "$CB/frontchannel_logout" ""; SPEC="oidcc-frontchannel-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
   bc-logout) logout "" "$CB/backchannel_logout"; SPEC="oidcc-backchannel-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
+  # CONFIG from fapiconfig.py, which carries the two FAPI clients' private keys.
+  fapi2)     SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi]" ;;
   *)         SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
 esac
 

@@ -109,6 +109,22 @@ done
 # most servers restrict a client to a single authentication method.
 run client create -client-id "conformance-post" -redirect "$CALLBACK" -require-pkce=false
 
+# FAPI 2.0 (./run.sh fapi2): two clients authenticating with private_key_jwt, their
+# tokens bound by DPoP, their requests pushed, and held to the profile, which refuses
+# that last step until the rest is so. PKCE stays required, as the profile has it.
+# The private keys stay in ../tls, which git ignores; fapiconfig.py puts them in a
+# configuration for the suite.
+node fapikeys.mjs ../tls
+for n in 1 2; do
+  c="conformance-fapi-$n"
+  docker cp "../tls/fapi$n.public.json" "signari-engine-1:/tmp/fapi$n.public.json"
+  run client create -client-id "$c" -name "FAPI $n" -redirect "$CALLBACK"
+  run client set-keys -client-id "$c" -jwks "/tmp/fapi$n.public.json"
+  run client set-dpop -client-id "$c" -dpop-bound
+  run client set-par -client-id "$c" -require-par
+  run client set-profile -client-id "$c" -security-profile fapi2
+done
+
 # The second callback carries query parameters on purpose: the suite tests that a
 # redirect URI with a query is matched exactly, and implementations that
 # normalise or strip it fail. `client create` registers one URI, and there is no
@@ -117,7 +133,9 @@ run client create -client-id "conformance-post" -redirect "$CALLBACK" -require-p
 docker compose exec -T postgres psql -U signari_superuser -d signari -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES
  ('conformance-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
- ('conformance-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
+ ('conformance-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapi-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapi-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
 ON CONFLICT DO NOTHING;
 UPDATE core.config_version SET version = version + 1 WHERE id = true;
 SQL

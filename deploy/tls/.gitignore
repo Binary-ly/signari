@@ -3,3 +3,4 @@ ca.key
 *.srl
 suite.crt
 suite.key
+fapi*.json

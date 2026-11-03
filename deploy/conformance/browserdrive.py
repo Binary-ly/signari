@@ -117,8 +117,13 @@ def ended(r, log):
     return True
 
 
-def drive_url(sess, url, log):
+def drive_url(sess, url, log, refuse=False, look_only=False):
+    """refuse answers the consent page Deny, for a module about a person who says no.
+    look_only stops at the first page, for one that has the page opened and left
+    before the same request is used again."""
     r = get(sess, url, allow_redirects=True)
+    if look_only:
+        return ended(r, log)
     for _ in range(8):
         page = r.text or ""
 
@@ -140,6 +145,13 @@ def drive_url(sess, url, log):
             continue
 
         if 'name="username"' in page and 'name="password"' in page:
+            if refuse and 'name="cancel"' in page:
+                # Saying no where a person is asked first: a consent given in an
+                # earlier module means no consent page comes to say it on.
+                log("      cancelling the sign-in")
+                r = post(sess, form_action(page, "/login"), data=hidden_fields(page) + [("cancel", "1")],
+                         allow_redirects=True)
+                continue
             fields = hidden_fields(page) + [("username", USER), ("password", PASSWORD)]
             log("      signing in")
             r = post(sess, form_action(page, "/login"), data=fields, allow_redirects=True)
@@ -151,8 +163,8 @@ def drive_url(sess, url, log):
         # access_denied, which reads like the user declined rather than like the
         # harness forgot to click.
         if 'name="decision"' in page:
-            fields = hidden_fields(page) + [("decision", "allow")]
-            log("      granting consent")
+            fields = hidden_fields(page) + [("decision", "deny" if refuse else "allow")]
+            log("      refusing consent" if refuse else "      granting consent")
             r = post(sess, form_action(page, "/consent"), data=fields, allow_redirects=True)
             continue
 
@@ -210,16 +222,20 @@ def fill_placeholders(api, mid, log):
             log(f"      placeholder error: {type(ex).__name__}: {ex}")
 
 
-def module_status(api, mid):
+def module_info(api, mid):
     # /api/info/{id} carries the status; /api/runner/{id} has no status key at
     # all, so reading it returns None forever and every module looks live.
     try:
         r = api.get(f"{SUITE}/api/info/{mid}", verify=False, timeout=15)
         if r.status_code == 200:
-            return r.json().get("status")
+            return r.json()
     except Exception:
         pass
-    return None
+    return {}
+
+
+def module_status(api, mid):
+    return module_info(api, mid).get("status")
 
 
 def drive_module(api, mid, log, budget=320):
@@ -239,6 +255,12 @@ def drive_module(api, mid, log, budget=320):
     # CheckIdTokenAuthTimeClaimsSameIfPresent -- an engine defect that is really
     # the harness throwing the session away between requests.
     sess = requests.Session()
+    # Two modules want what a person does differently: one says no, and one opens the
+    # sign-in page and leaves it before the same pushed request is used again. The
+    # second fails outright if the first visit signs in.
+    name = module_info(api, mid).get("testName", "")
+    refuse = name.endswith("user-rejects-authentication")
+    leave_first = "reused-request-uri-prior-to-auth-completion" in name
     try:
         while time.time() < deadline:
             st = module_status(api, mid)
@@ -254,7 +276,7 @@ def drive_module(api, mid, log, budget=320):
                 seen.add(u)
                 log(f"    visit {u[:92]}")
                 try:
-                    drive_url(sess, u, log)
+                    drive_url(sess, u, log, refuse=refuse, look_only=leave_first and len(seen) == 1)
                 except Exception as e:
                     log(f"      driver error: {type(e).__name__}: {e}")
                 try:

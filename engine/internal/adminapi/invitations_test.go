@@ -217,13 +217,10 @@ func TestAnInvitationsGroupsAreHeldToMembershipRules(t *testing.T) {
 // Another organisation's invitation answers as one that does not exist.
 func TestAnotherOrganisationsInvitationCannotBeRevoked(t *testing.T) {
 	s, _ := newTestServer(t)
-	ctx := context.Background()
-	org := anyOrgID(t, s)
 	id := newDriftInvitation(t, s)
-	var other string
-	if err := s.db.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE id <> $1::uuid ORDER BY created_at, id LIMIT 1`, org).Scan(&other); err != nil {
-		t.Skip("needs a second organisation")
-	}
+	// Its own, and not the second oldest, which on a fresh database is another test's
+	// and was deleted by that test's cleanup under this one.
+	other := newDriftOrg(t, s)
 	elsewhere := narrowedToken(t, s, other, []string{ScopeUsersWrite}, nil, nil)
 	if rec := call(t, s, http.MethodDelete, "/admin/invitations/"+id, elsewhere, nil); rec.Code != http.StatusNotFound {
 		t.Errorf("another organisation's token revoking: %d, want 404", rec.Code)

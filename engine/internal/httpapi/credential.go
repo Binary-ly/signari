@@ -245,9 +245,40 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proofs, verr := req.Validate()
+	if errors.Is(verr, oid4vci.ErrNoProof) {
+		writeCredentialError(w, http.StatusBadRequest, "invalid_proof", verr.Error())
+		return
+	}
 	if verr != nil {
 		writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
 			verr.Error())
+		return
+	}
+
+	// The holder must still be active. A deactivated person's issuance token
+	// carries no session to end and no grant to revoke, so without this it went
+	// on minting month-long credentials until it expired. Read before the request's
+	// shape is judged against the token, which needs to know what this issuer offers.
+	var orgID string
+	var active bool
+	oerr := s.db.QueryRow(ctx,
+		`SELECT org_id::text, status = 'active' FROM core.users WHERE id = $1::uuid`,
+		claims.Subject).Scan(&orgID, &active)
+	if oerr == nil && !active {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+			`error_description="The account this token was issued for is not active"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if oerr != nil {
+		s.log.ErrorContext(ctx, "resolving the organisation for a credential request", "err", oerr)
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	configs, cerr := store.CredentialConfigurations(ctx, s.db, orgID)
+	if cerr != nil {
+		s.log.ErrorContext(ctx, "loading credential configurations", "err", cerr)
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 
@@ -264,6 +295,14 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	wanted := req.ConfigurationID
 	var issuable []string
 	if len(asked) > 0 {
+		// A configuration this issuer has never heard of is that before it is anything
+		// else: §8.3.1.2's unknown_credential_configuration (specs/oid4vci.txt:1914), the
+		// answer a wallet can act on.
+		if _, known := configs[req.ConfigurationID]; req.ConfigurationID != "" && !known {
+			writeCredentialError(w, http.StatusBadRequest, "unknown_credential_configuration",
+				"this issuer does not offer the credential configuration "+req.ConfigurationID)
+			return
+		}
 		if req.CredentialIdentifier == "" {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
 				"the token response returned credential_identifiers, so a request sends "+
@@ -316,32 +355,6 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The holder must still be active. A deactivated person's issuance token
-	// carries no session to end and no grant to revoke, so without this it went
-	// on minting month-long credentials until it expired.
-	var orgID string
-	var active bool
-	oerr := s.db.QueryRow(ctx,
-		`SELECT org_id::text, status = 'active' FROM core.users WHERE id = $1::uuid`,
-		claims.Subject).Scan(&orgID, &active)
-	if oerr == nil && !active {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
-			`error_description="The account this token was issued for is not active"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	if oerr != nil {
-		s.log.ErrorContext(ctx, "resolving the organisation for a credential request", "err", oerr)
-		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-
-	configs, cerr := store.CredentialConfigurations(ctx, s.db, orgID)
-	if cerr != nil {
-		s.log.ErrorContext(ctx, "loading credential configurations", "err", cerr)
-		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
 	cfg, known := configs[wanted]
 	if !known {
 		// §8.3.1.2's code (specs/oid4vci.txt:1914). Reached when the offer names
@@ -398,8 +411,13 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 	}
 
 	holderKeys := make([]*jose.JSONWebKey, 0, len(proofs))
+	spent := map[string]bool{}
 	for _, p := range proofs {
-		key, attested, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots)
+		key, attested, perr := s.validateCredentialProof(ctx, claims, p, attesters, roots, spent)
+		if errors.Is(perr, errCredentialNonce) {
+			writeCredentialError(w, http.StatusBadRequest, "invalid_nonce", perr.Error())
+			return
+		}
 		if perr != nil {
 			writeCredentialError(w, http.StatusBadRequest, "invalid_proof", perr.Error())
 			return
@@ -587,19 +605,33 @@ func (s *Server) handleDeferredCredential(w http.ResponseWriter, r *http.Request
 	s.answerIssued(w, r, seal, parked.OrgID, claims, cfg, issued)
 }
 
+// errCredentialNonce is a proof whose c_nonce is not one this issuer gave out and has
+// not spent: invalid_nonce, so that the wallet "should retrieve a new c_nonce value"
+// (specs/oid4vci.txt:1923). A proof with none at all is invalid_proof (:1920).
+var errCredentialNonce = errors.New("the key proof does not carry a fresh c_nonce from " +
+	"this issuer's nonce endpoint")
+
 // validateCredentialProof checks one key proof and spends its nonce. attested
-// reports whether a trusted attester vouched for the key.
+// reports whether a trusted attester vouched for the key. spent holds the nonces
+// this request has spent already: a batch's proofs, each for a key of its own, carry
+// the one c_nonce a wallet fetched, and that is not a replay. Spending it per proof
+// refused every batch at its second proof (13.01, the OID4VCI plan's batch-issuance).
 func (s *Server) validateCredentialProof(ctx context.Context,
 	claims *tokens.AccessTokenClaims, proof string, attesters []*jose.JSONWebKey,
-	roots *x509.CertPool) (_ *jose.JSONWebKey, attested bool, _ error) {
+	roots *x509.CertPool, spent map[string]bool) (_ *jose.JSONWebKey, attested bool, _ error) {
 
 	// The nonce is read from the proof before validation so the right expected
 	// value can be supplied; the proof's signature is what makes it trustworthy,
 	// and the claim is compared, not believed.
 	presented := oid4vci.NonceFromProof(proof)
-	if err := store.ClaimCredentialNonce(ctx, s.db, presented); err != nil {
-		return nil, false, errors.New("the key proof does not carry a fresh c_nonce from " +
-			"this issuer's nonce endpoint")
+	if presented == "" {
+		return nil, false, errors.New("the key proof carries no c_nonce, and this issuer has a nonce endpoint")
+	}
+	if !spent[presented] {
+		if err := store.ClaimCredentialNonce(ctx, s.db, presented); err != nil {
+			return nil, false, errCredentialNonce
+		}
+		spent[presented] = true
 	}
 
 	key, err := oid4vci.ValidateJWTProof(proof, oid4vci.ProofContext{

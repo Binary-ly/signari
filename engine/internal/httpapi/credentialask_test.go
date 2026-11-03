@@ -164,6 +164,12 @@ func TestAWalletAsksForACredentialAndTheHolderApprovesIt(t *testing.T) {
 		out["error"] != "invalid_credential_request" {
 		t.Errorf("a token given identifiers took a configuration id: %d %v", status, out)
 	}
+	// Unless the issuer has no such configuration at all, which is that first
+	// (specs/oid4vci.txt:1914; 13.01, the OID4VCI plan's fail-unknown-credential-configuration).
+	if status, out := c.credential(t, token, `"credential_configuration_id":"NoSuchCredential"`); status != http.StatusBadRequest ||
+		out["error"] != "unknown_credential_configuration" {
+		t.Errorf("a configuration nobody defined, with a token given identifiers: %d %v", status, out)
+	}
 	if status, out := c.credential(t, token, `"credential_identifier":"ClosedCredential"`); status != http.StatusBadRequest ||
 		out["error"] != "unknown_credential_identifier" {
 		t.Errorf("an identifier the token was not given: %d %v", status, out)

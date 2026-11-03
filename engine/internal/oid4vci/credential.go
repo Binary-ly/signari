@@ -2,6 +2,7 @@ package oid4vci
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -103,6 +104,12 @@ type Configuration struct {
 	Revocable bool
 }
 
+// ErrNoProof is a request whose proofs parameter is missing or empty, which
+// §8.3.1.2 answers invalid_proof, "(1) if the field is missing"
+// (specs/oid4vci.txt:1920), and not as a malformed request.
+var ErrNoProof = errors.New("proofs is required: a credential is bound to a " +
+	"key, and without a proof there is no key to bind it to")
+
 // ValidateRequest applies §8.2's parameter rules.
 //
 // Returns the proofs to validate. The caller validates them, because that needs
@@ -127,8 +134,7 @@ func (r CredentialRequest) Validate() ([]string, error) {
 	// proof type". More than one would leave which proof type was actually
 	// honoured up to map iteration order.
 	if len(r.Proofs) == 0 {
-		return nil, fmt.Errorf("proofs is required: a credential is bound to a " +
-			"key, and without a proof there is no key to bind it to")
+		return nil, ErrNoProof
 	}
 	if len(r.Proofs) > 1 {
 		names := make([]string, 0, len(r.Proofs))
@@ -146,7 +152,7 @@ func (r CredentialRequest) Validate() ([]string, error) {
 		}
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("the jwt proofs array is empty")
+		return nil, fmt.Errorf("%w: the jwt proofs array is empty", ErrNoProof)
 	}
 	if len(raw) > MaxProofsPerRequest {
 		return nil, fmt.Errorf("this request carries %d key proofs and the limit "+

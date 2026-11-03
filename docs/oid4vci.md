@@ -314,6 +314,15 @@ client"* are different states, and only the second forbids the claim.
 nonce establish freshness. A nonce that can be presented twice establishes it
 once, so it is spent in the statement that reads it.
 
+Once per request, not once per proof. A batch's proofs, each for a key of its own,
+carry the one nonce the wallet fetched, and that is no replay; spent at the first
+proof, it refused the second, so no batch could be issued until November 2026. A
+nonce already spent, or never given out, is answered `invalid_nonce`, after which
+"the wallet should retrieve a new c_nonce value" (§8.3.1.2); a proof with no nonce
+at all is `invalid_proof`. Both were `invalid_proof`, which tells a wallet to give up.
+A request with no `proofs` is `invalid_proof` too, "if the field is missing", where it
+was `invalid_credential_request`.
+
 The endpoint is **unauthenticated**, which §7.1 states outright and which is
 worth not second-guessing: a wallet needs the nonce *before* it can build the
 proof that the token-bearing request depends on.

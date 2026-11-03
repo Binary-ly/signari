@@ -377,8 +377,37 @@ func TestACredentialNonceCannotBeReplayed(t *testing.T) {
 		t.Fatal("the same proof minted a second credential; a captured proof " +
 			"would be replayable indefinitely")
 	}
-	if resp["error"] != "invalid_proof" {
-		t.Errorf("error = %v, want invalid_proof", resp["error"])
+	// specs/oid4vci.txt:1923, a spent nonce being an "invalid c_nonce value", after
+	// which "the wallet should retrieve a new c_nonce value". invalid_proof, which this
+	// answered, is a proof with none (:1920), and tells a wallet to give up.
+	if resp["error"] != "invalid_nonce" {
+		t.Errorf("error = %v, want invalid_nonce", resp["error"])
+	}
+}
+
+// A batch's proofs, each for a key of its own, carry the one c_nonce the wallet
+// fetched. The nonce was spent at the first proof and the second refused, so no batch
+// was ever issued (13.01, the OID4VCI plan's batch-issuance). It is spent once for the
+// request, and still once.
+func TestABatchIsIssuedUnderOneNonce(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+	first, second := newWallet(t), newWallet(t)
+	token := f.mintAccessToken(t)
+	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ := nb["c_nonce"].(string)
+	body := `{"credential_configuration_id":"IdentityCredential","proofs":{"jwt":[` +
+		mustJSONString(t, first.proof(t, f.srv.cfg.Issuer, nonce)) + `,` +
+		mustJSONString(t, second.proof(t, f.srv.cfg.Issuer, nonce)) + `]}}`
+	status, resp := f.postJSON(t, "/oid4vci/credential", token, body)
+	if status != http.StatusOK {
+		t.Fatalf("a batch under one nonce answered %d: %v", status, resp)
+	}
+	if issued, _ := resp["credentials"].([]any); len(issued) != 2 {
+		t.Errorf("a batch of two proofs issued %d credentials", len(issued))
+	}
+	if status, resp := f.postJSON(t, "/oid4vci/credential", token, body); status == http.StatusOK || resp["error"] != "invalid_nonce" {
+		t.Errorf("the batch replayed answered %d %v", status, resp)
 	}
 }
 
@@ -429,7 +458,10 @@ func TestACredentialRequestWithoutAProofIsRefused(t *testing.T) {
 		t.Fatal("a credential was issued with no key proof, so it is bound to " +
 			"nothing and is a bearer token")
 	}
-	if resp["error"] != "invalid_credential_request" {
+	// specs/oid4vci.txt:1920: invalid_proof, "(1) if the field is missing". This was
+	// invalid_credential_request, the code for a request of the wrong shape (13.01, the
+	// OID4VCI plan's fail-missing-proof).
+	if resp["error"] != "invalid_proof" {
 		t.Errorf("error = %v", resp["error"])
 	}
 	// The message must name the missing thing. Removing the guard leaves a

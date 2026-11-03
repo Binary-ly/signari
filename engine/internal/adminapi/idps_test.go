@@ -41,9 +41,14 @@ func newDriftVPVerifier(t *testing.T, s *Server) (org, slug, path string) {
 	t.Helper()
 	org = newDriftMigrationOrg(t, s, false)
 	slug = "drift-vp-" + org[:8]
-	if _, err := store.AddIdentityProvider(context.Background(), s.db, nil, org, store.IdentityProviderSpec{
-		Slug: slug, Name: slug, Kind: "oid4vp", VP: &store.VPSpec{Prefix: "redirect_uri",
-			WalletURL: "openid4vp://", VCTValues: []string{"urn:example:pid:1"}, SubjectClaim: `["sub"]`}}); err != nil {
+	// Validated first, as AddIdentityProvider expects: Validate is what fills the
+	// defaults the columns' checks hold it to.
+	spec := store.IdentityProviderSpec{Slug: slug, Name: slug, Kind: "oid4vp", VP: &store.VPSpec{
+		Prefix: "redirect_uri", VCTValues: []string{"urn:example:pid:1"}, SubjectClaim: `["sub"]`}}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddIdentityProvider(context.Background(), s.db, nil, org, spec); err != nil {
 		t.Fatal(err)
 	}
 	return org, slug, "/admin/organizations/" + org + "/identity-providers/" + slug

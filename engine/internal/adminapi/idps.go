@@ -134,6 +134,7 @@ type addIdentityProviderRequest struct {
 	// requests are signed with and its certificate chain, leaf first.
 	ClientIDPrefix   string   `json:"client_id_prefix"`
 	WalletURL        string   `json:"wallet_url"`
+	ResponseMode     string   `json:"response_mode"`
 	VCTValues        []string `json:"vct_values"`
 	SubjectClaim     string   `json:"subject_claim"`
 	EmailClaim       string   `json:"email_claim"`
@@ -183,15 +184,15 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		spec.SkewSeconds = *req.SkewSeconds
 	}
 	vp := &store.VPSpec{Prefix: req.ClientIDPrefix, WalletURL: strings.TrimSpace(req.WalletURL),
-		VCTValues: req.VCTValues, SubjectClaim: req.SubjectClaim, EmailClaim: req.EmailClaim,
-		NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain}
+		ResponseMode: req.ResponseMode, VCTValues: req.VCTValues, SubjectClaim: req.SubjectClaim,
+		EmailClaim: req.EmailClaim, NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain}
 	switch {
 	case req.Kind == "oid4vp":
 		spec.VP = vp
-	case vp.Prefix != "" || vp.WalletURL != "" || len(vp.VCTValues) > 0 || vp.SubjectClaim != "" ||
+	case vp.Prefix != "" || vp.WalletURL != "" || vp.ResponseMode != "" || len(vp.VCTValues) > 0 || vp.SubjectClaim != "" ||
 		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "":
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
-			"detail": "client_id_prefix, wallet_url, vct_values, the claim paths, request_key and certificate_chain " +
+			"detail": "client_id_prefix, wallet_url, response_mode, vct_values, the claim paths, request_key and certificate_chain " +
 				"are a wallet sign-in's, kind oid4vp"})
 		return
 	}

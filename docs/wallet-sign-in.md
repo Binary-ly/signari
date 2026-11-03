@@ -33,6 +33,7 @@ and `PUT .../identity-providers/{slug}/vp-issuers` ([admin-api.md](admin-api.md)
 | `-subject-claim` | The claim that identifies a person. A name, or a JSON path such as `["address","country"]` |
 | `-email-claim`, `-name-claim` | Where the address and the name are, if the credential has them |
 | `-wallet-url` | Where the browser is sent: `openid4vp://`, or a wallet's own https link |
+| `-response-mode` | `direct_post`, or `direct_post.jwt` to have the answer encrypted. Each request then carries a P-256 key of its own, made when the sign-in starts and kept sealed with it, and the answer comes as a JWE to that key (ECDH-ES, A128GCM), named by its `kid`. A credential sent in clear to such a request is refused, since only an error may come unencrypted |
 
 Every claim named is asked for, and a credential without one of them is refused.
 
@@ -96,7 +97,7 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 
 - **Another device.** A page with a code to scan, which needs words a person has written
   in both languages.
-- **Encrypted answers** (`direct_post.jwt`) and the Digital Credentials API.
+- **The Digital Credentials API**, where the browser carries the request to a wallet itself.
 - **mdoc** credentials.
 - **Revocation.** A credential's `status` is not checked, which SD-JWT VC says should be
   done.
@@ -108,5 +109,5 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 |---|---|
 | `GET /oid4vp/<slug>/start` | The sign-in button. Sends the browser to the wallet |
 | `GET`, `POST /oid4vp/<slug>/request/<state>` | The signed request object, `application/oauth-authz-req+jwt`; by POST with the wallet's `wallet_nonce` echoed in it |
-| `POST /oid4vp/<slug>/response` | Where the wallet posts its answer (`direct_post`) |
+| `POST /oid4vp/<slug>/response` | Where the wallet posts its answer: `vp_token` and `state` (`direct_post`), or `response`, the JWE (`direct_post.jwt`) |
 | `GET /oid4vp/<slug>/done` | Where the wallet sends the browser back |

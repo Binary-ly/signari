@@ -882,6 +882,8 @@ func run(args []string) (err error) {
 		"person within its issuer, a name or a JSON path such as [\"address\",\"country\"]")
 	vpEmail := fs.String("email-claim", "", "`idp add -kind oid4vp`: the claim holding the address, if any")
 	vpName := fs.String("name-claim", "", "`idp add -kind oid4vp`: the claim holding the name, if any")
+	vpResponseMode := fs.String("response-mode", "direct_post", "`idp add -kind oid4vp`: direct_post, or "+
+		"direct_post.jwt for the answer encrypted to a key of each request's own")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
@@ -2146,8 +2148,8 @@ func run(args []string) (err error) {
 	case "idp add":
 		if *kind == "oid4vp" {
 			return idpAddVP(ctx, conn, *orgID, *slug, *name, *allowSignup, *allowLinking, *trustEmail,
-				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, VCTValues: splitList(*credVCT),
-					SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName},
+				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, ResponseMode: *vpResponseMode,
+					VCTValues: splitList(*credVCT), SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName},
 				*idpClientKeyFile, *idpClientCertFile)
 		}
 		nameID := *nameIDFormat

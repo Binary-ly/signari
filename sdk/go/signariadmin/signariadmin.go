@@ -2756,6 +2756,7 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	NameClaim              *string   `json:"name_claim,omitempty"`
 	NameIDFormat           *string   `json:"name_id_format,omitempty"`
 	RequestKey             *string   `json:"request_key,omitempty"`
+	ResponseMode           *string   `json:"response_mode,omitempty"`
 	Scopes                 *[]string `json:"scopes,omitempty"`
 	SkewSeconds            *int64    `json:"skew_seconds,omitempty"`
 	Slug                   *string   `json:"slug,omitempty"`

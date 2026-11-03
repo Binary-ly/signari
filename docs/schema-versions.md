@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0285 oid4vp_encrypted_responses
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may ask for its answer encrypted (direct_post.jwt, OID4VP 1.0 §8.3.1), so the credential crosses the wallet's network as ciphertext. Each request has a key of its own, a P-256 key for ECDH-ES made when the sign-in starts, kept with the pending sign-in sealed under the root key and gone with it.
+
 ## 0284 oid4vp_verifier
 
 Not compatible with the release before: stop it before migrating.

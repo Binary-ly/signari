@@ -118,7 +118,7 @@ var commandFlags = map[string][]string{
 	"i18n keys":                       {"theme-dir"},
 	"i18n list":                       {"theme-dir"},
 	"i18n status":                     {"theme-dir"},
-	"idp add":                         {"allow-linking", "allow-signup", "allow-unsolicited", "authorize-url", "client-cert-file", "client-id-ext", "client-id-prefix", "client-key-file", "client-secret", "email-claim", "entity-id", "force-authn", "idp-scopes", "issuer", "kind", "metadata", "metadata-signer", "metadata-unsigned", "name", "name-claim", "nameid-format", "org", "skew", "slug", "sp-cert", "sso-url", "subject-claim", "token-url", "trust-email-verification", "userinfo-email", "userinfo-email-verified", "userinfo-name", "userinfo-subject", "userinfo-url", "vct", "wallet-url"},
+	"idp add":                         {"allow-linking", "allow-signup", "allow-unsolicited", "authorize-url", "client-cert-file", "client-id-ext", "client-id-prefix", "client-key-file", "client-secret", "email-claim", "entity-id", "force-authn", "idp-scopes", "issuer", "kind", "metadata", "metadata-signer", "metadata-unsigned", "name", "name-claim", "nameid-format", "org", "response-mode", "skew", "slug", "sp-cert", "sso-url", "subject-claim", "token-url", "trust-email-verification", "userinfo-email", "userinfo-email-verified", "userinfo-name", "userinfo-subject", "userinfo-url", "vct", "wallet-url"},
 	"idp add-issuer":                  {"issuer", "jwks-url", "name", "org", "slug"},
 	"idp apple-secret":                {"apple-key", "apple-key-id", "apple-team", "slug"},
 	"idp assertions":                  {"allow-assertions", "slug"},

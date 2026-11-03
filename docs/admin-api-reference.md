@@ -1713,6 +1713,7 @@ Takes:
 | `name_claim` | string |  |
 | `name_id_format` | string |  |
 | `request_key` | string |  |
+| `response_mode` | string |  |
 | `scopes` | list of string |  |
 | `skew_seconds` | integer |  |
 | `slug` | string |  |

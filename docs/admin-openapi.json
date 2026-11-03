@@ -14262,6 +14262,9 @@
                   "request_key": {
                     "type": "string"
                   },
+                  "response_mode": {
+                    "type": "string"
+                  },
                   "scopes": {
                     "items": {
                       "type": "string"

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/oid4vp"
 	"signari.dev/engine/internal/store"
@@ -51,9 +53,21 @@ func (s *Server) vpClientID(v *store.VPVerifier) (string, error) {
 	return oid4vp.ClientID(v.Prefix, s.vpBase(v.Slug)+"/response", leaf)
 }
 
-func (s *Server) vpRequest(v *store.VPVerifier, clientID, nonce, state, walletNonce string) oid4vp.Request {
-	return oid4vp.Request{ClientID: clientID, ResponseURI: s.vpBase(v.Slug) + "/response",
-		ResponseMode: oid4vp.ModeDirectPost, Nonce: nonce, State: state, WalletNonce: walletNonce, Ask: v.Ask()}
+// vpRequest is the request a wallet is sent. responseKey is the PKCS #8 key its answer
+// is encrypted to under direct_post.jwt, named by the state so the answer says which
+// request it is, and nil otherwise.
+func (s *Server) vpRequest(v *store.VPVerifier, clientID, nonce, state, walletNonce string,
+	responseKey []byte) (oid4vp.Request, error) {
+	req := oid4vp.Request{ClientID: clientID, ResponseURI: s.vpBase(v.Slug) + "/response",
+		ResponseMode: v.ResponseMode, Nonce: nonce, State: state, WalletNonce: walletNonce, Ask: v.Ask()}
+	if responseKey != nil {
+		k, err := oid4vp.ParseResponseKey(responseKey)
+		if err != nil {
+			return req, err
+		}
+		req.EncryptTo = oid4vp.ResponseJWK(&k.PublicKey, state)
+	}
+	return req, nil
 }
 
 // handleVPStart begins a sign-in and sends the browser to the wallet.
@@ -93,6 +107,14 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		ProviderID: v.ProviderID, OrgID: v.OrgID, Nonce: nonce,
 		ReturnTo: s.validFederationReturn(r.URL.Query().Get("return")),
 	})
+	// An answer encrypted to a key of this request's own, so one key never opens two
+	// people's answers.
+	var responseKey []byte
+	if err == nil && v.ResponseMode == oid4vp.ModeDirectPostJWT {
+		if responseKey, _, err = oid4vp.NewResponseKey(state); err == nil {
+			err = store.SetVPResponseKey(ctx, tx, s.cfg.Root, v.ProviderID, state, responseKey)
+		}
+	}
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		s.log.ErrorContext(ctx, "beginning a wallet sign-in", "err", err)
@@ -104,7 +126,12 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := s.vpRequest(v, clientID, nonce, state, "")
+	req, err := s.vpRequest(v, clientID, nonce, state, "", responseKey)
+	if err != nil {
+		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
+		s.federationError(w, r, "Something went wrong. Please try again.")
+		return
+	}
 	// A signed request goes by reference, fetched by GET or by POST as the wallet
 	// can; an unsigned one has every parameter in the URL, since a redirect_uri
 	// verifier has nothing to sign with (specs/oid4vp.txt:615).
@@ -140,7 +167,7 @@ func (s *Server) handleVPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := r.PathValue("state")
-	nonce, err := store.PendingVPNonce(ctx, s.db, v.ProviderID, state)
+	nonce, responseKey, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
 	if err != nil {
 		if !errors.Is(err, store.ErrVPRequestGone) {
 			s.log.ErrorContext(ctx, "reading a wallet request", "err", err)
@@ -169,7 +196,11 @@ func (s *Server) handleVPRequest(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	signed, err := oid4vp.Sign(s.vpRequest(v, clientID, nonce, state, walletNonce).Parameters(time.Now()), v.Key, v.Chain)
+	req, err := s.vpRequest(v, clientID, nonce, state, walletNonce, responseKey)
+	var signed string
+	if err == nil {
+		signed, err = oid4vp.Sign(req.Parameters(time.Now()), v.Key, v.Chain)
+	}
 	if err != nil {
 		s.log.ErrorContext(ctx, "signing a wallet request", "slug", v.Slug, "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "the request could not be signed")
@@ -206,13 +237,45 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invalid_request", "no such verifier")
 		return
 	}
+	// An encrypted answer carries its state inside, and names the request's key, which
+	// is the state too, in its header (:1458).
 	state := r.PostForm.Get("state")
+	var encrypted *jose.JSONWebEncryption
+	if jwe := r.PostForm.Get("response"); jwe != "" {
+		if encrypted, err = oid4vp.ParseResponse(jwe); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "the response is not one this verifier can open")
+			return
+		}
+		state = encrypted.Header.KeyID
+	}
 	// "checking that the value of the received state parameter corresponds to a
 	// recent Authorization Request" (:2045-2047), before anything is verified, so
 	// nobody without a live request can make this server check signatures.
-	nonce, err := store.PendingVPNonce(ctx, s.db, v.ProviderID, state)
+	nonce, responseKey, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "this request has expired or has been answered")
+		return
+	}
+	vpToken := r.PostForm.Get("vp_token")
+	switch {
+	case encrypted != nil && responseKey == nil:
+		writeError(w, http.StatusBadRequest, "invalid_request", "this request did not ask for an encrypted answer")
+		return
+	case encrypted != nil:
+		key, kerr := oid4vp.ParseResponseKey(responseKey)
+		if kerr == nil {
+			vpToken, kerr = oid4vp.OpenResponse(encrypted, key, state, state)
+		}
+		if kerr != nil {
+			s.log.InfoContext(ctx, "an encrypted answer was refused", "slug", slug, "err", kerr,
+				"correlation_id", correlationID(ctx))
+			writeError(w, http.StatusBadRequest, "invalid_request", "the response is not one this verifier can open")
+			return
+		}
+	case responseKey != nil && vpToken != "":
+		// Asked for encrypted, so a credential sent in clear is refused: only an
+		// error may come unencrypted (:1574).
+		writeError(w, http.StatusBadRequest, "invalid_request", "this request asked for an encrypted answer")
 		return
 	}
 	// /oid4vp/<slug>/done, which the wallet sends the browser back to.
@@ -232,7 +295,7 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "this verifier is not configured")
 		return
 	}
-	presented, err := oid4vp.Verify(r.PostForm.Get("vp_token"), oid4vp.Expect{ClientID: clientID, Nonce: nonce,
+	presented, err := oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: clientID, Nonce: nonce,
 		Ask: v.Ask(), Issuers: v.Issuers, Now: time.Now()})
 	if err == nil {
 		var proved []byte

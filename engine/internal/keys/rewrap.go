@@ -96,6 +96,7 @@ var rootSealedColumns = []sealedColumn{
 	{table: "ssf_sources", column: "poll_secret_sealed", key: "id", context: "ssf_source_poll"},
 	{table: "credential_offers", column: "offer_sealed", key: "id", context: "credential_offer"},
 	{table: "vp_verifiers", column: "signing_key", key: "provider_id", context: "vp_verifier_key"},
+	{table: "federated_logins", column: "vp_response_key", key: "state_hash", context: "vp_response_key"},
 	// Nothing writes this table yet (writepath_test.go says why), but the
 	// sign-in path opens it with the root key, so the day a writer lands its
 	// rows are already rotated.

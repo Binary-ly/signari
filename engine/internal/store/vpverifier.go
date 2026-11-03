@@ -39,7 +39,10 @@ type VPVerifier struct {
 	Policy                               federation.Policy
 	Prefix                               oid4vp.Prefix
 	WalletURL                            string
-	VCTValues                            []string
+	// ResponseMode is direct_post, or direct_post.jwt for an answer encrypted to a
+	// key of the request's own.
+	ResponseMode string
+	VCTValues    []string
 	// Subject identifies the person, within the issuer. Email and Name are nil
 	// when the verifier does not ask for them.
 	Subject, Email, Name oid4vp.Path
@@ -79,14 +82,14 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		SELECT p.id::text, p.org_id::text, p.slug, p.display_name,
 		       p.allow_signup, p.allow_linking, p.require_verified_email, p.trust_email_verification,
 		       x.client_id_prefix, x.wallet_url, x.vct_values, x.subject_claim, x.email_claim,
-		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, '')
+		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode
 		FROM core.identity_providers p
 		JOIN core.vp_verifiers x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'oid4vp' AND p.enabled`, slug).Scan(
 		&v.ProviderID, &v.OrgID, &v.Slug, &v.DisplayName,
 		&v.Policy.AllowSignup, &v.Policy.AllowLinking, &v.Policy.RequireVerifiedEmail,
 		&v.Policy.TrustsEmailVerification,
-		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain)
+		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrVPVerifierUnknown
 	}
@@ -151,7 +154,9 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 // slug and policy.
 type VPSpec struct {
 	Prefix, WalletURL string
-	VCTValues         []string
+	// ResponseMode is direct_post, the default, or direct_post.jwt.
+	ResponseMode string
+	VCTValues    []string
 	// Claim paths, as oid4vp.ParsePath reads them.
 	SubjectClaim, EmailClaim, NameClaim string
 	// KeyPEM signs requests under an x509 prefix, and ChainPEM is its certificate
@@ -177,6 +182,13 @@ func (s *IdentityProviderSpec) validateVP() error {
 	}
 	if v.WalletURL == "" {
 		v.WalletURL = "openid4vp://"
+	}
+	switch v.ResponseMode {
+	case "":
+		v.ResponseMode = oid4vp.ModeDirectPost
+	case oid4vp.ModeDirectPost, oid4vp.ModeDirectPostJWT:
+	default:
+		return s.invalid("the response mode %q: want direct_post or direct_post.jwt", v.ResponseMode)
 	}
 	if u, err := url.Parse(v.WalletURL); err != nil || u.Scheme == "" || u.Scheme == "http" {
 		return s.invalid("the wallet URL %q: want openid4vp:// or a wallet's https link", v.WalletURL)
@@ -247,10 +259,10 @@ func addVPVerifier(ctx context.Context, q outpostDB, root *keys.RootKey, orgID s
 	_, err := q.Exec(ctx, `
 		INSERT INTO core.vp_verifiers
 			(provider_id, org_id, client_id_prefix, wallet_url, vct_values, subject_claim, email_claim,
-			 name_claim, signing_key, certificate_chain)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''))`,
+			 name_claim, signing_key, certificate_chain, response_mode)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11)`,
 		id, orgID, s.VP.Prefix, s.VP.WalletURL, s.VP.VCTValues, canonicalPath(s.VP.SubjectClaim),
-		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM)
+		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode)
 	return id, err
 }
 
@@ -353,18 +365,51 @@ func VPSubject(issuer, claim string) string { return issuer + vpSubjectSeparator
 // ErrVPRequestGone is a request that has expired, been answered or never existed.
 var ErrVPRequestGone = errors.New("this wallet request has expired or has been answered")
 
-// PendingVPNonce is the nonce of an unanswered request, for the request object.
-func PendingVPNonce(ctx context.Context, q outpostDB, providerID, state string) (string, error) {
+// PendingVPRequest is an unanswered request: its nonce, and under direct_post.jwt the
+// key its answer is encrypted to, opened with the root key.
+func PendingVPRequest(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string) (
+	nonce string, responseKey []byte, err error) {
 	h := sha256.Sum256([]byte(state))
-	var nonce string
-	err := q.QueryRow(ctx, `
-		SELECT nonce FROM core.federated_logins
+	var sealed []byte
+	err = q.QueryRow(ctx, `
+		SELECT nonce, vp_response_key FROM core.federated_logins
 		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL`,
-		h[:], providerID).Scan(&nonce)
+		h[:], providerID).Scan(&nonce, &sealed)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrVPRequestGone
+		return "", nil, ErrVPRequestGone
 	}
-	return nonce, err
+	if err != nil || len(sealed) == 0 {
+		return nonce, nil, err
+	}
+	if root == nil {
+		return "", nil, errors.New("opening a response key needs the root key")
+	}
+	responseKey, err = root.Open(sealed, sealContextVPResponseKey)
+	return nonce, responseKey, err
+}
+
+const sealContextVPResponseKey = "vp_response_key"
+
+// SetVPResponseKey keeps the key a request's answer is encrypted to with the pending
+// sign-in, sealed under the root key, so it goes when the sign-in does.
+func SetVPResponseKey(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string, pkcs8 []byte) error {
+	if root == nil {
+		return errors.New("sealing a response key needs the root key")
+	}
+	sealed, err := root.Seal(pkcs8, sealContextVPResponseKey)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256([]byte(state))
+	tag, err := q.Exec(ctx, `UPDATE core.federated_logins SET vp_response_key = $3
+		WHERE state_hash = $1 AND provider_id = $2::uuid`, h[:], providerID, sealed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVPRequestGone
+	}
+	return nil
 }
 
 const vpPresentationContext = "signari oid4vp presentation"

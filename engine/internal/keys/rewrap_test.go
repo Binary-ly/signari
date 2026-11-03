@@ -58,6 +58,7 @@ var columnClass = map[string]string{
 	"credential_offers.offer_sealed":    "rootSealed",
 	"credential_offers.handle_hash":     "oneWay",
 	"vp_verifiers.signing_key":          "rootSealed",
+	"federated_logins.vp_response_key":  "rootSealed",
 	// Under a key from the response code, which is not stored, and its hash.
 	"federated_logins.vp_presented":          "oneWay",
 	"federated_logins.vp_response_code_hash": "oneWay",

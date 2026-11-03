@@ -90,7 +90,7 @@ func (wl *holderWallet) present(clientID, nonce string) string {
 
 // vpFixture is a wallet sign-in in the sign-in fixture's organisation, believing the
 // wallet's issuer, with x509_san_dns and a certificate for the test issuer's host.
-func newVPFixture(t *testing.T, wl *holderWallet) (*signInFixture, string, *x509.Certificate) {
+func newVPFixture(t *testing.T, wl *holderWallet, responseMode ...string) (*signInFixture, string, *x509.Certificate) {
 	t.Helper()
 	f := newSignInFixture(t)
 	ctx := context.Background()
@@ -119,6 +119,9 @@ func newVPFixture(t *testing.T, wl *holderWallet) (*signInFixture, string, *x509
 		Prefix: "x509_san_dns", VCTValues: []string{walletVCT}, SubjectClaim: "personal_id", EmailClaim: "email",
 		KeyPEM:   string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})),
 		ChainPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}}
+	if len(responseMode) > 0 {
+		spec.VP.ResponseMode = responseMode[0]
+	}
 	if err := spec.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +201,8 @@ func (f *signInFixture) fetchVP(t *testing.T, loc *url.URL, leaf *x509.Certifica
 	}
 	var p map[string]any
 	_ = json.Unmarshal(payload, &p)
-	if p["client_id"] != q.Get("client_id") || p["wallet_nonce"] != "wn-1" || p["response_mode"] != "direct_post" {
+	if p["client_id"] != q.Get("client_id") || p["wallet_nonce"] != "wn-1" ||
+		(p["response_mode"] != "direct_post" && p["response_mode"] != "direct_post.jwt") {
 		t.Fatalf("request object %v", p)
 	}
 	return p
@@ -333,6 +337,72 @@ func TestARequestIsAnsweredOnceEvenByTwoAtOnce(t *testing.T) {
 	}
 	if _, err := store.PresentVP(context.Background(), f.pool, v.ProviderID, state, []byte(`{}`)); err != store.ErrVPRequestGone {
 		t.Fatalf("a second presentation was recorded: %v", err)
+	}
+}
+
+// Asked for encrypted, the wallet encrypts its answer to the key the request object
+// names, and the answer is opened, checked and finished as any other; a credential sent
+// in clear to such a request is refused, and so is one encrypted to another key.
+func TestAWalletsEncryptedAnswerSignsThePersonIn(t *testing.T) {
+	wl := newHolderWallet(t, "person-1")
+	f, slug, leaf := newVPFixture(t, wl, "direct_post.jwt")
+	loc, cookie := f.startVP(t, slug)
+	p := f.fetchVP(t, loc, leaf)
+	clientID, nonce, state, responseURI := p["client_id"].(string), p["nonce"].(string), p["state"].(string),
+		p["response_uri"].(string)
+	if p["response_mode"] != "direct_post.jwt" {
+		t.Fatalf("response_mode %v", p["response_mode"])
+	}
+	meta, _ := json.Marshal(p["client_metadata"])
+	var cm struct {
+		JWKS jose.JSONWebKeySet `json:"jwks"`
+	}
+	if err := json.Unmarshal(meta, &cm); err != nil || len(cm.JWKS.Keys) != 1 {
+		t.Fatalf("client_metadata %s: %v", meta, err)
+	}
+	to := cm.JWKS.Keys[0]
+	if to.KeyID != state || to.Algorithm != "ECDH-ES" || to.Use != "enc" || !to.IsPublic() {
+		t.Fatalf("the answer is to be encrypted to %+v", to)
+	}
+	encrypt := func(key any, payload map[string]any) string {
+		e, err := jose.NewEncrypter(jose.A128GCM, jose.Recipient{Algorithm: jose.ECDH_ES, Key: key, KeyID: to.KeyID}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(payload)
+		obj, err := e.Encrypt(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _ := obj.CompactSerialize()
+		return out
+	}
+	var vpToken map[string]any
+	_ = json.Unmarshal([]byte(wl.present(clientID, nonce)), &vpToken)
+
+	if rec := f.postVP(t, responseURI, url.Values{"state": {state}, "vp_token": {wl.present(clientID, nonce)}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("a credential in clear to an encrypted request answered %d", rec.Code)
+	}
+	stranger, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if rec := f.postVP(t, responseURI, url.Values{"response": {encrypt(stranger.Public(),
+		map[string]any{"vp_token": vpToken, "state": state})}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("an answer encrypted to another key answered %d", rec.Code)
+	}
+
+	rec := f.postVP(t, responseURI, url.Values{"response": {encrypt(to.Key, map[string]any{"vp_token": vpToken, "state": state})}})
+	var answer struct {
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &answer) != nil {
+		t.Fatalf("the encrypted answer answered %d: %s", rec.Code, rec.Body)
+	}
+	back, _ := url.Parse(answer.RedirectURI)
+	done := httptest.NewRequest(http.MethodGet, back.RequestURI(), nil)
+	done.AddCookie(cookie)
+	out := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(out, done)
+	if !hasSession(out) {
+		t.Fatalf("coming back answered %d: %.300s", out.Code, out.Body)
 	}
 }
 

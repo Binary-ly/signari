@@ -48,6 +48,19 @@ fi
 export SIGNARI_TLS_CERT=/tls/engine.crt
 export SIGNARI_TLS_KEY=/tls/engine.key
 
+# For the back-channel logout plan the engine posts logout tokens to the suite, and its
+# outbound guard is right to refuse both halves of that: the suite's nginx serves a
+# self-signed certificate for CN=localhost with no SAN, on a private address. So the
+# nginx is given a certificate naming the host the suite calls itself by, and the
+# engine trusts that one certificate and may reach this compose network, and nothing
+# else is loosened.
+if [ ! -f ../tls/suite.crt ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout ../tls/suite.key -out ../tls/suite.crt -subj "/CN=localhost.emobix.co.uk" \
+    -addext "subjectAltName=DNS:localhost.emobix.co.uk,DNS:localhost" 2>/dev/null
+fi
+export SIGNARI_CA_BUNDLE=/tls/suite.crt
+
 # Order matters and used to be wrong: the engine refuses to start until an
 # instance exists, so `up -d engine` before `instance create` leaves a container
 # restarting forever while the wait loop spins.
@@ -60,6 +73,8 @@ docker compose up -d postgres
 until [ "$(docker inspect -f '{{.State.Health.Status}}' signari-postgres-1)" = healthy ]; do
   sleep 1
 done
+SIGNARI_OUTBOUND_ALLOW_PRIVATE="$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' signari-net)"
+export SIGNARI_OUTBOUND_ALLOW_PRIVATE
 docker compose up migrate
 
 # `run` before the engine is up needs a one-off container, not exec. Bootstrap and not
@@ -124,11 +139,19 @@ run user create -email conformance@test.local -password 'Tr0ubad0ur-Marmalade-77
 # the process has restarted -- a JVM reads it once, at startup.
 if docker ps --format '{{.Names}}' | grep -q '^idp-conformance-server-1$'; then
   docker cp ../tls/ca.crt idp-conformance-server-1:/tmp/signari-ca.crt
+  docker cp ../tls/suite.crt idp-conformance-server-1:/tmp/signari-suite.crt
   docker exec -u 0 idp-conformance-server-1 sh -c \
     'keytool -importcert -noprompt -trustcacerts -alias signari-conformance \
-       -file /tmp/signari-ca.crt -cacerts -storepass changeit' >/dev/null 2>&1 || true
+       -file /tmp/signari-ca.crt -cacerts -storepass changeit;
+     keytool -importcert -noprompt -trustcacerts -alias signari-suite \
+       -file /tmp/signari-suite.crt -cacerts -storepass changeit' >/dev/null 2>&1 || true
+  docker cp ../tls/suite.crt idp-conformance-nginx-1:/etc/ssl/certs/nginx-selfsigned.crt
+  docker cp ../tls/suite.key idp-conformance-nginx-1:/etc/ssl/private/nginx-selfsigned.key
+  docker exec idp-conformance-nginx-1 nginx -s reload >/dev/null 2>&1
   docker restart idp-conformance-server-1 >/dev/null
   docker network connect signari-net idp-conformance-server-1 2>/dev/null || true
+  # The name the suite gives itself, so a logout token posted to it arrives.
+  docker network connect --alias localhost.emobix.co.uk signari-net idp-conformance-nginx-1 2>/dev/null || true
   echo "suite restarted with the CA trusted"
 fi
 

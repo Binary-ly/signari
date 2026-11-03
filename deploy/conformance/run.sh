@@ -49,12 +49,29 @@ if [ "$PLAN" = "config" ]; then
     "oidcc-config-certification-test-plan" config-op.json
 fi
 
+docker network connect --alias localhost.emobix.co.uk signari-net idp-conformance-nginx-1 2>/dev/null || true
+
+# Each logout plan wants the clients to have its channel and no other: a front-channel
+# URI registered while the RP-initiated plan runs is a request that plan "wasn't
+# expecting", and fails it.
+CB="https://localhost.emobix.co.uk:8443/test/a/signari"
+logout() {
+  for c in conformance-1 conformance-2; do
+    docker exec signari-engine-1 /signari client set-logout -client-id "$c" \
+      -post-logout-redirects "$CB/post_logout_redirect" -frontchannel-uri "$1" -backchannel-uri "$2" >/dev/null
+  done
+}
+
 STATIC="[server_metadata=discovery][client_registration=static_client]"
+LOGOUT="[response_type=code][client_registration=static_client]"
 case "$PLAN" in
-  basic)    SPEC="oidcc-basic-certification-test-plan$STATIC" ;;
-  formpost) SPEC="oidcc-formpost-basic-certification-test-plan$STATIC" ;;
-  hybrid)   SPEC="oidcc-hybrid-certification-test-plan$STATIC" ;;
-  *)        SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
+  basic)     SPEC="oidcc-basic-certification-test-plan$STATIC" ;;
+  formpost)  SPEC="oidcc-formpost-basic-certification-test-plan$STATIC" ;;
+  hybrid)    SPEC="oidcc-hybrid-certification-test-plan$STATIC" ;;
+  rp-logout) logout "" ""; SPEC="oidcc-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
+  fc-logout) logout "$CB/frontchannel_logout" ""; SPEC="oidcc-frontchannel-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
+  bc-logout) logout "" "$CB/backchannel_logout"; SPEC="oidcc-backchannel-rp-initiated-logout-certification-test-plan$LOGOUT" ;;
+  *)         SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
 esac
 
 # Everything else needs the front channel driven. The suite's own HtmlUnit driver

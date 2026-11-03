@@ -9,14 +9,18 @@ protocol and judge the answers.
 
 ## Current state, measured 3 November 2026
 
-Against the suite as of its commit `6b8b809` (7 August 2026), each plan with
-`[server_metadata=discovery][client_registration=static_client]`:
+Against the suite as of its commit `6b8b809` (7 August 2026), from nothing: a fresh
+suite, `setup.sh`, then each plan below in one run. Static clients throughout.
 
 | Plan | Result |
 |---|---|
 | **Config OP** (`./run.sh config`) | 2 modules, **44 conditions, 0 failures, 0 warnings**, runner exit 0. |
-| **Basic OP** (`./run.sh basic`) | 36 modules, **1712 conditions, 0 failures, 5 warnings**, the five below. 79 seconds. |
+| **Basic OP** (`./run.sh basic`) | 36 modules, **1737 conditions, 0 failures, 5 warnings**, the five below. 81 seconds. An earlier run the same day counted 1712; the count moves by a few dozen between runs, the failures did not. |
 | **Form Post OP** (`./run.sh formpost`) | 36 modules, **1877 conditions, 0 failures, 5 warnings**, the same five. |
+| **RP-Initiated Logout OP** (`./run.sh rp-logout`) | 12 modules, **555 conditions, 0 failures, 0 warnings**, runner exit 0. Eight are REVIEW: the error pages a human is asked to look at. The driver logs where each visit ended (`ended at 400 /oauth2/logout …`) so that the look is possible. |
+| **Front-Channel Logout OP** (`./run.sh fc-logout`) | 3 modules, **90 conditions, 0 failures, 0 warnings**, runner exit 0. |
+| **Back-Channel Logout OP** (`./run.sh bc-logout`) | 3 modules, **94 conditions, 0 failures, 0 warnings**, runner exit 0: the logout token arrived from the engine and its signature, `iss`, `aud`, `iat`, `jti`, `events` and `sid` were checked. |
+| **Dynamic OP** (`oidcc-dynamic-certification-test-plan[response_type=code]`, registering with a token from `signari registration token`) | **Cannot pass, by design.** 24 modules, 19 failures. OIDC Core §15.2 has every dynamic OP support the `id_token` and `id_token token` response types, and nothing containing `token` crosses the front channel here. Ten more are `code_challenge is required`, the profile sending no PKCE, which a registered client cannot opt out of; two want `request_uri`, which is not supported; one wants `sector_identifier_uri` checked, which registration ignores because a registered client is never pairwise; one waits for an operator to rotate the signing keys mid-test; and the suite registers faster than the per-address limit, which answers 429. Measured once and not scripted. |
 | **Hybrid OP** (`./run.sh hybrid`) | 97 modules. **`code id_token`: 34 modules, none failed** (19 PASSED, 5 REVIEW, 5 SKIPPED, 5 WARNING). `code token` and `code id_token token`: 50 failures, every one the authorization endpoint answering `unsupported_response_type`, which is the design: no access token crosses the front channel ([response modes](../../docs/response-modes.md)). The plan cannot pass whole for that reason. |
 
 **What the Hybrid plan found, the first time it was run.** Every fragment response
@@ -43,6 +47,20 @@ name; and the runner's grammar reads an absolute configuration path as a plan.
 `code` arrived as `ode`. A configuration filled with secrets belongs outside this
 directory, `CONFIG=/elsewhere/basic.json ./run.sh basic`, so that it is not one
 `git add` from being committed.
+
+**Each logout plan sets the clients up for itself.** A front-channel URI registered
+while the RP-Initiated plan runs is a request that plan "wasn't expecting", and it
+fails; `run.sh rp-logout`, `fc-logout` and `bc-logout` each register their channel
+and clear the others first.
+
+**The back channel needed the engine to reach the suite, and its outbound guard is
+right to refuse both halves of that.** The suite's nginx serves a self-signed
+certificate for `CN=localhost` with no SAN, on a private address. `setup.sh` gives
+it a certificate for `localhost.emobix.co.uk`, the name the suite calls itself by,
+puts it on the engine's network under that name, and starts the engine trusting that
+one certificate (`SIGNARI_CA_BUNDLE`) and allowed to reach that one network
+(`SIGNARI_OUTBOUND_ALLOW_PRIVATE`). Nothing else is loosened, and the compose file
+passes both through empty otherwise.
 
 Neither is a vacuous green. The Config OP plan, run against the same engine over
 plaintext HTTP, produced **7 failures**; it detects real problems and stopped

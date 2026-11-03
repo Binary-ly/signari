@@ -38,6 +38,9 @@ SUBMIT_RE = re.compile(r"""xhr\.open\(\s*['"]POST['"]\s*,\s*['"]([^'"]+)['"]""")
 HIDDEN_RE = re.compile(r"""<input[^>]*type=["']hidden["'][^>]*>""", re.I)
 ATTR_RE = re.compile(r"""([\w-]+)\s*=\s*["']([^"']*)["']""")
 ACTION_RE = re.compile(r"""<form[^>]*action=["']([^"']*)["']""", re.I)
+FRAME_RE = re.compile(r"""<iframe[^>]*\bsrc=["']([^"']+)["']""", re.I)
+CONTINUE_RE = re.compile(r"""</iframe>\s*<p><a href=["']([^"']+)["']""", re.I)
+TITLE_RE = re.compile(r"""<title>([^<]*)</title>""", re.I)
 
 
 def rewrite(url):
@@ -106,6 +109,14 @@ def submit_implicit(sess, response, log):
     return True
 
 
+def ended(r, log):
+    """Where a visit stopped, so that a module left for a human (REVIEW) carries what
+    the engine showed: its own error page, and not a redirect to the client."""
+    m = TITLE_RE.search(r.text or "")
+    log(f"      ended at {r.status_code} {urlsplit(r.url).path} {m.group(1).strip() if m else ''!r}")
+    return True
+
+
 def drive_url(sess, url, log):
     r = get(sess, url, allow_redirects=True)
     for _ in range(8):
@@ -113,6 +124,20 @@ def drive_url(sess, url, log):
 
         if submit_implicit(sess, r, log):
             return True
+
+        # Front-channel logout: a browser loads every frame and then goes on.
+        frames = FRAME_RE.findall(page)
+        if frames:
+            for src in frames:
+                f = get(sess, htmlmod.unescape(src))
+                log(f"      front-channel frame -> {f.status_code}")
+            m = CONTINUE_RE.search(page)
+            if not m:
+                return ended(r, log)
+            onward = htmlmod.unescape(m.group(1))
+            r = get(sess, onward if onward.startswith("http") else ENGINE_ORIGIN + onward,
+                    allow_redirects=True)
+            continue
 
         if 'name="username"' in page and 'name="password"' in page:
             fields = hidden_fields(page) + [("username", USER), ("password", PASSWORD)]
@@ -137,7 +162,7 @@ def drive_url(sess, url, log):
                      allow_redirects=True)
             continue
 
-        return True
+        return ended(r, log)
     return False
 
 

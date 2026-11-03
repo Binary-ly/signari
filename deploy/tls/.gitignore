@@ -1,3 +1,5 @@
 ca.key
 *.csr
 *.srl
+suite.crt
+suite.key

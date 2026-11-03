@@ -527,7 +527,9 @@ func TestAnOfferTokenStillAsksByConfiguration(t *testing.T) {
 	nonce, _ := nb["c_nonce"].(string)
 	status, out := f.postJSON(t, "/oid4vci/credential", token, `{"credential_identifier":"IdentityCredential",`+
 		`"proofs":{"jwt":[`+mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce))+`]}}`)
-	if status != http.StatusBadRequest || out["error"] != "invalid_credential_request" {
+	// specs/oid4vci.txt:1917. It was invalid_credential_request (13.01, the OID4VCI plan's
+	// fail-unknown-credential-identifier).
+	if status != http.StatusBadRequest || out["error"] != "unknown_credential_identifier" {
 		t.Errorf("an identifier from a token given none: %d %v", status, out)
 	}
 }

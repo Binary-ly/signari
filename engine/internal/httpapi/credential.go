@@ -318,7 +318,10 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		wanted, issuable = req.CredentialIdentifier, asked
 	} else {
 		if req.CredentialIdentifier != "" {
-			writeCredentialError(w, http.StatusBadRequest, "invalid_credential_request",
+			// An identifier this token was given none of is one this issuer never handed
+			// out: §8.3.1.2's unknown_credential_identifier (specs/oid4vci.txt:1917), as
+			// for an identifier the token was not given (13.01, the OID4VCI plan).
+			writeCredentialError(w, http.StatusBadRequest, "unknown_credential_identifier",
 				"credential_identifier is for a token response that returned credential_identifiers, "+
 					"and this one did not; send credential_configuration_id (section 8.2)")
 			return
@@ -343,6 +346,16 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	// Unknown to this issuer before it is not this token's: §8.3.1.2's code (:1914) names
+	// what the wallet got wrong, where insufficient_scope would send it for another
+	// token (13.01, the OID4VCI plan's fail-unknown-credential-configuration). It also
+	// covers an offer naming a configuration since removed.
+	cfg, known := configs[wanted]
+	if !known {
+		writeCredentialError(w, http.StatusBadRequest, "unknown_credential_configuration",
+			"this issuer does not offer the credential configuration "+wanted)
+		return
+	}
 	if !slices.Contains(issuable, wanted) {
 		// The token is good for issuance, of something else: RFC 6750 §3.1's
 		// insufficient_scope, which is a 403.
@@ -352,15 +365,6 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="insufficient_scope", `+
 			`error_description="This access token does not authorize issuing that credential"`)
 		w.WriteHeader(http.StatusForbidden)
-		return
-	}
-
-	cfg, known := configs[wanted]
-	if !known {
-		// §8.3.1.2's code (specs/oid4vci.txt:1914). Reached when the offer names
-		// a configuration that has since been removed.
-		writeCredentialError(w, http.StatusBadRequest, "unknown_credential_configuration",
-			"this issuer does not offer the credential configuration "+wanted)
 		return
 	}
 

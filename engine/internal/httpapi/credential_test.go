@@ -444,6 +444,19 @@ func TestAnUnknownCredentialConfigurationIsRefused(t *testing.T) {
 	if resp["error"] != "unknown_credential_configuration" {
 		t.Errorf("error = %v", resp["error"])
 	}
+
+	// And with a token offered something real: unknown before it is not this token's.
+	// It was the RFC 6750 403, which sends a wallet for another token that cannot help
+	// (13.01, the OID4VCI plan's fail-unknown-credential-configuration).
+	offered := f.mintAccessToken(t)
+	_, nb = f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ = nb["c_nonce"].(string)
+	status, resp = f.postJSON(t, "/oid4vci/credential", offered,
+		`{"credential_configuration_id":"NoSuchCredential","proofs":{"jwt":[`+
+			mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce))+`]}}`)
+	if status != http.StatusBadRequest || resp["error"] != "unknown_credential_configuration" {
+		t.Errorf("a configuration nobody defined, with a token offered another: %d %v", status, resp)
+	}
 }
 
 // A request with no proof at all: there would be no key to bind to.

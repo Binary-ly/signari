@@ -2965,7 +2965,7 @@ func writeTokenError(w http.ResponseWriter, e *oauth.TokenError) {
 	}
 	writeJSON(w, status, map[string]string{
 		"error":             e.Code,
-		"error_description": e.Description,
+		"error_description": oauth.ErrorText(e.Description),
 	})
 }
 

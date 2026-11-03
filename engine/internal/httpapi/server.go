@@ -31,6 +31,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/metrics"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/pages"
@@ -1268,7 +1269,7 @@ func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
 	if issues, ierr := store.AnyIDJAGAudience(ctx, s.db, s.instanceID); ierr != nil {
 		s.log.ErrorContext(ctx, "reading the id-jag audiences", "err", ierr)
 	} else if issues {
-		md.IdentityChainingRequestedTokenTypesSupported = []string{idJAGTokenType}
+		md.IdentityChainingRequestedTokenTypesSupported = []string{oauth.TokenTypeIDJAG}
 	}
 
 	// Operator-declared scopes, for organisations that have any.
@@ -1456,7 +1457,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeError(w http.ResponseWriter, code int, err, desc string) {
 	writeJSON(w, code, map[string]string{
 		"error":             err,
-		"error_description": desc,
+		"error_description": oauth.ErrorText(desc),
 	})
 }
 

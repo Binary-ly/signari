@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 )
 
@@ -141,7 +142,7 @@ type headlessStep struct {
 
 func headlessRefuse(w http.ResponseWriter, status int, code, detail string) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, status, map[string]string{"error": code, "error_description": detail})
+	writeJSON(w, status, map[string]string{"error": code, "error_description": oauth.ErrorText(detail)})
 }
 
 // handleHeadlessStart begins a walk from an authorization request.

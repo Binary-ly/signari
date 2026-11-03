@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -221,7 +222,7 @@ func (s *Server) signFederationJWT(payload any, typ string) (string, error) {
 func writeFederationError(w http.ResponseWriter, status int, code, description string) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, status, map[string]any{
-		"error": code, "error_description": description,
+		"error": code, "error_description": oauth.ErrorText(description),
 	})
 }
 

@@ -579,6 +579,6 @@ func writeCIBAError(w http.ResponseWriter, e *oauth.CIBAError) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, status, map[string]string{
-		"error": e.Code, "error_description": e.Description,
+		"error": e.Code, "error_description": oauth.ErrorText(e.Description),
 	})
 }

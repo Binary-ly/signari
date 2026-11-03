@@ -324,7 +324,7 @@ func writeUMAError(w http.ResponseWriter, e *uma.Error) {
 		status = http.StatusBadRequest
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	body := map[string]any{"error": e.Code, "error_description": e.Description}
+	body := map[string]any{"error": e.Code, "error_description": oauth.ErrorText(e.Description)}
 	if e.Ticket != "" {
 		body["ticket"] = e.Ticket
 	}

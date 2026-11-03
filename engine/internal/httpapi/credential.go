@@ -16,6 +16,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
@@ -655,7 +656,7 @@ func writeCredentialError(w http.ResponseWriter, status int, code, description s
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error": code, "error_description": description,
+		"error": code, "error_description": oauth.ErrorText(description),
 	})
 }
 

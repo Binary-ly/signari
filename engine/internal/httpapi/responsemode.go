@@ -75,7 +75,7 @@ func (p responseParams) values() url.Values {
 		v.Set("error", p.Error)
 	}
 	if p.ErrorDescription != "" {
-		v.Set("error_description", p.ErrorDescription)
+		v.Set("error_description", oauth.ErrorText(p.ErrorDescription))
 	}
 	if p.State != "" {
 		v.Set("state", p.State)

@@ -293,10 +293,9 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 		}
 	default:
 		return redirectErr("unsupported_response_type",
-			fmt.Sprintf("response_type %q is not supported. \"code\" always; "+
-				"\"code id_token\" where a client is permitted it. Anything containing "+
-				"\"token\" is refused: an access token must never cross the front channel",
-				req.ResponseType))
+			"that response_type is not supported: code always, and code id_token where a client "+
+				"is permitted it. Anything containing token is refused, since an access token "+
+				"must never cross the front channel")
 	}
 	if !c.AllowsResponseType(req.ResponseType) {
 		return redirectErr("unauthorized_client", "client may not use this response_type")
@@ -320,8 +319,7 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 				"code_challenge_method is required and must be S256")
 		}
 		if method != "S256" {
-			return redirectErr("invalid_request",
-				fmt.Sprintf("code_challenge_method %q is not supported; use S256", method))
+			return redirectErr("invalid_request", "that code_challenge_method is not supported; use S256")
 		}
 		if !validChallenge(req.CodeChallenge) {
 			return redirectErr("invalid_request",
@@ -424,8 +422,8 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 		}
 	default:
 		return redirectErr("invalid_request",
-			fmt.Sprintf("response_mode %q is not supported; use query, fragment, form_post, "+
-				"query.jwt, fragment.jwt, form_post.jwt or jwt", req.ResponseMode))
+			"that response_mode is not supported; use query, fragment, form_post, "+
+				"query.jwt, fragment.jwt, form_post.jwt or jwt")
 	}
 	if _, signed := req.ResponseEncoding(); c.HeldToSignedResponses() && !signed {
 		// Otherwise a request the browser has changed gets the client an unsigned

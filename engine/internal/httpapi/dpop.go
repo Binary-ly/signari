@@ -439,5 +439,5 @@ func (s *Server) refuseOutOfProfile(w http.ResponseWriter, r *http.Request, c *c
 
 func dpopChallenge(errCode, description string) string {
 	return `DPoP realm="signari", error="` + errCode + `", error_description="` +
-		description + `", algs="` + dpop.SupportedAlgs() + `"`
+		oauth.ErrorText(description) + `", algs="` + dpop.SupportedAlgs() + `"`
 }

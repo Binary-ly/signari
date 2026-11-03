@@ -7,6 +7,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -27,7 +28,7 @@ func (s *Server) handleFederatedBackchannelLogout(w http.ResponseWriter, r *http
 	slug := r.PathValue("slug")
 	w.Header().Set("Cache-Control", "no-store")
 	refuse := func(reason string) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": reason})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": oauth.ErrorText(reason)})
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, logoutTokenBodyLimit)
 	if err := r.ParseForm(); err != nil {

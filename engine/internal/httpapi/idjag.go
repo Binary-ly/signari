@@ -27,8 +27,6 @@ import (
 // reaches, and a grant is a credential on the same terms.
 const idJAGLifetime = 5 * time.Minute
 
-const idJAGTokenType = oauth.TokenTypeIDJAG
-
 // handleIDJAGExchange is §4.3: an ID token this client was given, and a server to be
 // admitted to. No person is asked, which is the point of it, so what stands in for them
 // is an operator's entry for this client and that server.

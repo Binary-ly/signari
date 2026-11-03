@@ -4,7 +4,7 @@ A user signs in to Signari, opens a list of machines they are allowed to reach,
 and gets a desktop or a shell in a browser tab. No VPN, no client software, and
 no separate set of credentials for each host.
 
-## Status: usable, not yet proven against a real desktop
+## Status: usable, and run against a real guacd
 
 Read this before planning around it.
 
@@ -12,6 +12,15 @@ Read this before planning around it.
 authorization chain, the WebSocket proxy with instruction-aligned framing, the
 connection registry, session records, and the browser client — the machine list,
 the viewer page, rendering, and mouse and keyboard input.
+
+**Run end to end in November 2026** against guacd 1.5.5 and a Debian machine serving
+all three protocols, signed in through the engine in Chrome: an SSH shell, a VNC
+display and an RDP session each drawn, with a command typed in the browser run on the
+machine and its output back on screen. A VNC connection holding no password asked for
+one in the viewer's form and opened with the answer; an SSH connection holding nothing
+asked in the terminal. A wrong answer ended the session with guacd's reason on screen.
+An RDP host with a self-signed certificate is refused until it is trusted; see
+[RDP and the host's certificate](#rdp-and-the-hosts-certificate).
 
 Rendering was checked by looking at it, not by assuming: a harness (see below)
 feeds the real client a real scene, and the vector drawing and the PNG image
@@ -30,9 +39,8 @@ that does not.
 
 **What is not done:**
 
-- **Not verified against a real guacd.** The harness speaks the handshake
-  faithfully and does not speak RDP, VNC or SSH. Nothing here proves those
-  work, and that is the one thing left that needs real apparatus.
+- **Not run against Windows.** The RDP host above was xrdp; a Windows host, and any
+  host that requires Network Level Authentication, has not been tried.
 - **No session replay.** Recordings can be written — `recording-path` is passed
   through — but nothing plays them back, and who may watch one is an unanswered
   policy question, not a missing button.
@@ -168,10 +176,33 @@ session. Each person signs in to the machine as themselves, so the machine's own
 logs say who it was.
 
 An SSH connection with neither asks in the terminal instead, inside the session,
-because that is where guacd asks; the form is for RDP and VNC. A wrong answer ends
-the session with what the machine said, and nothing retries it. This relies on
-guacd answering the protocol version the engine now sends, which has not been
-checked against a real guacd; the harness above checks the viewer's half.
+because that is where guacd asks; the form is for RDP and VNC. Against xrdp, which
+does not require Network Level Authentication, guacd asked nothing for RDP: the person
+signed in on the host's own login screen instead. A wrong answer ends the session with
+what guacd said, and nothing retries it. All of this was run against guacd 1.5.5.
+
+guacd does not always say why. About half the refused RDP sessions against 1.5.5
+reached the browser with no reason at all, and the viewer then says the session ended
+before it started rather than "Disconnected.", which reads like a session somebody
+closed. Until November 2026 it said "Disconnected." even when guacd had given a
+reason, writing over it as the session closed. guacd's own log has the reason either
+way.
+
+### RDP and the host's certificate
+
+guacd checks the certificate an RDP host presents, and a host whose certificate it
+cannot verify is refused: the viewer says "SSL/TLS connection failed
+(untrusted/self-signed certificate?)". xrdp's own self-signed certificate was refused
+so. Either give the host a certificate guacd can verify, or tell guacd not to check:
+
+```
+signari rac set-parameters -org <org-uuid> -slug finance-desk -rac-params ignore-cert=true
+```
+
+`ignore-cert=true` accepts any certificate on the leg from guacd to the host, so
+whoever can stand in the middle of that leg can pose as the host to guacd, and to
+whoever signs in. guacd 1.5.5 offers nothing between the two: its RDP client has no
+parameter for pinning one certificate.
 
 `signari rac list` shows what is registered, in every organisation. Until
 October 2026 this page gave the password as `-password`, which is `user

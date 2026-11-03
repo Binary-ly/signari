@@ -33,7 +33,7 @@ and `PUT .../identity-providers/{slug}/vp-issuers` ([admin-api.md](admin-api.md)
 | `-subject-claim` | The claim that identifies a person. A name, or a JSON path such as `["address","country"]` |
 | `-email-claim`, `-name-claim` | Where the address and the name are, if the credential has them |
 | `-wallet-url` | Where the browser is sent: `openid4vp://`, or a wallet's own https link |
-| `-response-mode` | `direct_post`, or `direct_post.jwt` to have the answer encrypted. Each request then carries a P-256 key of its own, made when the sign-in starts and kept sealed with it, and the answer comes as a JWE to that key (ECDH-ES, A128GCM), named by its `kid`. A credential sent in clear to such a request is refused, since only an error may come unencrypted |
+| `-response-mode` | `direct_post`, or `direct_post.jwt` to have the answer encrypted. Each request then carries a P-256 key of its own, made when the sign-in starts and kept sealed with it, and the answer comes as a JWE to that key (ECDH-ES, with A128GCM or A256GCM, both named in the request), named by its `kid`. A credential sent in clear to such a request is refused, since only an error may come unencrypted |
 
 Every claim named is asked for, and a credential without one of them is refused.
 

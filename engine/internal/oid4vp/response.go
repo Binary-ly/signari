@@ -15,9 +15,14 @@ import (
 // `response`, "an unsigned, encrypted JWT" (:1452) to a key the request named, whose
 // payload holds the response parameters "as top-level JSON members" (:1461).
 //
-// ECDH-ES with A128GCM and nothing else. A128GCM is the default when the request names
-// no other (:1459), and this verifier names none, so a different enc is a wallet that
-// did not read the request.
+// ECDH-ES with A128GCM or A256GCM, and nothing else. Both are named in the request's
+// encrypted_response_enc_values_supported, which "MUST be present for anything other
+// than the default single value of A128GCM" (:316), so another enc is a wallet that did
+// not read the request. Both, because the high-assurance profile the OpenID Foundation's
+// suite checks against wants both offered.
+
+// ContentEncryptions are the encs an answer may use, as the request names them.
+var ContentEncryptions = []jose.ContentEncryption{jose.A128GCM, jose.A256GCM}
 
 // encryptionAlgorithm is the alg the response key is published with, which the JWE's
 // alg "MUST be equal to" (:1456-1457).
@@ -59,8 +64,7 @@ func ParseResponseKey(pkcs8 []byte) (*ecdsa.PrivateKey, error) {
 // ParseResponse reads an encrypted answer's header, whose kid says which request's key
 // opens it.
 func ParseResponse(jwe string) (*jose.JSONWebEncryption, error) {
-	obj, err := jose.ParseEncrypted(jwe, []jose.KeyAlgorithm{encryptionAlgorithm},
-		[]jose.ContentEncryption{jose.A128GCM})
+	obj, err := jose.ParseEncrypted(jwe, []jose.KeyAlgorithm{encryptionAlgorithm}, ContentEncryptions)
 	if err != nil {
 		return nil, fmt.Errorf("the response is not a JWE this verifier asked for: %w", err)
 	}

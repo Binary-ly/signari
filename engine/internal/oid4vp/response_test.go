@@ -74,8 +74,21 @@ func TestAnEncryptedAnswerOpensWithItsRequestsKeyAlone(t *testing.T) {
 		}
 	}
 
-	// An enc this verifier did not offer is refused before anything is decrypted.
-	if _, err := ParseResponse(encryptAs(t, public, "state-1", jose.A256GCM, answer)); err == nil {
-		t.Error("A256GCM was taken, and only the default, A128GCM, was offered")
+	// A256GCM, the other enc offered, opens too; one not offered is refused before
+	// anything is decrypted.
+	if obj, err := ParseResponse(encryptAs(t, public, "state-1", jose.A256GCM, answer)); err != nil {
+		t.Errorf("A256GCM: %v", err)
+	} else if _, err := OpenResponse(obj, key, "state-1", "state-1"); err != nil {
+		t.Errorf("A256GCM: %v", err)
+	}
+	if _, err := ParseResponse(encryptAs(t, public, "state-1", jose.A128CBC_HS256, answer)); err == nil {
+		t.Error("A128CBC-HS256 was taken, and was not offered")
+	}
+	m := Request{EncryptTo: public}.metadata()
+	if encs, _ := m["encrypted_response_enc_values_supported"].([]jose.ContentEncryption); len(encs) != 2 {
+		t.Errorf("client_metadata names %v", m["encrypted_response_enc_values_supported"])
+	}
+	if _, ok := (Request{}).metadata()["encrypted_response_enc_values_supported"]; ok {
+		t.Error("encs were named for an answer that is not encrypted")
 	}
 }

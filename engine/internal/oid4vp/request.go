@@ -138,9 +138,8 @@ func (r Request) Parameters(now time.Time) map[string]any {
 }
 
 // metadata is client_metadata (specs/oid4vp.txt:310-322): the algorithms this
-// verifier checks, and for an encrypted answer the key to encrypt it to. The enc
-// is A128GCM, the default, so encrypted_response_enc_values_supported is left
-// out, as :316 says it SHOULD be.
+// verifier checks, and for an encrypted answer the key to encrypt it to and the encs
+// it may be encrypted with, which with more than A128GCM alone MUST be named (:316).
 func (r Request) metadata() map[string]any {
 	algs := AlgorithmNames()
 	m := map[string]any{"vp_formats_supported": map[string]any{
@@ -148,6 +147,7 @@ func (r Request) metadata() map[string]any {
 	}}
 	if r.EncryptTo != nil {
 		m["jwks"] = map[string]any{"keys": []any{r.EncryptTo}}
+		m["encrypted_response_enc_values_supported"] = ContentEncryptions
 	}
 	return m
 }

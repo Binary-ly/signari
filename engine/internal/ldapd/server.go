@@ -67,6 +67,12 @@ type Identity struct {
 	// empty, having no boundary to prove anything across.
 	BindProof string
 
+	// UserID and AMR are who authenticated and how, from a successful
+	// Authenticate, for a caller that issues something of its own on the
+	// strength of it (SAML ECP). Never published as attributes.
+	UserID string
+	AMR    []string
+
 	// Position is where List found this person, for the next page to carry on
 	// from. Never published as an attribute.
 	Position string

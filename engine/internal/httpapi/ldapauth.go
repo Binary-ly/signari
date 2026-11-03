@@ -378,6 +378,7 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
 		Detail: map[string]any{"via": a.via, "amr": amr},
 	})
+	id.UserID, id.AMR = userID, amr
 	return id, nil
 }
 

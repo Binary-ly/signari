@@ -2159,6 +2159,19 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cancel: the person tells the application they are not signing in, which is
+	// access_denied, "the resource owner ... denied the request" (specs/rfc6749.txt
+	// :1523-1525). The only way out was closing the page, and the application waited
+	// on a response that never came. The account picker's Cancel, and its words.
+	if r.PostForm.Get("cancel") != "" {
+		if authzQuery == "" {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		s.errorToClient(w, r, authzQuery, "access_denied", "the sign-in was cancelled")
+		return
+	}
+
 	// The challenge is checked BEFORE the credential lookup, so a solved
 	// challenge is a precondition for spending an Argon2 evaluation rather than
 	// a second opinion afterwards.

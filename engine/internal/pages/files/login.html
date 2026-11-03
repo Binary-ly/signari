@@ -15,6 +15,7 @@
 {{template "captcha" .}}<button type="submit">{{T "login.submit"}}</button>
 {{if .SingleSignOn}}<p class="alt"><button type="submit" name="sso" value="1" formnovalidate>{{T "login.sso"}}</button></p>{{end}}
 {{if .EmailCode}}<p class="alt"><button type="submit" formaction="/login/email" formnovalidate>{{T "login.emailcode"}}</button></p>{{end}}
+{{if .Authz}}<p class="alt"><button type="submit" name="cancel" value="1" formnovalidate>{{T "accounts.cancel"}}</button></p>{{end}}
 </form>
 {{if .Accounts}}<p class="alt"><a href="/login/accounts{{if .Authz}}?authz={{.Authz}}{{end}}">{{T "login.accounts"}}</a></p>{{end}}
 {{if .Passkeys}}<p class="alt" id="passkey-row" hidden><button type="button" id="passkey-signin">{{T "login.passkey"}}</button></p>{{end}}

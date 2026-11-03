@@ -39,6 +39,10 @@ was in. Another person's session is left alone.
 - The sign-in page links to the same chooser, **Choose an account you are signed
   in with**, whenever the browser holds one. That is how a person switches
   accounts from their account page.
+- A sign-in an application started has a **Cancel** too, which sends the
+  application `error=access_denied` with its `state` (RFC 6749 §4.1.2.1). Until
+  November 2026 the only way out was to close the page, and the application
+  waited on an answer that never came.
 
 Every account offered is checked against its session row each time, so one
 signed out elsewhere, deactivated or expired is never offered. Showing the list

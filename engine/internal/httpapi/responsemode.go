@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"signari.dev/engine/internal/clients"
@@ -148,14 +147,17 @@ func (s *Server) deliverAuthzResponse(w http.ResponseWriter, r *http.Request,
 	}
 	switch mode {
 	case "fragment":
-		// Merged with any fragment already on the registered URI rather than
-		// replacing it, because a client that registered one put it there.
-		existing := strings.TrimPrefix(u.Fragment, "#")
-		encoded := p.values().Encode()
-		if existing != "" {
-			encoded = existing + "&" + encoded
+		// RawFragment, the escaped form, because Encode has escaped it already. It went
+		// in Fragment, which holds the decoded form, so String escaped it again, and a
+		// client's script reading location.hash found `iss` still percent-encoded and
+		// refused the response as a mix-up. Tests decoded twice and agreed with it; the
+		// OIDF Hybrid plan, which decodes once as a browser does, did not. A registered
+		// redirect URI has no fragment of its own (RFC 6749 §3.1.2) to keep.
+		u.RawFragment = p.values().Encode()
+		if u.Fragment, err = url.PathUnescape(u.RawFragment); err != nil {
+			http.Error(w, "the authorization response could not be encoded", http.StatusInternalServerError)
+			return
 		}
-		u.Fragment = encoded
 	default:
 		q := u.Query()
 		for k, vs := range p.values() {

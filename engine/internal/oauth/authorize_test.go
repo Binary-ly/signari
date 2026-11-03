@@ -241,6 +241,13 @@ func TestEachResponseModeSaysHowItTravels(t *testing.T) {
 		{"", "code", "query", false},
 		{"", "code id_token", "fragment", false},
 		{"", "id_token code", "fragment", false},
+		// Refused here, and refused where the client that asked is listening.
+		{"", "code token", "fragment", false},
+		{"", "code id_token token", "fragment", false},
+		{"", "token", "fragment", false},
+		{"", "id_token", "fragment", false},
+		{"", "", "query", false},
+		{"", "banana", "query", false},
 		{"query", "code", "query", false},
 		{"fragment", "code", "fragment", false},
 		{"form_post", "code id_token", "form_post", false},

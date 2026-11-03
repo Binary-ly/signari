@@ -448,8 +448,13 @@ func (req AuthzRequest) ResponseEncoding() (encoding string, signed bool) {
 		return strings.TrimSuffix(req.ResponseMode, ".jwt"), true
 	}
 	encoding = "query"
-	if NormaliseResponseType(req.ResponseType) == "code id_token" {
-		encoding = "fragment"
+	// Not only what this server issues. OIDC Core §3.3.2.6 puts every error of the
+	// Hybrid Flow in the fragment, so `code token`, which is refused here, has to be
+	// refused there: that is where a client that asked for it is listening.
+	for _, part := range strings.Fields(req.ResponseType) {
+		if part == "id_token" || part == "token" {
+			encoding = "fragment"
+		}
 	}
 	return encoding, req.ResponseMode == "jwt"
 }

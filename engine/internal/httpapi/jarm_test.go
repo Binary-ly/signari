@@ -64,7 +64,10 @@ func carried(t *testing.T, rec *httptest.ResponseRecorder) (string, url.Values) 
 	if len(loc.Query()) != 0 {
 		t.Errorf("a response in two places: %q", loc)
 	}
-	values, err := url.ParseQuery(loc.Fragment)
+	// Escaped, as location.hash hands it to a client's script, and decoded once. Read
+	// from loc.Fragment it was decoded twice, which agreed with a server that encoded
+	// it twice.
+	values, err := url.ParseQuery(loc.EscapedFragment())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,14 +174,17 @@ func TestARefusalGoesTheWayTheResponseWouldHave(t *testing.T) {
 		name     string
 		extra    url.Values
 		encoding string
+		error    string
 	}{
-		{"a code by default", nil, "query"},
-		{"query", url.Values{"response_mode": {"query"}}, "query"},
-		{"fragment", url.Values{"response_mode": {"fragment"}}, "fragment"},
-		{"form_post", url.Values{"response_mode": {"form_post"}}, "form_post"},
-		{"hybrid by default", hybrid, "fragment"},
+		{"a code by default", nil, "query", "login_required"},
+		{"query", url.Values{"response_mode": {"query"}}, "query", "login_required"},
+		{"fragment", url.Values{"response_mode": {"fragment"}}, "fragment", "login_required"},
+		{"form_post", url.Values{"response_mode": {"form_post"}}, "form_post", "login_required"},
+		{"hybrid by default", hybrid, "fragment", "login_required"},
 		{"hybrid form_post", url.Values{"response_type": hybrid["response_type"], "nonce": hybrid["nonce"],
-			"response_mode": {"form_post"}}, "form_post"},
+			"response_mode": {"form_post"}}, "form_post", "login_required"},
+		// Refused, and refused in the fragment, where a client that asked is listening.
+		{"code token", url.Values{"response_type": {"code token"}}, "fragment", "unsupported_response_type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			extra := url.Values{"prompt": {"none"}}
@@ -189,7 +195,7 @@ func TestARefusalGoesTheWayTheResponseWouldHave(t *testing.T) {
 			if encoding != tc.encoding {
 				t.Errorf("it came by %s, want %s", encoding, tc.encoding)
 			}
-			if outer.Get("error") != "login_required" || outer.Get("state") != "s" ||
+			if outer.Get("error") != tc.error || outer.Get("state") != "s" ||
 				outer.Get("iss") != f.srv.cfg.Issuer {
 				t.Errorf("it carried %v", outer)
 			}

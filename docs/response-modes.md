@@ -13,6 +13,19 @@ For applications being migrated in that cannot be changed first.
 A refusal travels the way the response would have: in the fragment for a hybrid request
 unless another mode was asked for, and through the form for `form_post`. It used to go
 in the query whatever was asked, where a client listening at a fragment saw nothing.
+That includes the refusal of a type this server never issues: a client that asked for
+`code token` is answered `unsupported_response_type` in the fragment, which is where it
+is listening (OIDC Core §3.3.2.6).
+
+A fragment is encoded once. Until November 2026 it was encoded twice, so a script
+reading `location.hash` found `iss` still percent-encoded and, checking it as RFC 9207
+says, refused every hybrid response as a mix-up. This repository's own tests decoded
+twice and agreed with it; the OpenID Foundation's Hybrid plan, decoding once as a
+browser does, is what found it.
+
+A registered redirect URI may not have a fragment of its own. RFC 6749 §3.1.2 says the
+endpoint URI "MUST NOT include a fragment component"; dynamic registration refused one
+and every other way of registering a client accepted it, until November 2026.
 
 ## What is refused, permanently
 

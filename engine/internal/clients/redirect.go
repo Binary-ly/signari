@@ -108,25 +108,33 @@ func ValidateRedirectURI(raw string) error {
 			"before the host: it reads as one host and resolves to another")
 	}
 
-	for _, part := range []struct{ name, value string }{
-		{"query", u.RawQuery},
-		{"fragment", u.Fragment},
-	} {
-		if part.value == "" {
-			continue
-		}
-		vals, perr := url.ParseQuery(part.value)
-		if perr != nil {
-			// A fragment that is not key=value is fine -- it is just a fragment.
-			continue
-		}
-		for k := range vals {
-			if ForbiddenRedirectParams[strings.ToLower(k)] {
-				return fmt.Errorf("a redirect URI must not carry %q in its %s: "+
-					"the authorization response appends that parameter, and a "+
-					"relying party that reads the first occurrence would read "+
-					"this one instead", k, part.name)
-			}
+	// specs/rfc6749.txt:995, "The endpoint URI MUST NOT include a fragment component."
+	// Dynamic registration refused one and every other path took it, and a response
+	// sent in the fragment then had to be merged into it.
+	if u.Fragment != "" || strings.Contains(raw, "#") {
+		return fmt.Errorf("%q has a fragment, which a redirect URI must not have "+
+			"(RFC 6749 section 3.1.2): a response sent in the fragment would have to "+
+			"replace it or be mixed into it", raw)
+	}
+
+	if u.RawQuery == "" {
+		return nil
+	}
+	// The same section allows a query "application/x-www-form-urlencoded formatted",
+	// and one that does not parse is not. It was let through unchecked, and Go hands
+	// back the pairs it could read alongside the error, so `?a;b=1&code=x` registered
+	// a `code` for the client to read first.
+	vals, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return fmt.Errorf("%q has a query that is not form-encoded (RFC 6749 section "+
+			"3.1.2): %v", raw, err)
+	}
+	for k := range vals {
+		if ForbiddenRedirectParams[strings.ToLower(k)] {
+			return fmt.Errorf("a redirect URI must not carry %q in its query: "+
+				"the authorization response appends that parameter, and a "+
+				"relying party that reads the first occurrence would read "+
+				"this one instead", k)
 		}
 	}
 	return nil

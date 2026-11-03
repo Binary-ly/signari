@@ -29,7 +29,17 @@ func TestValidateRedirectURIRefusesTheDangerousShapes(t *testing.T) {
 		},
 		{
 			"id_token in the fragment",
-			"https://app.example/cb#id_token=attacker", "id_token",
+			"https://app.example/cb#id_token=attacker", "fragment",
+		},
+		{
+			// RFC 6749 §3.1.2: "MUST NOT include a fragment component".
+			"a plain fragment", "https://app.example/cb#section", "fragment",
+		},
+		{
+			// Go returns the pairs it read with the error, and the check was skipped
+			// on the error, so this registered a `code`.
+			"a code behind a query that does not parse",
+			"https://app.example/cb?a;b=1&code=attacker", "form-encoded",
 		},
 		{
 			"iss in the query, the mix-up parameter",
@@ -65,7 +75,6 @@ func TestValidateRedirectURIAcceptsTheOrdinaryShapes(t *testing.T) {
 	for _, uri := range []string{
 		"https://app.example/callback",
 		"https://app.example/callback?tenant=acme",  // a query, just not a response param
-		"https://app.example/cb#section",            // a plain fragment
 		"http://localhost:8080/callback",            // RFC 8252 native app
 		"http://127.0.0.1:1234/cb",                  // RFC 8252, ephemeral port
 		"com.example.app:/oauth2redirect",           // RFC 8252 private-use scheme

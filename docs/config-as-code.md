@@ -55,6 +55,7 @@ saml_providers:
     name: Intranet
     acs_urls: [https://intranet.example.com/_trust/]
     artifact_acs_urls: []     # URLs that take the response by artifact; left out is none
+    ecp_acs_urls: []          # PAOS URLs, for ECP sign-ins; left out is none, and no ECP
     name_id_format: emailAddress
     idp_initiated: true       # a sign-in can start from the portal; see saml.md
     default_relay_state: /sites/home

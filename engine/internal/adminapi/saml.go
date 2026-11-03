@@ -31,6 +31,7 @@ type samlProviderView struct {
 	LifetimeSeconds    int               `json:"lifetime_s"`
 	ACSURLs            []string          `json:"acs_urls"`
 	ArtifactACSURLs    []string          `json:"artifact_acs_urls"`
+	ECPACSURLs         []string          `json:"ecp_acs_urls"`
 	SLOURLs            []string          `json:"slo_urls"`
 	Attributes         map[string]string `json:"attribute_release"`
 	GroupRelease       any               `json:"group_release"`
@@ -50,8 +51,10 @@ type addSAMLProviderRequest struct {
 	EntityID string `json:"entity_id"`
 	Name     string `json:"name"`
 	ACSURL   string `json:"acs_url"`
-	// ArtifactACSURLs take the response by artifact, beside acs_url (8.08).
+	// ArtifactACSURLs take the response by artifact, and ECPACSURLs are PAOS
+	// endpoints for ECP sign-ins, beside acs_url (8.08).
 	ArtifactACSURLs    []string `json:"artifact_acs_urls"`
+	ECPACSURLs         []string `json:"ecp_acs_urls"`
 	NameIDFormat       string   `json:"name_id_format"`
 	SLOURL             string   `json:"slo_url"`
 	SLOBinding         string   `json:"slo_binding"`
@@ -127,7 +130,7 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignatureAlg:    p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
-			ArtifactACSURLs: p.ArtifactACSURLs, SLOURLs: p.SLOURLs, Attributes: p.Attributes,
+			ArtifactACSURLs: p.ArtifactACSURLs, ECPACSURLs: p.ECPACSURLs, SLOURLs: p.SLOURLs, Attributes: p.Attributes,
 			IdPInitiated: p.IdPInitiated, DefaultRelayState: p.DefaultRelayState,
 			MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
 			WSFedSAMLVersion: p.WSFedSAMLVersion, OrgEndpoint: p.OrgEndpoint}
@@ -153,10 +156,10 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		ACSURL: strings.TrimSpace(req.ACSURL), NameIDFormat: req.NameIDFormat, SLOURL: strings.TrimSpace(req.SLOURL),
 		SLOBinding: req.SLOBinding, SigningCertPEM: req.SigningCert, EncryptionCertPEM: req.EncryptionCert,
 		KeyTransport: req.KeyTransport, WantSignedRequests: req.WantSignedRequests,
-		ArtifactACSURLs: req.ArtifactACSURLs}
+		ArtifactACSURLs: req.ArtifactACSURLs, ECPACSURLs: req.ECPACSURLs}
 	if req.Metadata != "" || req.MetadataURL != "" {
-		if spec.ACSURL != "" || len(spec.ArtifactACSURLs) > 0 || spec.SLOURL != "" || spec.SigningCertPEM != "" ||
-			spec.EncryptionCertPEM != "" {
+		if spec.ACSURL != "" || len(spec.ArtifactACSURLs) > 0 || len(spec.ECPACSURLs) > 0 || spec.SLOURL != "" ||
+			spec.SigningCertPEM != "" || spec.EncryptionCertPEM != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
 				"detail": "the metadata says where assertions go and which keys are believed; acs_url, slo_url and " +
 					"the certificates would be a second answer"})

@@ -89,6 +89,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		// it, fails, and blames its own configuration.
 		SLOURL:       entityID + "/slo",
 		ArtifactURL:  entityID + "/artifact",
+		ECPURL:       entityID + "/ecp",
 		Certificates: certs,
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
@@ -647,9 +648,12 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 		return "", "", err
 	}
 	defer func() { _ = record.Rollback(ctx) }()
-	if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID,
-		saml.FullNameIDFormat(p.NameIDFormat)); err != nil {
-		return "", "", err
+	// An ECP sign-in has no session (samlecp.go), so nothing for a logout to end.
+	if sid != "" {
+		if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID,
+			saml.FullNameIDFormat(p.NameIDFormat)); err != nil {
+			return "", "", err
+		}
 	}
 	if err := audit.Write(ctx, record, audit.Event{
 		Type: "saml.assertion_issued", OrgID: orgID, SubjectID: userID,

@@ -731,6 +731,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/artifact", s.handleSAMLArtifactResolve)
+	mux.HandleFunc("POST /saml/ecp", s.handleSAMLECP)
 	// The same again for an organisation's own providers: see providerAt.
 	mux.HandleFunc("GET /saml/org/{org}/metadata", s.handleSAMLMetadata)
 	mux.HandleFunc("GET /saml/org/{org}/sso", s.handleSAMLSSO)
@@ -738,6 +739,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/org/{org}/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/org/{org}/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/org/{org}/artifact", s.handleSAMLArtifactResolve)
+	mux.HandleFunc("POST /saml/org/{org}/ecp", s.handleSAMLECP)
 
 	// Inbound: signing in FROM an upstream SAML provider. The mirror of the
 	// three routes above, which serve applications consuming what we issue.

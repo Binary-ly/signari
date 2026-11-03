@@ -601,6 +601,7 @@ func run(args []string) (err error) {
 		"`saml add-sp`: encrypt assertions to the key the provider's metadata offers")
 	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
 	artifactACS := fs.String("artifact-acs", "", "AssertionConsumerService URLs that take the response by artifact, separated by commas")
+	ecpACS := fs.String("ecp-acs", "", "PAOS AssertionConsumerService URLs, for ECP sign-ins, separated by commas")
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
@@ -1819,7 +1820,8 @@ func run(args []string) (err error) {
 					source: *metadataSource, signerPath: *metadataSigner, unsigned: *metadataUnsigned, encrypt: *metadataEncrypt})
 		}
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
-			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport, splitList(*artifactACS))
+			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport, splitList(*artifactACS),
+			splitList(*ecpACS))
 	case "saml refresh-sp":
 		return samlRefreshSP(ctx, conn, *orgID, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
 			unsigned: *metadataUnsigned}, *dryRun)
@@ -4272,7 +4274,7 @@ func registerSP(ctx context.Context, conn *pgx.Conn, orgID string, spec store.SA
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
 	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath,
-	keyTransport string, artifactACS []string) error {
+	keyTransport string, artifactACS, ecpACS []string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -4283,7 +4285,7 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	}
 	spec := store.SAMLProviderSpec{EntityID: entityID, Name: name, ACSURL: acs, NameIDFormat: nameIDFormat,
 		SLOURL: slo, SLOBinding: sloBinding, KeyTransport: keyTransport, WantSignedRequests: wantSignedRequests,
-		ArtifactACSURLs: artifactACS}
+		ArtifactACSURLs: artifactACS, ECPACSURLs: ecpACS}
 	// The SIGNING certificate, which verifies its requests, and the ENCRYPTION
 	// one, a different key, which assertions are encrypted to; the store
 	// checks both (store.SAMLProviderSpec.Validate).

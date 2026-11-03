@@ -53,6 +53,11 @@ func TestAnACSURLNamesABindingThatIsDelivered(t *testing.T) {
 		VALUES ($1::uuid, 'https://sp.example.test/artifact', 'HTTP-Artifact')`, providerID); err != nil {
 		t.Fatalf("an HTTP-Artifact consumer URL was refused: %v", err)
 	}
+	// And PAOS, for ECP (0287).
+	if _, err := tx.Exec(ctx, `INSERT INTO core.saml_acs_urls (provider_id, url, binding)
+		VALUES ($1::uuid, 'https://sp.example.test/ecp', 'PAOS')`, providerID); err != nil {
+		t.Fatalf("a PAOS consumer URL was refused: %v", err)
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO core.saml_acs_urls (provider_id, url, binding)
 		VALUES ($1::uuid, 'https://sp.example.test/redirect', 'HTTP-Redirect')`, providerID)
 	var pgErr *pgconn.PgError

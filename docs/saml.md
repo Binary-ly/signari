@@ -25,6 +25,7 @@ attribute and group releases the same way, under
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
 | `POST /saml/artifact` | the artifact resolution service, SOAP; see [the Artifact binding](#the-artifact-binding) |
+| `POST /saml/ecp` | sign-on over SOAP for a client that is not a browser; see [ECP](#ecp-signing-in-without-a-browser) |
 
 ## One entity ID, several organisations
 
@@ -658,12 +659,48 @@ message in it, the reason logged and audited as `saml.artifact_refused`. The
 `ArtifactResponse` is signed. The response waits sealed under a key derived from
 the artifact itself, which is not stored, so the database alone cannot read it.
 
+## ECP: signing in without a browser
+
+The Enhanced Client or Proxy profile (SAML Profiles 2.0 §4.2) is how a command-line
+tool, a desktop client or a script signs a person in to a SAML service provider.
+The client takes the provider's `AuthnRequest`, brings it here in a SOAP body to
+`POST /saml/ecp` (or `/saml/org/<slug>/ecp`) with the person's name and password
+by HTTP Basic, and carries the `Response` back to the provider's PAOS endpoint,
+which the answer's `ecp:Response` header names.
+
+A provider takes part by registering a PAOS endpoint, and one without one is
+refused:
+
+```sh
+signari saml add-sp ... -ecp-acs https://sp.example.com/Shibboleth.sso/SAML2/ECP
+```
+
+or a PAOS `AssertionConsumerService` in its metadata, `ecp_acs_urls` in the Admin
+API, or in [a configuration file](config-as-code.md). It is a decision to make per
+provider, because no page here can ask the person for anything:
+
+- The password goes through the same check LDAP and RADIUS use, with the same
+  failure budget per account and the same audit, `via: saml_ecp`.
+- A second factor, when one is wanted, comes after the password,
+  `password;123456`. The organisation's rule on password-only binds applies:
+  under `refuse_when_mfa`, the default for an organisation made since that rule
+  existed, a person the sign-in page would ask for a code is refused without
+  one; under `allow` they are not. A request asking for a second factor
+  (`RequestedAuthnContext`) is answered `NoAuthnContext` unless a code came.
+- The access policy, the NameID and the attribute releases are those of a
+  browser sign-in.
+- Every refusal of the person is the same `401`.
+
+The assertion names no `SessionIndex` and is recorded against no session, since
+there is no browser session behind it, so a logout started here does not reach
+it.
+
 ## Not yet built
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
 - **Artifacts in the other direction**, an `AuthnRequest` or a logout message sent
-  here by artifact, and **ECP**.
+  here by artifact.
 
 It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

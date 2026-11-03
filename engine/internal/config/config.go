@@ -33,6 +33,7 @@ import (
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -239,6 +240,8 @@ type SAMLProvider struct {
 	Enabled  *bool    `yaml:"enabled"`
 	// ArtifactACSURLs take the response by artifact (HTTP-Artifact), never by default.
 	ArtifactACSURLs []string `yaml:"artifact_acs_urls,omitempty"`
+	// ECPACSURLs are PAOS endpoints, which make the provider one that takes ECP sign-ins.
+	ECPACSURLs []string `yaml:"ecp_acs_urls,omitempty"`
 	// IdPInitiated lets a sign-in to it start from the portal and DefaultRelayState
 	// is what goes with that response, each left as it is when absent.
 	IdPInitiated      *bool   `yaml:"idp_initiated,omitempty"`
@@ -376,7 +379,7 @@ func (f *File) Validate() error {
 		for _, u := range p.ACSURLs {
 			posted[u] = true
 		}
-		for _, u := range append(append([]string(nil), p.ACSURLs...), p.ArtifactACSURLs...) {
+		for _, u := range slices.Concat(p.ACSURLs, p.ArtifactACSURLs, p.ECPACSURLs) {
 			if !strings.HasPrefix(u, "https://") {
 				add("saml_providers[%s]: acs_url %q must be https: it carries a "+
 					"signed assertion for a real user", p.EntityID, u)
@@ -385,11 +388,11 @@ func (f *File) Validate() error {
 				add("saml_providers[%s]: acs_url %q contains a wildcard", p.EntityID, u)
 			}
 		}
-		for _, u := range p.ArtifactACSURLs {
+		for _, u := range slices.Concat(p.ArtifactACSURLs, p.ECPACSURLs) {
 			if posted[u] {
-				add("saml_providers[%s]: %q is in acs_urls and artifact_acs_urls; a URL takes one binding",
-					p.EntityID, u)
+				add("saml_providers[%s]: %q is given for more than one binding; a URL takes one", p.EntityID, u)
 			}
+			posted[u] = true
 		}
 		switch p.NameID {
 		case "", "persistent", "emailAddress", "transient":

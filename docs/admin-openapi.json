@@ -23183,6 +23183,12 @@
                     },
                     "type": "array"
                   },
+                  "ecp_acs_urls": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "encryption_cert": {
                     "type": "string"
                   },

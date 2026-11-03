@@ -142,7 +142,8 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	rows, err = tx.Query(ctx, `
 		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state,
 		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-POST'), '{}'),
-		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-Artifact'), '{}')
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-Artifact'), '{}'),
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'PAOS'), '{}')
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
 		 WHERE p.org_id = $1::uuid
@@ -155,7 +156,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var enabled, idpInitiated bool
 		var relayState string
 		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &idpInitiated, &relayState,
-			&p.ACSURLs, &p.ArtifactACSURLs); err != nil {
+			&p.ACSURLs, &p.ArtifactACSURLs, &p.ECPACSURLs); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -550,6 +551,9 @@ func samlDiff(have, want SAMLProvider) string {
 	if !sameSet(have.ArtifactACSURLs, want.ArtifactACSURLs) {
 		d = append(d, "artifact_acs_urls")
 	}
+	if !sameSet(have.ECPACSURLs, want.ECPACSURLs) {
+		d = append(d, "ecp_acs_urls")
+	}
 	if want.NameID != "" && have.NameID != want.NameID {
 		d = append(d, "name_id_format")
 	}
@@ -772,11 +776,13 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				return fmt.Errorf("saml provider %q acs %q: %w", sp.EntityID, u, err)
 			}
 		}
-		for _, u := range sp.ArtifactACSURLs {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
-				VALUES ($1::uuid, $2, 'HTTP-Artifact', false)`, id, u); err != nil {
-				return fmt.Errorf("saml provider %q artifact acs %q: %w", sp.EntityID, u, err)
+		for binding, list := range map[string][]string{"HTTP-Artifact": sp.ArtifactACSURLs, "PAOS": sp.ECPACSURLs} {
+			for _, u := range list {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
+					VALUES ($1::uuid, $2, $3, false)`, id, u, binding); err != nil {
+					return fmt.Errorf("saml provider %q %s acs %q: %w", sp.EntityID, binding, u, err)
+				}
 			}
 		}
 	}

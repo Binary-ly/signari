@@ -4406,6 +4406,7 @@ export interface PostOrganizationsOrgIDRoleBindingsResponse {
 export interface PostOrganizationsOrgIDSAMLProvidersRequest {
   acs_url?: string
   artifact_acs_urls?: string[]
+  ecp_acs_urls?: string[]
   encryption_cert?: string
   entity_id?: string
   key_transport?: string

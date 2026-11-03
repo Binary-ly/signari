@@ -1098,6 +1098,12 @@
         "default_relay_state": {
           "type": "string"
         },
+        "ecp_acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "enabled": {
           "type": "boolean"
         },

@@ -213,7 +213,12 @@ docker compose exec -T -u 0 engine /signari idp add -kind oid4vp -org "$ORG" -sl
   -client-key-file /tmp/vp-verifier.key -client-cert-file /tmp/vp-verifier.crt
 run idp add -kind oid4vp -org "$ORG" -slug vp-plain -name "Conformance wallet, unsigned" \
   -client-id-prefix redirect_uri -vct urn:eudi:pid:1 -subject-claim family_name
-for s in vp vp-plain; do
+# And `vp-jwt`, signed as `vp` is, with each answer encrypted to a key of its request's own.
+docker compose exec -T -u 0 engine /signari idp add -kind oid4vp -org "$ORG" -slug vp-jwt \
+  -name "Conformance wallet, encrypted" -client-id-prefix x509_san_dns -response-mode direct_post.jwt \
+  -vct urn:eudi:pid:1 -subject-claim family_name \
+  -client-key-file /tmp/vp-verifier.key -client-cert-file /tmp/vp-verifier.crt
+for s in vp vp-plain vp-jwt; do
   run idp vp-issuer -slug "$s" -issuer "$VP_ISSUER" -jwks-file /tmp/vp-issuer.public.json
 done
 
@@ -224,7 +229,7 @@ run user create -email conformance@test.local -password 'Tr0ubad0ur-Marmalade-77
 # The person the suite's PID credential names (family_name Dupont), linked as an operator
 # links one, so a wallet sign-in finishes. Unlinked, it would be refused: the credential
 # carries no verified address, and nobody is made an account without one.
-for s in vp vp-plain; do
+for s in vp vp-plain vp-jwt; do
   run idp link -slug "$s" -subject "$VP_ISSUER|Dupont" -email conformance@test.local
 done
 

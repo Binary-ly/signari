@@ -223,6 +223,8 @@ type GrantRecord struct {
 	// ACR is the rung above the session's own this request asked for and was
 	// given (SatisfiedACR), for its ID token; empty reports the session's.
 	ACR string
+	// GrantAction and GrantID are what the request asked of a managed grant.
+	GrantAction, GrantID string
 }
 
 // ValidateCodeRedemption checks a code exchange.

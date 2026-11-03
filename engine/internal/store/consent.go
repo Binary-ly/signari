@@ -119,6 +119,11 @@ func WithdrawConsent(ctx context.Context, tx pgx.Tx, userID, clientID string) er
 	if err != nil {
 		return fmt.Errorf("withdrawing consent: %w", err)
 	}
+	// A grant is that consent under another name, and one left behind could be merged
+	// into later and hand back what was taken away.
+	if _, err := tx.Exec(ctx, `DELETE FROM core.client_grants WHERE user_id = $1::uuid AND client_id = $2`, userID, clientID); err != nil {
+		return fmt.Errorf("removing the client's grants: %w", err)
+	}
 	return nil
 }
 

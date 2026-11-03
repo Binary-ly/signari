@@ -62,6 +62,9 @@ type Metadata struct {
 	// server implements the profile and so never names who it would take one from.
 	IdentityChainingRequestedTokenTypesSupported []string `json:"identity_chaining_requested_token_types_supported,omitempty"`
 	AuthorizationGrantProfilesSupported          []string `json:"authorization_grant_profiles_supported,omitempty"`
+	// Grant Management §7.1.
+	GrantManagementActionsSupported []string `json:"grant_management_actions_supported,omitempty"`
+	GrantManagementEndpoint         string   `json:"grant_management_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
 	// OIDC Discovery §3.
@@ -214,6 +217,8 @@ const (
 	PathJWKS       = "/oauth2/jwks"
 	PathEndSession = "/oauth2/logout"
 	PathRevocation = "/oauth2/revoke"
+	// PathGrantManagement is Grant Management's endpoint, §6.2.
+	PathGrantManagement = "/oauth2/grants"
 	// PathAttestationChallenge is draft-ietf-oauth-attestation-based-client-auth-10 §6.1.
 	PathAttestationChallenge = "/oauth2/attestation-challenge"
 	PathIntrospection        = "/oauth2/introspect"
@@ -372,6 +377,8 @@ func Build(cfg Config) (*Metadata, error) {
 		// sending client_id at all, and `signari credential offer` mints one. It
 		// was deliberately absent while only the rules existed.
 		AuthorizationGrantProfilesSupported: []string{"urn:ietf:params:oauth:grant-profile:id-jag"},
+		GrantManagementActionsSupported:     []string{"query", "revoke", "create", "merge", "replace"},
+		GrantManagementEndpoint:             at(PathGrantManagement),
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",

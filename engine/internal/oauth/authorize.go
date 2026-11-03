@@ -56,6 +56,9 @@ type AuthzRequest struct {
 	// to be signed in.
 	IDTokenHint string
 
+	// GrantManagementAction and GrantID are Grant Management's §5.2 parameters.
+	GrantManagementAction, GrantID string
+
 	// RequestObject is RFC 9101's `request`, which the handler verifies and takes off
 	// the query before this is parsed, and RequestURI its `request_uri`, which is taken
 	// only as a pushed request's handle, so neither is here for a request that is in
@@ -109,7 +112,40 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		IssuerState:             q.Get("issuer_state"),
 		RequestObject:           q.Get("request"),
 		RequestURI:              q.Get("request_uri"),
+		GrantManagementAction:   q.Get("grant_management_action"),
+		GrantID:                 q.Get("grant_id"),
 	}
+}
+
+// The actions Grant Management's §5.2 defines.
+const (
+	GrantActionCreate  = "create"
+	GrantActionMerge   = "merge"
+	GrantActionReplace = "replace"
+)
+
+// grantManagementError is §5.1 and §5.4 of Grant Management, as far as a request can be
+// judged before anybody is signed in: whose grant it names is asked at the code.
+func grantManagementError(req AuthzRequest, c *clients.Client) string {
+	if req.GrantManagementAction == "" && req.GrantID == "" {
+		return ""
+	}
+	switch {
+	// §5.1: "Grant management is restricted to confidential only clients".
+	case c.Type != "confidential":
+		return "grant management is for confidential clients"
+	case req.GrantManagementAction == "":
+		return "grant_id needs a grant_management_action"
+	case req.GrantManagementAction == GrantActionCreate && req.GrantID != "":
+		return "grant_id cannot be given with the create action"
+	case req.GrantManagementAction == GrantActionCreate:
+		return ""
+	case req.GrantManagementAction != GrantActionMerge && req.GrantManagementAction != GrantActionReplace:
+		return "that grant_management_action is not supported"
+	case req.GrantID == "":
+		return "that action needs a grant_id"
+	}
+	return ""
 }
 
 // Disposition says how an authorization error must reach the user agent.
@@ -220,6 +256,9 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	if req.RequestURI != "" {
 		return redirectErr("request_uri_not_supported",
 			"this server does not fetch remote request objects; send the parameters directly")
+	}
+	if problem := grantManagementError(req, c); problem != "" {
+		return redirectErr("invalid_request", problem)
 	}
 
 	// 5. Code flow, and hybrid `code id_token` where a client is explicitly

@@ -592,7 +592,26 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		ExpiresAt:           time.Now().Add(codeTTL),
 		// The rung this request asked for and the session reaches, above the
 		// session's own, for the ID token to report.
-		ACR: oauth.SatisfiedACR(session.AMR, req.ACRValues),
+		ACR:         oauth.SatisfiedACR(session.AMR, req.ACRValues),
+		GrantAction: req.GrantManagementAction,
+		GrantID:     req.GrantID,
+	}
+	// §5.4: a grant named has to be this client's for this person, which is the first
+	// point a person is known, and before anything is spent on a request that fails.
+	if req.GrantID != "" {
+		held, herr := store.ClientGrantHeld(ctx, tx, req.GrantID, c.ClientID, session.UserID)
+		if herr != nil {
+			s.log.ErrorContext(ctx, "reading a grant", "err", herr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !held {
+			_ = tx.Rollback(ctx)
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_grant_id",
+				Description: "that grant_id is not one this client holds for this person",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
 	}
 	// RFC 9396 §7 requires the token response to return the details "as granted
 	// by the resource owner", so they are carried on the code rather than
@@ -1134,6 +1153,28 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// then dropped.
 	ctx = withHookClaims(ctx, hook.Claims)
 
+	// Grant Management §5.6.1: a grant comes to exist as its tokens are claimed.
+	grantID := ""
+	if consumed.GrantAction != "" {
+		var gerr error
+		grantID, gerr = store.SettleClientGrant(ctx, tx, consumed)
+		if errors.Is(gerr, store.ErrClientGrantUnknown) {
+			// Revoked between the request and here. The code is spent either way.
+			if err := tx.Commit(ctx); err != nil {
+				s.log.ErrorContext(ctx, "committing code consumption for a grant that has gone", "err", err)
+			}
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "that grant is no longer held", Status: http.StatusBadRequest})
+			return
+		}
+		if gerr != nil {
+			s.log.ErrorContext(ctx, "settling a grant", "err", gerr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		ctx = withClientGrant(ctx, grantID)
+	}
+
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
 		s.log.ErrorContext(ctx, "minting tokens", "err", err)
@@ -1144,6 +1185,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	resp.GrantID = grantID
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1171,6 +1213,8 @@ type tokenResponse struct {
 	IDToken      string `json:"id_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	// GrantID is Grant Management's §5.5, for a request that named an action.
+	GrantID string `json:"grant_id,omitempty"`
 	// RFC 9396 §7: "the AS MUST also return the authorization_details as granted
 	// by the resource owner and assigned to the respective access token."
 	//
@@ -1306,7 +1350,11 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// token can name the grant it belongs to. It used to be created further down,
 	// after signing, which is why access tokens carried no grant identity and
 	// revoking a refresh token could not reach them.
-	if familyID == "" && containsScope(scopes, "offline_access") {
+	//
+	// Under a managed grant there is always one, refresh token or none, because a
+	// lineage is what revoking the grant reaches an access token through.
+	managed := clientGrantFrom(ctx)
+	if familyID == "" && (containsScope(scopes, "offline_access") || managed != "") {
 		// Details go on the FAMILY, not the token: they belong to the
 		// authorization, and every rotation in the lineage inherits the same
 		// grant. Storing them per-token would let two live tokens from one
@@ -1319,6 +1367,11 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			familyDetails, jkt, certThumb)
 		if err != nil {
 			return nil, nil, err
+		}
+		if managed != "" {
+			if err := store.AttachFamilyToGrant(ctx, tx, familyID, managed); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 

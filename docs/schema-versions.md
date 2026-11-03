@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0283 grant_management
+
+Compatible with the release before: its binary may still serve this schema.
+
+Grant Management: a client that asks can hold on to what a person authorized under an identifier, add to it or replace it later, read it back and revoke it. A grant is made when the tokens are claimed, as the draft has it, so a code nobody redeems leaves none.
+
 ## 0282 id_jag
 
 Compatible with the release before: its binary may still serve this schema.

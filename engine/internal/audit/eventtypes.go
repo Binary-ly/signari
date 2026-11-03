@@ -99,7 +99,7 @@ var EventTypes = []string{
 	"mfa.passkey_link_used", "mfa.passkey_notice_failed", "mfa.passkey_refused", "mfa.passkey_registered",
 	"mfa.passkey_removed", "mfa.recovery_codes_regenerated", "mfa.skipped_duo_unavailable",
 	"mfa.sms_enrolled", "mfa.sms_removed", "mfa.totp_enrolled", "mfa.totp_removed",
-	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted", "oauth.id_jag_issued",
+	"oauth.code_reused", "oauth.consent_denied", "oauth.consent_granted", "oauth.grant_revoked", "oauth.id_jag_issued",
 	"oauth.pkce_challenge_reused",
 	"oauth.refresh_retried", "oauth.refresh_reused", "oauth.token_exchanged", "oauth.token_revoked",
 	"oid4vci.credential_deferred", "oid4vci.credential_issued", "oid4vci.credential_notified",

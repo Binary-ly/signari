@@ -97,6 +97,7 @@ command or an environment variable exists in code and not on its page.
 | [oid4vci.md](oid4vci.md) | The authorization server's half of credential issuance |
 | [openid-federation.md](openid-federation.md) | The Entity Configuration, metadata policy, and being a Trust Anchor or Intermediate |
 | [client-metadata-documents.md](client-metadata-documents.md) | Letting an application that is its own URL sign people in, such as an MCP client, with no registration step |
+| [grant-management.md](grant-management.md) | A client holding on to what a person authorized under an identifier: adding to it, replacing it, reading it back and revoking it |
 | [id-jag.md](id-jag.md) | Cross-app access: one application reaching another for somebody who signed in here, with no second consent screen |
 | [trust-marks.md](trust-marks.md) | Signed conformance statements |
 | [uma.md](uma.md) | User-Managed Access 2.0 |

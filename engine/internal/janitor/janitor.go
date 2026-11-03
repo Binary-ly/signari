@@ -133,6 +133,8 @@ type Stats struct {
 	CredentialRequestsSwept int64
 	// CredentialStatusListsSwept are full status lists whose credentials have all expired.
 	CredentialStatusListsSwept int64
+	// ClientGrantsSwept are grants long untouched with no token left on them.
+	ClientGrantsSwept int64
 	// PushedRequestsSwept are PAR handles nobody redeemed.
 	PushedRequestsSwept int64
 	// SAMLSourceStateSwept are inbound SAML requests and spent assertion records
@@ -260,6 +262,11 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		// runs behind the one an expired credential is judged by.
 		{"credential status lists", sweepBatch, &st.CredentialStatusListsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
 			return store.SweepCredentialStatusLists(ctx, tx, 24*time.Hour, limit)
+		}},
+		// Half a year untouched with no token left on it. A client coming back to one
+		// has only to create another.
+		{"client grants", sweepBatch, &st.ClientGrantsSwept, func(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+			return store.SweepClientGrants(ctx, tx, 180*24*time.Hour, limit)
 		}},
 		// Duo prompts nobody finished. Each row holds a live challenge state, so
 		// keeping them past expiry stores flow state for a flow nobody will finish.
@@ -543,6 +550,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("notifications_swept", s.NotificationsSwept)
 	add("credential_requests_swept", s.CredentialRequestsSwept)
 	add("credential_status_lists_swept", s.CredentialStatusListsSwept)
+	add("client_grants_swept", s.ClientGrantsSwept)
 	add("pushed_requests_swept", s.PushedRequestsSwept)
 	add("saml_source_state_swept", s.SAMLSourceStateSwept)
 	add("rate_windows_purged", s.RateWindowsPurged)

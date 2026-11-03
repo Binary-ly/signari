@@ -595,6 +595,10 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		ACR:         oauth.SatisfiedACR(session.AMR, req.ACRValues),
 		GrantAction: req.GrantManagementAction,
 		GrantID:     req.GrantID,
+		// RFC 9449 §10, and §10.1 for a proof on the push, which lands here as
+		// dpop_jkt. Read, kept and checked at the token endpoint, and never set
+		// here until November 2026, so no code was ever bound to a key.
+		DPoPJKT: req.DPoPJKT,
 	}
 	// §5.4: a grant named has to be this client's for this person, which is the first
 	// point a person is known, and before anything is spent on a request that fails.

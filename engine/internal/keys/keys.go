@@ -143,26 +143,30 @@ type Key interface {
 	DemotedAt() time.Time
 }
 
-// softwareKey holds private material in process memory. It is the development
-// and small-deployment implementation; PKCS#11 and cloud-KMS implementations
-// satisfy the same interface without anything above this package changing.
-type softwareKey struct {
+// signingKey is a key with its signer: private material in process memory,
+// sealed under the root key when stored, or a key a Backend holds, which this
+// process asks to sign (backend.go). Nothing above this package can tell the
+// two apart.
+type signingKey struct {
 	kid         string
 	alg         Algorithm
 	state       State
 	signer      crypto.Signer
 	publishedAt time.Time
 	demotedAt   time.Time
+	// held is the key_ref of a key a Backend holds, empty for one whose
+	// material is here.
+	held string
 }
 
-func (k *softwareKey) KID() string            { return k.kid }
-func (k *softwareKey) Algorithm() Algorithm   { return k.alg }
-func (k *softwareKey) State() State           { return k.state }
-func (k *softwareKey) Signer() crypto.Signer  { return k.signer }
-func (k *softwareKey) PublishedAt() time.Time { return k.publishedAt }
-func (k *softwareKey) DemotedAt() time.Time   { return k.demotedAt }
+func (k *signingKey) KID() string            { return k.kid }
+func (k *signingKey) Algorithm() Algorithm   { return k.alg }
+func (k *signingKey) State() State           { return k.state }
+func (k *signingKey) Signer() crypto.Signer  { return k.signer }
+func (k *signingKey) PublishedAt() time.Time { return k.publishedAt }
+func (k *signingKey) DemotedAt() time.Time   { return k.demotedAt }
 
-func (k *softwareKey) PublicJWK() jose.JSONWebKey {
+func (k *signingKey) PublicJWK() jose.JSONWebKey {
 	return jose.JSONWebKey{
 		Key:       k.signer.Public(),
 		KeyID:     k.kid,
@@ -177,7 +181,7 @@ func NewSoftwareKey(kid string, alg Algorithm, state State, signer crypto.Signer
 	if err := checkSignerMatchesAlg(alg, signer); err != nil {
 		return nil, err
 	}
-	return &softwareKey{kid: kid, alg: alg, state: state, signer: signer, publishedAt: publishedAt}, nil
+	return &signingKey{kid: kid, alg: alg, state: state, signer: signer, publishedAt: publishedAt}, nil
 }
 
 // Generate creates fresh private material for alg. New keys always enter the set
@@ -229,23 +233,34 @@ func Generate(kid string, alg Algorithm) (Key, error) {
 
 // GenerateSized is Generate at a modulus an operator chose.
 func GenerateSized(kid string, alg Algorithm, bits int) (Key, error) {
-	if !isRSA(alg) {
-		return nil, fmt.Errorf("%s has no modulus to size", alg)
-	}
-	if !slices.Contains(RSASizes, bits) {
-		return nil, fmt.Errorf("an RSA key is one of %v bits, not %d", RSASizes, bits)
+	if err := sizable(alg, bits); err != nil {
+		return nil, err
 	}
 	return generate(kid, alg, bits)
+}
+
+func sizable(alg Algorithm, bits int) error {
+	if !isRSA(alg) {
+		return fmt.Errorf("%s has no modulus to size", alg)
+	}
+	if !slices.Contains(RSASizes, bits) {
+		return fmt.Errorf("an RSA key is one of %v bits, not %d", RSASizes, bits)
+	}
+	return nil
 }
 
 // Successor makes the key that takes over from k. An operator who chose a size
 // chose it for a relying party, and a rotation nobody is watching must not
 // change it behind them.
 func Successor(kid string, k Key) (Key, error) {
+	return generate(kid, k.Algorithm(), successorBits(k))
+}
+
+func successorBits(k Key) int {
 	if pub, ok := k.Signer().Public().(*rsa.PublicKey); ok && slices.Contains(RSASizes, pub.N.BitLen()) {
-		return generate(kid, k.Algorithm(), pub.N.BitLen())
+		return pub.N.BitLen()
 	}
-	return Generate(kid, k.Algorithm())
+	return RSABits
 }
 
 func generate(kid string, alg Algorithm, rsaBits int) (Key, error) {
@@ -267,7 +282,7 @@ func generate(kid string, alg Algorithm, rsaBits int) (Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generating %s key: %w", alg, err)
 	}
-	return &softwareKey{
+	return &signingKey{
 		kid:         kid,
 		alg:         alg,
 		state:       StateNext,
@@ -415,6 +430,11 @@ func WithState(k Key, state State) (Key, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A key a module holds stays there. Dropped, a promotion would have Save
+	// seal the signer as if it were material, which it is not, and refuse.
+	if sk, ok := k.(*signingKey); ok {
+		out.(*signingKey).held = sk.held
+	}
 	// Carry the demotion stamp across the transition. Dropping it would silently
 	// reset the retirement clock, and it would reset it in the safe-looking
 	// direction: a zero stamp reads as "never demoted", which CanRetire refuses.
@@ -424,7 +444,7 @@ func WithState(k Key, state State) (Key, error) {
 
 // withDemotedAt returns k carrying a demotion stamp.
 func withDemotedAt(k Key, at time.Time) Key {
-	sk := k.(*softwareKey)
+	sk := k.(*signingKey)
 	sk.demotedAt = at
 	return sk
 }

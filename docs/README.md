@@ -83,6 +83,7 @@ command or an environment variable exists in code and not on its page.
 | [transaction-tokens.md](transaction-tokens.md) | Per-transaction tokens inside a call chain |
 | [mcp-authorization.md](mcp-authorization.md) | Acting as an authorization server for MCP |
 | [key-rotation.md](key-rotation.md) | next → active → passive → retired |
+| [signing-keys-in-a-module.md](signing-keys-in-a-module.md) | Signing keys made and kept in an HSM, through PKCS#11 |
 | [logout.md](logout.md) | Three mechanisms, because none reaches everything |
 | [accounts.md](accounts.md) | Several accounts in one browser, and `prompt=select_account` |
 | [oidc-parameters.md](oidc-parameters.md) | `login_hint`, `id_token_hint`, `display` and the `claims` parameter |

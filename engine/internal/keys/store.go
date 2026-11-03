@@ -42,6 +42,9 @@ type RootKey struct {
 	// accepted are root keys this one opens with and never seals with, held
 	// through an online rotation (3.13; keyring.go).
 	accepted []*RootKey
+	// backend holds the signing keys that never leave a module, and makes
+	// every new one when it is set (3.14; backend.go).
+	backend Backend
 }
 
 // NewRootKey takes 32 raw bytes. `ref` names which root key this is, so a future
@@ -155,17 +158,23 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 		return fmt.Errorf("marshalling public jwk: %w", err)
 	}
 
-	sk, ok := k.(*softwareKey)
+	sk, ok := k.(*signingKey)
 	if !ok {
-		return fmt.Errorf("Save supports software keys only; %T must persist its own key_ref", k)
+		return fmt.Errorf("Save stores this package's keys only, not %T", k)
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(sk.signer)
-	if err != nil {
-		return fmt.Errorf("marshalling private key: %w", err)
-	}
-	wrapped, err := root.seal(der)
-	if err != nil {
-		return fmt.Errorf("wrapping private key: %w", err)
+	// A key a module holds is stored as its reference alone: there is no
+	// material here to seal.
+	var wrapped []byte
+	ref := sk.held
+	if ref == "" {
+		der, err := x509.MarshalPKCS8PrivateKey(sk.signer)
+		if err != nil {
+			return fmt.Errorf("marshalling private key: %w", err)
+		}
+		if wrapped, err = root.seal(der); err != nil {
+			return fmt.Errorf("wrapping private key: %w", err)
+		}
+		ref = root.Ref()
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -182,7 +191,7 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 			                    AND core.signing_keys.state <> 'passive'
 			                   THEN now() ELSE core.signing_keys.demoted_at END`,
 		k.KID(), instanceID, string(k.Algorithm()), string(k.State()),
-		jwkBytes, wrapped, root.Ref(), k.PublishedAt(), purpose,
+		jwkBytes, wrapped, ref, k.PublishedAt(), purpose,
 	)
 	if err != nil {
 		return fmt.Errorf("saving key %s: %w", k.KID(), err)
@@ -245,11 +254,18 @@ func LoadSetFor(ctx context.Context, conn Querier, instanceID, purpose string, r
 			return nil, err
 		}
 		if wrapped == nil {
-			// An HSM/KMS-backed key. Resolving key_ref to a crypto.Signer is the
-			// job of a backend this build does not have yet; skipping it silently
-			// would mean serving a JWKS without a key we claim to hold.
-			return nil, fmt.Errorf(
-				"key %s is backed by %q, and no external signer backend is configured", kid, keyRef)
+			// A key a module holds. One this node cannot reach fails the load
+			// rather than being skipped: skipped, the JWKS would go without a
+			// key this deployment published and signs with.
+			k, err := root.openHeld(kid, Algorithm(alg), State(state), keyRef, jwkRaw, publishedAt)
+			if err != nil {
+				return nil, err
+			}
+			if demotedAt != nil {
+				k = withDemotedAt(k, *demotedAt)
+			}
+			loaded = append(loaded, k)
+			continue
 		}
 		wrapper := root.forRef(keyRef)
 		if wrapper == nil {
@@ -309,11 +325,11 @@ func Ensure(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKe
 		if n > 0 {
 			continue
 		}
-		k, err := Generate(newKID(), alg)
+		k, err := root.Generate(newKID(), alg)
 		if err != nil {
 			return nil, err
 		}
-		sk := k.(*softwareKey)
+		sk := k.(*signingKey)
 		sk.state = StateActive
 		if err := Save(ctx, tx, instanceID, sk, root); err != nil {
 			return nil, err

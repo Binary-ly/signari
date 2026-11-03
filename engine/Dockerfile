@@ -48,7 +48,40 @@ RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
       -ldflags="-s -w -X signari.dev/engine/internal/migrate.ExpectedFingerprint=${SIGNARI_SCHEMA_FINGERPRINT} -X main.version=${SIGNARI_VERSION}" \
       -o /out/signari ./cmd/signari
 
-# Runtime stage.
+# The PKCS#11 image, a target of its own: docker build --target pkcs11 .
+#
+# A PKCS#11 module is a C library the engine loads when it starts, so this binary
+# is built with cgo and needs a C library to run on, which the default image has
+# none of (docs/signing-keys-in-a-module.md). Built on bookworm to match the
+# runtime's: a binary linked against a newer glibc than its image carries does
+# not start.
+FROM golang:1.26.9-bookworm AS build-pkcs11
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG GOFIPS140=off
+ARG SIGNARI_SCHEMA_FINGERPRINT=
+ARG SIGNARI_VERSION=
+RUN CGO_ENABLED=1 GOFIPS140=${GOFIPS140} \
+    go build -trimpath -tags pkcs11 \
+      -ldflags="-s -w -X signari.dev/engine/internal/migrate.ExpectedFingerprint=${SIGNARI_SCHEMA_FINGERPRINT} -X main.version=${SIGNARI_VERSION}" \
+      -o /out/signari ./cmd/signari
+
+# The module is not in the image. It is the HSM vendor's, mounted when the
+# container runs and named by SIGNARI_PKCS11_MODULE. The cc image has glibc and
+# the C++ runtime, which a module written in C++, SoftHSM's for one, needs; it
+# is still distroless, with no shell or package manager.
+FROM gcr.io/distroless/cc-debian12:nonroot AS pkcs11
+
+COPY --from=build-pkcs11 /out/signari /signari
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/signari"]
+CMD ["serve", "-addr", "0.0.0.0:8080"]
+
+# Runtime stage. The last, so a build that names no target gets this one.
 #
 # Distroless: no shell, no package manager, no busybox. An attacker who achieves
 # execution inside an identity provider should not find a toolchain waiting.

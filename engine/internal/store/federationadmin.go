@@ -101,7 +101,7 @@ func EnableFederation(ctx context.Context, tx pgx.Tx, root *keys.RootKey, instan
 		if root == nil {
 			return "", fmt.Errorf("a federation key is sealed under SIGNARI_ROOT_KEY, which is not loaded")
 		}
-		k, err := keys.Generate(keys.NewKID(), keys.ES256)
+		k, err := root.Generate(keys.NewKID(), keys.ES256)
 		if err != nil {
 			return "", fmt.Errorf("generating the federation key: %w", err)
 		}

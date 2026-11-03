@@ -114,6 +114,19 @@ each is audited as `keys.rotated` with `automatic: true`. Signing moves to the
 new key on every node within the key refresh interval. Until October 2026 keys
 rotated only when somebody remembered to run the command.
 
+### Signing keys in a hardware module
+
+Only in the `pkcs11` image, or a binary built with `CGO_ENABLED=1 -tags pkcs11`;
+any other build refuses `SIGNARI_PKCS11_MODULE` rather than ignoring it. See
+[signing-keys-in-a-module.md](signing-keys-in-a-module.md).
+
+| | |
+|---|---|
+| `SIGNARI_PKCS11_MODULE` | The PKCS#11 module, a path to the vendor's `.so`. Set, every new signing key is made in its token and never leaves it, and the keys already there are signed with in place. There is no separate switch to make keys there, so a rotation cannot make a successor in software by mistake |
+| `SIGNARI_PKCS11_TOKEN` | The token's label. Required with a module, so one with a second token cannot have keys made in the wrong one |
+| `SIGNARI_PKCS11_PIN` | The token's user PIN |
+| `SIGNARI_PKCS11_PIN_FILE` | The PIN from a file instead, on the same terms as `SIGNARI_ROOT_KEY_FILE` |
+
 ## Build-time, not runtime
 
 | | |
@@ -860,5 +873,6 @@ them as undocumented and so nobody sets them in production expecting an effect.
 | `SIGNARI_DESTRUCTIVE_TEST_DSN` | A **disposable** database for tests that deliberately break the audit chain. See [the audit chain fork](audit-chain-fork.md) |
 | `SIGNARI_DNS_CHECK`, `SIGNARI_DNS_DOMAIN` | Gate the live DNS deliverability test |
 | `SIGNARI_SMS_TWILIO_BASE_URL` | Points the Twilio client at a local server |
+| `SIGNARI_TEST_PKCS11_MODULE` | The SoftHSM module for the tests built with `-tags pkcs11`, where it is not in one of the places SoftHSM installs it |
 | `SIGNARI_ALLOW_SKIPPED_DB_TESTS` | Set to `1` to run the suite without a database. Most tests then skip, and the run proves almost nothing — the flag exists so that is a stated choice rather than the accident of an unset `SIGNARI_TEST_DSN`, which once let a mutation harness report eight covered guards as uncovered |
 | `SIGNARI_PAGE_PREVIEW_DIR` | Directory to write a rendered copy of every sign-in page into, for looking at. Four variants each — your system setting, light, dark, and one carrying brand colours — plus an `index.html` contact sheet per variant. `SIGNARI_PAGE_PREVIEW_DIR=/tmp/pages go test ./internal/pages/ -run Preview`. Use it when changing a page or writing a theme: validation proves the CSRF token survived, not that the button is still visible |

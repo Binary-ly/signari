@@ -20,8 +20,13 @@ type Decrypter interface {
 	OpenJWE(object *jose.JSONWebEncryption) ([]byte, error)
 }
 
-// OpenJWE opens it with the key's private half.
-func (k *softwareKey) OpenJWE(object *jose.JSONWebEncryption) ([]byte, error) {
+// OpenJWE opens it with the key's private half. An encryption key is always made
+// here (RotateEncryptionKey), so one a module holds is not expected; it is refused
+// by name rather than handed to the library as a key type it does not know.
+func (k *signingKey) OpenJWE(object *jose.JSONWebEncryption) ([]byte, error) {
+	if k.held != "" {
+		return nil, fmt.Errorf("key %s is held in %s, which opens nothing here", k.kid, k.held)
+	}
 	return object.Decrypt(k.signer)
 }
 

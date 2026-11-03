@@ -101,11 +101,19 @@ func (r *RootKey) PoolTag() string {
 
 // LoadRootKeyring reads the root key and, when one is configured, the root key
 // it also accepts (SIGNARI_ACCEPTED_ROOT_KEY, _FILE and _REF), by the same
-// rules as the root key itself.
+// rules as the root key itself, and the module that holds signing keys
+// (SIGNARI_PKCS11_MODULE; backend.go).
 func LoadRootKeyring(getenv func(string) string) (*RootKey, error) {
 	root, err := LoadRootKey(getenv, "SIGNARI_ROOT_KEY", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ROOT_KEY_REF")
 	if err != nil {
 		return nil, err
+	}
+	backend, err := loadBackend(getenv)
+	if err != nil {
+		return nil, err
+	}
+	if backend != nil {
+		root = root.WithBackend(backend)
 	}
 	if getenv("SIGNARI_ACCEPTED_ROOT_KEY") == "" && getenv("SIGNARI_ACCEPTED_ROOT_KEY_FILE") == "" {
 		return root, nil

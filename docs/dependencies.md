@@ -10,7 +10,7 @@ scanned, and why each thing is here at all.
 
 ## The number is the point
 
-**21 direct dependencies. 70 modules in the whole graph, as `go list -m all`
+**22 direct dependencies. 75 modules in the whole graph, as `go list -m all`
 counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
@@ -31,6 +31,7 @@ named eighteen.
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | JOSE: JWS, JWE, JWK | the reference Go JOSE library, maintained by the go-jose org after the Square handover; the crypto this whole product rests on |
 | `github.com/jackc/pgx/v5` | v5.10.0 | PostgreSQL driver | the de-facto Go Postgres driver; parameterized queries are its default idiom |
 | `github.com/go-webauthn/webauthn` | v0.18.2 | WebAuthn ceremonies | the maintained successor to duo-labs/webauthn |
+| `github.com/eclipse-keypont/crypto11` | v1.6.8 | PKCS#11 keys as `crypto.Signer`, for signing keys in a hardware module | compiled only into the `pkcs11` build (`-tags pkcs11`, cgo), so the default binary carries none of it. Thales wrote it, and it moved to this path from `github.com/ThalesGroup/crypto11`, whose `go.mod` at v1.6.7 says so; it brings `github.com/miekg/pkcs11`, the binding to the C interface, `github.com/thales-e-security/pool` and `github.com/pkg/errors`, all three in that build alone |
 | `github.com/beevik/etree` | v1.7.0 | XML tree, for SAML | used only after `scanForUnsafeConstructs` has refused DOCTYPE and comments |
 | `github.com/russellhaering/goxmldsig` | v1.6.1 | XML signatures | the standard Go XML-DSig implementation |
 | `github.com/go-ldap/ldap/v3` | v3.4.14 | LDAP **client**, for directory sync | our LDAP *server* is written here; this is only the outbound side |
@@ -92,6 +93,10 @@ or our own code has the widest blast radius:
   confusion) are the reason `internal/saml/decode.go` refuses constructs *before*
   either library sees the document rather than trusting their configuration.
 - **`gokrb5`** — parses attacker-supplied tickets from the network.
+- **`crypto11` + `miekg/pkcs11`**, in the `pkcs11` build — they load the HSM
+  vendor's module into this process. It is C, it runs with the engine's
+  privileges, and nothing here can check it; choosing a module is choosing to
+  trust its vendor that far.
 - **`internal/radius`** — parses UDP packets from the network, written here.
 - **`internal/ldapd`** — parses BER from the network, written here.
 

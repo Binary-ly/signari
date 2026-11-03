@@ -96,11 +96,11 @@ func Rotate(ctx context.Context, tx pgx.Tx, instanceID string, root *RootKey, on
 			active, noneActive := set.Active(a)
 			switch {
 			case rsaBits != 0:
-				generated, err = GenerateSized(NewKID(), a, rsaBits)
+				generated, err = root.GenerateSized(NewKID(), a, rsaBits)
 			case noneActive != nil:
-				generated, err = Generate(NewKID(), a)
+				generated, err = root.Generate(NewKID(), a)
 			default:
-				generated, err = Successor(NewKID(), active)
+				generated, err = root.Successor(NewKID(), active)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("generating %s key: %w", a, err)

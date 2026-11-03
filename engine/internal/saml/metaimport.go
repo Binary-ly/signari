@@ -69,6 +69,8 @@ type ServiceProviderMetadata struct {
 	ACSURLs []string
 	// ArtifactACSURLs take the response by artifact.
 	ArtifactACSURLs []string
+	// ECPACSURLs are its PAOS endpoints, for a response an ECP carries.
+	ECPACSURLs []string
 	// SLOURL is empty when it takes no logout.
 	SLOURL, SLOBinding string
 	// SOAPLogoutURL is where it is told of a logout with no browser, the signature
@@ -265,7 +267,7 @@ func soleRole(entity *etree.Element, tag string) (*etree.Element, error) {
 func readServiceProvider(d *etree.Element, now time.Time, notes *[]string) (*ServiceProviderMetadata, error) {
 	sp := &ServiceProviderMetadata{}
 	var err error
-	if sp.ACSURLs, sp.ArtifactACSURLs, err = assertionConsumers(d, notes); err != nil {
+	if sp.ACSURLs, sp.ArtifactACSURLs, sp.ECPACSURLs, err = assertionConsumers(d, notes); err != nil {
 		return nil, err
 	}
 	if sp.SigningCertPEM, err = certificates(d, "signing", now, notes); err != nil {
@@ -335,7 +337,7 @@ func readIdentityProvider(d *etree.Element, now time.Time, notes *[]string) (*Id
 // assertionConsumers are the https HTTP-POST endpoints, the default first: the
 // one marked as default, and otherwise the lowest index; and the https
 // HTTP-Artifact ones, which are never the default here.
-func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts []string, err error) {
+func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts, paos []string, err error) {
 	type endpoint struct {
 		url       string
 		index     int
@@ -346,8 +348,8 @@ func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts []s
 		loc := a.SelectAttrValue("Location", "")
 		binding := a.SelectAttrValue("Binding", "")
 		switch {
-		case binding != BindingPOST && binding != BindingArtifact:
-			*notes = append(*notes, fmt.Sprintf("left out %s: it is on neither HTTP-POST nor HTTP-Artifact", loc))
+		case binding != BindingPOST && binding != BindingArtifact && binding != BindingPAOS:
+			*notes = append(*notes, fmt.Sprintf("left out %s: it is on none of HTTP-POST, HTTP-Artifact and PAOS", loc))
 			continue
 		case !strings.HasPrefix(loc, "https://"):
 			*notes = append(*notes, fmt.Sprintf("left out %s: an assertion is a credential, and that is not https", loc))
@@ -355,18 +357,18 @@ func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts []s
 		}
 		index, err := strconv.Atoi(a.SelectAttrValue("index", "0"))
 		if err != nil {
-			return nil, nil, fmt.Errorf("an AssertionConsumerService has the index %q", a.SelectAttrValue("index", ""))
+			return nil, nil, nil, fmt.Errorf("an AssertionConsumerService has the index %q", a.SelectAttrValue("index", ""))
 		}
-		if binding == BindingArtifact {
-			if !slices.Contains(artifacts, loc) {
-				artifacts = append(artifacts, loc)
+		if list := map[string]*[]string{BindingArtifact: &artifacts, BindingPAOS: &paos}[binding]; list != nil {
+			if !slices.Contains(*list, loc) {
+				*list = append(*list, loc)
 			}
 			continue
 		}
 		usable = append(usable, endpoint{loc, index, xmlTrue(a.SelectAttrValue("isDefault", ""))})
 	}
 	if len(usable) == 0 {
-		return nil, nil, fmt.Errorf("the service provider has no https AssertionConsumerService on the HTTP-POST binding")
+		return nil, nil, nil, fmt.Errorf("the service provider has no https AssertionConsumerService on the HTTP-POST binding")
 	}
 	slices.SortStableFunc(usable, func(a, b endpoint) int {
 		if a.isDefault != b.isDefault {
@@ -383,10 +385,13 @@ func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts []s
 			urls = append(urls, e.url)
 		}
 	}
-	// A URL a document gives for both bindings is taken for POST, which it
-	// certainly reads; a row takes one binding.
+	// A URL a document gives for more than one binding is taken for POST, which
+	// it certainly reads, and then for artifact; a row takes one binding.
 	artifacts = slices.DeleteFunc(artifacts, func(u string) bool { return slices.Contains(urls, u) })
-	return urls, artifacts, nil
+	paos = slices.DeleteFunc(paos, func(u string) bool {
+		return slices.Contains(urls, u) || slices.Contains(artifacts, u)
+	})
+	return urls, artifacts, paos, nil
 }
 
 // logoutService is the https logout endpoint, on the redirect binding if it has

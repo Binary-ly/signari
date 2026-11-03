@@ -286,6 +286,7 @@ func Unsolicited(p *Provider, now time.Time) (*Validated, error) {
 var acsBindings = map[string]string{
 	BindingPOST:     "HTTP-POST",
 	BindingArtifact: "HTTP-Artifact",
+	BindingPAOS:     "PAOS",
 }
 
 // resolveACS decides where the assertion may be delivered.
@@ -310,7 +311,7 @@ func resolveACS(r *AuthnRequest, p *Provider) (string, string, error) {
 		var ok bool
 		if wanted, ok = acsBindings[r.ProtocolBinding]; !ok {
 			return "", "", fmt.Errorf("the AuthnRequest asks for its response by %q, which is not "+
-				"HTTP-POST or HTTP-Artifact", r.ProtocolBinding)
+				"HTTP-POST, HTTP-Artifact or PAOS", r.ProtocolBinding)
 		}
 	}
 

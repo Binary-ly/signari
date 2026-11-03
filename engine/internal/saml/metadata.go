@@ -34,6 +34,8 @@ type MetadataInput struct {
 	// ArtifactURL is the artifact resolution service, where a provider taking its
 	// response by artifact fetches it over SOAP.
 	ArtifactURL string
+	// ECPURL is the SOAP sign-on service an ECP brings an AuthnRequest to.
+	ECPURL string
 	// Certificates, newest first. More than one is published DURING ROTATION so
 	// service providers can accept both while they update -- which is the whole
 	// reason rotation is survivable at all.
@@ -128,6 +130,11 @@ func Metadata(in MetadataInput) (string, error) {
 		sso := idp.CreateElement("md:SingleSignOnService")
 		sso.CreateAttr("Binding", b)
 		sso.CreateAttr("Location", in.SSOURL)
+	}
+	if in.ECPURL != "" {
+		sso := idp.CreateElement("md:SingleSignOnService")
+		sso.CreateAttr("Binding", BindingSOAP)
+		sso.CreateAttr("Location", in.ECPURL)
 	}
 
 	// Indentation is safe here, unlike in a signed assertion: nothing computes a

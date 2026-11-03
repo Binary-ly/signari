@@ -41,6 +41,11 @@ func (f *signInFixture) push(t *testing.T, extra url.Values) string {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.RequestURI == "" {
 		t.Fatalf("the push answered %d %s", rec.Code, rec.Body)
 	}
+	// The type as it was sent: Result() holds the header at WriteHeader, where
+	// rec.Header() goes on showing what was set after it, which nothing received.
+	if rec.Code != http.StatusCreated || rec.Result().Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("the push answered %d as %q", rec.Code, rec.Result().Header.Get("Content-Type"))
+	}
 	return out.RequestURI
 }
 

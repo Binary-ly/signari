@@ -300,8 +300,10 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	writeJSONBody(w, map[string]any{
+	// writeJSON, which names the type before the status. This wrote the status and
+	// then set Content-Type, which a header written already ignores, so every pushed
+	// request was answered text/plain (13.01, the FAPI 2.0 plan's EnsureContentTypeJson).
+	writeJSON(w, http.StatusCreated, map[string]any{
 		"request_uri": handle,
 		"expires_in":  int(parLifetime.Seconds()),
 	})

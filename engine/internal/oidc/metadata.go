@@ -67,6 +67,8 @@ type Metadata struct {
 	GrantManagementEndpoint         string   `json:"grant_management_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
+	// RFC 8705 §3.3, whose default is false.
+	TLSClientCertificateBoundAccessTokens bool `json:"tls_client_certificate_bound_access_tokens,omitempty"`
 	// OIDC Discovery §3.
 	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
@@ -413,6 +415,10 @@ func Build(cfg Config) (*Metadata, error) {
 			// to prevent.
 			abca.MethodPoP,
 		},
+		// RFC 8705 §3.3. Said for the reason the methods above are: a client set for
+		// it with `client set-tls -tls-bound-tokens` is issued them. Absent, which is
+		// false, a client reading discovery would not ask for them.
+		TLSClientCertificateBoundAccessTokens: true,
 
 		// S256 only, and the authorize endpoint enforces it. `plain` is not
 		// listed because it is not accepted.

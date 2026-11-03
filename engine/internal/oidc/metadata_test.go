@@ -179,6 +179,12 @@ func TestWhatIsRefusedIsSaidRatherThanOmitted(t *testing.T) {
 	if doc["authorization_response_iss_parameter_supported"] != true {
 		t.Errorf("RFC 9207's iss parameter is not advertised")
 	}
+	// RFC 8705 §3.3 (specs/rfc8705.txt:527-530): absent means false, and a client
+	// reading it would not ask for the binding a client set for it gets (13.01, the
+	// FAPI 2.0 plan's mTLS variant).
+	if doc["tls_client_certificate_bound_access_tokens"] != true {
+		t.Errorf("certificate-bound access tokens are issued and not advertised")
+	}
 	// JARM §4, and only what this deployment can sign with.
 	for _, mode := range []string{"query.jwt", "fragment.jwt", "form_post.jwt", "jwt"} {
 		if !slices.Contains(md.ResponseModesSupported, mode) {

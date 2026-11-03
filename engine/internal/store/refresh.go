@@ -2,11 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/hkdf"
-	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -216,46 +211,17 @@ func LinkSuccessor(ctx context.Context, tx pgx.Tx, oldHash, newHash, sealed []by
 // successorContext separates this key from anything else derived from a token.
 const successorContext = "signari refresh token successor"
 
-// successorCipher is the cipher derived from a refresh token. A token is 256 bits of
-// random, so nothing stretches it.
-func successorCipher(token string) (cipher.AEAD, error) {
-	key, err := hkdf.Key(sha256.New, []byte(token), nil, successorContext, 32)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
 // SealSuccessor seals a successor under a key only the token it replaced gives, so
 // whoever presents that token again can have the same answer, and a read of the row
-// gives nobody anything: the row holds the old token's hash, not the old token.
+// gives nobody anything: the row holds the old token's hash, not the old token. A
+// token is 256 bits of random, so nothing stretches it (handleseal.go).
 func SealSuccessor(oldToken, successor string) ([]byte, error) {
-	aead, err := successorCipher(oldToken)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return aead.Seal(nonce, nonce, []byte(successor), nil), nil
+	return sealUnder([]byte(oldToken), successorContext, []byte(successor), nil)
 }
 
 // OpenSuccessor opens what SealSuccessor sealed.
 func OpenSuccessor(oldToken string, sealed []byte) (string, error) {
-	aead, err := successorCipher(oldToken)
-	if err != nil {
-		return "", err
-	}
-	if len(sealed) < aead.NonceSize() {
-		return "", errors.New("a sealed successor too short to hold one")
-	}
-	nonce, body := sealed[:aead.NonceSize()], sealed[aead.NonceSize():]
-	plain, err := aead.Open(nil, nonce, body, nil)
+	plain, err := openUnder([]byte(oldToken), successorContext, sealed, nil)
 	if err != nil {
 		return "", fmt.Errorf("opening a sealed successor: %w", err)
 	}

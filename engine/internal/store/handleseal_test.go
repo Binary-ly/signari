@@ -38,6 +38,15 @@ func TestAHandleSealWorksUnderFIPSOnly(t *testing.T) {
 	if _, err := openUnder([]byte("a handed-out code"), "purpose", sealed, []byte("other")); err == nil {
 		t.Error("opened bound to something else")
 	}
+	// A refresh retry's successor, sealed the same way since November 2026; it
+	// and the opaque token handle failed in this mode before.
+	successor, err := SealSuccessor("an old refresh token", "its successor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := OpenSuccessor("an old refresh token", successor); err != nil || got != "its successor" {
+		t.Errorf("a refresh successor: %q %v", got, err)
+	}
 }
 
 // A presentation sealed the way it was before, the nonce chosen here, still

@@ -2,9 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,18 +25,6 @@ const OpaqueTokenPrefix = "sgo_"
 
 const opaqueTokenContext = "signari opaque access token"
 
-func opaqueTokenCipher(handle string) (cipher.AEAD, error) {
-	key, err := hkdf.Key(sha256.New, []byte(handle), nil, opaqueTokenContext, 32)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
 // NewOpaqueToken stores a signed token and answers the handle that stands for it, with
 // the signed token's own expiry.
 func NewOpaqueToken(ctx context.Context, q Execer, orgID, clientID, signed string, expires time.Time) (string, error) {
@@ -48,19 +33,14 @@ func NewOpaqueToken(ctx context.Context, q Execer, orgID, clientID, signed strin
 		return "", err
 	}
 	handle := OpaqueTokenPrefix + base64.RawURLEncoding.EncodeToString(random)
-	aead, err := opaqueTokenCipher(handle)
+	sealed, err := sealUnder([]byte(handle), opaqueTokenContext, []byte(signed), nil)
 	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(handle))
 	if _, err := q.Exec(ctx, `
 		INSERT INTO core.opaque_access_tokens (token_hash, org_id, client_id, sealed, expires_at)
-		VALUES ($1, $2::uuid, $3, $4, $5)`, sum[:], orgID, clientID,
-		aead.Seal(nonce, nonce, []byte(signed), nil), expires); err != nil {
+		VALUES ($1, $2::uuid, $3, $4, $5)`, sum[:], orgID, clientID, sealed, expires); err != nil {
 		return "", fmt.Errorf("storing an opaque access token: %w", err)
 	}
 	return handle, nil
@@ -86,14 +66,7 @@ func OpenOpaqueToken(ctx context.Context, q interface {
 	if err != nil {
 		return "", fmt.Errorf("reading an opaque access token: %w", err)
 	}
-	aead, err := opaqueTokenCipher(handle)
-	if err != nil {
-		return "", err
-	}
-	if len(sealed) < aead.NonceSize() {
-		return "", ErrNoOpaqueToken
-	}
-	plain, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], nil)
+	plain, err := openUnder([]byte(handle), opaqueTokenContext, sealed, nil)
 	if err != nil {
 		return "", ErrNoOpaqueToken
 	}

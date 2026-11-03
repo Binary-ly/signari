@@ -389,6 +389,17 @@ func (s *Server) forbidProxy(w http.ResponseWriter, reason string) {
 // an API call that would only be given an opaque redirect, keeps the 401.
 const pathProxyVerifyRedirect = "/proxy/verify/redirect"
 
+// onRedirectVariant reports whether a verify call came in on the redirect
+// variant: its path, or one below it. Envoy's ext_authz appends the request's
+// own path and query to the path it is given and keeps the request's method, both
+// measured against Envoy 1.31 (8.25), so it asks at
+// /proxy/verify/redirect/<original path> by POST as often as by GET. What is
+// asked about is read from the X-Forwarded-* headers it is told to set, as for
+// every other proxy; the suffix is not read.
+func onRedirectVariant(r *http.Request) bool {
+	return r.URL.Path == pathProxyVerifyRedirect || strings.HasPrefix(r.URL.Path, pathProxyVerifyRedirect+"/")
+}
+
 // denyProxy answers 401 with where to go next, or 302 to it for a browser
 // navigation on the redirect variant.
 func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string) {
@@ -415,7 +426,7 @@ func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string
 	// The reason is a HEADER, not a body: nginx auth_request discards the body,
 	// and an operator debugging this needs somewhere to look.
 	w.Header().Set("X-Signari-Reason", reason)
-	if r.URL.Path == pathProxyVerifyRedirect && isNavigation(r) {
+	if onRedirectVariant(r) && isNavigation(r) {
 		w.WriteHeader(http.StatusFound)
 		return
 	}
@@ -424,8 +435,8 @@ func (s *Server) denyProxy(w http.ResponseWriter, r *http.Request, reason string
 
 // isNavigation reports whether the request the proxy is asking about is a
 // browser loading a page: a GET or HEAD that accepts HTML. The method is the
-// one the proxy forwards in X-Forwarded-Method, since the verify call itself
-// is always a GET.
+// one the proxy forwards in X-Forwarded-Method, since the verify call's own
+// method is a GET from most proxies and the original request's from Envoy.
 func isNavigation(r *http.Request) bool {
 	method := firstHeader(r, "X-Forwarded-Method")
 	if method == "" {

@@ -169,9 +169,13 @@ answers a browser loading a page (`GET` or `HEAD`, accepting `text/html`) with
 not handed a redirect to a page it cannot use. Until October 2026 these recipes
 pointed at `/proxy/verify`, and `proxy check` passed them.
 
-Read against the proxies' own forward-auth code, not yet run end to end here:
-check yours with `signari proxy check`, whose browser probe fails a set-up that
-strands a browser on the `401`.
+Both recipes below were run end to end in November 2026, in Traefik 3.1 and
+Caddy 2.8 in front of an application that prints what it receives. An anonymous
+page load was sent to sign in and an API call refused with `401`. After sign-in
+the application received the person's identity headers. A forged
+`X-Forwarded-User` from the client was replaced with the real one, and
+`signari proxy check` found nothing open. Check yours with `signari proxy check`,
+whose browser probe fails a set-up that strands a browser on the `401`.
 
 ### Traefik
 
@@ -212,6 +216,59 @@ n8n.example.com {
     reverse_proxy n8n:5678
 }
 ```
+
+### Envoy
+
+Envoy's `ext_authz` filter, over HTTP. It relays a refusal to the browser as
+Traefik and Caddy do, so it too points at `/proxy/verify/redirect`, with two
+differences, measured against Envoy 1.31. Envoy adds the request's own path and
+query to that path, asking at `/proxy/verify/redirect/dashboard?tab=1`. It also
+asks with the request's own method. Signari answers anything below the path,
+by any method, and reads what is asked about from the `X-Forwarded-*` headers,
+which Envoy is told to set because it sets none of its own. Run end to end like
+the two above, with the same results.
+
+```yaml
+- name: envoy.filters.network.http_connection_manager
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+    stat_prefix: app
+    # Without these Envoy passes /a/../b on as it came, to Signari and to the app,
+    # so a rule for one path can be asked about another.
+    normalize_path: true
+    merge_slashes: true
+    route_config: { ... }   # the application's routes
+    http_filters:
+    - name: envoy.filters.http.ext_authz
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+        failure_mode_allow: false   # Signari unreachable is a refusal, never a pass
+        allowed_headers:
+          patterns: [{exact: cookie}, {exact: accept}, {exact: authorization}]
+        http_service:
+          server_uri: {uri: "https://auth.example.com", cluster: signari, timeout: 3s}
+          path_prefix: /proxy/verify/redirect
+          authorization_request:
+            headers_to_add:
+            - {key: X-Forwarded-Host, value: "%REQ(:authority)%"}
+            - {key: X-Forwarded-Uri, value: "%REQ(:path)%"}
+            - {key: X-Forwarded-Method, value: "%REQ(:method)%"}
+            - {key: X-Forwarded-Proto, value: "https"}
+          authorization_response:
+            # Copied onto the request to the app, replacing any the client sent.
+            allowed_upstream_headers:
+              patterns: [{exact: x-forwarded-user}, {exact: x-forwarded-email}, {exact: x-forwarded-sub}]
+            # What a refusal gives the browser: where to sign in.
+            allowed_client_headers:
+              patterns: [{exact: location}, {exact: www-authenticate}]
+    - name: envoy.filters.http.router
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+```
+
+`signari` is a cluster for Signari's address, with an `UpstreamTlsContext` whose
+`sni` is its host name. `allowed_headers` belongs on `ExtAuthz` itself: Envoy
+1.31 still takes it inside `authorization_request` and warns that it is going.
 
 ## Prove it works
 

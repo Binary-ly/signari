@@ -796,6 +796,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("/scim/v2/Bulk", s.handleSCIMBulk)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
 	mux.HandleFunc("GET "+pathProxyVerifyRedirect, s.handleProxyVerify)
+	// Envoy's ext_authz, which appends the request's path and keeps its method.
+	mux.HandleFunc(pathProxyVerifyRedirect+"/{rest...}", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
 	mux.HandleFunc("GET "+pathProxyBegin, s.handleProxyBegin)
 	mux.HandleFunc("GET "+pathProxyCallback, s.handleProxyCallback)

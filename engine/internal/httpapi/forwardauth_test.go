@@ -103,6 +103,42 @@ func TestProxyVerifyDenyPointsAtStart(t *testing.T) {
 	}
 }
 
+// Envoy's ext_authz asks at the redirect variant with the request's own path
+// appended and its own method (measured against Envoy 1.31, 8.25). Through the
+// router, as Envoy reaches it: a page load by GET is sent to sign in, a POST and
+// a fetch keep the 401, and the return URL is the one in X-Forwarded-*, not the
+// path appended.
+func TestEnvoyAsksBelowTheRedirectVariant(t *testing.T) {
+	s := newProxyServer()
+	ask := func(method, path, forwardedMethod, accept string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "app.example.test")
+		req.Header.Set("X-Forwarded-Uri", "/dashboard?tab=1")
+		req.Header.Set("X-Forwarded-Method", forwardedMethod)
+		req.Header.Set("Accept", accept)
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+	want := "https://auth.example.test/proxy/start?rd=https%3A%2F%2Fapp.example.test%2Fdashboard%3Ftab%3D1"
+	if rec := ask(http.MethodGet, "/proxy/verify/redirect/dashboard?tab=1", "GET", "text/html"); rec.Code != http.StatusFound ||
+		rec.Header().Get("Location") != want {
+		t.Errorf("a page load: %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := ask(http.MethodPost, "/proxy/verify/redirect/api/items", "POST", "text/html"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a POST, asked about by POST: %d", rec.Code)
+	}
+	if rec := ask(http.MethodGet, "/proxy/verify/redirect/api/items", "GET", "application/json"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a fetch: %d", rec.Code)
+	}
+	// Not below the plain endpoint, whose 401 is for nginx to turn into a redirect.
+	if rec := ask(http.MethodGet, "/proxy/verify/dashboard", "GET", "text/html"); rec.Code != http.StatusNotFound {
+		t.Errorf("below the plain endpoint: %d", rec.Code)
+	}
+}
+
 // TestFirstHeaderTakesTheFirstValue pins the header-splitting rule.
 //
 // A proxy chain APPENDS, so "X-Forwarded-Host: real, evil" is one header with

@@ -19,7 +19,9 @@ origin go to 127.0.0.1:8099 with the Host header preserved -- the issuer the
 engine sees, and therefore every issuer check, is unchanged.
 """
 import html as htmlmod
+import os
 import re
+import subprocess
 import sys
 import time
 import urllib3
@@ -238,6 +240,38 @@ def module_status(api, mid):
     return module_info(api, mid).get("status")
 
 
+# A command that mints a credential offer and prints it, as `signari credential offer`
+# does: the openid-credential-offer:// link on a line of its own, and the transaction
+# code after "transaction code:". run.sh sets it for the issuer-initiated OID4VCI plan.
+OFFER = os.environ.get("CONFORMANCE_OFFER_CMD", "")
+
+
+def deliver_offer(api, mid, sess, delivered, log):
+    """Be the issuer's front desk: when a module waits at its credential_offer_endpoint,
+    mint an offer and send it there, and the transaction code to tx_code_endpoint when
+    that appears. The code travels separately, as §3.5 has it."""
+    if not OFFER:
+        return
+    try:
+        exposed = api.get(f"{SUITE}/api/runner/{mid}", verify=False, timeout=15).json().get("exposed") or {}
+    except Exception:
+        return
+    endpoint = exposed.get("credential_offer_endpoint")
+    if endpoint and "offer" not in delivered:
+        out = subprocess.run(OFFER, shell=True, capture_output=True, text=True, timeout=60).stdout
+        link = next((l for l in out.splitlines() if l.startswith("openid-credential-offer://")), "")
+        code = re.search(r"transaction code: (\S+)", out)
+        delivered["offer"], delivered["tx"] = True, code.group(1) if code else ""
+        if link:
+            r = get(sess, endpoint + "?" + link.split("?", 1)[1])
+            log(f"      offer delivered -> {r.status_code}")
+    tx = exposed.get("tx_code_endpoint")
+    if tx and delivered.get("tx") and "tx_sent" not in delivered:
+        delivered["tx_sent"] = True
+        r = get(sess, tx.replace("your_tx_code", delivered["tx"]))
+        log(f"      transaction code delivered -> {r.status_code}")
+
+
 def drive_module(api, mid, log, budget=320):
     # 320s, not 150. The modules that authorize TWICE -- oidcc-prompt-login,
     # oidcc-max-age-1 -- need a second round of front-channel servicing, and if
@@ -261,11 +295,13 @@ def drive_module(api, mid, log, budget=320):
     name = module_info(api, mid).get("testName", "")
     refuse = name.endswith("user-rejects-authentication")
     leave_first = "reused-request-uri-prior-to-auth-completion" in name
+    delivered = {}
     try:
         while time.time() < deadline:
             st = module_status(api, mid)
             if st in ("FINISHED", "INTERRUPTED"):
                 return st
+            deliver_offer(api, mid, sess, delivered, log)
             try:
                 r = api.get(f"{SUITE}/api/runner/browser/{mid}", verify=False, timeout=15)
                 # The field is "urls", not "urlsToVisit".

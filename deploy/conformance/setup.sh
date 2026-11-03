@@ -171,6 +171,9 @@ run credential define -org "$ORG" -credential-configuration IdentityCredential \
 run rar register -org "$ORG" -type openid_credential -fields locations
 for n in 1 2; do
   run rar allow -client-id "conformance-fapi-$n" -type openid_credential
+  # And redeeming an offer (./run.sh vci-offer), which needs the grant registered.
+  run client set-grants -client-id "conformance-fapi-$n" \
+    -grant-types authorization_code,refresh_token,urn:ietf:params:oauth:grant-type:pre-authorized_code
 done
 
 # The password must not contain the username: the engine's own policy refuses

@@ -74,6 +74,14 @@ case "$PLAN" in
   # CONFIG from fapiconfig.py, which carries the two FAPI clients' private keys.
   fapi2)     SPEC="fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi]" ;;
   fapi2-ms)  SPEC="fapi2-message-signing-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][fapi_request_method=signed_non_repudiation][sender_constrain=dpop][fapi_profile=plain_fapi][fapi_response_mode=jarm]" ;;
+  # An offer this server mints, delivered by the driver, redeemed as a pre-authorized code.
+  vci-offer)
+    ORG="$(docker exec signari-postgres-1 psql -U signari_superuser -d signari -At \
+      -c "SELECT id FROM core.organizations ORDER BY created_at LIMIT 1")"
+    export CONFORMANCE_OFFER_CMD="docker exec signari-engine-1 /signari credential offer -org $ORG \
+      -email conformance@test.local -client-id conformance-fapi-1 -credential-configuration IdentityCredential \
+      -credential-issuer https://signari-engine:8080 -tx-code"
+    SPEC="oid4vci-1_0-issuer-test-plan[authorization_request_type=simple][client_auth_type=private_key_jwt][fapi_request_method=unsigned][sender_constrain=dpop][fapi_profile=vci][credential_format=sd_jwt_vc][vci_credential_encryption=plain][openid=plain_oauth][fapi_response_mode=plain_response][vci_grant_type=pre_authorization_code][vci_authorization_code_flow_variant=issuer_initiated]" ;;
   # rar, not simple: the configuration names no scope, so the suite asks by details.
   vci)       SPEC="oid4vci-1_0-issuer-test-plan[authorization_request_type=rar][client_auth_type=private_key_jwt][fapi_request_method=unsigned][sender_constrain=dpop][fapi_profile=vci][credential_format=sd_jwt_vc][vci_credential_encryption=plain][openid=plain_oauth][fapi_response_mode=plain_response][vci_grant_type=authorization_code][vci_authorization_code_flow_variant=wallet_initiated]" ;;
   *)         SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it

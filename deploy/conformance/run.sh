@@ -85,6 +85,16 @@ case "$PLAN" in
     SPEC="oid4vci-1_0-issuer-test-plan[authorization_request_type=simple][client_auth_type=private_key_jwt][fapi_request_method=unsigned][sender_constrain=dpop][fapi_profile=vci][credential_format=sd_jwt_vc][vci_credential_encryption=plain][openid=plain_oauth][fapi_response_mode=plain_response][vci_grant_type=pre_authorization_code][vci_authorization_code_flow_variant=issuer_initiated]" ;;
   # rar, not simple: the configuration names no scope, so the suite asks by details.
   vci)       SPEC="oid4vci-1_0-issuer-test-plan[authorization_request_type=rar][client_auth_type=private_key_jwt][fapi_request_method=unsigned][sender_constrain=dpop][fapi_profile=vci][credential_format=sd_jwt_vc][vci_credential_encryption=plain][openid=plain_oauth][fapi_response_mode=plain_response][vci_grant_type=authorization_code][vci_authorization_code_flow_variant=wallet_initiated]" ;;
+  # This server as an OID4VP verifier, the suite as the wallet; CONFIG from
+  # fapiconfig.py --vp. The driver starts each sign-in here and hands the suite the
+  # wallet URL's query, as a person's phone would open it.
+  # By the engine's own name, which browserdrive.py rewrites as it does every other
+  # visit: requests files a cookie under the Host header, so the cookie set here is the
+  # one the browser takes back when the wallet returns it there.
+  vp)        export CONFORMANCE_VP_START="https://signari-engine:8080/oid4vp/vp/start"
+             SPEC="oid4vp-1final-verifier-test-plan[credential_format=sd_jwt_vc][client_id_prefix=x509_san_dns][request_method=request_uri_signed][response_mode=direct_post][vp_profile=plain_vp]" ;;
+  vp-plain)  export CONFORMANCE_VP_START="https://signari-engine:8080/oid4vp/vp-plain/start"
+             SPEC="oid4vp-1final-verifier-test-plan[credential_format=sd_jwt_vc][client_id_prefix=redirect_uri][request_method=url_query][response_mode=direct_post][vp_profile=plain_vp]" ;;
   *)         SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
 esac
 

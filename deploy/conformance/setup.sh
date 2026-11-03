@@ -67,8 +67,10 @@ export SIGNARI_CA_BUNDLE=/tls/suite.crt
 # The engine image must be REBUILT, not just started. Skipping this is a quiet
 # failure: the container keeps whatever binary it was last built with, so a flag
 # added since -- `-require-pkce`, for one -- is "not defined" and the run dies
-# somewhere unrelated to the actual cause.
-docker compose build engine
+# somewhere unrelated to the actual cause. And migrate with it, which is an image of
+# its own: left alone, it applies the schema of the last build, and the new engine
+# refuses to start against it and the wait loop below spins for ever.
+docker compose build engine migrate
 docker compose up -d postgres
 until [ "$(docker inspect -f '{{.State.Health.Status}}' signari-postgres-1)" = healthy ]; do
   sleep 1
@@ -188,10 +190,43 @@ for n in 1 2; do
     -grant-types authorization_code,refresh_token,urn:ietf:params:oauth:grant-type:pre-authorized_code
 done
 
+# OID4VP (./run.sh vp and vp-plain): this server as a verifier, twice. `vp` signs its
+# requests (x509_san_dns) with a P-256 key and a certificate for signari-engine from
+# the conformance CA, which the suite is given as the trust anchor; `vp-plain` is
+# redirect_uri and signs nothing. Both believe the suite's credentials, whose issuer
+# is the suite's address for the plan's alias and whose key vpconfig.py hands the suite.
+# Asked for family_name, which every credential the suite makes carries.
+if [ ! -f ../tls/vp-verifier.crt ]; then
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ../tls/vp-verifier.key \
+    -out ../tls/vp-verifier.csr -subj "/CN=signari-engine" 2>/dev/null
+  openssl x509 -req -in ../tls/vp-verifier.csr -CA ../tls/ca.crt -CAkey ../tls/ca.key -CAcreateserial \
+    -out ../tls/vp-verifier.crt -days 3650 -extfile ../tls/san.cnf -extensions ext 2>/dev/null
+  rm -f ../tls/vp-verifier.csr ../tls/ca.srl
+fi
+node vpkeys.mjs ../tls
+for f in vp-verifier.key vp-verifier.crt vp-issuer.public.json; do docker cp "../tls/$f" "signari-engine-1:/tmp/$f"; done
+VP_ISSUER="https://localhost.emobix.co.uk:8443/test/a/signari-vp"
+# As root, once: docker cp keeps the key's 0600, and the engine's own user cannot read
+# it, which is how a private key should arrive. It is sealed as it is stored.
+docker compose exec -T -u 0 engine /signari idp add -kind oid4vp -org "$ORG" -slug vp -name "Conformance wallet" \
+  -client-id-prefix x509_san_dns -vct urn:eudi:pid:1 -subject-claim family_name \
+  -client-key-file /tmp/vp-verifier.key -client-cert-file /tmp/vp-verifier.crt
+run idp add -kind oid4vp -org "$ORG" -slug vp-plain -name "Conformance wallet, unsigned" \
+  -client-id-prefix redirect_uri -vct urn:eudi:pid:1 -subject-claim family_name
+for s in vp vp-plain; do
+  run idp vp-issuer -slug "$s" -issuer "$VP_ISSUER" -jwks-file /tmp/vp-issuer.public.json
+done
+
 # The password must not contain the username: the engine's own policy refuses
 # "conformance-password-1" for a user named conformance@test.local, which is the
 # control working as intended and not a bug to route around.
 run user create -email conformance@test.local -password 'Tr0ubad0ur-Marmalade-7719'
+# The person the suite's PID credential names (family_name Dupont), linked as an operator
+# links one, so a wallet sign-in finishes. Unlinked, it would be refused: the credential
+# carries no verified address, and nobody is made an account without one.
+for s in vp vp-plain; do
+  run idp link -slug "$s" -subject "$VP_ISSUER|Dupont" -email conformance@test.local
+done
 
 # The suite is a JVM and will not trust our CA until it is in the truststore AND
 # the process has restarted -- a JVM reads it once, at startup.

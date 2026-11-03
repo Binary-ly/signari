@@ -272,6 +272,46 @@ def deliver_offer(api, mid, sess, delivered, log):
         log(f"      transaction code delivered -> {r.status_code}")
 
 
+# The start of a wallet sign-in at the engine, for the OID4VP verifier plans: run.sh
+# sets it. Its answer is a redirect to the wallet, openid4vp://?..., whose query the
+# suite (as the wallet) takes at its authorization endpoint.
+VP_START = os.environ.get("CONFORMANCE_VP_START", "")
+
+
+def deliver_vp(api, mid, sess, delivered, log):
+    """Be the person tapping "sign in with a wallet": when a module exposes its
+    authorization_endpoint, start a sign-in at the engine and take the wallet URL there."""
+    if not VP_START or "vp" in delivered:
+        return
+    try:
+        exposed = api.get(f"{SUITE}/api/runner/{mid}", verify=False, timeout=15).json().get("exposed") or {}
+    except Exception:
+        return
+    endpoint = exposed.get("authorization_endpoint")
+    if not endpoint:
+        return
+    delivered["vp"] = True
+    try:
+        r = get(sess, VP_START, allow_redirects=False)
+        wallet = r.headers.get("Location", "")
+        if not wallet.startswith("openid4vp:") or "?" not in wallet:
+            log(f"      the engine answered {r.status_code} with no wallet URL: {wallet[:80]}")
+            return
+        # Not followed by requests: the wallet sends the browser back to the engine
+        # by the name the suite resolves, which only rewrite() reaches from here.
+        r = get(sess, endpoint + "?" + wallet.split("?", 1)[1], allow_redirects=False)
+        back = r.headers.get("Location", "")
+        log(f"      wallet request delivered -> {r.status_code} {back[:60]}")
+        if back.startswith(ENGINE_ORIGIN):
+            # The browser back at the engine with the cookie it left with, which is
+            # what finishes the sign-in.
+            r = get(sess, back, allow_redirects=False)
+            said = re.findall(r"<p>(.*?)</p>", r.text, re.S)[:2] if r.status_code >= 400 else []
+            log(f"      back at the engine -> {r.status_code} {r.headers.get('Location', '')[:60]} {said}")
+    except Exception as e:
+        log(f"      wallet driver error: {type(e).__name__}: {e}")
+
+
 def drive_module(api, mid, log, budget=320):
     # 320s, not 150. The modules that authorize TWICE -- oidcc-prompt-login,
     # oidcc-max-age-1 -- need a second round of front-channel servicing, and if
@@ -302,6 +342,7 @@ def drive_module(api, mid, log, budget=320):
             if st in ("FINISHED", "INTERRUPTED"):
                 return st
             deliver_offer(api, mid, sess, delivered, log)
+            deliver_vp(api, mid, sess, delivered, log)
             try:
                 r = api.get(f"{SUITE}/api/runner/browser/{mid}", verify=False, timeout=15)
                 # The field is "urls", not "urlsToVisit".

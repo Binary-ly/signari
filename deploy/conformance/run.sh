@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 SUITE="${SUITE_DIR:-$HOME/.cache/idp-conformance}"
 PLAN="${1:-basic}"
+# Somewhere other than the tracked template, so a secret is not one `git add` away.
+# Split, because the runner's grammar takes a relative name and reads an absolute
+# path as the name of a plan.
+CONFIG="${CONFIG:-config.json}"
+CONFIG_DIR="$(cd "$(dirname "$CONFIG")" && pwd)"
+CONFIG_FILE="$(basename "$CONFIG")"
 
 [ -f "$SUITE/target/fapi-test-suite.jar" ] || {
   echo "suite jar missing -- build it first:"
@@ -21,7 +27,7 @@ PLAN="${1:-basic}"
 # host's Python.
 VENV="${VENV_DIR:-$SUITE/.runner-venv}"
 [ -d "$VENV" ] || python3 -m venv "$VENV"
-"$VENV/bin/pip" install -q -r "$SUITE/scripts/requirements.txt"
+"$VENV/bin/pip" install -q -r "$SUITE/scripts/requirements.txt" requests
 
 # The suite and the engine must share a network, or the suite cannot resolve
 # signari-engine and the issuer check fails before any test runs.
@@ -43,15 +49,21 @@ if [ "$PLAN" = "config" ]; then
     "oidcc-config-certification-test-plan" config-op.json
 fi
 
-# Basic OP needs the front channel driven. The suite's own HtmlUnit driver stalls
-# after the callback (see README), so config.json carries no `browser` block and
-# browserdrive.py services the URLs the suite publishes instead.
+STATIC="[server_metadata=discovery][client_registration=static_client]"
+case "$PLAN" in
+  basic)    SPEC="oidcc-basic-certification-test-plan$STATIC" ;;
+  formpost) SPEC="oidcc-formpost-basic-certification-test-plan$STATIC" ;;
+  hybrid)   SPEC="oidcc-hybrid-certification-test-plan$STATIC" ;;
+  *)        SPEC="$PLAN" ;; # any other plan, with its variants, as the runner takes it
+esac
+
+# Everything else needs the front channel driven. The suite's own HtmlUnit driver
+# stalls after the callback (see README), so config.json carries no `browser` block
+# and browserdrive.py services the URLs the suite publishes instead.
 LOG="${LOG:-$(mktemp -t signari-conformance)}"
 "$VENV/bin/python" ./browserdrive.py "$LOG" &
 DRIVER=$!
 trap 'kill $DRIVER 2>/dev/null || true' EXIT
 
-"$VENV/bin/python" "$SUITE/scripts/run-test-plan.py" --no-parallel \
-  --show-untested-test-modules \
-  "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" \
-  config.json 2>&1 | tee "$LOG"
+( cd "$CONFIG_DIR" && "$VENV/bin/python" "$SUITE/scripts/run-test-plan.py" --no-parallel \
+  "$SPEC" "$CONFIG_FILE" ) 2>&1 | tee "$LOG"

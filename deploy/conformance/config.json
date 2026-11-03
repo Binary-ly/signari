@@ -5,7 +5,9 @@
     "discoveryUrl": "https://signari-engine:8080/.well-known/openid-configuration",
     "allow_unexpected_metadata_fields": [
       "permission_endpoint",
-      "client_attestation_pop_methods_supported"
+      "client_attestation_pop_methods_supported",
+      "grant_management_endpoint",
+      "authorization_grant_profiles_supported"
     ]
   },
   "client": {

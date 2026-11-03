@@ -24,6 +24,7 @@ import sys
 import time
 import urllib3
 import requests
+from urllib.parse import urlsplit
 
 urllib3.disable_warnings()
 
@@ -84,15 +85,23 @@ def form_action(page, default):
     return act if act.startswith("http") else ENGINE_ORIGIN + act
 
 
-def submit_implicit(sess, page, log):
-    """Do what the callback page's script would have done, if it had run."""
-    m = SUBMIT_RE.search(page)
+def submit_implicit(sess, response, log):
+    """Do what the callback page's script would have done, if it had run.
+
+    That script posts location.hash, '#' and all, which the suite strips with
+    substring(1) before it decodes. Empty for a code flow, and the whole answer for
+    hybrid, which returns in the fragment: posting nothing reads as the server having
+    dropped `code` and `state`, and posting it without the '#' as `ode` and an `iss`
+    still percent-encoded.
+    """
+    m = SUBMIT_RE.search(response.text or "")
     if not m:
         return False
     # Inlined by Thymeleaf's th:inline="javascript", i.e. a JS string literal:
     # every forward slash arrives as \/ and non-ASCII as \uXXXX.
     url = htmlmod.unescape(m.group(1)).replace("\\/", "/").encode().decode("unicode_escape")
-    r = post(sess, url, data="", headers={"Content-type": "text/plain"})
+    fragment = urlsplit(response.url).fragment
+    r = post(sess, url, data="#" + fragment if fragment else "", headers={"Content-type": "text/plain"})
     log(f"      implicit submit -> {r.status_code}")
     return True
 
@@ -102,7 +111,7 @@ def drive_url(sess, url, log):
     for _ in range(8):
         page = r.text or ""
 
-        if submit_implicit(sess, page, log):
+        if submit_implicit(sess, r, log):
             return True
 
         if 'name="username"' in page and 'name="password"' in page:

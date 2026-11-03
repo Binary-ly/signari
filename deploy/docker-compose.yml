@@ -61,7 +61,9 @@ services:
       SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
       SIGNARI_ROOT_KEY: ${SIGNARI_ROOT_KEY:?set SIGNARI_ROOT_KEY -- head -c 32 /dev/urandom | base64}
       SIGNARI_ROOT_KEY_REF: ${SIGNARI_ROOT_KEY_REF:-dev}
-    command: ["bootstrap", "-issuer", "${SIGNARI_ISSUER:-https://localhost:8099}", "-email", "${SIGNARI_FIRST_EMAIL:?set SIGNARI_FIRST_EMAIL, the first person's address}"]
+    # No `:?` on the email: compose checks those on every command that reads this file,
+    # profile or not, and `bootstrap` says what is missing for itself.
+    command: ["bootstrap", "-issuer", "${SIGNARI_ISSUER:-https://localhost:8099}", "-email", "${SIGNARI_FIRST_EMAIL:-}"]
     restart: "no"
 
   engine:

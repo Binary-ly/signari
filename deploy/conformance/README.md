@@ -7,12 +7,42 @@ The `interop/` checks break part of that circle by verifying tokens with an
 independent JOSE library; this breaks the rest, by having a third party drive the
 protocol and judge the answers.
 
-## Current state, measured 25 August 2026
+## Current state, measured 3 November 2026
+
+Against the suite as of its commit `6b8b809` (7 August 2026), each plan with
+`[server_metadata=discovery][client_registration=static_client]`:
 
 | Plan | Result |
 |---|---|
-| **Config OP** (`oidcc-config-certification-test-plan`) | **PASSED** — 39 conditions, 0 failures, 0 warnings, runner exit 0. Reproduced twice. |
-| **Basic OP** (`oidcc-basic-certification-test-plan`) | All 36 modules run and **all 36 complete**. **1754 conditions passed, 0 failures, 5 warnings.** 22 PASSED, 4 REVIEW (screenshot uploaded, awaiting human sign-off), 4 SKIPPED (unsupported optional features), 5 WARNING. 84 seconds. |
+| **Config OP** (`./run.sh config`) | 2 modules, **44 conditions, 0 failures, 0 warnings**, runner exit 0. |
+| **Basic OP** (`./run.sh basic`) | 36 modules, **1712 conditions, 0 failures, 5 warnings**, the five below. 79 seconds. |
+| **Form Post OP** (`./run.sh formpost`) | 36 modules, **1877 conditions, 0 failures, 5 warnings**, the same five. |
+| **Hybrid OP** (`./run.sh hybrid`) | 97 modules. **`code id_token`: 34 modules, none failed** (19 PASSED, 5 REVIEW, 5 SKIPPED, 5 WARNING). `code token` and `code id_token token`: 50 failures, every one the authorization endpoint answering `unsupported_response_type`, which is the design: no access token crosses the front channel ([response modes](../../docs/response-modes.md)). The plan cannot pass whole for that reason. |
+
+**What the Hybrid plan found, the first time it was run.** Every fragment response
+was encoded twice, so a script reading `location.hash` found `iss` still
+percent-encoded and refused the response as a mix-up (RFC 9207). The engine's own
+tests decoded twice and agreed with it. A refusal of `code token` went in the
+query, where a client that asked for it was not listening. And a redirect URI with
+a fragment, which RFC 6749 §3.1.2 forbids, could be registered everywhere but
+dynamic registration. All three are fixed.
+
+The August measurement for comparison: Config OP 39 conditions, Basic OP 1754
+conditions with one more module PASSED and one fewer SKIPPED. That module is
+`oidcc-ensure-request-object-with-redirect-uri`. In August request objects were
+refused outright and it passed on the refusal; now they are accepted signed and
+only signed, and the suite skips it because `none` is not among
+`request_object_signing_alg_values_supported`.
+
+`setup.sh` and `run.sh` had stopped working in the meantime, quietly: `instance
+create` no longer makes an organisation, so `bootstrap` does; the compose file
+required `SIGNARI_FIRST_EMAIL` of every command, not only the first run; the
+runner's `--show-untested-test-modules` takes a value, so it swallowed the plan's
+name; and the runner's grammar reads an absolute configuration path as a plan.
+`browserdrive.py` posted the fragment without its `#`, which the suite strips, so
+`code` arrived as `ode`. A configuration filled with secrets belongs outside this
+directory, `CONFIG=/elsewhere/basic.json ./run.sh basic`, so that it is not one
+`git add` from being committed.
 
 Neither is a vacuous green. The Config OP plan, run against the same engine over
 plaintext HTTP, produced **7 failures**; it detects real problems and stopped
@@ -203,8 +233,11 @@ what it should. That is the intended certification workflow.
 
 ## Running
 
-    ./setup.sh    # TLS, engine, clients, user, CA into the suite truststore
-    ./run.sh      # execute the plan via scripts/run-test-plan.py
+    ./setup.sh                                  # TLS, engine, clients, user, CA into the suite truststore
+    CONFIG=/elsewhere/basic.json ./run.sh basic # or config, formpost, hybrid, or any plan with its variants
+
+Both honour `DOCKER_CONTEXT`, so the stack can live in a virtual machine of its own
+rather than beside whatever else the default one runs.
 
 The runner needs `httpx` and `pyparsing` (`scripts/requirements.txt`), and for a
 local suite with no authentication, `CONFORMANCE_DEV_MODE=1` and

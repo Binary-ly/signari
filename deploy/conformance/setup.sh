@@ -62,8 +62,9 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' signari-postgres-1)" = h
 done
 docker compose up migrate
 
-# `run` before the engine is up needs a one-off container, not exec.
-docker compose run --rm --no-deps engine instance create -issuer "$ISSUER" -name conformance
+# `run` before the engine is up needs a one-off container, not exec. Bootstrap and not
+# `instance create`, which makes no organisation for the clients below to belong to.
+docker compose run --rm --no-deps engine bootstrap -issuer "$ISSUER" -email admin@test.local
 
 docker compose up -d engine
 until curl -ksf "https://localhost:8099/.well-known/openid-configuration" >/dev/null; do sleep 1; done
@@ -105,6 +106,14 @@ INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES
 ON CONFLICT DO NOTHING;
 UPDATE core.config_version SET version = version + 1 WHERE id = true;
 SQL
+
+# `code id_token` is off for a client until someone turns it on and says when to look
+# at it again, and `code token` and `code id_token token` stay refused whatever is set
+# here: an access token does not cross the front channel. So the Hybrid plan's modules
+# for those two fail on purpose; see the README.
+for c in conformance-1 conformance-2 conformance-post; do
+  run client set-hybrid -client-id "$c" -review-by 2031-01-01
+done
 
 # The password must not contain the username: the engine's own policy refuses
 # "conformance-password-1" for a user named conformance@test.local, which is the

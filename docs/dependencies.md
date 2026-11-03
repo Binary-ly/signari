@@ -10,13 +10,19 @@ scanned, and why each thing is here at all.
 
 ## The number is the point
 
-**Thirteen direct dependencies. Fifty-seven modules in the whole graph.**
+**21 direct dependencies. 70 modules in the whole graph, as `go list -m all`
+counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
 than luck: the QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec,
-the SD-JWT implementation, the RADIUS server and the flow language are all
-written here rather than pulled in. Every dependency is a party that can change
-what this binary does.
+the SD-JWT implementation, the RADIUS server, the flow language and the OTLP
+exporter are all written here rather than pulled in. Every dependency is a party
+that can change what this binary does.
+
+The table below is every direct requirement in `engine/go.mod`, at the version
+pinned there. `TestEveryDirectDependencyIsListed` holds it to that, both ways,
+and holds the count above to the table. This page said thirteen while `go.mod`
+named eighteen.
 
 ## Direct dependencies
 
@@ -24,7 +30,7 @@ what this binary does.
 |---|---|---|---|
 | `github.com/go-jose/go-jose/v4` | v4.1.4 | JOSE: JWS, JWE, JWK | the reference Go JOSE library, maintained by the go-jose org after the Square handover; the crypto this whole product rests on |
 | `github.com/jackc/pgx/v5` | v5.10.0 | PostgreSQL driver | the de-facto Go Postgres driver; parameterized queries are its default idiom |
-| `github.com/go-webauthn/webauthn` | v0.17.4 | WebAuthn ceremonies | the maintained successor to duo-labs/webauthn |
+| `github.com/go-webauthn/webauthn` | v0.18.2 | WebAuthn ceremonies | the maintained successor to duo-labs/webauthn |
 | `github.com/beevik/etree` | v1.7.0 | XML tree, for SAML | used only after `scanForUnsafeConstructs` has refused DOCTYPE and comments |
 | `github.com/russellhaering/goxmldsig` | v1.6.1 | XML signatures | the standard Go XML-DSig implementation |
 | `github.com/go-ldap/ldap/v3` | v3.4.14 | LDAP **client**, for directory sync | our LDAP *server* is written here; this is only the outbound side |
@@ -32,8 +38,16 @@ what this binary does.
 | `github.com/jcmturner/gokrb5/v8` | v8.4.4 | Kerberos / SPNEGO | the only maintained pure-Go Kerberos implementation |
 | `github.com/jcmturner/goidentity/v6` | v6.0.1 | identity type used by gokrb5 | comes with the above |
 | `github.com/coder/websocket` | v1.8.15 | WebSocket, for remote access | the maintained successor to nhooyr.io/websocket; its `authenticateOrigin` is load-bearing for us (see the V4 review) |
-| `golang.org/x/crypto` | v0.54.0 | Argon2id, HKDF, bcrypt | Go project |
-| `golang.org/x/text` | v0.40.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
+| `github.com/jcmturner/gofork` | v1.7.6 | ASN.1 for Kerberos messages | required by gokrb5; named directly only by a Kerberos test |
+| `github.com/google/uuid` | v1.6.0 | UUID parsing | checks that an imported subject or an organisation id is a canonical UUID |
+| `github.com/openwall/yescrypt-go` | v1.0.0 | yescrypt (`$y$`) verification | the scheme author's own Go module, held to libxcrypt's output by `yescrypt_test.go`; verifies hashes imported from `/etc/shadow`, which are rehashed on a successful sign-in |
+| `github.com/oschwald/maxminddb-golang/v2` | v2.5.0 | GeoIP database reader | reads an operator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
+| `go.opentelemetry.io/otel` | v1.47.0 | OpenTelemetry API: attributes, propagation, semantic conventions | the OpenTelemetry project; imported by `internal/tracing` alone, which a test holds |
+| `go.opentelemetry.io/otel/trace` | v1.47.0 | OpenTelemetry tracing API | as above |
+| `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |
+| `golang.org/x/crypto` | v0.57.0 | Argon2id, HKDF, bcrypt | Go project |
+| `golang.org/x/sync` | v0.23.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
+| `golang.org/x/text` | v0.42.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
 | `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | operator-supplied input only, never a request |
 
 ## How provenance is verified (V15.2.4, dependency confusion)

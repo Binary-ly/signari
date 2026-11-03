@@ -3,11 +3,8 @@ package store
 import (
 	"context"
 	"crypto"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -414,18 +411,6 @@ func SetVPResponseKey(ctx context.Context, q outpostDB, root *keys.RootKey, prov
 
 const vpPresentationContext = "signari oid4vp presentation"
 
-func vpCipher(responseCode string) (cipher.AEAD, error) {
-	key, err := hkdf.Key(sha256.New, []byte(responseCode), nil, vpPresentationContext, 32)
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
 // PresentVP records what a wallet's presentation proved, against the request it
 // answers, and answers the response code the browser has to bring back for it. What
 // was proved is sealed under a key only that code gives, and the code is not stored,
@@ -436,15 +421,10 @@ func PresentVP(ctx context.Context, q outpostDB, providerID, state string, prove
 		return "", err
 	}
 	code := base64.RawURLEncoding.EncodeToString(random)
-	aead, err := vpCipher(code)
+	sealed, err := sealUnder([]byte(code), vpPresentationContext, proved, []byte(providerID))
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	sealed := aead.Seal(nonce, nonce, proved, []byte(providerID))
 	stateHash := sha256.Sum256([]byte(state))
 	codeHash := sha256.Sum256([]byte(code))
 	tag, err := q.Exec(ctx, `
@@ -470,13 +450,5 @@ func OpenVPPresentation(p *PendingLogin, responseCode string) ([]byte, error) {
 	if subtle.ConstantTimeCompare(h[:], p.VPResponseCodeHash) != 1 {
 		return nil, errors.New("that is not the code the wallet was given")
 	}
-	aead, err := vpCipher(responseCode)
-	if err != nil {
-		return nil, err
-	}
-	if len(p.VPPresented) < aead.NonceSize() {
-		return nil, errors.New("the stored presentation is cut short")
-	}
-	nonce, sealed := p.VPPresented[:aead.NonceSize()], p.VPPresented[aead.NonceSize():]
-	return aead.Open(nil, nonce, sealed, []byte(p.ProviderID))
+	return openUnder([]byte(responseCode), vpPresentationContext, p.VPPresented, []byte(p.ProviderID))
 }

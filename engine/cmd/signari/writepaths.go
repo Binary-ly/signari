@@ -1346,52 +1346,19 @@ func userAssignOTP(ctx context.Context, conn *pgx.Conn, orgID, email, seedFile s
 	if err != nil {
 		return err
 	}
-	kind, counter := "totp", int64(0)
-	if hotp {
-		kind = "hotp"
-		// From before the first press, so counter 0 is a candidate.
-		first, err := p.VerifyHOTP(seed, code, -1, hotpSyncWindow)
-		if err == nil {
-			counter, err = p.VerifyHOTP(seed, next, first, 1)
-		}
-		if err != nil {
-			return fmt.Errorf("-code then -next-code are not two consecutive codes of this seed among its "+
-				"first %d presses (%v); check the seed, -totp-algorithm and -totp-digits", hotpSyncWindow, err)
-		}
-	} else if counter, err = p.Verify(seed, code, time.Now(), mfa.DefaultSkew, 0); err != nil {
-		return fmt.Errorf("-code is not this seed's code now (%v); check the seed, -totp-algorithm, "+
-			"-totp-digits, -totp-period and this host's clock", err)
+	counter, err := provedOTPCounter(seed, hotp, p, code, next)
+	if err != nil {
+		return err
 	}
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	tx, err := conn.Begin(ctx)
+	replaced, err := assignProvedOTP(ctx, conn, userID, userOrg, seed, hotp, p, counter, root, "cli")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	replaced, err := store.AssignOTPToken(ctx, tx, userID, userOrg, seed, kind, string(p.Algorithm),
-		p.Digits, p.Period, counter, root)
-	if err != nil {
-		return err
-	}
-	// The holder hears of it on their own channels, as of any factor change.
-	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
-		Notice: store.NoticeFactorAssigned, Factor: "totp"}); err != nil {
-		return err
-	}
-	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "mfa.otp_token_assigned", OrgID: userOrg, SubjectID: userID,
-		Detail: map[string]any{"kind": kind, "algorithm": string(p.Algorithm), "digits": p.Digits,
-			"period_s": int(p.Period / time.Second), "replaced": replaced, "via": "cli"},
-	}); err != nil {
-		return fmt.Errorf("auditing the assignment: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	fmt.Printf("%s: a %s token is now their authenticator", email, kind)
+	fmt.Printf("%s: a %s token is now their authenticator", email, otpKind(hotp))
 	if replaced {
 		fmt.Print(", replacing the one they had")
 	}
@@ -1399,6 +1366,68 @@ func userAssignOTP(ctx context.Context, conn *pgx.Conn, orgID, email, seedFile s
 	fmt.Println("\n  Delete the seed file: the seed is sealed in the database now, and a copy")
 	fmt.Println("  anywhere else is a second token. The codes given here are spent.")
 	return nil
+}
+
+func otpKind(hotp bool) string {
+	if hotp {
+		return "hotp"
+	}
+	return "totp"
+}
+
+// provedOTPCounter is the proof a token's codes are this seed's, and for a counter-based
+// token where its counter stands.
+func provedOTPCounter(seed []byte, hotp bool, p mfa.Params, code, next string) (int64, error) {
+	if hotp {
+		// From before the first press, so counter 0 is a candidate.
+		first, err := p.VerifyHOTP(seed, code, -1, hotpSyncWindow)
+		var counter int64
+		if err == nil {
+			counter, err = p.VerifyHOTP(seed, next, first, 1)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("-code then -next-code are not two consecutive codes of this seed among its "+
+				"first %d presses (%v); check the seed, -totp-algorithm and -totp-digits", hotpSyncWindow, err)
+		}
+		return counter, nil
+	}
+	counter, err := p.Verify(seed, code, time.Now(), mfa.DefaultSkew, 0)
+	if err != nil {
+		return 0, fmt.Errorf("-code is not this seed's code now (%v); check the seed, -totp-algorithm, "+
+			"-totp-digits, -totp-period and this host's clock", err)
+	}
+	return counter, nil
+}
+
+// assignProvedOTP stores a token whose codes were proved, answering whether it replaced
+// one. via says what did it, in the record.
+func assignProvedOTP(ctx context.Context, conn *pgx.Conn, userID, userOrg string, seed []byte, hotp bool,
+	p mfa.Params, counter int64, root *keys.RootKey, via string) (bool, error) {
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	kind := otpKind(hotp)
+	replaced, err := store.AssignOTPToken(ctx, tx, userID, userOrg, seed, kind, string(p.Algorithm),
+		p.Digits, p.Period, counter, root)
+	if err != nil {
+		return false, err
+	}
+	// The holder hears of it on their own channels, as of any factor change.
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticeFactorAssigned, Factor: "totp"}); err != nil {
+		return false, err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "mfa.otp_token_assigned", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"kind": kind, "algorithm": string(p.Algorithm), "digits": p.Digits,
+			"period_s": int(p.Period / time.Second), "replaced": replaced, "via": via},
+	}); err != nil {
+		return false, fmt.Errorf("auditing the assignment: %w", err)
+	}
+	return replaced, tx.Commit(ctx)
 }
 
 // instanceRememberDevice sets how long a remembered device skips the second

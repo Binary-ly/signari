@@ -96,6 +96,7 @@ var cliAPI = map[string]string{
 	"import authentik":   cliOnly("reads another product's export from the operator's disk"),
 	"import zitadel":     cliOnly("reads another product's export from the operator's disk"),
 	"import shadow":      cliOnly("reads /etc/shadow from the operator's disk"),
+	"import pskc":        cliOnly("reads a vendor's file of seeds from the operator's disk"),
 
 	// Groups.
 	"group create":        "POST /admin/groups",

@@ -337,6 +337,7 @@ federation in:
   import authentik          import users, groups and providers from an authentik dumpdata export
   import zitadel            import an organisation's users and roles from a Zitadel export
   import shadow             an account for each /etc/shadow entry with a password
+  import pskc               give the tokens in a vendor's PSKC file to their holders
   migration-source add      where pending people's passwords are verified at first sign-in
   migration-source enable   start sending pending passwords to the source
   migration-source disable  stop sending pending passwords to the source
@@ -1082,6 +1083,8 @@ func run(args []string) (err error) {
 	totpDigits := fs.Int("totp-digits", 6, "`instance totp-policy` / `user assign-otp`: digits per code, 6 or 8")
 	totpPeriod := fs.Duration("totp-period", 30*time.Second,
 		"`instance totp-policy` / `user assign-otp`: how long a time-based code lasts, 30s or 60s")
+	pskcKeyFile := fs.String("key-file", "", "the key a vendor sent for a PSKC file, in hex (import pskc)")
+	pskcAssignments := fs.String("assignments", "", "a CSV of serial,person,code[,next-code] (import pskc)")
 	seedFile := fs.String("seed-file", "",
 		"`user assign-otp`: a file holding the token's seed, as base32 or hex (from the vendor's seed "+
 			"list); read from a file so it never appears in a process list or shell history")
@@ -1638,6 +1641,8 @@ func run(args []string) (err error) {
 		return importZitadel(ctx, conn, *file, *orgID, *dryRun)
 	case "import shadow":
 		return importShadow(ctx, conn, *file, *orgID, *dirDomain, !*apply)
+	case "import pskc":
+		return importPSKC(ctx, conn, *orgID, *file, *pskcKeyFile, *pskcAssignments, !*apply)
 	case "dir add":
 		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
 			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,

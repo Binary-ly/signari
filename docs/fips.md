@@ -101,6 +101,13 @@ warns. A code checked anyway, or one from a token seed under 112 bits, is
 refused with an error rather than a panic. Until October 2026 the check panicked
 the request, at the moment the person typed a code.
 
+### A vendor's token file — `internal/importer`
+
+RFC 6030 recommends implementing HMAC-SHA1 for a PSKC file, and it is what the RFC's own
+example uses, so `signari import pskc` reads it. Under `fips140=only` such a file is refused
+with a sentence saying so: read it once on a build without that setting, or ask the vendor
+for HMAC-SHA256, which works in either. AES-CBC and the file's plain secrets are unaffected.
+
 ### RADIUS — `internal/radius`
 
 RFC 2865 builds the Response Authenticator from MD5, and RFC 2548 derives MPPE

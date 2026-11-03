@@ -42,6 +42,7 @@ import (
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tracing"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live
@@ -458,7 +459,7 @@ func (s *Server) Routes() http.Handler {
 	// sits outside everything else, so a panic in any middleware -- not only in a
 	// route handler -- is still caught, logged in this server's format, and
 	// answered.
-	inner := http.Handler(s.mux())
+	inner := tracing.NoteRoute(s.mux())
 	if s.accessLog {
 		inner = noteRoute(inner)
 	}
@@ -491,7 +492,8 @@ func (s *Server) Routes() http.Handler {
 	if s.accessLog {
 		outer = s.withAccessLog(outer)
 	}
-	return s.withClientIP(s.withCorrelation(outer))
+	// Tracing outside everything, so a request's span covers all of it (3.09).
+	return tracing.Middleware(s.withClientIP(s.withCorrelation(outer)))
 }
 
 // recordingMux is an http.ServeMux that also declares each pattern to the

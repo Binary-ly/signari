@@ -22,6 +22,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store/storetest"
+	"signari.dev/engine/internal/tracing"
 )
 
 // The browser sign-in journey, end to end.
@@ -75,6 +76,8 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
 		return err
 	}
+	// As serve's pools have it, so a test capturing spans sees the queries.
+	cfg.ConnConfig.Tracer = tracing.DB{}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Refusing passwords that are already in a breach corpus.
@@ -81,7 +83,7 @@ func (b *BreachChecker) client() *http.Client {
 		// waiting on a form should not wait on somebody else's outage.
 		t = 3 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	return &http.Client{Timeout: t, Transport: &tracing.Transport{Base: http.DefaultTransport}}
 }
 
 // loadLocal reads the offline corpus once.

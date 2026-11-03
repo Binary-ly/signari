@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/tracing"
 )
 
 // connectDB opens the one connection every command starts with.
@@ -106,6 +107,9 @@ func poolConfig(dsn string, getenv func(string) string) (*pgxpool.Config, error)
 	if cfg.ConnConfig.RuntimeParams["application_name"] == "" {
 		cfg.ConnConfig.RuntimeParams["application_name"] = "signari"
 	}
+	// A span per query run while serving a traced request, and nothing else
+	// (3.09).
+	cfg.ConnConfig.Tracer = tracing.DB{}
 	if v := getenv("SIGNARI_DB_MAX_CONNS"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil || n < 1 {

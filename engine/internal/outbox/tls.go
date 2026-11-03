@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/safedial"
+	"signari.dev/engine/internal/tracing"
 )
 
 // outboundClient builds the HTTP client used for every outbound delivery.
@@ -88,5 +89,5 @@ func outboundClient(timeout time.Duration) *http.Client {
 			}
 		}
 	}
-	return &http.Client{Timeout: timeout, Transport: transport}
+	return &http.Client{Timeout: timeout, Transport: &tracing.Transport{Base: transport}}
 }

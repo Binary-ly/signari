@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // How this engine proves itself at the provider's token endpoint.
@@ -178,7 +180,7 @@ func (c Config) tokenClient(hc *http.Client) (*http.Client, error) {
 	if c.TokenAuth.Method != AuthTLS {
 		return hc, nil
 	}
-	transport, ok := hc.Transport.(*http.Transport)
+	transport, ok := safedial.Underneath(hc.Transport)
 	if !ok || c.TokenAuth.Key == nil || c.TokenAuth.Certificate == nil {
 		return nil, errors.New("tls_client_auth needs a client key and certificate")
 	}
@@ -189,6 +191,6 @@ func (c Config) tokenClient(hc *http.Client) (*http.Client, error) {
 	clone.TLSClientConfig.Certificates = []tls.Certificate{{Certificate: [][]byte{c.TokenAuth.Certificate.Raw},
 		PrivateKey: c.TokenAuth.Key, Leaf: c.TokenAuth.Certificate}}
 	out := *hc
-	out.Transport = clone
+	out.Transport = safedial.Over(hc.Transport, clone)
 	return &out, nil
 }

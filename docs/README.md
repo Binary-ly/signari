@@ -27,6 +27,7 @@ command or an environment variable exists in code and not on its page.
 | [runbook-backup-restore.md](runbook-backup-restore.md) | Backup and restore, and why the root key changes everything |
 | [runbook-public-conformance.md](runbook-public-conformance.md) | Exposing a deployment to the OIDF conformance suite |
 | [performance.md](performance.md) | What one instance does under load |
+| [tracing.md](tracing.md) | OpenTelemetry spans to a collector, and what no span carries |
 | [security-scanning.md](security-scanning.md) | `govulncheck`, `gosec`, and the findings left visible on purpose |
 | [dependencies.md](dependencies.md) | Third-party inventory (ASVS V15.1.2) |
 

@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // newClientKey is a key and a certificate for it, as PEM and parsed.
@@ -176,6 +178,26 @@ func TestACertificateIsPresentedAtTheTokenEndpoint(t *testing.T) {
 	}
 	if len(hc.Transport.(*http.Transport).TLSClientConfig.Certificates) != len(before) {
 		t.Error("the certificate was left on the shared client, for every other call to find")
+	}
+}
+
+// The clients safedial builds send through a span per request (3.09), and the
+// certificate has to reach the connection through that wrapper as well. Taking
+// the wrapper for the transport refused every mutual-TLS exchange as having no
+// certificate.
+func TestACertificateIsPresentedThroughATracedClient(t *testing.T) {
+	e := &tokenEndpoint{}
+	srv := httptest.NewUnstartedServer(e)
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert, MinVersion: tls.VersionTLS12}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	_, _, key, cert := newClientKey(t)
+
+	hc := srv.Client()
+	hc.Transport = &tracing.Transport{Base: hc.Transport}
+	exchange(t, Config{ClientID: "our-client", TokenAuth: TokenAuth{Method: AuthTLS, Key: key, Certificate: cert}}, hc, srv.URL)
+	if len(e.peer) != 1 || !e.peer[0].Equal(cert) {
+		t.Fatalf("the endpoint saw %d certificates", len(e.peer))
 	}
 }
 

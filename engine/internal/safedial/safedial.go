@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Refusing to make requests into our own network.
@@ -477,12 +479,18 @@ func Client(timeout time.Duration) *http.Client { return ClientAllowing(timeout)
 // loopback. Wider allowances belong in SIGNARI_OUTBOUND_ALLOW_PRIVATE, where
 // they are visible.
 func ClientAllowing(timeout time.Duration, extra ...netip.Prefix) *http.Client {
+	return client(timeout, transportWith(extra))
+}
+
+// client wraps t in a span per request (3.09), which is why a caller wanting the
+// *http.Transport underneath asks Underneath rather than asserting the type.
+func client(timeout time.Duration, t *http.Transport) *http.Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: transportWith(extra),
+		Transport: &tracing.Transport{Base: t},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")
@@ -503,11 +511,27 @@ func ClientAllowing(timeout time.Duration, extra ...netip.Prefix) *http.Client {
 // which addresses may be reached are separate decisions: trusting a private CA
 // does not open the private network, which SIGNARI_OUTBOUND_ALLOW_PRIVATE does.
 func ClientTrusting(timeout time.Duration, roots *x509.CertPool) *http.Client {
-	c := Client(timeout)
-	c.Transport.(*http.Transport).TLSClientConfig = &tls.Config{
-		RootCAs: roots, MinVersion: tls.VersionTLS12,
+	t := transportWith(nil)
+	t.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return client(timeout, t)
+}
+
+// Underneath is the *http.Transport a client built here sends through, for a
+// caller that clones it.
+func Underneath(rt http.RoundTripper) (*http.Transport, bool) {
+	if t, ok := rt.(*tracing.Transport); ok {
+		rt = t.Base
 	}
-	return c
+	t, ok := rt.(*http.Transport)
+	return t, ok
+}
+
+// Over is t, wrapped as rt was.
+func Over(rt http.RoundTripper, t *http.Transport) http.RoundTripper {
+	if _, ok := rt.(*tracing.Transport); ok {
+		return &tracing.Transport{Base: t}
+	}
+	return t
 }
 
 // CheckURL is a cheap pre-flight for the moment a subscription is SAVED.

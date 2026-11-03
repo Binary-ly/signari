@@ -82,6 +82,7 @@ import (
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
+	"signari.dev/engine/internal/tracing"
 )
 
 func main() {
@@ -2669,6 +2670,14 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return err
 	}
+	// Spans to a collector, when one is named (3.09). Before the servers are
+	// built, because the middleware is only installed while tracing is on, and
+	// stopped last, so the spans of the final requests are sent.
+	stopTracing, err := tracing.Setup(os.Getenv, version, safedial.Roots(), log)
+	if err != nil {
+		return err
+	}
+	defer stopTracing()
 
 	// The startup gate. A drifted or half-migrated database must fail here, at
 	// boot, with a clear message -- not at 3am inside a query.
@@ -3007,7 +3016,12 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		adminSrv.SetMetrics(met)
 		adminSrv.SetRelease(version)
 		if readDSN := os.Getenv("SIGNARI_READ_DSN"); readDSN != "" {
-			replica, rerr := pgxpool.New(ctx, readDSN)
+			rcfg, rerr := pgxpool.ParseConfig(readDSN)
+			if rerr != nil {
+				return fmt.Errorf("SIGNARI_READ_DSN: %w", rerr)
+			}
+			rcfg.ConnConfig.Tracer = tracing.DB{}
+			replica, rerr := pgxpool.NewWithConfig(ctx, rcfg)
 			if rerr != nil {
 				return fmt.Errorf("SIGNARI_READ_DSN: %w", rerr)
 			}

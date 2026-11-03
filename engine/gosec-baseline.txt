@@ -8,6 +8,7 @@
 #
 # rule  file                                count  reason
 G115    internal/radius/authorization.go    3      taggedInteger splits a 3-octet RFC 2868 value into bytes on purpose; called with constants only
+G115    internal/tracing/otlp.go            7      protobuf encoding: constant field numbers and wire types, lengths and counts never negative, and an int64 written as uint64(v), as protobuf-go's own encoder does (docs/security-scanning.md)
 G117    internal/httpapi/txntoken.go        1      the protocol response's access_token field, not a stored secret
 G203    internal/httpapi/enrol.go           2      otpauth URI (fixed scheme) and the QR SVG this server generates
 G203    internal/i18n/printer.go            2      catalogue text is trusted; every interpolated value is escaped before marking

@@ -88,6 +88,10 @@ var mustBeReachable = []capability{
 	{"ObserveAudit", "signari_signins_total and signari_auth_failures_total are " +
 		"exported and read zero, because nothing hands the audit trail's sign-in " +
 		"events to the metrics engine"},
+	{"Setup", "SIGNARI_OTLP_TRACES_ENDPOINT is documented and parsed, and no " +
+		"collector ever receives a span"},
+	{"NoteRoute", "a request's span is named by its method alone, so a trace " +
+		"cannot say which endpoint was slow"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

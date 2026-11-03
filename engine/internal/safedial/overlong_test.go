@@ -58,11 +58,18 @@ func TestAnOverlongRequestIsNotSent(t *testing.T) {
 
 // Every way of getting a client here carries it, or the one built next does not.
 func TestEveryTransportRefusesTheOverlong(t *testing.T) {
+	under := func(c *http.Client) *http.Transport {
+		tr, ok := Underneath(c.Transport)
+		if !ok {
+			t.Fatalf("no transport under %T", c.Transport)
+		}
+		return tr
+	}
 	for name, tr := range map[string]*http.Transport{
 		"Transport":                Transport(),
 		"TransportAllowingPrivate": TransportAllowingPrivate(),
-		"Client":                   Client(time.Second).Transport.(*http.Transport),
-		"ClientTrusting":           ClientTrusting(time.Second, nil).Transport.(*http.Transport),
+		"Client":                   under(Client(time.Second)),
+		"ClientTrusting":           under(ClientTrusting(time.Second, nil)),
 	} {
 		if tr.Proxy == nil {
 			t.Errorf("%s has no ceiling", name)

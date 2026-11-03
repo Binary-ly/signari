@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Microsoft Entra ID, through Microsoft Graph.
@@ -70,7 +72,7 @@ func (e *EntraSource) client() *http.Client {
 	if e.Client != nil {
 		return e.Client
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second, Transport: &tracing.Transport{Base: http.DefaultTransport}}
 }
 
 // Fetch returns every user in the tenant.

@@ -313,6 +313,17 @@ startup so that every outbound client trusts it, not only delivery. It is a new
 `G304`, because it still reads the older `SIGNARI_SCIM_CA_BUNDLE` when the
 general setting is unset.
 
+**78** with the OTLP exporter (3.09), seven `G115` in `internal/tracing/otlp.go`,
+all of them protobuf encoding. Two shift a field number and a wire type, both
+constants, into a key. Four write a length or a dropped count, none of which can
+be negative. The seventh writes an `int64` attribute as `uint64(v)`, its two's
+complement, which is how protobuf-go's own encoder writes an `int64`
+(`google.golang.org/protobuf` v1.36.12, `internal/impl/codec_gen.go:1851`). The
+bytes were decoded with the generated OTLP types, and Jaeger assembled them into
+traces. That count is measured against this change alone: the tree it was made on
+already gave 164 against the 71 here, findings that arrived after the baseline was
+last set and were never reviewed. They still are to be.
+
 ## A fourth sweep: exported functions nothing calls
 
 The three sweeps above catch unimported *packages*, documented-but-absent

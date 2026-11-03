@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Provisioning into Microsoft Entra ID, through Microsoft Graph.
@@ -53,7 +55,7 @@ func (e *Entra) client() *http.Client {
 	if e.HTTP != nil {
 		return e.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{Timeout: 30 * time.Second, Transport: &tracing.Transport{Base: http.DefaultTransport}}
 }
 
 func (e *Entra) bearer(ctx context.Context) (string, error) {

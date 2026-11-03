@@ -42,6 +42,7 @@ import (
 	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/ratelimit"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tracing"
 )
 
 // Server is the admin write API. It listens separately from the public protocol
@@ -657,13 +658,13 @@ func (s *Server) Routes() http.Handler {
 	route("POST /admin/batch", "", s.handleBatch)
 	s.mux.Store(mux)
 
-	var inner http.Handler = mux
+	inner := tracing.NoteRoute(mux)
 	if s.metrics != nil {
 		// Innermost, next to the mux, which is the only place the matched
 		// pattern is known (see the same choice in httpapi.Routes).
-		inner = s.metrics.Middleware(mux)
+		inner = s.metrics.Middleware(inner)
 	}
-	return s.limitArrivals(versioned(inner))
+	return tracing.Middleware(s.limitArrivals(versioned(inner)))
 }
 
 // versioned serves /admin/v1/... as /admin/..., one route table under both

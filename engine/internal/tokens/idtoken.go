@@ -3,16 +3,21 @@ package tokens
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	_ "crypto/sha256" // for crypto.SHA256 in AtHash
 	_ "crypto/sha512" // for crypto.SHA384 and crypto.SHA512 in AtHash
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/cryptosigner"
 
 	"signari.dev/engine/internal/keys"
 )
@@ -274,7 +279,7 @@ func (s *Signer) sign(payload []byte, typ string) (string, error) {
 		WithType(jose.ContentType(typ)).
 		WithHeader(jose.HeaderKey("kid"), s.key.KID())
 
-	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: s.key.Signer()}, opts)
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: joseKey(s.key.Signer())}, opts)
 	if err != nil {
 		return "", fmt.Errorf("building signer: %w", err)
 	}
@@ -283,6 +288,32 @@ func (s *Signer) sign(payload []byte, typ string) (string, error) {
 		return "", fmt.Errorf("signing: %w", err)
 	}
 	return obj.CompactSerialize()
+}
+
+// joseKey is what the JOSE library signs with. It takes the three private key
+// types it knows, or an OpaqueSigner, and refuses any other crypto.Signer as an
+// unsupported key type, which is what a key held in a module is (keys/backend.go).
+// That one is adapted; the others go as they always have.
+func joseKey(signer crypto.Signer) any {
+	switch signer.(type) {
+	case *ecdsa.PrivateKey, *rsa.PrivateKey, ed25519.PrivateKey:
+		return signer
+	}
+	return cryptosigner.Opaque(hashLongSalt{signer})
+}
+
+// hashLongSalt signs PS256 with a salt as long as the hash, as the library does
+// for a key it holds itself (go-jose v4.1.4 asymmetric.go:294). Its adapter asks
+// any other signer for rsa.PSSSaltLengthAuto (cryptosigner.go, SignPayload),
+// which a PKCS#11 module cannot be given and crypto11 refuses (rsa.go, signPSS),
+// and which would make a module's PS256 signature unlike this server's own.
+type hashLongSalt struct{ crypto.Signer }
+
+func (s hashLongSalt) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if pss, ok := opts.(*rsa.PSSOptions); ok && pss.SaltLength == rsa.PSSSaltLengthAuto {
+		opts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: pss.Hash}
+	}
+	return s.Signer.Sign(rand, digest, opts)
 }
 
 // CHash computes the c_hash claim: the same construction as at_hash, over the

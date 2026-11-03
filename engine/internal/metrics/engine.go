@@ -347,7 +347,7 @@ func signInOutcome(reason string) string {
 // mechanism label, or "" when the reason is not a wrong credential.
 func failureMechanism(reason, via string) string {
 	switch {
-	case via == "ldap": // the listener and an outpost's binds alike
+	case via == "ldap": // the listener and an LDAP outpost's binds alike
 		return "ldap"
 	case via == "radius":
 		return "radius"

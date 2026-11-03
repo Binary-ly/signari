@@ -13,7 +13,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/outpost"
 	"signari.dev/engine/internal/passwords"
@@ -347,8 +346,10 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 	if a, err := netip.ParseAddr(body.ClientIP); err == nil {
 		ctx = ldapd.WithPeerAddr(ctx, a.String())
 	}
+	// Recorded as the protocol the credential arrived on, at this outpost, once:
+	// the authenticator writes every outcome, so this handler writes none.
 	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), orgID, s.log).
-		WithMFAGate(s.BindDemandsMFA).WithCodes(s.BindCodeOK)
+		WithMFAGate(s.BindDemandsMFA).WithCodes(s.BindCodeOK).withVia(kind).withOutpost(name)
 	ident, err := auth.Authenticate(ctx, body.Username, body.Password)
 	if errors.Is(err, ldapd.ErrBusy) {
 		// Not a judgement of the password, so not answered as one.
@@ -359,11 +360,6 @@ func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Reques
 		// One answer for every reason. An outpost sits somewhere less trusted by
 		// definition, and a response that distinguished "no such user" from
 		// "wrong password" would make it a user-enumeration endpoint there.
-		s.auditDetached(r.Context(), audit.Event{
-			Type: audit.EventLoginFailed, OrgID: orgID,
-			CorrelationID: correlationID(r.Context()),
-			Detail:        map[string]any{"via": "outpost", "outpost": name},
-		})
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication refused")
 		return
 	}

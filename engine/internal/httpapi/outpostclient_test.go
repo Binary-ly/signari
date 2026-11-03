@@ -109,6 +109,62 @@ func TestAnOutpostPassesOnWhereABindCameFrom(t *testing.T) {
 	}
 }
 
+// A password checked at an outpost is recorded once, as the protocol it arrived on and
+// naming the outpost. A RADIUS outpost's Access-Accept was recorded as an LDAP bind
+// naming no outpost, and every wrong password twice, which the sign-in metrics read off
+// the trail counted twice too; running the outpost's compose template found it.
+func TestAnOutpostsBindIsAuditedOnceAndWhereItArrived(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	name := fmt.Sprintf("branch-%d", time.Now().UnixNano())
+	_, token, err := store.CreateOutpost(ctx, f.pool, f.orgID, name, "radius", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.RemoveOutpost(context.Background(), f.pool, f.orgID, name) })
+	core := httptest.NewServer(f.srv.Routes())
+	t.Cleanup(core.Close)
+	client, err := outpost.New(core.URL, token, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Authenticate(ctx, f.email, "not-the-password"); !errors.Is(err, outpost.ErrRefused) {
+		t.Fatalf("a wrong password: %v", err)
+	}
+	if _, err := client.Authenticate(ctx, f.email, signInTestPassword); err != nil {
+		t.Fatalf("the right password: %v", err)
+	}
+
+	rows, err := f.pool.Query(ctx, `
+		SELECT event_type || ' ' || COALESCE(detail->>'via', '-') || ' ' || COALESCE(detail->>'outpost', '-')
+		       || ' ' || COALESCE(detail->>'reason', '-')
+		FROM core.audit_events
+		WHERE (subject_id = $1::uuid OR detail->>'outpost' = $2) AND event_type LIKE 'login.%' ORDER BY id`,
+		f.userID, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"login.failed radius " + name + " bad_password",
+		"login.succeeded radius " + name + " -",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the trail holds\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
+}
+
 // A running outpost that has gone quiet is told from one that has not started and one
 // taken out of service, and only the kinds that say hello can go quiet.
 func TestOnlyARunningOutpostGoesStale(t *testing.T) {

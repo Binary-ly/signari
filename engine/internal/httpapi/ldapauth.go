@@ -47,6 +47,11 @@ type LDAPAuthenticator struct {
 	// would be recorded as an LDAP bind -- and an investigation asking "how did
 	// this account authenticate" would be told the wrong answer confidently.
 	via string
+	// outpost names the outpost a credential reached the core through, on every
+	// event written here. An outpost's RADIUS Access-Accept used to be recorded
+	// as an LDAP bind naming no outpost, and its handler wrote a second
+	// login.failed beside this type's for every wrong password.
+	outpost string
 	// demandsMFA answers whether the sign-in flow would ask this person for a
 	// second factor after a password (Server.BindDemandsMFA). nil falls back to
 	// whether they have one enrolled, which is the built-in flow's answer and
@@ -132,6 +137,13 @@ func (a *LDAPAuthenticator) withVia(via string) *LDAPAuthenticator {
 	return &c
 }
 
+// withOutpost returns a copy naming an outpost on its audit events.
+func (a *LDAPAuthenticator) withOutpost(name string) *LDAPAuthenticator {
+	c := *a
+	c.outpost = name
+	return &c
+}
+
 // audit writes one authentication outcome to the append-only trail.
 //
 // # Why this exists
@@ -151,6 +163,9 @@ func (a *LDAPAuthenticator) withVia(via string) *LDAPAuthenticator {
 // correct authentication decision into an error -- the decision is already
 // made by the time this runs.
 func (a *LDAPAuthenticator) audit(ctx context.Context, e audit.Event) {
+	if a.outpost != "" && e.Detail != nil {
+		e.Detail["outpost"] = a.outpost
+	}
 	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		a.log.Error("auditing an LDAP bind", "event", e.Type, "err", err)

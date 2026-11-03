@@ -85,6 +85,15 @@ func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Ad
 		}
 		defer sess.busy.Unlock()
 
+		// RFC 3748 §4.1: "An authenticator receiving a Response whose Identifier
+		// value does not match that of the currently outstanding Request ... MUST
+		// silently discard the Response." It is no reply at all, and feeding it to
+		// TLS would break the conversation the right one is still part of.
+		if eap.Identifier != sess.identifier {
+			s.log.Debug("EAP-TLS response out of sequence", "client", client.Name)
+			return
+		}
+
 		next, done, ok := s.continueEAPTLS(sess, eap)
 		switch {
 		case !done:

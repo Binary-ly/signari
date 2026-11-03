@@ -157,10 +157,23 @@ checked first, so a device disabled since is answered nothing.
 the supplicant holds a random name for it, because a sealed ticket carries the
 client certificate and costs what it saves. With a three-kilobyte certificate a
 resumption takes three round trips where the whole handshake takes seven under
-TLS 1.2, and five where it takes nine under TLS 1.3. Certificate expiry and the
+TLS 1.2, and six where it takes nine under TLS 1.3. Certificate expiry and the
 chain are checked again and the owner is asked about again, so somebody
 deactivated since is refused. A restart, or a node that does not know the name,
-means the whole handshake.
+means the whole handshake. wpa_supplicant offers a ticket under TLS 1.2 only
+with `tls_disable_session_ticket=0` in `phase1`; without it, it does the whole
+handshake every time.
+
+**EAP-TLS under TLS 1.3 follows RFC 9190.** The server says it has accepted
+somebody over TLS, with one byte of application data, before EAP-Success, and it
+says so only after asking about the certificate's owner, so somebody refused is
+sent EAP-Failure and never that byte. Until November 2026 it was not sent, and the
+keys given to the access point were derived with the wrong arguments, so a real
+supplicant could finish only under TLS 1.2. This is checked with `eapol_test` from
+wpa_supplicant 2.10, which compares the keys in the Accept with the ones it derived
+for itself: they match under both versions, on a whole handshake and a resumed
+one. A response whose EAP Identifier is not the outstanding request's is
+discarded with no reply, as RFC 3748 requires.
 
 **A zero-length attribute is refused.** It would not advance the parse cursor,
 so the loop would spin forever on a packet an attacker sends once.

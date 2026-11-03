@@ -81,7 +81,7 @@ type eapSession struct {
 	tls  *tls.Conn
 
 	// identifier is the EAP identifier of the last request we sent. A response
-	// carrying a different one is out of sequence.
+	// carrying a different one is out of sequence, and handleEAP discards it.
 	identifier byte
 
 	// outbound is what TLS has produced and we have not finished sending.
@@ -94,6 +94,12 @@ type eapSession struct {
 
 	handshakeDone chan struct{}
 	handshakeErr  error
+
+	// decided says the question of who this is has been asked, once, when the
+	// handshake ended; accepted is the answer. indicated says the TLS 1.3
+	// protected success indication has gone out, after which only one reply
+	// earns an EAP-Success.
+	decided, accepted, indicated bool
 
 	username string
 	created  time.Time
@@ -182,6 +188,9 @@ type eapConn struct {
 	in     []byte // from the supplicant, waiting for tls to read
 	out    []byte // from tls, waiting to be sent
 	closed bool
+	// starved says tls is blocked in Read, so it has written all it will until
+	// the supplicant says something more.
+	starved bool
 }
 
 func newEAPConn() *eapConn {
@@ -194,8 +203,10 @@ func (c *eapConn) Read(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for len(c.in) == 0 && !c.closed {
+		c.starved = true
 		c.cond.Wait()
 	}
+	c.starved = false
 	if len(c.in) == 0 && c.closed {
 		return 0, io.EOF
 	}
@@ -223,36 +234,44 @@ func (c *eapConn) feed(b []byte) {
 	c.cond.Broadcast()
 }
 
-// waitOut blocks until TLS has produced output, the handshake ends, or the
-// deadline passes.
+// waitOut blocks until TLS has written all it is going to, which is when it is
+// waiting for the supplicant again or the handshake has ended, or the deadline
+// passes.
+//
+// Not at the first byte: TLS 1.3 writes a session ticket before it has read the
+// client's Finished, so that would send the ticket on its own, and how many round
+// trips a conversation took would depend on which goroutine got there first.
 //
 // The deadline is what stops a stalled handshake holding a goroutine forever.
 func (c *eapConn) waitOut(done <-chan struct{}, timeout time.Duration) []byte {
 	deadline := time.Now().Add(timeout)
 	for {
 		c.mu.Lock()
-		if len(c.out) > 0 || c.closed {
-			out := c.out
-			c.out = nil
-			c.mu.Unlock()
-			return out
-		}
+		quiet := c.closed || (c.starved && len(c.in) == 0)
 		c.mu.Unlock()
+		if quiet {
+			return c.take()
+		}
 
 		select {
 		case <-done:
 			// The handshake finished; take whatever it left behind.
-			c.mu.Lock()
-			out := c.out
-			c.out = nil
-			c.mu.Unlock()
-			return out
+			return c.take()
 		case <-time.After(2 * time.Millisecond):
 			if time.Now().After(deadline) {
-				return nil
+				return c.take()
 			}
 		}
 	}
+}
+
+// take empties what TLS has written.
+func (c *eapConn) take() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.out
+	c.out = nil
+	return out
 }
 
 func (c *eapConn) closeBoth() {
@@ -292,7 +311,7 @@ func (eapAddr) String() string  { return "eap" }
 // new ticket crosses back. Measured with a three-kilobyte certificate, resuming
 // took more round trips than not. So the state stays here and the supplicant is
 // given thirty-two random bytes for it, and the same certificate resumes in three
-// round trips where the whole handshake takes seven under TLS 1.2, and five where
+// round trips where the whole handshake takes seven under TLS 1.2, and six where
 // it takes nine under TLS 1.3.
 //
 // A resumed handshake skips the chain and not the decision. crypto/tls restores
@@ -427,6 +446,13 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 		return nil, true, false
 	}
 
+	// RFC 9190 §2.1.1: EAP-Success answers "an EAP-Response packet of
+	// EAP-Type=EAP-TLS and no data". Anything else here is the supplicant saying
+	// what it could not say by acknowledging, a TLS alert at that.
+	if sess.indicated && (frame.More || len(frame.Data) > 0) {
+		return nil, true, false
+	}
+
 	// A supplicant with more to send: acknowledge with an empty EAP-TLS packet
 	// and wait. This is the fragment ACK, and omitting it stalls every
 	// certificate chain larger than one fragment.
@@ -473,14 +499,19 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 		sess.outbound = sess.conn.waitOut(sess.handshakeDone, 5*time.Second)
 	}
 
+	select {
+	case <-sess.handshakeDone:
+		if sess.handshakeErr == nil && !sess.decided {
+			s.decideEAPTLS(sess)
+		}
+	default:
+	}
+
 	// Nothing left to send and the handshake is over: this is the verdict.
 	if len(sess.outbound) == 0 {
 		select {
 		case <-sess.handshakeDone:
-			if sess.handshakeErr != nil {
-				return nil, true, false
-			}
-			return nil, true, s.finishEAPTLS(sess)
+			return nil, true, sess.accepted
 		default:
 			// No output, no verdict: the supplicant sent something that moved
 			// nothing forward.
@@ -489,6 +520,33 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 	}
 
 	return s.nextFragment(sess), false, false
+}
+
+// decideEAPTLS asks who a finished handshake proved, and under TLS 1.3 tells the
+// supplicant.
+//
+// RFC 9190 §2.5: the server "MUST NOT send an encrypted TLS record with application
+// data 0x00 before it has successfully processed the client Finished and sent its
+// last handshake message", and after one "may only send an EAP-Success". So the byte
+// is a promise, and it follows the decision: somebody refused is sent no such record.
+//
+// RFC 9190 §2.1.4 has a refusal sent as a TLS alert. crypto/tls has no way to send
+// one once the handshake is done, and asking any earlier would be asking about a
+// certificate its holder has not proved it holds: VerifyConnection runs before
+// CertificateVerify is read. Somebody refused is answered EAP-Failure alone.
+func (s *Server) decideEAPTLS(sess *eapSession) {
+	sess.decided = true
+	sess.accepted = s.finishEAPTLS(sess)
+	if !sess.accepted || sess.tls.ConnectionState().Version < tls.VersionTLS13 {
+		return
+	}
+	if _, err := sess.tls.Write([]byte{0x00}); err != nil {
+		s.log.Error("sending the EAP-TLS success indication", "err", err)
+		sess.accepted = false
+		return
+	}
+	sess.indicated = true
+	sess.outbound = append(sess.outbound, sess.conn.take()...)
 }
 
 // nextFragment sends the next piece of queued TLS output.
@@ -545,21 +603,29 @@ func (s *Server) finishEAPTLS(sess *eapSession) bool {
 // MSK returns the master session key the access point needs.
 //
 // RFC 5216 §2.3: the first 64 bytes of keying material exported with the label
-// "client EAP encryption". RFC 9190 changes the label for TLS 1.3, and Go's
-// exporter handles the version difference underneath.
+// "client EAP encryption". RFC 9190 §2.3 changes all three arguments for TLS 1.3:
+//
+//	Type = 0x0D
+//	Key_Material = TLS-Exporter("EXPORTER_EAP_TLS_Key_Material", Type, 128)
+//	MSK          = Key_Material(0, 63)
+//
+// Asking for 64 is not asking for the first 64 of 128, because the length goes into
+// the derivation: "the key derivation MUST use the length values given above".
+// This asked for 64 with no Type until November 2026, so under TLS 1.3 the access
+// point was handed a key the supplicant did not have.
 //
 // Without this the supplicant authenticates and then cannot encrypt anything,
 // which on wifi means the association succeeds and no traffic passes -- a
 // failure that looks like a driver problem and is not.
 func (sess *eapSession) MSK() ([]byte, error) {
 	state := sess.tls.ConnectionState()
-	label := "client EAP encryption"
+	label, context, length := "client EAP encryption", []byte(nil), 64
 	if state.Version >= tls.VersionTLS13 {
-		label = "EXPORTER_EAP_TLS_Key_Material"
+		label, context, length = "EXPORTER_EAP_TLS_Key_Material", []byte{EAPTypeTLS}, 128
 	}
-	km, err := state.ExportKeyingMaterial(label, nil, 64)
+	km, err := state.ExportKeyingMaterial(label, context, length)
 	if err != nil {
 		return nil, fmt.Errorf("exporting EAP keying material: %w", err)
 	}
-	return km, nil
+	return km[:64], nil
 }

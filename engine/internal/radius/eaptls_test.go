@@ -1,6 +1,7 @@
 package radius
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -154,6 +155,66 @@ type supplicant struct {
 	// rounds counts requests, and resumed says the handshake skipped the chain.
 	rounds  int
 	resumed bool
+
+	// indication is the application data the server sent over TLS, and sentWith
+	// the Request Authenticator of the last request, which the MPPE keys in an
+	// Accept are encrypted under.
+	indication []byte
+	sentWith   []byte
+	// stray sends every response once first with the wrong EAP Identifier, and
+	// strayAnswered counts the ones the server replied to.
+	stray         bool
+	strayAnswered int
+	// answerIndication is what to send in place of the empty response to the
+	// request carrying the success indication.
+	answerIndication []byte
+	// indicationRounds counts the requests that carried TLS data after the
+	// handshake, which is how many the ticket and the indication took between them.
+	indicationRounds int
+}
+
+// msk is the key the supplicant derives for itself, from the two RFCs and not from
+// the server's code: RFC 5216 §2.3 under TLS 1.2, RFC 9190 §2.3 under TLS 1.3.
+func (s *supplicant) msk(t *testing.T) []byte {
+	t.Helper()
+	state := s.tlsConn.ConnectionState()
+	var km []byte
+	var err error
+	if state.Version == tls.VersionTLS13 {
+		km, err = state.ExportKeyingMaterial("EXPORTER_EAP_TLS_Key_Material", []byte{0x0D}, 128)
+	} else {
+		km, err = state.ExportKeyingMaterial("client EAP encryption", nil, 64)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return km[:64]
+}
+
+// mppeKey undoes RFC 2548 §2.4.2, as an access point does, and returns the key.
+func mppeKey(t *testing.T, accept *Packet, vendorType byte, secret, requestAuthenticator []byte) []byte {
+	t.Helper()
+	for _, a := range accept.Attributes {
+		if a.Type != AttrVendorSpecific || a.Value[4] != vendorType {
+			continue
+		}
+		salt, cipher := a.Value[6:8], a.Value[8:]
+		var plain []byte
+		prev := append(append([]byte(nil), requestAuthenticator...), salt...)
+		for i := 0; i < len(cipher); i += 16 {
+			h := md5.New()
+			h.Write(secret)
+			h.Write(prev)
+			b := h.Sum(nil)
+			for j := range 16 {
+				plain = append(plain, cipher[i+j]^b[j])
+			}
+			prev = cipher[i : i+16]
+		}
+		return plain[1 : 1+plain[0]]
+	}
+	t.Fatalf("no MPPE attribute of type %d in the accept", vendorType)
+	return nil
 }
 
 // nextFragment takes the next piece of our outbound flight.
@@ -260,13 +321,14 @@ func (s *supplicant) run() (byte, *Packet, error) {
 			case <-time.After(time.Second):
 			}
 			_ = handshakeErr
-			if s.cache != nil {
-				// Closed first: a handshake still waiting holds what this reads.
-				// TLS 1.3 delivers its ticket after the handshake, to a read.
-				s.pipe.closeBoth()
-				s.resumed = s.tlsConn.ConnectionState().DidResume
-				_, _ = s.tlsConn.Read(make([]byte, 1))
-			}
+			// Closed first: a handshake still waiting holds what this reads.
+			// TLS 1.3 delivers its ticket after the handshake, to a read, and
+			// the application data with it.
+			s.pipe.closeBoth()
+			s.resumed = s.tlsConn.ConnectionState().DidResume
+			got := make([]byte, 16)
+			n, _ := s.tlsConn.Read(got)
+			s.indication = got[:n]
 			return reply.Code, reply, nil
 		}
 
@@ -285,6 +347,15 @@ func (s *supplicant) run() (byte, *Packet, error) {
 		frame, err := DecodeEAPTLS(eap.Data)
 		if err != nil {
 			return 0, nil, err
+		}
+
+		// Looked at before this frame goes in: the frame that finishes our handshake
+		// is not one that arrived after it.
+		afterHandshake := false
+		select {
+		case <-handshakeDone:
+			afterHandshake = len(s.pending) == 0 && len(frame.Data) > 0
+		default:
 		}
 
 		// Feed whatever TLS data arrived to our client.
@@ -318,6 +389,21 @@ func (s *supplicant) run() (byte, *Packet, error) {
 			payload = s.nextFragment()
 		}
 
+		if afterHandshake {
+			s.indicationRounds++
+			if s.answerIndication != nil {
+				payload = (&EAPTLSFrame{Data: s.answerIndication}).Encode()
+			}
+		}
+
+		if s.stray {
+			wrong := (&EAPPacket{Code: EAPResponse, Identifier: eap.Identifier - 1,
+				Type: EAPTypeTLS, Data: payload}).Encode()
+			if s.answered(wrong, state) {
+				s.strayAnswered++
+			}
+		}
+
 		resp := (&EAPPacket{Code: EAPResponse, Identifier: eap.Identifier,
 			Type: EAPTypeTLS, Data: payload}).Encode()
 		reply, err = s.exchange(resp, state)
@@ -344,6 +430,7 @@ func (s *supplicant) exchange(eap, state []byte) (*Packet, error) {
 		return nil, err
 	}
 	s.rounds++
+	s.sentWith = req[4:20]
 	if s.send != nil {
 		raw, err := s.send(req)
 		if err != nil {
@@ -359,6 +446,19 @@ func (s *supplicant) exchange(eap, state []byte) (*Packet, error) {
 		return nil, err
 	}
 	return Decode(raw)
+}
+
+// answered sends one response and says whether the server replied at all.
+func (s *supplicant) answered(eap, state []byte) bool {
+	attrs := append(EAPAttributes(eap), Attribute{Type: AttrState, Value: state})
+	req, err := buildTestRequest(s.secret, attrs)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	s.server.handle(context.Background(), s.conn,
+		&net.UDPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 5000}, req)
+	_, err = s.conn.take(20 * time.Millisecond)
+	return err == nil
 }
 
 func eapTestServer(t *testing.T, pki *testPKI, auth CertificateAuthenticator) *Server {
@@ -439,6 +539,162 @@ func TestEAPTLSFullHandshake(t *testing.T) {
 	}
 	if eap.Code != EAPSuccess {
 		t.Fatalf("the accept carried EAP code %d, want Success", eap.Code)
+	}
+}
+
+// RFC 9190 §2.5: under TLS 1.3 an accepted peer is told so over TLS, with one byte
+// of application data, before it is sent EAP-Success. RFC 5216 has no such thing.
+func TestEAPTLSSaysSuccessOverTLS13AndNotOver12(t *testing.T) {
+	for name, tc := range map[string]struct {
+		version uint16
+		want    []byte
+	}{
+		"TLS 1.3": {tls.VersionTLS13, []byte{0x00}},
+		"TLS 1.2": {tls.VersionTLS12, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pki := newTestPKI(t)
+			sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{}), conn: newFakePacketConn(),
+				secret: []byte("a-secret-of-sufficient-length"), cert: pki.issue(t, "alice@corp.test", true, 0),
+				pool: pki.pool, identity: "anonymous", maxVersion: tc.version}
+			code, _, err := sup.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != CodeAccessAccept {
+				t.Fatalf("got code %d", code)
+			}
+			if !bytes.Equal(sup.indication, tc.want) {
+				t.Errorf("the application data over TLS was %x, want %x", sup.indication, tc.want)
+			}
+		})
+	}
+}
+
+// RFC 9190 §2.1.2 draws the ticket and the indication in one Request. TLS writes the
+// ticket before it has read the client's Finished, so taking the first output sent
+// them one at a time, or not, by which goroutine got there first.
+func TestATicketAndTheIndicationTravelTogether(t *testing.T) {
+	for range 20 {
+		pki := newTestPKI(t)
+		sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{}), conn: newFakePacketConn(),
+			secret: []byte("a-secret-of-sufficient-length"), cert: pki.issue(t, "alice@corp.test", true, 0),
+			pool: pki.pool, identity: "anonymous", cache: tls.NewLRUClientSessionCache(1)}
+		code, _, err := sup.run()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code != CodeAccessAccept || !bytes.Equal(sup.indication, []byte{0x00}) {
+			t.Fatalf("code %d, indication %x", code, sup.indication)
+		}
+		if sup.indicationRounds != 1 {
+			t.Fatalf("the ticket and the indication took %d requests", sup.indicationRounds)
+		}
+	}
+}
+
+// What the conversation above does in microseconds, slowed down: TLS writes, then
+// reads what it already has, then writes more, and only then waits for the supplicant.
+func TestWaitOutTakesAWholeFlight(t *testing.T) {
+	c := newEAPConn()
+	t.Cleanup(c.closeBoth)
+	c.feed([]byte("the client's Finished"))
+	go func() {
+		_, _ = c.Write([]byte("a ticket, "))
+		time.Sleep(20 * time.Millisecond)
+		_, _ = c.Read(make([]byte, 64))
+		_, _ = c.Write([]byte("and the rest"))
+		_, _ = c.Read(make([]byte, 64))
+	}()
+	if got := c.waitOut(make(chan struct{}), 2*time.Second); string(got) != "a ticket, and the rest" {
+		t.Errorf("took %q", got)
+	}
+}
+
+// The promise follows the decision. A certificate that proves who somebody is, for
+// somebody who may not be here, is told nothing that means success.
+func TestSomebodyRefusedIsSentNoIndication(t *testing.T) {
+	pki := newTestPKI(t)
+	sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{refuse: true}), conn: newFakePacketConn(),
+		secret: []byte("a-secret-of-sufficient-length"), cert: pki.issue(t, "leaver@corp.test", true, 0),
+		pool: pki.pool, identity: "anonymous"}
+	code, _, err := sup.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != CodeAccessReject {
+		t.Fatalf("got code %d", code)
+	}
+	if len(sup.indication) != 0 {
+		t.Errorf("somebody refused was sent %x over TLS", sup.indication)
+	}
+}
+
+// RFC 9190 §2.1.1: EAP-Success answers "an EAP-Response packet of EAP-Type=EAP-TLS
+// and no data". A TLS alert in that place is the peer refusing what it was told.
+func TestAnAlertInPlaceOfTheAcknowledgementIsAFailure(t *testing.T) {
+	pki := newTestPKI(t)
+	sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{}), conn: newFakePacketConn(),
+		secret: []byte("a-secret-of-sufficient-length"), cert: pki.issue(t, "alice@corp.test", true, 0),
+		pool: pki.pool, identity: "anonymous", answerIndication: []byte{21, 3, 3, 0, 2, 2, 40}}
+	code, _, err := sup.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != CodeAccessReject {
+		t.Errorf("got code %d, want Access-Reject", code)
+	}
+}
+
+// What matters about a session key is that both ends hold the same one, so this is
+// what the access point reads out of the Accept against what the supplicant worked
+// out alone. Under TLS 1.3 they differed until November 2026, and that passed every
+// test here: a laptop would associate and pass no traffic.
+func TestTheAccessPointIsGivenTheKeyTheSupplicantDerives(t *testing.T) {
+	for name, version := range map[string]uint16{"TLS 1.2": tls.VersionTLS12, "TLS 1.3": tls.VersionTLS13} {
+		t.Run(name, func(t *testing.T) {
+			pki := newTestPKI(t)
+			secret := []byte("a-secret-of-sufficient-length")
+			sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{}), conn: newFakePacketConn(),
+				secret: secret, cert: pki.issue(t, "alice@corp.test", true, 0),
+				pool: pki.pool, identity: "anonymous", maxVersion: version}
+			code, reply, err := sup.run()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code != CodeAccessAccept {
+				t.Fatalf("got code %d", code)
+			}
+			msk := sup.msk(t)
+			// RFC 5216 §2.3 names them from the access point's side: it receives
+			// with the first half and sends with the second.
+			if got := mppeKey(t, reply, vendorTypeRecvKey, secret, sup.sentWith); !bytes.Equal(got, msk[:32]) {
+				t.Errorf("MS-MPPE-Recv-Key is %x, the supplicant has %x", got, msk[:32])
+			}
+			if got := mppeKey(t, reply, vendorTypeSendKey, secret, sup.sentWith); !bytes.Equal(got, msk[32:64]) {
+				t.Errorf("MS-MPPE-Send-Key is %x, the supplicant has %x", got, msk[32:64])
+			}
+		})
+	}
+}
+
+// RFC 3748 §4.1: a Response whose Identifier is not the outstanding Request's is
+// silently discarded. Not answered, and not fed to TLS, which would break the
+// conversation the right one is still part of.
+func TestAResponseOutOfSequenceIsDiscardedSilently(t *testing.T) {
+	pki := newTestPKI(t)
+	sup := &supplicant{t: t, server: eapTestServer(t, pki, &certAuth{}), conn: newFakePacketConn(),
+		secret: []byte("a-secret-of-sufficient-length"), cert: pki.issue(t, "alice@corp.test", true, 5000),
+		pool: pki.pool, identity: "anonymous", stray: true}
+	code, _, err := sup.run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sup.strayAnswered != 0 {
+		t.Errorf("%d responses out of sequence were answered", sup.strayAnswered)
+	}
+	if code != CodeAccessAccept {
+		t.Errorf("got code %d: the conversation did not survive them", code)
 	}
 }
 

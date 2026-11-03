@@ -1,0 +1,15 @@
+# .env holds a developer's admin token and database password: an image is something
+# you push somewhere, and nothing in it should be a secret. The console reads its
+# settings from the environment it is started in.
+.env
+.env.*
+!.env.example
+
+vendor/
+node_modules/
+storage/
+bootstrap/cache/
+public/build/
+tests/
+.phpunit.cache/
+.phpunit.result.cache

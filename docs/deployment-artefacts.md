@@ -14,6 +14,44 @@ The chart deploys the engine, not PostgreSQL: a production identity provider's
 database wants backup, HA and tuning that belong to your data platform, not to an
 app chart. You bring the database and give the chart a DSN.
 
+## The console's images — shipped
+
+`admin/Dockerfile` builds the console as two images: Laravel under php-fpm (the
+default target), and nginx in front of it (`--target web`). Both run as an
+unprivileged user, and `.env` never goes into either: a developer's admin token
+and database password live there, and an image is something you push somewhere.
+The console reads its settings from the environment it is started in.
+
+Under compose, on request:
+
+```sh
+CONSOLE_APP_KEY=base64:$(head -c 32 /dev/urandom | base64) \
+SIGNARI_ADMIN_ADDR=:8081 SIGNARI_ADMIN_INSECURE=1 \
+  docker compose --profile console up -d
+docker compose exec engine /signari admin-token create -name console -org <org-uuid> \
+  -scopes users:write,clients:write,config:read
+# set SIGNARI_ADMIN_TOKEN to what it printed, and run the up again
+docker compose exec console php artisan signari:operator-create you@example.com --break-glass
+```
+
+It is at `http://localhost:8098/admin`. It connects as `signari_admin`, which
+`deploy/postgres-init/` makes with a password before migration 0001 would make it
+without one, on an empty volume; for a volume made before that, set the password
+with `ALTER ROLE signari_admin PASSWORD '…'`. Measured from an empty volume: the
+console's own `signari:verify-boundary` passes every check from inside its container
+(connected as `signari_admin`; `core` denied for reads and writes; `core_v1` empty
+with no organisation context and not otherwise; no leak past a transaction), and
+all 23 screens render in Chrome through its nginx with nothing refused by its
+policy and no request to another origin.
+
+The chart has it too, off unless `console.enabled`: one pod with both containers,
+a migration Job after the engine's, `signari_admin` as its database user, and its
+own pod name, since on the engine's it would sit behind the engine's Service.
+It refuses to render without its URL, its database host, its key and password,
+and an Admin API to write through. Validated with `helm lint` and `helm template`
+(`TestTheHelmChartRendersTheConsole`); not installed on a cluster, there being none
+here.
+
 ## Kubernetes operator — deliberately not built
 
 An operator earns its place when there is reconciliation a Deployment cannot

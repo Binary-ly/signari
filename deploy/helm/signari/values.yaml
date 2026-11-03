@@ -59,6 +59,36 @@ adminApi:
   # Plaintext, inside a network you trust: sets SIGNARI_ADMIN_INSECURE=1.
   insecure: false
 
+# The console (3.25): Laravel under php-fpm with nginx beside it in one pod. It reads
+# the engine as signari_admin through core_v1 and writes through the Admin API, and
+# its database user is never anything wider (ADR-004). Off unless enabled. Images
+# built from admin/Dockerfile: the default target, and `--target web`.
+console:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/binary-ly/signari-console
+    webRepository: ghcr.io/binary-ly/signari-console-web
+    tag: ""            # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  url: ""              # the address operators open it at, APP_URL (REQUIRED)
+  database:
+    host: ""           # REQUIRED
+    port: 5432
+    name: signari
+    sslmode: require
+  # The Admin API as the console reaches it. Empty, the chart's own admin service.
+  adminUrl: ""
+  secret:
+    # Keys: APP_KEY, DB_PASSWORD, SIGNARI_ADMIN_TOKEN. Preferred over the inline
+    # values, which sit in a values file and a release.
+    existingSecret: ""
+    appKey: ""         # base64: followed by 32 random bytes, base64
+    dbPassword: ""     # signari_admin's
+    adminToken: ""     # from `signari admin-token create`, with the console's scopes
+  service:
+    port: 8080
+
 # Prometheus metrics, on their own port and never on the public service (the
 # request and failure rates of an identity provider are a map of its weak
 # moments). docs/configuration.md lists every series.

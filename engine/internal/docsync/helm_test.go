@@ -122,3 +122,45 @@ func TestTheHelmChartRendersItsOptions(t *testing.T) {
 		}
 	}
 }
+
+// The console renders beside the engine (3.25) as signari_admin and no wider role, by
+// a pod name of its own: on the engine's labels it would sit behind the engine's
+// Service, budget and policy, whose selectors cannot change on an upgrade. Its
+// migration follows the engine's, and runs behind the image's own entrypoint.
+func TestTheHelmChartRendersTheConsole(t *testing.T) {
+	console := []string{"console.enabled=true", "console.url=https://console.example.test",
+		"console.database.host=db", "console.secret.appKey=base64:eQ==", "console.secret.dbPassword=p",
+		"adminApi.enabled=true", "adminApi.insecure=true"}
+	out, err := helmTemplate(t, console...)
+	if err != nil {
+		t.Fatalf("the chart with the console does not render: %v\n%s", err, out)
+	}
+	for _, want := range []string{"DB_USERNAME: signari_admin", "app.kubernetes.io/name: signari-console",
+		`args: ["php", "artisan", "migrate", "--force"]`, `SIGNARI_ADMIN_URL: "http://t-signari-admin:8090"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("with the console the chart lacks %s", want)
+		}
+	}
+	if strings.Contains(out, "command:") {
+		t.Error("a console container sets command:, which replaces the image's entrypoint")
+	}
+	for _, c := range []struct {
+		drop string
+		want string
+	}{
+		{"console.url=https://console.example.test", "needs console.url"},
+		{"console.database.host=db", "needs console.database.host"},
+		{"console.secret.dbPassword=p", "needs console.secret.appKey and console.secret.dbPassword"},
+		{"adminApi.enabled=true", "writes through the Admin API"},
+	} {
+		var sets []string
+		for _, s := range console {
+			if s != c.drop {
+				sets = append(sets, s)
+			}
+		}
+		if out, err := helmTemplate(t, sets...); err == nil || !strings.Contains(out, c.want) {
+			t.Errorf("without %s the console rendered (%v); want %q", c.drop, err, c.want)
+		}
+	}
+}

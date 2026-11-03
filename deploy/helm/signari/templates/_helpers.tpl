@@ -23,6 +23,16 @@ app.kubernetes.io/name: {{ include "signari.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+The console's pods, by a name of their own. Sharing the engine's would put them
+behind the engine's Service, budget and policy, whose selectors cannot change on an
+upgrade.
+*/}}
+{{- define "signari.consoleSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "signari.name" . }}-console
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
 {{- define "signari.image" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
@@ -65,6 +75,20 @@ Fail at template time, where the operator sees it, rather than at pod crash.
 {{- end -}}
 {{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) -}}
 {{- fail "signari: metrics.serviceMonitor.enabled needs metrics.enabled, or it monitors a service that does not exist" -}}
+{{- end -}}
+{{- if .Values.console.enabled -}}
+{{- if not .Values.console.url -}}
+{{- fail "signari: console.enabled needs console.url, the address operators open it at" -}}
+{{- end -}}
+{{- if not .Values.console.database.host -}}
+{{- fail "signari: console.enabled needs console.database.host; it connects as signari_admin and nothing wider" -}}
+{{- end -}}
+{{- if and (not .Values.console.secret.existingSecret) (or (not .Values.console.secret.appKey) (not .Values.console.secret.dbPassword)) -}}
+{{- fail "signari: console.enabled needs console.secret.appKey and console.secret.dbPassword, or console.secret.existingSecret" -}}
+{{- end -}}
+{{- if and (not .Values.console.adminUrl) (not .Values.adminApi.enabled) -}}
+{{- fail "signari: console.enabled writes through the Admin API; enable adminApi or give console.adminUrl" -}}
+{{- end -}}
 {{- end -}}
 {{- range $k, $v := .Values.extraEnv -}}
 {{- if has $k (list "SIGNARI_SHUTDOWN_DRAIN" "SIGNARI_SHUTDOWN_TIMEOUT") -}}

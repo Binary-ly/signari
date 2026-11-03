@@ -1,0 +1,35 @@
+# In front of the console's php-fpm at ${CONSOLE_FPM}: console:9000 under compose,
+# 127.0.0.1:9000 in a Kubernetes pod beside it. nginx's own entrypoint fills it in;
+# the variables nginx itself reads are left alone, being unset in the environment.
+server {
+    listen 8080;
+    root /app/public;
+    index index.php;
+    server_tokens off;
+    client_max_body_size 8m;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # Filament's published assets change name with each release, so they can be
+    # cached as long as a browser likes.
+    location ~* ^/(css|js|fonts)/ {
+        try_files $uri =404;
+        expires 30d;
+        access_log off;
+    }
+
+    # X-Forwarded-Proto goes through as a header like any other, and TRUSTED_PROXIES
+    # decides whether the console believes it.
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass ${CONSOLE_FPM};
+        fastcgi_param SCRIPT_FILENAME /app/public$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}

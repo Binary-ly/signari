@@ -16,6 +16,8 @@ services:
       POSTGRES_USER: signari_superuser
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
       POSTGRES_DB: signari
+      # The console's role, made with this password on first start; see postgres-init/.
+      SIGNARI_ADMIN_DB_PASSWORD: ${SIGNARI_ADMIN_DB_PASSWORD:-devconsole}
     healthcheck:
       # The engine must not start against a database that is still initialising:
       # its startup gate would report a schema mismatch and exit, which looks like
@@ -26,6 +28,7 @@ services:
       retries: 15
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
 
   # Migrations run as a separate one-shot service rather than on engine startup.
   # An engine replica that migrates on boot means N replicas racing to migrate,
@@ -94,6 +97,10 @@ services:
       # logout token can reach the suite on this network under its own CA.
       SIGNARI_OUTBOUND_ALLOW_PRIVATE: ${SIGNARI_OUTBOUND_ALLOW_PRIVATE:-}
       SIGNARI_CA_BUNDLE: ${SIGNARI_CA_BUNDLE:-}
+      # The Admin API the console writes through, on this network only: no port is
+      # published for it. Off unless set, and plaintext only when asked for by name.
+      SIGNARI_ADMIN_ADDR: ${SIGNARI_ADMIN_ADDR:-}
+      SIGNARI_ADMIN_INSECURE: ${SIGNARI_ADMIN_INSECURE:-0}
     volumes:
       - ./tls:/tls:ro
     ports:
@@ -104,6 +111,68 @@ services:
           # The name the conformance suite resolves. The issuer must match this
           # exactly, or every relying party rejects our tokens on the iss check.
           - signari-engine
+
+  # The console, on request, at http://localhost:8098/admin (3.25). Its own profile, so
+  # the conformance flows sharing this file are not given one:
+  #
+  #   CONSOLE_APP_KEY=base64:$(head -c 32 /dev/urandom | base64) \
+  #   SIGNARI_ADMIN_ADDR=:8081 SIGNARI_ADMIN_INSECURE=1 \
+  #     docker compose --profile console up -d
+  #
+  # It reads as signari_admin through core_v1 and writes through the Admin API, and
+  # needs an admin token (SIGNARI_ADMIN_TOKEN) and an operator; docs/deployment-artefacts.md
+  # says how.
+  console-migrate:
+    profiles: ["console"]
+    # The app stage by name: the last stage, which a build takes without one, is nginx.
+    build:
+      context: ../admin
+      target: app
+    image: signari-console
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment: &console-env
+      APP_KEY: ${CONSOLE_APP_KEY:-}
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_URL: ${CONSOLE_URL:-http://localhost:8098}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: signari
+      DB_USERNAME: signari_admin
+      DB_PASSWORD: ${SIGNARI_ADMIN_DB_PASSWORD:-devconsole}
+      SESSION_DRIVER: database
+      CACHE_STORE: database
+      QUEUE_CONNECTION: sync
+      SIGNARI_ADMIN_URL: ${CONSOLE_ADMIN_URL:-http://signari-engine:8081}
+      SIGNARI_ADMIN_TOKEN: ${SIGNARI_ADMIN_TOKEN:-}
+    # The console's own tables, in the admin schema, as signari_admin.
+    command: ["php", "artisan", "migrate", "--force"]
+    restart: "no"
+
+  console:
+    profiles: ["console"]
+    build:
+      context: ../admin
+      target: app
+    image: signari-console
+    depends_on:
+      console-migrate:
+        condition: service_completed_successfully
+    environment: *console-env
+
+  console-web:
+    profiles: ["console"]
+    build:
+      context: ../admin
+      target: web
+    image: signari-console-web
+    depends_on:
+      - console
+    ports:
+      - "8098:8080"
 
 volumes:
   pgdata:

@@ -67,6 +67,21 @@ the write surface for the entire identity provider. It serves TLS from
 `tls.certSecretName`, and the chart refuses to render it without one unless
 `adminApi.insecure=true` asks for plaintext by name, as the engine does.
 
+## The console
+
+Off by default. `console.enabled` adds the administration console beside the
+engine: one pod holding php-fpm and nginx, a ClusterIP Service on 8080, and a
+migration Job for its own tables that runs after the engine's. Images are built
+from `admin/Dockerfile`, the default target and `--target web`. It connects to the
+database as `signari_admin` and nothing wider, and writes through the Admin API,
+so it needs `adminApi.enabled` or `console.adminUrl`. Give it `console.url`,
+`console.database.host`, and `console.secret.appKey` and `.dbPassword` (or
+`console.secret.existingSecret` holding `APP_KEY`, `DB_PASSWORD` and
+`SIGNARI_ADMIN_TOKEN`); the chart refuses to render without them. The
+`signari_admin` role's password is yours to set on the database, as every role's
+is. Its pods carry their own name, so the engine's Service, budget and policy do
+not select them.
+
 ## Metrics, network policy and scheduled commands
 
 - `metrics.enabled` serves Prometheus metrics on their own port and ClusterIP

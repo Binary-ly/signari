@@ -3105,11 +3105,16 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 			WHERE p.redirect_uri = $1 AND p.client_id = $2
 			  AND `+store.InInstance("c.org_id", "$3"),
 			target, clientID, s.instanceID).Scan(&ok); err != nil || !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request",
-				"post_logout_redirect_uri is not registered")
-			return
-		}
-		if st := q.Get("state"); st != "" {
+			// No redirect, and the rest of the sign-out all the same:
+			// specs/oidc-rp-initiated-logout.txt:408-410 says only that the OP "MUST
+			// not perform post-logout redirection to an RP". This answered 400 here,
+			// after the session had ended and before the front channel, SAML and the
+			// upstream provider were told, so a mistyped URI left the person signed in
+			// to everything those reach.
+			s.log.InfoContext(ctx, "post_logout_redirect_uri is not registered; signing out without returning",
+				"client", clientID)
+			target = ""
+		} else if st := q.Get("state"); st != "" {
 			if u, err := url.Parse(target); err == nil {
 				vals := u.Query()
 				vals.Set("state", st)

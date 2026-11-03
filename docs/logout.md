@@ -48,6 +48,12 @@ fields of the same names in `signari apply`, and dynamic registration metadata.
 Until October 2026 nothing could register either one, so every
 `post_logout_redirect_uri` was refused and the front channel reached no client.
 
+One that is not registered stops the return and nothing else: the person is signed
+out, every channel is told, and they stay here. Until November 2026 it answered 400
+instead, after the session here had ended and before the front channel, SAML service
+providers and the provider they came through were told, so a mistyped address left
+them signed in to all of those. The engine logs the client that asked.
+
 ## Signing out at the provider too
 
 Somebody who signed in through a company's provider is still signed in there after

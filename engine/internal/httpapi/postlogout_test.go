@@ -22,27 +22,32 @@ func TestRPInitiatedLogoutReturnsToARegisteredURI(t *testing.T) {
 	ctx := context.Background()
 	h := f.srv.Routes()
 
-	set := func(uris ...string) {
+	set := func(logout store.ClientLogout) {
 		t.Helper()
 		tx, err := f.pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		if err := store.SetClientLogout(ctx, tx, f.clientID, store.ClientLogout{PostLogoutRedirectURIs: &uris}); err != nil {
+		if err := store.SetClientLogout(ctx, tx, f.clientID, logout); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
+	returns := func(uris ...string) store.ClientLogout { return store.ClientLogout{PostLogoutRedirectURIs: &uris} }
 	action := regexp.MustCompile(`<form method="post" action="([^"]*)"`)
 	csrf := regexp.MustCompile(`name="` + csrfFormField + `" value="([^"]*)"`)
 
-	// Sign out through the confirmation the endpoint asks for, as a browser does.
-	logout := func(target string) *httptest.ResponseRecorder {
+	// Sign out through the confirmation the endpoint asks for, as a browser does,
+	// having used the client in that session when participated says so.
+	logout := func(target string, participated bool) *httptest.ResponseRecorder {
 		t.Helper()
 		session := f.signInAndReturnCookie(t)
+		if participated {
+			f.authorizeWith(t, session, nil)
+		}
 		q := url.Values{"post_logout_redirect_uri": {target}, "client_id": {f.clientID}, "state": {"s1"}}
 		get := httptest.NewRequest(http.MethodGet, "/oauth2/logout?"+q.Encode(), nil)
 		get.AddCookie(&http.Cookie{Name: SessionCookieName, Value: session})
@@ -64,17 +69,31 @@ func TestRPInitiatedLogoutReturnsToARegisteredURI(t *testing.T) {
 		return rec
 	}
 
-	if rec := logout("https://rp.test/bye"); rec.Code != http.StatusBadRequest {
-		t.Errorf("before any registration the logout answered %d, want 400", rec.Code)
+	// Not returned to an address nobody registered, and signed out all the same.
+	if rec := logout("https://rp.test/bye", false); rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Errorf("before any registration the logout answered %d to %q, want 200 and no redirect",
+			rec.Code, rec.Header().Get("Location"))
 	}
 
-	set("https://rp.test/bye")
-	rec := logout("https://rp.test/bye")
+	set(returns("https://rp.test/bye"))
+	rec := logout("https://rp.test/bye", false)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://rp.test/bye?state=s1" {
 		t.Fatalf("a registered post-logout URI answered %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if rec := logout("https://rp.test/elsewhere"); rec.Code != http.StatusBadRequest {
-		t.Errorf("an unregistered URI answered %d, want 400", rec.Code)
+	if rec := logout("https://rp.test/elsewhere", false); rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Errorf("an unregistered URI answered %d to %q, want 200 and no redirect", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The redirect is cancelled and not the sign-out (specs/oidc-rp-initiated-logout.txt
+	// :408-410). This answered 400 after the session had ended and before anything on
+	// the front channel was told, so a mistyped URI left the person signed in to every
+	// application that is told that way.
+	front := "https://rp.test/front"
+	set(store.ClientLogout{FrontchannelURI: &front})
+	rec = logout("https://rp.test/elsewhere", true)
+	if rec.Header().Get("Location") != "" || !strings.Contains(rec.Body.String(), `<iframe src="https://rp.test/front`) {
+		t.Errorf("an unregistered URI with a front-channel client answered %d to %q: %.300s",
+			rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 
 	// Refused at registration rather than stored and never matched.

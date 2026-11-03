@@ -218,8 +218,17 @@ func TestAnOrganisationsMetadataNamesItsOwnEndpoints(t *testing.T) {
 		t.Errorf("the entity is %q", got)
 	}
 	for _, e := range doc.FindElements("//SingleSignOnService") {
-		if e.SelectAttrValue("Location", "") != base+"/sso" {
+		want := base + "/sso"
+		if e.SelectAttrValue("Binding", "") == "urn:oasis:names:tc:SAML:2.0:bindings:SOAP" {
+			want = base + "/ecp" // ECP (8.08)
+		}
+		if e.SelectAttrValue("Location", "") != want {
 			t.Errorf("sign-in goes to %q", e.SelectAttrValue("Location", ""))
+		}
+	}
+	for _, e := range doc.FindElements("//ArtifactResolutionService") {
+		if e.SelectAttrValue("Location", "") != base+"/artifact" {
+			t.Errorf("artifacts are resolved at %q", e.SelectAttrValue("Location", ""))
 		}
 	}
 	for _, e := range doc.FindElements("//SingleLogoutService") {

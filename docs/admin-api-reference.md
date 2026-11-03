@@ -3799,6 +3799,7 @@ Takes:
 | Field | Type | |
 |---|---|---|
 | `acs_url` | string |  |
+| `artifact_acs_urls` | list of string |  |
 | `encryption_cert` | string |  |
 | `entity_id` | string |  |
 | `key_transport` | string |  |

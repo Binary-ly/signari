@@ -4405,6 +4405,7 @@ export interface PostOrganizationsOrgIDRoleBindingsResponse {
 /** A JSON object of the Admin API. */
 export interface PostOrganizationsOrgIDSAMLProvidersRequest {
   acs_url?: string
+  artifact_acs_urls?: string[]
   encryption_cert?: string
   entity_id?: string
   key_transport?: string

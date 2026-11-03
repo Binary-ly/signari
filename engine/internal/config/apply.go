@@ -141,7 +141,8 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 
 	rows, err = tx.Query(ctx, `
 		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state,
-		       COALESCE(array_agg(a.url) FILTER (WHERE a.url IS NOT NULL), '{}')
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-POST'), '{}'),
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-Artifact'), '{}')
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
 		 WHERE p.org_id = $1::uuid
@@ -154,7 +155,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var enabled, idpInitiated bool
 		var relayState string
 		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &idpInitiated, &relayState,
-			&p.ACSURLs); err != nil {
+			&p.ACSURLs, &p.ArtifactACSURLs); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -546,6 +547,9 @@ func samlDiff(have, want SAMLProvider) string {
 	if !sameSet(have.ACSURLs, want.ACSURLs) {
 		d = append(d, "acs_urls")
 	}
+	if !sameSet(have.ArtifactACSURLs, want.ArtifactACSURLs) {
+		d = append(d, "artifact_acs_urls")
+	}
 	if want.NameID != "" && have.NameID != want.NameID {
 		d = append(d, "name_id_format")
 	}
@@ -766,6 +770,13 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
 				VALUES ($1::uuid, $2, 'HTTP-POST', $3)`, id, u, i == 0); err != nil {
 				return fmt.Errorf("saml provider %q acs %q: %w", sp.EntityID, u, err)
+			}
+		}
+		for _, u := range sp.ArtifactACSURLs {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
+				VALUES ($1::uuid, $2, 'HTTP-Artifact', false)`, id, u); err != nil {
+				return fmt.Errorf("saml provider %q artifact acs %q: %w", sp.EntityID, u, err)
 			}
 		}
 	}

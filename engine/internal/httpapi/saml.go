@@ -88,6 +88,7 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 		// an error is worse than one that is absent: the service provider calls
 		// it, fails, and blames its own configuration.
 		SLOURL:       entityID + "/slo",
+		ArtifactURL:  entityID + "/artifact",
 		Certificates: certs,
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
@@ -337,7 +338,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
+	doc, _, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
 		// Told to the service provider as a SAML refusal, at the ACS URL the
@@ -358,7 +359,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, r, acs, doc, relayState)
+	s.deliverSAMLResponse(w, r, validated, provider, doc, relayState)
 }
 
 // policyDenied is an access-policy refusal, carried as an error so a caller
@@ -764,7 +765,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, r, v.ACSURL, doc, relayState)
+	s.deliverSAMLResponse(w, r, v, p, doc, relayState)
 }
 
 // markAuthnRequestAnswered records a signed AuthnRequest's ID, reporting false

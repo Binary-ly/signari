@@ -108,6 +108,8 @@ type Stats struct {
 	AttestationChallengesPurged int64
 	// LogoutChainsSwept are SAML front-channel logouts the user abandoned.
 	LogoutChainsSwept int64
+	// SAMLArtifactsSwept are responses no service provider came to resolve.
+	SAMLArtifactsSwept int64
 
 	// Support-access episodes that ran out and were closed.
 	ImpersonationsExpired int64
@@ -226,6 +228,9 @@ func sweeps(st *Stats, keep store.Retention) []sweep {
 		// halfway leaves a row behind holding a live chain token. They expire on
 		// their own; this is what stops the table growing forever.
 		{"SAML logout chains", sweepBatch, &st.LogoutChainsSwept, store.SweepExpiredLogoutChains},
+		// Responses waiting for an artifact nobody resolved. Each is a signed
+		// assertion about a person, sealed, and of no use after its minute.
+		{"SAML artifacts", sweepBatch, &st.SAMLArtifactsSwept, store.SweepExpiredSAMLArtifacts},
 		// External logins the user abandoned at the provider's consent screen. Each
 		// row holds a PKCE verifier and a nonce, so keeping them past expiry stores
 		// live flow state for a flow nobody is going to finish.
@@ -541,6 +546,7 @@ func (s Stats) Log(log *slog.Logger) {
 	add("recoveries_purged", s.RecoveriesPurged)
 	add("device_codes_purged", s.DeviceCodesPurged)
 	add("logout_chains_swept", s.LogoutChainsSwept)
+	add("saml_artifacts_swept", s.SAMLArtifactsSwept)
 	add("federated_logins_swept", s.FederatedLoginsSwept)
 	add("dpop_proofs_swept", s.DPoPProofsSwept)
 	add("ceremonies_swept", s.CeremoniesSwept)

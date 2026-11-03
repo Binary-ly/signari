@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0286 saml_artifact
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider may take its response by artifact (8.08, SAML Bindings 2.0 §3.6): the browser carries a reference, and the provider fetches the response over SOAP from the artifact resolution service. An assertion consumer URL may say HTTP-Artifact again, which 0147 took away until this was built. Not compatible with the previous release: it changes a check on saml_acs_urls, and the previous release would POST to an artifact URL.
+
 ## 0285 oid4vp_encrypted_responses
 
 Compatible with the release before: its binary may still serve this schema.

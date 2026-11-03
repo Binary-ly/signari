@@ -115,7 +115,7 @@ var EventTypes = []string{
 	"proxy.session_issued",
 	"rac.session_ended", "rac.session_requested",
 	"restore.finalized",
-	"saml.assertion_issued", "saml.logout_completed", "saml.logout_propagated",
+	"saml.artifact_refused", "saml.assertion_issued", "saml.logout_completed", "saml.logout_propagated",
 	"scim.group_deprovisioned", "scim.group_membership_changed", "scim.group_provisioned",
 	"scim.group_replaced", "scim.privileged_kept", "scim.privileged_refused",
 	"scim.user_deprovisioned", "scim.user_patched", "scim.user_provisioned",

@@ -62,6 +62,9 @@ var columnClass = map[string]string{
 	// Under a key from the response code, which is not stored, and its hash.
 	"federated_logins.vp_presented":          "oneWay",
 	"federated_logins.vp_response_code_hash": "oneWay",
+	// Under a key from the artifact's message handle, which is not stored, and its hash.
+	"saml_artifacts.message":     "oneWay",
+	"saml_artifacts.handle_hash": "oneWay",
 
 	// The id of a token, which proves nothing without the token.
 	"credential_notifications.token_jti": "public",

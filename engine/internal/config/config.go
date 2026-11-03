@@ -237,6 +237,8 @@ type SAMLProvider struct {
 	ACSURLs  []string `yaml:"acs_urls"`
 	NameID   string   `yaml:"name_id_format"`
 	Enabled  *bool    `yaml:"enabled"`
+	// ArtifactACSURLs take the response by artifact (HTTP-Artifact), never by default.
+	ArtifactACSURLs []string `yaml:"artifact_acs_urls,omitempty"`
 	// IdPInitiated lets a sign-in to it start from the portal and DefaultRelayState
 	// is what goes with that response, each left as it is when absent.
 	IdPInitiated      *bool   `yaml:"idp_initiated,omitempty"`
@@ -370,13 +372,23 @@ func (f *File) Validate() error {
 		if p.DefaultRelayState != nil && len(*p.DefaultRelayState) > saml.MaxRelayState {
 			add("saml_providers[%s]: default_relay_state is at most %d bytes", p.EntityID, saml.MaxRelayState)
 		}
+		posted := map[string]bool{}
 		for _, u := range p.ACSURLs {
+			posted[u] = true
+		}
+		for _, u := range append(append([]string(nil), p.ACSURLs...), p.ArtifactACSURLs...) {
 			if !strings.HasPrefix(u, "https://") {
 				add("saml_providers[%s]: acs_url %q must be https: it carries a "+
 					"signed assertion for a real user", p.EntityID, u)
 			}
 			if strings.Contains(u, "*") {
 				add("saml_providers[%s]: acs_url %q contains a wildcard", p.EntityID, u)
+			}
+		}
+		for _, u := range p.ArtifactACSURLs {
+			if posted[u] {
+				add("saml_providers[%s]: %q is in acs_urls and artifact_acs_urls; a URL takes one binding",
+					p.EntityID, u)
 			}
 		}
 		switch p.NameID {

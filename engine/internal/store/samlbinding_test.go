@@ -10,10 +10,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// An assertion consumer URL is HTTP-POST only (0147). HTTP-Artifact was
-// allowed by the schema and implemented nowhere, so a row naming it described
-// a delivery that never happens (2.45).
-func TestAnACSURLMayNotClaimTheArtifactBinding(t *testing.T) {
+// An assertion consumer URL names a binding a response is delivered by. 0147
+// made it HTTP-POST only, while HTTP-Artifact was implemented nowhere and a row
+// naming it described a delivery that never happened (2.45); 0286 took it back
+// once it was (8.08). Anything else is still refused.
+func TestAnACSURLNamesABindingThatIsDelivered(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
 	if dsn == "" {
 		t.Skip("SIGNARI_TEST_DSN not set")
@@ -48,10 +49,14 @@ func TestAnACSURLMayNotClaimTheArtifactBinding(t *testing.T) {
 		VALUES ($1::uuid, 'https://sp.example.test/acs', 'HTTP-POST')`, providerID); err != nil {
 		t.Fatalf("an HTTP-POST consumer URL was refused: %v", err)
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core.saml_acs_urls (provider_id, url, binding)
+		VALUES ($1::uuid, 'https://sp.example.test/artifact', 'HTTP-Artifact')`, providerID); err != nil {
+		t.Fatalf("an HTTP-Artifact consumer URL was refused: %v", err)
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO core.saml_acs_urls (provider_id, url, binding)
-		VALUES ($1::uuid, 'https://sp.example.test/artifact', 'HTTP-Artifact')`, providerID)
+		VALUES ($1::uuid, 'https://sp.example.test/redirect', 'HTTP-Redirect')`, providerID)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
-		t.Fatalf("an HTTP-Artifact consumer URL answered %v, want a check violation", err)
+		t.Fatalf("an HTTP-Redirect consumer URL answered %v, want a check violation", err)
 	}
 }

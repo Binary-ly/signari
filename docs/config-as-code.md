@@ -54,6 +54,7 @@ saml_providers:
   - entity_id: urn:sharepoint:intranet
     name: Intranet
     acs_urls: [https://intranet.example.com/_trust/]
+    artifact_acs_urls: []     # URLs that take the response by artifact; left out is none
     name_id_format: emailAddress
     idp_initiated: true       # a sign-in can start from the portal; see saml.md
     default_relay_state: /sites/home

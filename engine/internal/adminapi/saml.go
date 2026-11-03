@@ -30,6 +30,7 @@ type samlProviderView struct {
 	HasSigningCert     bool              `json:"has_signing_cert"`
 	LifetimeSeconds    int               `json:"lifetime_s"`
 	ACSURLs            []string          `json:"acs_urls"`
+	ArtifactACSURLs    []string          `json:"artifact_acs_urls"`
 	SLOURLs            []string          `json:"slo_urls"`
 	Attributes         map[string]string `json:"attribute_release"`
 	GroupRelease       any               `json:"group_release"`
@@ -46,16 +47,18 @@ type samlProviderView struct {
 }
 
 type addSAMLProviderRequest struct {
-	EntityID           string `json:"entity_id"`
-	Name               string `json:"name"`
-	ACSURL             string `json:"acs_url"`
-	NameIDFormat       string `json:"name_id_format"`
-	SLOURL             string `json:"slo_url"`
-	SLOBinding         string `json:"slo_binding"`
-	SigningCert        string `json:"signing_cert"`
-	EncryptionCert     string `json:"encryption_cert"`
-	KeyTransport       string `json:"key_transport"`
-	WantSignedRequests bool   `json:"want_signed_requests"`
+	EntityID string `json:"entity_id"`
+	Name     string `json:"name"`
+	ACSURL   string `json:"acs_url"`
+	// ArtifactACSURLs take the response by artifact, beside acs_url (8.08).
+	ArtifactACSURLs    []string `json:"artifact_acs_urls"`
+	NameIDFormat       string   `json:"name_id_format"`
+	SLOURL             string   `json:"slo_url"`
+	SLOBinding         string   `json:"slo_binding"`
+	SigningCert        string   `json:"signing_cert"`
+	EncryptionCert     string   `json:"encryption_cert"`
+	KeyTransport       string   `json:"key_transport"`
+	WantSignedRequests bool     `json:"want_signed_requests"`
 	// The provider's metadata, in place of acs_url, slo_url and the certificates:
 	// the document itself or where to read it, the certificate it must be signed
 	// with, or metadata_unsigned, by name.
@@ -124,8 +127,9 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignatureAlg:    p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
-			SLOURLs: p.SLOURLs, Attributes: p.Attributes, IdPInitiated: p.IdPInitiated,
-			DefaultRelayState: p.DefaultRelayState, MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
+			ArtifactACSURLs: p.ArtifactACSURLs, SLOURLs: p.SLOURLs, Attributes: p.Attributes,
+			IdPInitiated: p.IdPInitiated, DefaultRelayState: p.DefaultRelayState,
+			MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
 			WSFedSAMLVersion: p.WSFedSAMLVersion, OrgEndpoint: p.OrgEndpoint}
 		if v.Attributes == nil {
 			v.Attributes = map[string]string{}
@@ -148,9 +152,11 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 	spec := store.SAMLProviderSpec{EntityID: strings.TrimSpace(req.EntityID), Name: strings.TrimSpace(req.Name),
 		ACSURL: strings.TrimSpace(req.ACSURL), NameIDFormat: req.NameIDFormat, SLOURL: strings.TrimSpace(req.SLOURL),
 		SLOBinding: req.SLOBinding, SigningCertPEM: req.SigningCert, EncryptionCertPEM: req.EncryptionCert,
-		KeyTransport: req.KeyTransport, WantSignedRequests: req.WantSignedRequests}
+		KeyTransport: req.KeyTransport, WantSignedRequests: req.WantSignedRequests,
+		ArtifactACSURLs: req.ArtifactACSURLs}
 	if req.Metadata != "" || req.MetadataURL != "" {
-		if spec.ACSURL != "" || spec.SLOURL != "" || spec.SigningCertPEM != "" || spec.EncryptionCertPEM != "" {
+		if spec.ACSURL != "" || len(spec.ArtifactACSURLs) > 0 || spec.SLOURL != "" || spec.SigningCertPEM != "" ||
+			spec.EncryptionCertPEM != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
 				"detail": "the metadata says where assertions go and which keys are believed; acs_url, slo_url and " +
 					"the certificates would be a second answer"})

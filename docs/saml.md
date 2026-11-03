@@ -24,6 +24,7 @@ attribute and group releases the same way, under
 | `GET /saml/metadata` | what the service provider imports |
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
+| `POST /saml/artifact` | the artifact resolution service, SOAP; see [the Artifact binding](#the-artifact-binding) |
 
 ## One entity ID, several organisations
 
@@ -618,10 +619,51 @@ ID, and the portal asks the same question: a provider refused shows as refused, 
 the policy's message, and opening its link directly says the same thing here, not at the
 provider, which was not expecting anything.
 
+## The Artifact binding
+
+A service provider can take its response by artifact (SAML Bindings 2.0 §3.6):
+the browser carries a short reference, and the provider fetches the response
+itself, over SOAP, from `POST /saml/artifact` (or
+`/saml/org/<slug>/artifact` for an organisation's entity). The response never
+crosses the browser. Register the URL that takes artifacts, and the provider's
+signing certificate:
+
+```sh
+signari saml add-sp -org <org-uuid> -entity-id https://sp.example.com/shibboleth \
+  -acs https://sp.example.com/Shibboleth.sso/SAML2/POST \
+  -artifact-acs https://sp.example.com/Shibboleth.sso/SAML2/Artifact \
+  -sp-cert sp-signing.pem
+```
+
+A provider's metadata does the same with an `AssertionConsumerService` on the
+HTTP-Artifact binding, and so do `artifact_acs_urls` in the Admin API and in
+[a configuration file](config-as-code.md). An artifact URL is never the default:
+a request reaches it by naming it, or by asking for HTTP-Artifact in its
+`ProtocolBinding`. A request that names one binding and a URL registered for the
+other is refused, where it used to be answered by POST whatever it asked for.
+
+The metadata publishes the resolution service at index 0. What a resolution
+has to pass:
+
+- the artifact is one this deployment issued in the last minute and nobody has
+  asked for yet. It is gone after the first request for it, whoever makes it;
+- the `ArtifactResolve` is signed with the certificate registered for the
+  provider the artifact was issued to, and names that provider as its `Issuer`.
+  A provider with no certificate registered cannot show it is the recipient, so
+  it is never given anything; configure it to sign its back-channel requests
+  (for Shibboleth, `signing="back"` or `"true"`).
+
+Anything else is answered as the specification asks: a `Success` with no
+message in it, the reason logged and audited as `saml.artifact_refused`. The
+`ArtifactResponse` is signed. The response waits sealed under a key derived from
+the artifact itself, which is not stored, so the database alone cannot read it.
+
 ## Not yet built
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
+- **Artifacts in the other direction**, an `AuthnRequest` or a logout message sent
+  here by artifact, and **ECP**.
 
 It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

@@ -1089,6 +1089,12 @@
           },
           "type": "array"
         },
+        "artifact_acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "default_relay_state": {
           "type": "string"
         },

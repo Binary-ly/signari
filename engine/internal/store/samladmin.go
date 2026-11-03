@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,7 +53,10 @@ type SAMLProviderSpec struct {
 	WantSignedRequests bool
 	// MoreACSURLs are its other endpoints, which a metadata document can name.
 	MoreACSURLs []string
-	Origin      SAMLMetadataOrigin
+	// ArtifactACSURLs take the response by artifact (8.08). Never the default:
+	// a request reaches one by naming it, or by asking for HTTP-Artifact.
+	ArtifactACSURLs []string
+	Origin          SAMLMetadataOrigin
 }
 
 // Validate refuses a provider before anything is written. The ACS URL is
@@ -74,6 +78,14 @@ func (s *SAMLProviderSpec) Validate() error {
 	}
 	if err := firstUnusableACS(s.MoreACSURLs); err != nil {
 		return err
+	}
+	if err := firstUnusableACS(s.ArtifactACSURLs); err != nil {
+		return err
+	}
+	for _, u := range s.ArtifactACSURLs {
+		if u == s.ACSURL || slices.Contains(s.MoreACSURLs, u) {
+			return samlInvalid{fmt.Sprintf("%q is given for POST and for artifact; a URL takes one binding", u)}
+		}
 	}
 	if s.Name == "" {
 		s.Name = s.EntityID
@@ -193,7 +205,7 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 		}
 		return "", err
 	}
-	if err := insertACSURLs(ctx, tx, id, append([]string{s.ACSURL}, s.MoreACSURLs...)); err != nil {
+	if err := insertACSURLs(ctx, tx, id, append([]string{s.ACSURL}, s.MoreACSURLs...), s.ArtifactACSURLs); err != nil {
 		return "", err
 	}
 	if s.SLOURL != "" {
@@ -482,6 +494,7 @@ type SAMLProviderRow struct {
 	DefaultRelayState                              string
 	LifetimeSeconds                                int
 	ACSURLs, SLOURLs                               []string
+	ArtifactACSURLs                                []string
 	Attributes                                     map[string]string
 	GroupAttribute                                 string
 	ReleasesGroups                                 bool
@@ -501,7 +514,10 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		SELECT p.id::text, p.entity_id, p.display_name, p.name_id_format, p.signature_alg, p.enabled,
 		       p.sign_assertions, p.sign_responses, p.want_authn_requests_signed,
 		       p.sp_encryption_cert IS NOT NULL, p.sp_signing_cert IS NOT NULL, p.lifetime_seconds,
-		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a WHERE a.provider_id = p.id), '{}'),
+		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a
+		                  WHERE a.provider_id = p.id AND a.binding = 'HTTP-POST'), '{}'),
+		       COALESCE((SELECT array_agg(a.url ORDER BY a.url) FROM core.saml_acs_urls a
+		                  WHERE a.provider_id = p.id AND a.binding = 'HTTP-Artifact'), '{}'),
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
 		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state,
@@ -518,7 +534,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		var p SAMLProviderRow
 		if err := rows.Scan(&p.ID, &p.EntityID, &p.Name, &p.NameIDFormat, &p.SignatureAlg, &p.Enabled,
 			&p.SignAssertions, &p.SignResponses, &p.WantSignedRequests, &p.Encrypted, &p.HasSigningCert,
-			&p.LifetimeSeconds, &p.ACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
+			&p.LifetimeSeconds, &p.ACSURLs, &p.ArtifactACSURLs, &p.SLOURLs, &p.Attributes, &p.GroupAttribute, &p.ReleasesGroups,
 			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
 			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion, &p.OrgEndpoint); err != nil {
 			return nil, err

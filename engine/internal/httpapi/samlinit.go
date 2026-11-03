@@ -58,7 +58,7 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		s.samlRefuse(w, r, "no such application")
 		return
 	}
-	doc, acs, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
+	doc, _, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
 	var denied *policyDenied
 	if errors.As(err, &denied) {
 		// Told here. There is no request to answer, and a refusal posted to a
@@ -78,5 +78,5 @@ func (s *Server) handleSAMLInit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, r, acs, doc, provider.DefaultRelayState)
+	s.deliverSAMLResponse(w, r, validated, provider, doc, provider.DefaultRelayState)
 }

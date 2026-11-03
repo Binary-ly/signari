@@ -4,3 +4,4 @@ ca.key
 suite.crt
 suite.key
 fapi*.json
+fapitls*

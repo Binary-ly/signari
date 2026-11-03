@@ -8,6 +8,8 @@ their private keys from ../tls, and userinfo as the protected resource.
     CONFIG=/elsewhere/fapims.json ./run.sh fapi2-ms
     python3 fapiconfig.py --vci /elsewhere/vci.json
     CONFIG=/elsewhere/vci.json ./run.sh vci
+    python3 fapiconfig.py --mtls /elsewhere/fapitls.json
+    CONFIG=/elsewhere/fapitls.json ./run.sh fapi2-mtls
 
 Written outside this directory, because it holds the clients' private keys.
 """
@@ -17,7 +19,8 @@ import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 signing = "--message-signing" in sys.argv[1:]
-prefix = "conformance-fapims" if signing else "conformance-fapi"
+mtls = "--mtls" in sys.argv[1:]
+prefix = "conformance-fapims" if signing else "conformance-fapitls" if mtls else "conformance-fapi"
 cfg = json.load(open(os.path.join(here, "config.json")))
 cfg["description"] = "signari engine -- FAPI 2.0" + (" Message Signing" if signing else "")
 for slot, n in (("client", 1), ("client2", 2)):
@@ -25,6 +28,12 @@ for slot, n in (("client", 1), ("client2", 2)):
         cfg[slot] = {"client_id": f"{prefix}-{n}", "scope": "openid email", "jwks": json.load(keys)}
 cfg.pop("client_secret_post", None)
 cfg["resource"] = {"resourceUrl": "https://signari-engine:8080/oauth2/userinfo"}
+if mtls:
+    # The certificate and key each mutual-TLS client holds, which the suite presents.
+    for tls, n in (("mtls", 1), ("mtls2", 2)):
+        with open(os.path.join(here, "..", "tls", f"fapitls{n}.crt")) as crt, \
+                open(os.path.join(here, "..", "tls", f"fapitls{n}.key")) as key:
+            cfg[tls] = {"cert": crt.read(), "key": key.read()}
 if "--vci" in sys.argv[1:]:
     # The same clients as wallets, and this server as the credential issuer and its
     # authorization server; the plan reads neither a scope nor a resource.

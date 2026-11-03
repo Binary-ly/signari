@@ -133,6 +133,16 @@ for n in 1 2; do
   run client set-signed-requests -client-id "$m"
   run client set-alg -client-id "$m" -response-alg ES256
   run client set-profile -client-id "$m" -security-profile fapi2-message-signing
+  # And by mutual TLS (./run.sh fapi2-mtls): a self-signed certificate it registers,
+  # authenticating it and binding its tokens, with no authority to trust.
+  t="conformance-fapitls-$n"
+  [ -f "../tls/fapitls$n.key" ] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -days 3650 -keyout "../tls/fapitls$n.key" -out "../tls/fapitls$n.crt" -subj "/CN=$t" 2>/dev/null
+  docker cp "../tls/fapitls$n.crt" "signari-engine-1:/tmp/fapitls$n.crt"
+  run client create -client-id "$t" -name "FAPI mTLS $n" -redirect "$CALLBACK"
+  run client set-tls -client-id "$t" -sp-cert "/tmp/fapitls$n.crt" -tls-bound-tokens
+  run client set-par -client-id "$t" -require-par
+  run client set-profile -client-id "$t" -security-profile fapi2
 done
 
 # The second callback carries query parameters on purpose: the suite tests that a
@@ -147,7 +157,9 @@ INSERT INTO core.client_redirect_uris (client_id, redirect_uri) VALUES
  ('conformance-fapi-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-fapi-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
  ('conformance-fapims-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
- ('conformance-fapims-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
+ ('conformance-fapims-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapitls-1', '$CALLBACK?dummy1=lorem&dummy2=ipsum'),
+ ('conformance-fapitls-2', '$CALLBACK?dummy1=lorem&dummy2=ipsum')
 ON CONFLICT DO NOTHING;
 UPDATE core.config_version SET version = version + 1 WHERE id = true;
 SQL

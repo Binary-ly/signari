@@ -80,13 +80,25 @@ function fit() {
 display.onresize = fit;
 window.addEventListener("resize", fit);
 
+// A reason, once given, stays. The library ends a session guacd refused by calling
+// onerror and then disconnect(), and the DISCONNECTED that follows used to replace
+// what guacd said with "Disconnected.": a wrong password, an untrusted certificate and
+// a dead host all read the same. Running it against a real guacd found it.
+let ended = false;
+// And guacd does not always give one: against guacd 1.5.5 about half the refused RDP
+// sessions reached the browser as a bare "disconnect" with no "error" before it. A session that
+// ends before it began says so, rather than reading like one somebody closed.
+let connected = false;
+
 // A status worked out from how the socket closed carries no message of its own.
 tunnel.onerror = function (status) {
+  ended = true;
   say("The connection failed: " + (status.message || "the channel closed") +
     " (" + status.code + ")", "err");
 };
 
 client.onerror = function (status) {
+  ended = true;
   say("The remote session ended: " + (status.message || "the channel closed"), "err");
 };
 
@@ -94,8 +106,9 @@ client.onstatechange = function (state) {
   const States = Guacamole.Client.State;
   if (state === States.CONNECTING) say("Connecting…");
   else if (state === States.WAITING) say("Waiting for the remote host…");
-  else if (state === States.CONNECTED) { clearStatus(); fit(); }
-  else if (state === States.DISCONNECTED) say("Disconnected.", "err");
+  else if (state === States.CONNECTED) { connected = true; clearStatus(); fit(); }
+  else if (state === States.DISCONNECTED && !ended)
+    say(connected ? "Disconnected." : "The session ended before it started, and no reason was given.", "err");
 };
 
 // Input.

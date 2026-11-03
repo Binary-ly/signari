@@ -83,6 +83,15 @@ browser has to bring the code and the cookie set when it left. A presentation po
 from another device therefore cannot finish a sign-in that this browser started, and a
 code used once is gone.
 
+## Tested against
+
+The OpenID Foundation's OpenID4VP 1.0 verifier plan, the suite playing the wallet:
+signed requests under `x509_san_dns` and unsigned ones under `redirect_uri`, both with
+`direct_post`, zero failures. Each refusal the plan tests, a credential or key binding
+signed with another key, the wrong `sd_hash`, nonce or audience, and a key binding a year
+old or a year ahead, is answered at the response URI with a 400. How to run it is in
+[the harness](../deploy/conformance/README.md).
+
 ## Not done
 
 - **Another device.** A page with a code to scan, which needs words a person has written

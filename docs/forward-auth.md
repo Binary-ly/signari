@@ -391,7 +391,7 @@ reach, a console held to more than the rest.
 # rules.txt: the first that matches decides
 public GET,HEAD /static/**
 public *        /health
-deny   *        /metrics
+deny   *        /metrics/**
 auth:console *  /console/**
 ```
 
@@ -437,10 +437,19 @@ with rules, these are refused with `403`, signed in or not, and never compared:
 - a path parameter (`/a;x/b`)
 - anything still encoded once decoded (`/a/%252e`)
 
-An application whose paths really look like that cannot have rules on the host. Two
+Behind the Traefik, Caddy and Envoy configurations on this page, each of those, sent
+as it is spelled here, was refused before the application saw it, signed in or not.
+Envoy's `normalize_path` resolves some first, and then sends the resolved path to the
+engine and the application alike, so the two still judge one path.
+
+An application whose paths really look like that cannot have rules on the host. Three
 things are still yours to get right. A path is compared with its case, so an
 application that does not care about case has to be given every spelling a `deny`
-should cover. And a rule is only as good as what the proxy says: with rules on a host,
+should cover. A path is compared with its trailing slash too: `deny * /metrics` leaves
+`/metrics/` open, which many applications serve as `/metrics`, so a `deny` is written
+`/metrics/**`, which is both and everything below. This page's example said
+`/metrics` until November 2026, when running it behind real proxies showed `/metrics/`
+reaching the application. And a rule is only as good as what the proxy says: with rules on a host,
 a proxy that sends no `X-Forwarded-Uri` is refused rather than guessed at. One that
 sends no `X-Forwarded-Method` has every rule naming methods read the strict way: a
 `public` one does not apply, and a `deny` one does. The configurations below send both.

@@ -221,6 +221,219 @@ func BuildArtifactResponse(in ArtifactResponseInput, message string, signer cryp
 	return SOAPEnvelope(text), nil
 }
 
+// ArtifactResolveInput is what an ArtifactResolve this deployment sends says: the
+// request half of Web SSO and logout by artifact, where a service provider issued the
+// artifact and this deployment fetches the message from it.
+type ArtifactResolveInput struct {
+	Issuer, Destination, Artifact string
+	Now                           time.Time
+}
+
+// BuildArtifactResolve asks a service provider for the message an artifact it issued
+// names, in a SOAP envelope, and answers the request's ID, which the answer's
+// InResponseTo must carry. It is signed: "The requester SHOULD authenticate itself to
+// the responder, either by signing the <ArtifactResolve> message or using any other
+// binding-supported mechanism" (saml-profiles-2.0-os lines 1471-1472).
+func BuildArtifactResolve(in ArtifactResolveInput, signer crypto.Signer, certDER []byte) (envelope, id string, err error) {
+	if id, err = newID(); err != nil {
+		return "", "", err
+	}
+	doc := etree.NewDocument()
+	req := doc.CreateElement("samlp:ArtifactResolve")
+	req.CreateAttr("xmlns:samlp", nsProtocol)
+	req.CreateAttr("xmlns:saml", nsAssertion)
+	req.CreateAttr("ID", id)
+	req.CreateAttr("Version", "2.0")
+	req.CreateAttr("IssueInstant", in.Now.UTC().Truncate(time.Second).Format(time.RFC3339))
+	req.CreateAttr("Destination", in.Destination)
+	// "The <Issuer> element MUST be present and MUST contain the unique identifier of
+	// the requesting entity" (lines 1488-1489).
+	req.CreateElement("saml:Issuer").SetText(in.Issuer)
+	req.CreateElement("samlp:Artifact").SetText(in.Artifact)
+	signed, err := signElement(req, signer, certDER)
+	if err != nil {
+		return "", "", err
+	}
+	if err := moveSignatureAfterIssuer(signed); err != nil {
+		return "", "", err
+	}
+	out := etree.NewDocument()
+	out.SetRoot(signed)
+	text, err := out.WriteToString()
+	if err != nil {
+		return "", "", err
+	}
+	return SOAPEnvelope(text), id, nil
+}
+
+// ArtifactResponse is a service provider's answer to an ArtifactResolve this
+// deployment sent.
+type ArtifactResponse struct {
+	ID, InResponseTo, Issuer, StatusCode string
+	// Message is the message the artifact named, lifted out as a document of its own,
+	// or nil when the provider answered with none, which it does for an artifact it
+	// did not issue, already gave out, or will not give to this deployment
+	// (saml-bindings-2.0-os lines 1180-1184).
+	Message []byte
+}
+
+// ReadArtifactResponse reads a SOAP 1.1 envelope carrying one ArtifactResponse.
+//
+// It checks no signature on the answer. "The responder MUST authenticate itself to
+// the requester, either by signing the <ArtifactResponse> or using any other
+// binding-supported mechanism" (saml-profiles-2.0-os lines 1482-1483), and the
+// mechanism here is the binding's: the answer is read only from the provider's
+// registered https address, its certificate verified, as the SOAP logout answers
+// are. A provider signing its answer around a request it also signed puts two
+// signatures in one document, which the check every message here goes through
+// refuses as the shape of a wrapping attack. The message's own signature is checked
+// where a signed request is required, on the way it would be checked arriving by
+// POST.
+func ReadArtifactResponse(body []byte) (*ArtifactResponse, error) {
+	if err := scanForUnsafeConstructs(body); err != nil {
+		return nil, err
+	}
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(body); err != nil {
+		return nil, fmt.Errorf("the answer does not parse: %w", err)
+	}
+	env := doc.Root()
+	if env == nil || env.Tag != "Envelope" || env.NamespaceURI() != nsSOAP11 {
+		return nil, errors.New("the answer is not a SOAP 1.1 envelope")
+	}
+	var soapBody *etree.Element
+	for _, c := range env.ChildElements() {
+		if c.Tag == "Body" && c.NamespaceURI() == nsSOAP11 {
+			if soapBody != nil {
+				return nil, errors.New("the envelope has two bodies")
+			}
+			soapBody = c
+		}
+	}
+	if soapBody == nil {
+		return nil, errors.New("the envelope has no body")
+	}
+	children := soapBody.ChildElements()
+	if len(children) != 1 || children[0].Tag != "ArtifactResponse" || children[0].NamespaceURI() != nsProtocol {
+		return nil, errors.New("the body does not carry exactly one ArtifactResponse")
+	}
+	el := children[0]
+	r := &ArtifactResponse{
+		ID:           el.SelectAttrValue("ID", ""),
+		InResponseTo: el.SelectAttrValue("InResponseTo", ""),
+	}
+	if r.ID == "" {
+		return nil, errors.New("the ArtifactResponse has no ID")
+	}
+	if v := el.SelectAttrValue("Version", ""); v != "2.0" {
+		return nil, fmt.Errorf("the ArtifactResponse is version %q, not 2.0", v)
+	}
+	var message *etree.Element
+	for _, c := range el.ChildElements() {
+		switch {
+		case c.Tag == "Issuer" && c.NamespaceURI() == nsAssertion:
+			// "the Format attribute MUST be omitted or have a value of
+			// urn:oasis:names:tc:SAML:2.0:nameid-format:entity" (saml-profiles-2.0-os
+			// lines 1495-1497).
+			if f := c.SelectAttrValue("Format", ""); f != "" && f != nameIDFormatEntity {
+				return nil, fmt.Errorf("the ArtifactResponse's Issuer has the format %q", f)
+			}
+			r.Issuer = strings.TrimSpace(c.Text())
+		case c.Tag == "Status" && c.NamespaceURI() == nsProtocol:
+			if code := c.SelectElement("StatusCode"); code != nil {
+				r.StatusCode = code.SelectAttrValue("Value", "")
+			}
+		case c.Tag == "Signature" || c.Tag == "Extensions":
+		default:
+			if message != nil {
+				return nil, errors.New("the ArtifactResponse carries more than one message")
+			}
+			message = c
+		}
+	}
+	// "The <Issuer> element MUST be present" (line 1495).
+	if r.Issuer == "" {
+		return nil, errors.New("the ArtifactResponse names no Issuer")
+	}
+	if message != nil {
+		lifted, err := standalone(message)
+		if err != nil {
+			return nil, err
+		}
+		r.Message = lifted
+	}
+	return r, nil
+}
+
+// MessageKind names the protocol message a document is, by its root element:
+// "AuthnRequest", "LogoutRequest", "LogoutResponse". Unmarshal into a message's type
+// does not check that, and a document fetched by artifact can be any of them.
+func MessageKind(doc []byte) (string, error) {
+	if err := scanForUnsafeConstructs(doc); err != nil {
+		return "", err
+	}
+	d := etree.NewDocument()
+	if err := d.ReadFromBytes(doc); err != nil {
+		return "", fmt.Errorf("the message does not parse: %w", err)
+	}
+	root := d.Root()
+	if root == nil || root.NamespaceURI() != nsProtocol {
+		return "", errors.New("the message is not a SAML protocol message")
+	}
+	return root.Tag, nil
+}
+
+// standalone writes el as a document of its own, carrying the declarations of the
+// namespace prefixes its names use that were declared on an ancestor. Those are the
+// ones exclusive canonicalisation renders, so a signature made over the message
+// before it was wrapped still verifies once it is unwrapped.
+func standalone(el *etree.Element) ([]byte, error) {
+	used := map[string]bool{}
+	var walk func(*etree.Element)
+	walk = func(e *etree.Element) {
+		used[e.Space] = true
+		for _, a := range e.Attr {
+			if a.Space != "" && a.Space != "xmlns" {
+				used[a.Space] = true
+			}
+		}
+		for _, c := range e.ChildElements() {
+			walk(c)
+		}
+	}
+	walk(el)
+	copied := el.Copy()
+	declared := func(e *etree.Element, prefix string) bool {
+		for _, a := range e.Attr {
+			if (prefix == "" && a.Space == "" && a.Key == "xmlns") || (a.Space == "xmlns" && a.Key == prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for prefix := range used {
+		if declared(el, prefix) {
+			continue
+		}
+		for p := el.Parent(); p != nil; p = p.Parent() {
+			if !declared(p, prefix) {
+				continue
+			}
+			for _, a := range p.Attr {
+				if prefix == "" && a.Space == "" && a.Key == "xmlns" {
+					copied.CreateAttr("xmlns", a.Value)
+				} else if a.Space == "xmlns" && a.Key == prefix {
+					copied.CreateAttr("xmlns:"+prefix, a.Value)
+				}
+			}
+			break
+		}
+	}
+	out := etree.NewDocument()
+	out.SetRoot(copied)
+	return out.WriteToBytes()
+}
+
 // SOAPFault is the answer to a request that is not an ArtifactResolve this
 // service can read, as a SOAP 1.1 Client fault.
 func SOAPFault(reason string) string {

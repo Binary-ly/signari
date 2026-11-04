@@ -71,6 +71,9 @@ type ServiceProviderMetadata struct {
 	ArtifactACSURLs []string
 	// ECPACSURLs are its PAOS endpoints, for a response an ECP carries.
 	ECPACSURLs []string
+	// ArtifactResolution is where it resolves the artifacts it issues, by the index an
+	// artifact names: how a request it sends by artifact is fetched.
+	ArtifactResolution []IndexedEndpoint
 	// SLOURL is empty when it takes no logout.
 	SLOURL, SLOBinding string
 	// SOAPLogoutURL is where it is told of a logout with no browser, the signature
@@ -270,6 +273,9 @@ func readServiceProvider(d *etree.Element, now time.Time, notes *[]string) (*Ser
 	if sp.ACSURLs, sp.ArtifactACSURLs, sp.ECPACSURLs, err = assertionConsumers(d, notes); err != nil {
 		return nil, err
 	}
+	if sp.ArtifactResolution, err = artifactResolutionServices(d, notes); err != nil {
+		return nil, err
+	}
 	if sp.SigningCertPEM, err = certificates(d, "signing", now, notes); err != nil {
 		return nil, err
 	}
@@ -392,6 +398,46 @@ func assertionConsumers(d *etree.Element, notes *[]string) (posts, artifacts, pa
 		return slices.Contains(urls, u) || slices.Contains(artifacts, u)
 	})
 	return urls, artifacts, paos, nil
+}
+
+// IndexedEndpoint is an endpoint an artifact names by its index.
+type IndexedEndpoint struct {
+	Index int
+	URL   string
+}
+
+// MaxEndpointIndex is the most an artifact's two-byte EndpointIndex can say.
+const MaxEndpointIndex = 0xffff
+
+// artifactResolutionServices are the https SOAP endpoints a provider resolves the
+// artifacts it issues at, by index (saml-bindings-2.0-os lines 1188-1191). What one
+// answers is believed for coming from there, which is why it has to be https.
+func artifactResolutionServices(d *etree.Element, notes *[]string) ([]IndexedEndpoint, error) {
+	var out []IndexedEndpoint
+	for _, a := range d.SelectElements("ArtifactResolutionService") {
+		loc := a.SelectAttrValue("Location", "")
+		if b := a.SelectAttrValue("Binding", ""); b != BindingSOAP {
+			*notes = append(*notes, fmt.Sprintf("left out the artifact resolution service %s: it is on %s, "+
+				"and an artifact is resolved over SOAP", loc, b))
+			continue
+		}
+		if !strings.HasPrefix(loc, "https://") {
+			*notes = append(*notes, fmt.Sprintf("left out the artifact resolution service %s: what it answers "+
+				"is believed for coming from there, and that is not https", loc))
+			continue
+		}
+		index, err := strconv.Atoi(a.SelectAttrValue("index", ""))
+		if err != nil || index < 0 || index > MaxEndpointIndex {
+			return nil, fmt.Errorf("an ArtifactResolutionService has the index %q", a.SelectAttrValue("index", ""))
+		}
+		if slices.ContainsFunc(out, func(e IndexedEndpoint) bool { return e.Index == index }) {
+			return nil, fmt.Errorf("two ArtifactResolutionService elements have the index %d, and an artifact "+
+				"naming it could be resolved at either", index)
+		}
+		out = append(out, IndexedEndpoint{index, loc})
+	}
+	slices.SortFunc(out, func(a, b IndexedEndpoint) int { return cmp.Compare(a.Index, b.Index) })
+	return out, nil
 }
 
 // logoutService is the https logout endpoint, on the redirect binding if it has

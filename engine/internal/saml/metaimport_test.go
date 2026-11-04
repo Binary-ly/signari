@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,40 @@ func TestAServiceProvidersSOAPLogoutIsRead(t *testing.T) {
 	}
 	if got := read("http://sp.example.test/slo"); got.SP.SOAPLogoutURL != "" || !strings.Contains(strings.Join(got.Notes, " "), "has to be https") {
 		t.Errorf("read %q, notes %q", got.SP.SOAPLogoutURL, got.Notes)
+	}
+}
+
+// Where a service provider resolves the artifacts it issues is read by index, on SOAP
+// and https only, and two under one index are refused rather than chosen between.
+func TestAServiceProvidersArtifactResolutionIsReadByIndex(t *testing.T) {
+	read := func(services string) (*EntityMetadata, error) {
+		return ReadMetadata(MetadataSource{Unsigned: true, Document: []byte(`<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sp.example.test">
+<SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+` + services + `
+<AssertionConsumerService index="0" Binding="` + BindingPOST + `" Location="https://sp.example.test/acs"/>
+</SPSSODescriptor></EntityDescriptor>`)})
+	}
+	got, err := read(`<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="https://sp.example.test/Shibboleth.sso/Artifact/SOAP" index="1"/>
+<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="https://sp.example.test/ars0" index="0"/>
+<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="http://sp.example.test/plain" index="2"/>
+<ArtifactResolutionService Binding="` + BindingPOST + `" Location="https://sp.example.test/post" index="3"/>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []IndexedEndpoint{{0, "https://sp.example.test/ars0"}, {1, "https://sp.example.test/Shibboleth.sso/Artifact/SOAP"}}
+	if !slices.Equal(got.SP.ArtifactResolution, want) {
+		t.Errorf("read %v, want %v", got.SP.ArtifactResolution, want)
+	}
+	notes := strings.Join(got.Notes, " ")
+	if !strings.Contains(notes, "http://sp.example.test/plain") || !strings.Contains(notes, "https://sp.example.test/post") {
+		t.Errorf("what was left out is not said: %q", notes)
+	}
+	if _, err := read(`<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="https://a.example.test/ars" index="1"/>
+<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="https://b.example.test/ars" index="1"/>`); err == nil {
+		t.Error("two services under one index were taken")
+	}
+	if _, err := read(`<ArtifactResolutionService Binding="` + BindingSOAP + `" Location="https://a.example.test/ars" index="65536"/>`); err == nil {
+		t.Error("an index no artifact can name was taken")
 	}
 }
 

@@ -79,12 +79,22 @@ func TestAnExactAddressLookupUsesAnIndex(t *testing.T) {
 	// Whether the index can serve it, not whether it pays to: a table another
 	// package has just emptied is rightly read whole, and row security is what
 	// would really stop an index being used, which this still sees.
+	//
+	// Plain index scans off too. With only sequential scans off, a table other
+	// packages had just pruned made walking the primary key for the LIMIT and
+	// filtering every row as cheap as the address index, and the test failed in a
+	// parallel run for a plan it was never about (3 November 2026). A bitmap scan
+	// needs a condition the index holds, so the primary key, which has none here,
+	// cannot stand in for the address index that way.
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_indexscan = off`); err != nil {
 		t.Fatal(err)
 	}
 	var plan []byte

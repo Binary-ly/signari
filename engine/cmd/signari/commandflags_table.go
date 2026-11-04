@@ -254,7 +254,7 @@ var commandFlags = map[string][]string{
 	"role grant":                      {"client-id", "email", "group", "org", "role"},
 	"role list":                       {"admin-url", "o", "org", "token-file"},
 	"role revoke":                     {"admin-url", "binding", "org", "token-file"},
-	"saml add-sp":                     {"acs", "artifact-acs", "ecp-acs", "entity-id", "metadata", "metadata-encrypt", "metadata-signer", "metadata-unsigned", "name", "nameid-format", "org", "slo", "slo-binding", "sp-cert", "sp-encryption-cert", "sp-key-transport", "want-signed-requests"},
+	"saml add-sp":                     {"acs", "artifact-acs", "artifact-resolution", "ecp-acs", "entity-id", "metadata", "metadata-encrypt", "metadata-signer", "metadata-unsigned", "name", "nameid-format", "org", "slo", "slo-binding", "sp-cert", "sp-encryption-cert", "sp-key-transport", "want-signed-requests"},
 	"saml attribute-release":          {"attribute", "claim", "entity-id", "org", "remove"},
 	"saml group-release":              {"attribute-name", "entity-id", "only", "org", "remove"},
 	"saml idp-initiated":              {"entity-id", "org", "relay-state", "remove"},

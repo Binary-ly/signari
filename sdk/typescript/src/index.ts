@@ -4406,6 +4406,7 @@ export interface PostOrganizationsOrgIDRoleBindingsResponse {
 export interface PostOrganizationsOrgIDSAMLProvidersRequest {
   acs_url?: string
   artifact_acs_urls?: string[]
+  artifact_resolution?: PostOrganizationsOrgIDSAMLProvidersRequestArtifactResolutionItem[]
   ecp_acs_urls?: string[]
   encryption_cert?: string
   entity_id?: string
@@ -4421,6 +4422,12 @@ export interface PostOrganizationsOrgIDSAMLProvidersRequest {
   slo_binding?: string
   slo_url?: string
   want_signed_requests?: boolean
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSAMLProvidersRequestArtifactResolutionItem {
+  index?: number
+  url?: string
 }
 
 /** A JSON object of the Admin API. */

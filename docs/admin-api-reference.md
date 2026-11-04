@@ -3800,6 +3800,7 @@ Takes:
 |---|---|---|
 | `acs_url` | string |  |
 | `artifact_acs_urls` | list of string |  |
+| `artifact_resolution` | list of object |  |
 | `ecp_acs_urls` | list of string |  |
 | `encryption_cert` | string |  |
 | `entity_id` | string |  |

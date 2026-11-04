@@ -126,7 +126,13 @@ func Metadata(in MetadataInput) (string, error) {
 	}
 	idp.CreateElement("md:NameIDFormat").SetText(format)
 
-	for _, b := range []string{BindingRedirect, BindingPOST} {
+	ssoBindings := []string{BindingRedirect, BindingPOST}
+	if in.ArtifactURL != "" {
+		// A request may come by artifact too, fetched from the provider's own
+		// resolution service (8.08, saml-bindings-2.0-os lines 1188-1191).
+		ssoBindings = append(ssoBindings, BindingArtifact)
+	}
+	for _, b := range ssoBindings {
 		sso := idp.CreateElement("md:SingleSignOnService")
 		sso.CreateAttr("Binding", b)
 		sso.CreateAttr("Location", in.SSOURL)

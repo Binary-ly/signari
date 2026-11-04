@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0288 saml_artifact_resolution
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider may send its request by artifact (8.08, SAML Bindings 2.0 §3.6.5): the browser brings a reference, and this deployment fetches the request over SOAP from the provider's artifact resolution service, the one the artifact names by its index. A provider with none sends no request that way. What the service answers is believed for coming from the address registered here, so the address is https, as an assertion consumer URL is.
+
 ## 0287 saml_ecp
 
 Not compatible with the release before: stop it before migrating.

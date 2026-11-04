@@ -77,6 +77,7 @@ import (
 	"signari.dev/engine/internal/proxyproto"
 	"signari.dev/engine/internal/radius"
 	"signari.dev/engine/internal/safedial"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
@@ -602,6 +603,8 @@ func run(args []string) (err error) {
 	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
 	artifactACS := fs.String("artifact-acs", "", "AssertionConsumerService URLs that take the response by artifact, separated by commas")
 	ecpACS := fs.String("ecp-acs", "", "PAOS AssertionConsumerService URLs, for ECP sign-ins, separated by commas")
+	artifactResolution := fs.String("artifact-resolution", "",
+		"where the provider resolves the artifacts it sends requests by: index=https URL, separated by commas")
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
@@ -1819,9 +1822,13 @@ func run(args []string) (err error) {
 				*acsURL, *sloURL, *spCert, *spEncCert, *spKeyTransport, *wantSignedReq, metadataFlags{
 					source: *metadataSource, signerPath: *metadataSigner, unsigned: *metadataUnsigned, encrypt: *metadataEncrypt})
 		}
+		resolution, err := parseArtifactResolution(*artifactResolution)
+		if err != nil {
+			return err
+		}
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
 			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport, splitList(*artifactACS),
-			splitList(*ecpACS))
+			splitList(*ecpACS), resolution)
 	case "saml refresh-sp":
 		return samlRefreshSP(ctx, conn, *orgID, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
 			unsigned: *metadataUnsigned}, *dryRun)
@@ -4274,7 +4281,7 @@ func registerSP(ctx context.Context, conn *pgx.Conn, orgID string, spec store.SA
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
 	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath,
-	keyTransport string, artifactACS, ecpACS []string) error {
+	keyTransport string, artifactACS, ecpACS []string, resolution []saml.IndexedEndpoint) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -4285,7 +4292,7 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	}
 	spec := store.SAMLProviderSpec{EntityID: entityID, Name: name, ACSURL: acs, NameIDFormat: nameIDFormat,
 		SLOURL: slo, SLOBinding: sloBinding, KeyTransport: keyTransport, WantSignedRequests: wantSignedRequests,
-		ArtifactACSURLs: artifactACS, ECPACSURLs: ecpACS}
+		ArtifactACSURLs: artifactACS, ECPACSURLs: ecpACS, ArtifactResolution: resolution}
 	// The SIGNING certificate, which verifies its requests, and the ENCRYPTION
 	// one, a different key, which assertions are encrypted to; the store
 	// checks both (store.SAMLProviderSpec.Validate).
@@ -7483,6 +7490,21 @@ func splitList(s string) []string {
 		return []string{}
 	}
 	return out
+}
+
+// parseArtifactResolution reads `-artifact-resolution 1=https://sp/ars,2=...`: the
+// index an artifact names and the address resolving it. The store checks the rest.
+func parseArtifactResolution(s string) ([]saml.IndexedEndpoint, error) {
+	var out []saml.IndexedEndpoint
+	for _, part := range splitList(s) {
+		index, url, ok := strings.Cut(part, "=")
+		n, err := strconv.Atoi(strings.TrimSpace(index))
+		if !ok || err != nil {
+			return nil, fmt.Errorf("-artifact-resolution takes index=URL, as 1=https://sp.example.com/ars, not %q", part)
+		}
+		out = append(out, saml.IndexedEndpoint{Index: n, URL: strings.TrimSpace(url)})
+	}
+	return out, nil
 }
 
 // inviteCreate mints one invitation and prints the link ONCE, or, with send,

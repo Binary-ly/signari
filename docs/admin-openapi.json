@@ -23183,6 +23183,21 @@
                     },
                     "type": "array"
                   },
+                  "artifact_resolution": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "index": {
+                          "type": "integer"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "ecp_acs_urls": {
                     "items": {
                       "type": "string"

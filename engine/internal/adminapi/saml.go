@@ -9,11 +9,35 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
 
 // SAML service providers (6.07), as `signari saml` registers and configures
 // them. A provider is addressed by its id: its entity id is usually a URL.
+
+// artifactResolutionService is one place a provider resolves its artifacts, by the
+// index an artifact names (8.08).
+type artifactResolutionService struct {
+	Index int    `json:"index"`
+	URL   string `json:"url"`
+}
+
+func artifactResolutionSpec(in []artifactResolutionService) []saml.IndexedEndpoint {
+	out := make([]saml.IndexedEndpoint, 0, len(in))
+	for _, e := range in {
+		out = append(out, saml.IndexedEndpoint{Index: e.Index, URL: strings.TrimSpace(e.URL)})
+	}
+	return out
+}
+
+func artifactResolutionView(in []saml.IndexedEndpoint) []artifactResolutionService {
+	out := make([]artifactResolutionService, 0, len(in))
+	for _, e := range in {
+		out = append(out, artifactResolutionService{e.Index, e.URL})
+	}
+	return out
+}
 
 type samlProviderView struct {
 	ID                 string            `json:"id"`
@@ -45,6 +69,8 @@ type samlProviderView struct {
 	WSFedSAMLVersion string `json:"wsfed_saml_version"`
 	// OrgEndpoint is a provider that answers at its organisation's endpoints.
 	OrgEndpoint bool `json:"org_endpoint"`
+	// ArtifactResolution is where it resolves the artifacts it sends requests by.
+	ArtifactResolution []artifactResolutionService `json:"artifact_resolution"`
 }
 
 type addSAMLProviderRequest struct {
@@ -71,6 +97,9 @@ type addSAMLProviderRequest struct {
 	MetadataUnsigned bool   `json:"metadata_unsigned"`
 	// MetadataEncrypt encrypts assertions to the key the metadata offers.
 	MetadataEncrypt bool `json:"metadata_encrypt"`
+	// ArtifactResolution is where it resolves the artifacts it issues, by the index an
+	// artifact names: having one is how it sends requests by artifact (8.08).
+	ArtifactResolution []artifactResolutionService `json:"artifact_resolution"`
 }
 
 // patchSAMLProviderRequest is `saml signing`: what is not given is left as
@@ -130,7 +159,8 @@ func (s *Server) listSAMLProviders(w http.ResponseWriter, r *http.Request) {
 			SignatureAlg:    p.SignatureAlg, Enabled: p.Enabled, SignAssertions: p.SignAssertions,
 			SignResponses: p.SignResponses, WantSignedRequests: p.WantSignedRequests, Encrypted: p.Encrypted,
 			HasSigningCert: p.HasSigningCert, LifetimeSeconds: p.LifetimeSeconds, ACSURLs: p.ACSURLs,
-			ArtifactACSURLs: p.ArtifactACSURLs, ECPACSURLs: p.ECPACSURLs, SLOURLs: p.SLOURLs, Attributes: p.Attributes,
+			ArtifactACSURLs: p.ArtifactACSURLs, ECPACSURLs: p.ECPACSURLs,
+			ArtifactResolution: artifactResolutionView(p.ArtifactResolution), SLOURLs: p.SLOURLs, Attributes: p.Attributes,
 			IdPInitiated: p.IdPInitiated, DefaultRelayState: p.DefaultRelayState,
 			MetadataURL: p.MetadataURL, MetadataReadAt: p.MetadataReadAt,
 			WSFedSAMLVersion: p.WSFedSAMLVersion, OrgEndpoint: p.OrgEndpoint}
@@ -156,9 +186,11 @@ func (s *Server) addSAMLProvider(w http.ResponseWriter, r *http.Request) {
 		ACSURL: strings.TrimSpace(req.ACSURL), NameIDFormat: req.NameIDFormat, SLOURL: strings.TrimSpace(req.SLOURL),
 		SLOBinding: req.SLOBinding, SigningCertPEM: req.SigningCert, EncryptionCertPEM: req.EncryptionCert,
 		KeyTransport: req.KeyTransport, WantSignedRequests: req.WantSignedRequests,
-		ArtifactACSURLs: req.ArtifactACSURLs, ECPACSURLs: req.ECPACSURLs}
+		ArtifactACSURLs: req.ArtifactACSURLs, ECPACSURLs: req.ECPACSURLs,
+		ArtifactResolution: artifactResolutionSpec(req.ArtifactResolution)}
 	if req.Metadata != "" || req.MetadataURL != "" {
-		if spec.ACSURL != "" || len(spec.ArtifactACSURLs) > 0 || len(spec.ECPACSURLs) > 0 || spec.SLOURL != "" ||
+		if spec.ACSURL != "" || len(spec.ArtifactACSURLs) > 0 || len(spec.ECPACSURLs) > 0 ||
+			len(spec.ArtifactResolution) > 0 || spec.SLOURL != "" ||
 			spec.SigningCertPEM != "" || spec.EncryptionCertPEM != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_metadata",
 				"detail": "the metadata says where assertions go and which keys are believed; acs_url, slo_url and " +

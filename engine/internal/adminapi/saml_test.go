@@ -68,15 +68,24 @@ func TestASAMLProviderIsConfiguredThroughTheAPI(t *testing.T) {
 		{"entity_id": entity, "acs_url": "https://wiki.example.test/acs", "slo_url": "https://wiki.example.test/slo"},
 		{"entity_id": entity, "acs_url": "https://wiki.example.test/acs", "want_signed_requests": true},
 		{"entity_id": entity, "acs_url": "https://wiki.example.test/acs", "signing_cert": "not a certificate"},
+		{"entity_id": entity, "acs_url": "https://wiki.example.test/acs",
+			"artifact_resolution": []map[string]any{{"index": 1, "url": "http://wiki.example.test/ars"}}},
+		{"entity_id": entity, "acs_url": "https://wiki.example.test/acs", "artifact_resolution": []map[string]any{
+			{"index": 1, "url": "https://a.example.test/ars"}, {"index": 1, "url": "https://b.example.test/ars"}}},
 	} {
 		if e := errorOf(http.MethodPost, base, bad, http.StatusBadRequest); e != "invalid_saml_provider" {
 			t.Errorf("%v answered %q", bad, e)
 		}
 	}
 	first := call(t, s, http.MethodPost, base, testToken, map[string]any{"entity_id": entity,
-		"acs_url": "https://wiki.example.test/acs", "name_id_format": "emailAddress"})
+		"acs_url": "https://wiki.example.test/acs", "name_id_format": "emailAddress",
+		"artifact_resolution": []map[string]any{{"index": 1, "url": "https://wiki.example.test/ars"}}})
 	if first.Code != http.StatusCreated {
 		t.Fatalf("registering: %d %s", first.Code, first.Body.String())
+	}
+	if rec := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(rec.Body.String(),
+		`"artifact_resolution":[{"index":1,"url":"https://wiki.example.test/ars"}]`) {
+		t.Errorf("the artifact resolution service registered is not listed: %s", rec.Body.String())
 	}
 	var created struct {
 		ID string `json:"id"`

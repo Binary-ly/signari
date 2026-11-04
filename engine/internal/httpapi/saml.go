@@ -152,10 +152,11 @@ func (s *Server) pathOrg(w http.ResponseWriter, r *http.Request) (slug string, o
 func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var encoded, relayState string
+	var encoded, artifact, relayState string
 	switch r.Method {
 	case http.MethodGet:
 		encoded = r.URL.Query().Get("SAMLRequest")
+		artifact = r.URL.Query().Get("SAMLart")
 		relayState = r.URL.Query().Get("RelayState")
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
@@ -163,9 +164,10 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		encoded = r.PostForm.Get("SAMLRequest")
+		artifact = r.PostForm.Get("SAMLart")
 		relayState = r.PostForm.Get("RelayState")
 	}
-	if encoded == "" {
+	if encoded == "" && artifact == "" {
 		s.samlRefuse(w, r, "no SAMLRequest")
 		return
 	}
@@ -175,6 +177,12 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		// way nobody can trace back to here.
 		s.samlRefuse(w, r, fmt.Sprintf("RelayState is %d bytes, over the %d the "+
 			"specification allows", len(relayState), maxRelayState))
+		return
+	}
+	if encoded == "" {
+		// By artifact (8.08). No cross-site bounce first: what follows the fetch is a
+		// 303 to this path, a same-site GET, which brings the session cookie anyway.
+		s.resolveSAMLRequestArtifact(w, r, artifact, relayState)
 		return
 	}
 	if crossSiteForm(r) {

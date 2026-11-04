@@ -44,6 +44,7 @@ func spDocument(entity, cert, acs string) string {
 	return fmt.Sprintf(`<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="%s">
 <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
 <KeyDescriptor use="signing"><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data><X509Certificate>%s</X509Certificate></X509Data></KeyInfo></KeyDescriptor>
+<ArtifactResolutionService index="1" Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="https://sp.example.test/ars"/>
 <SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://sp.example.test/slo"/>
 <AssertionConsumerService index="1" isDefault="true" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="%s"/>
 <AssertionConsumerService index="2" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.test/other"/>
@@ -168,6 +169,9 @@ func TestAServiceProviderIsRegisteredFromItsMetadata(t *testing.T) {
 	got := listed()
 	if len(got.ACSURLs) != 2 || !got.HasSigningCert || len(got.SLOURLs) != 1 || got.MetadataReadAt == nil {
 		t.Errorf("what was registered: %+v", got)
+	}
+	if len(got.ArtifactResolution) != 1 || got.ArtifactResolution[0] != (artifactResolutionService{1, "https://sp.example.test/ars"}) {
+		t.Errorf("the artifact resolution service the metadata names was not taken: %+v", got.ArtifactResolution)
 	}
 	var def string
 	if err := s.db.QueryRow(ctx, `SELECT url FROM core.saml_acs_urls WHERE provider_id = $1::uuid AND is_default`,

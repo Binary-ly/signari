@@ -2979,23 +2979,30 @@ type PostOrganizationsOrgIDRoleBindingsResponse struct {
 
 // PostOrganizationsOrgIDSAMLProvidersRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDSAMLProvidersRequest struct {
-	ACSURL             *string   `json:"acs_url,omitempty"`
-	ArtifactACSURLs    *[]string `json:"artifact_acs_urls,omitempty"`
-	EcpACSURLs         *[]string `json:"ecp_acs_urls,omitempty"`
-	EncryptionCert     *string   `json:"encryption_cert,omitempty"`
-	EntityID           *string   `json:"entity_id,omitempty"`
-	KeyTransport       *string   `json:"key_transport,omitempty"`
-	Metadata           *string   `json:"metadata,omitempty"`
-	MetadataEncrypt    *bool     `json:"metadata_encrypt,omitempty"`
-	MetadataSigner     *string   `json:"metadata_signer,omitempty"`
-	MetadataUnsigned   *bool     `json:"metadata_unsigned,omitempty"`
-	MetadataURL        *string   `json:"metadata_url,omitempty"`
-	Name               *string   `json:"name,omitempty"`
-	NameIDFormat       *string   `json:"name_id_format,omitempty"`
-	SigningCert        *string   `json:"signing_cert,omitempty"`
-	SloBinding         *string   `json:"slo_binding,omitempty"`
-	SloURL             *string   `json:"slo_url,omitempty"`
-	WantSignedRequests *bool     `json:"want_signed_requests,omitempty"`
+	ACSURL             *string                                                             `json:"acs_url,omitempty"`
+	ArtifactACSURLs    *[]string                                                           `json:"artifact_acs_urls,omitempty"`
+	ArtifactResolution *[]PostOrganizationsOrgIDSAMLProvidersRequestArtifactResolutionItem `json:"artifact_resolution,omitempty"`
+	EcpACSURLs         *[]string                                                           `json:"ecp_acs_urls,omitempty"`
+	EncryptionCert     *string                                                             `json:"encryption_cert,omitempty"`
+	EntityID           *string                                                             `json:"entity_id,omitempty"`
+	KeyTransport       *string                                                             `json:"key_transport,omitempty"`
+	Metadata           *string                                                             `json:"metadata,omitempty"`
+	MetadataEncrypt    *bool                                                               `json:"metadata_encrypt,omitempty"`
+	MetadataSigner     *string                                                             `json:"metadata_signer,omitempty"`
+	MetadataUnsigned   *bool                                                               `json:"metadata_unsigned,omitempty"`
+	MetadataURL        *string                                                             `json:"metadata_url,omitempty"`
+	Name               *string                                                             `json:"name,omitempty"`
+	NameIDFormat       *string                                                             `json:"name_id_format,omitempty"`
+	SigningCert        *string                                                             `json:"signing_cert,omitempty"`
+	SloBinding         *string                                                             `json:"slo_binding,omitempty"`
+	SloURL             *string                                                             `json:"slo_url,omitempty"`
+	WantSignedRequests *bool                                                               `json:"want_signed_requests,omitempty"`
+}
+
+// PostOrganizationsOrgIDSAMLProvidersRequestArtifactResolutionItem is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSAMLProvidersRequestArtifactResolutionItem struct {
+	Index *int64  `json:"index,omitempty"`
+	URL   *string `json:"url,omitempty"`
 }
 
 // PostOrganizationsOrgIDSAMLProvidersResponse is a JSON object of the Admin API.

@@ -88,6 +88,24 @@ func TestDangerousValuesAreRefused(t *testing.T) {
 				"    name_id_format: whatever\n",
 			"name_id_format",
 		},
+		{
+			"a plaintext artifact resolution service",
+			"saml_providers:\n  - entity_id: urn:a\n    acs_urls: [https://sp.test/acs]\n" +
+				"    artifact_resolution: [{index: 1, url: 'http://sp.test/ars'}]\n",
+			"https",
+		},
+		{
+			"one artifact index given twice",
+			"saml_providers:\n  - entity_id: urn:a\n    acs_urls: [https://sp.test/acs]\n" +
+				"    artifact_resolution: [{index: 1, url: 'https://a.test/ars'}, {index: 1, url: 'https://b.test/ars'}]\n",
+			"twice",
+		},
+		{
+			"an artifact index no artifact can name",
+			"saml_providers:\n  - entity_id: urn:a\n    acs_urls: [https://sp.test/acs]\n" +
+				"    artifact_resolution: [{index: 70000, url: 'https://a.test/ars'}]\n",
+			"index",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

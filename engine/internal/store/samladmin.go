@@ -59,7 +59,11 @@ type SAMLProviderSpec struct {
 	// ECPACSURLs are its PAOS endpoints, which an ECP carries a response to;
 	// having one is how a provider takes ECP sign-ins (samlecp.go).
 	ECPACSURLs []string
-	Origin     SAMLMetadataOrigin
+	// ArtifactResolution is where it resolves the artifacts it issues, by the index
+	// an artifact names: having one is how a provider sends its requests by
+	// artifact (8.08, samlartifactrequest.go).
+	ArtifactResolution []saml.IndexedEndpoint
+	Origin             SAMLMetadataOrigin
 }
 
 // Validate refuses a provider before anything is written. The ACS URL is
@@ -94,6 +98,9 @@ func (s *SAMLProviderSpec) Validate() error {
 			return samlInvalid{fmt.Sprintf("%q is given twice; a URL takes one binding", u)}
 		}
 		seen[u] = true
+	}
+	if err := checkArtifactResolution(s.ArtifactResolution); err != nil {
+		return err
 	}
 	if s.Name == "" {
 		s.Name = s.EntityID
@@ -215,6 +222,9 @@ func AddSAMLProvider(ctx context.Context, tx pgx.Tx, orgID string, s SAMLProvide
 	}
 	if err := insertACSURLs(ctx, tx, id, append([]string{s.ACSURL}, s.MoreACSURLs...), s.ArtifactACSURLs,
 		s.ECPACSURLs); err != nil {
+		return "", err
+	}
+	if err := insertArtifactResolution(ctx, tx, id, s.ArtifactResolution); err != nil {
 		return "", err
 	}
 	if s.SLOURL != "" {
@@ -504,6 +514,7 @@ type SAMLProviderRow struct {
 	LifetimeSeconds                                int
 	ACSURLs, SLOURLs                               []string
 	ArtifactACSURLs, ECPACSURLs                    []string
+	ArtifactResolution                             []saml.IndexedEndpoint
 	Attributes                                     map[string]string
 	GroupAttribute                                 string
 	ReleasesGroups                                 bool
@@ -532,7 +543,10 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 		       COALESCE((SELECT array_agg(s.url ORDER BY s.url) FROM core.saml_slo_urls s WHERE s.provider_id = p.id), '{}'),
 		       p.attributes, COALESCE(r.attribute_name, ''), r.provider_id IS NOT NULL, COALESCE(r.only_groups, '{}'),
 		       COALESCE(p.name_id_attribute, ''), p.idp_initiated, p.default_relay_state,
-		       COALESCE(p.metadata_url, ''), p.metadata_read_at, p.wsfed_saml_version, p.org_endpoint
+		       COALESCE(p.metadata_url, ''), p.metadata_read_at, p.wsfed_saml_version, p.org_endpoint,
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('Index', x.endpoint_index, 'URL', x.url)
+		                                  ORDER BY x.endpoint_index)
+		                   FROM core.saml_artifact_resolution x WHERE x.provider_id = p.id), '[]'::jsonb)
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_group_release r ON r.provider_id = p.id
 		 WHERE p.org_id = $1::uuid ORDER BY p.entity_id`, orgID)
@@ -548,7 +562,7 @@ func SAMLProviders(ctx context.Context, q Querier, orgID string) ([]SAMLProvider
 			&p.LifetimeSeconds, &p.ACSURLs, &p.ArtifactACSURLs, &p.ECPACSURLs, &p.SLOURLs, &p.Attributes,
 			&p.GroupAttribute, &p.ReleasesGroups,
 			&p.OnlyGroups, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
-			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion, &p.OrgEndpoint); err != nil {
+			&p.MetadataURL, &p.MetadataReadAt, &p.WSFedSAMLVersion, &p.OrgEndpoint, &p.ArtifactResolution); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

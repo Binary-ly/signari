@@ -80,6 +80,7 @@ func ReadSAMLMetadata(ctx context.Context, client *http.Client, r SAMLMetadataRe
 func (s *SAMLProviderSpec) ApplyMetadata(entityID string, m *saml.ServiceProviderMetadata, encrypt bool, o SAMLMetadataOrigin) {
 	s.EntityID, s.ACSURL, s.MoreACSURLs = entityID, m.ACSURLs[0], m.ACSURLs[1:]
 	s.ArtifactACSURLs, s.ECPACSURLs = m.ArtifactACSURLs, m.ECPACSURLs
+	s.ArtifactResolution = m.ArtifactResolution
 	s.SLOURL, s.SLOBinding, s.SigningCertPEM = m.SLOURL, m.SLOBinding, m.SigningCertPEM
 	s.SOAPLogoutURL = m.SOAPLogoutURL
 	if encrypt {
@@ -176,6 +177,10 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 	if ecpACS, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 		return nil, err
 	}
+	resolution, err := SAMLArtifactResolution(ctx, tx, providerID)
+	if err != nil {
+		return nil, err
+	}
 	err = tx.QueryRow(ctx, `SELECT url, binding FROM core.saml_slo_urls WHERE provider_id = $1::uuid AND binding <> 'SOAP'
 		ORDER BY url LIMIT 1`, providerID).Scan(&cur.SLOURL, &cur.SLOBinding)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -189,8 +194,8 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 
 	next := SAMLProviderSpec{EntityID: cur.EntityID, Name: cur.Name, NameIDFormat: cur.NameIDFormat,
 		KeyTransport: cur.KeyTransport, ACSURL: m.ACSURLs[0], MoreACSURLs: m.ACSURLs[1:],
-		ArtifactACSURLs: m.ArtifactACSURLs, ECPACSURLs: m.ECPACSURLs, SLOURL: m.SLOURL, SLOBinding: m.SLOBinding,
-		SOAPLogoutURL: m.SOAPLogoutURL, SigningCertPEM: m.SigningCertPEM,
+		ArtifactACSURLs: m.ArtifactACSURLs, ECPACSURLs: m.ECPACSURLs, ArtifactResolution: m.ArtifactResolution,
+		SLOURL: m.SLOURL, SLOBinding: m.SLOBinding, SOAPLogoutURL: m.SOAPLogoutURL, SigningCertPEM: m.SigningCertPEM,
 		EncryptionCertPEM:  cmp.Or(m.EncryptionCertPEM, cur.EncryptionCertPEM),
 		WantSignedRequests: cur.WantSignedRequests || m.WantSignedRequests}
 	if cur.EncryptionCertPEM == "" {
@@ -209,6 +214,7 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 	note("acs_urls", strings.Join(acs, " "), strings.Join(m.ACSURLs, " "))
 	note("artifact_acs_urls", strings.Join(artifactACS, " "), strings.Join(m.ArtifactACSURLs, " "))
 	note("ecp_acs_urls", strings.Join(ecpACS, " "), strings.Join(m.ECPACSURLs, " "))
+	note("artifact_resolution", indexedText(resolution), indexedText(m.ArtifactResolution))
 	note("slo_url", cur.SLOURL, next.SLOURL)
 	if next.SLOURL != "" {
 		note("slo_binding", cur.SLOBinding, next.SLOBinding)
@@ -224,6 +230,9 @@ func RefreshSAMLProvider(ctx context.Context, tx pgx.Tx, orgID, providerID strin
 		return nil, err
 	}
 	if err := insertACSURLs(ctx, tx, providerID, m.ACSURLs, m.ArtifactACSURLs, m.ECPACSURLs); err != nil {
+		return nil, err
+	}
+	if err := ReplaceSAMLArtifactResolution(ctx, tx, providerID, m.ArtifactResolution); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM core.saml_slo_urls WHERE provider_id = $1::uuid`, providerID); err != nil {

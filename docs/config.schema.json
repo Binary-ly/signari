@@ -1,5 +1,17 @@
 {
   "$defs": {
+    "ArtifactResolutionService": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Attester": {
       "additionalProperties": false,
       "properties": {
@@ -1092,6 +1104,12 @@
         "artifact_acs_urls": {
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_resolution": {
+          "items": {
+            "$ref": "#/$defs/ArtifactResolutionService"
           },
           "type": "array"
         },

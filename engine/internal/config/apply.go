@@ -14,6 +14,7 @@ import (
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/proxyrules"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
 
@@ -143,11 +144,15 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state,
 		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-POST'), '{}'),
 		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-Artifact'), '{}'),
-		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'PAOS'), '{}')
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'PAOS'), '{}'),
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('Index', x.endpoint_index, 'URL', x.url)
+		                                  ORDER BY x.endpoint_index)
+		                   FROM core.saml_artifact_resolution x WHERE x.provider_id = p.id), '[]'::jsonb)
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
 		 WHERE p.org_id = $1::uuid
-		 GROUP BY p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state`, orgID)
+		 GROUP BY p.id, p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated,
+		          p.default_relay_state`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +161,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var enabled, idpInitiated bool
 		var relayState string
 		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &idpInitiated, &relayState,
-			&p.ACSURLs, &p.ArtifactACSURLs, &p.ECPACSURLs); err != nil {
+			&p.ACSURLs, &p.ArtifactACSURLs, &p.ECPACSURLs, &p.ArtifactResolution); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -554,6 +559,9 @@ func samlDiff(have, want SAMLProvider) string {
 	if !sameSet(have.ECPACSURLs, want.ECPACSURLs) {
 		d = append(d, "ecp_acs_urls")
 	}
+	if !sameSet(resolutionText(have.ArtifactResolution), resolutionText(want.ArtifactResolution)) {
+		d = append(d, "artifact_resolution")
+	}
 	if want.NameID != "" && have.NameID != want.NameID {
 		d = append(d, "name_id_format")
 	}
@@ -589,6 +597,15 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// resolutionText writes artifact resolution services as "index=url", to compare as sets.
+func resolutionText(services []ArtifactResolutionService) []string {
+	out := make([]string, 0, len(services))
+	for _, s := range services {
+		out = append(out, fmt.Sprintf("%d=%s", s.Index, s.URL))
+	}
+	return out
 }
 
 // Apply performs a plan.
@@ -784,6 +801,13 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 					return fmt.Errorf("saml provider %q %s acs %q: %w", sp.EntityID, binding, u, err)
 				}
 			}
+		}
+		resolution := make([]saml.IndexedEndpoint, 0, len(sp.ArtifactResolution))
+		for _, a := range sp.ArtifactResolution {
+			resolution = append(resolution, saml.IndexedEndpoint{Index: a.Index, URL: a.URL})
+		}
+		if err := store.ReplaceSAMLArtifactResolution(ctx, tx, id, resolution); err != nil {
+			return fmt.Errorf("saml provider %q artifact_resolution: %w", sp.EntityID, err)
 		}
 	}
 

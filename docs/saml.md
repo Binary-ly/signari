@@ -659,6 +659,41 @@ message in it, the reason logged and audited as `saml.artifact_refused`. The
 `ArtifactResponse` is signed. The response waits sealed under a key derived from
 the artifact itself, which is not stored, so the database alone cannot read it.
 
+### Requests by artifact
+
+A provider can send its `AuthnRequest` by artifact too. The browser brings `SAMLart`
+to the sign-on service, and the request is fetched from the provider's own artifact
+resolution service over SOAP (SAML Bindings 2.0 §3.6.5). The metadata lists the
+sign-on service on the HTTP-Artifact binding for it. Register where the provider
+resolves its artifacts, by the index an artifact names:
+
+```sh
+signari saml add-sp ... -artifact-resolution 1=https://sp.example.com/Shibboleth.sso/Artifact/SOAP
+```
+
+or an `ArtifactResolutionService` in its metadata, `artifact_resolution` in the Admin
+API, or in [a configuration file](config-as-code.md). A provider with none sends no
+request by artifact. What happens to one:
+
+- The artifact names its provider by the SHA-1 of the entity ID, and the service by
+  index. Only a provider answered at the endpoint the artifact was brought to, with a
+  service at that index, is asked.
+- The `ArtifactResolve` is signed with this deployment's key for that provider.
+- The answer is believed because it comes from the address registered for the
+  provider, over https with its certificate verified: what the specification calls a
+  binding mechanism. A signature on the answer is not checked. A provider that signs
+  its answer around a request it also signed puts two signatures in one document,
+  which every check here refuses as the shape of a wrapping attack.
+- The answer has to reply to this request, come from the provider, say `Success` and
+  carry an `AuthnRequest` in that provider's name. Anything else is refused on the
+  page, with the reason.
+- An artifact is resolved once. Brought again, it is refused without asking the
+  provider, and one whose resolution failed is spent as well.
+- The request is then handled as one arriving by POST: held across sign-in,
+  validated, and refused if seen before. A provider registered to sign its requests
+  has to sign the `AuthnRequest` itself, as on the POST binding; a signature on the
+  answer around it does not count.
+
 ## ECP: signing in without a browser
 
 The Enhanced Client or Proxy profile (SAML Profiles 2.0 §4.2) is how a command-line
@@ -699,8 +734,8 @@ it.
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
-- **Artifacts in the other direction**, an `AuthnRequest` or a logout message sent
-  here by artifact.
+- **Logout messages by artifact**, in either direction. A sign-in request can come
+  by artifact; see [Requests by artifact](#requests-by-artifact).
 
 It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

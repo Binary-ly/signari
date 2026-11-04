@@ -242,10 +242,19 @@ type SAMLProvider struct {
 	ArtifactACSURLs []string `yaml:"artifact_acs_urls,omitempty"`
 	// ECPACSURLs are PAOS endpoints, which make the provider one that takes ECP sign-ins.
 	ECPACSURLs []string `yaml:"ecp_acs_urls,omitempty"`
+	// ArtifactResolution is where it resolves the artifacts it sends requests by,
+	// each by the index an artifact names.
+	ArtifactResolution []ArtifactResolutionService `yaml:"artifact_resolution,omitempty"`
 	// IdPInitiated lets a sign-in to it start from the portal and DefaultRelayState
 	// is what goes with that response, each left as it is when absent.
 	IdPInitiated      *bool   `yaml:"idp_initiated,omitempty"`
 	DefaultRelayState *string `yaml:"default_relay_state,omitempty"`
+}
+
+// ArtifactResolutionService is one place a service provider resolves its artifacts.
+type ArtifactResolutionService struct {
+	Index int    `yaml:"index"`
+	URL   string `yaml:"url"`
 }
 
 // RADIUSClient is a network device permitted to ask.
@@ -393,6 +402,24 @@ func (f *File) Validate() error {
 				add("saml_providers[%s]: %q is given for more than one binding; a URL takes one", p.EntityID, u)
 			}
 			posted[u] = true
+		}
+		indexes := map[int]bool{}
+		for _, a := range p.ArtifactResolution {
+			switch {
+			case a.Index < 0 || a.Index > saml.MaxEndpointIndex:
+				add("saml_providers[%s]: artifact_resolution index %d is not one an artifact can name (0 to %d)",
+					p.EntityID, a.Index, saml.MaxEndpointIndex)
+			case indexes[a.Index]:
+				add("saml_providers[%s]: artifact_resolution index %d is given twice", p.EntityID, a.Index)
+			}
+			indexes[a.Index] = true
+			if !strings.HasPrefix(a.URL, "https://") {
+				add("saml_providers[%s]: artifact_resolution %q must be https: what it answers is believed "+
+					"for coming from there", p.EntityID, a.URL)
+			}
+			if strings.Contains(a.URL, "*") {
+				add("saml_providers[%s]: artifact_resolution %q contains a wildcard", p.EntityID, a.URL)
+			}
 		}
 		switch p.NameID {
 		case "", "persistent", "emailAddress", "transient":

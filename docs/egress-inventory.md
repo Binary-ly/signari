@@ -94,6 +94,7 @@ named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` (see
 | Old provider behind delegated sign-in | `delegated` | `safedial`; the request carries a password |
 | FIDO metadata mirror | `fidomds` | `safedial` |
 | OpenID Federation trust anchors | `oidfed/fetch` | `safedial`, plus intermediates discovered while resolving a chain |
+| A service provider's artifact resolution service | `httpapi/samlartifactrequest` | `safedial`, https only, no redirect followed. Anybody can bring an artifact, which is what makes the call, so it goes only to the address registered under the index the artifact names, for the provider whose SourceID it carries, and once per artifact. See [saml](saml.md#requests-by-artifact) |
 | Outpost callbacks | `outpost` | the outpost agent calling its own engine; not a request the engine makes |
 | A URL passed to `signari proxycheck` / logout test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the server |
 | Vault or OpenBao transit engine | `keys` | named only by `SIGNARI_VAULT_ADDR`, and not `safedial`, as the server is the operator's own, usually on their network. Plain http is refused except to loopback, since the token goes with every request. Makes and reads signing keys and asks for signatures; nothing private comes back. See [signing keys in a module](signing-keys-in-a-module.md) |

@@ -67,6 +67,64 @@ func (s *Server) resolveSAMLRequestArtifact(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, r.URL.Path+"?"+q.Encode(), http.StatusSeeOther)
 }
 
+// handleSAMLLogoutArtifact answers a logout message a provider sends by artifact. A
+// LogoutRequest is the provider's own or refused, and is then acted on as one arriving
+// by POST is, its own signature required: fetching it from the provider establishes
+// where it came from, and a request to end somebody's session is still believed only
+// when signed. A LogoutResponse moves this deployment's logout along, as one arriving
+// by redirect does.
+func (s *Server) handleSAMLLogoutArtifact(w http.ResponseWriter, r *http.Request, artifact, relayState string) {
+	ctx := r.Context()
+	raw, p, err := s.fetchSAMLArtifact(ctx, r, artifact)
+	var kind string
+	if err == nil {
+		kind, err = saml.MessageKind(raw)
+	}
+	if err == nil && kind == "LogoutRequest" {
+		var req saml.LogoutRequest
+		if err = saml.Unmarshal(raw, &req); err == nil && req.Issuer != p.EntityID {
+			err = fmt.Errorf("the logout fetched names %q as its issuer, and the artifact was %q's", req.Issuer, p.EntityID)
+		}
+	}
+	if err == nil && kind != "LogoutRequest" && kind != "LogoutResponse" {
+		err = fmt.Errorf("the artifact names a %s, and the logout service takes a LogoutRequest or a LogoutResponse", kind)
+	}
+	if err != nil {
+		s.log.InfoContext(ctx, "SAML logout by artifact refused", "err", err, "correlation_id", correlationID(ctx))
+		s.samlRefuse(w, r, err.Error())
+		return
+	}
+	if kind == "LogoutResponse" {
+		if s.continueSAMLLogoutChain(w, r, relayState, logoutDocumentFailed(raw)) {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	form := url.Values{"SAMLRequest": {base64.StdEncoding.EncodeToString(raw)}}
+	if relayState != "" {
+		form.Set("RelayState", relayState)
+	}
+	body := form.Encode()
+	inner := r.Clone(context.WithValue(ctx, fetchedByArtifactKey{}, true))
+	inner.Method = http.MethodPost
+	inner.URL.RawQuery = ""
+	inner.Body = io.NopCloser(strings.NewReader(body))
+	inner.ContentLength = int64(len(body))
+	inner.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	inner.Form, inner.PostForm = nil, nil
+	s.handleSAMLSLO(w, inner)
+}
+
+// fetchedByArtifactKey marks a logout request fetched by artifact, whose answer goes
+// back the same way where the provider takes it so.
+type fetchedByArtifactKey struct{}
+
+func fetchedByArtifact(ctx context.Context) bool {
+	v, _ := ctx.Value(fetchedByArtifactKey{}).(bool)
+	return v
+}
+
 // fetchSAMLArtifact fetches the message an artifact a service provider issued names,
 // and answers it with the provider. The artifact names its issuer by the SHA-1 of its
 // entity id and the service by index, which the receiver looks up (lines 1079-1086);

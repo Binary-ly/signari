@@ -118,7 +118,8 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 	// logout was under way is still sent a signature it can check. One that has
 	// since been removed is sent RSA, the default.
 	signatureAlg, issuer := saml.SignatureAlgRSASHA256, saml.EntityID(s.cfg.Issuer, "")
-	if p, err := s.loadSAMLProviderByID(ctx, step.ProviderID); err == nil {
+	p, err := s.loadSAMLProviderByID(ctx, step.ProviderID)
+	if err == nil {
 		signatureAlg, issuer = p.SignatureAlg, s.samlEntityID(p)
 	} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
 		return "", err
@@ -150,6 +151,19 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 	}, key.Signer(), certDER)
 	if err != nil {
 		return "", err
+	}
+
+	// A provider whose logout endpoint takes artifacts is sent one (8.08), the request
+	// held for it to resolve. Read now, as the algorithm is; a provider since removed
+	// has nothing to resolve it as, and is sent the redirect.
+	if p != nil {
+		binding, err := store.SAMLLogoutBinding(ctx, s.db, step.ProviderID, step.SLOURL)
+		if err != nil {
+			return "", err
+		}
+		if binding == bindingArtifact {
+			return s.artifactURL(ctx, p, step.SLOURL, doc, token)
+		}
 	}
 
 	encoded, err := saml.EncodeRedirect(doc)

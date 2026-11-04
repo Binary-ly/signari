@@ -97,6 +97,19 @@ func SAMLArtifactResolutionURL(ctx context.Context, q rowQuerier, providerID str
 	return url, err
 }
 
+// SAMLLogoutBinding is the binding a provider's logout endpoint at url was registered
+// with, HTTP-Redirect when it is not registered: the binding a logout used before
+// there was any other.
+func SAMLLogoutBinding(ctx context.Context, q rowQuerier, providerID, url string) (string, error) {
+	var binding string
+	err := q.QueryRow(ctx, `SELECT binding FROM core.saml_slo_urls WHERE provider_id = $1::uuid AND url = $2`,
+		ExactUUIDOrNil(providerID), url).Scan(&binding)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "HTTP-Redirect", nil
+	}
+	return binding, err
+}
+
 // SAMLArtifactSenders are the entity ids of the providers answered at an organisation's
 // endpoints, or at the deployment's for none, that resolve artifacts somewhere. An
 // artifact names its issuer only by the SHA-1 of its entity id, which the database

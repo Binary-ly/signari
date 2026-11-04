@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0289 saml_artifact_logout
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider's logout endpoint may take its messages by artifact (8.08, SAML Bindings 2.0 §3.6): the LogoutRequest or LogoutResponse waits here, and the provider fetches it from the artifact resolution service with the artifact the browser brings. Not compatible with the previous release: it changes the check on saml_slo_urls, and the previous release would send a logout message to an artifact endpoint on the redirect binding.
+
 ## 0288 saml_artifact_resolution
 
 Not compatible with the release before: stop it before migrating.

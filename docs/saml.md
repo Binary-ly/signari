@@ -472,7 +472,8 @@ The binding is now stored and honoured:
 signari saml add-sp ... -slo https://sp.test/slo -slo-binding HTTP-POST
 ```
 
-A provider that registered both is answered on whichever binding it used. The
+`HTTP-Artifact` is the third; see [Logout by artifact](#logout-by-artifact). A
+provider that registered both is answered on whichever binding it used. The
 redirect-bound response was checked with **openssl**, against the certificate the
 IdP publishes in its own metadata — an entirely separate path from the code that
 produced it:
@@ -694,6 +695,31 @@ request by artifact. What happens to one:
   has to sign the `AuthnRequest` itself, as on the POST binding; a signature on the
   answer around it does not count.
 
+### Logout by artifact
+
+A logout can go both ways by artifact. A provider's `LogoutRequest` or
+`LogoutResponse` comes as `SAMLart` to the logout service and is fetched from the
+provider as a request by artifact is, so the provider needs a resolution service
+registered. A `LogoutRequest` fetched that way has to name that provider as its
+`Issuer`, and is then acted on as one arriving by POST: only when it is signed with
+the certificate registered for it, since a request to end somebody's session is
+never believed unsigned. A `LogoutResponse` moves this deployment's logout along, as
+one arriving by redirect does.
+
+The other way, a provider whose logout endpoint is registered with the HTTP-Artifact
+binding is sent its `LogoutRequest`, and the answer to its own, by artifact. The
+message waits here, and the provider fetches it from `POST /saml/artifact` with an
+`ArtifactResolve` signed as itself, as it fetches a response:
+
+```sh
+signari saml add-sp ... -slo https://sp.example.com/Shibboleth.sso/SLO/Artifact -slo-binding HTTP-Artifact
+```
+
+The metadata lists the logout service on the HTTP-Artifact binding as well. Reading a
+provider's metadata takes its redirect logout endpoint, or else its POST one, and
+never an artifact one, so a logout goes by artifact only to a provider registered
+for it with `-slo-binding` or the Admin API's `slo_binding`.
+
 ## ECP: signing in without a browser
 
 The Enhanced Client or Proxy profile (SAML Profiles 2.0 §4.2) is how a command-line
@@ -734,8 +760,6 @@ it.
 
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
-- **Logout messages by artifact**, in either direction. A sign-in request can come
-  by artifact; see [Requests by artifact](#requests-by-artifact).
 
 It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

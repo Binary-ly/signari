@@ -28,36 +28,53 @@ import (
 // validated against is registered for.
 func (s *Server) deliverSAMLResponse(w http.ResponseWriter, r *http.Request, v *saml.Validated,
 	p *saml.Provider, doc, relayState string) {
-	if v.Binding != "HTTP-Artifact" {
+	if v.Binding != bindingArtifact {
 		s.postSAMLResponse(w, r, v.ACSURL, doc, relayState)
 		return
 	}
+	s.redirectByArtifact(w, r, p, v.ACSURL, doc, relayState)
+}
+
+// redirectByArtifact sends a message to a provider by artifact: held here, and the
+// browser sent on with only a reference to it, which the provider resolves at the
+// artifact resolution service. A response, and since logout by artifact (8.08) a
+// LogoutResponse too.
+func (s *Server) redirectByArtifact(w http.ResponseWriter, r *http.Request, p *saml.Provider, target, doc, relayState string) {
 	ctx := r.Context()
-	artifact, handle, err := saml.NewArtifact(s.samlEntityID(p))
-	if err == nil {
-		err = store.HoldSAMLArtifact(ctx, s.db, p.ID, p.OrgID, handle, []byte(doc))
-	}
-	acs, perr := url.Parse(v.ACSURL)
-	if err == nil {
-		err = perr
-	}
+	to, err := s.artifactURL(ctx, p, target, doc, relayState)
 	if err != nil {
-		s.log.ErrorContext(ctx, "holding a SAML response for its artifact", "entity_id", p.EntityID,
+		s.log.ErrorContext(ctx, "holding a SAML message for its artifact", "entity_id", p.EntityID,
 			"err", err, "correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	// URL encoding, by redirect (saml-bindings-2.0-os lines 1026-1030, 1113-1117).
-	q := acs.Query()
+	// Lines 1145-1147: an artifact is not to be cached on the way.
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Header().Set("Pragma", "no-cache")
+	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// artifactURL holds a message for a provider and answers the address that brings it
+// the artifact, by URL encoding (saml-bindings-2.0-os lines 1026-1030, 1113-1117).
+func (s *Server) artifactURL(ctx context.Context, p *saml.Provider, target, doc, relayState string) (string, error) {
+	artifact, handle, err := saml.NewArtifact(s.samlEntityID(p))
+	if err != nil {
+		return "", err
+	}
+	if err := store.HoldSAMLArtifact(ctx, s.db, p.ID, p.OrgID, handle, []byte(doc)); err != nil {
+		return "", err
+	}
+	to, err := url.Parse(target)
+	if err != nil {
+		return "", err
+	}
+	q := to.Query()
 	q.Set("SAMLart", artifact)
 	if relayState != "" {
 		q.Set("RelayState", relayState)
 	}
-	acs.RawQuery = q.Encode()
-	// Lines 1145-1147: an artifact is not to be cached on the way.
-	w.Header().Set("Cache-Control", "no-cache, no-store")
-	w.Header().Set("Pragma", "no-cache")
-	http.Redirect(w, r, acs.String(), http.StatusSeeOther)
+	to.RawQuery = q.Encode()
+	return to.String(), nil
 }
 
 // handleSAMLArtifactResolve answers a provider resolving an artifact.

@@ -113,7 +113,12 @@ func Metadata(in MetadataInput) (string, error) {
 	}
 
 	if in.SLOURL != "" {
-		for _, b := range []string{BindingRedirect, BindingPOST} {
+		sloBindings := []string{BindingRedirect, BindingPOST}
+		if in.ArtifactURL != "" {
+			// A logout message may come and go by artifact too (8.08).
+			sloBindings = append(sloBindings, BindingArtifact)
+		}
+		for _, b := range sloBindings {
 			slo := idp.CreateElement("md:SingleLogoutService")
 			slo.CreateAttr("Binding", b)
 			slo.CreateAttr("Location", in.SLOURL)

@@ -149,8 +149,9 @@ func (s *SAMLProviderSpec) Validate() error {
 	if s.SLOBinding == "" {
 		s.SLOBinding = "HTTP-Redirect"
 	}
-	if s.SLOBinding != "HTTP-Redirect" && s.SLOBinding != "HTTP-POST" {
-		return samlInvalid{fmt.Sprintf("unknown logout binding %q: use HTTP-Redirect or HTTP-POST", s.SLOBinding)}
+	if s.SLOBinding != "HTTP-Redirect" && s.SLOBinding != "HTTP-POST" && s.SLOBinding != "HTTP-Artifact" {
+		return samlInvalid{fmt.Sprintf("unknown logout binding %q: use HTTP-Redirect, HTTP-POST or HTTP-Artifact",
+			s.SLOBinding)}
 	}
 	if s.SOAPLogoutURL != "" && !strings.HasPrefix(s.SOAPLogoutURL, "https://") {
 		return samlInvalid{fmt.Sprintf("the SOAP logout URL must be https: %q", s.SOAPLogoutURL)}

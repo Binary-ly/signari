@@ -611,7 +611,7 @@ func run(args []string) (err error) {
 	wantSignedReq := fs.Bool("want-signed-requests", false,
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
-		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+		"binding for the single logout endpoint: HTTP-Redirect, HTTP-POST or HTTP-Artifact")
 	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
 	ssfCritical := fs.String("critical-subject-members", "",
 		"comma-separated subject member names this transmitter marks Critical (SSF 1.0 section 3.6)")

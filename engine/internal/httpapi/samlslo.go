@@ -60,6 +60,12 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// By artifact (8.08): fetched from the provider, then handled as the message it is.
+	if art := params.Get("SAMLart"); art != "" && params.Get("SAMLRequest") == "" && params.Get("SAMLResponse") == "" {
+		s.handleSAMLLogoutArtifact(w, r, art, params.Get("RelayState"))
+		return
+	}
+
 	encoded := params.Get("SAMLRequest")
 	if encoded == "" {
 		if resp := params.Get("SAMLResponse"); resp != "" {
@@ -165,6 +171,9 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	if post {
 		requestBinding = bindingPOST
 	}
+	if fetchedByArtifact(ctx) {
+		requestBinding = bindingArtifact
+	}
 	sloURL, respBinding := sloEndpoint(ctx, s, provider.ID, requestBinding)
 	if sloURL == "" {
 		// Nowhere to answer. The session is still ended -- the logout succeeded,
@@ -206,6 +215,10 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	// before it was changed, because reading the code had not made it obvious.
 	if respBinding == bindingPOST {
 		s.postSAMLResponse(w, r, sloURL, doc, relayState)
+		return
+	}
+	if respBinding == bindingArtifact {
+		s.redirectByArtifact(w, r, provider, sloURL, doc, relayState)
 		return
 	}
 
@@ -295,6 +308,12 @@ func logoutResponseFailed(encoded string) bool {
 	if err != nil {
 		return true
 	}
+	return logoutDocumentFailed(raw)
+}
+
+// logoutDocumentFailed is logoutResponseFailed for the document itself, as one
+// fetched by artifact arrives.
+func logoutDocumentFailed(raw []byte) bool {
 	var lr struct {
 		Status struct {
 			StatusCode struct {
@@ -314,6 +333,7 @@ func logoutResponseFailed(encoded string) bool {
 const (
 	bindingRedirect = "HTTP-Redirect"
 	bindingPOST     = "HTTP-POST"
+	bindingArtifact = "HTTP-Artifact"
 )
 
 // sloEndpoint picks where a LogoutResponse goes and on which binding.

@@ -101,7 +101,14 @@ var walkFree = []string{"seqscan", "hashjoin", "mergejoin", "material", "sort"}
 // with an index condition to build the bitmap from. So on an empty table, where every
 // index costs the same and the planner may walk the wrong one, a whole table still
 // read in this plan, by a disabled path of either kind, is one no index can serve.
-var seeksOnly = append(append([]string{}, walkFree...), "indexscan", "indexonlyscan")
+//
+// Sorting stays on here. A bitmap returns its rows in no order, so with sorting off a
+// seek the statement's index offers costs one disabled node, exactly as walking an
+// ordered index with a filter does, and on an emptied table the walk won: a read of an
+// organisation's credential requests by (org_id, created_at) was reported as one no
+// index can serve (3 November 2026). Whether a page sorts is SortsToPage's question.
+var seeksOnly = append(slices.DeleteFunc(slices.Clone(walkFree), func(name string) bool { return name == "sort" }),
+	"indexscan", "indexonlyscan")
 
 // Explain plans a statement with the alternatives to an index turned off.
 func Explain(ctx context.Context, pool *pgxpool.Pool, s Statement) (string, error) {

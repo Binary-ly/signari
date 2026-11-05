@@ -339,6 +339,9 @@ federation in:
   import keycloak           import users, groups and clients from a Keycloak realm export
   import authentik          import users, groups and providers from an authentik dumpdata export
   import zitadel            import an organisation's users and roles from a Zitadel export
+  import auth0              import people from an Auth0 bulk user export (JSON)
+  import okta               import people from what Okta's users API lists
+  import entra              import people from Entra ID's user download (CSV) or Graph's JSON
   import shadow             an account for each /etc/shadow entry with a password
   import pskc               give the tokens in a vendor's PSKC file to their holders
   migration-source add      where pending people's passwords are verified at first sign-in
@@ -554,6 +557,8 @@ func run(args []string) (err error) {
 	file := fs.String("file", "", "path to a realm export (import), or an audit archive (audit verify)")
 	installID := fs.String("install-id", "", "`import authentik`: the installation ID authentik derived "+
 		"persistent NameIDs and passkey user handles from")
+	importVia := fs.String("via", "", "`import auth0`, `import okta`, `import entra`: the slug of the provider "+
+		"registered here that is that service itself; every person is linked to it by their identifier there")
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
@@ -1667,6 +1672,12 @@ func run(args []string) (err error) {
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
 	case "import zitadel":
 		return importZitadel(ctx, conn, *file, *orgID, *dryRun)
+	case "import auth0":
+		return importHostedService(ctx, conn, "auth0", *file, *orgID, *importVia, *dryRun)
+	case "import okta":
+		return importHostedService(ctx, conn, "okta", *file, *orgID, *importVia, *dryRun)
+	case "import entra":
+		return importHostedService(ctx, conn, "entra", *file, *orgID, *importVia, *dryRun)
 	case "import shadow":
 		return importShadow(ctx, conn, *file, *orgID, *dirDomain, !*apply)
 	case "import pskc":
@@ -6028,6 +6039,71 @@ func printImportReport(res *importer.Result, builtIns string) {
 			fmt.Printf("  %s\n", id)
 		}
 	}
+}
+
+// importHostedService imports the people of Auth0, Okta or Entra ID (6.26). None
+// of them gives out passwords, so a person comes across with a link, to a provider
+// the export names or to the service itself as -via; see internal/importer/hosted.go.
+func importHostedService(ctx context.Context, conn *pgx.Conn, service, path, orgID, via string, dryRun bool) error {
+	how := map[string]string{
+		"auth0": "Export the users from Auth0 as JSON: Import/Export Users in its dashboard, or its\n" +
+			"  POST /jobs/users-exports with \"format\": \"json\". A CSV export cannot hold their identities.",
+		"okta": "List the users with Okta's users API, GET /api/v1/users, and save each page into one file.",
+		"entra": "Download the users in the Microsoft Entra admin center (Users > All users > Download users),\n" +
+			"  or list them with Microsoft Graph, naming accountEnabled in $select.",
+	}[service]
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n  %s\n\nNo password comes out of it. With a "+
+			"migration source (`signari migration-source add`), people come in pending and it checks each one's "+
+			"password at their first sign-in; or register the service as a provider here (`signari idp add`) and "+
+			"name it with -via, so people sign in through it.", how)
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := beginImport(ctx, conn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	opts := importer.HostedOptions{Options: importer.Options{Root: root}, Via: via}
+	var res *importer.Result
+	switch service {
+	case "auth0":
+		exp, perr := importer.ParseAuth0(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportAuth0(ctx, tx, orgID, exp, opts)
+	case "okta":
+		exp, perr := importer.ParseOkta(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportOkta(ctx, tx, orgID, exp, opts)
+	default:
+		exp, perr := importer.ParseEntra(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportEntra(ctx, tx, orgID, exp, opts)
+	}
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Printf("DRY RUN -- nothing was written.\n")
+	} else if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	printImportReport(res, "the service's own")
+	return nil
 }
 
 // importZitadel imports one organisation of a Zitadel export (6.20).

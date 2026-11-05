@@ -196,3 +196,6 @@ command or an environment variable exists in code and not on its page.
 | [migrate-from-keycloak.md](migrate-from-keycloak.md) | Importing a realm |
 | [migrate-from-authentik.md](migrate-from-authentik.md) | Importing an installation |
 | [migrate-from-zitadel.md](migrate-from-zitadel.md) | Importing an organisation |
+| [migrate-from-auth0.md](migrate-from-auth0.md) | Importing a tenant's people |
+| [migrate-from-okta.md](migrate-from-okta.md) | Importing an org's people |
+| [migrate-from-entra.md](migrate-from-entra.md) | Importing a tenant's people |

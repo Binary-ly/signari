@@ -54,6 +54,12 @@ const (
 	EAPTypeTLS      = 13
 	// EAPTypeTTLS is EAP-TTLS (RFC 5281 §9.1).
 	EAPTypeTTLS = 21
+	// EAPTypeGTC is the Generic Token Card (RFC 3748 §5.6), PEAP's inner method here.
+	EAPTypeGTC = 6
+	// EAPTypePEAP is PEAP (MS-PEAP §2.2.2), and EAPTypeTLVExtensions the inner
+	// method that carries its Result TLV (§2.2.8.1).
+	EAPTypePEAP          = 25
+	EAPTypeTLVExtensions = 33
 )
 
 // maxEAPMessageChunk is what one RADIUS attribute can hold: 255 total, less the

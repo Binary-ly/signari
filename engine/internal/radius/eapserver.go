@@ -4,7 +4,6 @@ import (
 	// #nosec G501 -- RFC 2548 specifies MD5 for MPPE key encoding. It is not a
 	// choice: every access point in existence expects exactly this, and the
 	// keys it protects live for one wireless association.
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/rand"
@@ -55,8 +54,11 @@ func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Ad
 		switch {
 		case s.eapTLS != nil:
 			sess, req, err = s.startEAPTLS(eap.Identifier + 1)
-		case s.tunnelConfig != nil:
-			sess, req, err = s.startEAPTTLS(eap.Identifier + 1)
+		case s.tunnelOn(EAPTypePEAP):
+			// PEAP before EAP-TTLS: it is what most supplicants try first.
+			sess, req, err = s.startTunnel(eap.Identifier+1, EAPTypePEAP)
+		case s.tunnelOn(EAPTypeTTLS):
+			sess, req, err = s.startTunnel(eap.Identifier+1, EAPTypeTTLS)
 		default:
 			// Nothing configured. Refused rather than offered a weaker method: a
 			// supplicant asking for EAP and answered with MD5 has been downgraded
@@ -72,7 +74,7 @@ func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Ad
 		s.sessions.put(sess)
 		s.challenge(conn, addr, p, secret, sess, req)
 
-	case EAPTypeTLS, EAPTypeTTLS:
+	case EAPTypeTLS, EAPTypeTTLS, EAPTypePEAP:
 		state, ok := p.Attr(AttrState)
 		if !ok || p.Count(AttrState) > 1 {
 			// One conversation per request: with two States, which session it
@@ -123,17 +125,24 @@ func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Ad
 
 	case EAPTypeNak:
 		// The supplicant refuses the method offered, and its Nak lists the ones it
-		// would rather (RFC 3748 §5.3.1). EAP-TTLS is the only other on offer, and
-		// only where it is on; anything else is refused.
+		// would rather (RFC 3748 §5.3.1), in its order. PEAP and EAP-TTLS are the
+		// others there can be, each where it is on; anything else is refused.
 		if state, ok := p.Attr(AttrState); ok {
 			s.sessions.drop(string(state))
 		}
-		if s.tunnelConfig == nil || !bytes.Contains(eap.Data, []byte{EAPTypeTTLS}) {
+		var wanted byte
+		for _, t := range eap.Data {
+			if (t == EAPTypePEAP || t == EAPTypeTTLS) && s.tunnelOn(t) {
+				wanted = t
+				break
+			}
+		}
+		if wanted == 0 {
 			s.log.Info("supplicant refused the EAP method offered", "client", client.Name, "wants", eap.Data)
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}
-		sess, req, err := s.startEAPTTLS(eap.Identifier + 1)
+		sess, req, err := s.startTunnel(eap.Identifier+1, wanted)
 		if err != nil {
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return

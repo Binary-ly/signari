@@ -77,14 +77,18 @@ type eapSession struct {
 	// state is the RADIUS State attribute value, and the map key.
 	state string
 
-	// method is the EAP type the conversation runs: EAPTypeTLS, or EAPTypeTTLS,
-	// whose handshake proves only the server and whose second phase carries the
-	// person's password inside the tunnel (eaptunnel.go).
+	// method is the EAP type the conversation runs: EAPTypeTLS, or EAPTypeTTLS or
+	// EAPTypePEAP, whose handshake proves only the server and whose second phase
+	// carries the person's password inside the tunnel (eaptunnel.go, eappeap.go).
 	method byte
 	// app is what the tunnel's second phase decrypted, read by tunnelReader once the
 	// handshake is over; appBuf holds what has not yet made a whole AVP sequence.
 	app    chan []byte
 	appBuf []byte
+	// peap is where a PEAP conversation's second phase stands, and inner the name
+	// its inner Identity gave.
+	peap  peapStep
+	inner string
 
 	// conn is the in-memory pipe crypto/tls reads and writes.
 	conn *eapConn
@@ -463,8 +467,9 @@ func (s *Server) continueEAPTLS(ctx context.Context, sess *eapSession, resp *EAP
 	}
 	// RFC 5281 §9.2.1: the version a TTLS client answers with is the one both MUST
 	// use, and the server offered 0, the only one there is, so any other is not one
-	// it can run. EAP-TLS reserves the bits.
-	if sess.method == EAPTypeTTLS && frame.Version != 0 {
+	// it can run. MS-PEAP §3.1.5.3 likewise for PEAP's V bit, the lowest, the two
+	// above it reserved and ignored (§2.2.2). EAP-TLS reserves the bits.
+	if sess.method == EAPTypeTTLS && frame.Version != 0 || sess.method == EAPTypePEAP && frame.Version&0x01 != 0 {
 		return nil, true, false
 	}
 
@@ -511,7 +516,7 @@ func (s *Server) continueEAPTLS(ctx context.Context, sess *eapSession, resp *EAP
 	sess.inbound = nil
 	sess.expecting = 0
 
-	if sess.method == EAPTypeTTLS {
+	if sess.method == EAPTypeTTLS || sess.method == EAPTypePEAP {
 		return s.continueTunnel(ctx, sess, payload)
 	}
 

@@ -32,15 +32,20 @@ func (a *ttlsAuth) Authenticate(_ context.Context, u, p string) error {
 }
 
 func ttlsTestServer(t *testing.T, pki *testPKI, withTLS bool) (*Server, *ttlsAuth) {
+	return tunnelTestServer(t, pki, withTLS, EAPTunnelConfig{TTLS: true})
+}
+
+// tunnelTestServer is a server with the tunnelled methods tunnels names on.
+func tunnelTestServer(t *testing.T, pki *testPKI, withTLS bool, tunnels EAPTunnelConfig) (*Server, *ttlsAuth) {
 	t.Helper()
 	_, netw, _ := net.ParseCIDR("10.0.0.0/8")
+	tunnels.Certificate = pki.issue(t, "radius.test", false, 0)
 	cfg := Config{
-		Clients: []Client{{Net: netw, Secret: "a-secret-of-sufficient-length", Name: "ap"}},
-		EAPTTLS: &EAPTunnelConfig{Certificate: pki.issue(t, "radius.test", false, 0)},
+		Clients:    []Client{{Net: netw, Secret: "a-secret-of-sufficient-length", Name: "ap"}},
+		EAPTunnels: &tunnels,
 	}
 	if withTLS {
-		cfg.EAPTLS = &EAPTLSConfig{Certificate: cfg.EAPTTLS.Certificate, ClientCAs: pki.pool,
-			Auth: &certAuth{}}
+		cfg.EAPTLS = &EAPTLSConfig{Certificate: tunnels.Certificate, ClientCAs: pki.pool, Auth: &certAuth{}}
 	}
 	auth := &ttlsAuth{}
 	srv, err := New(cfg, auth, slog.New(slog.NewTextHandler(io.Discard, nil)))

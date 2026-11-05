@@ -34,11 +34,14 @@ import (
 //     not followed here, and a key the access point and the supplicant derive
 //     differently is an association that carries no traffic.
 
-// EAPTunnelConfig is what EAP-TTLS needs.
+// EAPTunnelConfig is what the tunnelled methods need, and which of them are on.
 type EAPTunnelConfig struct {
 	// Certificate is the server's, which supplicants verify before sending a
 	// password. It can be EAP-TLS's own.
 	Certificate tls.Certificate
+	// TTLS turns on EAP-TTLS with PAP inside, PEAP turns on PEAPv0 with EAP-GTC
+	// inside (eappeap.go).
+	TTLS, PEAP bool
 }
 
 // tunnelTLSConfig is the tunnel's TLS: the server's certificate, no client
@@ -53,12 +56,19 @@ func tunnelTLSConfig(c *EAPTunnelConfig) *tls.Config {
 	}
 }
 
-// startEAPTTLS begins an EAP-TTLS conversation.
-func (s *Server) startEAPTTLS(id byte) (*eapSession, *EAPPacket, error) {
-	if s.tunnelConfig == nil {
-		return nil, nil, errors.New("EAP-TTLS is not configured")
+// startTunnel begins an EAP-TTLS or PEAP conversation.
+func (s *Server) startTunnel(id, method byte) (*eapSession, *EAPPacket, error) {
+	if !s.tunnelOn(method) {
+		return nil, nil, fmt.Errorf("EAP type %d is not configured", method)
 	}
-	return s.startTLSMethod(id, EAPTypeTTLS, s.tunnelConfig)
+	return s.startTLSMethod(id, method, s.tunnelConfig)
+}
+
+// tunnelOn reports whether a tunnelled method is on.
+func (s *Server) tunnelOn(method byte) bool {
+	t := s.cfg.EAPTunnels
+	return t != nil && s.tunnelConfig != nil &&
+		(method == EAPTypeTTLS && t.TTLS || method == EAPTypePEAP && t.PEAP)
 }
 
 // AVP codes: the RADIUS attributes of the same numbers (§10.1, RFC 2865 §5).
@@ -138,14 +148,17 @@ func (s *Server) continueTunnel(ctx context.Context, sess *eapSession, payload [
 	if sess.handshakeErr != nil {
 		return nil, true, false
 	}
-
-	// The second phase. The client goes first (§7.6), with its AVPs after the
-	// server's Finished; an acknowledgement with none is a client with nothing to
-	// say, and a tunnel that proved only the server has authenticated nobody.
 	if sess.app == nil {
 		sess.app = make(chan []byte, 16)
 		go tunnelReader(sess)
 	}
+	if sess.method == EAPTypePEAP {
+		return s.peapPhase2(ctx, sess)
+	}
+
+	// The second phase. The client goes first (§7.6), with its AVPs after the
+	// server's Finished; an acknowledgement with none is a client with nothing to
+	// say, and a tunnel that proved only the server has authenticated nobody.
 	avps, ok := readAVPs(sess, 2*time.Second)
 	if !ok {
 		return nil, true, false
@@ -235,8 +248,11 @@ func readAVPs(sess *eapSession, wait time.Duration) ([]tunnelAVP, bool) {
 
 // eapMethodName is a method's name, for the log.
 func eapMethodName(method byte) string {
-	if method == EAPTypeTTLS {
+	switch method {
+	case EAPTypeTTLS:
 		return "EAP-TTLS"
+	case EAPTypePEAP:
+		return "PEAP"
 	}
 	return "EAP-TLS"
 }

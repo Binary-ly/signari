@@ -3301,15 +3301,15 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		if eerr != nil {
 			return fmt.Errorf("configuring EAP-TLS: %w", eerr)
 		}
-		ttlsCfg, terr := eapTTLSFromEnv()
+		tunnelCfg, terr := eapTunnelsFromEnv()
 		if terr != nil {
-			return fmt.Errorf("configuring EAP-TTLS: %w", terr)
+			return fmt.Errorf("configuring EAP-TTLS and PEAP: %w", terr)
 		}
 
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
 			passwords.Shared(), radiusOrgID, log).
 			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK)
-		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg, EAPTTLS: ttlsCfg,
+		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg, EAPTunnels: tunnelCfg,
 			Workers: 2 * passwords.Shared().Concurrency()}, radiusAuth, log)
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
@@ -7114,24 +7114,30 @@ func duoShow(ctx context.Context, conn *pgx.Conn) error {
 // half-applied: a listener with a server certificate and no client CAs would
 // complete handshakes with anybody holding any certificate, which is worse than
 // no EAP-TLS at all because it looks like it is working.
-// eapTTLSFromEnv turns on EAP-TTLS with PAP inside when SIGNARI_EAP_TUNNELS names it
-// (7.08), with the server certificate EAP-TLS uses. Off unless named: it is a
-// password method, and a supplicant that does not check this certificate sends the
-// password to whoever answers.
-func eapTTLSFromEnv() (*radius.EAPTunnelConfig, error) {
+// eapTunnelsFromEnv turns on EAP-TTLS with PAP inside and PEAP with EAP-GTC inside,
+// each when SIGNARI_EAP_TUNNELS names it (7.08), with the server certificate EAP-TLS
+// uses. Off unless named: they are password methods, and a supplicant that does not
+// check this certificate sends the password to whoever answers.
+func eapTunnelsFromEnv() (*radius.EAPTunnelConfig, error) {
 	named := strings.TrimSpace(os.Getenv("SIGNARI_EAP_TUNNELS"))
 	if named == "" {
 		return nil, nil
 	}
+	var cfg radius.EAPTunnelConfig
 	for _, m := range strings.Split(named, ",") {
-		if m = strings.ToLower(strings.TrimSpace(m)); m != "ttls" {
-			return nil, fmt.Errorf("SIGNARI_EAP_TUNNELS names %q; the tunnel there is is ttls", m)
+		switch m = strings.ToLower(strings.TrimSpace(m)); m {
+		case "ttls":
+			cfg.TTLS = true
+		case "peap":
+			cfg.PEAP = true
+		default:
+			return nil, fmt.Errorf("SIGNARI_EAP_TUNNELS names %q; the tunnels there are are ttls and peap", m)
 		}
 	}
 	certFile, keyFile := os.Getenv("SIGNARI_EAP_TLS_CERT"), os.Getenv("SIGNARI_EAP_TLS_KEY")
 	if certFile == "" || keyFile == "" {
-		return nil, fmt.Errorf("EAP-TTLS needs SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY: the certificate is " +
-			"all that proves this server to somebody about to send it their password")
+		return nil, fmt.Errorf("EAP-TTLS and PEAP need SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY: the " +
+			"certificate is all that proves this server to somebody about to send it their password")
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -7140,7 +7146,8 @@ func eapTTLSFromEnv() (*radius.EAPTunnelConfig, error) {
 	if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil && time.Now().After(leaf.NotAfter) {
 		return nil, fmt.Errorf("the EAP server certificate expired on %s", leaf.NotAfter.Format("2006-01-02"))
 	}
-	return &radius.EAPTunnelConfig{Certificate: cert}, nil
+	cfg.Certificate = cert
+	return &cfg, nil
 }
 
 func eapTLSFromEnv(pool *pgxpool.Pool, orgID string) (*radius.EAPTLSConfig, error) {

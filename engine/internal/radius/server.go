@@ -105,11 +105,12 @@ type Config struct {
 	// asks for EAP and is offered a password method has been downgraded, and
 	// the whole point of EAP-TLS is that there is no password to downgrade to.
 	EAPTLS *EAPTLSConfig
-	// EAPTTLS enables EAP-TTLS with PAP inside (7.08, RFC 5281): the server's
-	// certificate makes the tunnel and the person's password goes inside it, to the
-	// same Authenticator as a PAP request. nil leaves it off, for the reason EAPTLS
-	// gives: it is a password method, and turning one on is a decision.
-	EAPTTLS *EAPTunnelConfig
+	// EAPTunnels enables EAP-TTLS with PAP inside (RFC 5281) and PEAPv0 with EAP-GTC
+	// inside (MS-PEAP), each by its flag (7.08): the server's certificate makes the
+	// tunnel and the person's password goes inside it, to the same Authenticator as
+	// a PAP request. nil leaves both off, for the reason EAPTLS gives: they are
+	// password methods, and turning one on is a decision.
+	EAPTunnels *EAPTunnelConfig
 	// Workers is how many packets are answered at once. Zero is twice the
 	// processors. Twice whatever bounds the hasher is enough: a worker past its
 	// slots waits for one, and those short of them answer what does not hash.
@@ -141,7 +142,7 @@ type Server struct {
 	// tlsConfig is the one every conversation runs under, which is what lets a
 	// supplicant resume: a session ticket is sealed under keys the Config holds.
 	tlsConfig *tls.Config
-	// tunnelConfig is EAP-TTLS's, nil when it is off.
+	// tunnelConfig is EAP-TTLS's and PEAP's, nil when both are off.
 	tunnelConfig *tls.Config
 
 	codes pendingCodes
@@ -231,17 +232,17 @@ func New(cfg Config, auth Authenticator, log *slog.Logger) (*Server, error) {
 				"verify it, and one they do not trust makes every login fail")
 		}
 	}
-	if cfg.EAPTTLS != nil && len(cfg.EAPTTLS.Certificate.Certificate) == 0 {
-		return nil, errors.New("EAP-TTLS needs a server certificate: it is all that proves the server to " +
-			"the person sending it their password")
+	if cfg.EAPTunnels != nil && len(cfg.EAPTunnels.Certificate.Certificate) == 0 {
+		return nil, errors.New("EAP-TTLS and PEAP need a server certificate: it is all that proves the server " +
+			"to the person sending it their password")
 	}
 	s := &Server{cfg: cfg, auth: auth, log: log, clients: cfg.Clients,
 		eapTLS: cfg.EAPTLS, sessions: newEAPSessions(), queueLength: maxQueuedPackets}
 	if cfg.EAPTLS != nil {
 		s.tlsConfig = eapTLSConfig(cfg.EAPTLS)
 	}
-	if cfg.EAPTTLS != nil {
-		s.tunnelConfig = tunnelTLSConfig(cfg.EAPTTLS)
+	if cfg.EAPTunnels != nil {
+		s.tunnelConfig = tunnelTLSConfig(cfg.EAPTunnels)
 	}
 	return s, nil
 }

@@ -48,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -1373,6 +1374,100 @@ func otpKind(hotp bool) string {
 		return "hotp"
 	}
 	return "totp"
+}
+
+// userAssignYubico makes a YubiKey's Yubico OTP slot a person's authenticator (4.27), from
+// the private ID and AES key the slot was configured with. An OTP the token types now proves
+// both are its own, and gives its public ID and where its counters stand, so that OTP is
+// spent and every later one is accepted once. Nothing asks a validation service.
+func userAssignYubico(ctx context.Context, conn *pgx.Conn, orgID, email, keyFile, otp string) error {
+	if email == "" || keyFile == "" || otp == "" {
+		return fmt.Errorf("give -email, -seed-file (the slot's private ID and AES key, in hex) and -code " +
+			"(an OTP the token types now)")
+	}
+	raw, err := os.ReadFile(keyFile) // #nosec G304 -- the operator names the file
+	if err != nil {
+		return err
+	}
+	key, privateID, err := readYubicoKey(string(raw))
+	if err != nil {
+		return err
+	}
+	publicID, _, ok := mfa.SplitYubicoOTP(otp)
+	if !ok {
+		return fmt.Errorf("-code is not a Yubico OTP: one to sixteen bytes of public ID, then 32 characters, all modhex, " +
+			"as the token types them")
+	}
+	// From before any OTP, so the token's first is a candidate.
+	counter, err := mfa.VerifyYubicoOTP(key, privateID, publicID, otp, -1)
+	if err != nil {
+		return fmt.Errorf("-code is not an OTP made with this key and private ID (%v); check the file, and that the "+
+			"OTP came from the slot they were written to", err)
+	}
+	userID, userOrg, err := oneInOrg(ctx, conn, "users",
+		"(email_fold = lower($1) OR username_fold = lower($1))", email, orgID, "user")
+	if err != nil {
+		return err
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	replaced, err := store.AssignYubicoToken(ctx, tx, userID, userOrg, publicID, key, privateID, counter, root)
+	if err != nil {
+		return err
+	}
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticeFactorAssigned, Factor: "totp"}); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "mfa.otp_token_assigned", OrgID: userOrg, SubjectID: userID,
+		Detail: map[string]any{"kind": "yubico", "public_id": publicID, "replaced": replaced, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the assignment: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: the Yubico OTP token %s is now their authenticator", email, publicID)
+	if replaced {
+		fmt.Print(", replacing the one they had")
+	}
+	fmt.Println()
+	fmt.Println("\n  Delete the key file: the key is sealed in the database now, and a copy anywhere")
+	fmt.Println("  else can make OTPs this token's. The OTP given here is spent.")
+	return nil
+}
+
+// readYubicoKey reads a Yubico OTP slot's private ID and AES key: two fields of hex, in
+// either order, told apart by length (six bytes and sixteen), separated by space, a comma
+// or a new line, a colon or hyphen within a field ignored.
+func readYubicoKey(s string) (key, privateID []byte, err error) {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	for _, f := range fields {
+		b, err := hex.DecodeString(strings.NewReplacer(":", "", "-", "").Replace(f))
+		switch {
+		case err != nil:
+			return nil, nil, fmt.Errorf("the key file holds %q, which is not hex", f)
+		case len(b) == mfa.YubicoKeySize && key == nil:
+			key = b
+		case len(b) == mfa.YubicoPrivateIDSize && privateID == nil:
+			privateID = b
+		default:
+			return nil, nil, fmt.Errorf("the key file holds a %d-byte field where it should hold the 6-byte private ID "+
+				"and the 16-byte AES key, once each", len(b))
+		}
+	}
+	if key == nil || privateID == nil {
+		return nil, nil, fmt.Errorf("the key file should hold the 6-byte private ID and the 16-byte AES key, in hex")
+	}
+	return key, privateID, nil
 }
 
 // provedOTPCounter is the proof a token's codes are this seed's, and for a counter-based

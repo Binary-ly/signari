@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0290 yubico_otp
+
+Not compatible with the release before: stop it before migrating.
+
+A YubiKey's own one-time passwords as a person's second factor (4.27): the characters it types when touched, checked against the token's AES key with no validation service asked. A token is a credential of kind 'yubico' and algorithm 'AES128', its public ID kept beside it. Not compatible with the previous release, which reads a credential of a kind it does not know as a time-based one and would check six-digit codes against the token's key.
+
 ## 0289 saml_artifact_logout
 
 Not compatible with the release before: stop it before migrating.

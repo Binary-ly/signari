@@ -518,6 +518,16 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	return s.verifyCode(ctx, tx, userID, code, true)
 }
 
+// guessedAt reports whether a code nothing accepted was a guess at this authenticator,
+// to be charged to it: one with its shape, which for a Yubico token is an OTP with its
+// public ID. A code of six digits is no guess at a YubiKey, nor an OTP at an app.
+func guessedAt(cred *store.TOTPCredential, code string) bool {
+	if cred.Kind == "yubico" {
+		return mfa.PlausibleYubicoOTP(code, cred.YubicoPublicID)
+	}
+	return mfa.Plausible(code, cred.Digits)
+}
+
 // verifyCode is verifySecondFactor with the email code optional. A recovery
 // leaves it out (5.12): the link already proved the mailbox, so a code sent to
 // a mailbox is no second factor there.
@@ -538,9 +548,17 @@ func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string,
 		// against its next presses; a time-based one against the clock.
 		var counter int64
 		var verr error
-		if cred.Kind == "hotp" {
+		switch cred.Kind {
+		case "yubico":
+			// A YubiKey's OTP, decrypted under its own key (4.27).
+			key, privateID, kerr := cred.YubicoKey()
+			if kerr != nil {
+				return res, kerr
+			}
+			counter, verr = mfa.VerifyYubicoOTP(key, privateID, cred.YubicoPublicID, code, cred.LastCounter)
+		case "hotp":
 			counter, verr = otpParams(cred).VerifyHOTP(cred.Secret, code, cred.LastCounter, mfa.HOTPLookAhead)
-		} else {
+		default:
 			counter, verr = otpParams(cred).Verify(cred.Secret, code, time.Now(), mfa.DefaultSkew, cred.LastCounter)
 		}
 		if verr == nil {
@@ -606,7 +624,7 @@ func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string,
 
 	// cred is nil when the authenticator was absent, paused or disabled: only
 	// one that was actually tried is charged.
-	if cred != nil && mfa.Plausible(code, cred.Digits) {
+	if cred != nil && guessedAt(cred, code) {
 		f, err := store.RecordTOTPFailure(ctx, tx, userID, s.failureLimit())
 		if err != nil {
 			return res, err

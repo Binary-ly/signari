@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,5 +145,111 @@ func TestAssignOTPStoresOnlyASeedItsCodesProve(t *testing.T) {
 	}
 	if err := run([]string{"instance", "sms-numbers", "-dsn", dsn, "-org", org, "-sms-numbers", "clear"}); err == nil {
 		t.Error("instance sms-numbers clear was accepted")
+	}
+}
+
+// A YubiKey's Yubico OTP slot is assigned only with an OTP made under the key and private
+// ID given (4.27), which also says its public ID and where its counters stand; and a token
+// already somebody's is not given to a second person.
+func TestAssignOTPYubicoStoresOnlyAKeyItsOTPProves(t *testing.T) {
+	dsn := os.Getenv("SIGNARI_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SIGNARI_TEST_DSN not set")
+	}
+	if os.Getenv("SIGNARI_ROOT_KEY") == "" {
+		t.Setenv("SIGNARI_ROOT_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	}
+	ctx := context.Background()
+	db, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close(context.Background()) })
+	var org string
+	if err := db.QueryRow(ctx, `
+		WITH i AS (INSERT INTO core.instances (issuer, display_name)
+		           VALUES ('https://yubico-cli-' || gen_random_uuid() || '.test', 'Yubico CLI test') RETURNING id)
+		INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT id, 'o' || substr(gen_random_uuid()::text, 1, 8), 'Yubico' FROM i RETURNING id::text`).
+		Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, db, org)
+	people := make([]string, 2)
+	for i := range people {
+		people[i] = fmt.Sprintf("assign-yubico-%d-%d@example.test", i, time.Now().UnixNano())
+		email := people[i]
+		t.Cleanup(func() {
+			_, _ = db.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, email)
+		})
+		pw := make([]byte, 24)
+		_, _ = rand.Read(pw)
+		if err := run([]string{"user", "create", "-dsn", dsn, "-org", org, "-email", email,
+			"-password", base64.RawURLEncoding.EncodeToString(pw)}); err != nil {
+			t.Fatalf("user create: %v", err)
+		}
+	}
+	stored := func(email string) (kind, alg, publicID string, counter int64, ok bool) {
+		t.Helper()
+		err := db.QueryRow(ctx, `SELECT c.kind, c.algorithm, COALESCE(c.yubico_public_id, ''), c.last_used_counter
+			FROM core.totp_credentials c JOIN core.users u ON u.id = c.user_id
+			WHERE u.email = $1 AND c.confirmed_at IS NOT NULL`, email).Scan(&kind, &alg, &publicID, &counter)
+		return kind, alg, publicID, counter, err == nil
+	}
+
+	// mfa's vectors from libyubikey's ykgenerate: this key and private ID, use 1 session 0.
+	// Any public ID: the encrypted part does not depend on it, and a token has one holder.
+	idBytes := make([]byte, 6)
+	_, _ = rand.Read(idBytes)
+	var publicID string
+	for _, b := range idBytes {
+		publicID += string("cbdefghijklnrtuv"[b>>4]) + string("cbdefghijklnrtuv"[b&15])
+	}
+	otp := publicID + "hfbkfjghgbjibhlvjfibfvujblhgbfnf"
+	dir := t.TempDir()
+	file := func(name, content string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	good := file("good", "aa:99:48:55:e4:55, 47077bb37e5298413989c9ef9fcb1dad\n")
+	assign := func(email, keyFile string, more ...string) error {
+		return run(append([]string{"user", "assign-otp", "-dsn", dsn, "-org", org, "-email", email,
+			"-yubico", "-seed-file", keyFile}, more...))
+	}
+	for name, err := range map[string]error{
+		"another private ID":  assign(people[0], file("wrongid", "47077bb37e5298413989c9ef9fcb1dad aa994855e456"), "-code", otp),
+		"only the key":        assign(people[0], file("keyonly", "47077bb37e5298413989c9ef9fcb1dad"), "-code", otp),
+		"not an OTP":          assign(people[0], good, "-code", "287082"),
+		"with -hotp":          assign(people[0], good, "-code", otp, "-hotp"),
+		"with no -code":       assign(people[0], good),
+		"a key of 15 bytes":   assign(people[0], file("short", "aa994855e455 47077bb37e5298413989c9ef9fcb1d"), "-code", otp),
+		"an OTP with no ID":   assign(people[0], good, "-code", "hfbkfjghgbjibhlvjfibfvujblhgbfnf"),
+		"one character wrong": assign(people[0], good, "-code", otp[:len(otp)-1]+"c"),
+	} {
+		if err == nil {
+			t.Errorf("%s: assigned", name)
+		}
+	}
+	if _, _, _, _, ok := stored(people[0]); ok {
+		t.Fatal("a key its OTP did not prove was stored")
+	}
+
+	if err := assign(people[0], good, "-code", otp); err != nil {
+		t.Fatalf("assign-otp -yubico: %v", err)
+	}
+	if kind, alg, id, counter, ok := stored(people[0]); !ok || kind != "yubico" || alg != "AES128" || id != publicID ||
+		counter != 0x0100 {
+		t.Errorf("stored %s %s %q at %#x (%v), want yubico AES128 %q at 0x100", kind, alg, id, counter, ok, publicID)
+	}
+	if err := assign(people[1], good, "-code", publicID+"dvhtenbcidccjcbvrjtheicebfleckuh"); err == nil ||
+		!strings.Contains(err.Error(), "another person's authenticator") {
+		t.Errorf("the token given to a second person: %v", err)
+	}
+	if _, _, _, _, ok := stored(people[1]); ok {
+		t.Error("the second person was given a token somebody holds")
 	}
 }

@@ -1108,6 +1108,9 @@ func run(args []string) (err error) {
 		"`user assign-otp`: a file holding the token's seed, as base32 or hex (from the vendor's seed "+
 			"list); read from a file so it never appears in a process list or shell history")
 	hotp := fs.Bool("hotp", false, "`user assign-otp`: the token is counter-based (HOTP), not time-based")
+	yubicoOTP := fs.Bool("yubico", false,
+		"`user assign-otp`: the token is a YubiKey's Yubico OTP slot; -seed-file holds its private ID and AES key "+
+			"in hex, and -code is an OTP it types now")
 	otpCode := fs.String("code", "", "`user assign-otp`: the code the token shows now, proving the seed is its own")
 	otpNextCode := fs.String("next-code", "",
 		"`user assign-otp -hotp`: the code after -code, so a wrong seed cannot match one code by chance")
@@ -1456,6 +1459,12 @@ func run(args []string) (err error) {
 		return instanceTOTPPolicy(ctx, conn, *orgID, mfa.Params{Algorithm: mfa.Algorithm(*totpAlgorithm),
 			Digits: *totpDigits, Period: *totpPeriod})
 	case "user assign-otp":
+		if *yubicoOTP {
+			if *hotp || *otpNextCode != "" {
+				return fmt.Errorf("-yubico is proved by one OTP: not with -hotp or -next-code")
+			}
+			return userAssignYubico(ctx, conn, *orgID, *email, *seedFile, *otpCode)
+		}
 		return userAssignOTP(ctx, conn, *orgID, *email, *seedFile, *hotp, mfa.Params{
 			Algorithm: mfa.Algorithm(*totpAlgorithm), Digits: *totpDigits, Period: *totpPeriod},
 			*otpCode, *otpNextCode)

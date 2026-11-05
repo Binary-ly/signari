@@ -89,7 +89,10 @@ computes SHA-256: one that does not shows codes that never match, so choose apps
 or tokens that state it. Each credential keeps the algorithm it was enrolled with.
 
 **Consequence: no SHA-1 codes.** Use SHA-256 apps or tokens, or WebAuthn, which
-is unaffected — passkeys are ECDSA P-256 or RSA with SHA-256 and pass cleanly.
+is unaffected — passkeys are ECDSA P-256 or RSA with SHA-256 and pass cleanly. A
+YubiKey's Yubico OTP (`user assign-otp -yubico`) is unaffected too: each OTP is one
+AES-128 block, decrypted inside the module, and it is checked under `fips140=only`
+by test.
 
 `serve` refuses to start under `fips140=only` while anyone has a SHA-1 code
 authenticator as a second factor, saying how many, because none of them could

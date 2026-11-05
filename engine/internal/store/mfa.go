@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/keys"
 )
@@ -81,11 +82,27 @@ type TOTPCredential struct {
 	Digits    int
 	Period    time.Duration
 	// Kind is totp, or hotp for a counter-based token, whose LastCounter is
-	// its last accepted press.
+	// its last accepted press, or yubico for a Yubico OTP token (migration 0290),
+	// whose LastCounter is its last accepted OTP's and whose Secret is its key and
+	// private ID (YubicoKey).
 	Kind        string
 	Confirmed   bool
 	LastCounter int64
 	LockedUntil *time.Time
+	// YubicoPublicID is a Yubico OTP token's public ID, in modhex.
+	YubicoPublicID string
+}
+
+// yubicoSecretSize is what a Yubico OTP token's secret_enc seals: its AES-128 key
+// then its six-byte private ID.
+const yubicoSecretSize = 16 + 6
+
+// YubicoKey splits a Yubico OTP token's secret into its AES key and private ID.
+func (c *TOTPCredential) YubicoKey() (key, privateID []byte, err error) {
+	if c.Kind != "yubico" || len(c.Secret) != yubicoSecretSize {
+		return nil, nil, fmt.Errorf("store: not a Yubico OTP token's secret (%s, %d bytes)", c.Kind, len(c.Secret))
+	}
+	return c.Secret[:16], c.Secret[16:], nil
 }
 
 // StartTOTPEnrolment stores a secret the user is about to scan, APART from any
@@ -189,6 +206,8 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 			kind = EXCLUDED.kind,
 			confirmed_at = now(),
 			last_used_counter = EXCLUDED.last_used_counter,
+			-- An app replacing a Yubico token: the token's public ID goes with it.
+			yubico_public_id = NULL,
 			failed_attempts = 0,
 			locked_until = NULL,
 			disabled_at = NULL`, userID, counter)
@@ -207,17 +226,18 @@ func CompleteTOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string, counte
 // LoadTOTP reads and decrypts a credential.
 func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey) (*TOTPCredential, error) {
 	var sealed []byte
-	var algorithm, kind string
+	var algorithm, kind, publicID string
 	var digits, period int
 	var confirmedAt, lockedUntil, disabledAt *time.Time
 	var lastCounter int64
 
 	err := tx.QueryRow(ctx, `
 		SELECT secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter,
-		       locked_until, disabled_at
+		       locked_until, disabled_at, COALESCE(yubico_public_id, '')
 		FROM core.totp_credentials WHERE user_id = $1::uuid
 		FOR UPDATE`, userID).
-		Scan(&sealed, &algorithm, &digits, &period, &kind, &confirmedAt, &lastCounter, &lockedUntil, &disabledAt)
+		Scan(&sealed, &algorithm, &digits, &period, &kind, &confirmedAt, &lastCounter, &lockedUntil, &disabledAt,
+			&publicID)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNoTOTP
 	}
@@ -246,6 +266,7 @@ func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey)
 	return &TOTPCredential{
 		Secret: secret, Algorithm: algorithm, Digits: digits, Period: time.Duration(period) * time.Second,
 		Kind: kind, Confirmed: confirmedAt != nil, LastCounter: lastCounter, LockedUntil: lockedUntil,
+		YubicoPublicID: publicID,
 	}, nil
 }
 
@@ -257,6 +278,29 @@ func LoadTOTP(ctx context.Context, tx pgx.Tx, userID string, root *keys.RootKey)
 // `signari user assign-otp`.
 func AssignOTPToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte, kind, algorithm string,
 	digits int, period time.Duration, counter int64, root *keys.RootKey) (replaced bool, err error) {
+	return assignToken(ctx, tx, userID, orgID, secret, kind, algorithm, digits, period, counter, nil, root)
+}
+
+// ErrYubicoTokenHeld is a Yubico OTP token assigned to somebody else already. Its
+// counter is kept with the credential, so a token held twice would have two, and an
+// OTP spent at one account would still be unspent at the other.
+var ErrYubicoTokenHeld = errors.New("store: that Yubico OTP token is another person's authenticator; remove it there first")
+
+// AssignYubicoToken makes a YubiKey's Yubico OTP the person's authenticator, as
+// AssignOTPToken does for an OATH token (4.27). counter is that of the OTP that proved
+// the key, so it cannot be replayed. The one writer of kind 'yubico'.
+func AssignYubicoToken(ctx context.Context, tx pgx.Tx, userID, orgID, publicID string, key, privateID []byte,
+	counter int64, root *keys.RootKey) (replaced bool, err error) {
+	if len(key) != 16 || len(privateID) != 6 {
+		return false, fmt.Errorf("store: a Yubico OTP token needs a 16-byte key and a 6-byte private ID")
+	}
+	secret := append(append(make([]byte, 0, yubicoSecretSize), key...), privateID...)
+	// Digits and period are not read for this kind; the defaults stand in.
+	return assignToken(ctx, tx, userID, orgID, secret, "yubico", "AES128", 6, 30*time.Second, counter, &publicID, root)
+}
+
+func assignToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret []byte, kind, algorithm string,
+	digits int, period time.Duration, counter int64, publicID *string, root *keys.RootKey) (replaced bool, err error) {
 
 	sk, err := keys.LoadOrCreateSubjectKey(ctx, tx, userID, root)
 	if err != nil {
@@ -274,8 +318,9 @@ func AssignOTPToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.totp_credentials
-			(user_id, org_id, secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, now(), $8)
+			(user_id, org_id, secret_enc, algorithm, digits, period_secs, kind, confirmed_at, last_used_counter,
+			 yubico_public_id)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, now(), $8, $9)
 		ON CONFLICT (user_id) DO UPDATE SET
 			org_id = EXCLUDED.org_id,
 			secret_enc = EXCLUDED.secret_enc,
@@ -285,10 +330,14 @@ func AssignOTPToken(ctx context.Context, tx pgx.Tx, userID, orgID string, secret
 			kind = EXCLUDED.kind,
 			confirmed_at = now(),
 			last_used_counter = EXCLUDED.last_used_counter,
+			yubico_public_id = EXCLUDED.yubico_public_id,
 			failed_attempts = 0,
 			locked_until = NULL,
 			disabled_at = NULL`,
-		userID, orgID, sealed, algorithm, digits, int(period.Seconds()), kind, counter); err != nil {
+		userID, orgID, sealed, algorithm, digits, int(period.Seconds()), kind, counter, publicID); err != nil {
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.ConstraintName == "totp_credentials_yubico_public_id" {
+			return false, ErrYubicoTokenHeld
+		}
 		return false, fmt.Errorf("assigning the OTP token: %w", err)
 	}
 	// An enrolment begun for an app would replace the token when finished.

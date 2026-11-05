@@ -304,7 +304,7 @@ var commandFlags = map[string][]string{
 	"uma requests":                    {"o", "org"},
 	"uma settings":                    {"org", "owner-intervention", "poll-interval"},
 	"user approve":                    {"email", "org"},
-	"user assign-otp":                 {"code", "email", "hotp", "next-code", "org", "seed-file", "totp-algorithm", "totp-digits", "totp-period"},
+	"user assign-otp":                 {"code", "email", "hotp", "next-code", "org", "seed-file", "totp-algorithm", "totp-digits", "totp-period", "yubico"},
 	"user create":                     {"admin-url", "email", "org", "password", "token-file"},
 	"user locale":                     {"email", "locale", "org"},
 	"user passkey-link":               {"email", "link-expires", "org"},

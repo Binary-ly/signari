@@ -720,6 +720,14 @@ provider's metadata takes its redirect logout endpoint, or else its POST one, an
 never an artifact one, so a logout goes by artifact only to a provider registered
 for it with `-slo-binding` or the Admin API's `slo_binding`.
 
+Both were run against Shibboleth SP 3.4.1 sending its `AuthnRequest` and its
+`LogoutRequest` by artifact (`outgoingBindings` on its `SSO` and `Logout`): the
+request was fetched from its `/Shibboleth.sso/Artifact/SOAP`, held across the
+sign-in and answered by artifact, and its logout was fetched, ended the session and
+was answered by artifact at its `/SLO/Artifact`, which it resolved here and reported
+as a completed global logout. The run found that a request handed on that way lost
+its binding when it was held across the sign-in, and was refused after the password.
+
 ## ECP: signing in without a browser
 
 The Enhanced Client or Proxy profile (SAML Profiles 2.0 §4.2) is how a command-line

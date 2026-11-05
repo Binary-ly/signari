@@ -206,6 +206,30 @@ func TestAProviderSendsItsRequestByArtifact(t *testing.T) {
 		t.Error("the provider was asked again for an artifact already resolved")
 	}
 
+	// Signed out: the request is held across the sign-in still as the POST-encoded one it
+	// was handed on as, and answered after it. Parked by the method alone, it came back
+	// as the redirect binding and was refused once the password was in (Shibboleth).
+	answering(func(r *saml.ArtifactResolve) string {
+		return artifactAnswer(rf.own, r.ID, sp.withoutKey().authnRequest(t, rf.own))
+	})
+	anon := httptest.NewRecorder()
+	rf.f.srv.Routes().ServeHTTP(anon, httptest.NewRequest(http.MethodGet,
+		"/saml/sso?"+url.Values{"SAMLart": {sentArtifact(t, rf.own, 1)}}.Encode(), nil))
+	handedOn := anon.Header().Get("Location")
+	anon = httptest.NewRecorder()
+	rf.f.srv.Routes().ServeHTTP(anon, httptest.NewRequest(http.MethodGet, handedOn, nil))
+	login, err := url.Parse(anon.Header().Get("Location"))
+	if err != nil || anon.Code != http.StatusSeeOther {
+		t.Fatalf("signed out, the request handed on was answered %d %q", anon.Code, anon.Header().Get("Location"))
+	}
+	resume, ok := parkedReturn(login.Query().Get("authz"))
+	if !ok || !strings.Contains(resume, "Binding=POST") {
+		t.Fatalf("the request is held across the sign-in as %q", resume)
+	}
+	if rec := sso(resume); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "SAMLResponse") {
+		t.Errorf("after the sign-in the request was answered %d: %s", rec.Code, refusalReason(rec.Body.String()))
+	}
+
 	refused := func(why string, artifact string, f func(*saml.ArtifactResolve) string) {
 		t.Helper()
 		answering(f)

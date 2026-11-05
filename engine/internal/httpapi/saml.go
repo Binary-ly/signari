@@ -309,7 +309,16 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the user is not signed in and IsPassive was requested", relayState)
 			return
 		}
-		back := r.URL.Path + "?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
+		// A request already resumed as POST-encoded keeps saying so when it is parked
+		// again. It used to be read from the method alone, so one parked twice, sent
+		// on to a second factor or arriving by artifact (which hands it on that way),
+		// came back as the redirect binding and was refused after the sign-in. Shibboleth
+		// sending its request by artifact found it.
+		method := r.Method
+		if samlBindingFromQuery(r) {
+			method = http.MethodPost
+		}
+		back := r.URL.Path + "?" + samlResumeQuery(encoded, relayState, method, r.URL.RawQuery)
 		if rung >= 2 {
 			http.Redirect(w, r, parkLoginForMFA(back), http.StatusSeeOther)
 			return

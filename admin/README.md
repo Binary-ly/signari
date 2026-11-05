@@ -45,19 +45,30 @@ The session cookie is `Secure` whenever `APP_URL` is `https://`. Set
 `APP_DEBUG=false`, because a debug page shows the environment and the database
 credentials to whoever triggers an error.
 
-Every response is sent with `Content-Security-Policy: frame-ancestors 'none';
-base-uri 'self'; form-action 'self'; object-src 'none'`, `X-Frame-Options:
-DENY`, `nosniff` and `Referrer-Policy: same-origin`, and over HTTPS with HSTS
-(one year, without `includeSubDomains`).
+Every response is sent with a `Content-Security-Policy` that loads everything
+from the console's own origin (`default-src 'self'`, `connect-src 'self'`,
+`img-src 'self' data:`) and forbids framing, `<base>`, foreign form targets and
+plugins (`frame-ancestors 'none'; base-uri 'self'; form-action 'self';
+object-src 'none'`). With it go `X-Frame-Options: DENY`, `nosniff` and
+`Referrer-Policy: same-origin`, and over HTTPS, HSTS (one year, without
+`includeSubDomains`).
+
+An inline script runs only when it carries the nonce of the response it came in,
+so a `<script>` injected into a screen does not run. Filament's views that write
+inline scripts are copied under `resources/views/vendor/` to carry it, and a test
+fails when they fall out of step with Filament ([why and how](resources/views/vendor/README.md)).
+`script-src` still allows `'unsafe-eval'`. The Alpine that Livewire 3 bundles
+compiles every expression with `new Function`, and Livewire runs Filament's
+`@script` blocks the same way, so every screen breaks without it. An injected
+attribute that Alpine reads as an expression is therefore not stopped by the
+nonce. Styles keep `'unsafe-inline'`, because Filament writes `style` attributes,
+which no nonce covers.
 
 Behind a proxy that terminates TLS, name it in `TRUSTED_PROXIES` (addresses or
 CIDR ranges, comma separated). Requests then count as HTTPS when that proxy says
 they were, and HSTS is sent. Unset, every request reached PHP as plain HTTP,
 HSTS was never sent, and URLs were generated as `http`. A proxy that is not
-named is not believed. The policy does not restrict scripts
-yet. Livewire and Alpine evaluate expressions at runtime, so restricting
-`script-src` without `'unsafe-eval'` would break every screen, and allowing
-`'unsafe-eval'` would make the restriction meaningless.
+named is not believed.
 
 ## What that command proves
 

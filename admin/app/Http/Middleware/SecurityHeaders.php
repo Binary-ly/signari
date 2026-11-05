@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Vite;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -29,12 +30,24 @@ use Symfony\Component\HttpFoundation\Response;
  * found by reading. connect-src 'self' also means a script that does get to run
  * cannot post what it read to another origin.
  *
- * What it does not do is stop a script injected into the page. Filament 4 writes
- * thirteen inline scripts with no way to give them a nonce, and the Alpine that
- * Livewire 3 bundles compiles every expression with `new Function`, so script-src
- * keeps 'unsafe-inline' and 'unsafe-eval'. Without either, every screen breaks;
- * the nonce would need Filament's own views copied here and kept in step with
- * every release of it.
+ * # Scripts: a nonce, so an injected inline script does not run
+ *
+ * Every response gets a nonce of its own (Vite::useCspNonce), and script-src
+ * allows an inline script only when it carries that nonce. Livewire puts it on its
+ * own tags (FrontendAssets::nonce). Filament writes seven inline scripts in three
+ * views with no way to give them one, so those views are copied under
+ * resources/views/vendor/ with the nonce added and nothing else changed;
+ * FilamentViewCopiesTest fails when Filament's originals change and the copies
+ * have not been brought into step. Filament's six other inline scripts are
+ * Livewire @script blocks, which are never in the page: Livewire evaluates them.
+ *
+ * What stays is 'unsafe-eval'. The Alpine that Livewire 3 bundles compiles every
+ * expression, and those @script blocks, with `new Function`; without it every
+ * screen breaks. An injected attribute that Alpine reads as an expression is the
+ * way in that leaves, which is why a nonce does not end the matter.
+ *
+ * Styles keep 'unsafe-inline': Filament writes style="" attributes throughout,
+ * and a nonce cannot cover an attribute.
  *
  * HSTS only on a response that arrived over HTTPS, and without
  * includeSubDomains: the console does not own the rest of the operator's
@@ -45,12 +58,15 @@ class SecurityHeaders
 {
     public function handle(Request $request, Closure $next): Response
     {
+        // Before the response is rendered, so every tag written for it carries the nonce.
+        $nonce = Vite::useCspNonce();
+
         $response = $next($request);
 
         $headers = $response->headers;
         $headers->set('Content-Security-Policy', implode('; ', [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "script-src 'self' 'nonce-{$nonce}' 'unsafe-eval'",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data:",
             "connect-src 'self'",

@@ -83,6 +83,59 @@ class ConsoleHardeningTest extends TestCase
     }
 
     /*
+     * An inline script runs only when it carries the nonce of the response it came
+     * in (6.24). script-src had 'unsafe-inline', so a script injected into any
+     * screen ran with the operator's session. Every inline script a panel screen
+     * writes, Filament's, Livewire's and the console's own, carries this
+     * response's nonce, and no two responses share one.
+     */
+    public function test_an_inline_script_runs_only_with_the_responses_nonce(): void
+    {
+        $this->enrol($this->operator)->save();
+        $nonces = [];
+        foreach (['/admin', '/admin/engine-clients'] as $screen) {
+            $response = $this->actingAs($this->operator)->get($screen)->assertOk();
+            $csp = (string) $response->headers->get('Content-Security-Policy');
+            $this->assertStringNotContainsString("'unsafe-inline' 'unsafe-eval'", $csp);
+            $this->assertMatchesRegularExpression("/script-src 'self' 'nonce-([A-Za-z0-9]{40})' 'unsafe-eval'/", $csp);
+            preg_match("/'nonce-([A-Za-z0-9]{40})'/", $csp, $m);
+            $nonces[] = $m[1];
+
+            preg_match_all('/<script\b([^>]*)>/i', $response->getContent(), $tags);
+            $inline = array_filter($tags[1], fn (string $attributes): bool => ! str_contains($attributes, 'src='));
+            $this->assertNotEmpty($inline, "{$screen} wrote no inline script to check");
+            foreach ($inline as $attributes) {
+                $this->assertStringContainsString('nonce="'.$m[1].'"', $attributes,
+                    "{$screen} wrote an inline script without this response's nonce: <script{$attributes}>");
+            }
+        }
+        $this->assertNotSame($nonces[0], $nonces[1], 'two responses were given the same nonce');
+    }
+
+    /*
+     * Filament's views that write inline scripts are copied here to give them the
+     * nonce. A copy that drifts from the view it replaces would keep an old
+     * Filament's markup on every screen, so each must be its original with the
+     * nonce added to every script and nothing else: when a Filament upgrade changes
+     * an original, this fails until the copy is made again from it.
+     */
+    public function test_the_copied_filament_views_are_their_originals_with_the_nonce(): void
+    {
+        $nonce = ' nonce="{{ \Illuminate\Support\Facades\Vite::cspNonce() }}"';
+        foreach ([
+            'filament-panels/components/layout/base.blade.php' => 'filament/filament/resources/views/components/layout/base.blade.php',
+            'filament-panels/livewire/sidebar.blade.php' => 'filament/filament/resources/views/livewire/sidebar.blade.php',
+            'filament/assets.blade.php' => 'filament/support/resources/views/assets.blade.php',
+        ] as $copy => $original) {
+            $ours = file_get_contents(resource_path('views/vendor/'.$copy));
+            $theirs = file_get_contents(base_path('vendor/'.$original));
+            $this->assertSame($theirs, str_replace($nonce, '', $ours), "{$copy} is no longer {$original} with the nonce added");
+            $this->assertSame(substr_count($theirs, '<script'), substr_count($ours, '<script'.$nonce),
+                "{$copy} has a script without the nonce");
+        }
+    }
+
+    /*
      * Behind a proxy that terminates TLS every request reached PHP as plain
      * HTTP, so HSTS was never sent. A proxy named in TRUSTED_PROXIES is
      * believed about the scheme; any other is not.

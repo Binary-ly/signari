@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
 )
 
@@ -109,6 +113,90 @@ type registrationRequest struct {
 	IntrospectionEncryptedResponseAlg string          `json:"introspection_encrypted_response_alg"`
 	IntrospectionEncryptedResponseEnc string          `json:"introspection_encrypted_response_enc"`
 	JWKS                              json.RawMessage `json:"jwks"`
+
+	// How the client names people, and for pairwise the document saying which
+	// redirect URIs one party holds (specs/oidc-registration.txt:109-112). Dropped
+	// before, so a client that asked for pairwise subjects was handed the id every
+	// other client is.
+	SubjectType         string `json:"subject_type"`
+	SectorIdentifierURI string `json:"sector_identifier_uri"`
+}
+
+const (
+	sectorFetchTimeout = 10 * time.Second
+	maxSectorDocument  = 64 << 10
+)
+
+// registeredSubject reads subject_type and sector_identifier_uri: the type asked
+// for, "" for none, and the sector a client's subjects belong to, "" for none named.
+// A pairwise client names its sector by a document or by having one host.
+func (s *Server) registeredSubject(ctx context.Context, kind, sectorURI string, redirects []string) (string, string, error) {
+	if kind != "" && kind != "public" && kind != "pairwise" {
+		return "", "", fmt.Errorf("subject_type %q is not one this issuer has: public or pairwise", kind)
+	}
+	if sectorURI != "" {
+		sector, err := s.fetchSectorIdentifier(ctx, sectorURI, redirects)
+		return kind, sector, err
+	}
+	if kind == "pairwise" {
+		sector, why := store.RedirectSector(redirects)
+		if why != "" {
+			// "If there are multiple hostnames in the registered redirect_uris, the
+			// Client MUST register a sector_identifier_uri" (specs/oidc-core.txt:5246-5248).
+			return "", "", fmt.Errorf("%s, so a pairwise client registers a sector_identifier_uri", why)
+		}
+		return kind, sector, nil
+	}
+	return kind, "", nil
+}
+
+// fetchSectorIdentifier reads a sector_identifier_uri and answers its host, the
+// sector, once every redirect URI is in the array it holds: "The values registered
+// in redirect_uris MUST be included in the elements of the array, or registration
+// MUST fail" (specs/oidc-registration.txt:363), compared code point for code point
+// (:384-385). Through safedial, since a stranger chose the address; nothing of what it
+// answered is kept, as the same paragraph allows.
+func (s *Server) fetchSectorIdentifier(ctx context.Context, raw string, redirects []string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return "", errors.New("sector_identifier_uri must be a URL using the https scheme")
+	}
+	ctx, cancel := context.WithTimeout(ctx, sectorFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", errors.New("sector_identifier_uri must be a URL using the https scheme")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := safedial.Client(sectorFetchTimeout).Do(req)
+	if err != nil {
+		// What the dial met stays in the log: a stranger asking is told only that it
+		// could not be read, not what lies at an address it cannot reach itself.
+		s.log.InfoContext(ctx, "reading a sector_identifier_uri", "uri", raw, "err", err,
+			"correlation_id", correlationID(ctx))
+		return "", errors.New("sector_identifier_uri could not be read from here")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("sector_identifier_uri answered %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSectorDocument+1))
+	if err != nil {
+		return "", errors.New("sector_identifier_uri could not be read from here")
+	}
+	if len(body) > maxSectorDocument {
+		return "", fmt.Errorf("sector_identifier_uri holds more than %d bytes", maxSectorDocument)
+	}
+	var listed []string
+	if err := json.Unmarshal(body, &listed); err != nil {
+		return "", errors.New("sector_identifier_uri does not hold a JSON array of redirect URIs")
+	}
+	for _, r := range redirects {
+		if !slices.Contains(listed, r) {
+			return "", fmt.Errorf("redirect_uri %s is not in the array at sector_identifier_uri", r)
+		}
+	}
+	return strings.ToLower(u.Hostname()), nil
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +369,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.RequireSignedRequestObject {
 		settings.RequireSignedRequest = &req.RequireSignedRequestObject
 	}
+	kind, sector, err := s.registeredSubject(ctx, req.SubjectType, req.SectorIdentifierURI, req.RedirectURIs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if kind != "" {
+		settings.SubjectType = &kind
+	}
+	if sector != "" {
+		settings.Sector = &sector
+	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
 		Settings:     settings,
 		JWKS:         req.JWKS,
@@ -342,7 +441,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	// Echoed whether or not it was asked for: the client needs to know what it
 	// will be verifying.
+	if req.SectorIdentifierURI != "" {
+		body["sector_identifier_uri"] = req.SectorIdentifierURI
+	}
 	if st, serr := store.ClientSettingsOf(ctx, s.db, reg.ClientID); serr == nil {
+		body["subject_type"] = st.SubjectType
 		body["id_token_signed_response_alg"] = st.IDTokenAlg
 		body["require_pushed_authorization_requests"] = st.RequirePAR
 		body["require_signed_request_object"] = st.RequireSignedRequest
@@ -404,13 +507,17 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"client_id":     c.ClientID,
 			"client_name":   c.DisplayName,
 			"redirect_uris": c.RedirectURIs,
 			"scope":         strings.Join(c.Scopes, " "),
 			"grant_types":   []string{"authorization_code", "refresh_token"},
-		})
+		}
+		if st, err := store.ClientSettingsOf(ctx, s.db, c.ClientID); err == nil {
+			body["subject_type"] = st.SubjectType
+		}
+		writeJSON(w, http.StatusOK, body)
 	case http.MethodPut:
 		s.replaceRegisteredClient(w, r, c)
 	case http.MethodDelete:
@@ -473,21 +580,41 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 	if len(granted) == 0 {
 		granted = []string{"openid"}
 	}
+	// The sector held to the one the client has, in the store, since new redirect URIs
+	// are where that sector's subjects would go.
+	kind, sector, err := s.registeredSubject(ctx, req.SubjectType, req.SectorIdentifierURI, req.RedirectURIs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
 	name := displayNameFor(req.ClientName)
-	if err := store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, req.RedirectURIs, granted); err != nil {
+	err = store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, req.RedirectURIs, granted,
+		store.RegisteredSubject{Type: kind, Sector: sector})
+	if errors.Is(err, store.ErrInvalidClientSetting) {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if err != nil {
 		s.log.ErrorContext(ctx, "updating a registered client", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 	s.log.InfoContext(ctx, "registered client updated", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"client_id":               c.ClientID,
 		"client_name":             name,
 		"redirect_uris":           req.RedirectURIs,
 		"scope":                   strings.Join(granted, " "),
 		"grant_types":             []string{"authorization_code", "refresh_token"},
 		"registration_client_uri": s.cfg.Issuer + "/oauth2/register/" + c.ClientID,
-	})
+	}
+	if req.SectorIdentifierURI != "" {
+		body["sector_identifier_uri"] = req.SectorIdentifierURI
+	}
+	if st, err := store.ClientSettingsOf(ctx, s.db, c.ClientID); err == nil {
+		body["subject_type"] = st.SubjectType
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // authorizeRegistration decides whether this caller may register, and where.

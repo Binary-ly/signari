@@ -83,6 +83,19 @@ http://127.0.0.1:9000/cb   accepted — RFC 8252 loopback
 https://ok.test/cb         accepted
 ```
 
+## Pairwise subjects
+
+A registrant can ask with `subject_type: pairwise` for subjects that mean nothing
+to any other client. Its sector is the one host of its redirect URIs. Where
+there are several hosts, or a loopback address, it must name a
+`sector_identifier_uri`. That document is fetched once, through the outbound
+checks, and has to list every redirect URI. An update cannot move the redirect
+URIs out of the sector the client already has.
+[Pairwise subjects](pairwise-subjects.md#clients-that-register-themselves) has
+the rules. Every response says the client's `subject_type`. Before, the field
+was dropped, so a client that asked for pairwise was handed the id that every
+other client sees.
+
 ## Management, and the check that matters
 
 The registration access token manages **that client and nothing else**. The

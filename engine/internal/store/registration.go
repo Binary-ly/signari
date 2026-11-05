@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -317,10 +318,17 @@ func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string
 	return c, nil
 }
 
+// RegisteredSubject is how a registrant's update names people. Type "" keeps the one
+// the client has. Sector is the host of a sector_identifier_uri the new redirect URIs
+// were found in, "" for none.
+type RegisteredSubject struct{ Type, Sector string }
+
 // UpdateRegisteredClient replaces what a registrant may change of their own client:
-// its name, where it may be redirected and what it may ask for. In one transaction,
-// since a client caught between the two statements would have no redirect at all.
-func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, redirectURIs, scopes []string) error {
+// its name, where it may be redirected, what it may ask for and how it names people.
+// In one transaction, since a client caught between the statements would have no
+// redirect at all.
+func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, redirectURIs, scopes []string,
+	subject RegisteredSubject) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
@@ -337,7 +345,48 @@ func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, nam
 		SELECT $1, unnest($2::text[])`, clientID, redirectURIs); err != nil {
 		return fmt.Errorf("replacing a registered client's redirects: %w", err)
 	}
+	if err := keepRegisteredSector(ctx, tx, clientID, redirectURIs, subject); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// keepRegisteredSector holds an update to the sector the client has. A pairwise
+// client's redirect URIs are where its sector's subjects are sent, so new ones must be
+// vouched for by that sector: by a sector_identifier_uri on it that lists them, or by
+// having it as their one host (specs/oidc-core.txt:5229-5258). Left as it was beside
+// redirects it does not cover, the sector's subjects would go to an address it never
+// named; moved, it would change what the client calls everybody.
+func keepRegisteredSector(ctx context.Context, tx pgx.Tx, clientID string, redirectURIs []string,
+	subject RegisteredSubject) error {
+	var kind, sector string
+	if err := tx.QueryRow(ctx, `SELECT subject_type, sector FROM core.clients WHERE client_id = $1 FOR UPDATE`,
+		clientID).Scan(&kind, &sector); err != nil {
+		return err
+	}
+	if subject.Type != "" {
+		kind = subject.Type
+	}
+	want := strings.ToLower(subject.Sector)
+	if kind == "pairwise" && want == "" {
+		var why string
+		if want, why = RedirectSector(redirectURIs); why != "" {
+			return fmt.Errorf("%w: %s, so a pairwise client registers a sector_identifier_uri", ErrInvalidClientSetting, why)
+		}
+	}
+	switch {
+	case want == "":
+		want = sector
+	case sector != "" && want != sector:
+		return fmt.Errorf("%w: this client's subjects belong to the sector %s, and these redirect URIs are vouched "+
+			"for by %s; a sector_identifier_uri on %s that lists them keeps everybody's subject as it is",
+			ErrInvalidClientSetting, sector, want, sector)
+	case !sectorShape.MatchString(want):
+		return fmt.Errorf("%w: a sector is a host name, not %q", ErrInvalidClientSetting, want)
+	}
+	_, err := tx.Exec(ctx, `UPDATE core.clients SET subject_type = $2, sector = $3, updated_at = now()
+		WHERE client_id = $1`, clientID, kind, want)
+	return err
 }
 
 // DeleteRegisteredClient removes a self-registered client.

@@ -29,7 +29,35 @@ signari client set-subject-type -client-id mobile  -subject-type pairwise -secto
 
 The sector is stored when it is set and is not worked out again, so a change to a redirect
 URI does not change what the client calls anybody. Its value is yours: it is a host name in
-shape, and this server does not fetch anything from it. There is no `sector_identifier_uri`.
+shape, and this server does not fetch anything from it. A client registering itself names
+its sector differently, with a `sector_identifier_uri` (below).
+
+## Clients that register themselves
+
+A client using [dynamic registration](dynamic-registration.md) asks for pairwise subjects
+with `subject_type`. With one host across its redirect URIs, that host is its sector. With
+several, or a loopback address, it names a `sector_identifier_uri` instead: an `https`
+address serving a JSON array that holds every one of its redirect URIs, exactly as
+registered. The host of that address is then the sector:
+
+```json
+{
+  "redirect_uris": ["https://app.example.com/cb", "https://m.example.net/cb"],
+  "subject_type": "pairwise",
+  "sector_identifier_uri": "https://example.com/redirect_uris.json"
+}
+```
+
+The document is read once, at registration, through the same outbound checks as every
+address a stranger chooses: no private address, no plaintext, no redirect to plaintext, and
+at most 64 KiB. It is refused when any redirect URI is missing from it, compared character
+for character, with no case folding. Nothing it holds is kept.
+
+An update made with the registration access token is held to the sector the client already
+has. New redirect URIs are where that sector's subjects will be sent, so they must be
+vouched for in the same way: listed in a document on the same host, or sharing the client's
+one host. A registrant cannot move a pairwise client onto an address its sector never named
+and keep the subjects. To change the sector, register a new client.
 
 ## What it changes
 
@@ -63,9 +91,6 @@ behind [forward auth](forward-auth.md), which is yours and not a client.
 **A client set to pairwise is refused a Transaction Token naming a person.** A Txn-Token
 names its subject by the one id the deployment's own workloads share, so giving it to such a
 client would hand over the thing it was set up not to see.
-
-**Dynamic registration does not set it.** A client registered that way is public until an
-operator says otherwise.
 
 ## Changing it
 

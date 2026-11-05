@@ -520,9 +520,8 @@ func setSubjectType(ctx context.Context, tx pgx.Tx, clientID string, s ClientSet
 		WHERE client_id = $1`, clientID, kind, sector))
 }
 
-// sectorOfRedirects is the one host a client's redirect URIs have. Several say nothing
-// of which is the sector, and a loopback or a custom scheme says nothing of whose it is:
-// every native application on a machine would share one.
+// sectorOfRedirects is the one host a client's redirect URIs have, for an operator who
+// named no sector.
 func sectorOfRedirects(ctx context.Context, tx pgx.Tx, clientID string) (string, error) {
 	rows, err := tx.Query(ctx, `SELECT redirect_uri FROM core.client_redirect_uris WHERE client_id = $1`, clientID)
 	if err != nil {
@@ -532,6 +531,17 @@ func sectorOfRedirects(ctx context.Context, tx pgx.Tx, clientID string) (string,
 	if err != nil {
 		return "", err
 	}
+	sector, why := RedirectSector(uris)
+	if why != "" {
+		return "", fmt.Errorf("%w: %s: name its sector", ErrInvalidClientSetting, why)
+	}
+	return sector, nil
+}
+
+// RedirectSector is the one host uris have, or why they say nothing of a sector.
+// Several say nothing of which is the sector, and a loopback or a custom scheme says
+// nothing of whose it is: every native application on a machine would share one.
+func RedirectSector(uris []string) (sector, why string) {
 	hosts := map[string]bool{}
 	for _, uri := range uris {
 		u, err := url.Parse(uri)
@@ -540,19 +550,18 @@ func sectorOfRedirects(ctx context.Context, tx pgx.Tx, clientID string) (string,
 		}
 		host := strings.ToLower(u.Hostname())
 		if ip := net.ParseIP(host); host == "" || host == "localhost" || (ip != nil && ip.IsLoopback()) {
-			return "", fmt.Errorf("%w: %s says nothing of whose this client is: name its sector",
-				ErrInvalidClientSetting, uri)
+			return "", uri + " says nothing of whose this client is"
 		}
 		hosts[host] = true
 	}
 	if len(hosts) != 1 {
-		return "", fmt.Errorf("%w: this client's redirect URIs have %d hosts, so they cannot say what its sector "+
-			"is: name it", ErrInvalidClientSetting, len(hosts))
+		return "", fmt.Sprintf("this client's redirect URIs have %d hosts, so they cannot say what its sector is",
+			len(hosts))
 	}
 	for host := range hosts {
-		return host, nil
+		return host, ""
 	}
-	return "", nil
+	return "", ""
 }
 
 // ClientSettingsView is what SetClientSettings writes, read back.

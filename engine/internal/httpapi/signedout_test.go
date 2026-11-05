@@ -132,9 +132,10 @@ func TestTheSAMLChainsReportIsShownToTheBrowser(t *testing.T) {
 	}
 	// The count is set apart as a number of its own (U+2068 ... U+2069), as every count
 	// the pages show is, and so is each address.
+	one := string(rune(0x2068)) + "1" + string(rune(0x2069))
 	for _, want := range []string{
-		"⁨1⁩ application was told you signed out:", "<li><bdi>" + told + "</bdi></li>",
-		"⁨1⁩ application could not be reached, and your session there may still be open:",
+		one + " application was told you signed out:", "<li><bdi>" + told + "</bdi></li>",
+		one + " application could not be reached, and your session there may still be open:",
 		"<li><bdi>" + unreached + "</bdi></li>",
 	} {
 		if !strings.Contains(body, want) {

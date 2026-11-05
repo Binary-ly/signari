@@ -13,10 +13,13 @@ signari client set-profile -client-id bank-api -security-profile fapi2
 This is refused until the client meets the profile, and the refusal says everything that
 is missing. **The OpenID Foundation's plan has been run against this**, `private_key_jwt`
 with DPoP: 57 modules, one failure, a missing `code_verifier` answered `invalid_request`
-where the suite wants `invalid_grant`. Its first run found four defects, among them that no
-authorization code had been bound to a DPoP key; `deploy/conformance/README.md` has the
-numbers and how to repeat them. The mutual-TLS variants have not been run, and the profile
-is not certified.
+where the suite wants `invalid_grant`. RFC 7636 §4.6 has a comparison that fails answered
+`invalid_grant`, and an absent verifier fails it, so since November 2026 that is the
+answer; the module, rerun alone against the changed engine, passes. Its first run found four
+defects, among them that no authorization code had been bound to a DPoP key. The mutual-TLS
+variants, with self-signed and with CA-issued client certificates, have been run as well,
+with the same one failure; `deploy/conformance/README.md` has the numbers and how to repeat
+them. The profile is not certified.
 
 ## What a client has to be
 
@@ -91,4 +94,5 @@ It is optional, and a client held to this profile is limited to signed ones anyw
 
 [The review](security-review-fapi2.md) goes through the specification requirement by
 requirement. It covers the Security Profile. The OpenID Foundation's Message Signing plan,
-with signed requests and JARM, ran 71 modules with the same one failure.
+with signed requests and JARM, ran 71 modules with the same one failure, the missing
+`code_verifier` since answered as above.

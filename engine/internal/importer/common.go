@@ -98,7 +98,7 @@ func importPerson(ctx context.Context, tx pgx.Tx, orgID string, p person) (impor
 	// an Okta login is most often the address).
 	var byEmail string
 	if p.Email != "" {
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM core.users WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 			orgID, p.Email).Scan(&byEmail); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return imported{}, err
 		}

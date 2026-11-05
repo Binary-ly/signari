@@ -76,3 +76,29 @@ func TestAnImportedPersonKeepsTheirNames(t *testing.T) {
 		t.Errorf("a re-run replaced the account's own name with %q", d)
 	}
 }
+
+// A person whose username is their own address imports again. The insert that
+// was to find their account by address ran the cross-field check (migration
+// 0158) first, on a row with an id of its own, which met their own account's
+// address as somebody else's: every re-run of a realm signing people in by
+// address failed on its first person.
+func TestAPersonWhoseUsernameIsTheirAddressImportsAgain(t *testing.T) {
+	ctx, tx, orgID := importFixture(t)
+	email := fmt.Sprintf("same-%d@example.test", time.Now().UnixNano())
+	realm := &KeycloakRealm{Realm: "r", Users: []keycloakUser{{Username: email, Email: email, Enabled: true,
+		Credentials: []keycloakCredential{{Type: "password",
+			SecretData:     `{"value":"aGFzaA==","salt":"c2FsdA=="}`,
+			CredentialData: `{"algorithm":"pbkdf2-sha256","hashIterations":27500}`}}}}}
+	h := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	if res, err := Import(ctx, tx, orgID, realm, h); err != nil || res.UsersCreated != 1 {
+		t.Fatalf("the first run: %+v, %v", res, err)
+	}
+	res, err := Import(ctx, tx, orgID, realm, h)
+	if err != nil {
+		t.Fatalf("the second run: %v", err)
+	}
+	if res.UsersCreated != 0 || res.UsersUpdated != 1 {
+		t.Errorf("the second run created %d and updated %d, want the one account found", res.UsersCreated,
+			res.UsersUpdated)
+	}
+}

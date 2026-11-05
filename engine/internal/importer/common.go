@@ -90,6 +90,20 @@ func importPerson(ctx context.Context, tx pgx.Tx, orgID string, p person) (impor
 		return imported{}, err
 	}
 
+	// The account that already has the address, found here rather than left to the
+	// insert's ON CONFLICT. The cross-field check (migration 0158) runs BEFORE
+	// INSERT, on a row with an id of its own, so a person whose username is their
+	// own address collided with their own account, and a re-run, the thing an
+	// importer must survive, failed on every such person (found doing 6.26, where
+	// an Okta login is most often the address).
+	var byEmail string
+	if p.Email != "" {
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+			orgID, p.Email).Scan(&byEmail); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return imported{}, err
+		}
+	}
+
 	var r imported
 	if holder != "" && (p.Email == "" || holderEmail == "") {
 		// Names fill gaps and never replace what an account already holds.
@@ -98,6 +112,15 @@ func importPerson(ctx context.Context, tx pgx.Tx, orgID string, p person) (impor
 			given_name = COALESCE(given_name, NULLIF($2,'')), surname = COALESCE(surname, NULLIF($3,'')),
 			display_name = COALESCE(display_name, NULLIF($4,''))
 			WHERE id = $1::uuid`, holder, p.Given, p.Surname, p.Display); err != nil {
+			return imported{}, err
+		}
+	} else if byEmail != "" {
+		// What the insert's ON CONFLICT does, as an update of the row itself.
+		r.ID = byEmail
+		if _, err := tx.Exec(ctx, `UPDATE core.users SET username = COALESCE(username, NULLIF($2,'')),
+			given_name = COALESCE(given_name, NULLIF($3,'')), surname = COALESCE(surname, NULLIF($4,'')),
+			display_name = COALESCE(display_name, NULLIF($5,''))
+			WHERE id = $1::uuid`, byEmail, p.Username, p.Given, p.Surname, p.Display); err != nil {
 			return imported{}, err
 		}
 	} else if err := tx.QueryRow(ctx, `

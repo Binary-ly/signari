@@ -1,5 +1,5 @@
 # The operator: a static binary, run as nobody, nothing else in the image.
-FROM golang:1.26.9 AS build
+FROM golang:1.26.10 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

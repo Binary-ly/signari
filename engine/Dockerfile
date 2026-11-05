@@ -5,7 +5,7 @@
 # silently change which cryptographic module the binary carries, and the patch
 # release is the security floor go.mod declares (the official image builds with
 # GOTOOLCHAIN=local, so an older image refuses rather than upgrades).
-FROM golang:1.26.9 AS build
+FROM golang:1.26.10 AS build
 
 WORKDIR /src
 
@@ -55,7 +55,7 @@ RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
 # none of (docs/signing-keys-in-a-module.md). Built on bookworm to match the
 # runtime's: a binary linked against a newer glibc than its image carries does
 # not start.
-FROM golang:1.26.9-bookworm AS build-pkcs11
+FROM golang:1.26.10-bookworm AS build-pkcs11
 
 WORKDIR /src
 COPY go.mod go.sum ./

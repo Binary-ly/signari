@@ -6,10 +6,14 @@ module signari.dev/engine
 // net/http, encoding/asn1), fixed in 1.26.6. On 1.26.6 it found twelve more,
 // fixed in 1.26.9: html/template escaping on every page we render, HTTP/1 and
 // HTTP/2 desynchronisation, memory and CPU exhaustion in the HTTP/2 server, MIME
-// header and Range limits, and ECH parsing in crypto/tls. Building with an older
-// toolchain reintroduces all of them, and nothing else in this repository would
-// say so -- which is why CI runs govulncheck. See docs/security-scanning.md.
-go 1.26.9
+// header and Range limits, and ECH parsing in crypto/tls. On 1.26.9 it found
+// GO-2026-6809, crypto/x509 trusting compromised intermediate certificates,
+// reachable from the FIDO metadata check that anchors an authenticator's
+// attestation; fixed in 1.26.10, and the release script refused to build until it
+// moved. Building with an older toolchain reintroduces all of them, and nothing
+// else in this repository would say so -- which is why CI runs govulncheck. See
+// docs/security-scanning.md.
+go 1.26.10
 
 require (
 	github.com/beevik/etree v1.7.0

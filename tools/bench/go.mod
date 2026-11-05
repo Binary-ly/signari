@@ -1,6 +1,6 @@
 module signari.dev/bench
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/go-asn1-ber/asn1-ber v1.5.8
@@ -14,5 +14,5 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )

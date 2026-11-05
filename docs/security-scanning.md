@@ -151,8 +151,12 @@ twelve standard-library advisories reachable from the engine and one in a module
 | GO-2026-6607 | `crypto/tls` | malformed ECH extension references |
 | GO-2026-6629 | `golang.org/x/text` | panic in PRECIS, which normalises usernames |
 
-All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0, now the floor in
-`go.mod` and the build image. The Terraform provider had fifteen of its own
+All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0. A later scan on
+go1.26.9 found **GO-2026-6809**: `crypto/x509` kept trusting intermediate
+certificates that have since been distrusted, reachable from the FIDO metadata
+check that decides whether a security key's attestation is anchored. It is fixed
+in **go1.26.10**, now the floor in `go.mod` and the build image. The release
+script refused to build until it moved, which is what it is for. The Terraform provider had fifteen of its own
 (gRPC authorization bypass and memory exhaustion among them), fixed by the same
 toolchain and newer `grpc`, `x/net` and `x/text`. A clean result is only true on
 the day it was produced, so CI runs govulncheck on every change rather than this

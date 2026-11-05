@@ -8,7 +8,7 @@ import (
 	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1" //nolint:gosec // the x5t header is defined over SHA-1; it names a certificate and protects nothing
+	"crypto/sha1" // #nosec G505 -- the x5t header is defined over SHA-1; it names a certificate and protects nothing
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -121,7 +121,7 @@ func (c Config) clientAssertion(now time.Time) (string, error) {
 		// SHA-1 panics under fips140=only, and a provider that can read the
 		// stronger thumbprint needs nothing more.
 		if !fips140.Enforced() {
-			s1 := sha1.Sum(cert.Raw) //nolint:gosec // see the import
+			s1 := sha1.Sum(cert.Raw) // #nosec G401 -- see the import
 			opts = opts.WithHeader("x5t", base64.RawURLEncoding.EncodeToString(s1[:]))
 		}
 	}

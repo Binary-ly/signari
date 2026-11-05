@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,13 @@ func TestAKeycloakRealmImportsWhatItCanAndNamesTheRest(t *testing.T) {
 	if _, why, err := importPasskey(ctx, tx, org, pre, passkey{RPID: "example.test",
 		ID: []byte(fmt.Sprintf("own-%d", n)), PublicKey: cose}); err != nil || why != "" {
 		t.Fatal(why, err)
+	}
+	// A counter wider than an authenticator's four bytes is refused, not wrapped
+	// to a small number a clone could pass.
+	if saved, why, err := importPasskey(ctx, tx, org, pre, passkey{RPID: "example.test",
+		ID: []byte(fmt.Sprintf("wide-%d", n)), PublicKey: cose, SignCount: math.MaxUint32 + 1}); err != nil || saved ||
+		!strings.Contains(why, "4294967296") {
+		t.Fatal(saved, why, err)
 	}
 	q := func(s string) string { return strings.ReplaceAll(s, `"`, `\"`) }
 	pw := `{"type":"password","secretData":"{\"value\":\"aGFzaA==\",\"salt\":\"c2FsdA==\"}",` +

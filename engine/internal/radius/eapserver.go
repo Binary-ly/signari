@@ -1,10 +1,10 @@
 package radius
 
 import (
+	"context"
 	// #nosec G501 -- RFC 2548 specifies MD5 for MPPE key encoding. It is not a
 	// choice: every access point in existence expects exactly this, and the
 	// keys it protects live for one wireless association.
-	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/binary"

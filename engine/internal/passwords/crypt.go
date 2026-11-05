@@ -1,8 +1,11 @@
 package passwords
 
 import (
+	// #nosec G501 -- md5 and sha1 are here to VERIFY the hashes a directory being
+	// migrated off holds, as in foreign.go: nothing here makes one, and a
+	// password that verifies is re-hashed with Argon2id at once.
 	"crypto/md5"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- see the note on the md5 import above
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -43,13 +46,13 @@ func verifyMD5Crypt(stored, password string) error {
 // md5Crypt is the algorithm FreeBSD's crypt(3) introduced and glibc, OpenSSL
 // and Apache share.
 func md5Crypt(password, salt []byte, magic string) string {
-	alt := md5.New()
+	alt := md5.New() // #nosec G401 -- verifying a foreign hash
 	alt.Write(password)
 	alt.Write(salt)
 	alt.Write(password)
 	final := alt.Sum(nil)
 
-	ctx := md5.New()
+	ctx := md5.New() // #nosec G401 -- verifying a foreign hash
 	ctx.Write(password)
 	ctx.Write([]byte(magic))
 	ctx.Write(salt)
@@ -66,7 +69,7 @@ func md5Crypt(password, salt []byte, magic string) string {
 	final = ctx.Sum(nil)
 
 	for i := 0; i < 1000; i++ {
-		c := md5.New()
+		c := md5.New() // #nosec G401 -- verifying a foreign hash
 		if i&1 != 0 {
 			c.Write(password)
 		} else {

@@ -328,6 +328,70 @@ traces. That count is measured against this change alone: the tree it was made o
 already gave 164 against the 71 here, findings that arrived after the baseline was
 last set and were never reviewed. They still are to be.
 
+### 78 to 177, every one traced
+
+The release build stopped at the gate with 186 findings. Each was traced to where
+its value comes from, and nine went away:
+
+- **One was real.** The passkey importer narrowed an export's signature counter
+  with `uint32(max(n, 0))`. The counter is a "32-bit unsigned big-endian
+  integer" (`specs/webauthn.txt:4873`), so a larger one is not a count any
+  authenticator sent, and the cast wrapped it to a small number, a floor a cloned
+  authenticator's next assertion clears. Such a passkey is now refused and named in
+  the report, and the person enrols it again.
+- **Three annotations gosec could not read.** `//nolint:gosec` is another linter's
+  syntax; gosec reads `#nosec`. That covered the `x5t` SHA-1 thumbprint in
+  federation token authentication. MPPE's `#nosec` on the md5 import sat above
+  `"context"` once the imports were sorted, so it annotated the wrong line.
+  md5-crypt (4.09) now carries the same annotation as the other foreign-hash
+  verifiers in `foreign.go`.
+- **The command line, 74 new and 111 in all.** Every `G304` and `G703` in `cmd/signari` is a
+  path the operator names with a flag, or a secret file the operator's
+  configuration names. The Admin API refuses such a file outright, and the command
+  line refuses one that an engine setting names. Most of the jump is gosec's
+  `G703` ignoring the `#nosec G304` already on eighteen of these lines. The two
+  `G704` are the command line's Admin API client calling the address the operator
+  gave.
+- **Nine new open-redirect sites**, of four kinds:
+  - The request's own routed path, sent back as a GET so the session cookie comes
+    with it: `saml.go`, `samlartifactrequest.go` and `wsfed.go`.
+  - A configured address: an external factor's URL, or an upstream's SLO endpoint.
+  - The post-logout target, checked against the client's registered URIs. It is
+    then either carried through the upstream under the root key's MAC
+    (`upstreamlogout.go`) or stored server-side when the logout began
+    (`samlsourcelogout.go`).
+  - A fixed path: `/authorize` on this origin. The forward-auth callback is built
+    from the host `validateProxyRedirect` accepted.
+
+The two kinds that act on what the request carries, its path and a returned
+state, are the class the rule exists for. They were checked against
+`signari serve` rather than by reading:
+
+```
+/logout/complete, a target with a forged mark, no mark, or an empty one   200, no redirect
+POST //wsfed and POST ///evil.test/../saml/sso, cross-site                 307 to this origin's /wsfed, /saml/sso
+POST /wsfed cross-site                                                     303 to /wsfed?wa=... on this origin
+POST /wsfed/org/x/..%2f..%2f..%2fevil.test                                 404
+```
+
+`ServeMux` cleans a doubled slash or a dot segment before any handler sees the
+path, so `r.URL.Path` there cannot begin `//`.
+
+The rest are false positives:
+
+- `G407`: `cipher.NewGCMWithRandomNonce` makes its own nonce, and `nil` is how it
+  is asked to.
+- `G124`: a cookie set on the in-process sub-request a headless step replays.
+  Nothing here is a `Set-Cookie`.
+- `G117`: a provider's tokens marshalled only to be sealed under the root key.
+- `G402`: TLS 1.2 is the tunnel's ceiling because RFC 5281's and MS-PEAP's keys
+  are defined over its PRF.
+- `G705`: a signed request object, with `nosniff`.
+- `G203`: the enrolment QR and URI, the same as `enrol.go`'s.
+- `G115` ×5: each value is bounded before the conversion.
+
+**Baseline: 177**, every line with its reason in `engine/gosec-baseline.txt`.
+
 ## A fourth sweep: exported functions nothing calls
 
 The three sweeps above catch unimported *packages*, documented-but-absent

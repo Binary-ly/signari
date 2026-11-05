@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -326,6 +327,14 @@ func importPasskey(ctx context.Context, tx pgx.Tx, orgID, userID string, k passk
 	// fail every ceremony.
 	if _, err := webauthncose.ParsePublicKey(k.PublicKey); err != nil {
 		return false, "its public key is not a COSE key: " + err.Error(), nil
+	}
+	// The counter is a "32-bit unsigned big-endian integer"
+	// (specs/webauthn.txt:4873). A larger one is not a count an authenticator
+	// sent, and narrowed it would wrap to a small number, a floor a clone's next
+	// assertion could clear.
+	if k.SignCount > math.MaxUint32 {
+		return false, fmt.Sprintf("its signature counter, %d, is more than an authenticator's four bytes can hold",
+			k.SignCount), nil
 	}
 	var exists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.webauthn_credentials WHERE credential_id = $1)`,

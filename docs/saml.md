@@ -264,7 +264,13 @@ that ended the local session last would leave the user signed in here whenever a
 provider fails to redirect back — and they fail all the time: closed tab, 500,
 dropped network. By the time the first redirect is issued, signing out of Signari
 has already happened. Everything after is best-effort notification, and what
-could not be reached is recorded rather than assumed:
+could not be reached is recorded rather than assumed. It goes in the
+`saml.logout_propagated` audit event. When nothing asked for the browser to be sent
+on afterwards, the person is shown a page that says they are signed out, which
+applications were told and which could not be reached and may still have a session
+open. It is the `signedout` page, and it can be overridden like any other
+([theming](theming.md)). A caller that does not ask for HTML is given the same
+report as JSON:
 
 ```json
 {"status":"signed out",

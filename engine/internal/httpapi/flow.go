@@ -3084,8 +3084,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 			// outcome. But we do not redirect and do not claim success.
 			s.clearSessionCookie(w)
 			s.clearParked(w, r)
-			writeError(w, http.StatusInternalServerError, "server_error",
-				"sign-out could not be completed; your session may still be active")
+			s.signOutFailed(w, r)
 			return
 		}
 	}
@@ -3183,7 +3182,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 		s.renderFrontChannelLogout(w, r, frontChannel, "/login")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+	s.signedOut(w, r, nil, nil)
 }
 
 // terminateOwnSession revokes the session behind the presented cookie.

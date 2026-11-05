@@ -176,6 +176,22 @@
   "fclogout.frame": "logout",
   "fclogout.continue": "Continue now",
 
+  "signedout.title": "Signed out",
+  "signedout.heading": "You are signed out",
+  "signedout.body": "Your session in this browser has ended. If this computer is shared, close the browser as well.",
+  "signedout.notified": {
+    "one": "{n} application was told you signed out:",
+    "other": "{n} applications were told you signed out:"
+  },
+  "signedout.failed": {
+    "one": "{n} application could not be reached, and your session there may still be open:",
+    "other": "{n} applications could not be reached, and your sessions there may still be open:"
+  },
+  "signedout.signin": "Sign in again",
+  "signedout.incomplete.title": "Sign-out did not finish",
+  "signedout.incomplete.body": "This browser no longer holds your session, but the session could not be ended, so it may stay valid until it expires. Sign in and end it from your list of sessions.",
+  "signedout.endsession": "End it from your sessions",
+
   "backchannel.title": "Sign-in requests",
   "backchannel.empty": "Nothing is waiting for you.",
   "backchannel.intro": "An application has asked to sign in as you. Approve it only if you started it.",

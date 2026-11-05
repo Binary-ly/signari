@@ -308,5 +308,5 @@ func (s *Server) upstreamAnsweredLogout(w http.ResponseWriter, r *http.Request, 
 		http.Redirect(w, r, pending.ReturnPath, http.StatusSeeOther)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+	s.signedOut(w, r, nil, nil)
 }

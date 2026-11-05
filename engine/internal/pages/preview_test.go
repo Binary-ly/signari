@@ -520,6 +520,11 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 			"Reason":        "The service provider's certificate expired on 3 August 2026, so the assertion could not be signed for it.",
 			"CorrelationID": "3BX-8M2",
 		},
+		// After a SAML logout chain: two told, one that could not be reached.
+		"signedout": map[string]any{
+			"Notified": []string{"https://wiki.example.com/shibboleth", "https://expenses.example.com/saml"},
+			"Failed":   []string{"https://analytics.example.com/saml"},
+		},
 		"fclogout": map[string]any{
 			"Targets": []map[string]any{
 				{"URL": "https://analytics.example.com/logout"},

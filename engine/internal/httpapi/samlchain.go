@@ -258,11 +258,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 		http.Redirect(w, r, chain.FinalRedirect, http.StatusSeeOther)
 		return true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "signed out",
-		"notified": entityIDs(chain.Notified),
-		"failed":   entityIDs(chain.Failed),
-	})
+	s.signedOut(w, r, entityIDs(chain.Notified), entityIDs(chain.Failed))
 	return true
 }
 

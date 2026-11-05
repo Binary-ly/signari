@@ -52,22 +52,23 @@ and an Admin API to write through. Validated with `helm lint` and `helm template
 (`TestTheHelmChartRendersTheConsole`); not installed on a cluster, there being none
 here.
 
-## Kubernetes operator — deliberately not built
+## Kubernetes operator — configuration as a resource
 
-An operator earns its place when there is reconciliation a Deployment cannot
-express: rotating the root key on a schedule, promoting signing keys, running the
-janitor as a leader-elected singleton, reconciling clients and providers from
-custom resources. Those are real, and they are a multi-week component with its own
-release cadence, RBAC surface and upgrade story.
+`operator/` keeps an organisation's configuration file applied
+([its README](../operator/README.md)). A `SignariConfig` resource holds the file
+that `signari apply` reads. The operator plans it through the Admin API and
+applies it with the planned version as `If-Match`. Every `resyncSeconds` it plans
+again, so a change made from the console or the CLI is put back. What an apply
+mints goes into a Secret the resource owns, and every refusal comes back from the
+engine, named, in the resource's `Ready` condition.
 
-Building it now would be speculative: the reconciliation it would own is today
-handled correctly by simpler means — migrations by the Helm hook, key rotation and
-the janitor by `signari` CLI verbs run as CronJobs, clients and providers by the
-config-as-code path (`signari apply`, `docs/config-as-code.md`). The honest
-sequence is to run the chart, find which of those an operator would genuinely
-improve for a real fleet, and build that — not to ship an operator whose CRDs
-wrap CLI verbs that already work. Recorded as a roadmap item, not a gap pretended
-away.
+That is the one piece of reconciliation it owns, because it is the one a Deployment
+cannot express and a CronJob of `signari apply` expresses badly: an apply on a
+schedule rather than on a change, with nowhere to say what it refused. The rest
+stays where it works: migrations in the Helm hook, and key rotation and the janitor
+as `signari` CLI verbs run as CronJobs. The operator is a Go module of its own, like
+the Terraform provider, so the engine takes no Kubernetes dependency. It never
+touches the database.
 
 ## Client SDKs and framework adapters — use the standards' own ecosystems
 

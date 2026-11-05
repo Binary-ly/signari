@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signari-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: signari-operator
+  namespace: signari-operator
+---
+# SignariConfigs in every namespace, and Secrets read and written one by one: the
+# token a resource names, and the Secret it owns for what an apply minted. No list
+# or watch on Secrets, since the operator never caches them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: signari-operator
+rules:
+  - apiGroups: [signari.dev]
+    resources: [signariconfigs]
+    verbs: [get, list, watch]
+  - apiGroups: [signari.dev]
+    resources: [signariconfigs/status]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: signari-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: signari-operator
+subjects:
+  - kind: ServiceAccount
+    name: signari-operator
+    namespace: signari-operator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signari-operator
+  namespace: signari-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: signari-operator}
+  template:
+    metadata:
+      labels: {app: signari-operator}
+    spec:
+      serviceAccountName: signari-operator
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: operator
+          image: signari-operator:dev
+          imagePullPolicy: IfNotPresent
+          args: [--leader-elect]
+          ports:
+            - {name: probes, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: probes}
+          readinessProbe:
+            httpGet: {path: /readyz, port: probes}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}

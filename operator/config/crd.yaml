@@ -1,0 +1,76 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: signariconfigs.signari.dev
+spec:
+  group: signari.dev
+  names:
+    kind: SignariConfig
+    listKind: SignariConfigList
+    plural: signariconfigs
+    singular: signariconfig
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Reason
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].reason
+        - name: Version
+          type: integer
+          jsonPath: .status.configVersion
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [endpoint, organization, document, tokenSecretRef]
+              properties:
+                endpoint:
+                  description: The Admin API's base URL.
+                  type: string
+                  pattern: '^https?://'
+                organization:
+                  description: The organisation's id, which the file is applied to.
+                  type: string
+                  minLength: 1
+                document:
+                  description: The configuration file, as `signari apply` reads it.
+                  type: string
+                  minLength: 1
+                prune:
+                  description: Delete what the file does not declare.
+                  type: boolean
+                tokenSecretRef:
+                  description: The Secret holding an Admin API token; key "token" unless named.
+                  type: object
+                  required: [name]
+                  properties:
+                    name: {type: string}
+                    key: {type: string}
+                caSecretRef:
+                  description: The Secret holding the CA of the Admin API's certificate; key "ca.crt" unless named.
+                  type: object
+                  required: [name]
+                  properties:
+                    name: {type: string}
+                    key: {type: string}
+                resyncSeconds:
+                  description: How often the file is planned again, so a change made another way is put back.
+                  type: integer
+                  minimum: 30
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

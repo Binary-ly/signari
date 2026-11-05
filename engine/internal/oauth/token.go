@@ -346,8 +346,16 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 	// parameter was present in the authorization request" -- a biconditional,
 	// so both halves are failures.
 	if g.CodeChallenge != "" {
+		// invalid_grant, as a wrong one is. RFC 7636 §4.6 has the server compute the
+		// challenge from the verifier received and compare: "If the values are not
+		// equal, an error response indicating "invalid_grant" ... MUST be returned"
+		// (specs/rfc7636.txt:552-555), and an absent verifier equals nothing. OAuth
+		// 2.1 names the opposite case invalid_request (below) and not this one
+		// (draft-ietf-oauth-v2-1-17 lines 1853-1856). This answered invalid_request
+		// until November 2026, the one failure of the FAPI 2.0 conformance plans,
+		// whose module cites §4.6 for it.
 		if req.CodeVerifier == "" {
-			return false, tokenErr("invalid_request", "code_verifier is required")
+			return false, tokenErr("invalid_grant", "code_verifier is required, and none came")
 		}
 		if err := VerifyPKCE(g.CodeChallengeMethod, g.CodeChallenge, req.CodeVerifier); err != nil {
 			return false, tokenErr("invalid_grant", "code_verifier is invalid")

@@ -115,7 +115,8 @@ func TestRedemptionFailures(t *testing.T) {
 		// TestAnOAuth21ClientNeedNotSendRedirectURI, and
 		// TestACodeIsNeverRedeemableWithNeitherDefence for when it is still
 		// mandatory.
-		{"missing verifier", func(r *TokenRequest) { r.CodeVerifier = "" }, nil, nil, "invalid_request"},
+		// RFC 7636 §4.6: an absent verifier fails the comparison as a wrong one does.
+		{"missing verifier", func(r *TokenRequest) { r.CodeVerifier = "" }, nil, nil, "invalid_grant"},
 		{"wrong verifier", func(r *TokenRequest) { r.CodeVerifier = "0000000000000000000000000000000000000000000" }, nil, nil, "invalid_grant"},
 		{"disabled client", nil, nil, func(c *clients.Client) { c.Enabled = false }, "invalid_client"},
 		{"grant not allowed", nil, nil, func(c *clients.Client) { c.GrantTypes = []string{"refresh_token"} }, "unauthorized_client"},

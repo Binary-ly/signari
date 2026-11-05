@@ -1,6 +1,7 @@
 package radius
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -75,6 +76,15 @@ type eapSession struct {
 
 	// state is the RADIUS State attribute value, and the map key.
 	state string
+
+	// method is the EAP type the conversation runs: EAPTypeTLS, or EAPTypeTTLS,
+	// whose handshake proves only the server and whose second phase carries the
+	// person's password inside the tunnel (eaptunnel.go).
+	method byte
+	// app is what the tunnel's second phase decrypted, read by tunnelReader once the
+	// handshake is over; appBuf holds what has not yet made a whole AVP sequence.
+	app    chan []byte
+	appBuf []byte
 
 	// conn is the in-memory pipe crypto/tls reads and writes.
 	conn *eapConn
@@ -404,6 +414,12 @@ func (s *Server) startEAPTLS(id byte) (*eapSession, *EAPPacket, error) {
 	if s.eapTLS == nil {
 		return nil, nil, errors.New("EAP-TLS is not configured")
 	}
+	return s.startTLSMethod(id, EAPTypeTLS, s.tlsConfig)
+}
+
+// startTLSMethod begins a conversation of a method that runs a TLS handshake, and
+// returns its Start request.
+func (s *Server) startTLSMethod(id, method byte, config *tls.Config) (*eapSession, *EAPPacket, error) {
 	state, err := newState()
 	if err != nil {
 		return nil, nil, err
@@ -411,12 +427,12 @@ func (s *Server) startEAPTLS(id byte) (*eapSession, *EAPPacket, error) {
 
 	conn := newEAPConn()
 	sess := &eapSession{
-		state: state, conn: conn, identifier: id,
+		state: state, conn: conn, identifier: id, method: method,
 		handshakeDone: make(chan struct{}),
 		created:       time.Now(), lastSeen: time.Now(),
 	}
 
-	sess.tls = tls.Server(conn, s.tlsConfig)
+	sess.tls = tls.Server(conn, config)
 
 	// The handshake runs in its own goroutine because crypto/tls is blocking and
 	// the EAP layer is a series of separate UDP packets. It ends when the
@@ -426,10 +442,10 @@ func (s *Server) startEAPTLS(id byte) (*eapSession, *EAPPacket, error) {
 		close(sess.handshakeDone)
 	}()
 
-	// The EAP-TLS Start packet carries no TLS data, only the S flag.
+	// The Start packet carries no TLS data, only the S flag, and for EAP-TTLS the
+	// version offered, 0, the only one there is (RFC 5281 §9.2.1).
 	frame := &EAPTLSFrame{Start: true}
-	req := &EAPPacket{Code: EAPRequest, Identifier: id, Type: EAPTypeTLS,
-		Data: frame.Encode()}
+	req := &EAPPacket{Code: EAPRequest, Identifier: id, Type: method, Data: frame.Encode()}
 	return sess, req, nil
 }
 
@@ -438,11 +454,17 @@ func (s *Server) startEAPTLS(id byte) (*eapSession, *EAPPacket, error) {
 //
 // Returns done=true when the conversation has reached a verdict; ok says which
 // verdict it is.
-func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
+func (s *Server) continueEAPTLS(ctx context.Context, sess *eapSession, resp *EAPPacket) (
 	next *EAPPacket, done, ok bool) {
 
 	frame, err := DecodeEAPTLS(resp.Data)
 	if err != nil {
+		return nil, true, false
+	}
+	// RFC 5281 §9.2.1: the version a TTLS client answers with is the one both MUST
+	// use, and the server offered 0, the only one there is, so any other is not one
+	// it can run. EAP-TLS reserves the bits.
+	if sess.method == EAPTypeTTLS && frame.Version != 0 {
 		return nil, true, false
 	}
 
@@ -477,7 +499,7 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 		sess.identifier++
 		ack := &EAPTLSFrame{}
 		return &EAPPacket{Code: EAPRequest, Identifier: sess.identifier,
-			Type: EAPTypeTLS, Data: ack.Encode()}, false, false
+			Type: sess.method, Data: ack.Encode()}, false, false
 	}
 
 	// Final fragment: the whole TLS message is now in hand.
@@ -488,6 +510,10 @@ func (s *Server) continueEAPTLS(sess *eapSession, resp *EAPPacket) (
 	payload := sess.inbound
 	sess.inbound = nil
 	sess.expecting = 0
+
+	if sess.method == EAPTypeTTLS {
+		return s.continueTunnel(ctx, sess, payload)
+	}
 
 	if len(payload) > 0 {
 		sess.conn.feed(payload)
@@ -575,7 +601,7 @@ func (s *Server) nextFragment(sess *eapSession) *EAPPacket {
 	}
 
 	return &EAPPacket{Code: EAPRequest, Identifier: sess.identifier,
-		Type: EAPTypeTLS, Data: frame.Encode()}
+		Type: sess.method, Data: frame.Encode()}
 }
 
 // finishEAPTLS decides whether a completed handshake is an authentication.
@@ -620,7 +646,13 @@ func (s *Server) finishEAPTLS(sess *eapSession) bool {
 func (sess *eapSession) MSK() ([]byte, error) {
 	state := sess.tls.ConnectionState()
 	label, context, length := "client EAP encryption", []byte(nil), 64
-	if state.Version >= tls.VersionTLS13 {
+	switch {
+	case sess.method == EAPTypeTTLS:
+		// RFC 5281 §8: PRF-128(master_secret, "ttls keying material", client_random +
+		// server_random), the MSK its first 64 octets. Defined over TLS 1.2's PRF,
+		// which is all a tunnel here runs (tunnelTLSConfig).
+		label, length = "ttls keying material", 128
+	case state.Version >= tls.VersionTLS13:
 		label, context, length = "EXPORTER_EAP_TLS_Key_Material", []byte{EAPTypeTLS}, 128
 	}
 	km, err := state.ExportKeyingMaterial(label, context, length)

@@ -52,6 +52,8 @@ const (
 	EAPTypeNak      = 3
 	EAPTypeMD5      = 4
 	EAPTypeTLS      = 13
+	// EAPTypeTTLS is EAP-TTLS (RFC 5281 §9.1).
+	EAPTypeTTLS = 21
 )
 
 // maxEAPMessageChunk is what one RADIUS attribute can hold: 255 total, less the
@@ -180,9 +182,13 @@ type EAPTLSFrame struct {
 	// only on the first fragment of a set.
 	TotalLength uint32
 	Data        []byte
+	// Version is the low three bits of the flags, where EAP-TTLS keeps its version
+	// (RFC 5281 §9.1); EAP-TLS reserves them. Zero for every method here.
+	Version byte
 }
 
-// DecodeEAPTLS parses the payload of an EAP-TLS packet.
+// DecodeEAPTLS parses the payload of an EAP-TLS packet, and of the methods that
+// frame theirs the same way.
 func DecodeEAPTLS(data []byte) (*EAPTLSFrame, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("EAP-TLS payload is empty")
@@ -191,6 +197,7 @@ func DecodeEAPTLS(data []byte) (*EAPTLSFrame, error) {
 		Start:          data[0]&tlsFlagStart != 0,
 		More:           data[0]&tlsFlagMoreFragments != 0,
 		LengthIncluded: data[0]&tlsFlagLengthIncluded != 0,
+		Version:        data[0] & 0x07,
 	}
 	rest := data[1:]
 	if f.LengthIncluded {
@@ -217,6 +224,7 @@ func (f *EAPTLSFrame) Encode() []byte {
 	if f.LengthIncluded {
 		flags |= tlsFlagLengthIncluded
 	}
+	flags |= f.Version & 0x07
 
 	out := []byte{flags}
 	if f.LengthIncluded {

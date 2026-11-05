@@ -169,13 +169,41 @@ All three settings or none. A server certificate without client CAs would
 complete handshakes with anybody holding any certificate — worse than no
 EAP-TLS at all, because it looks like it is working.
 
+## EAP-TTLS: a password inside the tunnel
+
+```sh
+SIGNARI_EAP_TUNNELS=ttls          # with SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY
+```
+
+For people with no certificate. The supplicant makes a TLS tunnel to this server
+and checks the server's certificate, then sends the person's name and password
+inside it as EAP-TTLS AVPs (RFC 5281). The password is checked exactly as a PAP
+request's is: the same account, status and lockout. The access point is given
+the tunnel's own keys, so traffic flows once the person is in.
+
+- **Off unless set.** It is a password method, and the certificate is the only
+  thing standing between a person's password and whoever answers in its place.
+  A supplicant that is not set to check the certificate sends the password to
+  anyone. Configure every supplicant with the issuing CA and the server name.
+- **Certificates first.** With EAP-TLS on as well (`SIGNARI_EAP_CLIENT_CA`),
+  EAP-TLS is offered first. A supplicant without a certificate refuses it
+  naming EAP-TTLS, and is then offered EAP-TTLS. With only
+  `SIGNARI_EAP_TUNNELS`, EAP-TTLS is offered straight away and EAP-TLS stays
+  off.
+- **No resumption.** A resumed TTLS session skips the password entirely, so
+  nothing is kept to resume. Every connection checks the password, and somebody
+  deactivated since is refused at their next one.
+- **TLS 1.2.** The tunnel's keys are defined over TLS 1.2, so the tunnel runs
+  TLS 1.2, with the extended master secret, as Go requires for exporting keys.
+- **A second factor** is typed after the password, `password;123456`, as for
+  PAP. The tunnel does not prompt for a code.
+
 ## Not implemented
 
-- **PEAP and EAP-TTLS.** Password-based methods tunnelled inside TLS. Absent
-  deliberately: they exist to carry a password, and this engine's answer to
-  "wifi with a password" is a passkey or a certificate. A supplicant that asks
-  for EAP when EAP-TLS is not configured is **refused**, not offered something
-  weaker.
+- **PEAP.** A password method tunnelled inside TLS like EAP-TTLS, with its own
+  inner protocol. Not built yet; EAP-TTLS is what carries a password here. A
+  supplicant that asks for EAP when neither EAP-TLS nor EAP-TTLS is on is
+  **refused**, not offered something weaker.
 - **CRL and OCSP checking.** The account-status check above covers the case that
   matters — somebody leaving — and does it faster than a revocation list
   propagates. A stolen laptop with a live account is a revocation problem, and

@@ -1,6 +1,7 @@
 package radius
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
@@ -86,7 +87,7 @@ func TestALengthlessFragmentStreamStopsAtTheCap(t *testing.T) {
 	for sent <= maxReassembly+len(chunk) {
 		resp := &EAPPacket{Code: EAPResponse, Identifier: 1, Type: EAPTypeTLS,
 			Data: (&EAPTLSFrame{More: true, Data: chunk}).Encode()}
-		_, done, ok := s.continueEAPTLS(sess, resp)
+		_, done, ok := s.continueEAPTLS(context.Background(), sess, resp)
 		sent += len(chunk)
 		if done {
 			if ok || sent <= maxReassembly {

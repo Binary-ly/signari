@@ -547,8 +547,9 @@ See [EAP-TLS](eap-tls.md).
 | `SIGNARI_RADIUS_ADDR` | Listen address. Absent, no RADIUS listener starts |
 | `SIGNARI_RADIUS_ORG_ID` | Required when the database holds more than one organisation |
 | `SIGNARI_EAP_TLS_CERT`, `SIGNARI_EAP_TLS_KEY` | The certificate supplicants verify |
-| `SIGNARI_EAP_CLIENT_CA` | Authorities issuing supplicant certificates. All three or none — a partial configuration is refused |
+| `SIGNARI_EAP_CLIENT_CA` | Authorities issuing supplicant certificates. All three or none — a partial configuration is refused, unless `SIGNARI_EAP_TUNNELS` is set, when the certificate alone runs the tunnel and EAP-TLS stays off |
 | `SIGNARI_EAP_IDENTITY_FROM` | `cn`, `email` or `upn`. Use `upn` against Active Directory |
+| `SIGNARI_EAP_TUNNELS` | `ttls` turns on EAP-TTLS with PAP inside, with the certificate above: the person's password goes inside a TLS tunnel to this server and is checked as a PAP request's is. Off unless set. See [EAP-TTLS](eap-tls.md#eap-ttls-a-password-inside-the-tunnel) |
 
 ## Remote access (RDP, VNC, SSH in the browser)
 

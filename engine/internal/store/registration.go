@@ -371,15 +371,16 @@ func keepRegisteredSector(ctx context.Context, tx pgx.Tx, clientID string, redir
 	if kind == "pairwise" && want == "" {
 		var why string
 		if want, why = RedirectSector(redirectURIs); why != "" {
-			return fmt.Errorf("%w: %s, so a pairwise client registers a sector_identifier_uri", ErrInvalidClientSetting, why)
+			return fmt.Errorf("%w: %s; a pairwise client names it with a sector_identifier_uri",
+				ErrInvalidClientSetting, why)
 		}
 	}
 	switch {
 	case want == "":
 		want = sector
 	case sector != "" && want != sector:
-		return fmt.Errorf("%w: this client's subjects belong to the sector %s, and these redirect URIs are vouched "+
-			"for by %s; a sector_identifier_uri on %s that lists them keeps everybody's subject as it is",
+		return fmt.Errorf("%w: this client's subjects belong to the sector %s, not %s; a sector_identifier_uri on %s "+
+			"that lists these redirect URIs keeps everybody's subject as it is",
 			ErrInvalidClientSetting, sector, want, sector)
 	case !sectorShape.MatchString(want):
 		return fmt.Errorf("%w: a sector is a host name, not %q", ErrInvalidClientSetting, want)

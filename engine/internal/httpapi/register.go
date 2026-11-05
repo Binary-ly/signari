@@ -143,7 +143,7 @@ func (s *Server) registeredSubject(ctx context.Context, kind, sectorURI string, 
 		if why != "" {
 			// "If there are multiple hostnames in the registered redirect_uris, the
 			// Client MUST register a sector_identifier_uri" (specs/oidc-core.txt:5246-5248).
-			return "", "", fmt.Errorf("%s, so a pairwise client registers a sector_identifier_uri", why)
+			return "", "", fmt.Errorf("%s; a pairwise client names it with a sector_identifier_uri", why)
 		}
 		return kind, sector, nil
 	}

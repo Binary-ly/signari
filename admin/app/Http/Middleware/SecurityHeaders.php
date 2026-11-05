@@ -46,6 +46,15 @@ use Symfony\Component\HttpFoundation\Response;
  * screen breaks. An injected attribute that Alpine reads as an expression is the
  * way in that leaves, which is why a nonce does not end the matter.
  *
+ * Alpine's CSP evaluator (@alpinejs/csp 3.17.5) was tried in its place on
+ * 5 November 2026, with 'unsafe-eval' dropped, over all 23 screens in Chrome:
+ * sign-in worked and every screen failed. It refused 43 distinct expressions, and
+ * they are not in a few views: they are what Filament writes for every form field
+ * and filter (`filamentSchemaComponent({ …, $wire })`, object shorthand), every
+ * action (`JSON.parse`, a global) and every table, much of it from its PHP
+ * component classes. Passing would mean forking Filament's rendering. Revisit
+ * with a Livewire and Filament that ship a CSP build.
+ *
  * Styles keep 'unsafe-inline': Filament writes style="" attributes throughout,
  * and a nonce cannot cover an attribute.
  *

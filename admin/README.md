@@ -61,8 +61,12 @@ fails when they fall out of step with Filament ([why and how](resources/views/ve
 compiles every expression with `new Function`, and Livewire runs Filament's
 `@script` blocks the same way, so every screen breaks without it. An injected
 attribute that Alpine reads as an expression is therefore not stopped by the
-nonce. Styles keep `'unsafe-inline'`, because Filament writes `style` attributes,
-which no nonce covers.
+nonce. Alpine's CSP evaluator was tried in its place, without `'unsafe-eval'`. It
+failed on all 23 screens: it refuses the object shorthand and globals Filament
+writes for every form field, action and table, so passing would mean forking
+Filament's rendering (`app/Http/Middleware/SecurityHeaders.php` has the detail).
+Styles keep `'unsafe-inline'`, because Filament writes `style` attributes, which
+no nonce covers.
 
 Behind a proxy that terminates TLS, name it in `TRUSTED_PROXIES` (addresses or
 CIDR ranges, comma separated). Requests then count as HTTPS when that proxy says

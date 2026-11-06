@@ -89,6 +89,11 @@ spec:
           # /readyz, which checks the database and the signing keys. Both probes
           # asked /healthz, so a pod whose database was unreachable kept taking
           # traffic.
+          #
+          # Liveness is for a process that cannot answer at all, so it waits a
+          # minute for one: five seconds a probe, six in a row. On the defaults, a
+          # second and three, a node short of CPU had every replica restarted at
+          # once on kind, which turns a slow minute into an outage.
           livenessProbe:
             httpGet:
               path: /healthz
@@ -98,6 +103,8 @@ spec:
               {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /readyz
@@ -107,6 +114,7 @@ spec:
               {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 5
+            timeoutSeconds: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- if .Values.tls.certSecretName }}

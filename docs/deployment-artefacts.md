@@ -92,3 +92,25 @@ libraries that already work.
 `deploy/docker-compose.yml` (the development stack and the conformance-suite
 target) and `engine/Dockerfile` (a distroless, non-root, static image, optionally
 FIPS-validated) predate this and remain the basis the chart builds on.
+
+## Base images are pinned by digest
+
+Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile` and `admin/Dockerfile`
+names its base by tag and digest, for example
+`golang:1.26.10@sha256:cfa2…`. The digest is what gets pulled, and the tag says what
+it is. A tag is whatever its registry says today, so a build from a bare tag can
+differ from the build that was checked, without anyone changing a line here.
+`TestEveryBaseImageIsPinnedByDigest` fails on a `FROM` without a digest.
+
+The cost is that a patched base arrives only when someone moves the pin. To move
+one, read the digest of the index the tag names now and put it in place of the
+old one:
+
+```sh
+docker buildx imagetools inspect --format '{{json .Manifest}}' golang:1.26.10 | jq -r .digest
+```
+
+That is the multi-platform index, so the pin holds for every architecture the
+image is built for. The console image also installs packages with `apk` as it
+builds, and those are not pinned. Its base is fixed, but the image is not one
+that rebuilds byte for byte.

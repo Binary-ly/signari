@@ -5,7 +5,12 @@
 # silently change which cryptographic module the binary carries, and the patch
 # release is the security floor go.mod declares (the official image builds with
 # GOTOOLCHAIN=local, so an older image refuses rather than upgrades).
-FROM golang:1.26.10 AS build
+#
+# And to a digest, every base here: a tag is whatever its registry says today,
+# and can be pointed somewhere else after the release was checked. The tag stays
+# beside it to say what the digest is. docs/deployment-artefacts.md has how to
+# move a pin; TestEveryBaseImageIsPinnedByDigest fails on a FROM without one.
+FROM golang:1.26.10@sha256:cfa27959837144bf4649802ba38e59daffd0dd2a7994aa83daaf113285b0f551 AS build
 
 WORKDIR /src
 
@@ -55,7 +60,7 @@ RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
 # none of (docs/signing-keys-in-a-module.md). Built on bookworm to match the
 # runtime's: a binary linked against a newer glibc than its image carries does
 # not start.
-FROM golang:1.26.10-bookworm AS build-pkcs11
+FROM golang:1.26.10-bookworm@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473 AS build-pkcs11
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -73,7 +78,7 @@ RUN CGO_ENABLED=1 GOFIPS140=${GOFIPS140} \
 # container runs and named by SIGNARI_PKCS11_MODULE. The cc image has glibc and
 # the C++ runtime, which a module written in C++, SoftHSM's for one, needs; it
 # is still distroless, with no shell or package manager.
-FROM gcr.io/distroless/cc-debian12:nonroot AS pkcs11
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS pkcs11
 
 COPY --from=build-pkcs11 /out/signari /signari
 USER nonroot:nonroot
@@ -85,7 +90,7 @@ CMD ["serve", "-addr", "0.0.0.0:8080"]
 #
 # Distroless: no shell, no package manager, no busybox. An attacker who achieves
 # execution inside an identity provider should not find a toolchain waiting.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/signari /signari
 

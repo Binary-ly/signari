@@ -71,7 +71,28 @@ mark would stay on a server connection that `serve` later receives, and request
 traffic would be recorded as operator edits. Connect the CLI to PostgreSQL
 directly, or through a pooler in session mode.
 
-## What has not been measured
+## Behind a real PgBouncer
 
 The suite was run with each mode against PostgreSQL directly, and that is what
-the table reports. No engine has yet been run behind a real PgBouncer here.
+the table reports. Four `serve` instances of one issuer were also run behind
+PgBouncer 1.26.1, in November 2026, in `pool_mode = transaction`,
+`default_pool_size = 16`. Each used `default_query_exec_mode=cache_describe` and
+reached the database only through the pooler. A round-robin TCP proxy put them
+behind one address. The bench tool (`tools/bench`) then ran twelve scenarios
+against them, four workers each, eight seconds measured: discovery, the key set,
+client credentials, introspection, sign-in, refresh, userinfo, revocation, token
+exchange, device start and poll, and sign-out. There were no errors. PgBouncer
+counted 321,942 transactions, no instance logged an error, and the proxy gave each
+instance about 131 connections. The setup commands connected to PostgreSQL
+directly, as above.
+
+Every advisory lock `serve` takes is held for one transaction, so a transaction
+pooler cannot hand it to someone else. That covers the janitor's turn, the audit
+stream's pump, and key rotation. `migrate`'s is the only lock held for a session.
+
+One thing that looks like a pooling failure is not one. More concurrent sign-ins to
+one account than the organisation's free attempts (`login_free_attempts`,
+three by default) are throttled, because each attempt is charged before the
+password is checked and handed back once it proves right. With six workers on one
+account, about one sign-in in forty was refused this way. That happened with the
+database connected directly too.

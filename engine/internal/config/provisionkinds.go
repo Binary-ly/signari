@@ -52,6 +52,9 @@ type SCIMTarget struct {
 	OAuthTokenURL string `yaml:"oauth_token_url,omitempty"`
 	OAuthClientID string `yaml:"oauth_client_id,omitempty"`
 	OAuthScope    string `yaml:"oauth_scope,omitempty"`
+	// OAuthClientAuth is client_secret_basic, the default when absent, or
+	// client_secret_post for a token endpoint that takes the secret only in the form.
+	OAuthClientAuth string `yaml:"oauth_client_auth,omitempty"`
 	// Compatibility names what a SCIM target needs that the protocol does not say
 	// it should; left as it is when absent, and [] for none.
 	Compatibility []string `yaml:"compatibility,omitempty"`
@@ -73,12 +76,20 @@ func (w SCIMTarget) secretRef() (*SecretRef, string) {
 	return w.Credentials, fmt.Sprintf("scim_targets[%s].credentials", w.Slug)
 }
 
+// oauth is the grant the file declares, its method spelled out as the database
+// holds it, so a file that leaves Basic unsaid plans no change against one held.
 func (w SCIMTarget) oauth() provision.TargetOAuth {
-	return provision.TargetOAuth{TokenURL: w.OAuthTokenURL, ClientID: w.OAuthClientID, Scope: w.OAuthScope}
+	auth := w.OAuthClientAuth
+	if auth == "" && w.OAuthTokenURL != "" {
+		auth = scim.ClientSecretBasic
+	}
+	return provision.TargetOAuth{TokenURL: w.OAuthTokenURL, ClientID: w.OAuthClientID, Scope: w.OAuthScope,
+		ClientAuth: auth}
 }
 
 func heldOAuth(h store.SCIMTargetRow) provision.TargetOAuth {
-	return provision.TargetOAuth{TokenURL: h.OAuthTokenURL, ClientID: h.OAuthClientID, Scope: h.OAuthScope}
+	return provision.TargetOAuth{TokenURL: h.OAuthTokenURL, ClientID: h.OAuthClientID, Scope: h.OAuthScope,
+		ClientAuth: h.OAuthClientAuth}
 }
 
 // spec is the target as provision.AddTarget takes it, its secret resolved.
@@ -87,7 +98,7 @@ func (w SCIMTarget) spec() provision.TargetSpec {
 		Impersonate: w.Impersonate, Domain: w.TargetDomain, OnDeactivate: w.OnDeactivate,
 		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing,
 		OAuthTokenURL: w.OAuthTokenURL, OAuthClientID: w.OAuthClientID, OAuthScope: w.OAuthScope,
-		Compatibility: w.Compatibility}
+		OAuthClientAuth: w.OAuthClientAuth, Compatibility: w.Compatibility}
 	if r, _ := w.secretRef(); r != nil && s.Kind == "scim" {
 		s.Token = r.value
 	} else if r != nil {
@@ -126,19 +137,21 @@ func (scimSection) validate(f *File, add func(string, ...any)) {
 				add("%s: %v", at, err)
 			}
 			switch {
-			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "":
+			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "" && w.OAuthClientAuth == "":
 			case !strings.HasPrefix(w.OAuthTokenURL, "https://") || w.OAuthClientID == "":
 				add("%s: the client credentials grant needs oauth_client_id and an https oauth_token_url, where "+
 					"the secret is sent", at)
 			case safedial.CheckURL(w.OAuthTokenURL) != nil:
 				add("%s: %v", at, safedial.CheckURL(w.OAuthTokenURL))
+			case w.OAuthClientAuth != "" && scim.CheckClientAuth(w.OAuthClientAuth) != nil:
+				add("%s: oauth_client_auth: %v", at, scim.CheckClientAuth(w.OAuthClientAuth))
 			}
 		case "google", "entra":
 			if w.BaseURL != "" || w.Token != nil {
 				add("%s: a %s target is reached through its own API with credentials, not a base_url and token",
 					at, k)
 			}
-			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" {
+			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" || w.OAuthClientAuth != "" {
 				add("%s: only a SCIM target takes the client credentials grant", at)
 			}
 			if len(w.Compatibility) > 0 {
@@ -380,6 +393,10 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
 			Enabled: &enabled, ScopeGroups: h.ScopeGroups, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
 			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope, Compatibility: h.Compatibility}
+		// Basic is what an absent method means, so only the other is written down.
+		if h.OAuthClientAuth == scim.ClientSecretPost {
+			w.OAuthClientAuth = h.OAuthClientAuth
+		}
 		switch h.Kind {
 		case "scim":
 			w.Kind, w.BaseURL = "", h.BaseURL

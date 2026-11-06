@@ -25,6 +25,9 @@ func TestATargetAuthenticatesByTheGrantItWasRegisteredWith(t *testing.T) {
 		"a token URL and no client": {"oauth_token_url": "https://auth.example.test/token"},
 		"a scope alone":             {"oauth_scope": "s"},
 		"a plain token URL":         {"oauth_token_url": "http://auth.example.test/token", "oauth_client_id": "c"},
+		"a method with no grant":    {"oauth_client_auth": "client_secret_post"},
+		"a method nothing here speaks": {"oauth_token_url": "https://auth.example.test/token", "oauth_client_id": "c",
+			"oauth_client_auth": "private_key_jwt"},
 	} {
 		req := map[string]any{"slug": "bad", "base_url": "https://scim.example.test/v2", "token": "t"}
 		for k, v := range body {
@@ -56,12 +59,14 @@ func TestATargetAuthenticatesByTheGrantItWasRegisteredWith(t *testing.T) {
 			OAuthTokenURL string `json:"oauth_token_url"`
 			OAuthClientID string `json:"oauth_client_id"`
 			OAuthScope    string `json:"oauth_scope"`
+			ClientAuth    string `json:"oauth_client_auth"`
 		} `json:"targets"`
 	}
 	if err := json.Unmarshal(list.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Targets) != 1 || got.Targets[0].OAuthClientID != "our-client" || got.Targets[0].OAuthScope != "scim.write" {
+	if len(got.Targets) != 1 || got.Targets[0].OAuthClientID != "our-client" || got.Targets[0].OAuthScope != "scim.write" ||
+		got.Targets[0].ClientAuth != "client_secret_basic" {
 		t.Errorf("the target reads %+v", got.Targets)
 	}
 
@@ -88,6 +93,43 @@ func TestATargetAuthenticatesByTheGrantItWasRegisteredWith(t *testing.T) {
 	}
 	if fake.clientID != "our-client" || fake.clientSecret != secret {
 		t.Errorf("the token endpoint saw %q, %q", fake.clientID, fake.clientSecret)
+	}
+}
+
+// A target whose token endpoint takes the secret only in the form is given it
+// there and not by Basic as well (7.14), from registration to a sync that asks.
+func TestATargetIsGivenItsSecretInTheFormWhenRegisteredSo(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	fake := newFakeTarget(t)
+	s.targetClient = func() (*http.Client, error) { return fake.Client(), nil }
+	const secret = "a-secret: for/the form"
+	if err := provision.AddTarget(ctx, s.db, s.root, org, provision.TargetSpec{Slug: "drift", BaseURL: fake.URL,
+		Token: secret, OAuthTokenURL: fake.URL + "/oauth/token", OAuthClientID: "our-client",
+		OAuthClientAuth: "client_secret_post"}); err != nil {
+		t.Fatal(err)
+	}
+	base := "/admin/organizations/" + org + "/scim-targets"
+	if list := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(list.Body.String(),
+		`"oauth_client_auth":"client_secret_post"`) {
+		t.Errorf("the target reads %s", list.Body.String())
+	}
+	var person string
+	if err := s.db.QueryRow(ctx, `INSERT INTO core.users (org_id, username, email, status, user_handle)
+		VALUES ($1::uuid, 'ada', 'ada@example.test', 'active', decode(md5(random()::text) || md5(random()::text) ||
+		        md5(random()::text) || md5(random()::text), 'hex')) RETURNING id::text`, org).Scan(&person); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, person) })
+	if rec := call(t, s, http.MethodPost, base+"/drift/sync", testToken, map[string]any{"apply": true}); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"created":1`) {
+		t.Fatalf("syncing: %d %s", rec.Code, rec.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.formID != "our-client" || fake.formSecret != secret || fake.clientID != "" {
+		t.Errorf("the token endpoint saw form %q, %q and Basic %q", fake.formID, fake.formSecret, fake.clientID)
 	}
 }
 

@@ -268,7 +268,7 @@ var commandFlags = map[string][]string{
 	"saml signing":                    {"assertion-lifetime", "entity-id", "org", "sign-assertions", "sign-responses", "signature-alg"},
 	"saml soap-logout":                {"entity-id", "org", "url"},
 	"saml wsfed-token":                {"entity-id", "org", "saml-version"},
-	"scim add":                        {"base-url", "compatibility", "name", "oauth-client-id", "oauth-scope", "oauth-token-url", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "token"},
+	"scim add":                        {"base-url", "compatibility", "name", "oauth-client-auth", "oauth-client-id", "oauth-scope", "oauth-token-url", "on-deactivate", "org", "recreate-missing", "scim-dry-run", "slug", "token"},
 	"scim deprovision-group":          {"group", "org", "slug"},
 	"scim disable":                    {"org", "slug"},
 	"scim enable":                     {"org", "slug"},

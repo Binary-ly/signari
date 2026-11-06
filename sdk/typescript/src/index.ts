@@ -3069,6 +3069,7 @@ export interface GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem {
   kind: string
   linked: number
   name: string
+  oauth_client_auth: string
   oauth_client_id: string
   oauth_scope: string
   oauth_token_url: string
@@ -4488,6 +4489,7 @@ export interface PostOrganizationsOrgIDSCIMTargetsRequest {
   impersonate?: string
   kind?: string
   name?: string
+  oauth_client_auth?: string
   oauth_client_id?: string
   oauth_scope?: string
   oauth_token_url?: string

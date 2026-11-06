@@ -27,9 +27,11 @@ type fakeTarget struct {
 	lists, listNothing, strict bool
 	listed                     int
 	// bearers are what each POST /Users authenticated with, clientID and
-	// clientSecret what the token endpoint was asked as.
+	// clientSecret what the token endpoint was asked as by Basic, formID and
+	// formSecret by the form.
 	bearers                []string
 	clientID, clientSecret string
+	formID, formSecret     string
 }
 
 // fakeIssuedToken is what the fake's token endpoint issues.
@@ -59,6 +61,7 @@ func newFakeTarget(t *testing.T) *fakeTarget {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.clientID, f.clientSecret, _ = r.BasicAuth()
+		f.formID, f.formSecret = r.PostFormValue("client_id"), r.PostFormValue("client_secret")
 		answer(w, http.StatusOK, map[string]any{"access_token": fakeIssuedToken, "token_type": "Bearer", "expires_in": 3600})
 	})
 	mux.HandleFunc("PATCH /Users/{id}", func(w http.ResponseWriter, r *http.Request) {

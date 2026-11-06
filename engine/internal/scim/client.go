@@ -44,6 +44,21 @@ const (
 	defaultTimeout = 20 * time.Second
 )
 
+// How a target's client authenticates at its token endpoint (Target.OAuthClientAuth).
+const (
+	ClientSecretBasic = "client_secret_basic"
+	ClientSecretPost  = "client_secret_post"
+)
+
+// CheckClientAuth refuses a client authentication method a target cannot be given.
+func CheckClientAuth(method string) error {
+	switch method {
+	case ClientSecretBasic, ClientSecretPost:
+		return nil
+	}
+	return fmt.Errorf("the client authenticates by %s or %s, not %q", ClientSecretBasic, ClientSecretPost, method)
+}
+
 // Target is a configured downstream application.
 type Target struct {
 	ID           string
@@ -83,6 +98,11 @@ type Target struct {
 	// credentials grant, as OAuthClientID with Token as the client's secret and
 	// OAuthScope as the scope, which may be empty.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// OAuthClientAuth is how the client authenticates there: client_secret_basic,
+	// the default, which a token endpoint "MUST support" (specs/rfc6749.txt:875-877),
+	// or client_secret_post, the id and secret in the form (:883-893), which the
+	// RFC calls NOT RECOMMENDED (:903-904) and some token endpoints take alone.
+	OAuthClientAuth string
 
 	// Compatibility names what this target needs that the protocol does not say
 	// it should (Compatibilities).
@@ -460,14 +480,24 @@ func (c *Client) bearer(ctx context.Context, renew bool) (string, error) {
 	if c.target.OAuthScope != "" {
 		form.Set("scope", c.target.OAuthScope)
 	}
+	post := c.target.OAuthClientAuth == ClientSecretPost
+	if post {
+		// Both in the body (specs/rfc6749.txt:887-893), and then not in a header
+		// as well: the client "MUST NOT use more than one authentication method
+		// in each request" (:864-865).
+		form.Set("client_id", c.target.OAuthClientID)
+		form.Set("client_secret", c.target.Token)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.target.OAuthTokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
-	// Form-encoded first, which HTTP Basic alone is not: a secret with a colon or
-	// a percent sign in it is otherwise a different secret at the far end.
-	req.SetBasicAuth(url.QueryEscape(c.target.OAuthClientID), url.QueryEscape(c.target.Token))
+	if !post {
+		// Form-encoded first, which HTTP Basic alone is not: a secret with a colon
+		// or a percent sign in it is otherwise a different secret at the far end.
+		req.SetBasicAuth(url.QueryEscape(c.target.OAuthClientID), url.QueryEscape(c.target.Token))
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 

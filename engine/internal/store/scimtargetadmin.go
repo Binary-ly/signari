@@ -129,6 +129,8 @@ type SCIMTargetRow struct {
 	// OAuthTokenURL, OAuthClientID and OAuthScope are the client credentials
 	// grant it authenticates with, "" for a bearer token.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// OAuthClientAuth is how that client authenticates, "" with no grant.
+	OAuthClientAuth string
 	// Compatibility names what it needs that the protocol does not say it should.
 	Compatibility []string
 }
@@ -146,7 +148,8 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
 		       t.created_at, COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''),
-		       COALESCE(t.oauth_scope, ''), t.compatibility
+		       COALESCE(t.oauth_scope, ''), t.compatibility,
+		       CASE WHEN t.oauth_token_url IS NULL THEN '' ELSE t.oauth_client_auth END
 		  FROM core.scim_targets t
 		 WHERE t.org_id = $1::uuid ORDER BY t.slug`, orgID)
 	if err != nil {
@@ -159,7 +162,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroups,
 			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
 			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope,
-			&t.Compatibility); err != nil {
+			&t.Compatibility, &t.OAuthClientAuth); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

@@ -80,22 +80,37 @@ type TargetSpec struct {
 	// client credentials grant, Token then being the client's secret, with
 	// OAuthScope as the scope.
 	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// OAuthClientAuth is how that client authenticates: client_secret_basic,
+	// the default when empty, or client_secret_post.
+	OAuthClientAuth string
 	// Compatibility names what a SCIM target needs that the protocol does not
 	// say it should.
 	Compatibility []string
 }
 
-// validateOAuth refuses half a grant, and a token URL that a secret should not
-// be sent to.
-func validateOAuth(tokenURL, clientID, scope string) error {
+// validateOAuth refuses half a grant, a token URL that a secret should not be
+// sent to, and a way of authenticating that is not one or has no grant to go with.
+func validateOAuth(tokenURL, clientID, scope, clientAuth string) error {
 	switch {
-	case tokenURL == "" && clientID == "" && scope == "":
+	case tokenURL == "" && clientID == "" && scope == "" && clientAuth == "":
 	case tokenURL == "" || clientID == "":
 		return targetInvalid{"the client credentials grant needs both the token URL and the client id"}
 	case !strings.HasPrefix(tokenURL, "https://"):
 		return targetInvalid{"the token URL must be https: the client secret is sent to it"}
+	case clientAuth != "":
+		if err := scim.CheckClientAuth(clientAuth); err != nil {
+			return targetInvalid{err.Error()}
+		}
 	}
 	return nil
+}
+
+// clientAuthOrDefault is what is stored for a grant: Basic unless told otherwise.
+func clientAuthOrDefault(clientAuth string) string {
+	if clientAuth == "" {
+		return scim.ClientSecretBasic
+	}
+	return clientAuth
 }
 
 func validateCompatibility(kind string, names []string) error {
@@ -127,10 +142,11 @@ func (s *TargetSpec) Validate() error {
 	default:
 		return targetInvalid{fmt.Sprintf("on deactivate is deactivate, delete or nothing, not %q", s.OnDeactivate)}
 	}
-	if s.Kind != "" && s.Kind != "scim" && (s.OAuthTokenURL != "" || s.OAuthClientID != "" || s.OAuthScope != "") {
+	if s.Kind != "" && s.Kind != "scim" && (s.OAuthTokenURL != "" || s.OAuthClientID != "" || s.OAuthScope != "" ||
+		s.OAuthClientAuth != "") {
 		return targetInvalid{"only a SCIM target takes the client credentials grant"}
 	}
-	if err := validateOAuth(s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope); err != nil {
+	if err := validateOAuth(s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.OAuthClientAuth); err != nil {
 		return err
 	}
 	if err := validateCompatibility(s.Kind, s.Compatibility); err != nil {
@@ -189,11 +205,11 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 		_, err = q.Exec(ctx, `
 			INSERT INTO core.scim_targets
 				(org_id, slug, display_name, base_url, token, on_deactivate, dry_run, recreate_missing,
-				 oauth_token_url, oauth_client_id, oauth_scope, compatibility)
+				 oauth_token_url, oauth_client_id, oauth_scope, compatibility, oauth_client_auth)
 			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
-			        COALESCE($12::text[], '{}'))`,
+			        COALESCE($12::text[], '{}'), $13)`,
 			orgID, s.Slug, s.Name, s.BaseURL, sealed, s.OnDeactivate, s.DryRun, s.RecreateMissing,
-			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.Compatibility)
+			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.Compatibility, clientAuthOrDefault(s.OAuthClientAuth))
 	} else {
 		var sealed []byte
 		if sealed, err = root.Seal(s.Credentials, "provision_credentials"); err != nil {
@@ -228,8 +244,9 @@ type TargetChange struct {
 	Compatibility []string
 }
 
-// TargetOAuth is a target's client credentials grant, without the secret.
-type TargetOAuth struct{ TokenURL, ClientID, Scope string }
+// TargetOAuth is a target's client credentials grant, without the secret, and how
+// its client authenticates ("" for Basic).
+type TargetOAuth struct{ TokenURL, ClientID, Scope, ClientAuth string }
 
 // UpdateTarget changes a registered target as a configuration file declares
 // it (6.19), checked as AddTarget checks a new one. A SCIM target's base URL
@@ -261,9 +278,9 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 		return targetInvalid{"a change of grant needs the secret too: the one held belongs to the old " +
 			"grant, and would be sent to whoever answers at the new address"}
 	}
-	var oauthURL, oauthClient, oauthScope *string
+	var oauthURL, oauthClient, oauthScope, oauthAuth *string
 	if c.OAuth != nil {
-		if err := validateOAuth(c.OAuth.TokenURL, c.OAuth.ClientID, c.OAuth.Scope); err != nil {
+		if err := validateOAuth(c.OAuth.TokenURL, c.OAuth.ClientID, c.OAuth.Scope, c.OAuth.ClientAuth); err != nil {
 			return err
 		}
 		if c.OAuth.TokenURL != "" {
@@ -271,7 +288,9 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 				return err
 			}
 		}
-		oauthURL, oauthClient, oauthScope = &c.OAuth.TokenURL, &c.OAuth.ClientID, &c.OAuth.Scope
+		// The grant is replaced whole, so a change that names no method is Basic again.
+		auth := clientAuthOrDefault(c.OAuth.ClientAuth)
+		oauthURL, oauthClient, oauthScope, oauthAuth = &c.OAuth.TokenURL, &c.OAuth.ClientID, &c.OAuth.Scope, &auth
 	}
 	if err := validateCompatibility(kind, c.Compatibility); err != nil {
 		return err
@@ -320,10 +339,11 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 			oauth_token_url = CASE WHEN $12::text IS NULL THEN oauth_token_url ELSE NULLIF($12, '') END,
 			oauth_client_id = CASE WHEN $13::text IS NULL THEN oauth_client_id ELSE NULLIF($13, '') END,
 			oauth_scope     = CASE WHEN $14::text IS NULL THEN oauth_scope ELSE NULLIF($14, '') END,
-			compatibility   = COALESCE($15::text[], compatibility)
+			compatibility   = COALESCE($15::text[], compatibility),
+			oauth_client_auth = COALESCE($16::text, oauth_client_auth)
 		 WHERE org_id = $1::uuid AND slug = $2`,
 		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds,
-		c.RecreateMissing, oauthURL, oauthClient, oauthScope, c.Compatibility)
+		c.RecreateMissing, oauthURL, oauthClient, oauthScope, c.Compatibility, oauthAuth)
 	if err != nil {
 		return err
 	}

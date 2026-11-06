@@ -286,6 +286,7 @@ scim_targets:                 # where people are provisioned to
     oauth_token_url: https://billing.example.com/oauth/token
     oauth_client_id: signari
     oauth_scope: scim.write   # may be left out
+    oauth_client_auth: client_secret_post   # left out, the secret goes by HTTP Basic
   - slug: workspace
     kind: google              # or entra; fixed once made
     credentials: {file: google-sa.json}

@@ -42,6 +42,7 @@ type scimTargetView struct {
 	OAuthTokenURL   string    `json:"oauth_token_url"`
 	OAuthClientID   string    `json:"oauth_client_id"`
 	OAuthScope      string    `json:"oauth_scope"`
+	OAuthClientAuth string    `json:"oauth_client_auth"`
 	Compatibility   []string  `json:"compatibility"`
 	Linked          int       `json:"linked"`
 	ShouldBeGone    int       `json:"should_be_gone"`
@@ -70,6 +71,9 @@ type addSCIMTargetRequest struct {
 	OAuthTokenURL string `json:"oauth_token_url"`
 	OAuthClientID string `json:"oauth_client_id"`
 	OAuthScope    string `json:"oauth_scope"`
+	// OAuthClientAuth is client_secret_basic, the default, or client_secret_post
+	// for a token endpoint that takes the secret only in the form.
+	OAuthClientAuth string `json:"oauth_client_auth"`
 	// Compatibility names what it needs that the protocol does not say it should.
 	Compatibility []string `json:"compatibility"`
 }
@@ -108,7 +112,7 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
 			OnDeactivate: t.OnDeactivate, ScopeGroups: t.ScopeGroups, DryRun: t.DryRun, Enabled: t.Enabled,
 			RecreateMissing: t.RecreateMissing, OAuthTokenURL: t.OAuthTokenURL, OAuthClientID: t.OAuthClientID,
-			OAuthScope: t.OAuthScope, Compatibility: t.Compatibility, Linked: t.Linked,
+			OAuthScope: t.OAuthScope, OAuthClientAuth: t.OAuthClientAuth, Compatibility: t.Compatibility, Linked: t.Linked,
 			ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "targets": out})
@@ -126,7 +130,8 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		Impersonate: strings.TrimSpace(req.Impersonate), Domain: strings.TrimSpace(req.TargetDomain),
 		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing,
 		OAuthTokenURL: strings.TrimSpace(req.OAuthTokenURL), OAuthClientID: strings.TrimSpace(req.OAuthClientID),
-		OAuthScope: strings.TrimSpace(req.OAuthScope), Compatibility: req.Compatibility}
+		OAuthScope: strings.TrimSpace(req.OAuthScope), OAuthClientAuth: strings.TrimSpace(req.OAuthClientAuth),
+		Compatibility: req.Compatibility}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return

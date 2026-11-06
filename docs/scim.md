@@ -145,8 +145,14 @@ signari scim add -org <uuid> -slug billing \
 ```
 
 The token URL is held to what the base URL is: `https`, and refused if it points
-inside this network, because the secret goes there. The secret is sent by HTTP Basic,
-sealed at rest like a bearer token, and never read back. A token is asked for when
+inside this network, because the secret goes there. The secret is sealed at rest
+like a bearer token, and never read back. It is sent by HTTP Basic, which RFC 6749
+requires every token endpoint to accept. A token endpoint that refuses Basic and
+takes the id and secret only in the form gets `-oauth-client-auth
+client_secret_post`, or `oauth_client_auth` through the Admin API or a
+configuration file. The secret then goes in the form and nothing goes in a
+header, since a client uses one way to authenticate a request. The RFC calls the
+form NOT RECOMMENDED, so use it only where Basic is refused. A token is asked for when
 a pass first needs one, kept in memory for that pass, replaced 30 seconds before it
 expires, and asked for once more if the target answers 401 anyway. Changing the
 grant through a configuration file needs the secret in the same file, for the

@@ -4048,6 +4048,7 @@ Takes:
 | `impersonate` | string |  |
 | `kind` | string |  |
 | `name` | string |  |
+| `oauth_client_auth` | string |  |
 | `oauth_client_id` | string |  |
 | `oauth_scope` | string |  |
 | `oauth_token_url` | string |  |

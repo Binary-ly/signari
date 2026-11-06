@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0291 scim_target_client_auth
+
+Compatible with the release before: its binary may still serve this schema.
+
+How a SCIM target's client authenticates at its token endpoint (7.14): HTTP Basic, as before and the default, or the id and secret in the form, for a token endpoint that takes only that. Compatible with the previous release, which ignores the column and goes on sending Basic: a target set to the form is then refused by its token endpoint until that node is upgraded, and nothing is sent anywhere it should not be.
+
 ## 0290 yubico_otp
 
 Not compatible with the release before: stop it before migrating.

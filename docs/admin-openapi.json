@@ -24595,6 +24595,9 @@
                           "name": {
                             "type": "string"
                           },
+                          "oauth_client_auth": {
+                            "type": "string"
+                          },
                           "oauth_client_id": {
                             "type": "string"
                           },
@@ -24637,6 +24640,7 @@
                           "oauth_token_url",
                           "oauth_client_id",
                           "oauth_scope",
+                          "oauth_client_auth",
                           "compatibility",
                           "linked",
                           "should_be_gone",
@@ -24744,6 +24748,9 @@
                     "type": "string"
                   },
                   "name": {
+                    "type": "string"
+                  },
+                  "oauth_client_auth": {
                     "type": "string"
                   },
                   "oauth_client_id": {

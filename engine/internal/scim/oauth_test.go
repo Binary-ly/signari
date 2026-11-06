@@ -101,6 +101,31 @@ func TestAGrantIsAskedForOnceAndKept(t *testing.T) {
 	}
 }
 
+// client_secret_post puts the id and the secret in the form and nothing in a
+// header, since a client uses one method a request (7.14); the secret arrives as
+// registered, odd characters and all.
+func TestASecretIsSentInTheFormWhenTheTargetTakesItThere(t *testing.T) {
+	f := newOAuthTarget(t)
+	c := NewClient(Target{BaseURL: f.URL, Token: "a secret: with/odd%chars", OAuthTokenURL: f.URL + "/oauth/token",
+		OAuthClientID: "our client", OAuthScope: "scim.write", OAuthClientAuth: ClientSecretPost}, f.Client())
+	if _, err := c.GetUser(context.Background(), "u-1"); err != nil {
+		t.Fatal(err)
+	}
+	form := f.form.Load().(url.Values)
+	if form.Get("client_id") != "our client" || form.Get("client_secret") != "a secret: with/odd%chars" ||
+		form.Get("grant_type") != "client_credentials" || form.Get("scope") != "scim.write" {
+		t.Errorf("asked with %v", form)
+	}
+	if id, _ := f.id.Load().(string); id != "" {
+		t.Errorf("Basic was sent as well, as %q: two methods in one request", id)
+	}
+	for _, bad := range []string{"", "private_key_jwt", "client_secret_jwt", "Client_Secret_Post"} {
+		if CheckClientAuth(bad) == nil {
+			t.Errorf("%q was taken as a way to authenticate", bad)
+		}
+	}
+}
+
 func TestAnExpiredTokenIsReplacedBeforeItIsSent(t *testing.T) {
 	f := newOAuthTarget(t)
 	f.expiresIn.Store(int64(tokenSlack / time.Second))

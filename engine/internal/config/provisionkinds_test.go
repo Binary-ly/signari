@@ -153,6 +153,81 @@ func TestAProvisioningTargetIsDeclaredWithItsTokenByReference(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
+// How a target's client authenticates is declared by a file (7.14): leaving it
+// unsaid is Basic and plans nothing against a target held with Basic, naming the
+// form plans a change and applies it, and the export writes down only the form.
+func TestATargetsClientAuthenticationIsDeclared(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	org, root := freshOrg(t, ctx, tx), testRoot(t)
+	plan := func(raw string) (*File, *Plan, error) {
+		t.Helper()
+		f, err := Parse([]byte("version: 1\n" + raw))
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := f.ResolveSecrets(func(SecretRef) (string, error) { return "a-client-secret", nil }); err != nil {
+			t.Fatal(err)
+		}
+		p, err := BuildPlanWith(ctx, tx, org, f, false, Options{Root: root})
+		return f, p, err
+	}
+	apply := func(raw string) *Plan {
+		t.Helper()
+		f, p, err := plan(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Apply(ctx, tx, org, f, p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	held := func() string {
+		t.Helper()
+		rows, err := store.SCIMTargets(ctx, tx, org)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("the targets are %+v (%v)", rows, err)
+		}
+		return rows[0].OAuthClientAuth
+	}
+	const target = "scim_targets:\n  - {slug: hr, base_url: 'https://hr.example.test/scim/v2', token: {env: HR_SECRET}, " +
+		"oauth_token_url: 'https://auth.example.test/token', oauth_client_id: signari%s}\n"
+
+	apply(fmt.Sprintf(target, ""))
+	if got := held(); got != "client_secret_basic" {
+		t.Errorf("a grant naming no method is held as %q", got)
+	}
+	if _, p, err := plan(fmt.Sprintf(target, "")); err != nil || !p.Empty() {
+		t.Errorf("Basic left unsaid plans\n%s (%v)", p, err)
+	}
+	if p := apply(fmt.Sprintf(target, ", oauth_client_auth: client_secret_post")); !strings.Contains(p.String(), "oauth") {
+		t.Errorf("naming the form was planned as\n%s", p)
+	}
+	if got := held(); got != "client_secret_post" {
+		t.Errorf("the form named, the target holds %q", got)
+	}
+	if _, p, err := plan(fmt.Sprintf(target, ", oauth_client_auth: client_secret_post")); err != nil || !p.Empty() {
+		t.Errorf("applied again it plans\n%s (%v)", p, err)
+	}
+	exported, err := Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := exported.Marshal(); !strings.Contains(string(out), "oauth_client_auth: client_secret_post") {
+		t.Errorf("the export loses the method:\n%s", out)
+	}
+	// Refused as the file is read, before anything is planned.
+	if _, _, err := plan(fmt.Sprintf(target, ", oauth_client_auth: private_key_jwt")); err == nil ||
+		!strings.Contains(err.Error(), `oauth_client_auth: the client authenticates by`) {
+		t.Errorf("a method nothing here speaks answered %v", err)
+	}
+}
+
 // What a file may not say about a target, refused before anything is read.
 func TestATargetTheFileCannotDescribeIsRefused(t *testing.T) {
 	for name, raw := range map[string]string{

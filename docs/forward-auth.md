@@ -544,9 +544,10 @@ WWW-Authenticate: Bearer error="insufficient_user_authentication",
 The program sends the person to sign in again with `acr_values=2`, which asks for
 two factors, and the token from that sign-in passes. `phishing_resistant` asks for
 `4`, a device-bound key. A rule with `factors_any_of` gets the challenge without
-`acr_values`, because no single value means "one of these factors". The session's
-factors are read on every request, so once the person steps up in the same session,
-the token they already hold passes too.
+`acr_values`, because no single value means "one of these factors". Stepping up is
+a new sign-in, and it replaces the session. The token from before it then gets a
+401 saying the session has ended, and the program carries on with the token from
+the new sign-in.
 
 A refusal that no sign-in would change stays a 403. Examples are a group the person
 is not in, a network rule, or a `deny`. A token with no session behind it stands for

@@ -81,7 +81,7 @@ RUN CGO_ENABLED=1 GOFIPS140=${GOFIPS140} \
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS pkcs11
 
 COPY --from=build-pkcs11 /out/signari /signari
-USER nonroot:nonroot
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/signari"]
 CMD ["serve", "-addr", "0.0.0.0:8080"]
@@ -94,8 +94,13 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c
 
 COPY --from=build /out/signari /signari
 
-# Non-root, from the base image. An IdP has no reason to run as root.
-USER nonroot:nonroot
+# Non-root, the base image's nonroot user. An IdP has no reason to run as root.
+#
+# By number, not by name: Kubernetes' runAsNonRoot, which the chart sets, can
+# only check a number, and refuses to start a container whose image names its
+# user. As `nonroot:nonroot` every pod the chart made, the migration Job first,
+# stopped at CreateContainerConfigError, so the chart could not install.
+USER 65532:65532
 
 EXPOSE 8080
 

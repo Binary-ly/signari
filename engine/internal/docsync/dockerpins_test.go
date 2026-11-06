@@ -72,3 +72,36 @@ func TestEveryBaseImageIsPinnedByDigest(t *testing.T) {
 		t.Fatal("no tracked Dockerfile was found, so nothing was checked")
 	}
 }
+
+// numericUser is a USER Kubernetes' runAsNonRoot can check: a uid, and a gid if any.
+var numericUser = regexp.MustCompile(`^[0-9]+(:[0-9]+)?$`)
+
+// Every tracked Dockerfile names the user it runs as by number (2.09). The chart sets
+// runAsNonRoot, which can only verify a number, and refuses to start a container whose
+// image names its user; the engine's said `nonroot:nonroot`, and no pod the chart made
+// ever started, the migration Job first.
+func TestEveryImageNamesItsUserByNumber(t *testing.T) {
+	root := repoRoot(t)
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	for _, name := range bytes.Split(out, []byte{0}) {
+		path := string(name)
+		if base := filepath.Base(path); base != "Dockerfile" && !strings.HasPrefix(base, "Dockerfile.") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := bufio.NewScanner(bytes.NewReader(raw))
+		for n := 1; lines.Scan(); n++ {
+			fields := strings.Fields(lines.Text())
+			if len(fields) == 2 && strings.EqualFold(fields[0], "USER") && !numericUser.MatchString(fields[1]) {
+				t.Errorf("%s:%d: USER %s is a name; runAsNonRoot cannot check it, so a pod that sets it "+
+					"never starts. Give the uid and gid", path, n, fields[1])
+			}
+		}
+	}
+}

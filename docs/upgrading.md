@@ -112,8 +112,9 @@ author's to rule out.
 
 | | |
 |---|---|
-| Runs on | 17 and later. 17 is the version this release's suites ran against, and an older major is refused rather than assumed to work: `signari verify`, `serve` and `migrate` refuse it before applying anything |
-| Tested on | 17. A later major runs, and `signari doctor` warns that it was not tested here |
+| Runs on | 16 and later. An older major is refused rather than assumed to work: `signari verify`, `serve` and `migrate` refuse it before applying anything |
+| Tested on | 16 and 17, the whole engine suite against each. A later major runs, and `signari doctor` warns that it was not tested here |
+| Not 15 | Every migration applies on 15, but 15 writes out a view's definition differently, with each column qualified by its table. So the schema fingerprints differently there, and a release pinned to the fingerprint would refuse every 15 database. 16 and 17 fingerprint the same schema alike, since November 2026: 17 lists `MAINTAIN` among a table owner's privileges and 16 has no such privilege, so the owner's own is left out |
 | Bootstrap | needs a role that may create roles, one of them with `BYPASSRLS` (`signari_maintenance`), and grant schemas to them: a superuser on your own server. Whether a managed service's administrator role may do this is the service's to say, and has not been tried here |
 
 Until October 2026 nothing declared a range, and nothing checked one.

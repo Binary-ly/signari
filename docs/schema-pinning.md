@@ -63,6 +63,16 @@ schema-qualified whatever the session's search path is. The migrations set
 fingerprint the ledger recorded under it never matched a read made anywhere
 else.
 
+A table owner's own `MAINTAIN` is left out. PostgreSQL 17 added the privilege
+and lists it among what an owner holds, and 16 has none, so until November 2026
+the same schema fingerprinted differently on the two, and a release pinned on 17
+would have refused a 16 database. `MAINTAIN` granted to anybody else still
+counts, since it would let them lock and vacuum the engine's tables. 15 renders
+view definitions differently again, and is below the supported range
+([upgrading](upgrading.md#which-postgresql)). The change is fingerprint scheme
+3. A ledger row computed by scheme 2 is not compared until the next migration
+records one, as for an upgrade of PostgreSQL.
+
 ## An unpinned binary compares with the ledger
 
 The ledger, `core.schema_migrations`, records the fingerprint after each

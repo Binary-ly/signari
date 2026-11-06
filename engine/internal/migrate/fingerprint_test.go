@@ -157,7 +157,7 @@ func TestEveryChangeToTheTenantBoundaryMovesTheFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []struct{ name, ddl string }{
+	changes := []struct{ name, ddl string }{
 		{"a policy dropped", `DROP POLICY users_org_isolation ON core.users`},
 		{"row-level security no longer forced", `ALTER TABLE core.users NO FORCE ROW LEVEL SECURITY`},
 		{"row-level security disabled", `ALTER TABLE core.users DISABLE ROW LEVEL SECURITY`},
@@ -175,7 +175,16 @@ func TestEveryChangeToTheTenantBoundaryMovesTheFingerprint(t *testing.T) {
 		{"a unique index dropped", `DROP INDEX core.users_org_email_key`},
 		{"the view owner given BYPASSRLS", `ALTER ROLE signari_engine BYPASSRLS`},
 		{"the console made a member of the engine role", `GRANT signari_engine TO signari_admin`},
-	} {
+	}
+	// An owner's MAINTAIN is left out so 16 and 17 agree; granted to the console
+	// it is a way to lock and vacuum the engine's tables, and still counts.
+	if major, err := serverMajorTx(ctx, tx); err != nil {
+		t.Fatal(err)
+	} else if major >= 17 {
+		changes = append(changes, struct{ name, ddl string }{"MAINTAIN granted to the console",
+			`GRANT MAINTAIN ON core.users TO signari_admin`})
+	}
+	for _, c := range changes {
 		if _, err := tx.Exec(ctx, `SAVEPOINT boundary`); err != nil {
 			t.Fatal(err)
 		}
@@ -196,6 +205,34 @@ func TestEveryChangeToTheTenantBoundaryMovesTheFingerprint(t *testing.T) {
 	if again, err := fingerprintTx(ctx, tx); err != nil || again != before {
 		t.Fatalf("after rolling every change back the fingerprint is %.12s (%v), want %.12s", again, err, before)
 	}
+}
+
+// The privilege PostgreSQL 17 added and lists among an owner's is not a line, so
+// a schema fingerprints the same on 16 and 17 and a release pinned on one runs on
+// the other (3.28). On 17 every table the engine owns held one.
+func TestAnOwnersMaintainIsNotFingerprinted(t *testing.T) {
+	conn, ctx := fpConn(t)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	lines, err := fingerprintLines(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(l, "grant ") && strings.Contains(l, "|signari_engine|MAINTAIN|") {
+			t.Fatalf("the owner's own MAINTAIN is fingerprinted, which 16 has no such privilege to match: %s", l)
+		}
+	}
+}
+
+// serverMajorTx is the major version the transaction's server runs.
+func serverMajorTx(ctx context.Context, tx pgx.Tx) (int, error) {
+	var num int
+	err := tx.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&num)
+	return num / 10000, err
 }
 
 func mustViewDef(t *testing.T, ctx context.Context, tx pgx.Tx, view string) string {

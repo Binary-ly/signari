@@ -104,13 +104,18 @@ var fingerprintSections = []struct{ name, query string }{
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE n.nspname IN ('core', 'core_v1') AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')`},
+	// Not the owner's own MAINTAIN: PostgreSQL 17 added the privilege and lists
+	// it among what an owner holds, and 16 has no such privilege, so the same
+	// schema fingerprinted differently on the two and a release pinned on one
+	// refused the other. MAINTAIN granted to anyone else still counts.
 	{"grants", `
 		SELECT format('grant %s.%s|%s|%s|%s', n.nspname, c.relname, ` + roleSQL("g.grantee") + `,
 		       g.privilege_type, g.is_grantable)
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		CROSS JOIN LATERAL aclexplode(c.relacl) g
-		WHERE n.nspname IN ('core', 'core_v1') AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')`},
+		WHERE n.nspname IN ('core', 'core_v1') AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+		  AND NOT (g.privilege_type = 'MAINTAIN' AND g.grantee = c.relowner)`},
 	{"column grants", `
 		SELECT format('column-grant %s.%s.%s|%s|%s|%s', n.nspname, c.relname, a.attname,
 		       ` + roleSQL("g.grantee") + `, g.privilege_type, g.is_grantable)
@@ -213,8 +218,10 @@ func fingerprintLines(ctx context.Context, tx pgx.Tx) ([]string, error) {
 // scheme that computed it (0160) and is compared only by a binary computing
 // the same one: a binary that fingerprints differently, older or newer, would
 // otherwise read every row as drift. Scheme 1 covered columns and constraints;
-// scheme 2 is the one above. Change the number whenever a line changes.
-const fingerprintScheme = 2
+// scheme 2 the tenant boundary too; scheme 3 is scheme 2 without an owner's
+// MAINTAIN, so PostgreSQL 16 and 17 agree. Change the number whenever a line
+// changes.
+const fingerprintScheme = 3
 
 // LedgerCheck compares the live schema with what the ledger recorded when the
 // latest migration was applied.

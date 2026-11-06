@@ -12,11 +12,16 @@ import (
 // oldest it was tested on. An older major is refused rather than assumed to
 // work, since no older one has been run against; nothing declared a range,
 // so an older server found out part way through the migrations.
-var MinServerMajor = 17
+//
+// 16 and not 15: every migration applies on 15, but 15 renders a view's
+// definition differently (each column qualified by its table), so the schema
+// fingerprints differently there and a release pinned to the fingerprint would
+// refuse every 15 database it met. 16 and 17 fingerprint alike.
+var MinServerMajor = 16
 
 // TestedServerMajors are the majors this release's suites ran against. A
 // newer one runs, and `signari doctor` says it was not tested here.
-var TestedServerMajors = []int{17}
+var TestedServerMajors = []int{16, 17}
 
 // ServerMajor is the PostgreSQL major version conn is connected to.
 func ServerMajor(ctx context.Context, conn *pgx.Conn) (int, error) {

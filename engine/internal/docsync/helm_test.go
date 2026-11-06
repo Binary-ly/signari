@@ -47,17 +47,29 @@ func TestTheHelmChartCanInstall(t *testing.T) {
 	if strings.Contains(out, ":latest\"") {
 		t.Error("the image is :latest; a moving tag runs different engines in one release")
 	}
-	weight := func(kind string) int {
+	weight := func(kind, name string) int {
 		t.Helper()
-		m := regexp.MustCompile(`(?s)kind: ` + kind + `\n.*?"helm.sh/hook-weight": "(-?\d+)"`).FindStringSubmatch(out)
+		m := regexp.MustCompile(`(?s)kind: ` + kind + `\nmetadata:\n  name: t-signari` + name +
+			`\n.*?"helm.sh/hook-weight": "(-?\d+)"`).FindStringSubmatch(out)
 		if m == nil {
-			t.Fatalf("the %s is not a hook with a weight", kind)
+			t.Fatalf("the %s t-signari%s is not a hook with a weight", kind, name)
 		}
 		n, _ := strconv.Atoi(m[1])
 		return n
 	}
-	if s, j := weight("Secret"), weight("Job"); s >= j {
-		t.Errorf("the Secret's hook weight %d is not below the migration Job's %d, so the Job may start first", s, j)
+	secret, migrate := weight("Secret", "-secrets"), weight("Job", "-migrate")
+	if secret >= migrate {
+		t.Errorf("the Secret's hook weight %d is not below the migration Job's %d, so the Job may start first",
+			secret, migrate)
+	}
+	// `serve` refuses to start with no instance for its issuer, and an install made
+	// none, so a fresh one migrated and never became ready (found on kind).
+	if instance := weight("Job", "-instance"); instance <= migrate || instance >= 0 {
+		t.Errorf("the instance Job's hook weight %d is not after the migration's %d and before the engine",
+			instance, migrate)
+	}
+	if !strings.Contains(out, `args: ["instance", "create", "-issuer", "https://id.example.test"]`) {
+		t.Error("no hook makes the instance the engine serves")
 	}
 }
 

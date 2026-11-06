@@ -34,6 +34,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/oauth"
 )
 
 // File is a parsed policy document.
@@ -223,6 +224,12 @@ type Decision struct {
 	// Rule names the rule that refused, so an operator can find it in the file.
 	Rule    string
 	Message string
+	// StepUp says the rule that refused asked only for a stronger sign-in:
+	// everything else it requires holds, so signing in again with more factors
+	// would pass it. ACR is the value that asks for that sign-in, "" when the rule
+	// names factors that no one value stands for.
+	StepUp bool
+	ACR    string
 }
 
 // Parse reads a policy file and RUNS ITS TESTS.
@@ -373,7 +380,11 @@ func (f *File) Evaluate(req Request) Decision {
 			return Decision{Allowed: false, Rule: r.Name, Message: message(r)}
 		}
 		if !r.Require.satisfiedBy(req) {
-			return Decision{Allowed: false, Rule: r.Name, Message: message(r)}
+			d := Decision{Allowed: false, Rule: r.Name, Message: message(r)}
+			if r.Require.asksFactors() && r.Require.withoutFactors().satisfiedBy(req) {
+				d.StepUp, d.ACR = true, r.Require.acr()
+			}
+			return d
 		}
 	}
 	if !matched && f.Default == "deny" {
@@ -641,6 +652,34 @@ func hasPhishingResistantFactor(amr []string) bool {
 		}
 	}
 	return false
+}
+
+// asksFactors reports whether the conditions name how the person signed in.
+func (c Conditions) asksFactors() bool {
+	return c.MFA || c.PhishingResistant || len(c.FactorsAnyOf) > 0
+}
+
+// withoutFactors is the conditions with how the person signed in left out: what
+// still has to hold whatever they sign in with.
+func (c Conditions) withoutFactors() Conditions {
+	c.MFA, c.PhishingResistant, c.FactorsAnyOf = false, false, nil
+	return c
+}
+
+// acr is the authentication context that asks for the factors these conditions
+// name: a device-bound key for phishing_resistant, which hasPhishingResistantFactor
+// holds to `hwk`, and two factors for mfa. A list of factors has no one value, as
+// two factors can be met by one the list leaves out.
+func (c Conditions) acr() string {
+	switch {
+	case len(c.FactorsAnyOf) > 0:
+		return ""
+	case c.PhishingResistant:
+		return oauth.ACRPhishingResistantHardware
+	case c.MFA:
+		return oauth.ACRMultiFactor
+	}
+	return ""
 }
 
 // hasAnyFactor reports whether the session used at least one of the named

@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/proxyrules"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -73,6 +75,11 @@ type proxyClaims struct {
 	// Host is the one application it is good for, when it was set on that
 	// application's own address. A cookie for a parent domain says nothing here.
 	Host string `json:"host,omitempty"`
+
+	// viaToken is a program's access token rather than a browser's cookie, which
+	// can be told to come back with a token from a stronger sign-in. Never signed
+	// into a cookie.
+	viaToken bool
 }
 
 // handleProxyVerify is the endpoint the reverse proxy calls per request.
@@ -221,7 +228,7 @@ func (s *Server) proxyClaimsFromToken(r *http.Request, raw string) (proxyClaims,
 	if err != nil || c == nil {
 		return proxyClaims{}, "the client of this access token could not be found"
 	}
-	pc := proxyClaims{Subject: claims.Subject, SID: claims.SessionID, OrgID: c.OrgID}
+	pc := proxyClaims{Subject: claims.Subject, SID: claims.SessionID, OrgID: c.OrgID, viaToken: true}
 	if id, ok := store.CanonicalUUID(claims.Subject); ok {
 		if err := s.db.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`, id).
 			Scan(&pc.Email); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -237,8 +244,25 @@ func (s *Server) answerProxy(w http.ResponseWriter, r *http.Request, pc proxyCla
 	// passed every protected host of every organisation: anybody who could
 	// sign in anywhere in the deployment reached the payroll dashboard of a
 	// tenant they had never heard of.
-	host, reason := s.authorizeProxyHost(r, pc, rule)
+	host, reason, stepUp := s.authorizeProxyHost(r, pc, rule)
 	if host == nil {
+		// A program whose token came from a sign-in too weak for the host's
+		// policy, when a stronger one would pass it, is told so as RFC 9470 §3
+		// has a resource server tell it (specs/rfc9470.txt:286-306), so it can
+		// send the person to sign in again with acr_values. A token naming no
+		// session stands for nobody who could. Otherwise the 401 every refusal
+		// of a token is, Location and all, so a proxy that turns one into a
+		// sign-in goes on doing so.
+		if stepUp != nil && pc.viaToken && pc.SID != "" {
+			challenge := `Bearer error="insufficient_user_authentication", error_description="` +
+				oauth.ErrorText(reason) + `"`
+			if stepUp.ACR != "" {
+				challenge += `, acr_values="` + stepUp.ACR + `"`
+			}
+			w.Header().Set("WWW-Authenticate", challenge)
+			s.denyProxy(w, r, reason)
+			return
+		}
 		s.forbidProxy(w, reason)
 		return
 	}
@@ -337,20 +361,22 @@ func (s *Server) proxyDisclosure(ctx context.Context, host *store.ProxyHost, pc 
 // and let the travel one through as "not checked", and left the device check
 // reading posture headers relayed by the proxy.
 //
-// It answers the host, or nil and why not.
-func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims, rule *proxyrules.Rule) (*store.ProxyHost, string) {
+// It answers the host, or nil and why not, with the policy's decision when a rule
+// that asked only for a stronger sign-in is why.
+func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims, rule *proxyrules.Rule) (*store.ProxyHost,
+	string, *policy.Decision) {
 	ctx := r.Context()
 	host := strings.ToLower(firstHeader(r, "X-Forwarded-Host"))
 	if host == "" {
-		return nil, "the proxy did not say which application it is asking about (X-Forwarded-Host)"
+		return nil, "the proxy did not say which application it is asking about (X-Forwarded-Host)", nil
 	}
 	registered, err := store.ProxyHostFor(ctx, s.db, pc.OrgID, host)
 	if err != nil {
 		s.log.ErrorContext(ctx, "checking a protected host", "err", err)
-		return nil, "the protected host could not be checked"
+		return nil, "the protected host could not be checked", nil
 	}
 	if registered == nil {
-		return nil, "this application is not one of your organisation's protected hosts"
+		return nil, "this application is not one of your organisation's protected hosts", nil
 	}
 
 	// The host's policy, and on top of it the one a named path has of its own.
@@ -366,10 +392,13 @@ func (s *Server) authorizeProxyHost(r *http.Request, pc proxyClaims, rule *proxy
 				CorrelationID: correlationID(ctx),
 				Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "proxy", "host": host},
 			})
-			return nil, pd.Message
+			if pd.StepUp {
+				return nil, pd.Message, pd
+			}
+			return nil, pd.Message, nil
 		}
 	}
-	return registered, ""
+	return registered, "", nil
 }
 
 // forbidProxy answers 403: the person is signed in and may not reach this host.

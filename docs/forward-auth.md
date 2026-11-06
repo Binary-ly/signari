@@ -529,6 +529,37 @@ and only the application could check that, so a proxy would be taking it on trus
 Your proxy has to pass `Authorization` to `/proxy/verify`, which nginx's
 `auth_request` does unless it has been told not to.
 
+### When the sign-in behind a token was not strong enough
+
+A policy rule can ask for factors, such as `mfa: true` or `phishing_resistant: true`.
+When that is all a rule asks for and the token's sign-in did not give it, the
+answer is a 401 with the challenge RFC 9470 defines:
+
+```
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer error="insufficient_user_authentication",
+  error_description="Sign in with a second factor to reach the reports.", acr_values="2"
+```
+
+The program sends the person to sign in again with `acr_values=2`, which asks for
+two factors, and the token from that sign-in passes. `phishing_resistant` asks for
+`4`, a device-bound key. A rule with `factors_any_of` gets the challenge without
+`acr_values`, because no single value means "one of these factors". The session's
+factors are read on every request, so once the person steps up in the same session,
+the token they already hold passes too.
+
+A refusal that no sign-in would change stays a 403. Examples are a group the person
+is not in, a network rule, or a `deny`. A token with no session behind it stands for
+nobody who could sign in, so it also gets a 403. So does a browser, which the proxy
+sends to sign in in its own way.
+
+The 401 carries the same `Location` as any other refusal, so a proxy that turns
+refusals into a sign-in goes on doing so. That also means a program sees the
+challenge only if your proxy hands it the 401. nginx's `auth_request` passes a 401's
+`WWW-Authenticate` on by itself, checked with nginx 1.31.8, so do not add it again
+with `add_header`, which sends it twice. The recipe above, though, sends every 401 to
+sign in with `error_page`. Serve programs from a location without that line.
+
 ## Session lifetime
 
 The proxy cookie lasts 30 minutes and is refreshed by the flow, but **the live

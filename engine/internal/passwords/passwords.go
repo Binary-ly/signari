@@ -29,8 +29,10 @@ import (
 	"fmt"
 	"golang.org/x/text/unicode/norm"
 	"io"
+	"maps"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -740,7 +742,7 @@ func verifyDjangoPBKDF2(stored, password string) error {
 //
 // TestSupportedPrefixesMatchesVerify keeps the two in step.
 func SupportedPrefixes() []string {
-	return []string{
+	prefixes := []string{
 		"$argon2id$",
 		pbkdf2Prefix,           // our own, under FIPS
 		"$2a$", "$2b$", "$2y$", // bcrypt
@@ -752,9 +754,12 @@ func SupportedPrefixes() []string {
 		"$5$", "$6$", // glibc SHA-crypt: /etc/shadow, LDAP directories
 		"$y$",           // yescrypt: /etc/shadow on current distributions
 		"$1$", "$apr1$", // md5-crypt, and Apache's
-		"{SSHA}", "{SHA}", "{SMD5}", "{MD5}", "{SSHA256}", "{SHA256}", "{SSHA512}", "{SHA512}",
 		// and {CRYPT} around any of the crypt(3) ones, which CanVerify unwraps
 	}
+	// The LDAP schemes from the table Verify reads, so the two cannot disagree:
+	// a list kept here by hand lacked {SHA384} once the table had it, and
+	// CanVerify said no to a hash Verify accepted.
+	return append(prefixes, slices.Sorted(maps.Keys(ldapSchemes))...)
 }
 
 // CanVerify reports whether a stored hash is one this engine can check.

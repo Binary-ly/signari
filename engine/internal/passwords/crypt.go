@@ -120,6 +120,10 @@ var ldapSchemes = map[string]ldapScheme{
 	"{MD5}":     {md5.New, md5.Size, false, true},
 	"{SSHA256}": {sha256.New, sha256.Size, true, false},
 	"{SHA256}":  {sha256.New, sha256.Size, false, false},
+	// OpenLDAP's pw-sha2 makes these as well as the other two sizes, so a
+	// directory being left can hold them.
+	"{SSHA384}": {sha512.New384, sha512.Size384, true, false},
+	"{SHA384}":  {sha512.New384, sha512.Size384, false, false},
 	"{SSHA512}": {sha512.New, sha512.Size, true, false},
 	"{SHA512}":  {sha512.New, sha512.Size, false, false},
 }

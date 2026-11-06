@@ -7,8 +7,12 @@ pre-upgrade migration Job (a Helm hook running `migrate all` once, never on engi
 boot, because N replicas migrating on startup race and rollback becomes
 ambiguous), a Service, and optional Ingress, HPA and PodDisruptionBudget. It
 refuses to render without an issuer and a stable root key rather than deploying an
-engine that cannot start or one whose signing keys reset on restart. Validated
-with `helm lint` and `helm template`. See `deploy/helm/signari/README.md`.
+engine that cannot start or one whose signing keys reset on restart. A second hook
+makes the instance the engine serves. Validated with `helm lint` and `helm
+template`, and installed on kind in November 2026. That run found that no pod
+could start, because the image named its user, and that the engine never became
+ready, because nothing made its instance. Both are fixed.
+See `deploy/helm/signari/README.md`.
 
 The chart deploys the engine, not PostgreSQL: a production identity provider's
 database wants backup, HA and tuning that belong to your data platform, not to an
@@ -49,8 +53,11 @@ a migration Job after the engine's, `signari_admin` as its database user, and it
 own pod name, since on the engine's it would sit behind the engine's Service.
 It refuses to render without its URL, its database host, its key and password,
 and an Admin API to write through. Validated with `helm lint` and `helm template`
-(`TestTheHelmChartRendersTheConsole`); not installed on a cluster, there being none
-here.
+(`TestTheHelmChartRendersTheConsole`), and installed on kind in November 2026. The
+pod came up 2/2, with php-fpm as uid 82 and nginx as 101. Its boundary and
+read-model commands passed every check from inside it, and its token read the
+Admin API through the address the chart derives. The chart's README has the rest
+of that run.
 
 ## Kubernetes operator — configuration as a resource
 

@@ -109,9 +109,50 @@ still finishing; the chart refuses those two settings in `extraEnv`, where the
 grace period could not follow them. `helm test` runs `signari verify`. The image is pinned to the chart's
 `appVersion`, not `latest`.
 
-The chart is checked by rendering it (`TestTheHelmChartCanInstall`,
-`TestTheHelmChartRendersItsOptions`); an install on a real cluster has not been
-run here.
+A second hook Job, after the migration, runs `signari instance create -issuer
+<issuer>`. `serve` refuses to start until an instance names the issuer it serves,
+and nothing else in an install makes one. The command is idempotent, so every
+upgrade runs it too.
+
+### Run on a cluster
+
+The chart was installed on kind in November 2026 (Kubernetes from kind's own node
+image, postgres 17 beside it), with the Secret managed by hand as above. That run
+found two faults that rendering could not:
+
+- **No pod started.** The image named its user `nonroot:nonroot`, and
+  `runAsNonRoot` can only check a number, so the migration Job stopped at
+  `CreateContainerConfigError`. The image now runs as `65532:65532`.
+- **The engine never became ready.** With the user fixed, the migration completed
+  and both replicas crash-looped on `no instance with issuer`, which the
+  instance Job above now makes.
+
+After those fixes, the chart behaved as follows:
+
+- A fresh install completed both Jobs and both replicas were ready.
+- `helm test` ran `signari verify` and reported `schema ok`.
+- `helm upgrade` ran both Jobs again and scaled to three ready replicas.
+- Prometheus 3.5.0 scraped the metrics Service, with the target `up` and 20
+  `signari_` metrics.
+- The console's pod came up 2/2. Inside it, `signari:verify-boundary` and
+  `signari:read-model-smoke` passed every check once the organisation had a
+  person, and its token read the Admin API.
+
+Two settings changed because of that run:
+
+- **Liveness probe.** It now waits five seconds a probe and six probes in a row.
+  On the defaults, one second and three, a node short of CPU had every replica
+  restarted at once.
+- **Network policy.** With `networkPolicy.enabled`, an empty `metricsFrom` closed
+  the metrics port to Prometheus and an empty `adminFrom` closed the Admin API to
+  the console. Naming each pod opened its port again. A policy turned on did not
+  cut connections that were already open, so a scraper with a keep-alive
+  connection went on reading until it reconnected.
+
+Not exercised: the `ServiceMonitor`, which needs the Prometheus operator.
+
+The render tests are `TestTheHelmChartCanInstall`, which also checks the instance
+Job's place, and `TestTheHelmChartRendersItsOptions`.
 
 See `docs/configuration.md` for every environment variable; put optional ones
 (SMTP, SMS, GeoIP, audit streaming) under `extraEnv`.

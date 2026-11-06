@@ -3,4 +3,8 @@ signari_dev
 /admin/vendor/
 /admin/node_modules/
 /engine/bin/
+# What scripts/build-release.sh writes when given no output path.
+/engine/signari
+/engine/signari.cdx.json
+/engine/signari.image.cdx.json
 /tools/bench/bench

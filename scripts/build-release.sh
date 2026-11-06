@@ -25,7 +25,10 @@
 # SIGNARI_FINGERPRINT_DSN (an empty database) or docker. govulncheck and gosec
 # must be on PATH: a release is refused on a reachable vulnerability or a
 # finding above engine/gosec-baseline.txt, and is built twice and refused
-# unless the two binaries are byte-identical.
+# unless the two binaries are byte-identical. cyclonedx-gomod must be too: each
+# binary gets a CycloneDX SBOM beside it, <output>.cdx.json, and the image's its
+# own, <output>.image.cdx.json, since the binary in the image is built for another
+# platform.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,14 +83,42 @@ check_fips() {
 # The release gate: a reachable vulnerability, or a static-analysis finding
 # above the reviewed baseline, refuses the release, as CI refuses a push. A
 # release built on a workstation never passed through CI.
-for tool in govulncheck gosec; do
+for tool in govulncheck gosec cyclonedx-gomod jq; do
     if ! command -v "$tool" >/dev/null; then
-        echo "error: $tool is not on PATH; a release is not built unscanned" >&2
-        echo "       (go install golang.org/x/vuln/cmd/govulncheck@v1.7.0 and" >&2
-        echo "        github.com/securego/gosec/v2/cmd/gosec@v2.28.0, as CI does)" >&2
+        echo "error: $tool is not on PATH; a release is not built unscanned or undescribed" >&2
+        echo "       (go install golang.org/x/vuln/cmd/govulncheck@v1.7.0," >&2
+        echo "        github.com/securego/gosec/v2/cmd/gosec@v2.28.0 and" >&2
+        echo "        github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0)" >&2
         exit 1
     fi
 done
+
+# The SBOM of a built binary: CycloneDX, read from the build information the binary
+# carries, so it lists what was linked and not what go.mod would allow, with each
+# module's hash. The standard library is in it, whose advisories are as much the
+# release's as any module's. No serial number or timestamp, so it is as repeatable
+# as the binary. Refused when it does not list every module the binary names, or
+# names another platform: the tool takes GOOS and GOARCH from the environment and
+# not the binary, so the image's linux build was first described as darwin's.
+sbom_of() {
+    local goos goarch want got std
+    goos="$(go version -m "$1" | awk '$1 == "build" && $2 ~ /^GOOS=/ { sub("GOOS=", "", $2); print $2 }')"
+    goarch="$(go version -m "$1" | awk '$1 == "build" && $2 ~ /^GOARCH=/ { sub("GOARCH=", "", $2); print $2 }')"
+    GOOS="$goos" GOARCH="$goarch" cyclonedx-gomod bin -json -std -noserial -notimestamp -version "$release" \
+        -output "$2" "$1" 2>/dev/null
+    want="$(go version -m "$1" | awk '$1 == "dep"' | wc -l | tr -d ' ')"
+    got="$(jq '[.components[] | select(.name != "std")] | length' "$2")"
+    std="$(jq -r '.components[] | select(.name == "std") | .purl' "$2")"
+    if [ "$got" != "$want" ] || [ -z "$std" ]; then
+        echo "error: the SBOM $2 lists $got modules and the binary names $want, or it leaves out the standard library" >&2
+        exit 1
+    fi
+    case "$std" in
+        *"goarch=$goarch"*"goos=$goos"*) ;;
+        *) echo "error: the SBOM $2 describes $std, and the binary is $goos/$goarch" >&2; exit 1 ;;
+    esac
+    echo "SBOM $2: $got modules and the standard library, for $goos/$goarch" >&2
+}
 if ! (cd "$here/engine" && govulncheck ./...) >&2; then
     echo "error: govulncheck reports a reachable vulnerability; not building $release" >&2
     exit 1
@@ -123,6 +154,7 @@ if [ "$got" != "$fp" ]; then
 fi
 echo "built $out, pinned" >&2
 check_fips "$("$out" version | module_of)" "$out"
+sbom_of "$out" "$out.cdx.json"
 
 if [ -n "$image" ]; then
     docker build \
@@ -137,6 +169,14 @@ if [ -n "$image" ]; then
     fi
     echo "built image $image, pinned" >&2
     check_fips "$(docker run --rm "$image" version | module_of)" "image $image"
+    # The image's binary is another platform's build, so it is described from
+    # itself: copied out, never run.
+    inside="$(mktemp -d)"
+    container="$(docker create "$image")"
+    docker cp "$container:/signari" "$inside/signari" >/dev/null
+    docker rm "$container" >/dev/null
+    sbom_of "$inside/signari" "$out.image.cdx.json"
+    rm -rf "$inside"
 fi
 
 if [ -n "$tag" ]; then

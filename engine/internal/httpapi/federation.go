@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
@@ -314,6 +315,16 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 
 	case federation.CreateUser:
 		ext.Email = email
+		// A person made from an upstream is known here by the address it sent, and by
+		// nothing else (store.CreateUserFromExternal). With none, the account could
+		// only fail the database's own rule, which surfaced as "something went wrong".
+		if strings.TrimSpace(email) == "" {
+			_ = tx.Rollback(ctx)
+			s.log.InfoContext(ctx, "an upstream sent no address to make an account with", "slug", provider.Slug,
+				"correlation_id", correlationID(ctx))
+			fail("federr.notenough")
+			return
+		}
 		// The operator's provider, about somebody arriving from an identity provider
 		// who has no account here. Through the transaction this callback holds.
 		if reason, refused := s.userCreateRefused(ctx, tx, provider.OrgID, email, "federation"); refused {

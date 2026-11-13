@@ -543,6 +543,46 @@ func TestAnUpstreamsSOAPLogoutEndsTheSessions(t *testing.T) {
 	}
 }
 
+// An upstream that sends no address for somebody new is told it sent too little, in the
+// reader's language, and nobody is made: an account made here from an upstream is known
+// by the address alone, and without one the database's rule refused it as a fault.
+func TestAnUpstreamThatSendsNoAddressMakesNobody(t *testing.T) {
+	u := newSAMLUpstream(t)
+	if _, err := u.f.pool.Exec(context.Background(), `UPDATE core.identity_providers
+		SET allow_signup = true, require_verified_email = false WHERE id = $1::uuid`, u.providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.f.pool.Exec(context.Background(), `UPDATE core.saml_sources SET allow_unsolicited = true
+		WHERE provider_id = $1::uuid`, u.providerID); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := u.f.pool.QueryRow(context.Background(), `SELECT count(*) FROM core.users WHERE org_id = $1::uuid`, u.f.orgID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := saml.BuildResponse(saml.ResponseInput{Issuer: "https://upstream.test/idp",
+		Destination: u.f.srv.cfg.Issuer + "/saml/source/" + u.slug + "/acs", Audience: u.f.srv.cfg.Issuer,
+		Lifetime: 2 * time.Minute, Now: time.Now(),
+		Subject: saml.Subject{NameID: "pairwise-7f3a", NameIDFormat: saml.NameIDFormatPersistent,
+			SessionIndex: "s-1", AuthnInstant: time.Now()}}, "k1", u.signer, u.certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"SAMLResponse": {base64.StdEncoding.EncodeToString([]byte(doc))}}
+	r := httptest.NewRequest(http.MethodPost, "/saml/source/"+u.slug+"/acs", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Accept-Language", "ar")
+	rec := httptest.NewRecorder()
+	u.f.srv.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "لم يُرجع المزوّد معلومات كافية") {
+		t.Errorf("answered %d: %.400s", rec.Code, rec.Body.String())
+	}
+	var after int
+	if err := u.f.pool.QueryRow(context.Background(), `SELECT count(*) FROM core.users WHERE org_id = $1::uuid`, u.f.orgID).Scan(&after); err != nil || after != before {
+		t.Errorf("%d people before, %d after (%v)", before, after, err)
+	}
+}
+
 // A request heard twice ends nothing the second time, however good its signature.
 func TestAnUpstreamsLogoutIsHeardOnce(t *testing.T) {
 	u := newSAMLUpstream(t)

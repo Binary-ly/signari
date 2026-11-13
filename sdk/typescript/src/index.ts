@@ -3370,6 +3370,7 @@ export interface GetUsersUserIDConsentsResponseConsentsItem {
   display_name: string
   granted_at: string
   offline_until?: string | null
+  persisted_claims_until?: string | null
   scopes: string[]
 }
 

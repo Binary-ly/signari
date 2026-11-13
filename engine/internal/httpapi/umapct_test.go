@@ -90,6 +90,55 @@ func TestAPersonIsRememberedOnlyIfTheySaidSo(t *testing.T) {
 	}
 }
 
+// A person remembered by an application can see it on their connected applications
+// page, with how long it goes on acting for them, and removing it there ends the
+// token: they had no way to before but signing out everywhere (11.12).
+func TestAPersonSeesAndEndsWhatRemembersThem(t *testing.T) {
+	f := newCIBAFixture(t)
+	f.allowUserOn(t, "document", "42", "viewer", f.email)
+	f.registerClaimsRedirect(t, f.clientID, claimsReturn)
+	cookie := f.browserSession(t, f.userID)
+	_, body := f.exchange(t, f.clientID, f.gather(t, cookie, true), nil)
+	pct, _ := body["pct"].(string)
+	if pct == "" {
+		t.Fatalf("no PCT: %v", body)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/account/connected", nil)
+	get.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+	page := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(page, get)
+	html := page.Body.String()
+	if page.Code != http.StatusOK || !strings.Contains(html, `value="`+f.clientID+`"`) ||
+		!strings.Contains(html, "while you are signed out") {
+		t.Fatalf("the page (%d) does not show the application that remembers them:\n%s", page.Code, html)
+	}
+
+	form := url.Values{"client_id": {f.clientID}, csrfFormField: {csrfFrom(t, page)}}
+	post := httptest.NewRequest(http.MethodPost, "/account/connected/revoke", strings.NewReader(form.Encode()))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+	post.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfFrom(t, page)})
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, post)
+	if rec.Code >= 400 {
+		t.Fatalf("removing it answered %d: %s", rec.Code, rec.Body.String())
+	}
+	code, body := f.exchange(t, f.clientID, f.rawTicket(t), url.Values{"pct": {pct}})
+	if code == http.StatusOK || body["error"] != "invalid_grant" {
+		t.Errorf("the PCT of an application they removed still worked: %d %v", code, body)
+	}
+	apps, err := store.ConnectedApps(context.Background(), f.pool, f.userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range apps {
+		if a.ClientID == f.clientID {
+			t.Errorf("it is still listed: %+v", a)
+		}
+	}
+}
+
 // §5.2: "The authorization server MUST maintain the binding between the PCT and the
 // client to which it was issued." And what it stands for is read when it is used,
 // because a token is no reason to take somebody's word about a closed account.

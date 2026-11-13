@@ -430,7 +430,8 @@ var opSchemas = map[string]opSchema{
 		"user_id": uuidStr(),
 		"consents": arrayOf(object([]string{"client_id", "display_name", "scopes", "granted_at", "active_refresh_grants"},
 			map[string]jsonSchema{"client_id": str(), "display_name": str(), "scopes": arrayOf(str()),
-				"granted_at": dateTime(), "active_refresh_grants": integer(), "offline_until": nullable(dateTime())}))})},
+				"granted_at": dateTime(), "active_refresh_grants": integer(), "offline_until": nullable(dateTime()),
+				"persisted_claims_until": nullable(dateTime())}))})},
 	"DELETE /admin/users/{userID}/consents/{clientID}": {http.StatusOK, nil, object([]string{"user_id", "client_id", "refresh_grants_revoked", "config_version"},
 		withVersion(map[string]jsonSchema{"user_id": uuidStr(), "client_id": str(), "refresh_grants_revoked": integer()}))},
 

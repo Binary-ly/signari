@@ -27,6 +27,9 @@ type consentView struct {
 	GrantedAt    time.Time  `json:"granted_at"`
 	ActiveTokens int        `json:"active_refresh_grants"`
 	OfflineUntil *time.Time `json:"offline_until"`
+	// PersistedClaimsUntil is when its last UMA persisted claims token about
+	// the person ends, null for none.
+	PersistedClaimsUntil *time.Time `json:"persisted_claims_until"`
 }
 
 // consentUser reads a person's organisation and holds the caller to it.
@@ -71,7 +74,8 @@ func (s *Server) listUserConsents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, consentView{ClientID: a.ClientID, DisplayName: a.DisplayName, Scopes: a.Scopes,
-			GrantedAt: a.GrantedAt.UTC(), ActiveTokens: a.ActiveTokens, OfflineUntil: utcOrNil(a.OfflineUntil)})
+			GrantedAt: a.GrantedAt.UTC(), ActiveTokens: a.ActiveTokens, OfflineUntil: utcOrNil(a.OfflineUntil),
+			PersistedClaimsUntil: utcOrNil(a.PersistedClaimsUntil)})
 	}
 	s.writeList(w, r, map[string]any{"user_id": userID, "consents": out})
 }

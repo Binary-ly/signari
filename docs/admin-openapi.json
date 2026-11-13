@@ -30675,6 +30675,13 @@
                               "null"
                             ]
                           },
+                          "persisted_claims_until": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "scopes": {
                             "items": {
                               "type": "string"

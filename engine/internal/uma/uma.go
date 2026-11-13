@@ -32,11 +32,12 @@
 // and §3.3.3), and all four of §3.3.6's errors -- `need_info`, `request_denied`,
 // `request_submitted` and `invalid_grant`. See claims.go.
 //
-// NOT implemented, and therefore not advertised: persisted claims tokens (`pct`,
-// §3.3.5) and RPT upgrade (`rpt`, §3.3.5.1). Both are optimisations -- a PCT
-// saves gathering the same claims twice, an upgrade saves minting a second token
-// -- and both are refused rather than ignored, because a client that sends one
-// and receives a token reasonably concludes it was honoured.
+// Since November 2026 also persisted claims tokens (`pct`, §3.3.5), issued only to
+// somebody who asked to be remembered and listed on their connected applications
+// page, where removing the application ends them, and RPT upgrade (`rpt`,
+// §3.3.5.1), each permission decided again. Until then both were refused rather
+// than ignored, because a client that sends one and receives a token reasonably
+// concludes it was honoured.
 //
 // # What changed about the requesting party
 //

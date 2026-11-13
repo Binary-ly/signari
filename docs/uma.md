@@ -379,7 +379,10 @@ because those are this server's own records and are read when it is used. It is 
 the client it was issued to and no other, as §5.2 requires. It stops at its month, when
 the client revokes it (`token_type_hint=pct`, §3.7), when the person is deactivated, and
 when they are signed out everywhere, which is a thing they are told happened and would not
-be true with one of these left over.
+be true with one of these left over. The person sees the application on their connected
+applications page (`/account/connected`), with the day it stops acting for them, and
+removing it there ends its PCTs with its other grants; an administrator sees the same as
+`persisted_claims_until` from the Admin API, and can remove it the same way.
 
 It says who is asking and nothing else: every permission is still decided, and the
 resource owner's policy applies to a remembered person as to anybody. A request that
@@ -391,6 +394,4 @@ person using it now is the person the token was issued for, which only the clien
 
 - **Resource registration** (Federated Authorization §2), which is why a
   permission carries `resource_type` — see above.
-- **A screen for a person** to see the tokens remembering them and end one, short of
-  signing out everywhere.
 - **`claim_token` formats** beyond an ID token this server issued.

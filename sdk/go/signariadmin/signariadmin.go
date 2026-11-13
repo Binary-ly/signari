@@ -1928,12 +1928,13 @@ type GetUsersUserIDConsentsResponse struct {
 
 // GetUsersUserIDConsentsResponseConsentsItem is a JSON object of the Admin API.
 type GetUsersUserIDConsentsResponseConsentsItem struct {
-	ActiveRefreshGrants int64    `json:"active_refresh_grants"`
-	ClientID            string   `json:"client_id"`
-	DisplayName         string   `json:"display_name"`
-	GrantedAt           string   `json:"granted_at"`
-	OfflineUntil        *string  `json:"offline_until,omitempty"`
-	Scopes              []string `json:"scopes"`
+	ActiveRefreshGrants  int64    `json:"active_refresh_grants"`
+	ClientID             string   `json:"client_id"`
+	DisplayName          string   `json:"display_name"`
+	GrantedAt            string   `json:"granted_at"`
+	OfflineUntil         *string  `json:"offline_until,omitempty"`
+	PersistedClaimsUntil *string  `json:"persisted_claims_until,omitempty"`
+	Scopes               []string `json:"scopes"`
 }
 
 // GetUsersUserIDFactorsResponse is a JSON object of the Admin API.

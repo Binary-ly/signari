@@ -53,8 +53,14 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 			ClientID: a.ClientID, Name: a.DisplayName, Scopes: a.Scopes,
 			Granted: a.GrantedAt.Format("2 January 2006"), ActiveTokens: a.ActiveTokens,
 		}
-		if a.OfflineUntil != nil {
-			app.OfflineUntil = a.OfflineUntil.Format("2 January 2006")
+		// A persisted claims token is acting for them while they are away as
+		// much as an offline grant is, so the page says the later of the two.
+		until := a.OfflineUntil
+		if p := a.PersistedClaimsUntil; p != nil && (until == nil || p.After(*until)) {
+			until = p
+		}
+		if until != nil {
+			app.OfflineUntil = until.Format("2 January 2006")
 		}
 		view = append(view, app)
 	}

@@ -157,6 +157,10 @@ type ConnectedApp struct {
 	// when it has none: until then it can act for the person while they are
 	// signed out (5.10), and they should be able to see that it can.
 	OfflineUntil *time.Time
+	// PersistedClaimsUntil is when the last UMA persisted claims token the
+	// application holds about the person ends, nil when it holds none (11.12):
+	// until then it is given tokens on their claims without asking them again.
+	PersistedClaimsUntil *time.Time
 }
 
 // ConnectedApps lists what a user has granted, with the client's real name.
@@ -170,6 +174,11 @@ type ConnectedApp struct {
 // offline grant to it can act for the person while they are signed out
 // (5.10). Unlisted, they could neither see that nor remove it. Its scopes are
 // those of its newest refresh token.
+//
+// So is one holding a persisted claims token about them (11.12), which is
+// given tokens on their claims without asking them again for a month: a grant
+// in all but name, and one they had no way to see or end but signing out
+// everywhere. It has no scopes of its own.
 func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]ConnectedApp, error) {
 	rows, err := db.Query(ctx, `
 		WITH apps AS (
@@ -184,14 +193,25 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 			  WHERE f.user_id = $1::uuid AND f.revoked_at IS NULL
 			    AND NOT EXISTS (SELECT 1 FROM core.consents c WHERE c.user_id = f.user_id
 			                      AND c.client_id = f.client_id AND c.withdrawn_at IS NULL)
-			  ORDER BY f.client_id, f.created_at DESC))
+			  ORDER BY f.client_id, f.created_at DESC)
+			UNION ALL
+			SELECT p.client_id, '{}'::text[], min(p.created_at)
+			  FROM core.uma_persisted_claims p
+			 WHERE p.user_id = $1::uuid AND p.expires_at > now()
+			   AND NOT EXISTS (SELECT 1 FROM core.consents c WHERE c.user_id = p.user_id
+			                     AND c.client_id = p.client_id AND c.withdrawn_at IS NULL)
+			   AND NOT EXISTS (SELECT 1 FROM core.refresh_token_families f WHERE f.user_id = p.user_id
+			                     AND f.client_id = p.client_id AND f.revoked_at IS NULL)
+			 GROUP BY p.client_id)
 		SELECT a.client_id, COALESCE(cl.display_name, a.client_id), a.scopes, a.granted_at,
 		       (SELECT count(*) FROM core.refresh_token_families f
 		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
 		           AND f.revoked_at IS NULL),
 		       (SELECT max(f.offline_not_after) FROM core.refresh_token_families f
 		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
-		           AND f.revoked_at IS NULL AND f.offline_not_after > now())
+		           AND f.revoked_at IS NULL AND f.offline_not_after > now()),
+		       (SELECT max(p.expires_at) FROM core.uma_persisted_claims p
+		         WHERE p.user_id = $1::uuid AND p.client_id = a.client_id AND p.expires_at > now())
 		FROM apps a
 		LEFT JOIN core.clients cl ON cl.client_id = a.client_id
 		ORDER BY a.granted_at DESC`, userID)
@@ -204,7 +224,7 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 	for rows.Next() {
 		var a ConnectedApp
 		if err := rows.Scan(&a.ClientID, &a.DisplayName, &a.Scopes, &a.GrantedAt,
-			&a.ActiveTokens, &a.OfflineUntil); err != nil {
+			&a.ActiveTokens, &a.OfflineUntil, &a.PersistedClaimsUntil); err != nil {
 			return nil, err
 		}
 		sort.Strings(a.Scopes)
@@ -230,9 +250,17 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 //
 // reason is recorded on each grant it revokes: the person, from their account
 // page, or an administrator, from the Admin API (6.08).
+//
+// The application's persisted claims tokens about the person go too (11.12):
+// left, it would go on being given tokens on their claims after they took its
+// access away.
 func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID, reason string) (int64, error) {
 	if err := WithdrawConsent(ctx, tx, userID, clientID); err != nil {
 		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.uma_persisted_claims WHERE user_id = $1::uuid AND client_id = $2`,
+		userID, clientID); err != nil {
+		return 0, fmt.Errorf("ending persisted claims tokens for %q: %w", clientID, err)
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE core.refresh_token_families

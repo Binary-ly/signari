@@ -1,0 +1,9 @@
+# The demo application's client (6.21), applied by docker-compose.yml's `demo-client`
+# to the organisation bootstrap made: the only one there is, so the file names none.
+# Applied again, it plans nothing.
+version: 1
+clients:
+  - client_id: demo
+    name: Demo application
+    public: true
+    redirect_uris: [http://localhost:8097/callback]

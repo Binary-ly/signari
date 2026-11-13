@@ -332,6 +332,24 @@ identity_providers:
 	if err := run([]string{"instance", "create", "-dsn", scratch, "-issuer", "https://fresh.example.test"}); err != nil {
 		t.Fatalf("instance create: %v", err)
 	}
+	// A file naming no organisation, as deploy/demo/client.yaml names none (6.21): with
+	// none here, a plan is refused and makes none, as `user create` would.
+	demoClient := filepath.Join(dir, "demo-client.yaml")
+	if err := os.WriteFile(demoClient, []byte("version: 1\nclients:\n  - client_id: demo\n    public: true\n"+
+		"    redirect_uris: [http://localhost:8097/callback]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	organisations := func() (n int) {
+		t.Helper()
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM core.organizations`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := run([]string{"plan", "-dsn", scratch, "-f", demoClient}); err == nil ||
+		!strings.Contains(err.Error(), "holds 0 organisations") || organisations() != 0 {
+		t.Fatalf("a plan with no organisation answered %v and left %d", err, organisations())
+	}
 	var fresh string
 	if err := conn.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
 		SELECT id, 'fresh', 'Fresh' FROM core.instances RETURNING id::text`).Scan(&fresh); err != nil {
@@ -377,6 +395,28 @@ identity_providers:
 	}
 	if p := planWith(conn, fresh, seedFile); !p.Empty() {
 		t.Errorf("the deployment the export was applied to lacks what the organisation was made from:\n%s", p)
+	}
+
+	// With one organisation, the file is applied to it, and applied again plans nothing.
+	if err := run([]string{"apply", "-dsn", scratch, "-f", demoClient}); err != nil {
+		t.Fatalf("applying a file that names no organisation, with one here: %v", err)
+	}
+	if err := run([]string{"plan", "-dsn", scratch, "-f", demoClient}); err != nil {
+		t.Errorf("planning it again: %v", err)
+	}
+	var owner string
+	if err := conn.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = 'demo'`).Scan(&owner); err != nil ||
+		owner != fresh {
+		t.Errorf("the client is in %q (%v), not the only organisation", owner, err)
+	}
+	// With two, which is meant is not this command's to guess.
+	if _, err := conn.Exec(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
+		SELECT id, 'second', 'Second' FROM core.instances`); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"apply", "-dsn", scratch, "-f", demoClient}); err == nil ||
+		!strings.Contains(err.Error(), "holds 2 organisations") {
+		t.Errorf("a file naming no organisation, with two here, answered %v", err)
 	}
 }
 

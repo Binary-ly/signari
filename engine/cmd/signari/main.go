@@ -8484,7 +8484,18 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		orgID = f.Org
 	}
 	if orgID == "" {
-		return fmt.Errorf("give -org, or set `org:` in the file")
+		// The only organisation there is, as `user create` and `client create` take
+		// it: a first run's file, applied before anybody knows the id bootstrap gave
+		// it. Unlike them, none is made when there is none, since a plan writes
+		// nothing.
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*), COALESCE(min(id::text), '') FROM core.organizations`).
+			Scan(&n, &orgID); err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("give -org, or set `org:` in the file: this database holds %d organisations", n)
+		}
 	}
 	// Secrets the file names by reference are read here, where it is applied
 	// from; the plan compares each with the one held.

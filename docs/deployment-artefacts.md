@@ -94,6 +94,24 @@ thing to build first if an SDK is wanted. Recorded rather than stubbed, for the
 same reason as the operator: three half-SDKs are worse than the standard
 libraries that already work.
 
+## A first run with something to sign in to
+
+The `first-run` profile runs `bootstrap` once the schema is in; the `demo` profile adds
+`examples/go-quickstart` as an application at `http://localhost:8097/login`, and the
+`demo-client` service applies its public client, `demo`, from `deploy/demo/client.yaml` to
+the organisation bootstrap made. `apply` takes the only organisation there is when neither `-org` nor the
+file names one, so the file names none, and applied again it plans nothing. Together,
+from an empty volume to a signed-in person takes no SQL; the commands are in the
+[README](../README.md#quick-start). The demo runs on the host's network so that it reaches
+the engine at the issuer's own address, the one the browser uses, and trusts the
+development CA under `deploy/tls`, which signs the engine's certificate for `localhost`.
+
+With `first-run` on, the engine starts after `bootstrap` has finished. The first
+measured run started them side by side, and the engine found no signing keys yet and
+exited for good. Without the profile, the engine does not wait for it. Measured from an
+empty volume in November 2026: one `up`, the link, a password, and the demo answered
+"Signed in as" the first person, with nothing typed into a database.
+
 ## Also present
 
 `deploy/docker-compose.yml` (the development stack and the conformance-suite
@@ -102,8 +120,8 @@ FIPS-validated) predate this and remain the basis the chart builds on.
 
 ## Base images are pinned by digest
 
-Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile` and `admin/Dockerfile`
-names its base by tag and digest, for example
+Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile`, `admin/Dockerfile` and
+`examples/go-quickstart/Dockerfile` names its base by tag and digest, for example
 `golang:1.26.10@sha256:cfa2…`. The digest is what gets pulled, and the tag says what
 it is. A tag is whatever its registry says today, so a build from a bare tag can
 differ from the build that was checked, without anyone changing a line here.

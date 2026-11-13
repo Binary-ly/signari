@@ -80,6 +80,11 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      # With the first run asked for, after it: started beside it, the engine finds no
+      # signing keys yet and exits. Without it, not waited for, since it is not there.
+      bootstrap:
+        condition: service_completed_successfully
+        required: false
     environment:
       SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
       # 32 random bytes, base64. Deliberately has no default: a generated-on-boot
@@ -175,6 +180,53 @@ services:
       - console
     ports:
       - "8098:8080"
+
+  # An application to sign in to, on request, at http://localhost:8097/login (6.21): the Go
+  # quickstart, registered as a public client by applying demo/client.yaml. With the first
+  # run, a database to a signed-in person takes no SQL:
+  #
+  #   export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
+  #     SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
+  #   docker compose --profile first-run --profile demo up -d
+  #   docker compose logs bootstrap        # the one-time link for the first person
+  #
+  # then open the link, choose a password, and sign in at http://localhost:8097/login. The
+  # engine serves TLS under tls/, whose CA the demo trusts. The demo is on the host's
+  # network so that it reaches the engine at the issuer's own address, the one the browser
+  # uses: localhost inside a container would be the container.
+  demo-client:
+    profiles: ["demo"]
+    build:
+      context: ../engine
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
+    volumes:
+      - ./demo:/demo:ro
+    command: ["apply", "-f", "/demo/client.yaml"]
+    restart: "no"
+
+  demo:
+    profiles: ["demo"]
+    build:
+      context: ../examples/go-quickstart
+    depends_on:
+      demo-client:
+        condition: service_completed_successfully
+      engine:
+        condition: service_started
+    network_mode: host
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      CLIENT_ID: demo
+      REDIRECT_URI: http://localhost:8097/callback
+      SSL_CERT_FILE: /tls/ca.crt
+    volumes:
+      - ./tls:/tls:ro
+    # The engine may not be answering yet when this starts, and discovery is the first thing it does.
+    restart: on-failure
 
 volumes:
   pgdata:

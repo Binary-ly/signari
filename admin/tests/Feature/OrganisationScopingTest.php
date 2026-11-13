@@ -73,7 +73,7 @@ class OrganisationScopingTest extends TestCase
 
     private function operatorFor(?string $orgId): User
     {
-        $user = new User();
+        $user = new User;
         $user->name = 'Operator';
         $user->email = 'op-'.Str::random(10).'@example.test';
         $user->password = bcrypt('irrelevant');
@@ -112,6 +112,50 @@ class OrganisationScopingTest extends TestCase
         foreach (['/admin/engine-clients', '/admin/engine-users'] as $screen) {
             $this->actingAs($operator)->get($screen)->assertOk();
         }
+    }
+
+    /**
+     * Every click on a screen after the first load -- a row action, a search, a
+     * sort, the next page -- is a POST to /livewire/update, and Filament runs
+     * authMiddleware there only when it is registered as persistent. It was not:
+     * the page loaded with its rows, the first round-trip rendered the table with
+     * no organisation and so with none, and a row action opened no form, since
+     * its record was no longer in the table. Found in Chrome, removing a sign-in
+     * method; the feature tests set app.org_id themselves and Livewire::test makes
+     * no HTTP request, so every one of them passed.
+     */
+    public function test_a_round_trip_after_the_page_keeps_the_organisation(): void
+    {
+        $org = $this->seededOrg();
+        $operator = $this->operatorFor($org['id']);
+
+        $page = $this->actingAs($operator)->get('/admin/engine-clients')->assertOk()->getContent();
+        $snapshot = null;
+        $token = null;
+        preg_match('/<meta name="csrf-token" content="([^"]+)"/', $page, $m) && $token = $m[1];
+        preg_match_all('/wire:snapshot="([^"]*)"/', $page, $all);
+        foreach ($all[1] as $raw) {
+            $json = html_entity_decode($raw, ENT_QUOTES | ENT_HTML5);
+            if (str_contains((string) (json_decode($json, true)['memo']['name'] ?? ''), 'list-engine-clients')) {
+                $snapshot = $json;
+            }
+        }
+        $this->assertNotNull($snapshot, 'the clients screen carries no snapshot of its list');
+
+        // What the browser sends when a component asks the server to render it again
+        // ($refresh, which is client-side: a commit with no updates and no calls).
+        $html = $this->actingAs($operator)
+            ->withHeaders(['X-Livewire' => '1'])
+            ->postJson('/livewire/update', [
+                '_token' => $token,
+                'components' => [['snapshot' => $snapshot, 'updates' => new \stdClass, 'calls' => []]],
+            ])
+            ->assertOk()
+            ->json('components.0.effects.html');
+
+        $this->assertIsString($html, 'the round-trip rendered nothing');
+        $this->assertStringContainsString($org['client_id'], $html,
+            'after a round-trip the list rendered without its organisation, so with no rows');
     }
 
     public function test_operator_in_another_organisation_sees_nothing(): void

@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Http\Middleware\EnsureSecondFactor;
 use App\Http\Middleware\EnsureSignariSession;
+use App\Http\Middleware\ScopeToOrganisation;
 use App\Services\SignariSignIn;
 use Filament\Panel;
 use Filament\Support\Assets\Css;
@@ -13,7 +14,9 @@ use Filament\View\PanelsRenderHook;
 use Illuminate\Auth\Events\Logout;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -52,6 +55,22 @@ class AppServiceProvider extends ServiceProvider
         FilamentAsset::register([
             Css::make('signari-console', __DIR__.'/../../resources/css/console.css'),
         ]);
+
+        /*
+         * Every round-trip after a page loads -- a row action, a search, a sort,
+         * the next page -- is a POST to /livewire/update that reads core_v1 as the
+         * page did, so it needs the organisation as the page did. Registering
+         * ScopeToOrganisation as persistent middleware does not give it: Livewire
+         * runs those to completion, against an empty response, before it touches
+         * the component (Livewire\Drawer\Utils::applyMiddleware), so the
+         * transaction commits and the setting reverts before a row is read. Until
+         * this, each round-trip rendered an empty table and no row action could
+         * open its form (OrganisationScopingTest). So the route itself goes
+         * through it, wrapping the whole update as a page's route does; Filament's
+         * Authenticate and EnsureSignariSession still run inside, as persistent.
+         */
+        Livewire::setUpdateRoute(fn ($handle) => Route::post('/livewire/update', $handle)
+            ->middleware(['web', ScopeToOrganisation::class]));
 
         /*
          * The proxies config('app.trusted_proxies') names, and only those: their

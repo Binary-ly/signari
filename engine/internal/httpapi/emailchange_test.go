@@ -106,8 +106,9 @@ func TestAChangeOfAddressRefusesWhatCannotBeAndCanBeAbandoned(t *testing.T) {
 		return f.formPost(t, cookie, "/account/email", "/account/email", form).Body.String()
 	}
 	for addr, want := range map[string]string{
-		strings.ToUpper(other):   "another account already uses that address",
-		strings.ToUpper(f.email): "that is already the address on your account",
+		// Said through the catalogue since November 2026, no longer the store's text.
+		strings.ToUpper(other):   "Another account already uses that address.",
+		strings.ToUpper(f.email): "That is already the address on your account.",
 		"not-an-address":         "Enter the full address",
 	} {
 		if body := post(url.Values{"step": {"start"}, "address": {addr}}); !strings.Contains(body, want) {

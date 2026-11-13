@@ -73,6 +73,8 @@ type respOpts struct {
 	email          string
 	// sealNameID stands something else in for the NameID, before anything is signed.
 	sealNameID func(*etree.Element) *etree.Element
+	// sealAttribute does the same for the email attribute.
+	sealAttribute func(*etree.Element) *etree.Element
 }
 
 func (u *upstream) response(t *testing.T, o respOpts) []byte {
@@ -176,6 +178,11 @@ func (u *upstream) response(t *testing.T, o respOpts) []byte {
 		at := stmt.CreateElement("saml:Attribute")
 		at.CreateAttr("Name", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress")
 		at.CreateElement("saml:AttributeValue").SetText(o.email)
+		if o.sealAttribute != nil {
+			sealed := o.sealAttribute(at)
+			stmt.RemoveChild(at)
+			stmt.AddChild(sealed)
+		}
 	}
 
 	// Sign whichever element the case calls for, using the same signer the

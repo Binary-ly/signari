@@ -171,7 +171,10 @@ The certificate is in the metadata with `use="encryption"` and the algorithms ta
 here. Any live key opens an assertion, so an upstream can move to a new certificate
 in its own time, and until `-require-encryption` is on a plain assertion is still
 taken, which is how a change of this kind is rolled out without an outage.
-`EncryptedAssertion` and `EncryptedID` are both read.
+`EncryptedAssertion`, `EncryptedID` and `EncryptedAttribute` are all read, the last as
+the attribute it holds. An assertion carrying an encrypted attribute or NameID is
+refused, not read without it, when no key is configured: an address dropped quietly
+would match the person on less than the upstream sent.
 
 | | |
 |---|---|
@@ -217,8 +220,7 @@ redirect.
 ## What is not done
 
 No `SOAP` binding for logout, and a logout address that takes only HTTP-POST is left
-out, with a note: a sign-out reaches an upstream as a redirect. `EncryptedAttribute` is
-not read, so an attribute an upstream encrypts on its own is not seen.
+out, with a note: a sign-out reaches an upstream as a redirect.
 
-Each is absent from the metadata document as well as from the code — a
+It is absent from the metadata document as well as from the code — a
 capability advertised and not implemented is the failure this project sweeps for.

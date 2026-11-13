@@ -254,6 +254,42 @@ func TestAnEncryptedNameIDIsRead(t *testing.T) {
 	}
 }
 
+// An attribute sent encrypted is read like one sent plain, with GCM and with CBC under
+// the assertion's signature, and an assertion carrying one is refused by a provider
+// with no key rather than read without it.
+func TestAnEncryptedAttributeIsRead(t *testing.T) {
+	u := newUpstream(t)
+	key, certPEM := spKeyFor(t, SPKeyEncryption)
+	sealAs := func(seal sealer) func(*etree.Element) *etree.Element {
+		return func(at *etree.Element) *etree.Element {
+			sealed := seal(t, at)
+			sealed.Tag = "EncryptedAttribute"
+			return sealed
+		}
+	}
+	p := decrypting(u, key)
+	p.AllowUnsolicited = true
+	for name, seal := range map[string]sealer{"GCM": toCert(certPEM, ""), "CBC, inside a signature": sealCBC(certPEM, algAES256CBC, 32)} {
+		raw := u.response(t, respOpts{signAssertion: true, audience: p.SPEntityID, destination: sealedACS,
+			nameID: "staff-7", email: "ada@corp.test", sealAttribute: sealAs(seal)})
+		got, err := consumeSealed(raw, p)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Email != "ada@corp.test" ||
+			got.Attributes["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"][0] != "ada@corp.test" {
+			t.Errorf("%s: read email %q, attributes %v", name, got.Email, got.Attributes)
+		}
+	}
+
+	p.Decrypters = nil
+	raw := u.response(t, respOpts{signAssertion: true, audience: p.SPEntityID, destination: sealedACS,
+		nameID: "staff-7", email: "ada@corp.test", sealAttribute: sealAs(toCert(certPEM, ""))})
+	if _, err := consumeSealed(raw, p); err == nil || !strings.Contains(err.Error(), "attribute is encrypted") {
+		t.Errorf("with no key: %v", err)
+	}
+}
+
 func TestAnEncryptedAssertionIsRefused(t *testing.T) {
 	u := newUpstream(t)
 	key, certPEM := spKeyFor(t, SPKeyEncryption)
@@ -417,6 +453,67 @@ func TestAnUpstreamHeldToEncryptionCannotSendAPlainAssertion(t *testing.T) {
 	}
 	if _, err := consumeSealed(u.sealedResponse(t, o, false, toCert(certPEM, "")), p); err != nil {
 		t.Errorf("an encrypted one: %v", err)
+	}
+}
+
+// An attribute xmlsec1 encrypted, so the attribute path is not this package agreeing
+// with itself either.
+func TestAnAttributeXmlsec1EncryptedIsRead(t *testing.T) {
+	bin, err := exec.LookPath("xmlsec1")
+	if err != nil {
+		t.Skip("xmlsec1 not installed; it is the independent check")
+	}
+	u := newUpstream(t)
+	key, certPEM := spKeyFor(t, SPKeyEncryption)
+	p := decrypting(u, key)
+	p.AllowUnsolicited = true
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "enc.pem")
+	if err := os.WriteFile(certPath, []byte(certPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seal := func(at *etree.Element) *etree.Element {
+		doc := etree.NewDocument()
+		doc.SetRoot(at.Copy())
+		plain, err := doc.WriteToBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := filepath.Join(dir, "plain.xml")
+		if err := os.WriteFile(data, plain, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		template := filepath.Join(dir, "template.xml")
+		if err := os.WriteFile(template, []byte(`<saml:EncryptedAttribute xmlns:saml="`+nsAssertion+`">
+<xenc:EncryptedData xmlns:xenc="`+nsXMLEnc+`" Type="`+nsXMLEnc+`Element">
+<xenc:EncryptionMethod Algorithm="`+algAES256GCM+`"/>
+<ds:KeyInfo xmlns:ds="`+nsDS+`"><xenc:EncryptedKey>
+<xenc:EncryptionMethod Algorithm="`+algRSAOAEPMGF1P+`"/>
+<xenc:CipherData><xenc:CipherValue/></xenc:CipherData>
+</xenc:EncryptedKey></ds:KeyInfo>
+<xenc:CipherData><xenc:CipherValue/></xenc:CipherData>
+</xenc:EncryptedData></saml:EncryptedAttribute>`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command(bin, "encrypt", "--lax-key-search", "--pubkey-cert-pem", certPath,
+			"--session-key", "aes-256", "--binary-data", data, template).CombinedOutput()
+		if err != nil {
+			t.Fatalf("xmlsec1: %v\n%s", err, out)
+		}
+		sealed := etree.NewDocument()
+		if err := sealed.ReadFromBytes(out); err != nil {
+			t.Fatal(err)
+		}
+		return sealed.Root()
+	}
+	raw := u.response(t, respOpts{signAssertion: true, audience: p.SPEntityID, destination: sealedACS,
+		nameID: "staff-7", email: "ada@corp.test", sealAttribute: seal})
+	got, err := consumeSealed(raw, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "ada@corp.test" {
+		t.Errorf("read email %q from what xmlsec1 encrypted", got.Email)
 	}
 }
 

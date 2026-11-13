@@ -307,7 +307,27 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 		out.SessionIndex = sc.SelectAttrValue("SessionIndex", "")
 	}
 
-	for _, attr := range assertion.FindElements("./AttributeStatement/Attribute") {
+	attributes := assertion.FindElements("./AttributeStatement/Attribute")
+	// An EncryptedAttribute is read as the attribute it holds, an element "of or derived
+	// from AttributeType" (specs/saml-core-2.0-os.txt:1559-1571).
+	// Inside the assertion that was verified, so the signature covers its
+	// ciphertext as it covers an EncryptedID's. Refused rather than skipped without a
+	// key: an address dropped quietly would match the person on less than was sent.
+	for _, encrypted := range assertion.FindElements("./AttributeStatement/EncryptedAttribute") {
+		if len(p.Decrypters) == 0 {
+			return nil, fmt.Errorf("an attribute is encrypted, which this provider is not configured to decrypt")
+		}
+		plain, err := open(encrypted, p.Decrypters, true)
+		if err != nil {
+			return nil, err
+		}
+		_, attr, err := decrypted(plain, "Attribute", encrypted)
+		if err != nil {
+			return nil, err
+		}
+		attributes = append(attributes, attr)
+	}
+	for _, attr := range attributes {
 		name := attr.SelectAttrValue("Name", "")
 		if name == "" {
 			continue

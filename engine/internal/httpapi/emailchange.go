@@ -100,7 +100,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, store.ErrAddressInUse):
 			_ = tx.Rollback(ctx)
-			s.renderEmailChange(w, r, userID, "", err.Error())
+			s.renderEmailChange(w, r, userID, "", tr.Text(emailChangeRefusal(err)))
 			return
 		case errors.Is(err, store.ErrNoEmailChange):
 			_ = tx.Rollback(ctx)
@@ -162,7 +162,7 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 			return
 		case errors.Is(err, store.ErrSameAddress), errors.Is(err, store.ErrAddressInUse):
 			_ = tx.Rollback(ctx)
-			s.renderEmailChange(w, r, userID, "", err.Error())
+			s.renderEmailChange(w, r, userID, "", tr.Text(emailChangeRefusal(err)))
 			return
 		case err != nil:
 			s.log.ErrorContext(ctx, "starting a change of address", "err", err)
@@ -183,4 +183,12 @@ func (s *Server) handleEmailChangePost(w http.ResponseWriter, r *http.Request) {
 		}
 		s.renderEmailChange(w, r, userID, "", "")
 	}
+}
+
+// emailChangeRefusal is the message for an address change the store refused.
+func emailChangeRefusal(err error) string {
+	if errors.Is(err, store.ErrSameAddress) {
+		return "emailchange.same"
+	}
+	return "emailchange.inuse"
 }

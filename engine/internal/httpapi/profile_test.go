@@ -68,10 +68,16 @@ func heldAttributes(t *testing.T, pool *pgxpool.Pool, userID, orgID string, root
 // postIn is the profile form posted by a browser that asks for lang.
 func postIn(t *testing.T, f *signInFixture, cookie, lang string, form url.Values) string {
 	t.Helper()
-	rec := accountGET(f, cookie, "/account/profile")
+	return formPostIn(t, f, cookie, "/account/profile", "/account/profile", lang, form)
+}
+
+// formPostIn is the form on page posted to path by a browser that asks for lang.
+func formPostIn(t *testing.T, f *signInFixture, cookie, page, path, lang string, form url.Values) string {
+	t.Helper()
+	rec := accountGET(f, cookie, page)
 	m := csrfValue.FindStringSubmatch(rec.Body.String())
 	if m == nil {
-		t.Fatal("the profile carries no CSRF field")
+		t.Fatalf("%s carries no CSRF field", page)
 	}
 	var csrfCookie string
 	for _, c := range rec.Result().Cookies() {
@@ -80,7 +86,7 @@ func postIn(t *testing.T, f *signInFixture, cookie, lang string, form url.Values
 		}
 	}
 	form.Set(csrfFormField, m[1])
-	r := httptest.NewRequest(http.MethodPost, "/account/profile", strings.NewReader(form.Encode()))
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Accept-Language", lang)
 	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})

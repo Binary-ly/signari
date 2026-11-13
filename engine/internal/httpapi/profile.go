@@ -159,6 +159,14 @@ func (s *Server) passwordRefusalText(r *http.Request, err error) string {
 	return tr.Text(refused.Key, data)
 }
 
+// pageMessage is the message key says in the reader's language, and nothing for "".
+func (s *Server) pageMessage(r *http.Request, key string) string {
+	if key == "" {
+		return ""
+	}
+	return s.tr(r).Text(key)
+}
+
 // handleProfilePost saves what the person may set.
 func (s *Server) handleProfilePost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

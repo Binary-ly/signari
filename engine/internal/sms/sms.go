@@ -96,23 +96,34 @@ func NormaliseNumber(raw string) (string, error) {
 		s = "+" + s[2:]
 	}
 	if s == "" {
-		return "", fmt.Errorf("no number given")
+		return "", &NumberRefusal{Key: "sms.number.none", text: "no number given"}
 	}
 	if !strings.HasPrefix(s, "+") {
 		// NOT guessed. Assuming a country code is how a number in one country
 		// gets a code for another, and the person then never receives a message
 		// and cannot tell why.
-		return "", fmt.Errorf("give the number in international form, starting with "+
-			"a + and the country code (got %q). A national-format number cannot be "+
-			"dialled without knowing which country it is in, and guessing wrong "+
-			"means the code goes to somebody else's phone", raw)
+		return "", &NumberRefusal{Key: "sms.number.international", text: fmt.Sprintf(
+			"give the number in international form, starting with "+
+				"a + and the country code (got %q). A national-format number cannot be "+
+				"dialled without knowing which country it is in, and guessing wrong "+
+				"means the code goes to somebody else's phone", raw)}
 	}
 	if !e164.MatchString(s) {
-		return "", fmt.Errorf("%q is not a valid international number: expected a + "+
-			"followed by 7 to 15 digits", raw)
+		return "", &NumberRefusal{Key: "sms.number.invalid", text: fmt.Sprintf(
+			"%q is not a valid international number: expected a + "+
+				"followed by 7 to 15 digits", raw)}
 	}
 	return s, nil
 }
+
+// NumberRefusal is a number NormaliseNumber would not take, with the message key a
+// page says it with in the reader's language. Error is English, for the API and logs.
+type NumberRefusal struct {
+	Key  string
+	text string
+}
+
+func (e *NumberRefusal) Error() string { return e.text }
 
 // RedactNumber keeps the last two digits, which is what a person needs to
 // recognise their own number and what an attacker cannot use.

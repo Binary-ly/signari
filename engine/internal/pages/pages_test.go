@@ -833,7 +833,14 @@ func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
 		t.Errorf("only %d federationRefusal calls with a literal were found; this check is reading too little", len(upstream))
 	}
 	refusals = append(refusals, upstream...)
-	refusals = append(refusals, keysUsedInGo(t, regexp.MustCompile(`"((?:federr|error\.signup)\.[a-z_]+)"`))...)
+	refusals = append(refusals, keysUsedInGo(t, regexp.MustCompile(
+		`"((?:federr|error\.signup|enrol|sms\.number|emailchange)\.[a-z_]+)"`))...)
+	// The enrolment pages' render closures take a key too.
+	enrolment := keysUsedInGo(t, regexp.MustCompile(`render\("[a-z]+", [^\n]*, "([^"]+)"\)`))
+	if len(enrolment) < 20 {
+		t.Errorf("only %d enrolment render calls with a message were found; this check is reading too little", len(enrolment))
+	}
+	refusals = append(refusals, enrolment...)
 	for _, key := range refusals {
 		used[key] = true
 		if !bundle.HasKey(key) {
@@ -987,7 +994,7 @@ func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
 	// and that reason is a message key rendered on a page this package owns. store
 	// and passwords too: a refused attribute value or password carries the key a
 	// page says it with.
-	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords"} {
+	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords", "sms"} {
 		dir := filepath.Join("..", pkg)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

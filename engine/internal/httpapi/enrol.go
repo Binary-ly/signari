@@ -759,9 +759,10 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	render := func(stage, addr, msg string) {
+	// key names the message the page shows, in the reader's language; "" shows none.
+	render := func(stage, addr, key string) {
 		s.renderPage(w, r, "emailotp", map[string]any{
-			"Stage": stage, "Address": addr, "Error": msg,
+			"Stage": stage, "Address": addr, "Error": s.pageMessage(r, key),
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 	}
@@ -778,7 +779,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
-		render("start", "", "That form expired. Try again.")
+		render("start", "", "enrol.formexpired")
 		return
 	}
 	if s.credentialChangeRefused(w, r, sid, "/account/mfa/email", false) {
@@ -789,7 +790,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	case "verify":
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
@@ -798,12 +799,11 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(r.PostForm.Get("code")))
 		if verr != nil {
 			s.log.ErrorContext(ctx, "verifying an enrolment code", "err", verr)
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		if !okCode {
-			render("code", r.PostForm.Get("address"),
-				"That code did not match, or it has expired.")
+			render("code", r.PostForm.Get("address"), "enrol.codemismatch")
 			return
 		}
 		if err := audit.Write(ctx, tx, audit.Event{
@@ -812,11 +812,11 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			Detail:        map[string]any{"replaced": replaced != ""},
 		}); err != nil {
 			s.log.ErrorContext(ctx, "auditing the email factor enrolment", "err", err)
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		if err := tx.Commit(ctx); err != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 
@@ -842,13 +842,13 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	default: // send a code to the address being enrolled
 		address := strings.TrimSpace(r.PostForm.Get("address"))
 		if !strings.Contains(address, "@") || len(address) > 320 {
-			render("start", address, "That does not look like an email address.")
+			render("start", address, "enrol.notemail")
 			return
 		}
 
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
@@ -857,21 +857,21 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		// factor until a code sent to this one comes back.
 		if err := store.StartEmailOTPEnrolment(ctx, tx, userID, orgID, address); err != nil {
 			s.log.ErrorContext(ctx, "enrolling the email factor", "err", err)
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 		code, addr, ierr := store.IssueEmailOTPEnrolment(ctx, tx, userID)
 		if errors.Is(ierr, store.ErrEmailOTPTooSoon) {
-			render("code", address, "A code was just sent. Check your inbox.")
+			render("code", address, "enrol.codesent")
 			return
 		}
 		if ierr != nil {
 			s.log.ErrorContext(ctx, "issuing an enrolment code", "err", ierr)
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 		if err := tx.Commit(ctx); err != nil {
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 
@@ -890,8 +890,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			// Said out loud HERE, unlike at sign-in: this person is already
 			// authenticated, so there is nothing to disclose, and silently
 			// showing a code entry form for mail that never left is cruel.
-			render("code", address,
-				"We could not send that code. Check the address, or try again shortly.")
+			render("code", address, "enrol.emailunsent")
 			return
 		}
 		render("code", address, "")
@@ -918,9 +917,10 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	render := func(stage, number, msg string) {
+	// key names the message the page shows, in the reader's language; "" shows none.
+	render := func(stage, number, key string) {
 		s.renderPage(w, r, "smsotp", map[string]any{
-			"Stage": stage, "Number": number, "Error": msg,
+			"Stage": stage, "Number": number, "Error": s.pageMessage(r, key),
 			"CSRF": csrf, "CSRFField": csrfFormField,
 			"Configured": s.smsAvailable(),
 		})
@@ -946,7 +946,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
-		render("start", "", "That form expired. Try again.")
+		render("start", "", "enrol.formexpired")
 		return
 	}
 	if s.credentialChangeRefused(w, r, sid, "/account/mfa/sms", false) {
@@ -956,9 +956,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	// Refused up front when no gateway is configured. Accepting an enrolment
 	// that can never deliver a code would be building somebody a lockout.
 	if !s.smsAvailable() {
-		render("start", "",
-			"Text messages are not available on this server. Ask an administrator, "+
-				"or use an authenticator app instead.")
+		render("start", "", "enrol.smsunavailable")
 		return
 	}
 
@@ -966,7 +964,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	case "verify":
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
@@ -975,11 +973,11 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			strings.TrimSpace(r.PostForm.Get("code")), s.smsDelegate())
 		if verr != nil {
 			s.log.ErrorContext(ctx, "verifying an SMS enrolment code", "err", verr)
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "enrol.generic")
 			return
 		}
 		if !okCode {
-			render("verify", "", "That code is not right, or it has expired.")
+			render("verify", "", "error.verifyemail.mismatch")
 			return
 		}
 		if aerr := audit.Write(ctx, tx, audit.Event{
@@ -990,7 +988,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			s.log.ErrorContext(ctx, "recording the SMS enrolment", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "enrol.generic")
 			return
 		}
 		// The number codes used to go to hears that they no longer will -- the
@@ -1024,7 +1022,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		if _, rerr := s.removeOwnFactor(ctx, userID, orgID, "sms_otp"); rerr != nil &&
 			!errors.Is(rerr, store.ErrFactorNotFound) {
 			s.log.ErrorContext(ctx, "removing the SMS factor", "err", rerr)
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		render("start", "", "")
@@ -1036,8 +1034,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		if n, nerr := sms.NormaliseNumber(r.PostForm.Get("number")); nerr == nil && !s.smsPolicy.Permits(n) {
 			_ = s.refuseSMS(ctx, userID, "refused_country", "enrolment of a number outside "+
 				"SIGNARI_SMS_ALLOWED_PREFIXES")
-			render("start", r.PostForm.Get("number"), "Text messages to that country are not "+
-				"available here. Use an authenticator app or a passkey instead.")
+			render("start", r.PostForm.Get("number"), "enrol.smscountry")
 			return
 		}
 
@@ -1047,12 +1044,12 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		hashed, herr := store.SMSNumbersHashed(ctx, s.db, orgID)
 		if herr != nil {
 			s.log.ErrorContext(ctx, "reading how SMS numbers are kept", "err", herr)
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
@@ -1062,16 +1059,24 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		if nerr == nil && hashed {
 			if hash, nerr = s.smsNumberHash(ctx, tx, userID, typed); nerr != nil {
 				s.log.ErrorContext(ctx, "hashing an SMS number", "err", nerr)
-				render("start", "", "Something went wrong. Try again.")
+				render("start", "", "enrol.generic")
 				return
 			}
 		}
 		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID, r.PostForm.Get("number"), hash)
 		if nerr != nil {
 			// The number errors are written for the person typing them and are
-			// shown as-is: "give the number in international form" is actionable
-			// and reveals nothing.
-			render("start", r.PostForm.Get("number"), nerr.Error())
+			// said in their language: "give the number in international form" is
+			// actionable and reveals nothing. Anything else enrolment can fail with
+			// is not for them, and is said as a failure.
+			key := "enrol.generic"
+			var refused *sms.NumberRefusal
+			if errors.As(nerr, &refused) {
+				key = refused.Key
+			} else {
+				s.log.ErrorContext(ctx, "enrolling a number", "err", nerr)
+			}
+			render("start", r.PostForm.Get("number"), key)
 			return
 		}
 
@@ -1090,11 +1095,11 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			return
 		case ierr != nil:
 			s.log.ErrorContext(ctx, "issuing an SMS enrolment code", "err", ierr)
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 
@@ -1108,8 +1113,7 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			// leave them waiting for a message that is never coming.
 			s.log.ErrorContext(ctx, "sending an SMS enrolment code", "err", serr,
 				"to", sms.RedactNumber(to))
-			render("start", number,
-				"That message could not be sent. Check the number and try again.")
+			render("start", number, "enrol.smsunsent")
 			return
 		}
 		render("verify", sms.RedactNumber(number), "")

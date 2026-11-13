@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
@@ -88,6 +89,35 @@ func (s *Server) setPendingCookieFor(w http.ResponseWriter, userID, orgID string
 	return nil
 }
 
+// promptAnswerRefusalText says what is wrong with a prompt's answers in the reader's
+// language, naming the fields as the operator labelled them, in that language's way of
+// listing them.
+func (s *Server) promptAnswerRefusalText(r *http.Request, err error) string {
+	tr := s.tr(r)
+	var refused *prompts.AnswerRefusal
+	if !errors.As(err, &refused) {
+		return tr.Text("enrol.generic")
+	}
+	if refused.TooLong != "" {
+		return tr.Text("prompt.refused.toolong", map[string]any{"Field": refused.TooLong})
+	}
+	sep := tr.Text("prompt.refused.separator")
+	var parts []string
+	for _, c := range []struct {
+		key    string
+		labels []string
+	}{
+		{"prompt.refused.missing", refused.Missing},
+		{"prompt.refused.notemail", refused.NotEmail},
+		{"prompt.refused.notoption", refused.NotOption},
+	} {
+		if len(c.labels) > 0 {
+			parts = append(parts, tr.Text(c.key, map[string]any{"Fields": strings.Join(c.labels, sep)}))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // handlePromptPost records an answer and continues the sign-in.
 func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -136,7 +166,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	}
 	answers, verr := p.ValidateAnswers(submitted)
 	if verr != nil {
-		rerender(verr.Error())
+		rerender(s.promptAnswerRefusalText(r, verr))
 		return
 	}
 

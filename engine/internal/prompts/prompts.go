@@ -155,7 +155,7 @@ type Answers map[string]string
 // this exists to prevent.
 func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 	out := Answers{}
-	var missing []string
+	var missing, notEmail, notOption []string
 
 	for _, f := range p.Fields {
 		if f.Type == Notice {
@@ -181,7 +181,7 @@ func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 			continue
 		}
 		if f.Type == Email && !strings.Contains(v, "@") {
-			missing = append(missing, f.Label+" (not an email address)")
+			notEmail = append(notEmail, f.Label)
 			continue
 		}
 		if f.Type == Select {
@@ -195,18 +195,39 @@ func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 			if !ok {
 				// Not merely invalid: a value outside the options is a submission
 				// that did not come from the rendered form.
-				missing = append(missing, f.Label+" (not one of the options)")
+				notOption = append(notOption, f.Label)
 				continue
 			}
 		}
 		if len(v) > 500 {
-			return nil, fmt.Errorf("%s is too long", f.Label)
+			return nil, &AnswerRefusal{TooLong: f.Label}
 		}
 		out[f.Name] = v
 	}
 
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("please complete: %s", strings.Join(missing, ", "))
+	if len(missing)+len(notEmail)+len(notOption) > 0 {
+		return nil, &AnswerRefusal{Missing: missing, NotEmail: notEmail, NotOption: notOption}
 	}
 	return out, nil
+}
+
+// AnswerRefusal is answers ValidateAnswers would not take, by each field's label, so a
+// page can say what is wrong in the reader's language. Error is English, for logs.
+type AnswerRefusal struct {
+	Missing, NotEmail, NotOption []string
+	TooLong                      string
+}
+
+func (e *AnswerRefusal) Error() string {
+	if e.TooLong != "" {
+		return e.TooLong + " is too long"
+	}
+	parts := append([]string{}, e.Missing...)
+	for _, l := range e.NotEmail {
+		parts = append(parts, l+" (not an email address)")
+	}
+	for _, l := range e.NotOption {
+		parts = append(parts, l+" (not one of the options)")
+	}
+	return "please complete: " + strings.Join(parts, ", ")
 }

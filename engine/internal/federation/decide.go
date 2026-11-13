@@ -104,6 +104,8 @@ type Decision struct {
 	// Reason is written for the person reading it on a sign-in page, not for a
 	// log. Somebody stuck here needs to know what to do next.
 	Reason string
+	// Key names the message the page says Reason with, in the reader's language.
+	Key string
 }
 
 // Decide works out what to do with an external identity.
@@ -128,7 +130,7 @@ func Decide(ext ExternalIdentity, p Policy, c Context) (Decision, error) {
 	//    and it works because they have already proved they control it.
 	if c.LinkRequested && c.CurrentUserID != "" {
 		if !p.AllowLinking {
-			return Decision{Outcome: Refuse,
+			return Decision{Outcome: Refuse, Key: "federr.nolinking",
 				Reason: "This provider is not configured to be linked to existing accounts."}, nil
 		}
 		return Decision{Outcome: LinkToCurrentUser, UserID: c.CurrentUserID}, nil
@@ -141,12 +143,12 @@ func Decide(ext ExternalIdentity, p Policy, c Context) (Decision, error) {
 	//    user how to do it safely, which costs them one sign-in.
 	if c.LocalUserWithSameEmail != "" {
 		if !p.AllowLinking {
-			return Decision{Outcome: Refuse,
+			return Decision{Outcome: Refuse, Key: "federr.emailexists",
 				Reason: "An account already exists with this email address, and this " +
 					"provider cannot be linked to existing accounts."}, nil
 		}
 		return Decision{
-			Outcome: RequireLocalSignIn,
+			Outcome: RequireLocalSignIn, Key: "federr.signinfirst",
 			Reason: "An account already exists with this email address. Sign in to it " +
 				"first, then add this provider from your account settings. We do not " +
 				"link accounts on a matching email alone, because anyone able to " +
@@ -157,13 +159,13 @@ func Decide(ext ExternalIdentity, p Policy, c Context) (Decision, error) {
 
 	// 4. Genuinely new person.
 	if !p.AllowSignup {
-		return Decision{Outcome: Refuse,
+		return Decision{Outcome: Refuse, Key: "federr.signupclosed",
 			Reason: "This provider cannot be used to create new accounts. Ask an " +
 				"administrator for an account first, then add this provider from your " +
 				"account settings."}, nil
 	}
 	if p.RequireVerifiedEmail && !usableEmail(ext, p) {
-		return Decision{Outcome: Refuse,
+		return Decision{Outcome: Refuse, Key: "federr.unverifiedemail",
 			Reason: "This provider did not confirm that your email address is verified. " +
 				"Verify it with the provider and try again."}, nil
 	}

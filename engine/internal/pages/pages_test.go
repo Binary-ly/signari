@@ -994,7 +994,7 @@ func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
 	// and that reason is a message key rendered on a page this package owns. store
 	// and passwords too: a refused attribute value or password carries the key a
 	// page says it with.
-	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords", "sms"} {
+	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords", "sms", "federation"} {
 		dir := filepath.Join("..", pkg)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

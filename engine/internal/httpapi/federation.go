@@ -355,7 +355,13 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		}); aerr == nil {
 			_ = tx.Commit(ctx)
 		}
-		fail(decision.Reason)
+		// The decision's English reason is for the log; the page says its key.
+		s.log.InfoContext(ctx, "the reason given", "reason", decision.Reason, "correlation_id", correlationID(ctx))
+		key := decision.Key
+		if key == "" {
+			key = "federr.generic"
+		}
+		fail(key)
 		return
 	}
 

@@ -79,8 +79,8 @@ Most do not, and they keep working on everyone else.
 one's secret, and `DELETE /admin/tokens/{id}` revokes one. **A token can do this
 only for a token no wider than itself**, in every way a token can be wide. The
 scopes must be ones the caller holds. The organisation must be the caller's. The
-clients and groups must be among the caller's, so a client-narrowed caller cannot
-mint an unnarrowed token. And the token cannot outlive the caller. Rotation is
+clients, groups and attributes must be among the caller's, so a client-narrowed
+caller cannot mint an unnarrowed token. And the token cannot outlive the caller. Rotation is
 held to the same rule, because rotating a token hands over a working secret for
 it, so a narrow token able to rotate a wide one would have become the wide one.
 Revocation is too, or a token for one client could revoke the organisation's main
@@ -98,14 +98,24 @@ and only the CLI could make or revoke one. Each is audited:
 
 ## Narrowing a token to named objects
 
-A token may be restricted to particular clients or groups, not just to a scope
-and an organisation. A CI job that deploys one application should not hold a
+A token may be restricted to particular clients, groups or user attributes, not
+just to a scope and an organisation. A CI job that deploys one application should not hold a
 credential able to disable the payroll system.
 
 | | |
 |---|---|
 | `client_ids` | Clients this token may act on, for reads and writes alike. `GET /admin/clients` lists only these, and the token cannot create a client |
 | `group_ids` | Groups it may act on, including their membership. `GET /admin/groups` lists only these, and the token cannot create a group |
+| `attribute_names` | User attributes, by declared name, whose values it may read, set, clear or release (`-attributes` on `signari admin-token create`). `GET /admin/users/{id}/attributes` gives only these, and says nothing of the others, not even that the person has them. A name the organisation does not declare is refused when the token is made |
+
+**Field-level access** (ASVS 5.0.0 V8.2.3). Before November 2026 `users:read`
+read every attribute value a person held, personal ones unsealed, so a help desk's
+lookup token read what a payroll integration's needed. A token narrowed to
+attributes is refused what would reach the others another way. A claim mapper
+releasing one, or deleting another's mapper, is refused. So is a person's whole
+export (`GET /admin/subjects/{id}/export`), a configuration file, an upstream's
+attribute map, and a role that reaches every attribute (`user-manager`, say).
+Rotating it keeps the narrowing.
 
 **A narrowed token cannot create an object of the kind it is narrowed on.**
 The new object would not be on its list, so the token could register an
@@ -286,6 +296,7 @@ names the missing scope on purpose, and burying that in a JSON dump wastes it:
 | --- | --- |
 | `403 insufficient_scope` | "this token does not hold users:write" |
 | `403 outside_token_organisation` | "this token may only act on organisation …" |
+| `403 outside_token_objects` | "this token is restricted to named clients and … is not one of them", or groups, or attributes. Until November 2026 these went out as `outside_token_organisation`, with "outside this token's organisation" in front |
 | `401` | "…may have been revoked or expired — run `signari admin-token list`" |
 
 ## Signing in to the console through Signari

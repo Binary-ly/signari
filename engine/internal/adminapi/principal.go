@@ -137,6 +137,9 @@ type Principal struct {
 	// time somebody cleared a list intending to revoke access.
 	ClientIDs []string
 	GroupIDs  []string
+	// AttributeNames narrows the token to named user attributes (V8.2.3), by
+	// the same rule: nil is every attribute, empty is none.
+	AttributeNames []string
 
 	// UserGroups narrows a scope to the members of named groups, for a
 	// principal whose only binding granting it is a delegated user-manager
@@ -163,6 +166,13 @@ func (p *Principal) MayActOnClient(clientID string) error {
 // MayActOnGroup reports whether this principal may touch a group.
 func (p *Principal) MayActOnGroup(groupID string) error {
 	return p.mayActOnObject("group", groupID, p.GroupIDs)
+}
+
+// MayActOnAttribute reports whether this principal may read, set or release a
+// user attribute's values. A name is an attribute's declared name, compared
+// exactly, as it is stored.
+func (p *Principal) MayActOnAttribute(name string) error {
+	return p.mayActOnObject("attribute", name, p.AttributeNames)
 }
 
 // mayActOnObject is the shared rule.
@@ -195,8 +205,7 @@ func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: this token is restricted to named %ss and %s is not one of them",
-		errCrossOrg, kind, id)
+	return outsideObjects{fmt.Sprintf("this token is restricted to named %ss and %s is not one of them", kind, id)}
 }
 
 // Can reports whether this principal holds a scope.
@@ -278,12 +287,12 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	var serving bool
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, name, org_id::text, scopes, expires_at, revoked_at,
-		       client_ids, group_ids,
+		       client_ids, group_ids, attribute_names,
 		       org_id IS NULL OR `+store.OrgInService("org_id")+`
 		FROM core.admin_tokens
 		WHERE token_hash = $1`, sum[:]).
 		Scan(&p.TokenID, &p.Name, &orgID, &p.Scopes, &expires, &revoked,
-			&p.ClientIDs, &p.GroupIDs, &serving)
+			&p.ClientIDs, &p.GroupIDs, &p.AttributeNames, &serving)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errTokenRejected
@@ -347,6 +356,16 @@ func (s *Server) touch(tokenID string) {
 // than 404 -- the resource exists, the caller simply may not touch it, and
 // saying "not found" would be a lie that costs an operator an hour.
 var errCrossOrg = errors.New("outside this token's organisation")
+
+// outsideObjects is a refusal for a client, group or attribute the token is
+// not narrowed to. It is an errCrossOrg, so every handler that answers one
+// answers this, and writeCrossOrg says what it is: until November 2026 it went
+// out as outside_token_organisation, "outside this token's organisation", for
+// a token whose organisation it was.
+type outsideObjects struct{ msg string }
+
+func (e outsideObjects) Error() string        { return e.msg }
+func (e outsideObjects) Is(target error) bool { return target == errCrossOrg }
 
 // errUnknownOrg and errMalformedOrg are an organisation the caller named that
 // does not exist, or an id that is not one (0.23). Both are the caller's
@@ -515,6 +534,25 @@ func groupFilter(ctx context.Context) []string {
 		return []string{}
 	}
 	return lowered(p.GroupIDs)
+}
+
+// attributeFilter is the attributes the caller may reach: nil for every one.
+func attributeFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return p.AttributeNames
+}
+
+// requireAttribute refuses an attribute the caller may not reach, with
+// errCrossOrg, as requireClient refuses a client.
+func requireAttribute(ctx context.Context, name string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("%w: no principal", errCrossOrg)
+	}
+	return p.MayActOnAttribute(name)
 }
 
 func lowered(ids []string) []string {

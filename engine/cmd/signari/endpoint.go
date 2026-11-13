@@ -69,7 +69,7 @@ func endpointGroupCreate(ctx context.Context, c *apiClient, orgID, group, name s
 // endpointTokenCreate is `admin-token create` through POST /admin/tokens. The
 // secret is printed once, as the database path prints it.
 func endpointTokenCreate(ctx context.Context, c *apiClient, name, orgID, scopes string, expiresIn time.Duration,
-	expiresGiven bool, clients, groups string) error {
+	expiresGiven bool, clients, groups, attributes string) error {
 	if name == "" {
 		return fmt.Errorf("give -name; it appears in the audit trail, and \"which token " +
 			"was that\" is unanswerable without one")
@@ -84,6 +84,9 @@ func endpointTokenCreate(ctx context.Context, c *apiClient, name, orgID, scopes 
 	}
 	if ids := splitList(clients); len(ids) > 0 {
 		body["client_ids"] = ids
+	}
+	if names := splitList(attributes); len(names) > 0 {
+		body["attribute_names"] = names
 	}
 	if expiresGiven {
 		body["expires_in_s"] = int64(expiresIn.Seconds())

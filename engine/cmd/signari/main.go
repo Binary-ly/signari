@@ -1095,6 +1095,9 @@ func run(args []string) (err error) {
 			"that is not listed here, whatever it returns")
 	tokenClients := fs.String("clients", "",
 		"comma-separated client ids this admin token may act on; empty means every client in its organisation")
+	tokenAttributes := fs.String("attributes", "",
+		"comma-separated user attributes this admin token may read, set or release; empty means every attribute "+
+			"in its organisation")
 	cibaDelivery := fs.String("delivery", "poll",
 		"CIBA token delivery mode: poll, ping or push. ping and push have this issuer "+
 			"POST to a URL the client supplies, which is why they are set here and not "+
@@ -1359,7 +1362,7 @@ func run(args []string) (err error) {
 			fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
 			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
 				return endpointTokenCreate(ctx, c, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
-					*tokenClients, *inviteGroups)
+					*tokenClients, *inviteGroups, *tokenAttributes)
 			})
 		}
 	case "admin-token list":
@@ -1831,7 +1834,7 @@ func run(args []string) (err error) {
 		expiresGiven := false
 		fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
 		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
-			*tokenClients, *inviteGroups)
+			*tokenClients, *inviteGroups, *tokenAttributes)
 	case "admin-token list":
 		return adminTokenList(ctx, conn, *outputFormat)
 	case "admin-token revoke":
@@ -5671,7 +5674,7 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string, asJSON bool) 
 // pushes toward that: the table holds a SHA-256, and there is no command to
 // retrieve a token, only to replace one.
 func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes string,
-	expiresIn time.Duration, expiresGiven bool, clients, groups string) error {
+	expiresIn time.Duration, expiresGiven bool, clients, groups, attributes string) error {
 
 	// Ninety days unless asked; -expires-in 0 is the deliberate way to make
 	// one that never expires. Never was the default until October 2026.
@@ -5712,9 +5715,13 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	if err != nil {
 		return err
 	}
+	attributeNames, err := resolveAttributeNames(ctx, conn, orgID, attributes)
+	if err != nil {
+		return err
+	}
 
-	secret, id, err := adminapi.NewToken(ctx, conn, name, orgID, list, expires,
-		clientIDs, groupIDs)
+	secret, id, err := adminapi.NewNarrowedToken(ctx, conn, name, orgID, list, expires,
+		clientIDs, groupIDs, attributeNames)
 	if err != nil {
 		return err
 	}
@@ -5731,6 +5738,9 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	}
 	if len(groupIDs) > 0 {
 		fmt.Printf("  groups : %d named group(s) only\n", len(groupIDs))
+	}
+	if len(attributeNames) > 0 {
+		fmt.Printf("  attributes: %s only\n", strings.Join(attributeNames, ", "))
 	}
 	if expires != nil {
 		fmt.Printf("  expires: %s\n", expires.Format(time.RFC3339))

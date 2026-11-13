@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3183,6 +3184,35 @@ func resolveGroupIDs(ctx context.Context, conn *pgx.Conn, orgID, names string) (
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// resolveAttributeNames checks -attributes against the attributes the
+// organisation declares (V8.2.3). A misspelt name is refused rather than kept:
+// kept, it narrows the token to an attribute nobody has, and the token then
+// reads nothing while looking as if it were meant to.
+func resolveAttributeNames(ctx context.Context, conn *pgx.Conn, orgID, names string) ([]string, error) {
+	var out []string
+	for _, n := range strings.Split(names, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if orgID == "" {
+			return nil, fmt.Errorf("-attributes needs -org: an attribute is declared by an organisation, " +
+				"and a token limited to one in an unspecified organisation is not limited to anything")
+		}
+		var declared bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.user_attribute_schema
+			WHERE org_id = $1::uuid AND name = $2)`, orgID, n).Scan(&declared); err != nil {
+			return nil, err
+		}
+		if !declared {
+			return nil, fmt.Errorf("no attribute named %q is declared in that organisation", n)
+		}
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return slices.Compact(out), nil
 }
 
 // outpostSetEnabled takes an outpost out of service, or puts it back (2.29).

@@ -94,6 +94,13 @@ func (s *Server) createMapper(w http.ResponseWriter, r *http.Request) {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
 		}
+		// A mapper hands the attribute's value to applications, which is a read
+		// of it by other means: only one the token may reach (V8.2.3).
+		if attributeSource {
+			if err := requireAttribute(ctx, req.Attribute); err != nil {
+				return err
+			}
+		}
 
 		// The attribute declared, the scope one a grant can carry, the client
 		// the organisation's (store.SetClaimMapper): a typo otherwise made a
@@ -229,6 +236,25 @@ func (s *Server) deleteMapper(w http.ResponseWriter, r *http.Request) {
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
+		}
+		// How an attribute is released is the attribute's: a token narrowed
+		// to others leaves its mappers alone (V8.2.3).
+		if attributeFilter(ctx) != nil {
+			var name *string
+			err := tx.QueryRow(ctx, `SELECT s.name FROM core.claim_mappers m
+				LEFT JOIN core.user_attribute_schema s ON s.id = m.attribute_id
+				WHERE m.org_id = $1::uuid AND m.id = $2::uuid`, orgID, store.ExactUUIDOrNil(mapperID)).Scan(&name)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNotFound
+			}
+			if err != nil {
+				return err
+			}
+			if name != nil {
+				if err := requireAttribute(ctx, *name); err != nil {
+					return err
+				}
+			}
 		}
 		// In the organisation only (store.RemoveClaimMapper): without it a
 		// caller could delete another tenant's mapper by id.

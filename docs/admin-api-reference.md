@@ -4660,6 +4660,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `attribute_names` | list of string |  |
 | `client_ids` | list of string |  |
 | `expires_in_s` | integer |  |
 | `group_ids` | list of string |  |

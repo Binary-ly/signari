@@ -29209,6 +29209,15 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "attribute_names": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": [
+                              "array",
+                              "null"
+                            ]
+                          },
                           "client_ids": {
                             "items": {
                               "type": "string"
@@ -29352,6 +29361,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "attribute_names": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "client_ids": {
                     "items": {
                       "type": "string"

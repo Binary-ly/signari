@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Admin tokens over the API (6.04). Until October 2026 a token could be made,
@@ -47,11 +48,12 @@ const (
 
 // tokenTerms is what a token may do, as the width check compares it.
 type tokenTerms struct {
-	OrgID     string
-	Scopes    []string
-	ClientIDs []string
-	GroupIDs  []string
-	ExpiresAt *time.Time
+	OrgID          string
+	Scopes         []string
+	ClientIDs      []string
+	GroupIDs       []string
+	AttributeNames []string
+	ExpiresAt      *time.Time
 }
 
 // wider names the first way terms would exceed the caller, or nil.
@@ -84,6 +86,16 @@ func (p *Principal) wider(t tokenTerms) error {
 			}
 		}
 	}
+	if p.AttributeNames != nil {
+		if t.AttributeNames == nil {
+			return fmt.Errorf("this token is narrowed to named attributes, so a token it makes must be too")
+		}
+		for _, a := range t.AttributeNames {
+			if !slices.Contains(p.AttributeNames, a) {
+				return fmt.Errorf("attribute %s is not one this token may reach", a)
+			}
+		}
+	}
 	if p.ExpiresAt != nil && (t.ExpiresAt == nil || t.ExpiresAt.After(*p.ExpiresAt)) {
 		return fmt.Errorf("a token may not outlive the one that makes it, which expires at %s",
 			p.ExpiresAt.UTC().Format(time.RFC3339))
@@ -99,13 +111,14 @@ type tokenView struct {
 	Scopes     []string `json:"scopes"`
 	ClientIDs  []string `json:"client_ids"`
 	GroupIDs   []string `json:"group_ids"`
+	Attributes []string `json:"attribute_names"`
 	CreatedAt  string   `json:"created_at"`
 	ExpiresAt  *string  `json:"expires_at"`
 	RevokedAt  *string  `json:"revoked_at"`
 	LastUsedAt *string  `json:"last_used_at"`
 }
 
-const tokenViewColumns = `id::text, name, org_id::text, scopes, client_ids, group_ids::text[],
+const tokenViewColumns = `id::text, name, org_id::text, scopes, client_ids, group_ids::text[], attribute_names,
 	to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(revoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -113,7 +126,7 @@ const tokenViewColumns = `id::text, name, org_id::text, scopes, client_ids, grou
 
 func scanTokenView(row pgx.Row) (tokenView, error) {
 	var v tokenView
-	err := row.Scan(&v.ID, &v.Name, &v.OrgID, &v.Scopes, &v.ClientIDs, &v.GroupIDs,
+	err := row.Scan(&v.ID, &v.Name, &v.OrgID, &v.Scopes, &v.ClientIDs, &v.GroupIDs, &v.Attributes,
 		&v.CreatedAt, &v.ExpiresAt, &v.RevokedAt, &v.LastUsedAt)
 	return v, err
 }
@@ -155,6 +168,7 @@ type createTokenRequest struct {
 	OrgID      string   `json:"org_id"`
 	ClientIDs  []string `json:"client_ids"`
 	GroupIDs   []string `json:"group_ids"`
+	Attributes []string `json:"attribute_names"`
 	ExpiresInS *int64   `json:"expires_in_s"`
 }
 
@@ -203,7 +217,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := time.Now().Add(life)
 	terms := tokenTerms{OrgID: req.OrgID, Scopes: req.Scopes, ClientIDs: nilIfEmpty(req.ClientIDs),
-		GroupIDs: nilIfEmpty(req.GroupIDs), ExpiresAt: &expires}
+		GroupIDs: nilIfEmpty(req.GroupIDs), AttributeNames: nilIfEmpty(req.Attributes), ExpiresAt: &expires}
 	if err := p.wider(terms); err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "wider_than_caller", "detail": err.Error()})
 		return
@@ -220,9 +234,22 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		// Each a name the organisation declares: a misspelt one narrows the
+		// token to an attribute nobody has, and it then reads nothing while
+		// looking as if it were meant to.
+		for _, n := range terms.AttributeNames {
+			var declared bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.user_attribute_schema
+				WHERE org_id = $1::uuid AND name = $2)`, store.ExactUUIDOrNil(req.OrgID), n).Scan(&declared); err != nil {
+				return err
+			}
+			if !declared {
+				return asTokenRequestError(fmt.Errorf("no attribute named %q is declared in organisation %q", n, req.OrgID))
+			}
+		}
 		var err error
-		secret, id, err = NewToken(ctx, tx, req.Name, req.OrgID, req.Scopes, &expires,
-			terms.ClientIDs, terms.GroupIDs)
+		secret, id, err = NewNarrowedToken(ctx, tx, req.Name, req.OrgID, req.Scopes, &expires,
+			terms.ClientIDs, terms.GroupIDs, terms.AttributeNames)
 		if err != nil {
 			return asTokenRequestError(err)
 		}
@@ -245,9 +272,10 @@ func (s *Server) targetTerms(ctx context.Context, tx pgx.Tx, p *Principal, token
 	var orgID *string
 	var name string
 	var revoked *time.Time
-	err := tx.QueryRow(ctx, `SELECT org_id::text, name, scopes, client_ids, group_ids::text[], expires_at, revoked_at
+	err := tx.QueryRow(ctx, `SELECT org_id::text, name, scopes, client_ids, group_ids::text[], attribute_names,
+		       expires_at, revoked_at
 		FROM core.admin_tokens WHERE id::text = $1 FOR UPDATE`, tokenID).
-		Scan(&orgID, &name, &t.Scopes, &t.ClientIDs, &t.GroupIDs, &t.ExpiresAt, &revoked)
+		Scan(&orgID, &name, &t.Scopes, &t.ClientIDs, &t.GroupIDs, &t.AttributeNames, &t.ExpiresAt, &revoked)
 	if err != nil {
 		return t, "", err
 	}
@@ -321,7 +349,10 @@ func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
 		if err := p.wider(next); err != nil {
 			return &widerError{err}
 		}
-		secret, newID, err = NewToken(ctx, tx, name, t.OrgID, t.Scopes, &expires, t.ClientIDs, t.GroupIDs)
+		// Narrowed as the old one was, attributes too: a rotation that dropped a
+		// restriction would be a widening the caller's own width never shows.
+		secret, newID, err = NewNarrowedToken(ctx, tx, name, t.OrgID, t.Scopes, &expires, t.ClientIDs, t.GroupIDs,
+			t.AttributeNames)
 		if err != nil {
 			return asTokenRequestError(err)
 		}

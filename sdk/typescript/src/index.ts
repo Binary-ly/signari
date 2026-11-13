@@ -3305,6 +3305,7 @@ export interface GetTokensResponse {
 
 /** A JSON object of the Admin API. */
 export interface GetTokensResponseTokensItem {
+  attribute_names?: string[] | null
   client_ids?: string[] | null
   created_at: string
   expires_at?: string | null
@@ -4640,6 +4641,7 @@ export interface PostSubjectsSubjectIDEraseResponse {
 
 /** A JSON object of the Admin API. */
 export interface PostTokensRequest {
+  attribute_names?: string[]
   client_ids?: string[]
   expires_in_s?: number
   group_ids?: string[]

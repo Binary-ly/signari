@@ -434,7 +434,7 @@ succeed by querying the wrong schema.
 | **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
 | **V8.4.1** cross-tenant controls | met, and now uniform |
 | **V8.1.x** documentation of the rules | **met, November 2026** — [security-inventories.md](security-inventories.md) says where each boundary is enforced and which page holds its rules |
-| **V8.2.3** field-level (BOPLA) | partial — SCIM releases a fixed attribute set; there is no per-field permission model |
+| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get a user attribute only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [admin-tokens.md](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound SCIM sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
 | **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
 
 ## V11 Cryptography: twenty-four requirements (21 August 2026)

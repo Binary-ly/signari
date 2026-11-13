@@ -16,6 +16,13 @@ import (
 // who was handed a person's data is what an inquiry into a disclosure asks.
 func (s *Server) exportSubject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// Everything kept about a person is every attribute of theirs, unsealed:
+	// not for a token narrowed to some (V8.2.3).
+	if attributeFilter(ctx) != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "outside_token_objects",
+			"detail": "a token limited to named attributes cannot export everything kept about a person"})
+		return
+	}
 	subjectID, ok := store.CanonicalUUID(r.PathValue("subjectID"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown_subject"})

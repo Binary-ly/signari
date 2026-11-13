@@ -106,6 +106,8 @@ func grantable(p *Principal, role string) error {
 			return fmt.Errorf("the %s role reaches every application, and this caller only some", role)
 		case (sc == ScopeGroupsRead || sc == ScopeGroupsWrite) && p.GroupIDs != nil:
 			return fmt.Errorf("the %s role reaches every group, and this caller only some", role)
+		case (sc == ScopeUsersRead || sc == ScopeUsersWrite) && p.AttributeNames != nil:
+			return fmt.Errorf("the %s role reaches every attribute of every person, and this caller only some", role)
 		}
 	}
 	return nil

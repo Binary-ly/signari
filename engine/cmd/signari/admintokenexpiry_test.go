@@ -29,7 +29,7 @@ func TestAnAdminTokenFromTheCLIExpiresUnlessToldNotTo(t *testing.T) {
 		t.Cleanup(func() {
 			_, _ = db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name = $1`, name)
 		})
-		if err := adminTokenCreate(ctx, db, name, "", "config:read", in, given, "", ""); err != nil {
+		if err := adminTokenCreate(ctx, db, name, "", "config:read", in, given, "", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		var at *time.Time

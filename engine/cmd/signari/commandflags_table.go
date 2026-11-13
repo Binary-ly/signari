@@ -5,7 +5,7 @@ package main
 // TestEachCommandParsesOnlyTheFlagsItReads, which writes this file anew with
 // -command-flags-out.
 var commandFlags = map[string][]string{
-	"admin-token create":              {"admin-url", "clients", "expires-in", "groups", "name", "org", "scopes", "token-file"},
+	"admin-token create":              {"admin-url", "attributes", "clients", "expires-in", "groups", "name", "org", "scopes", "token-file"},
 	"admin-token list":                {"admin-url", "o", "token-file"},
 	"admin-token revoke":              {"admin-url", "token-file", "token-id"},
 	"apply":                           {"f", "org", "prune"},

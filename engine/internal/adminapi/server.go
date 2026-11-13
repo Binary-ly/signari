@@ -1465,6 +1465,13 @@ var errNotFound = errors.New("not found")
 // pretending otherwise sends an operator hunting for a resource that is right
 // where they left it.
 func writeCrossOrg(w http.ResponseWriter, err error) {
+	var objects outsideObjects
+	if errors.As(err, &objects) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "outside_token_objects", "detail": objects.msg,
+		})
+		return
+	}
 	writeJSON(w, http.StatusForbidden, map[string]string{
 		"error": "outside_token_organisation", "detail": err.Error(),
 	})

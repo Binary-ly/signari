@@ -76,17 +76,18 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 	s.writeList(w, r, map[string]any{"org_id": orgID, "providers": out})
 }
 
-// narrowedTokenRefused answers a token narrowed to named applications or
-// groups, for a change that acts on applications and people the token never
-// names: a provider is consulted on every sign-in or token in the
-// organisation, and an outpost verifies anybody's password.
+// narrowedTokenRefused answers a token narrowed to named applications, groups
+// or user attributes, for a change that acts on applications, people and
+// attributes the token never names: a provider is consulted on every sign-in
+// or token in the organisation, an outpost verifies anybody's password, and an
+// upstream's attribute map or a configuration file sets any attribute.
 func narrowedTokenRefused(w http.ResponseWriter, r *http.Request, detail string) bool {
 	ctx := r.Context()
-	if clientFilter(ctx) == nil && groupFilter(ctx) == nil {
+	if clientFilter(ctx) == nil && groupFilter(ctx) == nil && attributeFilter(ctx) == nil {
 		return false
 	}
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "outside_token_objects",
-		"detail": "a token limited to named applications or groups cannot " + detail})
+		"detail": "a token limited to named applications, groups or attributes cannot " + detail})
 	return true
 }
 

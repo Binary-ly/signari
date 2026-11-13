@@ -227,8 +227,13 @@ func (s *Server) getUserAttributes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token narrowed to named attributes is given those, and nothing else is
+	// said about the rest: not their values, and not that the person has them.
 	out := make([]map[string]any, 0, len(values))
 	for _, v := range values {
+		if requireAttribute(ctx, v.Name) != nil {
+			continue
+		}
 		out = append(out, map[string]any{
 			"name": v.Name, "display_name": v.DisplayName,
 			"value_type": v.ValueType, "personal": v.Personal,
@@ -279,6 +284,14 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
+		}
+
+		// Every name the token may reach, before any is written: one it may not
+		// refuses the whole request, rather than writing the rest.
+		for name := range req.Attributes {
+			if err := requireAttribute(ctx, name); err != nil {
+				return err
+			}
 		}
 
 		// Names only, never values, and sorted so the record is stable.
@@ -346,6 +359,10 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) clearUserAttribute(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID, name := r.PathValue("userID"), r.PathValue("name")
+	if err := requireAttribute(ctx, name); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
 	orgID, ok := s.consentUser(w, r)
 	if !ok {
 		return

@@ -1868,16 +1868,17 @@ type GetTokensResponse struct {
 
 // GetTokensResponseTokensItem is a JSON object of the Admin API.
 type GetTokensResponseTokensItem struct {
-	ClientIDs  []string `json:"client_ids,omitempty"`
-	CreatedAt  string   `json:"created_at"`
-	ExpiresAt  *string  `json:"expires_at,omitempty"`
-	GroupIDs   []string `json:"group_ids,omitempty"`
-	ID         string   `json:"id"`
-	LastUsedAt *string  `json:"last_used_at,omitempty"`
-	Name       string   `json:"name"`
-	OrgID      *string  `json:"org_id,omitempty"`
-	RevokedAt  *string  `json:"revoked_at,omitempty"`
-	Scopes     []string `json:"scopes"`
+	AttributeNames []string `json:"attribute_names,omitempty"`
+	ClientIDs      []string `json:"client_ids,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	ExpiresAt      *string  `json:"expires_at,omitempty"`
+	GroupIDs       []string `json:"group_ids,omitempty"`
+	ID             string   `json:"id"`
+	LastUsedAt     *string  `json:"last_used_at,omitempty"`
+	Name           string   `json:"name"`
+	OrgID          *string  `json:"org_id,omitempty"`
+	RevokedAt      *string  `json:"revoked_at,omitempty"`
+	Scopes         []string `json:"scopes"`
 }
 
 // GetUsersResponse is a JSON object of the Admin API.
@@ -3203,12 +3204,13 @@ type PostSubjectsSubjectIDEraseResponse struct {
 
 // PostTokensRequest is a JSON object of the Admin API.
 type PostTokensRequest struct {
-	ClientIDs  *[]string `json:"client_ids,omitempty"`
-	ExpiresInS *int64    `json:"expires_in_s,omitempty"`
-	GroupIDs   *[]string `json:"group_ids,omitempty"`
-	Name       *string   `json:"name,omitempty"`
-	OrgID      *string   `json:"org_id,omitempty"`
-	Scopes     *[]string `json:"scopes,omitempty"`
+	AttributeNames *[]string `json:"attribute_names,omitempty"`
+	ClientIDs      *[]string `json:"client_ids,omitempty"`
+	ExpiresInS     *int64    `json:"expires_in_s,omitempty"`
+	GroupIDs       *[]string `json:"group_ids,omitempty"`
+	Name           *string   `json:"name,omitempty"`
+	OrgID          *string   `json:"org_id,omitempty"`
+	Scopes         *[]string `json:"scopes,omitempty"`
 }
 
 // PostTokensResponse is a JSON object of the Admin API.

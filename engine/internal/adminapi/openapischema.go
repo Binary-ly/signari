@@ -390,7 +390,8 @@ var opSchemas = map[string]opSchema{
 		"tokens": arrayOf(object([]string{"id", "name", "scopes", "created_at"}, map[string]jsonSchema{
 			"id": uuidStr(), "name": str(), "org_id": nullable(uuidStr()), "scopes": arrayOf(str()),
 			"client_ids": nullable(arrayOf(str())), "group_ids": nullable(arrayOf(str())),
-			"created_at": dateTime(), "expires_at": nullable(dateTime()), "revoked_at": nullable(dateTime()),
+			"attribute_names": nullable(arrayOf(str())),
+			"created_at":      dateTime(), "expires_at": nullable(dateTime()), "revoked_at": nullable(dateTime()),
 			"last_used_at": nullable(dateTime())}))})},
 	"GET /admin/users": {http.StatusOK, nil, object([]string{"users"}, map[string]jsonSchema{
 		"users": arrayOf(userSummarySchema), "next_cursor": str()})},

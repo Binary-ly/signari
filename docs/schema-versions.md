@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0295 admin_token_attributes
+
+Compatible with the release before: its binary may still serve this schema.
+
+Narrowing an admin token to named user attributes (ASVS 5.0.0 V8.2.3, field-level access): such a token reads, sets and clears only those attributes' values, releases only those to applications through claim mappers, and is refused what reaches every attribute at once (a person's whole export, a configuration file, an upstream's attribute map). Until now `users:read` read every value a person held, personal ones unsealed, so a help desk's lookup token read what a payroll integration's needed. NULL is every attribute, as for client_ids and group_ids (0120), and an empty array is none. Compatible with the previous release, which ignores the column: a narrowed token is then unnarrowed there.
+
 ## 0294 codes_bound_to_the_attempt
 
 Compatible with the release before: its binary may still serve this schema.

@@ -191,10 +191,19 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string, atte
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	code, address, err := store.IssueEmailOTP(ctx, tx, userID, attempt)
-	if err == nil && !s.allowRecovery(ctx, "mfa:email:user:hour:"+userID, emailCodesPerHour, time.Hour) {
-		// Charged only for a code that would go out; over it, the code is not
-		// stored and nothing is sent, and the page is the same.
-		return
+	if err == nil {
+		// Charged in the transaction that stores the code, so a code that does
+		// not go out costs nothing, and the check holds no second connection.
+		// Over it, the code is not stored, nothing is sent, and the page is the
+		// same.
+		res, rerr := store.AllowRate(ctx, tx, "mfa:email:user:hour:"+userID, emailCodesPerHour, time.Hour)
+		if rerr != nil {
+			s.log.ErrorContext(ctx, "checking the sign-in code allowance", "err", rerr)
+			return
+		}
+		if !res.Allowed {
+			return
+		}
 	}
 	switch {
 	case errors.Is(err, store.ErrNoEmailOTP):

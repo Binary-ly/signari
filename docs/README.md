@@ -173,6 +173,7 @@ command or an environment variable exists in code and not on its page.
 | | |
 |---|---|
 | [security-review-asvs.md](security-review-asvs.md) | OWASP ASVS 5.0, requirement by requirement |
+| [security-review-cwe-top25.md](security-review-cwe-top25.md) | MITRE's 2025 CWE Top 25, each held where, by file and line |
 | [security-review-rfc9700.md](security-review-rfc9700.md) | RFC 9700 (BCP 240) |
 | [security-review-fapi2.md](security-review-fapi2.md) | FAPI 2.0 Security Profile |
 | [security-review-nist-800-63b.md](security-review-nist-800-63b.md) | NIST SP 800-63B revision 4 |

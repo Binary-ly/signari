@@ -279,7 +279,7 @@ loss, compromise, revocation. This review had never opened it.
 
 | Requirement | Signari |
 |---|---|
-| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **met except for SMS.** Passkeys have been covered since 20 August 2026 (see *Account Notifications* below), authenticator apps and email codes since October 2026, and regenerated recovery codes as well. Binding an SMS number still sends nothing. The section below is kept as the record of the gap |
+| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **met.** Passkeys have been covered since 20 August 2026 (see *Account Notifications* below), authenticator apps and email codes since October 2026, and regenerated recovery codes as well. An SMS number was the last: proving one now tells every channel the account has (`httpapi/enrol.go`, `mail.smsotp.enrolled`), and this row said otherwise until November 2026. The section below is kept as the record of the gap |
 | §4.3: "**SHALL** suspend, invalidate, or destroy compromised authenticators … promptly following compromise detection" | met — a credential can be removed from the account screen, and a session compromise revokes the refresh lineage |
 | §4.5: "**SHALL** promptly invalidate authenticators when a subscriber account ceases to exist …, when requested by the subscriber, when the authenticator is compromised …" | met |
 | §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | met for passkey removal (see *§4.5 Invalidation* below), and for an authenticator app or a set of recovery codes disabled at §3.2.2's ceiling |
@@ -345,7 +345,10 @@ and §5 (session management) have now each been read against source. §6, §7 an
 and carry no verifier SHALLs.
 
 When this was written, one SHALL was unmet: **§4.1.2.1's binding notification**
-(TODO 9h). It has since been closed for every authenticator except an SMS number.
+(TODO 9h). It has since been closed for every authenticator, an SMS number included:
+a number proved by its code is told to every channel the account has
+(`httpapi/enrol.go`, the `mail.smsotp.enrolled` notice), and a number it replaced
+hears that its codes have moved.
 One deliberate deviation stands: **§3.2.2's consecutive-failure limit** for
 passwords (TODO 9e), taken to avoid a targeted denial of service. The authenticator
 half of §3.2.2 was recorded here as met, and it was not; October 2026 corrects

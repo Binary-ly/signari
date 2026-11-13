@@ -195,7 +195,11 @@ func Run(ctx context.Context, opt Options) (*Report, error) {
 	}
 
 	rep.add(probeHeaderInjection(ctx, client, base))
-	rep.add(probeBrowser(ctx, client, base, opt.Issuer))
+	browser, loc := probeBrowser(ctx, client, base, opt.Issuer)
+	rep.add(browser)
+	if beginsHere(base, loc) {
+		rep.add(probeBegin(ctx, client, base, loc, opt.Issuer))
+	}
 
 	if opt.Origin != "" {
 		rep.add(probeOriginBypass(ctx, client, opt.Origin, opt.Issuer))
@@ -222,7 +226,12 @@ func Run(ctx context.Context, opt Options) (*Report, error) {
 // The conservative direction matters: anything not clearly a refusal is treated
 // as exposed, because a checker that resolves ambiguity in the deployment's
 // favour is worse than no checker.
-func classify(resp *http.Response, body []byte, issuer string) (Status, string) {
+//
+// base is the application probed, or nil when the answer came from somewhere
+// else: a redirect to its own /.signari/proxy/begin is the identity provider's
+// too, for a host that keeps a cookie of its own, and probeBegin checks where
+// that goes.
+func classify(resp *http.Response, body []byte, issuer string, base *url.URL) (Status, string) {
 	loc := resp.Header.Get("Location")
 
 	switch {
@@ -232,6 +241,10 @@ func classify(resp *http.Response, body []byte, issuer string) (Status, string) 
 	case resp.StatusCode >= 300 && resp.StatusCode < 400 && loc != "":
 		if issuer != "" && strings.HasPrefix(loc, strings.TrimRight(issuer, "/")) {
 			return Protected, fmt.Sprintf("%d to the identity provider", resp.StatusCode)
+		}
+		if base != nil && beginsHere(base, loc) {
+			return Protected, fmt.Sprintf("%d to %s on this address, where a host that keeps "+
+				"a cookie of its own begins its sign-in", resp.StatusCode, pathBegin)
 		}
 		if issuer != "" {
 			// Redirecting somewhere else is not automatically wrong -- it may be
@@ -261,7 +274,7 @@ func probePath(ctx context.Context, c *http.Client, base *url.URL, path, issuer 
 		res.Status, res.Detail = Unknown, err.Error()
 		return res
 	}
-	res.Status, res.Detail = classify(resp, body, issuer)
+	res.Status, res.Detail = classify(resp, body, issuer, base)
 	if res.Status == Exposed {
 		if path == "/" {
 			// The root being open means nothing is attached at all, which is a
@@ -296,7 +309,7 @@ func probeMethod(ctx context.Context, c *http.Client, base *url.URL, method stri
 			"a rule written for GET leaves POST unauthenticated."
 		return res
 	}
-	res.Status, res.Detail = classify(resp, body, "")
+	res.Status, res.Detail = classify(resp, body, "", base)
 	if res.Status == Exposed {
 		res.Fix = fmt.Sprintf("%s requests bypass authentication. Remove any method "+
 			"condition from the auth rule.", method)
@@ -337,7 +350,7 @@ func probeHeaderInjection(ctx context.Context, c *http.Client, base *url.URL) Re
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-	res.Status, res.Detail = classify(resp, body, "")
+	res.Status, res.Detail = classify(resp, body, "", base)
 	if res.Status == Exposed {
 		res.Detail = fmt.Sprintf("%d: an anonymous request that merely CLAIMED to be a "+
 			"user in a header was served %d bytes", resp.StatusCode, len(body))
@@ -375,7 +388,7 @@ func probeOriginBypass(ctx context.Context, c *http.Client, origin, issuer strin
 	// authentication, it is very likely the proxy itself -- a misread of the
 	// operator's own topology, not a hole. Calling that a critical finding is how
 	// a checker teaches people to ignore it.
-	st, detail := classify(resp, body, issuer)
+	st, detail := classify(resp, body, issuer, nil)
 	if st == Protected {
 		res.Status = Protected
 		res.Detail = detail + "; that address enforces authentication, so it is " +
@@ -400,14 +413,15 @@ func probeOriginBypass(ctx context.Context, c *http.Client, origin, issuer strin
 // probes send no Accept and count any 401 as protected, which a proxy that
 // hands Signari's 401 to the browser unchanged -- Traefik and Caddy both do --
 // also earns: protected, and nobody can sign in through it.
-func probeBrowser(ctx context.Context, c *http.Client, base *url.URL, issuer string) Result {
+//
+// It returns where the browser was sent too, for probeBegin.
+func probeBrowser(ctx context.Context, c *http.Client, base *url.URL, issuer string) (Result, string) {
 	target := base.String() + "/"
 	res := Result{Probe: "a browser opening the page", Target: target}
-	resp, body, err := doWith(ctx, c, http.MethodGet, target, nil, map[string]string{
-		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+	resp, body, err := doWith(ctx, c, http.MethodGet, target, nil, browserAccept)
 	if err != nil {
 		res.Status, res.Detail = Unknown, err.Error()
-		return res
+		return res, ""
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		res.Status = Stranded
@@ -415,11 +429,96 @@ func probeBrowser(ctx context.Context, c *http.Client, base *url.URL, issuer str
 		res.Fix = "point the proxy at /proxy/verify/redirect (Traefik `address`, Caddy `uri`), " +
 			"which sends a browser to sign in and keeps the 401 for API calls; or turn " +
 			"the 401 into a redirect in the proxy, as the nginx recipe does."
-		return res
+		return res, ""
 	}
-	res.Status, res.Detail = classify(resp, body, issuer)
+	res.Status, res.Detail = classify(resp, body, issuer, base)
 	if res.Status == Protected {
 		res.Detail = "sent to sign in: " + res.Detail
+	}
+	return res, resp.Header.Get("Location")
+}
+
+// The first step of a sign-in for a host that keeps a cookie of its own (`signari
+// proxy cookie -cookie own`), served on the application's address and routed by its
+// proxy to Signari, and where Signari sends the browser from there.
+const (
+	pathBegin = "/.signari/proxy/begin"
+	pathStart = "/proxy/start"
+)
+
+var browserAccept = map[string]string{
+	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+// beginsHere reports whether loc sends the browser to base's own /.signari/proxy/begin.
+func beginsHere(base *url.URL, loc string) bool {
+	u, ok := resolve(base, loc)
+	return ok && u.Path == pathBegin
+}
+
+// resolve is loc as the browser reads it on base, and whether that is on base itself.
+func resolve(base *url.URL, loc string) (*url.URL, bool) {
+	if loc == "" {
+		return nil, false
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		return nil, false
+	}
+	u = base.ResolveReference(u)
+	return u, u.Scheme == base.Scheme && strings.EqualFold(u.Host, base.Host)
+}
+
+// probeBegin follows a browser sent to the application's own /.signari/proxy/begin
+// one step, which none of the other probes do. The proxy has to hand that path to
+// Signari, and Signari's answer back unchanged; a sign-in that goes wrong there
+// exposes nothing, so every other probe passes, and nobody can sign in. Measured with
+// nginx 1.31.8 and the recipe's location block before it said `proxy_redirect off`:
+// nginx rewrote Signari's `Location: <issuer>/proxy/start?...` to `/proxy/start?...`,
+// which the browser asks this application for, whose forward auth sends it to begin
+// again, for ever.
+func probeBegin(ctx context.Context, c *http.Client, base *url.URL, begin, issuer string) Result {
+	u, _ := resolve(base, begin)
+	res := Result{Probe: "the sign-in begun at this address", Target: u.String()}
+	resp, _, err := doWith(ctx, c, http.MethodGet, u.String(), nil, browserAccept)
+	if err != nil {
+		res.Status, res.Detail = Unknown, err.Error()
+		return res
+	}
+	loc := resp.Header.Get("Location")
+	next, here := resolve(base, loc)
+	route := "route /.signari/ on this host to Signari, with the host it was asked for " +
+		"in X-Forwarded-Host, ahead of the forward auth (docs/forward-auth.md, " +
+		"\"An application on another domain\")."
+	switch redirect := resp.StatusCode >= 300 && resp.StatusCode < 400 && next != nil; {
+	case resp.StatusCode == http.StatusNotFound:
+		res.Status = Stranded
+		res.Detail = "404: nothing here answers " + pathBegin + ", so the browser stops on the application's 404"
+		res.Fix = route
+	case redirect && here && next.Path == pathStart:
+		res.Status = Stranded
+		res.Detail = fmt.Sprintf("%d to %s on this address, not the issuer's: the proxy rewrote "+
+			"the issuer's address in Signari's redirect, and the browser goes round between "+
+			"here and %s", resp.StatusCode, pathStart, pathBegin)
+		res.Fix = "hand Signari's Location back unchanged: in nginx, `proxy_redirect off;` " +
+			"in the /.signari/ location, whose default rewrites the proxy_pass address."
+	case redirect && here && next.Path == pathBegin:
+		res.Status = Stranded
+		res.Detail = fmt.Sprintf("%d back to %s: the path is behind the forward auth "+
+			"rather than handed to Signari", resp.StatusCode, pathBegin)
+		res.Fix = route
+	case redirect && issuer != "" && strings.HasPrefix(loc, strings.TrimRight(issuer, "/")+pathStart):
+		res.Status = Protected
+		res.Detail = fmt.Sprintf("%d to the identity provider's %s", resp.StatusCode, pathStart)
+	case redirect && issuer == "" && !here && next.Path == pathStart:
+		res.Status = Protected
+		res.Detail = fmt.Sprintf("%d to %s", resp.StatusCode, truncate(loc, 60))
+	case redirect:
+		res.Status = Unknown
+		res.Detail = fmt.Sprintf("%d to %s, which is not the issuer's %s", resp.StatusCode,
+			truncate(loc, 60), pathStart)
+	default:
+		res.Status = Unknown
+		res.Detail = fmt.Sprintf("%d, where Signari sends the browser on", resp.StatusCode)
 	}
 	return res
 }

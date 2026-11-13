@@ -4215,10 +4215,11 @@ func proxyCheck(ctx context.Context, app, issuer, origin, extraPaths string, ins
 			len(open), len(rep.Results))
 	}
 	// Nothing open, and nobody can sign in either: a separate sentence, since
-	// the fix is the proxy's verify address rather than a hole in it.
+	// the fix is the proxy's verify address, or how it routes /.signari/, rather
+	// than a hole in it.
 	if stuck := rep.Stranded(); len(stuck) > 0 {
-		fmt.Printf("\n  Nothing is exposed, but a browser is refused and never sent to sign in.\n\n")
-		return fmt.Errorf("browsers are left on the proxy's refusal instead of being sent to sign in")
+		fmt.Printf("\n  Nothing is exposed, but a browser never reaches the sign-in page.\n\n")
+		return fmt.Errorf("browsers are stopped or sent round before they reach the sign-in page")
 	}
 	fmt.Printf("\n  No probe reached the application unauthenticated.\n" +
 		"  That is evidence, not a guarantee: it covers the paths and methods\n" +

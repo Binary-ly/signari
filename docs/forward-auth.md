@@ -293,6 +293,10 @@ the answer actually matters. It looks for:
 - **identity-header injection** — a request that merely *claims* to be a user
 - **direct-to-origin bypass** — the app still listening on its own port, which
   makes everything else in the report irrelevant
+- **a sign-in that never arrives** — the proxy hands a browser its 401 instead of a
+  redirect, or, for a host that [keeps a cookie of its own](#an-application-on-another-domain),
+  `/.signari/` is not routed to Signari or its redirect comes back rewritten. Nothing is
+  open, and nobody can sign in, so it is reported as `STUCK`
 
 A clean run is evidence, not a guarantee. It covers the paths and methods listed
 in the output, from wherever it ran — nothing more, and the command says so.
@@ -345,16 +349,32 @@ signari proxy cookie -org <uuid> -host n8n.other.com -cookie own
 ```
 
 Its proxy has to route one more path to Signari, sending the application's name in
-`X-Forwarded-Host`. On nginx, alongside the `location` blocks below:
+`X-Forwarded-Host`, and hand Signari's redirects back unchanged. On nginx, alongside the
+`location` blocks above:
 
 ```nginx
 location /.signari/ {
     proxy_pass              https://auth.example.com;
     proxy_ssl_server_name   on;
+    # Without it, nginx rewrites the issuer's address in Signari's redirect to this
+    # application's, and the browser goes round between here and /proxy/start.
+    proxy_redirect          off;
     proxy_set_header Host             auth.example.com;
     proxy_set_header X-Forwarded-Host $http_host;
 }
 ```
+
+Measured with nginx 1.31.8 in November 2026, with two applications on a domain the
+issuer shares nothing with: the sign-in, the page asked for served with the person's
+headers, a forged `X-Forwarded-User` replaced, the neighbouring application signed in on
+the same session with no second password, a link that ends a sign-in refused in another
+browser, and sign-out at the issuer ending it at the application. The first version of
+this block had no `proxy_redirect off`, and no browser could sign in through it.
+nginx's default rewrote `Location: https://auth.example.com/proxy/start?…` to
+`/proxy/start?…`, which the browser then asked the application for. Its forward auth
+sent the browser back to begin, and so on for ever. Nothing was exposed, so a check
+that only looks for open paths passed it. `signari proxy check` now follows the sign-in
+begun at the application's address one step, and names this.
 
 The sign-in then goes:
 

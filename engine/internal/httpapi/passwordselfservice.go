@@ -154,7 +154,7 @@ func (s *Server) handleAccountPasswordPost(w http.ResponseWriter, r *http.Reques
 		s.log.ErrorContext(ctx, "reading password history", "err", perr)
 	}
 	if _, err := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); err != nil {
-		s.renderAccountPassword(w, r, err.Error(), "")
+		s.renderAccountPassword(w, r, s.passwordRefusalText(r, err), "")
 		return
 	}
 

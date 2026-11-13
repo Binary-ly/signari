@@ -88,6 +88,42 @@ func TestVoluntaryPasswordChangeRequiresTheCurrentPassword(t *testing.T) {
 	}
 }
 
+// The policy's refusal is said in the reader's language, with the number it names,
+// and never as the policy's English (which the Admin API and the command line keep).
+func TestAPasswordTheSigninPolicyRefusesIsSaidInTheReadersLanguage(t *testing.T) {
+	f := newSignInFixture(t)
+	out := f.attempt(t, f.email, signInTestPassword)
+	if out.sessionCookie == "" {
+		t.Fatal("could not sign in to obtain a session")
+	}
+	for lang, want := range map[string]string{
+		"ar": "يجب أن تتكون كلمة المرور من",
+		"en": "Passwords must be at least",
+	} {
+		getReq := httptest.NewRequest(http.MethodGet, "/account/password", nil)
+		getReq.AddCookie(&http.Cookie{Name: SessionCookieName, Value: out.sessionCookie})
+		getRec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(getRec, getReq)
+		csrfCookie, csrfField := extractCSRF(t, getRec)
+		form := url.Values{"current": {signInTestPassword}, "password": {"short"}, "confirm": {"short"},
+			csrfFormField: {csrfField}}
+		req := httptest.NewRequest(http.MethodPost, "/account/password", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept-Language", lang)
+		req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: out.sessionCookie})
+		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		body := rec.Body.String()
+		if !strings.Contains(body, want) {
+			t.Errorf("%s: the refusal does not say %q: %s", lang, want, truncate(body, 500))
+		}
+		if lang == "ar" && strings.Contains(body, "passwords must be at least") {
+			t.Error("the policy's English reached an Arabic page")
+		}
+	}
+}
+
 // extractCSRF pulls the CSRF cookie value and the hidden field value from a
 // rendered page, so a test can submit a request that passes the double-submit
 // check.

@@ -353,7 +353,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 	// local length check, because a second place to decide what a password may
 	// be is a second place for it to be weaker.
 	if res, perr := s.pwPolicy.Check(ctx, password, email, nil, s.hasher); perr != nil {
-		fail(perr.Error())
+		fail(s.passwordRefusalText(r, perr))
 		return
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
 		// The check was configured and could not run. Logged loudly: a control

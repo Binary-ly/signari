@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"signari.dev/engine/internal/i18n"
+	"signari.dev/engine/internal/passwords"
 )
 
 // The page set, its layout, and what an override is allowed to do to it.
@@ -813,12 +814,16 @@ func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
 				"internal/i18n/locales/en.json", key)
 		}
 	}
-	// The store names the message for a refused attribute value, and a page says
-	// it later: a key missing there would put the key itself on the page.
-	refusal := regexp.MustCompile(`refuseAttribute\("([^"]+)"`)
+	// The store names the message for a refused attribute value, and the password
+	// policy for a refused password, and a page says it later: a key missing there
+	// would put the key itself on the page.
+	refusal := regexp.MustCompile(`refuse(?:Attribute)?\("([a-z][a-z0-9]*(?:\.[a-z0-9_]+)+)"`)
 	refusals := keysUsedInGo(t, refusal)
-	if len(refusals) == 0 {
-		t.Error("no refuseAttribute call was found; this check is reading nothing")
+	if len(refusals) < 12 {
+		t.Errorf("only %d refusal keys were found; this check is not reading the store and the password policy", len(refusals))
+	}
+	for _, key := range passwords.PatternKeys {
+		refusals = append(refusals, key)
 	}
 	for _, key := range refusals {
 		used[key] = true
@@ -970,8 +975,9 @@ func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
 	var out []string
 	// adminapi as well as httpapi: the Admin API sets a password-change reason,
 	// and that reason is a message key rendered on a page this package owns. store
-	// too: a refused attribute value carries the key a page says it with.
-	for _, pkg := range []string{"httpapi", "adminapi", "store"} {
+	// and passwords too: a refused attribute value or password carries the key a
+	// page says it with.
+	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords"} {
 		dir := filepath.Join("..", pkg)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

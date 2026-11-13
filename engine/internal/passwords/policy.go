@@ -124,10 +124,40 @@ type Result struct {
 	Score int
 }
 
+// Refusal is a password the policy refused, carrying what a page needs to say why in
+// the reader's language: Key names the message and Data holds its values. Error is
+// English, for the Admin API, the command line and logs. A page used to show Error to
+// every reader.
+type Refusal struct {
+	Key  string
+	Data map[string]any
+	text string
+}
+
+func (r *Refusal) Error() string { return r.text }
+
+func refuse(key string, data map[string]any, format string, args ...any) *Refusal {
+	return &Refusal{Key: key, Data: data, text: fmt.Sprintf(format, args...)}
+}
+
+// PatternKeys are the message keys for what a weak password is built around, by the
+// pattern Estimate names; a pattern without one is said without it.
+var PatternKeys = map[string]string{
+	"a repeated block":                               "password.pattern.repeated_block",
+	"a sequence like abcdef or 123456":               "password.pattern.sequence",
+	"a keyboard pattern like qwerty":                 "password.pattern.keyboard",
+	"a date":                                         "password.pattern.date",
+	"your own name or address":                       "password.pattern.identity",
+	"digits only":                                    "password.pattern.digits",
+	"a very common password with additions":          "password.pattern.common",
+	"a common word with letters swapped for symbols": "password.pattern.leet",
+	"one character repeated":                         "password.pattern.repeated_char",
+}
+
 // Check validates a candidate password.
 //
 // `identity` is the person's email or username, and `previous` are their recent
-// hashes, most recent first. Both may be empty.
+// hashes, most recent first. Both may be empty. A refusal is a *Refusal.
 func (p Policy) Check(ctx context.Context, candidate, identity string,
 	previous []string, hasher *Hasher) (Result, error) {
 
@@ -176,15 +206,17 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 	n := len([]rune(candidate))
 	switch {
 	case n < min:
-		return res, fmt.Errorf("passwords must be at least %d characters. A "+
-			"passphrase of a few unrelated words is easier to remember and far "+
-			"harder to guess than a short one with symbols in it", min)
+		return res, refuse("password.refused.short", map[string]any{"Min": min},
+			"passwords must be at least %d characters. A "+
+				"passphrase of a few unrelated words is easier to remember and far "+
+				"harder to guess than a short one with symbols in it", min)
 	case n > max:
-		return res, fmt.Errorf("that password is longer than %d characters", max)
+		return res, refuse("password.refused.long", map[string]any{"Max": max},
+			"that password is longer than %d characters", max)
 	}
 
 	if strings.TrimSpace(candidate) == "" {
-		return res, fmt.Errorf("that password is only whitespace")
+		return res, refuse("password.refused.blank", nil, "that password is only whitespace")
 	}
 
 	// Context: a password containing the person's own address or username is
@@ -197,14 +229,14 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 		}
 		if len(local) >= 4 && strings.Contains(strings.ToLower(candidate),
 			strings.ToLower(local)) {
-			return res, fmt.Errorf("that password contains your username, which " +
+			return res, refuse("password.refused.identity", nil, "that password contains your username, which "+
 				"makes it guessable by anyone who knows who you are")
 		}
 	}
 
 	// A single repeated character passes any length rule and is in every corpus.
 	if repeatedRun(candidate) {
-		return res, fmt.Errorf("that password is one character repeated")
+		return res, refuse("password.refused.repeated", nil, "that password is one character repeated")
 	}
 
 	// Guess strength, BEFORE the network. It costs nothing, it runs the same
@@ -214,7 +246,11 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 		st := Estimate(candidate, identity)
 		res.Score = st.Score
 		if st.Score < p.MinScore {
-			return res, fmt.Errorf("%s", st.Explain())
+			data := map[string]any{}
+			if key, ok := PatternKeys[st.Pattern]; ok {
+				data["Pattern"] = key
+			}
+			return res, refuse("password.refused.weak", data, "%s", st.Explain())
 		}
 	}
 
@@ -227,8 +263,9 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 		}
 		for i := 0; i < limit; i++ {
 			if _, err := hasher.Verify(ctx, previous[i], candidate); err == nil {
-				return res, fmt.Errorf("that is one of your last %d passwords. "+
-					"Reusing one undoes the reason for changing it", p.HistoryDepth)
+				return res, refuse("password.refused.reused", map[string]any{"Depth": p.HistoryDepth},
+					"that is one of your last %d passwords. "+
+						"Reusing one undoes the reason for changing it", p.HistoryDepth)
 			}
 		}
 	}
@@ -241,12 +278,12 @@ func (p Policy) Check(ctx context.Context, candidate, identity string,
 			if breached {
 				// Deliberately not "how many times". A count invites bargaining,
 				// and the answer is the same whatever it is.
-				return res, fmt.Errorf("that password appears in a known breach, " +
-					"so it is already in the lists attackers try first. Choose " +
+				return res, refuse("password.refused.breached", nil, "that password appears in a known breach, "+
+					"so it is already in the lists attackers try first. Choose "+
 					"another -- it does not have to be complicated, only unused")
 			}
 		case p.BreachRequired:
-			return res, fmt.Errorf("the breach check could not run and this " +
+			return res, refuse("password.refused.breachcheck", nil, "the breach check could not run and this "+
 				"deployment requires it, so the password was not accepted. Try again")
 		default:
 			// Let it through, and the caller logs that the check did not run.

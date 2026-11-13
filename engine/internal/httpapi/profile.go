@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 )
 
@@ -136,6 +137,26 @@ func (s *Server) attributeRefusalText(r *http.Request, err error, label string) 
 		label = refused.Label
 	}
 	return tr.Text(refused.Key, map[string]any{"Name": label})
+}
+
+// passwordRefusalText says why the password policy refused a password, in the reader's
+// language: what a weak one is built around is said in it too. Any other error is said
+// as a refusal, never as its English.
+func (s *Server) passwordRefusalText(r *http.Request, err error) string {
+	tr := s.tr(r)
+	var refused *passwords.Refusal
+	if !errors.As(err, &refused) {
+		return tr.Text("password.refused.generic")
+	}
+	data := map[string]any{}
+	for k, v := range refused.Data {
+		data[k] = v
+	}
+	if pattern, ok := refused.Data["Pattern"].(string); ok {
+		data["Pattern"] = tr.Text(pattern)
+		return tr.Text("password.refused.weakpattern", data)
+	}
+	return tr.Text(refused.Key, data)
 }
 
 // handleProfilePost saves what the person may set.

@@ -126,7 +126,7 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	}
 
 	if _, err := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); err != nil {
-		again(err.Error())
+		again(s.passwordRefusalText(r, err))
 		return
 	}
 

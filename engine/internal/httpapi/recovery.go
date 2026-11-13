@@ -616,7 +616,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		// second password a person tried after a refused first could never be
 		// submitted.
 		s.renderPage(w, r, "reset", map[string]any{
-			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
+			"Ready": true, "Token": r.PostForm.Get("token"), "Error": s.passwordRefusalText(r, cerr),
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 		return

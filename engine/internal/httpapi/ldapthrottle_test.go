@@ -257,7 +257,7 @@ func TestAnLDAPBindIsRefusedOnceTheAddressBudgetIsSpent(t *testing.T) {
 // the form, because they guard the same credential.
 func TestTheLDAPAndFormBudgetsAreTheSameBudget(t *testing.T) {
 	a, ctx := ldapAuthFixture(t)
-	clearOfWindowEdge(t, signInPerAccountWindow)
+	start := clearOfWindowEdge(t, signInPerAccountWindow)
 	user := uniqueName(t)
 	key := "signin:fail:user:" + strings.ToLower(user)
 	cleanupBuckets(t, a, ctx, key)
@@ -276,9 +276,11 @@ func TestTheLDAPAndFormBudgetsAreTheSameBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n < signInPerAccountLimit {
-		t.Fatalf("the form's bucket %q holds %d failures after %d LDAP binds. "+
+		t.Fatalf("the form's bucket %q holds %d failures after %d LDAP binds%s. "+
 			"Two doors onto one credential must draw down one budget, or the "+
-			"budget describes neither door.", key, n, signInPerAccountLimit)
+			"budget describes neither door. (A short count has also meant another "+
+			"process deleting buckets on this database: 0.11.)",
+			key, n, signInPerAccountLimit, windowTurned(start, signInPerAccountWindow))
 	}
 }
 

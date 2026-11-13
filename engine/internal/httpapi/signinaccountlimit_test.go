@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,10 +38,26 @@ func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 	f := newSignInFixture(t)
 	clearOfWindowEdge(t, signInPerAccountWindow)
 
-	if _, err := f.pool.Exec(context.Background(),
-		`DELETE FROM core.rate_limits WHERE bucket_key LIKE 'signin:%'`); err != nil {
-		t.Fatalf("clearing sign-in buckets: %v", err)
+	// Addresses of this run's own, each in a /64 of its own since an IPv6 budget
+	// is keyed by its /64, and only this run's buckets deleted afterwards. It used
+	// to sign in from fixed addresses and so first deleted every `signin:` key,
+	// which emptied the account bucket of a test running beside it in another
+	// process on the same database: TestTheLDAPAndFormBudgetsAreTheSameBudget then
+	// read 11 failures after 30, and 27 runs in 400 failed with the two looped
+	// side by side (0.11).
+	run := rand.Uint32()
+	keys := []string{"signin:fail:user:" + strings.ToLower(f.email), "signin:fail:account:" + f.userID}
+	address := func(i int) string {
+		a := fmt.Sprintf("2001:db8:%x:%x::1", run>>16, run&0xff00|uint32(i))
+		keys = append(keys, "signin:fail:ip:"+budgetIP(a))
+		return a
 	}
+	t.Cleanup(func() {
+		if _, err := f.pool.Exec(context.Background(),
+			`DELETE FROM core.rate_limits WHERE bucket_key = ANY($1)`, keys); err != nil {
+			t.Logf("deleting this test's sign-in buckets: %v", err)
+		}
+	})
 
 	attemptFrom := func(addr, password string) *http.Response {
 		t.Helper()
@@ -68,7 +86,7 @@ func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
-		req.RemoteAddr = addr + ":5555"
+		req.RemoteAddr = net.JoinHostPort(addr, "5555")
 		rec := httptest.NewRecorder()
 		f.srv.rateLimitedLogin(rec, req)
 		return rec.Result()
@@ -77,7 +95,7 @@ func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 	throttledAt := -1
 	for i := 0; i < signInPerAccountLimit+1; i++ {
 		// A fresh address every time: no per-address budget is ever spent twice.
-		res := attemptFrom(fmt.Sprintf("198.51.100.%d", i%254+1), "not-the-password")
+		res := attemptFrom(address(i), "not-the-password")
 		if res.Header.Get("Retry-After") != "" || res.StatusCode == http.StatusTooManyRequests {
 			throttledAt = i
 			break
@@ -103,7 +121,7 @@ func TestOneAccountIsProtectedFromManyAddresses(t *testing.T) {
 		SET throttled_until = now() + interval '1 minute' WHERE user_id = $1::uuid`, f.userID); err != nil {
 		t.Fatal(err)
 	}
-	res := attemptFrom("192.0.2.77", "not-the-password")
+	res := attemptFrom(address(255), "not-the-password")
 	if res.Header.Get("Retry-After") == "" && res.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("an unseen address was allowed to keep guessing at the same "+
 			"account (status %d, no Retry-After); the protection is keyed on the "+

@@ -370,7 +370,10 @@ func TestTheMailboxIsNotBothFactors(t *testing.T) {
 		if _, err := tx.Exec(ctx, `UPDATE core.email_otp_credentials SET last_sent_at = NULL WHERE user_id = $1::uuid`, f.userID); err != nil {
 			t.Fatal(err)
 		}
-		code, _, err := store.IssueEmailOTP(ctx, tx, f.userID)
+		// Issued to this very sign-in, so that what refuses it is the mailbox,
+		// not the attempt it was sent for.
+		code, _, err := store.IssueEmailOTP(ctx, tx, f.userID,
+			pendingAttempt(t, f.srv, cookieFrom(page, PendingCookieName).Value))
 		if err != nil {
 			t.Fatal(err)
 		}

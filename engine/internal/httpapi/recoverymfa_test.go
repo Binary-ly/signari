@@ -169,14 +169,24 @@ func TestAnEmailedCodeDoesNotWaiveTheDelay(t *testing.T) {
 		WHERE user_id = $1::uuid`, f.userID); err != nil {
 		t.Fatal(err)
 	}
-	live, _, err := store.IssueEmailOTP(ctx, tx, f.userID)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Issued to this recovery itself, the link's hash, so that what refuses it
+	// is the mailbox the link already proved, not the attempt it was sent for.
+	token := pendingResetToken(t, f)
+	tx, err = f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	live, _, err := store.IssueEmailOTP(ctx, tx, f.userID, store.HashToken(token))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	token := pendingResetToken(t, f)
 	if rec := postResetFactor(t, f, token, live); rec.Code == http.StatusSeeOther {
 		t.Fatal("an emailed code waived the delay")
 	}

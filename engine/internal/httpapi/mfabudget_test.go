@@ -31,6 +31,21 @@ type mfaStep struct {
 	csrfField  string
 	csrfCookie string
 	ip         string
+	// attempt is the sign-in the pending token names, which a code issued for
+	// this step must be issued to (store/codeattempt.go).
+	attempt []byte
+}
+
+// pendingAttempt is the sign-in a pending cookie names.
+func pendingAttempt(t *testing.T, s *Server, pending string) []byte {
+	t.Helper()
+	read := httptest.NewRequest(http.MethodGet, "/login/mfa", nil)
+	read.AddCookie(&http.Cookie{Name: PendingCookieName, Value: pending})
+	claims, err := s.readPending(read)
+	if err != nil || claims.Attempt == "" {
+		t.Fatalf("the pending token names no attempt (%v)", err)
+	}
+	return claims.attemptOf()
 }
 
 func newMFAStep(t *testing.T, f *signInFixture) *mfaStep {
@@ -46,6 +61,7 @@ func newMFAStep(t *testing.T, f *signInFixture) *mfaStep {
 			m.pending = c.Value
 		}
 	}
+	m.attempt = pendingAttempt(t, f.srv, m.pending)
 
 	get := httptest.NewRecorder()
 	f.srv.handleLoginGet(get, httptest.NewRequest(http.MethodGet, "/login", nil))

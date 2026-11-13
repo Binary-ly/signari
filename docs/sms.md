@@ -205,7 +205,8 @@ password exactly which number to attack at the mobile operator.
 | | |
 |---|---|
 | code lifetime | **5 minutes** — shorter than email's ten; a text arrives in seconds and sits on a lock screen |
-| resend interval | 60s — every message costs money, and a resend button with no floor spends somebody else's budget |
+| resend interval | 60s within one sign-in — every message costs money, and a resend button with no floor spends somebody else's budget. Another sign-in is texted a code of its own at once, within the daily allowances per number and per organisation |
+| taken for | the sign-in, or the password reset, it was sent for, and no other: as for [email codes](email-otp.md#one-live-code-never-a-queue-of-them). An LDAP bind, a RADIUS request and the desktop sign-in take none; a bind took one until November 2026 |
 | attempts per code | 5 |
 | wrong codes in a row, across codes | 100, then the factor is switched off and the holder told, as an authenticator app is. No code is sent or accepted until a number is proved again. A right code resets the count |
 | one live code | "send another" replaces, never accumulates |

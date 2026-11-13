@@ -454,8 +454,10 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
+	// The link is this recovery's attempt: a code texted for it finishes it
+	// alone, and one texted for a sign-in does not (store/codeattempt.go).
 	if r.PostForm.Get("send") == "sms" {
-		s.sendSMSOTPIfEnrolled(ctx, req.UserID)
+		s.sendSMSOTPIfEnrolled(ctx, req.UserID, hash)
 		s.renderReset(w, r, req, token, csrf, pending, plan, "", s.tr(r).Text("reset.factor.smssent"))
 		return
 	}
@@ -473,7 +475,7 @@ func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	res, err := s.verifyCode(ctx, tx, req.UserID, strings.TrimSpace(r.PostForm.Get("code")), false)
+	res, err := s.verifyCode(ctx, tx, req.UserID, strings.TrimSpace(r.PostForm.Get("code")), false, hash)
 	switch {
 	case err != nil:
 		_ = tx.Rollback(ctx)

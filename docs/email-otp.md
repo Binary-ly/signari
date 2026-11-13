@@ -56,13 +56,30 @@ attacker would accumulate guesses against a widening set.
 | | |
 |---|---|
 | lifetime | 10 minutes |
-| resend interval | 60 seconds |
+| resend interval | 60 seconds, within one sign-in |
+| codes mailed, per account | 10 an hour |
 | attempts per code | 5 |
 | wrong codes in a row, across codes | 100, then the factor is switched off |
 | stored as | SHA-256, compared in constant time |
+| taken for | the sign-in it was sent for, and no other |
 
 A correct code is destroyed on use, whether or not the rest of the sign-in
 succeeds. A one-time code that survives its use is not one-time.
+
+**A code finishes only the sign-in it was sent for** (ASVS 5.0.0 V6.6.2). The
+sign-in's pending token names an attempt, and the hash of that attempt is kept
+beside the code. Given in any other sign-in, earlier or later, or in a browser
+that started none, the code is no code at all, and nothing is counted against it.
+An LDAP bind, a RADIUS request and the [desktop sign-in](desktop-login.md) send no
+code, so they take none. Until November 2026 a code was bound only to the person,
+so one sent for a sign-in in one browser could finish another, and a bind took a
+texted code sent for a browser's sign-in.
+
+A second sign-in therefore gets a code of its own at once, even within the
+minute, and the first sign-in's code stops working. The minute is a resend's within
+one sign-in. What stops somebody who has the password from filling the inbox is
+ten codes an hour per account; past that nothing is sent, and the page looks the
+same.
 
 **A hundred wrong codes in a row switch the factor off**, the same ceiling an
 authenticator app has. The holder is told, and no more codes are sent or
@@ -137,7 +154,8 @@ no code from such a page, as the password form will not choose between them.
 | | |
 |---|---|
 | lifetime | 10 minutes |
-| codes asked for, per account | one a minute and five an hour; past that, the code already sent stays the one that works |
+| codes asked for, per account | one a minute and five an hour; past that, the code already sent stays the one that works, in the browser that asked for it |
+| taken in | the browser that asked for it: the code page's cookie carries that request's id, and a code another browser asked for is no code there |
 | codes asked for, per address | twenty an hour |
 | attempts per code | 5, and each wrong one is also charged to the account's second-factor budget |
 | stored as | SHA-256, compared in constant time, deleted when used |

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,6 +63,21 @@ type pendingClaims struct {
 	// pages may continue it (enrolmfa.go). Empty for the code step and the
 	// prompts, which are reached by any pending sign-in.
 	Stage string `json:"stg,omitempty"`
+	// Attempt names this sign-in, which every emailed or texted code is
+	// issued to and taken for alone (store/codeattempt.go, ASVS V6.6.2).
+	Attempt string `json:"att,omitempty"`
+}
+
+// newAttempt is a fresh sign-in's name, for its pending token: 128 random bits
+// and more (crypto/rand.Text).
+func newAttempt() string { return rand.Text() }
+
+// attemptOf is the attempt a pending sign-in names, as the store takes it.
+func (p *pendingClaims) attemptOf() []byte {
+	if p == nil || p.Attempt == "" {
+		return nil
+	}
+	return []byte(p.Attempt)
 }
 
 // beginMFAChallenge issues the pending token and renders the code prompt.
@@ -116,9 +132,11 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 	}
 
 	now := time.Now()
+	attempt := newAttempt()
 	tok, err := tokens.NewSigner(key).SignJSON(pendingClaims{
 		Issuer: s.cfg.Issuer, Subject: userID, OrgID: orgID, AMR: amr,
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
+		Attempt: attempt,
 	}, typPending)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "signing the pending token", "err", err)
@@ -141,14 +159,22 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 	//
 	// Not after an emailed sign-in code: that was the mailbox, and a second code
 	// to it is no second factor (verifyCode refuses one there too).
+	//
+	// Each is issued to this sign-in's attempt alone.
 	if primaryProof(amr) != flow.StageEmailOTP {
-		s.sendEmailOTPIfEnrolled(r.Context(), userID)
+		s.sendEmailOTPIfEnrolled(r.Context(), userID, []byte(attempt))
 	}
-	s.sendSMSOTPIfEnrolled(r.Context(), userID)
+	s.sendSMSOTPIfEnrolled(r.Context(), userID, []byte(attempt))
 
 	s.renderMFA(w, r, userID, authzQuery, "")
 	return false
 }
+
+// emailCodesPerHour bounds the sign-in codes mailed to one person in an hour.
+// The minute between them (store.EmailOTPResendInterval) is a resend's within
+// one sign-in, and each sign-in is sent a code of its own; this is what then
+// stops somebody holding the password from filling the person's inbox.
+const emailCodesPerHour = 10
 
 // sendEmailOTPIfEnrolled issues and mails a code, when that factor is enrolled.
 //
@@ -156,7 +182,7 @@ func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe
 // enrolled can still use the app if mail is slow or broken, and blocking the
 // sign-in because SMTP is down would turn a mail outage into an authentication
 // outage.
-func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
+func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string, attempt []byte) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		s.log.ErrorContext(ctx, "beginning a transaction for the email code", "err", err)
@@ -164,7 +190,12 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	code, address, err := store.IssueEmailOTP(ctx, tx, userID)
+	code, address, err := store.IssueEmailOTP(ctx, tx, userID, attempt)
+	if err == nil && !s.allowRecovery(ctx, "mfa:email:user:hour:"+userID, emailCodesPerHour, time.Hour) {
+		// Charged only for a code that would go out; over it, the code is not
+		// stored and nothing is sent, and the page is the same.
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrNoEmailOTP):
 		return // not enrolled; nothing to do
@@ -289,7 +320,8 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 
 	// An email code is a second factor only when the first was not an emailed
 	// code: the same mailbox twice is one factor, whatever amr would say.
-	res, err := s.verifyCode(ctx, tx, pending.Subject, code, primaryProof(pending.AMR) != flow.StageEmailOTP)
+	res, err := s.verifyCode(ctx, tx, pending.Subject, code, primaryProof(pending.AMR) != flow.StageEmailOTP,
+		pending.attemptOf())
 	if err != nil {
 		// Released before rendering, which takes a connection of its own.
 		_ = tx.Rollback(ctx)
@@ -395,7 +427,9 @@ func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWr
 // BindCodeOK checks a code that came with a bind or a RADIUS request, as the
 // sign-in form checks one (7.05): a replay refused, a wrong code charged to the
 // factor it was a guess at and to the person's budget, and a factor it switched
-// off told to them. Not an emailed code: nothing here could have sent one.
+// off told to them. Not an emailed or a texted code: nothing here could have
+// sent one, so one that arrives was sent for another sign-in (codeattempt.go).
+// A texted one was taken until November 2026.
 func (s *Server) BindCodeOK(ctx context.Context, orgID, userID, code string) (bool, error) {
 	spent, err := store.CountRate(ctx, s.db, secondFactorAccountKey(userID), secondFactorPerAccountWindow)
 	if err != nil {
@@ -409,7 +443,7 @@ func (s *Server) BindCodeOK(ctx context.Context, orgID, userID, code string) (bo
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	res, err := s.verifyCode(ctx, tx, userID, code, false)
+	res, err := s.verifyCode(ctx, tx, userID, code, false, nil)
 	if err != nil {
 		return false, err
 	}
@@ -514,8 +548,11 @@ type secondFactorResult struct {
 // mistyped six-digit code charged to the recovery codes would let ordinary
 // typing errors disable the codes kept for the day the phone is gone. Email and
 // SMS codes count their own attempts per code (store.VerifyEmailOTP).
+//
+// For the desktop sign-in, which sends no code and so names no attempt: an
+// emailed or texted code is another sign-in's, and is not taken here.
 func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) (secondFactorResult, error) {
-	return s.verifyCode(ctx, tx, userID, code, true)
+	return s.verifyCode(ctx, tx, userID, code, true, nil)
 }
 
 // guessedAt reports whether a code nothing accepted was a guess at this authenticator,
@@ -531,7 +568,12 @@ func guessedAt(cred *store.TOTPCredential, code string) bool {
 // verifyCode is verifySecondFactor with the email code optional. A recovery
 // leaves it out (5.12): the link already proved the mailbox, so a code sent to
 // a mailbox is no second factor there.
-func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string, withEmail bool) (secondFactorResult, error) {
+//
+// attempt is the sign-in the caller is finishing, which an emailed or texted
+// code must have been issued to (store/codeattempt.go); nil where nothing sent
+// one, and then neither is taken.
+func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string, withEmail bool,
+	attempt []byte) (secondFactorResult, error) {
 	var res secondFactorResult
 	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
 	switch {
@@ -575,7 +617,7 @@ func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string,
 	// is the last resort, not the second guess.
 	var emailGuessed bool
 	if withEmail {
-		ok, guessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code))
+		ok, guessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, attempt, strings.TrimSpace(code))
 		if eerr != nil {
 			return res, eerr
 		} else if ok {
@@ -593,7 +635,7 @@ func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string,
 	// from an authenticator app in every record and every policy decision --
 	// documenting the weakness and then erasing it in the one field that
 	// machines read.
-	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code), s.smsDelegate())
+	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, attempt, strings.TrimSpace(code), s.smsDelegate())
 	if errors.Is(serr, store.ErrSMSVerifierUnavailable) {
 		// Refused, not charged, and the other factors still tried: an outage of
 		// the service is not the person's guess.
@@ -732,7 +774,7 @@ func (s *Server) renderMFAWith(w http.ResponseWriter, r *http.Request, userID, a
 // Only a VERIFIED number is texted. An unverified one is somebody's typo, and
 // sending codes to it would be this engine spamming a stranger every time an
 // account it does not own is signed into.
-func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
+func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string, attempt []byte) {
 	if !s.smsAvailable() {
 		return
 	}
@@ -764,7 +806,7 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	code, number, err := store.IssueSMSOTP(ctx, tx, userID, s.smsVerifier != nil)
+	code, number, err := store.IssueSMSOTP(ctx, tx, userID, attempt, s.smsVerifier != nil)
 	switch {
 	case errors.Is(err, store.ErrNoSMSOTP):
 		return

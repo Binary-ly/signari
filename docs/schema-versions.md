@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0294 codes_bound_to_the_attempt
+
+Compatible with the release before: its binary may still serve this schema.
+
+An emailed or texted sign-in code is bound to the sign-in that asked for it (ASVS 5.0.0 V6.6.2): the hash of the attempt its pending token names is kept beside the code, and the code is refused to any other attempt, earlier or later. Until now a code was bound only to the person, so one sent for a sign-in in one browser could finish another, and an LDAP bind or a desktop sign-in, neither of which sends a code, took one sent for something else. Compatible with the previous release, which neither writes nor reads the column and so goes on binding a code to the person; a code it sent is refused here, and the person asks again.
+
 ## 0293 uma_resources
 
 Compatible with the release before: its binary may still serve this schema.

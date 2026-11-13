@@ -541,6 +541,7 @@ worth recording as carefully as a finding.
 | **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check TOTP implementations most often skip |
 | **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
 | **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
+| **V6.6.2** OOB codes bound to their request | met, November 2026 — the hash of the sign-in's attempt is kept beside each emailed or texted code (`store/codeattempt.go`); see below |
 | **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per user by construction |
 
 ### V6.8.1, and the reason it is the strongest item here
@@ -559,13 +560,17 @@ address.
 
 ### Partial, and honestly so
 
-- **V6.6.2** — codes bound to the *original authentication request*. Ours are
-  bound to the **user**: one live code per account, and requesting another
-  replaces the pending one, so guesses cannot accumulate. A code issued during
-  one login attempt could be spent in a later attempt by the same user. The
-  practical gap is narrow, because spending it still requires the first factor,
-  and binding to a session does not stop the relay attack people actually run
-  (persuading someone to read a code aloud). Recorded rather than changed.
+- ~~**V6.6.2** — codes bound to the *original authentication request*~~ —
+  **met, November 2026** (`specs/asvs-5.0.0.txt:2528-2530`). Codes were bound to
+  the **user**, so one issued during one sign-in could be spent in another, and an
+  LDAP bind or the desktop sign-in took a texted or emailed code sent for a
+  browser's sign-in. Now the sign-in's pending token names an attempt, and the
+  hash of that attempt is kept beside the emailed or texted code. A password reset
+  uses its link as the attempt, and an emailed first-factor code uses the request
+  that asked for it. A code given in any other attempt is no code there. Binding
+  does not stop the relay people actually run (persuading someone to read a code
+  aloud), since the relayer is the one who started the sign-in; see
+  [email codes](email-otp.md#one-live-code-never-a-queue-of-them).
 - ~~**V6.1.x, V6.3.4** — documentation of every authentication pathway and its
   strength~~ — **met, November 2026**: all of them side by side, with what each
   records, in [security-inventories.md](security-inventories.md).

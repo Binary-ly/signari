@@ -53,6 +53,10 @@ type emailCodeClaims struct {
 	OrgID   string `json:"org"`
 	Authz   string `json:"authz,omitempty"`
 	Expiry  int64  `json:"exp"`
+	// Attempt is the request whose code this browser may use, the id
+	// store.StartEmailSignIn gave it: empty for a browser that asked for none,
+	// which no code then finishes (store/codeattempt.go).
+	Attempt string `json:"att,omitempty"`
 }
 
 // emailSignInOffered reports whether the organisation's sign-in flow takes an
@@ -81,9 +85,10 @@ func (s *Server) emailSignInOffered(ctx context.Context, orgID string) bool {
 	return false
 }
 
-func (s *Server) setEmailCodeCookie(w http.ResponseWriter, subject, orgID, authz string) error {
+func (s *Server) setEmailCodeCookie(w http.ResponseWriter, subject, orgID, authz, attempt string) error {
 	raw, err := json.Marshal(emailCodeClaims{
 		Subject: subject, OrgID: orgID, Authz: authz, Expiry: time.Now().Add(emailCodeStep).Unix(),
+		Attempt: attempt,
 	})
 	if err != nil {
 		return err
@@ -149,21 +154,29 @@ func (s *Server) handleEmailSignInStart(w http.ResponseWriter, r *http.Request) 
 	s.noteRemember(w, r)
 	identifier := strings.TrimSpace(r.PostForm.Get("username"))
 	// Nobody, unless the name is somebody's: ids of the same shape either way.
-	subject, subjectOrg := uuid.NewString(), uuid.NewString()
+	// The attempt too, which names no request unless one was made: the
+	// cookie's length is the same for a name nobody has.
+	subject, subjectOrg, attempt := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	if identifier != "" && s.allowRecovery(ctx, "emailsignin:ip:"+budgetIP(clientIP(r)), 20, time.Hour) {
 		if userID, userOrg, ok := s.emailSignInAccount(ctx, identifier, orgID); ok {
 			subject, subjectOrg = userID, userOrg
 			// One a minute and five an hour per account, as recovery is paced:
-			// over the pace the code already sent stays the one that works.
+			// over the pace the code already sent stays the one that works --
+			// in the browser that asked for it, which keeps its attempt. In
+			// another it is that browser's code, not this one's.
 			if s.allowRecovery(ctx, "emailsignin:user:min:"+userID, 1, time.Minute) &&
 				s.allowRecovery(ctx, "emailsignin:user:hour:"+userID, 5, time.Hour) {
-				if err := s.startEmailSignIn(ctx, userID, userOrg); err != nil {
+				if id, err := s.startEmailSignIn(ctx, userID, userOrg); err != nil {
 					s.log.ErrorContext(ctx, "starting an emailed sign-in", "err", err, "correlation_id", correlationID(ctx))
+				} else {
+					attempt = id
 				}
+			} else if held, err := s.readEmailCode(r); err == nil && held.Subject == userID && held.Attempt != "" {
+				attempt = held.Attempt
 			}
 		}
 	}
-	if err := s.setEmailCodeCookie(w, subject, subjectOrg, authz); err != nil {
+	if err := s.setEmailCodeCookie(w, subject, subjectOrg, authz, attempt); err != nil {
 		s.log.ErrorContext(ctx, "issuing the emailed sign-in's token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
@@ -203,16 +216,21 @@ func (s *Server) emailSignInAccount(ctx context.Context, identifier, orgID strin
 	return found[0][0], found[0][1], true
 }
 
-func (s *Server) startEmailSignIn(ctx context.Context, userID, orgID string) error {
+// startEmailSignIn makes the code to be sent and returns the attempt it is for.
+func (s *Server) startEmailSignIn(ctx context.Context, userID, orgID string) (string, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := store.StartEmailSignIn(ctx, tx, userID, orgID); err != nil {
-		return err
+	id, err := store.StartEmailSignIn(ctx, tx, userID, orgID)
+	if err != nil {
+		return "", err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // deliverSignInCode sends the code a NoticeSignInCode names, minting it now.
@@ -265,7 +283,7 @@ func (s *Server) handleEmailSignInVerify(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ok, err := store.VerifyEmailSignIn(ctx, tx, pending.Subject, strings.TrimSpace(r.PostForm.Get("code")))
+	ok, err := store.VerifyEmailSignIn(ctx, tx, pending.Subject, pending.Attempt, strings.TrimSpace(r.PostForm.Get("code")))
 	if err != nil {
 		s.log.ErrorContext(ctx, "checking an emailed sign-in code", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)

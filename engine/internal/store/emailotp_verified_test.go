@@ -67,7 +67,7 @@ func TestAnUnprovedEmailAddressIsNotASecondFactor(t *testing.T) {
 		t.Fatal("HasFactorOtherThanDuo counts an unproved email address")
 	}
 	allowResend(t, tx, userID)
-	if _, _, err := IssueEmailOTP(ctx, tx, userID); !errors.Is(err, ErrNoEmailOTP) {
+	if _, _, err := IssueEmailOTP(ctx, tx, userID, attemptA); !errors.Is(err, ErrNoEmailOTP) {
 		t.Fatalf("a sign-in code was issued for an unproved address (err = %v)", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestANewEmailAddressDoesNotDisplaceTheProvedOneUntilItIsProved(t *testing.T
 		t.Fatal("starting a re-enrolment removed the proved email factor")
 	}
 	allowResend(t, tx, userID)
-	_, to, err := IssueEmailOTP(ctx, tx, userID)
+	_, to, err := IssueEmailOTP(ctx, tx, userID, attemptA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestANewEmailAddressDoesNotDisplaceTheProvedOneUntilItIsProved(t *testing.T
 		t.Fatalf("moving the factor reported replacing %q, want the previous address", replaced)
 	}
 	allowResend(t, tx, userID)
-	if _, to, _ := IssueEmailOTP(ctx, tx, userID); to != "new@example.test" {
+	if _, to, _ := IssueEmailOTP(ctx, tx, userID, attemptA); to != "new@example.test" {
 		t.Fatalf("after proving the new address, sign-in codes go to %q", to)
 	}
 }
@@ -124,13 +124,13 @@ func TestAnEmailEnrolmentCodeCannotSignInAndASignInCodeCannotEnrol(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, enrolCode); ok {
+	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, attemptA, enrolCode); ok {
 		t.Fatal("a code sent to an address being enrolled satisfied a sign-in challenge")
 	}
 
 	// And a sign-in code must not complete an enrolment.
 	allowResend(t, tx, userID)
-	signInCode, _, err := IssueEmailOTP(ctx, tx, userID)
+	signInCode, _, err := IssueEmailOTP(ctx, tx, userID, attemptA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,14 +146,63 @@ func TestAnEmailSignInCodeIsSingleUse(t *testing.T) {
 	proveEmail(t, tx, userID, orgID, "owner@example.test")
 
 	allowResend(t, tx, userID)
-	code, _, err := IssueEmailOTP(ctx, tx, userID)
+	code, _, err := IssueEmailOTP(ctx, tx, userID, attemptA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, err := VerifyEmailOTP(ctx, tx, userID, code); err != nil || !ok {
+	if ok, _, err := VerifyEmailOTP(ctx, tx, userID, attemptA, code); err != nil || !ok {
 		t.Fatalf("a correct sign-in code was refused (ok=%v err=%v)", ok, err)
 	}
-	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, code); ok {
+	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, attemptA, code); ok {
 		t.Fatal("a sign-in code was accepted twice")
+	}
+}
+
+var attemptA, attemptB = []byte("the first sign-in"), []byte("the second sign-in")
+
+// V6.6.2: a code is for the sign-in it was sent for, and for no sign-in before
+// or after it. One with no attempt at all (an LDAP bind, a desktop sign-in)
+// takes none, and what any other sign-in tries is no guess at the code.
+func TestAnEmailSignInCodeIsOnlyForTheSignInItWasSentFor(t *testing.T) {
+	tx, orgID, userID, _ := mfaFixture(t)
+	ctx := context.Background()
+	proveEmail(t, tx, userID, orgID, "owner@example.test")
+	allowResend(t, tx, userID)
+
+	if _, _, err := IssueEmailOTP(ctx, tx, userID, nil); !errors.Is(err, ErrNoAttempt) {
+		t.Fatalf("a code was issued to no sign-in: %v", err)
+	}
+	first, _, err := IssueEmailOTP(ctx, tx, userID, attemptA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range [][]byte{nil, attemptB} {
+		for i := 0; i < EmailOTPMaxAttempts+1; i++ {
+			ok, guessed, err := VerifyEmailOTP(ctx, tx, userID, other, first)
+			if err != nil || ok || guessed {
+				t.Fatalf("the first sign-in's code, given in %q: ok=%v guessed=%v err=%v", other, ok, guessed, err)
+			}
+		}
+	}
+
+	// The same sign-in asking again within the minute is paced; another
+	// sign-in is sent a code of its own at once, and the first's is gone.
+	if _, _, err := IssueEmailOTP(ctx, tx, userID, attemptA); !errors.Is(err, ErrEmailOTPTooSoon) {
+		t.Fatalf("the same sign-in asked again at once and was not paced: %v", err)
+	}
+	second, _, err := IssueEmailOTP(ctx, tx, userID, attemptB)
+	if err != nil {
+		t.Fatalf("a second sign-in within the minute was sent no code of its own: %v", err)
+	}
+	if first != second {
+		if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, attemptA, first); ok {
+			t.Fatal("the earlier sign-in's code still finished it after a later one asked")
+		}
+	}
+	if ok, _, _ := VerifyEmailOTP(ctx, tx, userID, attemptA, second); ok {
+		t.Fatal("the later sign-in's code finished the earlier one")
+	}
+	if ok, _, err := VerifyEmailOTP(ctx, tx, userID, attemptB, second); err != nil || !ok {
+		t.Fatalf("the code was refused to the sign-in it was sent for (others tried it first): %v %v", ok, err)
 	}
 }

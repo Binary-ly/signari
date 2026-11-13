@@ -74,7 +74,7 @@ func (s *Server) setPendingCookieFor(w http.ResponseWriter, userID, orgID string
 	tok, err := tokens.NewSigner(key).SignJSON(pendingClaims{
 		Issuer: s.cfg.Issuer, Subject: userID, OrgID: orgID, AMR: amr,
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
-		Stage: stage,
+		Stage: stage, Attempt: newAttempt(),
 	}, typPending)
 	if err != nil {
 		return err

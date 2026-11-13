@@ -62,7 +62,10 @@ carry a code, and this one can.
 
 It carries a code and nothing else. A person whose only second factor is a
 security key or passkey is asked for a code here, and the only code that can be
-right is one of their recovery codes.
+right is one of their recovery codes. An emailed or texted code cannot be used
+either: each is taken only for the sign-in it was sent for, and this exchange
+sends none (see [email codes](email-otp.md#one-live-code-never-a-queue-of-them)).
+Until November 2026 one sent for a browser's sign-in was taken here.
 
 ## Its own outpost kind
 

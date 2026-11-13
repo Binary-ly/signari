@@ -68,8 +68,8 @@ func StartEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID, addre
 			pending_address = EXCLUDED.pending_address,
 			-- Any code in flight is invalidated: one sent for a different
 			-- purpose or address must not complete this enrolment.
-			code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-			updated_at = now()`,
+			code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_attempt = NULL,
+			attempts = 0, updated_at = now()`,
 		userID, orgID, address)
 	if err != nil {
 		return fmt.Errorf("starting the email factor enrolment: %w", err)
@@ -84,23 +84,30 @@ func StartEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, orgID, addre
 // nobody has shown they read is not a factor. Replaces any pending code rather
 // than adding to it. "Send another" must not leave the previous one valid, or a
 // patient attacker accumulates guesses against a widening set of live codes.
-func IssueEmailOTP(ctx context.Context, tx pgx.Tx, userID string) (code, address string, err error) {
-	return issueEmailCode(ctx, tx, userID, emailCodeSignIn)
+//
+// The code is for attempt alone, the sign-in its pending token names
+// (codeattempt.go), and replaces any code another attempt held.
+func IssueEmailOTP(ctx context.Context, tx pgx.Tx, userID string, attempt []byte) (code, address string, err error) {
+	if len(attempt) == 0 {
+		return "", "", ErrNoAttempt
+	}
+	return issueEmailCode(ctx, tx, userID, emailCodeSignIn, attempt)
 }
 
 // IssueEmailOTPEnrolment generates an ENROLMENT code for the pending address.
 func IssueEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID string) (code, address string, err error) {
-	return issueEmailCode(ctx, tx, userID, emailCodeEnrol)
+	return issueEmailCode(ctx, tx, userID, emailCodeEnrol, nil)
 }
 
-func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (code, address string, err error) {
+func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string, attempt []byte) (code, address string, err error) {
 	var lastSent, verifiedAt, disabledAt *time.Time
 	var proved string
 	var pending *string
+	var held []byte
 	err = tx.QueryRow(ctx, `
-		SELECT address, pending_address, verified_at, last_sent_at, disabled_at
+		SELECT address, pending_address, verified_at, last_sent_at, disabled_at, code_attempt
 		FROM core.email_otp_credentials
-		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent, &disabledAt)
+		WHERE user_id = $1::uuid FOR UPDATE`, userID).Scan(&proved, &pending, &verifiedAt, &lastSent, &disabledAt, &held)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrNoEmailOTP
@@ -121,7 +128,11 @@ func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (cod
 		}
 		address = *pending
 	}
-	if lastSent != nil && time.Since(*lastSent) < EmailOTPResendInterval {
+	// The pace is for asking again within one sign-in. Another sign-in is sent
+	// a code of its own, since the one already sent is not its to use: the
+	// first factor each sign-in needed, and the caller's budget, bound that.
+	if lastSent != nil && time.Since(*lastSent) < EmailOTPResendInterval &&
+		(purpose == emailCodeEnrol || sameAttempt(held, attempt)) {
 		return "", "", ErrEmailOTPTooSoon
 	}
 
@@ -132,10 +143,11 @@ func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (cod
 	sum := sha256.Sum256([]byte(code))
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.email_otp_credentials
-		SET code_hash = $2, code_expires_at = now() + $3::interval, code_purpose = $4,
+		SET code_hash = $2, code_expires_at = now() + $3::interval, code_purpose = $4, code_attempt = $5,
 		    attempts = 0, last_sent_at = now(), updated_at = now()
 		WHERE user_id = $1::uuid`,
-		userID, sum[:], fmt.Sprintf("%d seconds", int(EmailOTPLifetime.Seconds())), purpose); err != nil {
+		userID, sum[:], fmt.Sprintf("%d seconds", int(EmailOTPLifetime.Seconds())), purpose,
+		attemptHash(attempt)); err != nil {
 		return "", "", err
 	}
 	return code, address, nil
@@ -151,8 +163,12 @@ func issueEmailCode(ctx context.Context, tx pgx.Tx, userID, purpose string) (cod
 // guessed reports a wrong guess against a live sign-in code, for the caller to
 // charge with RecordEmailOTPFailure once it knows no other factor took the
 // code -- as RecordTOTPFailure is charged. A right code resets the count.
-func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok, guessed bool, err error) {
-	ok, _, guessed, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeSignIn)
+//
+// Only for the attempt the code was issued to: to any other, earlier or later,
+// or to none, there is no live code, and nothing is guessed at.
+func VerifyEmailOTP(ctx context.Context, tx pgx.Tx, userID string, attempt []byte, submitted string) (
+	ok, guessed bool, err error) {
+	ok, _, guessed, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeSignIn, attempt)
 	return ok, guessed, err
 }
 
@@ -187,24 +203,24 @@ func RecordEmailOTPFailure(ctx context.Context, tx pgx.Tx, userID string, ceilin
 // somewhere else, so the caller can tell that address it has stopped receiving
 // codes -- the one notice an attacker who redirected the factor cannot suppress.
 func ConfirmEmailOTPEnrolment(ctx context.Context, tx pgx.Tx, userID, submitted string) (ok bool, replaced string, err error) {
-	ok, replaced, _, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeEnrol)
+	ok, replaced, _, err = checkEmailCode(ctx, tx, userID, submitted, emailCodeEnrol, nil)
 	return ok, replaced, err
 }
 
-func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string) (
+func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose string, attempt []byte) (
 	ok bool, replaced string, guessed bool, err error) {
 
 	const none = false
-	var storedHash []byte
+	var storedHash, held []byte
 	var expires, verifiedAt, disabledAt *time.Time
 	var attempts int
 	var codePurpose, pending *string
 	var proved string
 	err = tx.QueryRow(ctx, `
 		SELECT code_hash, code_expires_at, attempts, code_purpose, address, pending_address,
-		       verified_at, disabled_at
+		       verified_at, disabled_at, code_attempt
 		FROM core.email_otp_credentials WHERE user_id = $1::uuid FOR UPDATE`, userID).
-		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt, &disabledAt)
+		Scan(&storedHash, &expires, &attempts, &codePurpose, &proved, &pending, &verifiedAt, &disabledAt, &held)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, "", none, nil
@@ -218,6 +234,10 @@ func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose s
 		return false, "", none, nil
 	}
 	if purpose == emailCodeSignIn && (verifiedAt == nil || disabledAt != nil) {
+		return false, "", none, nil
+	}
+	// Another sign-in's code is no code here, and a guess at it is no guess.
+	if purpose == emailCodeSignIn && !sameAttempt(held, attempt) {
 		return false, "", none, nil
 	}
 	if purpose == emailCodeEnrol && pending == nil {
@@ -243,8 +263,8 @@ func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose s
 	if purpose == emailCodeSignIn {
 		if _, err := tx.Exec(ctx, `
 			UPDATE core.email_otp_credentials
-			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-			    failed_attempts = 0, updated_at = now()
+			SET code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_attempt = NULL,
+			    attempts = 0, failed_attempts = 0, updated_at = now()
 			WHERE user_id = $1::uuid`, userID); err != nil {
 			return false, "", none, err
 		}
@@ -258,8 +278,8 @@ func checkEmailCode(ctx context.Context, tx pgx.Tx, userID, submitted, purpose s
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.email_otp_credentials
 		SET address = pending_address, pending_address = NULL, verified_at = now(),
-		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, attempts = 0,
-		    failed_attempts = 0, disabled_at = NULL, updated_at = now()
+		    code_hash = NULL, code_expires_at = NULL, code_purpose = NULL, code_attempt = NULL,
+		    attempts = 0, failed_attempts = 0, disabled_at = NULL, updated_at = now()
 		WHERE user_id = $1::uuid`, userID); err != nil {
 		return false, "", none, err
 	}

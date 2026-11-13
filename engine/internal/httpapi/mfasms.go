@@ -64,7 +64,8 @@ func (s *Server) handleMFASMSSend(w http.ResponseWriter, r *http.Request) {
 		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
-	code, to, err := store.IssueSMSOTPTo(ctx, tx, pending.Subject, number, hash, s.smsVerifier != nil)
+	code, to, err := store.IssueSMSOTPTo(ctx, tx, pending.Subject, pending.attemptOf(), number, hash,
+		s.smsVerifier != nil)
 	switch {
 	case errors.Is(err, store.ErrSMSNumberMismatch), errors.Is(err, store.ErrNoSMSOTP),
 		errors.Is(err, store.ErrSMSOTPTooSoon):

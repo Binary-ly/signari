@@ -20,13 +20,10 @@ func TestEmailAndSMSCodesStopAtTheCeilingAndTellTheHolder(t *testing.T) {
 	for _, c := range []struct {
 		factor, table, subject string
 		give                   func(t *testing.T, f *signInFixture)
-		issue                  func(context.Context, pgx.Tx, string) (string, string, error)
+		issue                  issuer
 	}{
 		{factorEmailOTP, "email_otp_credentials", "mail.emailotp.disabled.subject", giveEmailFactor, store.IssueEmailOTP},
-		{factorSMSOTP, "sms_otp_credentials", "mail.smsotp.disabled.subject", giveSMSFactor,
-			func(ctx context.Context, tx pgx.Tx, userID string) (string, string, error) {
-				return store.IssueSMSOTP(ctx, tx, userID, false)
-			}},
+		{factorSMSOTP, "sms_otp_credentials", "mail.smsotp.disabled.subject", giveSMSFactor, issueSMS},
 	} {
 		t.Run(c.factor, func(t *testing.T) {
 			f := newSignInFixture(t)
@@ -43,12 +40,12 @@ func TestEmailAndSMSCodesStopAtTheCeilingAndTellTheHolder(t *testing.T) {
 				 WHERE user_id = $1::uuid`, c.table), f.userID, store.MaxConsecutiveFactorFailures-1); err != nil {
 				t.Fatal(err)
 			}
-			live := issueCode(t, f, c.issue)
+			step := newMFAStep(t, f)
+			live := issueCode(t, f, c.issue, step.attempt)
 			wrong := "000000"
 			if live == wrong {
 				wrong = "111111"
 			}
-			step := newMFAStep(t, f)
 
 			if rec := step.submit(wrong); rec.Code != http.StatusUnauthorized {
 				t.Fatalf("the hundredth wrong code answered %d, want 401", rec.Code)
@@ -81,7 +78,7 @@ func TestEmailAndSMSCodesStopAtTheCeilingAndTellTheHolder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _, ierr := c.issue(ctx, tx, f.userID)
+			_, _, ierr := c.issue(ctx, tx, f.userID, step.attempt)
 			_ = tx.Rollback(ctx)
 			if ierr == nil {
 				t.Fatal("a disabled factor was issued another code")
@@ -109,8 +106,9 @@ func TestARightEmailCodeResetsTheFailureCount(t *testing.T) {
 		 WHERE user_id = $1::uuid`, f.userID); err != nil {
 		t.Fatal(err)
 	}
-	live := issueCode(t, f, store.IssueEmailOTP)
-	if rec := newMFAStep(t, f).submit(live); !sessionSet(rec) {
+	step := newMFAStep(t, f)
+	live := issueCode(t, f, store.IssueEmailOTP, step.attempt)
+	if rec := step.submit(live); !sessionSet(rec) {
 		t.Fatalf("the right code did not sign in (status %d)", rec.Code)
 	}
 	var n int
@@ -123,7 +121,18 @@ func TestARightEmailCodeResetsTheFailureCount(t *testing.T) {
 	}
 }
 
-func issueCode(t *testing.T, f *signInFixture, issue func(context.Context, pgx.Tx, string) (string, string, error)) string {
+// issuer issues a sign-in code to one attempt, as store.IssueEmailOTP does.
+type issuer = func(ctx context.Context, tx pgx.Tx, userID string, attempt []byte) (string, string, error)
+
+func issueSMS(ctx context.Context, tx pgx.Tx, userID string, attempt []byte) (string, string, error) {
+	return store.IssueSMSOTP(ctx, tx, userID, attempt, false)
+}
+
+func issueEmailOTP(ctx context.Context, tx pgx.Tx, userID string, attempt []byte) (string, string, error) {
+	return store.IssueEmailOTP(ctx, tx, userID, attempt)
+}
+
+func issueCode(t *testing.T, f *signInFixture, issue issuer, attempt []byte) string {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := f.pool.Begin(ctx)
@@ -131,7 +140,7 @@ func issueCode(t *testing.T, f *signInFixture, issue func(context.Context, pgx.T
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	code, _, err := issue(ctx, tx, f.userID)
+	code, _, err := issue(ctx, tx, f.userID, attempt)
 	if err != nil {
 		t.Fatal(err)
 	}

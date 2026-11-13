@@ -235,8 +235,9 @@ their code after their password, `password;123456`: six to eight digits after
 the last semicolon. It is held to what the sign-in form holds a code to: spent
 once, and a wrong one charged to the authenticator and the person's budget. A
 code that is given has to be right, even where the password alone would have
-done, and a password that really does end that way still works. An emailed code
-cannot be used, since nothing here could have sent one.
+done, and a password that really does end that way still works. An emailed or
+texted code cannot be used: each is taken only for the sign-in it was sent for,
+and nothing here sends one. A texted code was taken until November 2026.
 
 Each organisation decides what happens
 when the person binding is someone its sign-in page would ask for a second

@@ -30,7 +30,12 @@ var ErrEmailSignInInvalid = errors.New("no live sign-in code")
 
 // StartEmailSignIn replaces any live code for userID with a new one to be sent,
 // and queues the notice that sends it.
-func StartEmailSignIn(ctx context.Context, tx pgx.Tx, userID, orgID string) error {
+//
+// The id it returns is this request's, the attempt the code is bound to
+// (codeattempt.go): VerifyEmailSignIn takes the code only with it, so the
+// browser that asked holds it, and a code another browser asked for, or an
+// earlier request made, is no code there.
+func StartEmailSignIn(ctx context.Context, tx pgx.Tx, userID, orgID string) (string, error) {
 	var id string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO core.email_sign_in_codes (user_id, org_id, expires_at)
@@ -38,9 +43,9 @@ func StartEmailSignIn(ctx context.Context, tx pgx.Tx, userID, orgID string) erro
 		ON CONFLICT (user_id) DO UPDATE SET id = gen_random_uuid(), code_hash = NULL, attempts = 0,
 		       created_at = now(), expires_at = EXCLUDED.expires_at
 		RETURNING id::text`, userID, orgID, int(EmailSignInTTL.Seconds())).Scan(&id); err != nil {
-		return fmt.Errorf("starting an emailed sign-in: %w", err)
+		return "", fmt.Errorf("starting an emailed sign-in: %w", err)
 	}
-	return EnqueueAccountNotice(ctx, tx, AccountNotice{UserID: userID, Notice: NoticeSignInCode, LinkID: id})
+	return id, EnqueueAccountNotice(ctx, tx, AccountNotice{UserID: userID, Notice: NoticeSignInCode, LinkID: id})
 }
 
 // MintEmailSignInCode makes the code for row id, when it is still the live one
@@ -67,15 +72,20 @@ func MintEmailSignInCode(ctx context.Context, db interface {
 	return code, expires, nil
 }
 
-// VerifyEmailSignIn checks a code for userID. A right one is spent; a wrong one
-// is counted against the code, and the EmailSignInAttempts-th ends it.
-func VerifyEmailSignIn(ctx context.Context, tx pgx.Tx, userID, code string) (bool, error) {
+// VerifyEmailSignIn checks a code for userID, from the request attempt that
+// StartEmailSignIn made. A right one is spent; a wrong one is counted against
+// the code, and the EmailSignInAttempts-th ends it. From any other attempt, or
+// none, there is no live code, and nothing is counted against it.
+func VerifyEmailSignIn(ctx context.Context, tx pgx.Tx, userID, attempt, code string) (bool, error) {
+	if attempt == "" {
+		return false, nil
+	}
 	var hash []byte
 	var attempts int
 	err := tx.QueryRow(ctx, `
 		SELECT code_hash, attempts FROM core.email_sign_in_codes
-		 WHERE user_id = $1::uuid AND code_hash IS NOT NULL AND expires_at > now()
-		 FOR UPDATE`, userID).Scan(&hash, &attempts)
+		 WHERE user_id = $1::uuid AND id = $2::uuid AND code_hash IS NOT NULL AND expires_at > now()
+		 FOR UPDATE`, userID, ExactUUIDOrNil(attempt)).Scan(&hash, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

@@ -63,6 +63,9 @@ var notConfiguration = map[string]string{
 		"token that may apply it could widen",
 	"relations": "authorization data the application writes as people and objects come and go, as group " +
 		"membership is: the model they are checked against is configuration, the tuples are not",
+	"uma_resources": "what a resource server registers through the UMA protection API, often for one person " +
+		"who granted it: the server's to create and remove as its resources come and go, as relations are the " +
+		"application's, and a file declaring them would race the server that owns them",
 
 	"auth_locations": person, "duo_enrollments": person, "email_changes": person, "email_otp_credentials": person,
 	"federated_identities": person, "federated_tokens": person, "group_members": person,

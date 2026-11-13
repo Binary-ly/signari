@@ -635,9 +635,31 @@ present is kept.
   metadata names no `zip_values_supported`, so a compressed request is refused.
 - A credential requested by **`scope`** (§5.1.2). A wallet asks with
   authorization details, and the metadata names no scope for it to use instead.
-- The **`claims`** of an authorization detail (§5.1.1) are accepted and not
-  honoured: a credential holds what its configuration says, and the holder
+- **Issuing fewer claims than a configuration carries** because a wallet's `claims`
+  asked for fewer. A credential holds what its configuration says, and the holder
   chooses what to disclose of it.
+
+## What a wallet asks to have in its credential
+
+The `claims` of an `openid_credential` authorization detail (§5.1.1) are claims
+description objects (Appendix B.1), each a claim path pointer and whether the
+wallet takes no credential without the claim. They are held to Appendix B.3: a
+claim described twice, one array addressed whole and by an index, or one claim
+taken for an array and an object, refuses the request at the authorization endpoint
+with `invalid_authorization_details`, as does a path that is not one (Appendix C),
+or an empty list.
+
+A claim marked `mandatory` must be one the configuration carries, named as its
+format names claims: the first key for `dc+sd-jwt`, the key under
+`credentialSubject` for `jwt_vc_json`. Otherwise the request is refused before
+anybody signs in, since no credential of that configuration would be one the wallet
+takes. A claim it carries and the person's record has no value for, such as an
+address on an account that has only a username, is refused at the credential
+endpoint with `credential_request_denied`, before a proof spends its nonce. A claim
+not marked mandatory and not carried is let go, as the wallet said it could be.
+
+Until November 2026 nothing decoded `claims`, so a wallet that marked a claim
+mandatory was given a credential without it and nothing said so.
 
 ## `x5c` key proofs — built
 

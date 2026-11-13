@@ -367,6 +367,19 @@ func (s *Server) handleCredential(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	// What the wallet said it takes no credential without, held to the person's
+	// record now and before a proof spends its nonce: the configuration was checked
+	// when it asked, and a record can lack a claim the configuration carries.
+	if missing, merr := s.missingMandatoryClaim(ctx, claims.Subject, cfg, granted); merr != nil {
+		s.log.ErrorContext(ctx, "reading a credential's subject", "err", merr, "correlation_id", correlationID(ctx))
+		writeCredentialError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	} else if missing != "" {
+		// §8.3.1.2's credential_request_denied, which a wallet treats as final
+		// (specs/oid4vci.txt:1929): this record will not grow the claim by retrying.
+		writeCredentialError(w, http.StatusBadRequest, "credential_request_denied", missing)
+		return
+	}
 
 	// One instant for the whole batch.
 	//

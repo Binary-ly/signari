@@ -183,6 +183,54 @@ func TestAWalletAsksForACredentialAndTheHolderApprovesIt(t *testing.T) {
 	}
 }
 
+// What a wallet asks to have in its credential is held to (12.06): refused at the
+// authorization endpoint when it contradicts itself or names, as mandatory, a claim
+// the configuration does not carry, and at the credential endpoint when the person's
+// record has no value for one it carries. Until then `claims` was decoded by nothing.
+func TestAWalletsMandatoryClaimsAreHeldToTheCredential(t *testing.T) {
+	c := newCredentialFlow(t)
+	ctx := context.Background()
+	asking := func(claims string) string {
+		return `[{"type":"openid_credential","credential_configuration_id":"OpenCredential","claims":` + claims + `}]`
+	}
+	for name, claims := range map[string]string{
+		"one claim twice":          `[{"path":["email"]},{"path":["email"],"mandatory":true}]`,
+		"a claim it never carries": `[{"path":["birthdate"],"mandatory":true}]`,
+		"an empty list":            `[]`,
+	} {
+		rec := c.authorize(c.request(asking(claims), ""))
+		if loc := rec.Header().Get("Location"); !strings.Contains(loc, "error="+rar.ErrorCode) {
+			t.Errorf("%s answered %d %q", name, rec.Code, loc)
+		}
+	}
+
+	q := c.request(asking(`[{"path":["email"],"mandatory":true},{"path":["nickname"]}]`), "")
+	body := c.redeem(t, c.approve(q, c.authorize(q)))
+	token, _ := body["access_token"].(string)
+	if token == "" {
+		t.Fatalf("no token: %v", body)
+	}
+	if status, out := c.credential(t, token, `"credential_identifier":"OpenCredential"`); status != http.StatusOK {
+		t.Fatalf("a credential carrying what was asked for was refused: %d %v", status, out)
+	}
+
+	// The record loses the claim the wallet will not go without.
+	// A person has an address or a username, so the username stands in.
+	if _, err := c.f.pool.Exec(ctx, `UPDATE core.users SET username = 'no-address-' || substr(id::text, 1, 8),
+		email = NULL WHERE id = $1::uuid`, c.f.userID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = c.f.pool.Exec(context.Background(), `UPDATE core.users SET email = $2 WHERE id = $1::uuid`,
+			c.f.userID, c.f.email)
+	})
+	status, out := c.credential(t, token, `"credential_identifier":"OpenCredential"`)
+	if status != http.StatusBadRequest || out["error"] != "credential_request_denied" ||
+		!strings.Contains(out["error_description"].(string), "email") {
+		t.Errorf("a record without the mandatory claim answered %d %v", status, out)
+	}
+}
+
 // Appendix A.1.1: the same journey, ending in a JWT, and the metadata saying so in
 // the shape that format requires.
 func TestAWalletIsIssuedAJWTCredential(t *testing.T) {

@@ -78,6 +78,10 @@ type Detail struct {
 
 	// CredentialConfigurationID names what a detail of CredentialType asks for.
 	CredentialConfigurationID string `json:"credential_configuration_id,omitempty"`
+	// Claims is what such a detail asks to have in the credential (OID4VCI §5.1.1,
+	// Appendix B.1), which oid4vci holds to Appendix B.3. Nil when not given; an
+	// empty array given is refused, since §5.1.1 says non-empty.
+	Claims []ClaimDescription `json:"claims,omitempty"`
 	// CredentialIdentifiers is what a token response adds to one (OID4VCI §6.2),
 	// and never read from a request.
 	CredentialIdentifiers []string `json:"credential_identifiers,omitempty"`
@@ -85,6 +89,15 @@ type Detail struct {
 
 // CredentialType is the type OID4VCI §5.1.1 defines, asking for a credential.
 const CredentialType = "openid_credential"
+
+// ClaimDescription is one claims description object of a credential detail
+// (OID4VCI Appendix B.1): a claim path pointer (Appendix C), each element a claim
+// name, an array index or null for every element, and whether the wallet takes no
+// credential without the claim.
+type ClaimDescription struct {
+	Path      []any `json:"path"`
+	Mandatory bool  `json:"mandatory,omitempty"`
+}
 
 // CredentialConfigurations names what these details ask to have issued.
 func CredentialConfigurations(details []Detail) []string {
@@ -242,17 +255,26 @@ func decodeDetail(obj map[string]json.RawMessage) (Detail, error) {
 	_ = json.Unmarshal(obj[FieldIdentifier], &d.Identifier)
 	if d.Type == CredentialType {
 		_ = json.Unmarshal(obj[fieldCredentialConfiguration], &d.CredentialConfigurationID)
+		// Strictly, unlike the common fields: what a wallet will take no credential
+		// without is no detail to let go of because its JSON was the wrong shape.
+		if raw, ok := obj[fieldClaims]; ok {
+			if err := json.Unmarshal(raw, &d.Claims); err != nil || d.Claims == nil {
+				return d, fmt.Errorf("claims is an array of claims description objects (OID4VCI Appendix B.1)")
+			}
+		}
 	}
 	return d, nil
 }
 
-const fieldCredentialConfiguration = "credential_configuration_id"
+const (
+	fieldCredentialConfiguration = "credential_configuration_id"
+	fieldClaims                  = "claims"
+)
 
 // checkCredentialDetail is §5.1.1, which replaces the unknown-field rule for this
-// one type: it "is never considered invalid due to unknown fields". So a `claims`
-// asking for part of a credential is not refused, and not honoured either: a
-// credential holds what its configuration says, and the holder chooses what to
-// disclose of it.
+// one type: it "is never considered invalid due to unknown fields". `claims`, what
+// the wallet asks to have in the credential, is decoded above and held to the
+// configuration by oid4vci, which knows how each format names its claims.
 func checkCredentialDetail(d Detail, obj map[string]json.RawMessage) error {
 	if strings.TrimSpace(d.CredentialConfigurationID) == "" {
 		return fmt.Errorf("%s is required, and a string", fieldCredentialConfiguration)

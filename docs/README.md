@@ -188,6 +188,7 @@ command or an environment variable exists in code and not on its page.
 | [admin-api-reference.md](admin-api-reference.md) | Every Admin API operation, its scope, and the fields it takes and answers, generated from the same document |
 | [extensibility.md](extensibility.md) | Extending a decision with your own service |
 | [admin-tokens.md](admin-tokens.md) | Credentials for the Admin API |
+| [approvals.md](approvals.md) | A second person for an erasure or an org-owner grant |
 
 ## Migrating in
 

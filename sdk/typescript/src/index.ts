@@ -553,6 +553,12 @@ export class SignariAdmin {
     return this.call<GetOrganizationsOrgIDAccessPolicyResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/access-policy`, undefined, opts)
   }
 
+  // GET /admin/organizations/{orgID}/approvals: Changes waiting for a second person, and how
+  // recent ones were decided. Needs config:read.
+  getOrganizationsOrgIDApprovals(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDApprovalsResponse>> {
+    return this.call<GetOrganizationsOrgIDApprovalsResponse>("GET", `/admin/organizations/${encodeURIComponent(orgID)}/approvals`, undefined, opts)
+  }
+
   // GET /admin/organizations/{orgID}/attesters: The attesters whose client attestations the
   // organisation accepts. Needs config:read.
   getOrganizationsOrgIDAttesters(orgID: string, opts: CallOptions = {}): Promise<Answer<GetOrganizationsOrgIDAttestersResponse>> {
@@ -992,6 +998,18 @@ export class SignariAdmin {
   // users:write. A target that may impersonate others also needs privileged-users:write.
   patchUsersUserID(userID: string, body: PatchUsersUserIDRequest, opts: CallOptions = {}): Promise<Answer<PatchUsersUserIDResponse>> {
     return this.call<PatchUsersUserIDResponse>("PATCH", `/admin/users/${encodeURIComponent(userID)}`, body, opts)
+  }
+
+  // POST /admin/approvals/{approvalID}/approve: Approve a change somebody else asked for: it is
+  // made now, as the approver. Any token; each operation in it is held to its own scope.
+  postApprovalsApprovalIDApprove(approvalID: string, opts: CallOptions = {}): Promise<Answer<PostApprovalsApprovalIDApproveResponse>> {
+    return this.call<PostApprovalsApprovalIDApproveResponse>("POST", `/admin/approvals/${encodeURIComponent(approvalID)}/approve`, undefined, opts)
+  }
+
+  // POST /admin/approvals/{approvalID}/reject: Turn down, or withdraw, a change waiting for a
+  // second person. Any token; each operation in it is held to its own scope.
+  postApprovalsApprovalIDReject(approvalID: string, opts: CallOptions = {}): Promise<Answer<PostApprovalsApprovalIDRejectResponse>> {
+    return this.call<PostApprovalsApprovalIDRejectResponse>("POST", `/admin/approvals/${encodeURIComponent(approvalID)}/reject`, undefined, opts)
   }
 
   // POST /admin/batch: Up to 100 writes in one transaction, all or none, one version bump. Any
@@ -2403,6 +2421,29 @@ export interface GetOrganizationsOrgIDAccessPolicyResponse {
 }
 
 /** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDApprovalsResponse {
+  approvals: GetOrganizationsOrgIDApprovalsResponseApprovalsItem[]
+  org_id: string
+}
+
+/** A JSON object of the Admin API. */
+export interface GetOrganizationsOrgIDApprovalsResponseApprovalsItem {
+  decided_at?: string
+  decided_by?: string
+  expires_at: string
+  id: string
+  kind: string
+  method: string
+  path: string
+  requested_at: string
+  requested_by: string
+  requested_by_me: boolean
+  result_status?: number
+  status: string
+  summary: string
+}
+
+/** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDAttestersResponse {
   attesters: GetOrganizationsOrgIDAttestersResponseAttestersItem[]
   org_id: string
@@ -3111,6 +3152,7 @@ export interface GetOrganizationsOrgIDScopesResponseScopesItem {
 
 /** A JSON object of the Admin API. */
 export interface GetOrganizationsOrgIDSettingsResponse {
+  approvals_required: string[]
   login_free_attempts: number
   login_max_delay_s: number
   mail_from: string
@@ -3742,6 +3784,7 @@ export interface PatchOrganizationsOrgIDSCIMTargetsSlugResponse {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSettingsRequest {
+  approvals_required?: string[]
   login_free_attempts?: number
   login_max_delay_s?: number
   mail_from?: string
@@ -3764,6 +3807,7 @@ export interface PatchOrganizationsOrgIDSettingsRequest {
 
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDSettingsResponse {
+  approvals_required: string[]
   config_version: number
   login_free_attempts: number
   login_max_delay_s: number
@@ -3805,6 +3849,22 @@ export interface PatchUsersUserIDResponse {
   config_version: number
   id: string
   sessions_ended?: number
+}
+
+/** A JSON object of the Admin API. */
+export interface PostApprovalsApprovalIDApproveResponse {
+  approval_id: string
+  config_version: number
+  result?: Record<string, unknown>
+  result_status: number
+  status: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostApprovalsApprovalIDRejectResponse {
+  approval_id: string
+  config_version: number
+  status: string
 }
 
 /** A JSON object of the Admin API. */

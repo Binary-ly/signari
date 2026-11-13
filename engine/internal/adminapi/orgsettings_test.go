@@ -25,6 +25,8 @@ var settingChoices = map[string][2]any{
 	"totp_digits": {6, 8}, "totp_period_s": {30, 60},
 	"login_free_attempts": {3, 5}, "login_max_delay_s": {900, 1800},
 	"mail_from": {"id@acme.example", "accounts@acme.example"}, "mail_from_name": {"Acme", "Acme Identity"},
+	// Only ever added to here: taking one away waits for a second person.
+	"approvals_required": {[]any{"owner_grant"}, []any{"owner_grant", "subject_erasure"}},
 }
 
 func TestEveryOrganisationSettingIsSetThroughTheAPI(t *testing.T) {
@@ -105,9 +107,10 @@ func TestEveryOrganisationSettingIsSetThroughTheAPI(t *testing.T) {
 		WHERE org_id = $1::uuid AND event_type LIKE 'org.%' AND detail->>'via' = 'admin_api'`, org).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	// Session limit, binds, devices, notice, window, lifetimes, numbers, TOTP, throttle, sender.
-	if n != 10 {
-		t.Errorf("changing every setting was recorded %d times, want 10", n)
+	// Session limit, binds, devices, notice, window, lifetimes, numbers, TOTP, throttle, sender,
+	// approvals.
+	if n != 11 {
+		t.Errorf("changing every setting was recorded %d times, want 11", n)
 	}
 
 	// The address alone taken back takes its name, since a name alone is no sender.

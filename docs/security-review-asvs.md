@@ -1357,7 +1357,7 @@ addresses only for *user*-submitted names.
 | V2.3.2 documented business limits | met — device-code attempts, signup rate, registration rate, call-chain length, resource-indicator count |
 | V2.3.3 transactional | met — `pgx.Tx` around the code-to-token exchange; a partial redemption cannot leave a code spent and no token issued |
 | V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race. WebAuthn challenges are spent with `INSERT ... ON CONFLICT DO NOTHING RETURNING` on the first attempt to finish their ceremony. **Until October 2026 they were not**: the challenge travels in a signed cookie, the handler cleared that cookie, and the same cookie and assertion presented again opened a second session. The end-to-end passkey test found it (migration 0141) |
-| V2.3.5 multi-user approval for high-value flows | L3, not implemented |
+| V2.3.5 multi-user approval for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([approvals.md](approvals.md)) |
 | V2.4.1 anti-automation | met — per-address and per-account limits, adaptive CAPTCHA, token buckets per endpoint with separate buckets so tuning one does not silently widen another |
 | V2.4.2 realistic human timing | L3, not implemented |
 

@@ -143,6 +143,9 @@ var columnClass = map[string]string{
 	"clients.client_secret_hash": "oneWay",
 
 	// Public or non-secret material.
+	// A waiting Admin API request's body (0296): an erasure's subject id, a
+	// role grant, a settings change. Never a secret, and cleared once decided.
+	"admin_approvals.body":               "public",
 	"clients.access_token_format":        "public",
 	"clients.access_token_signed_alg":    "public",
 	"clients.tls_thumbprint":             "public",

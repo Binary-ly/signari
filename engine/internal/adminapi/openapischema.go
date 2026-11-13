@@ -84,7 +84,7 @@ func orgSettingsProps() map[string]jsonSchema {
 		"session_idle_s": integer(), "offline_lifetime_s": integer(), "persistent_sessions": boolean(),
 		"sms_numbers": str(), "totp_algorithm": str(), "totp_digits": integer(), "totp_period_s": integer(),
 		"login_free_attempts": integer(), "login_max_delay_s": integer(), "mail_from": str(),
-		"mail_from_name": str()}
+		"mail_from_name": str(), "approvals_required": arrayOf(str())}
 }
 
 // signupProps is an organisation's self-sign-up rule as read and set (6.07).
@@ -480,6 +480,18 @@ var opSchemas = map[string]opSchema{
 		withVersion(map[string]jsonSchema{"host": str(), "enabled": boolean()}))},
 	"DELETE /admin/organizations/{orgID}/proxy-hosts/{host}": {http.StatusOK, nil, object([]string{"host", "config_version"},
 		withVersion(map[string]jsonSchema{"host": str()}))},
+	"GET /admin/organizations/{orgID}/approvals": {http.StatusOK, nil, object([]string{"org_id", "approvals"},
+		map[string]jsonSchema{"org_id": uuidStr(), "approvals": arrayOf(object([]string{"id", "kind", "method", "path",
+			"summary", "requested_by", "requested_at", "expires_at", "status", "requested_by_me"}, map[string]jsonSchema{
+			"id": uuidStr(), "kind": str(), "method": str(), "path": str(), "summary": str(),
+			"requested_by": str(), "requested_at": dateTime(), "expires_at": dateTime(), "status": str(),
+			"decided_by": str(), "decided_at": dateTime(), "result_status": integer(),
+			"requested_by_me": boolean()}))})},
+	"POST /admin/approvals/{approvalID}/approve": {http.StatusOK, nil, object(
+		[]string{"approval_id", "status", "result_status", "config_version"}, withVersion(map[string]jsonSchema{
+			"approval_id": uuidStr(), "status": str(), "result_status": integer(), "result": openObject()}))},
+	"POST /admin/approvals/{approvalID}/reject": {http.StatusOK, nil, object([]string{"approval_id", "status", "config_version"},
+		withVersion(map[string]jsonSchema{"approval_id": uuidStr(), "status": str()}))},
 	"GET /admin/organizations/{orgID}/role-bindings": {http.StatusOK, nil, object([]string{"role_bindings"}, map[string]jsonSchema{
 		"role_bindings": arrayOf(object([]string{"id", "org_id", "role", "created_at"}, map[string]jsonSchema{
 			"id": uuidStr(), "org_id": uuidStr(), "role": str(), "user_id": uuidStr(), "client_id": str(),

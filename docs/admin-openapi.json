@@ -45,6 +45,214 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/approvals/{approvalID}/approve": {
+      "post": {
+        "operationId": "post_approvals_approvalID_approve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approvalID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "result": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "result_status": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "approval_id",
+                    "status",
+                    "result_status",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "An operation was refused; `failed_index` names which, and nothing was written."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve a change somebody else asked for: it is made now, as the approver."
+      }
+    },
+    "/admin/approvals/{approvalID}/reject": {
+      "post": {
+        "operationId": "post_approvals_approvalID_reject",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approvalID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 7232 precondition. The write is refused with 412 if the configuration moved since the ETag was read.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "config_version": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "approval_id",
+                    "status",
+                    "config_version"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "An operation was refused; `failed_index` names which, and nothing was written."
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The configuration version moved; nothing was written. `expected_version` and `current_version` name both."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Turn down, or withdraw, a change waiting for a second person."
+      }
+    },
     "/admin/audit-events": {
       "get": {
         "operationId": "get_audit_events",
@@ -8235,6 +8443,146 @@
           }
         ],
         "summary": "Put a policy document in force once it loads and its tests pass."
+      }
+    },
+    "/admin/organizations/{orgID}/approvals": {
+      "get": {
+        "operationId": "get_organizations_orgID_approvals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orgID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approvals": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "decided_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "decided_by": {
+                            "type": "string"
+                          },
+                          "expires_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "method": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "requested_at": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "requested_by": {
+                            "type": "string"
+                          },
+                          "requested_by_me": {
+                            "type": "boolean"
+                          },
+                          "result_status": {
+                            "type": "integer"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "summary": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "method",
+                          "path",
+                          "summary",
+                          "requested_by",
+                          "requested_at",
+                          "expires_at",
+                          "status",
+                          "requested_by_me"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "org_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "org_id",
+                    "approvals"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request was refused; `error` names why."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No usable bearer token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The token lacks config:read, or is scoped to another organisation."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "config:read"
+            ]
+          }
+        ],
+        "summary": "Changes waiting for a second person, and how recent ones were decided."
       }
     },
     "/admin/organizations/{orgID}/attesters": {
@@ -26092,6 +26440,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
+                    "approvals_required": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "login_free_attempts": {
                       "type": "integer"
                     },
@@ -26152,6 +26506,7 @@
                     }
                   },
                   "required": [
+                    "approvals_required",
                     "login_free_attempts",
                     "login_max_delay_s",
                     "mail_from",
@@ -26245,6 +26600,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "approvals_required": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "login_free_attempts": {
                     "type": "integer"
                   },
@@ -26313,6 +26674,12 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
+                    "approvals_required": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "config_version": {
                       "type": "integer"
                     },
@@ -26376,6 +26743,7 @@
                     }
                   },
                   "required": [
+                    "approvals_required",
                     "login_free_attempts",
                     "login_max_delay_s",
                     "mail_from",

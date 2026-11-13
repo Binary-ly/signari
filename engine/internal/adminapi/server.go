@@ -466,6 +466,13 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/me", "", s.handleMe)
 
 	// Administrative roles (roles.go): who holds which in the organisation.
+	// A second person for the highest-value changes (approvals.go). Approving
+	// and rejecting take no scope of their own: an approval replays the request
+	// as the approver, held to that request's scope, and a rejection is held to
+	// it by the handler.
+	route("GET /admin/organizations/{orgID}/approvals", ScopeConfigRead, s.listApprovals)
+	route("POST /admin/approvals/{approvalID}/approve", "", s.approveRequest)
+	route("POST /admin/approvals/{approvalID}/reject", "", s.rejectRequest)
 	route("GET /admin/organizations/{orgID}/role-bindings", ScopeConfigRead, s.listRoleBindings)
 	route("POST /admin/organizations/{orgID}/role-bindings", ScopeOrganizationsWrite, s.grantRole)
 	route("DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",

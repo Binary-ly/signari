@@ -8,6 +8,7 @@ refused with `412` when the configuration moved since the version it names.
 | Section | Operations |
 |---|---|
 | [access-policy](#access-policy) | 2 |
+| [approvals](#approvals) | 3 |
 | [attesters](#attesters) | 3 |
 | [attributes](#attributes) | 2 |
 | [audit-events](#audit-events) | 1 |
@@ -129,6 +130,51 @@ Answers:
 | `config_version` | integer | always |
 | `org_id` | string | always |
 | `summary` | string | always |
+
+## approvals
+
+### `POST /admin/approvals/{approvalID}/approve`
+
+Approve a change somebody else asked for: it is made now, as the approver. Any token; each operation in it is held to its own scope.
+
+Go `PostApprovalsApprovalIDApprove`, TypeScript `postApprovalsApprovalIDApprove`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `approval_id` | string | always |
+| `config_version` | integer | always |
+| `result` | object |  |
+| `result_status` | integer | always |
+| `status` | string | always |
+
+### `POST /admin/approvals/{approvalID}/reject`
+
+Turn down, or withdraw, a change waiting for a second person. Any token; each operation in it is held to its own scope.
+
+Go `PostApprovalsApprovalIDReject`, TypeScript `postApprovalsApprovalIDReject`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `approval_id` | string | always |
+| `config_version` | integer | always |
+| `status` | string | always |
+
+### `GET /admin/organizations/{orgID}/approvals`
+
+Changes waiting for a second person, and how recent ones were decided. Needs config:read.
+
+Go `GetOrganizationsOrgIDApprovals`, TypeScript `getOrganizationsOrgIDApprovals`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `approvals` | list of object | always |
+| `org_id` | string | always |
 
 ## attesters
 
@@ -4279,6 +4325,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `approvals_required` | list of string | always |
 | `login_free_attempts` | integer | always |
 | `login_max_delay_s` | integer | always |
 | `mail_from` | string | always |
@@ -4309,6 +4356,7 @@ Takes:
 
 | Field | Type | |
 |---|---|---|
+| `approvals_required` | list of string |  |
 | `login_free_attempts` | integer |  |
 | `login_max_delay_s` | integer |  |
 | `mail_from` | string |  |
@@ -4332,6 +4380,7 @@ Answers:
 
 | Field | Type | |
 |---|---|---|
+| `approvals_required` | list of string | always |
 | `config_version` | integer | always |
 | `login_free_attempts` | integer | always |
 | `login_max_delay_s` | integer | always |

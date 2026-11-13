@@ -36,6 +36,7 @@ var adminReadsWhole = map[string]string{
 
 // pagesAllowed are the statements that may sort a page, each with why.
 var pagesAllowed = []struct{ statement, why string }{
+	{"FROM core.admin_approvals", "an organisation's of the last thirty days, which only the rarest changes make"},
 	{"FROM core.consents", "one person's, which a person has few of"},
 	{"FROM core.credential_configurations", "the longest-lived of an instance's credential types, a handful"},
 	{"FROM core.sessions", "one person's live sessions, which the session cap bounds"},

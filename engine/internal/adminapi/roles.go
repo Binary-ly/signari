@@ -1,9 +1,11 @@
 package adminapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"time"
@@ -113,6 +115,19 @@ func grantable(p *Principal, role string) error {
 	return nil
 }
 
+// roleHolder names who a grant is for, for an approval's summary: ids only.
+func roleHolder(req grantRoleRequest) string {
+	switch {
+	case req.UserID != "":
+		return "user " + req.UserID
+	case req.ClientID != "":
+		return "application " + req.ClientID
+	case req.GroupID != "":
+		return "group " + req.GroupID
+	}
+	return "nobody"
+}
+
 // roleBindingView is a binding as the API shows it.
 type roleBindingView struct {
 	ID        string `json:"id"`
@@ -161,7 +176,14 @@ func (s *Server) grantRole(w http.ResponseWriter, r *http.Request) {
 	orgID := r.PathValue("orgID")
 	p, _ := principalFrom(ctx)
 	var req grantRoleRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	// Read whole first, so a grant that waits for a second person is kept as
+	// it came (approvals.go).
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
@@ -178,6 +200,12 @@ func (s *Server) grantRole(w http.ResponseWriter, r *http.Request) {
 	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
+		return
+	}
+	// The org-owner role is every other permission at once: where the
+	// organisation says so, a second person approves it (V2.3.5).
+	if req.Role == "org-owner" && s.approvalGate(w, r, pre, orgID, store.ApprovalOwnerGrant,
+		"grant org-owner to "+roleHolder(req), raw) {
 		return
 	}
 	var id string

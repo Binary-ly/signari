@@ -403,7 +403,6 @@ var knownUnread = map[string]string{
 	"event_deliveries.status_code":            "what the subscriber answered",
 	"ssf_sources.last_event_at":               "when a transmitter last sent anything",
 	"ssf_received.event_time":                 "when the transmitter says the event happened",
-	"uma_pending_requests.decided_at":         "when a resource owner decided",
 	"preauthorized_codes.tx_code_input_mode":  "describes the code to the wallet in the offer, which is built when minted from the same values",
 	"preauthorized_codes.tx_code_description": "the same",
 }

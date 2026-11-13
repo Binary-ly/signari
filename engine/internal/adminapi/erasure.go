@@ -3,6 +3,8 @@ package adminapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -30,7 +32,10 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 	subjectID := r.PathValue("subjectID")
 
 	var req eraseSubjectRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+	// Read whole first, so an erasure that waits for a second person is kept
+	// as it came (approvals.go): the subject's id and whether to deactivate.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+	if err != nil || json.Unmarshal(raw, &req) != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
@@ -53,6 +58,20 @@ func (s *Server) eraseSubject(w http.ResponseWriter, r *http.Request) {
 
 	pre, preOK := s.readPrecondition(w, r)
 	if !preOK {
+		return
+	}
+	// An erasure cannot be undone: where the subject's organisation says so, a
+	// second person approves it (V2.3.5). A subject with no account left names
+	// no organisation, and is erased by an unscoped token as before.
+	var subjectOrg string
+	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
+		store.ExactUUIDOrNil(subjectID)).Scan(&subjectOrg); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.log.Error("finding the subject's organisation", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	if s.approvalGate(w, r, pre, subjectOrg, store.ApprovalSubjectErasure,
+		fmt.Sprintf("erase subject %s (deactivate: %t)", subjectID, req.Deactivate), raw) {
 		return
 	}
 

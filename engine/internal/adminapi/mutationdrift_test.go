@@ -1538,6 +1538,21 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// Asked for by another token, so the break-glass token may approve.
+			name: "POST /admin/approvals/{approvalID}/approve", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/approvals/" + newPendingApproval(t, s) + "/approve"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/approvals/{approvalID}/reject", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/approvals/" + newPendingApproval(t, s) + "/reject"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name:   "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
 			method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
@@ -2028,6 +2043,34 @@ func newDriftBinding(t *testing.T, s *Server, role string) string {
 	if err != nil {
 		t.Fatalf("granting the fixture role: %v", err)
 	}
+	return id
+}
+
+// newPendingApproval keeps a request waiting for a second person, asked for by
+// a token that is not the break-glass one: a harmless settings change, which
+// answers 200 when an approval replays it.
+func newPendingApproval(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := anyOrgID(t, s)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, _, err := store.RequestApproval(ctx, tx, store.Approval{OrgID: org, Kind: store.ApprovalOwnerGrant,
+		Method: http.MethodPatch, Path: "/admin/organizations/" + org + "/settings",
+		Body: []byte(`{"new_device_notice":true}`), Summary: "a fixture", RequestedBy: "token:fixture",
+		RequestedName: "fixture"})
+	if err != nil {
+		t.Fatalf("keeping the fixture approval: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_approvals WHERE id::text = $1`, id)
+	})
 	return id
 }
 

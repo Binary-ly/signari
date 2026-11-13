@@ -1,10 +1,14 @@
 package adminapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,6 +46,8 @@ type orgSettingsView struct {
 	// MailFrom is empty when the organisation's mail is the deployment's.
 	MailFrom     string `json:"mail_from"`
 	MailFromName string `json:"mail_from_name"`
+	// ApprovalsRequired is what waits for a second person (approvals.go).
+	ApprovalsRequired []string `json:"approvals_required"`
 }
 
 func viewOrgSettings(orgID string, s store.OrgSettings) orgSettingsView {
@@ -58,7 +64,7 @@ func viewOrgSettings(orgID string, s store.OrgSettings) orgSettingsView {
 		SMSNumbers: sms, TOTPAlgorithm: s.TOTP.Algorithm, TOTPDigits: s.TOTP.Digits,
 		TOTPPeriodS: seconds(s.TOTP.Period), LoginFreeAttempts: s.LoginFreeAttempts,
 		LoginMaxDelayS: seconds(s.LoginMaxDelay),
-		MailFrom:       s.Mail.From, MailFromName: s.Mail.Name}
+		MailFrom:       s.Mail.From, MailFromName: s.Mail.Name, ApprovalsRequired: s.ApprovalsRequired}
 }
 
 func seconds(d time.Duration) int { return int(d / time.Second) }
@@ -85,6 +91,9 @@ type patchOrgSettingsRequest struct {
 	LoginMaxDelayS        *int    `json:"login_max_delay_s"`
 	MailFrom              *string `json:"mail_from"`
 	MailFromName          *string `json:"mail_from_name"`
+	// ApprovalsRequired replaces the list whole; taking a kind away waits for
+	// a second person itself.
+	ApprovalsRequired *[]string `json:"approvals_required"`
 }
 
 // errInvalidSetting carries a setter's own refusal to the caller as a 400.
@@ -130,7 +139,14 @@ func (s *Server) patchOrgSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := r.PathValue("orgID")
 	var req patchOrgSettingsRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	// Read whole first, so a change that waits for a second person is kept as
+	// it came (approvals.go).
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
+		return
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
@@ -139,6 +155,22 @@ func (s *Server) patchOrgSettings(w http.ResponseWriter, r *http.Request) {
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return
+	}
+	// Taking a kind away from approvals_required is the one change to it that
+	// waits, or one token could turn the rule off and then act alone. The rest
+	// of the request waits with it, as it came.
+	if req.ApprovalsRequired != nil && requireOrg(ctx, orgID) == nil {
+		current, err := store.ApprovalsRequired(ctx, s.db, orgID)
+		if err != nil {
+			s.log.Error("reading what waits for approval", "org_id", orgID, "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+			return
+		}
+		if relaxesApprovals(current, req.ApprovalsRequired) && s.approvalGate(w, r, pre, orgID,
+			store.ApprovalsRelaxed, fmt.Sprintf("relax approvals_required from %v to %v", current,
+				*req.ApprovalsRequired), raw) {
+			return
+		}
 	}
 	var after store.OrgSettings
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
@@ -325,7 +357,31 @@ func (s *Server) applyOrgSettings(ctx context.Context, tx pgx.Tx, orgID string, 
 			return err
 		}
 	}
+	if req.ApprovalsRequired != nil {
+		was, err := store.SetApprovalsRequired(ctx, tx, orgID, *req.ApprovalsRequired)
+		if err != nil {
+			return err
+		}
+		if err := record(audit.Event{Type: "org.approvals_required_set",
+			Detail: map[string]any{"from": was, "to": *req.ApprovalsRequired}}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// relaxesApprovals reports whether asked takes away a kind that current makes
+// wait: what has to wait for a second person itself.
+func relaxesApprovals(current []string, asked *[]string) bool {
+	if asked == nil {
+		return false
+	}
+	for _, k := range current {
+		if !slices.Contains(*asked, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // pick is the value asked for, or what is there.

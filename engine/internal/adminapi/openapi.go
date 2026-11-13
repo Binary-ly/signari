@@ -398,6 +398,9 @@ var summaries = map[string]string{
 	"PATCH /admin/organizations/{orgID}/settings": "Change the settings named; the rest are left as they are.",
 
 	// Administrative roles (6.01).
+	"GET /admin/organizations/{orgID}/approvals":                    "Changes waiting for a second person, and how recent ones were decided.",
+	"POST /admin/approvals/{approvalID}/approve":                    "Approve a change somebody else asked for: it is made now, as the approver.",
+	"POST /admin/approvals/{approvalID}/reject":                     "Turn down, or withdraw, a change waiting for a second person.",
 	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",
 	"POST /admin/organizations/{orgID}/role-bindings":               "Give a person or an application a role, a user manager optionally over one group's members.",
 	"DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}": "Take a role away; the holder's next request is refused what it gave.",

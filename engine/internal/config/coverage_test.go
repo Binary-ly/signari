@@ -66,6 +66,9 @@ var notConfiguration = map[string]string{
 	"uma_resources": "what a resource server registers through the UMA protection API, often for one person " +
 		"who granted it: the server's to create and remove as its resources come and go, as relations are the " +
 		"application's, and a file declaring them would race the server that owns them",
+	"admin_approvals": "Admin API requests waiting for a second person, and how each was decided: a record of " +
+		"who asked and who approved, which a file could only forge. What waits is configuration, " +
+		"approvals_required on the organisation",
 
 	"auth_locations": person, "duo_enrollments": person, "email_changes": person, "email_otp_credentials": person,
 	"federated_identities": person, "federated_tokens": person, "group_members": person,

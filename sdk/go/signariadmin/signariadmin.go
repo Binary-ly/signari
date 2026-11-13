@@ -965,6 +965,29 @@ type GetOrganizationsOrgIDAccessPolicyResponse struct {
 	OrgID     string  `json:"org_id"`
 }
 
+// GetOrganizationsOrgIDApprovalsResponse is a JSON object of the Admin API.
+type GetOrganizationsOrgIDApprovalsResponse struct {
+	Approvals []GetOrganizationsOrgIDApprovalsResponseApprovalsItem `json:"approvals"`
+	OrgID     string                                                `json:"org_id"`
+}
+
+// GetOrganizationsOrgIDApprovalsResponseApprovalsItem is a JSON object of the Admin API.
+type GetOrganizationsOrgIDApprovalsResponseApprovalsItem struct {
+	DecidedAt     string `json:"decided_at,omitempty"`
+	DecidedBy     string `json:"decided_by,omitempty"`
+	ExpiresAt     string `json:"expires_at"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Method        string `json:"method"`
+	Path          string `json:"path"`
+	RequestedAt   string `json:"requested_at"`
+	RequestedBy   string `json:"requested_by"`
+	RequestedByMe bool   `json:"requested_by_me"`
+	ResultStatus  int64  `json:"result_status,omitempty"`
+	Status        string `json:"status"`
+	Summary       string `json:"summary"`
+}
+
 // GetOrganizationsOrgIDAttestersResponse is a JSON object of the Admin API.
 type GetOrganizationsOrgIDAttestersResponse struct {
 	Attesters []GetOrganizationsOrgIDAttestersResponseAttestersItem `json:"attesters"`
@@ -1674,25 +1697,26 @@ type GetOrganizationsOrgIDScopesResponseScopesItem struct {
 
 // GetOrganizationsOrgIDSettingsResponse is a JSON object of the Admin API.
 type GetOrganizationsOrgIDSettingsResponse struct {
-	LoginFreeAttempts     int64  `json:"login_free_attempts"`
-	LoginMaxDelayS        int64  `json:"login_max_delay_s"`
-	MailFrom              string `json:"mail_from"`
-	MailFromName          string `json:"mail_from_name"`
-	MaxConcurrentSessions int64  `json:"max_concurrent_sessions"`
-	NewDeviceNotice       bool   `json:"new_device_notice"`
-	OfflineLifetimeS      int64  `json:"offline_lifetime_s"`
-	OrgID                 string `json:"org_id"`
-	PasswordOnlyBinds     string `json:"password_only_binds"`
-	PersistentSessions    bool   `json:"persistent_sessions"`
-	ReauthWindowS         int64  `json:"reauth_window_s"`
-	RememberDeviceDays    int64  `json:"remember_device_days"`
-	SessionIdleS          int64  `json:"session_idle_s"`
-	SessionLifetimeS      int64  `json:"session_lifetime_s"`
-	SessionLimitBehaviour string `json:"session_limit_behaviour"`
-	SMSNumbers            string `json:"sms_numbers"`
-	TOTPAlgorithm         string `json:"totp_algorithm"`
-	TOTPDigits            int64  `json:"totp_digits"`
-	TOTPPeriodS           int64  `json:"totp_period_s"`
+	ApprovalsRequired     []string `json:"approvals_required"`
+	LoginFreeAttempts     int64    `json:"login_free_attempts"`
+	LoginMaxDelayS        int64    `json:"login_max_delay_s"`
+	MailFrom              string   `json:"mail_from"`
+	MailFromName          string   `json:"mail_from_name"`
+	MaxConcurrentSessions int64    `json:"max_concurrent_sessions"`
+	NewDeviceNotice       bool     `json:"new_device_notice"`
+	OfflineLifetimeS      int64    `json:"offline_lifetime_s"`
+	OrgID                 string   `json:"org_id"`
+	PasswordOnlyBinds     string   `json:"password_only_binds"`
+	PersistentSessions    bool     `json:"persistent_sessions"`
+	ReauthWindowS         int64    `json:"reauth_window_s"`
+	RememberDeviceDays    int64    `json:"remember_device_days"`
+	SessionIdleS          int64    `json:"session_idle_s"`
+	SessionLifetimeS      int64    `json:"session_lifetime_s"`
+	SessionLimitBehaviour string   `json:"session_limit_behaviour"`
+	SMSNumbers            string   `json:"sms_numbers"`
+	TOTPAlgorithm         string   `json:"totp_algorithm"`
+	TOTPDigits            int64    `json:"totp_digits"`
+	TOTPPeriodS           int64    `json:"totp_period_s"`
 }
 
 // GetOrganizationsOrgIDSignInFlowResponse is a JSON object of the Admin API.
@@ -2305,48 +2329,50 @@ type PatchOrganizationsOrgIDSCIMTargetsSlugResponse struct {
 
 // PatchOrganizationsOrgIDSettingsRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDSettingsRequest struct {
-	LoginFreeAttempts     *int64  `json:"login_free_attempts,omitempty"`
-	LoginMaxDelayS        *int64  `json:"login_max_delay_s,omitempty"`
-	MailFrom              *string `json:"mail_from,omitempty"`
-	MailFromName          *string `json:"mail_from_name,omitempty"`
-	MaxConcurrentSessions *int64  `json:"max_concurrent_sessions,omitempty"`
-	NewDeviceNotice       *bool   `json:"new_device_notice,omitempty"`
-	OfflineLifetimeS      *int64  `json:"offline_lifetime_s,omitempty"`
-	PasswordOnlyBinds     *string `json:"password_only_binds,omitempty"`
-	PersistentSessions    *bool   `json:"persistent_sessions,omitempty"`
-	ReauthWindowS         *int64  `json:"reauth_window_s,omitempty"`
-	RememberDeviceDays    *int64  `json:"remember_device_days,omitempty"`
-	SessionIdleS          *int64  `json:"session_idle_s,omitempty"`
-	SessionLifetimeS      *int64  `json:"session_lifetime_s,omitempty"`
-	SessionLimitBehaviour *string `json:"session_limit_behaviour,omitempty"`
-	SMSNumbers            *string `json:"sms_numbers,omitempty"`
-	TOTPAlgorithm         *string `json:"totp_algorithm,omitempty"`
-	TOTPDigits            *int64  `json:"totp_digits,omitempty"`
-	TOTPPeriodS           *int64  `json:"totp_period_s,omitempty"`
+	ApprovalsRequired     *[]string `json:"approvals_required,omitempty"`
+	LoginFreeAttempts     *int64    `json:"login_free_attempts,omitempty"`
+	LoginMaxDelayS        *int64    `json:"login_max_delay_s,omitempty"`
+	MailFrom              *string   `json:"mail_from,omitempty"`
+	MailFromName          *string   `json:"mail_from_name,omitempty"`
+	MaxConcurrentSessions *int64    `json:"max_concurrent_sessions,omitempty"`
+	NewDeviceNotice       *bool     `json:"new_device_notice,omitempty"`
+	OfflineLifetimeS      *int64    `json:"offline_lifetime_s,omitempty"`
+	PasswordOnlyBinds     *string   `json:"password_only_binds,omitempty"`
+	PersistentSessions    *bool     `json:"persistent_sessions,omitempty"`
+	ReauthWindowS         *int64    `json:"reauth_window_s,omitempty"`
+	RememberDeviceDays    *int64    `json:"remember_device_days,omitempty"`
+	SessionIdleS          *int64    `json:"session_idle_s,omitempty"`
+	SessionLifetimeS      *int64    `json:"session_lifetime_s,omitempty"`
+	SessionLimitBehaviour *string   `json:"session_limit_behaviour,omitempty"`
+	SMSNumbers            *string   `json:"sms_numbers,omitempty"`
+	TOTPAlgorithm         *string   `json:"totp_algorithm,omitempty"`
+	TOTPDigits            *int64    `json:"totp_digits,omitempty"`
+	TOTPPeriodS           *int64    `json:"totp_period_s,omitempty"`
 }
 
 // PatchOrganizationsOrgIDSettingsResponse is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDSettingsResponse struct {
-	ConfigVersion         int64  `json:"config_version"`
-	LoginFreeAttempts     int64  `json:"login_free_attempts"`
-	LoginMaxDelayS        int64  `json:"login_max_delay_s"`
-	MailFrom              string `json:"mail_from"`
-	MailFromName          string `json:"mail_from_name"`
-	MaxConcurrentSessions int64  `json:"max_concurrent_sessions"`
-	NewDeviceNotice       bool   `json:"new_device_notice"`
-	OfflineLifetimeS      int64  `json:"offline_lifetime_s"`
-	OrgID                 string `json:"org_id"`
-	PasswordOnlyBinds     string `json:"password_only_binds"`
-	PersistentSessions    bool   `json:"persistent_sessions"`
-	ReauthWindowS         int64  `json:"reauth_window_s"`
-	RememberDeviceDays    int64  `json:"remember_device_days"`
-	SessionIdleS          int64  `json:"session_idle_s"`
-	SessionLifetimeS      int64  `json:"session_lifetime_s"`
-	SessionLimitBehaviour string `json:"session_limit_behaviour"`
-	SMSNumbers            string `json:"sms_numbers"`
-	TOTPAlgorithm         string `json:"totp_algorithm"`
-	TOTPDigits            int64  `json:"totp_digits"`
-	TOTPPeriodS           int64  `json:"totp_period_s"`
+	ApprovalsRequired     []string `json:"approvals_required"`
+	ConfigVersion         int64    `json:"config_version"`
+	LoginFreeAttempts     int64    `json:"login_free_attempts"`
+	LoginMaxDelayS        int64    `json:"login_max_delay_s"`
+	MailFrom              string   `json:"mail_from"`
+	MailFromName          string   `json:"mail_from_name"`
+	MaxConcurrentSessions int64    `json:"max_concurrent_sessions"`
+	NewDeviceNotice       bool     `json:"new_device_notice"`
+	OfflineLifetimeS      int64    `json:"offline_lifetime_s"`
+	OrgID                 string   `json:"org_id"`
+	PasswordOnlyBinds     string   `json:"password_only_binds"`
+	PersistentSessions    bool     `json:"persistent_sessions"`
+	ReauthWindowS         int64    `json:"reauth_window_s"`
+	RememberDeviceDays    int64    `json:"remember_device_days"`
+	SessionIdleS          int64    `json:"session_idle_s"`
+	SessionLifetimeS      int64    `json:"session_lifetime_s"`
+	SessionLimitBehaviour string   `json:"session_limit_behaviour"`
+	SMSNumbers            string   `json:"sms_numbers"`
+	TOTPAlgorithm         string   `json:"totp_algorithm"`
+	TOTPDigits            int64    `json:"totp_digits"`
+	TOTPPeriodS           int64    `json:"totp_period_s"`
 }
 
 // PatchUsersUserIDRequest is a JSON object of the Admin API.
@@ -2368,6 +2394,22 @@ type PatchUsersUserIDResponse struct {
 	ConfigVersion int64  `json:"config_version"`
 	ID            string `json:"id"`
 	SessionsEnded int64  `json:"sessions_ended,omitempty"`
+}
+
+// PostApprovalsApprovalIDApproveResponse is a JSON object of the Admin API.
+type PostApprovalsApprovalIDApproveResponse struct {
+	ApprovalID    string         `json:"approval_id"`
+	ConfigVersion int64          `json:"config_version"`
+	Result        map[string]any `json:"result,omitempty"`
+	ResultStatus  int64          `json:"result_status"`
+	Status        string         `json:"status"`
+}
+
+// PostApprovalsApprovalIDRejectResponse is a JSON object of the Admin API.
+type PostApprovalsApprovalIDRejectResponse struct {
+	ApprovalID    string `json:"approval_id"`
+	ConfigVersion int64  `json:"config_version"`
+	Status        string `json:"status"`
 }
 
 // PostBatchRequest is a JSON object of the Admin API.
@@ -5020,6 +5062,17 @@ func (c *Client) GetOrganizationsOrgIDAccessPolicy(ctx context.Context, orgID st
 	return &out, v, nil
 }
 
+// GetOrganizationsOrgIDApprovals is GET /admin/organizations/{orgID}/approvals: Changes waiting
+// for a second person, and how recent ones were decided. Needs config:read.
+func (c *Client) GetOrganizationsOrgIDApprovals(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDApprovalsResponse, int64, error) {
+	var out GetOrganizationsOrgIDApprovalsResponse
+	v, err := c.call(ctx, "GET", "/admin/organizations/"+url.PathEscape(orgID)+"/approvals", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // GetOrganizationsOrgIDAttesters is GET /admin/organizations/{orgID}/attesters: The attesters
 // whose client attestations the organisation accepts. Needs config:read.
 func (c *Client) GetOrganizationsOrgIDAttesters(ctx context.Context, orgID string, opts ...Option) (*GetOrganizationsOrgIDAttestersResponse, int64, error) {
@@ -5845,6 +5898,30 @@ func (c *Client) PatchOrganizationsOrgIDSettings(ctx context.Context, orgID stri
 func (c *Client) PatchUsersUserID(ctx context.Context, userID string, body PatchUsersUserIDRequest, opts ...Option) (*PatchUsersUserIDResponse, int64, error) {
 	var out PatchUsersUserIDResponse
 	v, err := c.call(ctx, "PATCH", "/admin/users/"+url.PathEscape(userID), body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostApprovalsApprovalIDApprove is POST /admin/approvals/{approvalID}/approve: Approve a change
+// somebody else asked for: it is made now, as the approver. Any token; each operation in it is
+// held to its own scope.
+func (c *Client) PostApprovalsApprovalIDApprove(ctx context.Context, approvalID string, opts ...Option) (*PostApprovalsApprovalIDApproveResponse, int64, error) {
+	var out PostApprovalsApprovalIDApproveResponse
+	v, err := c.call(ctx, "POST", "/admin/approvals/"+url.PathEscape(approvalID)+"/approve", nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostApprovalsApprovalIDReject is POST /admin/approvals/{approvalID}/reject: Turn down, or
+// withdraw, a change waiting for a second person. Any token; each operation in it is held to its
+// own scope.
+func (c *Client) PostApprovalsApprovalIDReject(ctx context.Context, approvalID string, opts ...Option) (*PostApprovalsApprovalIDRejectResponse, int64, error) {
+	var out PostApprovalsApprovalIDRejectResponse
+	v, err := c.call(ctx, "POST", "/admin/approvals/"+url.PathEscape(approvalID)+"/reject", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

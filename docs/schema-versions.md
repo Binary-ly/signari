@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0296 admin_approvals
+
+Compatible with the release before: its binary may still serve this schema.
+
+A second person for the Admin API's highest-value changes (ASVS 5.0.0 V2.3.5): an organisation names which of them need one in approvals_required, and such a request is kept here, pending, until somebody else who may make it approves it, which replays it as theirs, or it is rejected or expires. The kinds are an erasure, which cannot be undone, and granting the org-owner role, which is every other permission at once; relaxing the setting itself needs a second person too, or one token could turn the rule off and then act alone. Compatible with the previous release, which ignores both: there every such request runs at once, as it always did.
+
 ## 0295 admin_token_attributes
 
 Compatible with the release before: its binary may still serve this schema.

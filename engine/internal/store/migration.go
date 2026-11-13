@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/provider"
 )
 
@@ -462,10 +463,10 @@ func MigrationSourceToTest(ctx context.Context, q interface {
 func CompleteMigration(ctx context.Context, tx pgx.Tx, userID, orgID, sourceID, hash string) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, source_system, is_current)
-		VALUES ($1::uuid, $2::uuid, $3, 'argon2id', 'migrated', true)
+		VALUES ($1::uuid, $2::uuid, $3, $4, 'migrated', true)
 		ON CONFLICT (user_id) DO UPDATE SET
-			hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true, updated_at = now()`,
-		userID, orgID, hash); err != nil {
+			hash = EXCLUDED.hash, algorithm = EXCLUDED.algorithm, is_current = true, updated_at = now()`,
+		userID, orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 		return fmt.Errorf("storing the migrated credential: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `

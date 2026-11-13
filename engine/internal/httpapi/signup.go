@@ -543,7 +543,7 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
-		VALUES ($1::uuid, $2::uuid, $3, 'argon2id')`, userID, orgID, hash); err != nil {
+		VALUES ($1::uuid, $2::uuid, $3, $4)`, userID, orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 		return "", nil, err
 	}
 	if verify {

@@ -182,8 +182,8 @@ func (w *LDAPWriter) Create(ctx context.Context, actor string, e *ldapd.NewEntry
 		// the one in the walkthrough.
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-			VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)`,
-			userID, w.orgID, hash); err != nil {
+			VALUES ($1::uuid, $2::uuid, $3, $4, true)`,
+			userID, w.orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 			return fmt.Errorf("storing the password: %w", err)
 		}
 	}
@@ -315,14 +315,14 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 			var replaced bool
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)
 				ON CONFLICT (user_id) DO UPDATE
-				SET hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
+				SET hash = EXCLUDED.hash, algorithm = EXCLUDED.algorithm, is_current = true,
 				    updated_at = now(), failed_attempts = 0, throttled_until = NULL,
 				    last_failure_at = NULL, must_change = false,
 				    must_change_reason = NULL, last_breach_check = NULL
 				RETURNING xmax <> 0`,
-				userID, w.orgID, hash).Scan(&replaced); err != nil {
+				userID, w.orgID, hash, passwords.AlgorithmOf(hash)).Scan(&replaced); err != nil {
 				return fmt.Errorf("storing the password: %w", err)
 			}
 			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,

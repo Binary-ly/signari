@@ -3935,7 +3935,7 @@ func userCreate(ctx context.Context, conn *pgx.Conn, givenOrg, email, password s
 	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
-		VALUES ($1, $2, $3, 'argon2id')`, userID, orgID, hash); err != nil {
+		VALUES ($1, $2, $3, $4)`, userID, orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 		return fmt.Errorf("storing credential: %w", err)
 	}
 	fmt.Printf("user %s\n  email %s\n", userID, email)

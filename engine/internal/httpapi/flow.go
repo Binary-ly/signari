@@ -2331,8 +2331,8 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		if fresh, herr := s.hasher.Hash(ctx, password); herr == nil {
 			if _, err := s.db.Exec(ctx, `
 				UPDATE core.password_credentials
-				SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now()
-				WHERE user_id = $1`, userID, fresh); err != nil {
+				SET hash = $2, algorithm = $3, is_current = true, updated_at = now()
+				WHERE user_id = $1`, userID, fresh, passwords.AlgorithmOf(fresh)); err != nil {
 				s.log.ErrorContext(ctx, "rehashing password", "err", err)
 			}
 			// A user imported by password hash has now finished migrating: the

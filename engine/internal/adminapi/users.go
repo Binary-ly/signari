@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 )
 
@@ -136,8 +137,8 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		if req.Password != "" {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)`,
-				userID, req.OrgID, hash); err != nil {
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)`,
+				userID, req.OrgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 				return err
 			}
 		}
@@ -444,9 +445,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			var replaced bool
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)
 				ON CONFLICT (user_id) DO UPDATE SET
-					hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
+					hash = EXCLUDED.hash, algorithm = EXCLUDED.algorithm, is_current = true,
 					failed_attempts = 0, throttled_until = NULL, updated_at = now(),
 					-- Cleared with the password they belonged to. A stale
 					-- must_change would ask the user to replace a password an
@@ -454,7 +455,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					must_change = false, must_change_reason = NULL,
 					last_breach_check = NULL
 				RETURNING xmax <> 0`,
-				userID, orgID, newHash).Scan(&replaced); err != nil {
+				userID, orgID, newHash, passwords.AlgorithmOf(newHash)).Scan(&replaced); err != nil {
 				return err
 			}
 			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,

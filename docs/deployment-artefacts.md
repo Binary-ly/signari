@@ -122,7 +122,7 @@ FIPS-validated) predate this and remain the basis the chart builds on.
 
 Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile`, `admin/Dockerfile` and
 `examples/go-quickstart/Dockerfile` names its base by tag and digest, for example
-`golang:1.26.10@sha256:cfa2…`. The digest is what gets pulled, and the tag says what
+`golang:1.26.11@sha256:9579…`. The digest is what gets pulled, and the tag says what
 it is. A tag is whatever its registry says today, so a build from a bare tag can
 differ from the build that was checked, without anyone changing a line here.
 `TestEveryBaseImageIsPinnedByDigest` fails on a `FROM` without a digest.
@@ -132,7 +132,7 @@ one, read the digest of the index the tag names now and put it in place of the
 old one:
 
 ```sh
-docker buildx imagetools inspect --format '{{json .Manifest}}' golang:1.26.10 | jq -r .digest
+docker buildx imagetools inspect --format '{{json .Manifest}}' golang:1.26.11 | jq -r .digest
 ```
 
 That is the multi-platform index, so the pin holds for every architecture the

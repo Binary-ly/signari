@@ -155,8 +155,12 @@ All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0. A later scan on
 go1.26.9 found **GO-2026-6809**: `crypto/x509` kept trusting intermediate
 certificates that have since been distrusted, reachable from the FIDO metadata
 check that decides whether a security key's attestation is anchored. It is fixed
-in **go1.26.10**, now the floor in `go.mod` and the build image. The release
-script refused to build until it moved, which is what it is for. The Terraform provider had fifteen of its own
+in **go1.26.10**. The release script refused to build until it moved, which is
+what it is for, and in November 2026 it refused again: on go1.26.10 it found
+**GO-2026-6859**, an HTTP/1 server crash through a header race in
+`http.MaxBytesReader`, which bounds request bodies on two dozen paths here. It is
+fixed in **go1.26.11**, now the floor in each module's `go.mod` and in every build
+image. The Terraform provider had fifteen of its own
 (gRPC authorization bypass and memory exhaustion among them), fixed by the same
 toolchain and newer `grpc`, `x/net` and `x/text`. A clean result is only true on
 the day it was produced, so CI runs govulncheck on every change rather than this

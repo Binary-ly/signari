@@ -10,7 +10,7 @@
 # and can be pointed somewhere else after the release was checked. The tag stays
 # beside it to say what the digest is. docs/deployment-artefacts.md has how to
 # move a pin; TestEveryBaseImageIsPinnedByDigest fails on a FROM without one.
-FROM golang:1.26.10@sha256:cfa27959837144bf4649802ba38e59daffd0dd2a7994aa83daaf113285b0f551 AS build
+FROM golang:1.26.11@sha256:957952ae74dc010608717144399a59a2c6e82ea03d63be1c7ff6577c5a135f93 AS build
 
 WORKDIR /src
 
@@ -60,7 +60,7 @@ RUN CGO_ENABLED=0 GOFIPS140=${GOFIPS140} \
 # none of (docs/signing-keys-in-a-module.md). Built on bookworm to match the
 # runtime's: a binary linked against a newer glibc than its image carries does
 # not start.
-FROM golang:1.26.10-bookworm@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473 AS build-pkcs11
+FROM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build-pkcs11
 
 WORKDIR /src
 COPY go.mod go.sum ./

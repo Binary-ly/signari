@@ -1,6 +1,6 @@
 module signari.dev/operator
 
-go 1.26.10
+go 1.26.11
 
 require (
 	k8s.io/api v0.37.0

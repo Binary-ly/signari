@@ -10,10 +10,12 @@ module signari.dev/engine
 // GO-2026-6809, crypto/x509 trusting compromised intermediate certificates,
 // reachable from the FIDO metadata check that anchors an authenticator's
 // attestation; fixed in 1.26.10, and the release script refused to build until it
-// moved. Building with an older toolchain reintroduces all of them, and nothing
-// else in this repository would say so -- which is why CI runs govulncheck. See
-// docs/security-scanning.md.
-go 1.26.10
+// moved. On 1.26.10 it found GO-2026-6859, an HTTP/1 server crash through a header
+// race in MaxBytesReader, which bounds request bodies on 24 paths here; fixed in
+// 1.26.11, and again the release script refused to build. Building with an older
+// toolchain reintroduces all of them, and nothing else in this repository would say
+// so -- which is why CI runs govulncheck. See docs/security-scanning.md.
+go 1.26.11
 
 require (
 	github.com/beevik/etree v1.7.0

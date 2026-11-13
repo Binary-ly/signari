@@ -145,10 +145,10 @@ type statusHost struct {
 	token       func() string
 }
 
-func (h *statusHost) fetch(uri string) ([]byte, string, error) {
+func (h *statusHost) fetch(uri, accept string) ([]byte, string, error) {
 	h.asked++
-	if uri != testStatusURI {
-		h.f.t.Errorf("asked for %s", uri)
+	if uri != testStatusURI || accept != StatusTokenMedia {
+		h.f.t.Errorf("asked for %s as %s", uri, accept)
 	}
 	if h.err != nil {
 		return nil, "", h.err
@@ -185,7 +185,7 @@ func TestAValidStatusAdmits(t *testing.T) {
 			return f.listToken(map[int]byte{4: statusInvalid, 6: statusSuspended}, nil, "statuslist+jwt")
 		}}
 	e := f.expect()
-	e.FetchStatus = h.fetch
+	e.Fetch = h.fetch
 	if _, err := Verify(f.withStatus(nil), e); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestAStatusThatIsNotValidRefuses(t *testing.T) {
 			h := &statusHost{f: f, contentType: ct, err: c.err, token: c.token}
 			e := f.expect()
 			if !c.noFetcher {
-				e.FetchStatus = h.fetch
+				e.Fetch = h.fetch
 			}
 			_, err := Verify(f.withStatus(c.credential), e)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -289,7 +289,7 @@ func TestAnInvalidCredentialIsNotLookedUp(t *testing.T) {
 	h := &statusHost{f: f, contentType: StatusTokenMedia,
 		token: func() string { return f.listToken(nil, nil, "statuslist+jwt") }}
 	e := f.expect()
-	e.FetchStatus = h.fetch
+	e.Fetch = h.fetch
 	e.Nonce = "another request's"
 	if _, err := Verify(f.withStatus(nil), e); err == nil {
 		t.Fatal("accepted")
@@ -312,7 +312,7 @@ func TestAClaimThatMustBeSignedIsRefusedFromADisclosure(t *testing.T) {
 			h := &statusHost{f: f, contentType: StatusTokenMedia,
 				token: func() string { return f.listToken(nil, nil, "statuslist+jwt") }}
 			e := f.expect()
-			e.FetchStatus = h.fetch
+			e.Fetch = h.fetch
 			cred := f.credentialDisclosing(name, value)
 			_, err := Verify(token("person", f.present(cred, append([]string{name}, both...), nil, nil)), e)
 			if err == nil || !strings.Contains(err.Error(), "forbids disclosing") {

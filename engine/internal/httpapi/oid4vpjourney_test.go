@@ -40,6 +40,8 @@ type holderWallet struct {
 	subject        string
 	// status is the credential's status claim, when its issuer keeps one.
 	status map[string]any
+	// iss is the credential's issuer, walletIssuer unless a test moves it.
+	iss string
 }
 
 func newHolderWallet(t *testing.T, subject string) *holderWallet {
@@ -75,7 +77,11 @@ func (wl *holderWallet) sign(key *ecdsa.PrivateKey, typ string, claims any) stri
 // client id.
 func (wl *holderWallet) present(clientID, nonce string) string {
 	wl.t.Helper()
-	always := map[string]any{"iss": walletIssuer, "vct": walletVCT, "iat": time.Now().Unix(),
+	iss := wl.iss
+	if iss == "" {
+		iss = walletIssuer
+	}
+	always := map[string]any{"iss": iss, "vct": walletVCT, "iat": time.Now().Unix(),
 		"exp": time.Now().Add(time.Hour).Unix()}
 	if wl.status != nil {
 		always["status"] = wl.status
@@ -355,6 +361,103 @@ func TestARevokedCredentialDoesNotSignAnybodyIn(t *testing.T) {
 	}
 	if asked != 2 {
 		t.Errorf("the list was asked for %d times, once for each presentation was expected", asked)
+	}
+}
+
+// An issuer believed by its metadata (SD-JWT VC section 3): its JWT VC Issuer Metadata
+// names a jwks_uri, both served over TLS and fetched through the outbound client at the
+// response URI. The linked person signs in; the issuer rotates its key, and a credential
+// signed with the old one is refused at once, while one signed with the new one signs in.
+func TestAnIssuerBelievedByItsMetadataSignsThePersonIn(t *testing.T) {
+	ctx := context.Background()
+	wl := newHolderWallet(t, "person-1")
+	f, slug, leaf := newVPFixture(t, wl)
+
+	published := wl.issuer
+	var iss string
+	var asked []string
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		switch r.URL.Path {
+		case "/.well-known/jwt-vc-issuer/pid":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": iss, "jwks_uri": strings.TrimSuffix(iss, "/pid") + "/keys"})
+		case "/keys":
+			w.Header().Set("Content-Type", "application/jwk-set+json")
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: published.Public(), Use: "sig"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer site.Close()
+	iss = site.URL + "/pid"
+	wl.iss = iss
+	f.srv.outboundHTTP = func(time.Duration) *http.Client { return site.Client() }
+
+	v, err := store.LoadVPVerifier(ctx, f.pool, f.srv.cfg.Root, slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetVPTrustedIssuerByMetadata(ctx, tx, f.orgID, slug, iss); err != nil {
+		t.Fatal(err)
+	}
+	// One subject per person at a provider: the fixture's link under the pinned
+	// issuer gives way to this issuer's.
+	if _, err := tx.Exec(ctx, `DELETE FROM core.federated_identities WHERE provider_id = $1::uuid AND user_id = $2::uuid`,
+		v.ProviderID, f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.LinkFederatedIdentity(ctx, tx, v.ProviderID, f.userID, f.orgID,
+		federation.ExternalIdentity{Subject: store.VPSubject(iss, "person-1")}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	present := func() (*httptest.ResponseRecorder, *http.Cookie) {
+		loc, cookie := f.startVP(t, slug)
+		p := f.fetchVP(t, loc, leaf)
+		return f.postVP(t, p["response_uri"].(string), url.Values{"state": {p["state"].(string)},
+			"vp_token": {wl.present(p["client_id"].(string), p["nonce"].(string))}}), cookie
+	}
+	rec, cookie := present()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a credential checked with the issuer's published key answered %d: %s", rec.Code, rec.Body)
+	}
+	if len(asked) != 2 || asked[0] != "/.well-known/jwt-vc-issuer/pid" || asked[1] != "/keys" {
+		t.Errorf("the issuer was asked for %v", asked)
+	}
+	var answer struct {
+		RedirectURI string `json:"redirect_uri"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &answer)
+	back, _ := url.Parse(answer.RedirectURI)
+	done := httptest.NewRequest(http.MethodGet, back.RequestURI(), nil)
+	done.AddCookie(cookie)
+	out := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(out, done)
+	if !hasSession(out) {
+		t.Fatalf("the linked person was not signed in: %d %s", out.Code, out.Body)
+	}
+
+	// The issuer rotates. Nothing was kept, so the next presentation reads the new key.
+	rotated, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published = rotated
+	if rec, _ := present(); rec.Code != http.StatusBadRequest {
+		t.Errorf("a credential signed with the key the issuer stopped publishing answered %d", rec.Code)
+	}
+	wl.issuer = rotated
+	if rec, _ := present(); rec.Code != http.StatusOK {
+		t.Errorf("a credential signed with the issuer's new key answered %d: %s", rec.Code, rec.Body)
 	}
 }
 

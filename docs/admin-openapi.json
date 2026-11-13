@@ -16373,7 +16373,10 @@
                   "issuer": {
                     "type": "string"
                   },
-                  "jwks": {}
+                  "jwks": {},
+                  "keys_from": {
+                    "type": "string"
+                  }
                 },
                 "type": "object"
               }

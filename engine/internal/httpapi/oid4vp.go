@@ -298,8 +298,8 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	presented, err := oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: clientID, Nonce: nonce,
-		Ask: v.Ask(), Issuers: v.Issuers, Now: time.Now(),
-		FetchStatus: func(uri string) ([]byte, string, error) { return s.fetchStatusList(ctx, uri) }})
+		Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata, Now: time.Now(),
+		Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
 	if err == nil {
 		var proved []byte
 		if proved, err = vpIdentity(v, presented); err == nil {
@@ -318,39 +318,42 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusBadRequest, "invalid_request", "the presentation was not accepted")
 }
 
-// A Status List Token is read within this long, and no larger than this. A list of a
-// million credentials at eight bits is a megabyte before compression.
+// What the verifier fetches is read within this long, and no larger than this. A status
+// list of a million credentials at eight bits is a megabyte before compression.
 const (
-	statusListTimeout = 10 * time.Second
-	statusListLimit   = 4 << 20
+	verifierFetchTimeout = 10 * time.Second
+	verifierFetchLimit   = 4 << 20
 )
 
-// fetchStatusList asks for the Status List Token a presented credential names
-// (specs/token-status-list.txt:730-750), through the outbound dialler, so an issuer's
-// list in the private network is refused unless an operator named it.
-func (s *Server) fetchStatusList(ctx context.Context, uri string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, statusListTimeout)
+// fetchForVerifier GETs what a presentation's check needs: the Status List Token a
+// credential names (specs/token-status-list.txt:730-750), or a believed issuer's JWT VC
+// Issuer Metadata and key set (specs/sdjwtvc.txt:1140-1170). Through the outbound
+// dialler, so an address in the private network is refused unless an operator named it.
+func (s *Server) fetchForVerifier(ctx context.Context, uri, accept string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, verifierFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("Accept", oid4vp.StatusTokenMedia)
-	resp, err := s.outboundClient(statusListTimeout).Do(req)
+	req.Header.Set("Accept", accept)
+	resp, err := s.outboundClient(verifierFetchTimeout).Do(req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// "MUST use an HTTP status code in the 2xx range" (:754).
+	// A status list "MUST use an HTTP status code in the 2xx range"
+	// (specs/token-status-list.txt:754); metadata "MUST use an HTTP 200"
+	// (specs/sdjwtvc.txt:1168).
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, "", fmt.Errorf("the status list answered %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("%s answered %d", uri, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, statusListLimit+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, verifierFetchLimit+1))
 	if err != nil {
 		return nil, "", err
 	}
-	if len(body) > statusListLimit {
-		return nil, "", fmt.Errorf("the status list is larger than %d bytes", statusListLimit)
+	if len(body) > verifierFetchLimit {
+		return nil, "", fmt.Errorf("%s is larger than %d bytes", uri, verifierFetchLimit)
 	}
 	return body, resp.Header.Get("Content-Type"), nil
 }

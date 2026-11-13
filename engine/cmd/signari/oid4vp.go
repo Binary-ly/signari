@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/oid4vp"
 	"signari.dev/engine/internal/store"
 )
 
@@ -66,24 +67,35 @@ func idpAddVP(ctx context.Context, conn *pgx.Conn, orgID, slug, name string, all
 	return nil
 }
 
-// idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile, or
-// with -remove stops believing it.
-func idpVPIssuer(ctx context.Context, conn *pgx.Conn, slug, issuer, jwksFile string, remove bool) error {
+// idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile or
+// with -keys-from-metadata those its metadata publishes, or with -remove stops
+// believing it.
+func idpVPIssuer(ctx context.Context, conn *pgx.Conn, slug, issuer, jwksFile string, fromMetadata, remove bool) error {
 	switch {
 	case slug == "":
 		return fmt.Errorf("give -slug, the wallet sign-in")
 	case issuer == "":
 		return fmt.Errorf("give -issuer, exactly as the iss its credentials carry")
-	case remove && jwksFile != "":
-		return fmt.Errorf("-remove takes no -jwks-file")
+	case remove && (jwksFile != "" || fromMetadata):
+		return fmt.Errorf("-remove takes no -jwks-file or -keys-from-metadata")
 	case remove:
 		if err := store.RemoveVPTrustedIssuer(ctx, conn, "", slug, issuer); err != nil {
 			return err
 		}
 		fmt.Printf("%s no longer believes %s\n", slug, issuer)
 		return nil
+	case fromMetadata && jwksFile != "":
+		return fmt.Errorf("give -jwks-file or -keys-from-metadata, not both: keys are either held here or read from the issuer")
+	case fromMetadata:
+		if err := store.SetVPTrustedIssuerByMetadata(ctx, conn, "", slug, issuer); err != nil {
+			return err
+		}
+		where, _ := oid4vp.IssuerMetadataURL(issuer)
+		fmt.Printf("%s believes credentials from %s, checked with the keys published at %s, read for each presentation\n",
+			slug, issuer, where)
+		return nil
 	case jwksFile == "":
-		return fmt.Errorf("give -jwks-file, the issuer's public signing keys as a JWK Set")
+		return fmt.Errorf("give -jwks-file, the issuer's public signing keys as a JWK Set, or -keys-from-metadata")
 	}
 	jwks, err := os.ReadFile(jwksFile)
 	if err != nil {

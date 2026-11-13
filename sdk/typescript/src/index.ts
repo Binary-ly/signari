@@ -5241,6 +5241,7 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugTokenAuthResponse {
 export interface PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest {
   issuer?: string
   jwks?: unknown
+  keys_from?: string
 }
 
 /** A JSON object of the Admin API. */

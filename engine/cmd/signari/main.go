@@ -791,6 +791,7 @@ func run(args []string) (err error) {
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
 	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate or anchor gave you, as a JWK Set (federation add-subordinate, add-anchor)")
+	keysFromMetadata := fs.Bool("keys-from-metadata", false, "believe the issuer with the keys its JWT VC Issuer Metadata publishes, read for each presentation (idp vp-issuer)")
 	fedTrustMarks := fs.String("trust-marks", "", "`federation add-anchor`: Trust Mark types a relying party must hold, comma separated")
 	metadataPrefix := fs.String("url-prefix", "", "an https URL ending in /, which a client_id is under (client-metadata allow, forget)")
 	fedPolicyFile := fs.String("metadata-policy-file", "", "what this entity requires of a subordinate's metadata (federation add-subordinate)")
@@ -2175,7 +2176,7 @@ func run(args []string) (err error) {
 	case "idp enable":
 		return idpSetEnabled(ctx, conn, *slug, true)
 	case "idp vp-issuer":
-		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *removeMember)
+		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *keysFromMetadata, *removeMember)
 	case "idp link":
 		return idpLink(ctx, conn, *slug, *subject, *email)
 	case "idp unlink":

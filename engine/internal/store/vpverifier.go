@@ -47,6 +47,9 @@ type VPVerifier struct {
 	Key     crypto.Signer
 	Chain   []*x509.Certificate
 	Issuers map[string]*jose.JSONWebKeySet
+	// IssuersFromMetadata are believed with the keys their JWT VC Issuer Metadata
+	// publishes, read for each presentation, rather than keys held here.
+	IssuersFromMetadata map[string]bool
 }
 
 // CredentialQueryID names the one credential a verifier asks for, in the query and in
@@ -125,18 +128,23 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		}
 	}
 
-	rows, err := db.Query(ctx, `SELECT issuer, jwks FROM core.vp_trusted_issuers WHERE provider_id = $1::uuid`,
+	rows, err := db.Query(ctx, `SELECT issuer, jwks, keys_from FROM core.vp_trusted_issuers WHERE provider_id = $1::uuid`,
 		v.ProviderID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	v.Issuers = map[string]*jose.JSONWebKeySet{}
+	v.IssuersFromMetadata = map[string]bool{}
 	for rows.Next() {
-		var issuer string
+		var issuer, keysFrom string
 		var raw []byte
-		if err := rows.Scan(&issuer, &raw); err != nil {
+		if err := rows.Scan(&issuer, &raw, &keysFrom); err != nil {
 			return nil, err
+		}
+		if keysFrom == VPKeysFromMetadata {
+			v.IssuersFromMetadata[issuer] = true
+			continue
 		}
 		set, err := ParseIssuerKeys(raw)
 		if err != nil {
@@ -303,14 +311,19 @@ func ParseIssuerKeys(raw []byte) (*jose.JSONWebKeySet, error) {
 // ErrVPIssuerUnknown is an issuer a wallet sign-in does not believe.
 var ErrVPIssuerUnknown = errors.New("this wallet sign-in does not believe that issuer")
 
+// Where a believed issuer's keys come from: held here, or its JWT VC Issuer Metadata.
+const (
+	VPKeysPinned       = "pinned"
+	VPKeysFromMetadata = "metadata"
+)
+
 // SetVPTrustedIssuer believes issuer, with these keys, for the wallet sign-in slug, or
 // replaces the keys held for it. orgID is the organisation it must be in, or "" for
 // the command line, which names a slug alone.
 func SetVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte) error {
 	issuer = strings.TrimSpace(issuer)
-	if issuer == "" || strings.Contains(issuer, vpSubjectSeparator) {
-		return idpInvalid{fmt.Sprintf("the issuer %q: want the exact iss its credentials carry, which has no %q",
-			issuer, vpSubjectSeparator)}
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
 	}
 	set, err := ParseIssuerKeys(jwks)
 	if err != nil {
@@ -320,12 +333,40 @@ func SetVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer st
 	if err != nil {
 		return err
 	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, canonical, VPKeysPinned)
+}
+
+// SetVPTrustedIssuerByMetadata believes issuer for the wallet sign-in slug with the keys
+// its JWT VC Issuer Metadata publishes, read for each presentation, and drops any keys
+// held for it. The issuer has to be an https URL with no query or fragment, the only
+// kind that has metadata (specs/sdjwtvc.txt:1136-1138).
+func SetVPTrustedIssuerByMetadata(ctx context.Context, q outpostDB, orgID, slug, issuer string) error {
+	issuer = strings.TrimSpace(issuer)
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
+	}
+	if _, err := oid4vp.IssuerMetadataURL(issuer); err != nil {
+		return idpInvalid{err.Error()}
+	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromMetadata)
+}
+
+func checkVPIssuerName(issuer string) error {
+	if issuer == "" || strings.Contains(issuer, vpSubjectSeparator) {
+		return idpInvalid{fmt.Sprintf("the issuer %q: want the exact iss its credentials carry, which has no %q",
+			issuer, vpSubjectSeparator)}
+	}
+	return nil
+}
+
+func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte, keysFrom string) error {
 	tag, err := q.Exec(ctx, `
-		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks)
-		SELECT x.provider_id, x.org_id, $2, $3::jsonb
+		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks, keys_from)
+		SELECT x.provider_id, x.org_id, $2, $3::jsonb, $5
 		FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
 		WHERE p.slug = $1 AND ($4 = '' OR p.org_id::text = $4)
-		ON CONFLICT (provider_id, issuer) DO UPDATE SET jwks = EXCLUDED.jwks`, slug, issuer, canonical, orgID)
+		ON CONFLICT (provider_id, issuer) DO UPDATE SET jwks = EXCLUDED.jwks, keys_from = EXCLUDED.keys_from`,
+		slug, issuer, jwks, orgID, keysFrom)
 	if err != nil {
 		return err
 	}

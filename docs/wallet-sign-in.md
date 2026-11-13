@@ -40,11 +40,34 @@ Every claim named is asked for, and a credential without one of them is refused.
 ## Whom it believes
 
 Nobody, until `idp vp-issuer` names an issuer, exactly as the `iss` its credentials
-carry, with the public keys they are signed with. A private key or a MAC key in the file
-is refused. Those keys are the only ones a credential from that issuer is checked
-against. They are not fetched from the issuer and not taken from a certificate in the
-credential: SD-JWT VC lets the verifier's policy decide how an issuer's key is found,
-and this policy is "the keys the operator gave".
+carry. SD-JWT VC lets the verifier's policy decide how an issuer's key is found, and
+the operator chooses, issuer by issuer, between two ways.
+
+### Where an issuer's keys come from
+
+**Pinned**, with `-jwks-file`: the public keys in the file are the only ones a
+credential from that issuer is checked against. A private key or a MAC key in the file
+is refused. Rotating them is the operator's job.
+
+**From its metadata**, with `-keys-from-metadata`, for an issuer whose `iss` is an
+`https` URL with no query or fragment:
+
+```sh
+signari idp vp-issuer -slug wallet -issuer https://pid.example -keys-from-metadata
+```
+
+For each presentation from that issuer, before its signature is checked, its JWT VC
+Issuer Metadata is read from `https://pid.example/.well-known/jwt-vc-issuer` (for an
+issuer with a path, the path follows the well-known name), through the same outbound
+rules as every other request this server makes. It has to be served as
+`application/json`, name exactly the same `issuer`, and carry either `jwks` or a
+`jwks_uri` at an `https` address, not both. Those keys check the credential, and its
+status list, if it names one. Nothing is kept, so an issuer's rotation is seen at once,
+and an issuer whose metadata cannot be read signs nobody in until it can.
+
+Only an issuer named here is ever looked up: a credential naming any other is refused
+before anything is fetched, so a credential cannot choose where this server goes.
+Keys are not taken from a certificate in the credential (`x5c`).
 
 ## Who is signed in
 
@@ -69,7 +92,7 @@ wallet is told at once that it was refused:
 - the request it answers is live and unanswered, before anything is verified;
 - exactly one credential, for the one query asked;
 - the credential is typed `dc+sd-jwt` (or `vc+sd-jwt`, the name it replaced), signed with
-  an asymmetric algorithm by a key held for its issuer, of a type asked for, and not
+  an asymmetric algorithm by one of its issuer's keys, pinned or from its metadata, of a type asked for, and not
   expired or not yet valid;
 - its disclosures are all referenced by it, none twice;
 - it carries a key binding (`cnf`), and a Key Binding JWT signed by that key, typed
@@ -92,7 +115,7 @@ every other request this server makes (`SIGNARI_OUTBOUND_ALLOW_PRIVATE` for a li
 the private network). It has to be:
 
 - served as `application/statuslist+jwt`, typed `statuslist+jwt`;
-- signed by a key held for the credential's own issuer. A list kept by a separate status
+- signed by one of the credential's own issuer's keys, pinned or from its metadata. A list kept by a separate status
   issuer is not believed, since nothing here says who may speak for whom;
 - about this credential's list (`sub` the address the credential names), with an `iat`,
   not expired, not yet to come, and a positive `ttl` if it has one.
@@ -126,7 +149,8 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 - **mdoc** credentials.
 - **A separate status issuer**, whose key is linked to the credential's issuer by a
   certificate authority. Only the issuer's own keys sign a list believed here.
-- **Finding an issuer's key** from its metadata or a certificate chain. Keys are pinned.
+- **An issuer's key from a certificate chain** in the credential (`x5c`), validated to
+  a root the operator trusts. Keys are pinned or read from the issuer's metadata.
 
 ## Routes
 

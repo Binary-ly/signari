@@ -22,9 +22,10 @@ import (
 // credential that names a status is not believed until its list says it is valid,
 // because a sign-in with a revoked credential is the thing revocation exists to stop.
 
-// StatusFetcher fetches the Status List Token at uri: the body and the response's
-// Content-Type. The caller dials, so the address is held to its outbound rules.
-type StatusFetcher func(uri string) (body []byte, contentType string, err error)
+// Fetcher GETs uri asking for accept, and returns the body and the response's
+// Content-Type: a Status List Token, an issuer's metadata or its key set. The caller
+// dials, so every address is held to its outbound rules.
+type Fetcher func(uri, accept string) (body []byte, contentType string, err error)
 
 const (
 	// StatusTokenMedia is what a list in JWT form is asked for and answered as
@@ -104,11 +105,11 @@ func statusReference(payload map[string]any) (*statusRef, error) {
 //
 // The list is fetched for every presentation and never kept: a cached VALID would
 // let a credential revoked since sign in again (ADR-007).
-func checkStatus(ref statusRef, keys *jose.JSONWebKeySet, fetch StatusFetcher, now time.Time) error {
+func checkStatus(ref statusRef, keys *jose.JSONWebKeySet, fetch Fetcher, now time.Time) error {
 	if fetch == nil {
 		return fmt.Errorf("the credential names a status list and this verifier has no way to read it")
 	}
-	body, contentType, err := fetch(ref.URI)
+	body, contentType, err := fetch(ref.URI, StatusTokenMedia)
 	if err != nil {
 		return fmt.Errorf("the credential's status list could not be read: %w", err)
 	}

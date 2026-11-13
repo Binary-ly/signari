@@ -447,11 +447,27 @@ func (s *Server) putIdPTokenAuth(w http.ResponseWriter, r *http.Request) {
 type vpIssuerRequest struct {
 	Issuer string          `json:"issuer"`
 	JWKS   json.RawMessage `json:"jwks"`
+	// KeysFrom is "pinned", the default, with jwks, or "metadata", without: the keys
+	// the issuer's JWT VC Issuer Metadata publishes, read for each presentation.
+	KeysFrom string `json:"keys_from,omitempty"`
 }
 
 func (s *Server) putVPIssuer(w http.ResponseWriter, r *http.Request) {
 	var req vpIssuerRequest
 	if !decodeStrict(w, r, &req) {
+		return
+	}
+	switch req.KeysFrom {
+	case "", store.VPKeysPinned:
+	case store.VPKeysFromMetadata:
+		if len(req.JWKS) > 0 && string(req.JWKS) != "null" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
+				"detail": "keys_from metadata takes no jwks: the keys are read from the issuer"})
+			return
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
+			"detail": `keys_from is "pinned" or "metadata"`})
 		return
 	}
 	s.changeVPIssuer(w, r, req, true)
@@ -479,7 +495,13 @@ func (s *Server) changeVPIssuer(w http.ResponseWriter, r *http.Request, req vpIs
 		}
 		detail := map[string]any{"provider": slug, "issuer": req.Issuer}
 		if believe {
-			if err := store.SetVPTrustedIssuer(ctx, tx, orgID, slug, req.Issuer, req.JWKS); err != nil {
+			set := func() error { return store.SetVPTrustedIssuer(ctx, tx, orgID, slug, req.Issuer, req.JWKS) }
+			detail["keys_from"] = store.VPKeysPinned
+			if req.KeysFrom == store.VPKeysFromMetadata {
+				set = func() error { return store.SetVPTrustedIssuerByMetadata(ctx, tx, orgID, slug, req.Issuer) }
+				detail["keys_from"] = store.VPKeysFromMetadata
+			}
+			if err := set(); err != nil {
 				return err
 			}
 			return audit.Write(ctx, tx, audit.Event{Type: "admin.idp_vp_issuer_set", AdminTokenID: TokenIDFrom(ctx),

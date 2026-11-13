@@ -120,6 +120,39 @@ func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
 		"issuer": "https://pid.example", "jwks": issuerJWKS(t, false)}); rec.Code != http.StatusNotFound {
 		t.Errorf("an unknown slug answered %d", rec.Code)
 	}
+
+	// The same issuer moved to the keys its metadata publishes: the held keys go,
+	// and a second issuer believed that way sits beside it.
+	for _, iss := range []string{"https://pid.example", "https://other.example/tenant/7"} {
+		if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": iss,
+			"keys_from": "metadata"}); rec.Code != http.StatusOK {
+			t.Fatalf("believing %s by its metadata: %d %s", iss, rec.Code, rec.Body)
+		}
+	}
+	v, err = store.LoadVPVerifier(context.Background(), s.db, nil, slug)
+	if err != nil || v.Issuers["https://pid.example"] != nil || !v.IssuersFromMetadata["https://pid.example"] ||
+		!v.IssuersFromMetadata["https://other.example/tenant/7"] {
+		t.Fatalf("after keys_from metadata: pinned %v, from metadata %v, %v", v.Issuers, v.IssuersFromMetadata, err)
+	}
+	for name, body := range map[string]map[string]any{
+		"keys and metadata both":     {"issuer": "https://pid.example", "keys_from": "metadata", "jwks": issuerJWKS(t, false)},
+		"an issuer with no metadata": {"issuer": "urn:example:pid", "keys_from": "metadata"},
+		"a plain http issuer":        {"issuer": "http://pid.example", "keys_from": "metadata"},
+		"an unknown keys_from":       {"issuer": "https://pid.example", "keys_from": "x5c"},
+	} {
+		if rec := call(t, s, http.MethodPut, issuers, testToken, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s answered %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	// And back to pinned keys, which a held issuer keeps.
+	if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": "https://pid.example",
+		"jwks": issuerJWKS(t, false)}); rec.Code != http.StatusOK {
+		t.Fatalf("pinning again: %d %s", rec.Code, rec.Body)
+	}
+	if v, err = store.LoadVPVerifier(context.Background(), s.db, nil, slug); err != nil ||
+		v.Issuers["https://pid.example"] == nil || v.IssuersFromMetadata["https://pid.example"] {
+		t.Fatalf("after pinning again: pinned %v, from metadata %v, %v", v.Issuers, v.IssuersFromMetadata, err)
+	}
 	if rec := call(t, s, http.MethodDelete, issuers+"?issuer=https://pid.example", testToken, nil); rec.Code != http.StatusOK {
 		t.Fatalf("no longer believing: %d %s", rec.Code, rec.Body)
 	}

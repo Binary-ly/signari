@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0297 vp_issuer_metadata
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may find a believed issuer's keys in its JWT VC Issuer Metadata (specs/sdjwtvc.txt:1085-1089 and section 3), fetched for each presentation, rather than hold them pinned: keys_from is 'pinned', with jwks, or 'metadata', without. Not compatible with the previous release once an issuer is set the second way: that release reads the missing keys as an error and refuses that wallet sign-in, which fails closed.
+
 ## 0296 admin_approvals
 
 Compatible with the release before: its binary may still serve this schema.

@@ -102,13 +102,16 @@ only the Response. The two cannot both be off, and a flag left out of the
 command leaves its setting alone. Until October 2026 both settings were stored
 and ignored, and every response signed the assertion only.
 
-**XML comments are refused outright.** Go parses
+**XML comments inside the document are refused outright.** Go parses
 `<Issuer>admin<!---->@evil.test</Issuer>` as `admin@evil.test`. Canonicalisation
 drops comments before the digest is computed, and other parsers keep only the
 first text node — so the signed bytes, our value, and the peer's value can all
 differ. That is CVE-2017-11427 and its relatives. Rather than trying to agree
-with every other implementation, documents containing comments are rejected. No
-legitimate service provider puts a comment in an AuthnRequest.
+with every other implementation, a document with a comment anywhere inside its
+document element is rejected. No legitimate service provider puts a comment in an
+AuthnRequest. A comment before or after the document element is allowed, being in
+no element's text and under no signature: Shibboleth's metadata generator begins
+every document with one, and until November 2026 that refused its metadata.
 
 **Decompression is bounded during the read**, not measured afterwards. A few
 kilobytes of DEFLATE expands to gigabytes; that is how both `crewjam/saml` and

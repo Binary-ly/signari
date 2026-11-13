@@ -82,7 +82,7 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, store.ErrVPVerifierUnknown) {
 			s.log.ErrorContext(ctx, "loading a wallet sign-in", "slug", slug, "err", err)
 		}
-		s.federationError(w, r, "That sign-in method is not available.")
+		s.federationRefusal(w, r, "federr.unavailable")
 		return
 	}
 	clientID, err := s.vpClientID(v)
@@ -90,18 +90,18 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		// The certificate does not name this server's host, which every wallet
 		// would refuse: said here, where an operator reads it.
 		s.log.ErrorContext(ctx, "a wallet sign-in cannot be offered", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not available.")
+		s.federationRefusal(w, r, "federr.unavailable")
 		return
 	}
 	nonce, err := randomToken()
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -120,18 +120,18 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		s.log.ErrorContext(ctx, "beginning a wallet sign-in", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
 	req, err := s.vpRequest(v, clientID, nonce, state, "", responseKey)
 	if err != nil {
 		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	// A signed request goes by reference, fetched by GET or by POST as the wallet
@@ -144,7 +144,7 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 	target, err := req.URL(v.WalletURL, requestURI, v.Prefix.Signed())
 	if err != nil {
 		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not available.")
+		s.federationRefusal(w, r, "federr.unavailable")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -409,25 +409,24 @@ func (s *Server) handleVPDone(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
 	if state == "" || (q.Get("response_code") == "" && q.Get("error") == "") {
-		s.federationError(w, r, "That sign-in link is incomplete.")
+		s.federationRefusal(w, r, "federr.linkincomplete")
 		return
 	}
 	c, err := r.Cookie(FederationCookieName)
 	if err != nil || c.Value == "" {
-		s.federationError(w, r, "This sign-in was started in a different browser, or the "+
-			"link is more than ten minutes old. Please try again.")
+		s.federationRefusal(w, r, "federr.otherbrowser")
 		return
 	}
 	s.clearFederationCookie(w)
 
 	v, err := s.loadVPVerifier(r, slug)
 	if err != nil {
-		s.federationError(w, r, "That sign-in method is not available.")
+		s.federationRefusal(w, r, "federr.unavailable")
 		return
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -436,20 +435,20 @@ func (s *Server) handleVPDone(w http.ResponseWriter, r *http.Request) {
 		_ = tx.Rollback(ctx)
 		s.log.InfoContext(ctx, "a wallet sign-in was refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, err.Error())
+		s.federationRefusal(w, r, federatedLoginRefusal(err))
 		return
 	}
 	if pending.ProviderID != v.ProviderID {
 		_ = tx.Rollback(ctx)
-		s.federationError(w, r, "That sign-in link does not match this provider.")
+		s.federationRefusal(w, r, "federr.linkmismatch")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	if q.Get("error") != "" {
-		s.federationError(w, r, "The sign-in was cancelled or refused by the provider.")
+		s.federationRefusal(w, r, "federr.cancelled")
 		return
 	}
 
@@ -461,7 +460,7 @@ func (s *Server) handleVPDone(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.InfoContext(ctx, "a wallet sign-in's presentation could not be opened", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "The provider's response could not be verified.")
+		s.federationRefusal(w, r, "federr.unverified")
 		return
 	}
 	s.completeFederation(w, r, &federation.Config{

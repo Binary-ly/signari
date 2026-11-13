@@ -825,11 +825,21 @@ func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
 	for _, key := range passwords.PatternKeys {
 		refusals = append(refusals, key)
 	}
+	// A refusal at an upstream sign-in takes a key, and so does sign-up's: until
+	// November 2026 each took an English sentence, and every reader was shown it. A
+	// sentence handed to federationRefusal is not a key, and fails here.
+	upstream := keysUsedInGo(t, regexp.MustCompile(`federationRefusal\(w, r, "([^"]*)"\)`))
+	if len(upstream) < 40 {
+		t.Errorf("only %d federationRefusal calls with a literal were found; this check is reading too little", len(upstream))
+	}
+	refusals = append(refusals, upstream...)
+	refusals = append(refusals, keysUsedInGo(t, regexp.MustCompile(`"((?:federr|error\.signup)\.[a-z_]+)"`))...)
 	for _, key := range refusals {
 		used[key] = true
 		if !bundle.HasKey(key) {
-			t.Errorf("the store refuses an attribute with the message %q, which is not in "+
-				"internal/i18n/locales/en.json", key)
+			t.Errorf("a refusal is said with the message %q, which is not in "+
+				"internal/i18n/locales/en.json, so the page would show the key, or the "+
+				"English handed in its place", key)
 		}
 	}
 

@@ -150,9 +150,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 		// form instead.
 		s.log.ErrorContext(ctx, "the Duo integration is configured but unusable", "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r,
-			"Second-factor authentication is misconfigured on this server, so this "+
-				"sign-in cannot be completed. Please tell an administrator.")
+		s.federationRefusal(w, r, "federr.duomisconfigured")
 		return duoTookOver
 	}
 
@@ -184,7 +182,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 			other, oerr := p.otherFactor, p.otherErr
 			if oerr != nil {
 				s.log.ErrorContext(ctx, "checking for another factor", "err", oerr)
-				s.federationError(w, r, "Something went wrong. Please try again.")
+				s.federationRefusal(w, r, "federr.generic")
 				return duoTookOver
 			}
 			if other {
@@ -192,9 +190,7 @@ func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
 			}
 			return duoFailedOpen
 		}
-		s.federationError(w, r,
-			"The second-factor service is not responding, so this sign-in cannot be "+
-				"completed. Please try again shortly.")
+		s.federationRefusal(w, r, "federr.duodown")
 		return duoTookOver
 	}
 
@@ -233,7 +229,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		code = r.URL.Query().Get("code")
 	}
 	if state == "" || code == "" {
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -242,14 +238,14 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.InfoContext(ctx, "no Duo challenge in progress", "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in has expired. Please start again.")
+		s.federationRefusal(w, r, "federr.expired")
 		return
 	}
 
 	cfg, err := store.LoadDuoIntegration(ctx, s.db, ch.OrgID, s.cfg.Root, s.duoRedirectURI(), s.cfg.AllowInsecureIssuer)
 	if err != nil {
 		s.log.ErrorContext(ctx, "loading the Duo integration for a callback", "err", err)
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -264,13 +260,13 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 			Type: "mfa.duo_failed", OrgID: ch.OrgID, SubjectID: ch.UserID,
 			CorrelationID: correlationID(ctx),
 		})
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()

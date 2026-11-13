@@ -41,7 +41,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	relay, err := saml.RelayStateToken()
 	if err != nil {
 		s.log.ErrorContext(ctx, "generating relay state", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
@@ -49,7 +49,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 		signer, _, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
 		if serr != nil {
 			s.log.ErrorContext(ctx, "reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
-			s.federationError(w, r, "That sign-in method is not configured correctly.")
+			s.federationRefusal(w, r, "federr.misconfigured")
 			return
 		}
 		src.Provider.RequestSigner = signer
@@ -57,7 +57,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	req, err := saml.BuildAuthnRequest(src.Provider, relay, time.Now())
 	if err != nil {
 		s.log.ErrorContext(ctx, "building the SAML request", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not configured correctly.")
+		s.federationRefusal(w, r, "federr.misconfigured")
 		return
 	}
 
@@ -70,7 +70,7 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 	if err := store.RecordSAMLRequest(ctx, s.db, src.ProviderID, req.ID, relay,
 		returnPath, samlSourceRequestTTL); err != nil {
 		s.log.ErrorContext(ctx, "recording the SAML request", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
@@ -99,7 +99,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	raw, err := saml.DecodePOST(r.PostForm.Get("SAMLResponse"))
 	if err != nil {
 		s.log.InfoContext(ctx, "undecodable SAML response", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -113,7 +113,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		pending, perr := store.ConsumeSAMLRequest(ctx, s.db, relay)
 		if perr != nil {
 			s.log.InfoContext(ctx, "no outstanding SAML request", "slug", slug, "err", perr)
-			s.federationError(w, r, "That sign-in has expired. Please try again.")
+			s.federationRefusal(w, r, "federr.expired")
 			return
 		}
 		if pending.ProviderID != src.ProviderID {
@@ -121,7 +121,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 			// reconciled: it means the response and the request came from two
 			// different flows.
 			s.log.InfoContext(ctx, "relay state belongs to another provider", "slug", slug)
-			s.federationError(w, r, "That sign-in could not be completed.")
+			s.federationRefusal(w, r, "federr.incomplete")
 			return
 		}
 		expectedID = pending.ID
@@ -133,7 +133,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	if bytes.Contains(raw, []byte("Encrypted")) {
 		if src.Provider.Decrypters, err = store.SAMLSourceDecrypters(ctx, s.db, s.root, src.ProviderID); err != nil {
 			s.log.ErrorContext(ctx, "reading the keys an upstream encrypts to", "slug", slug, "err", err)
-			s.federationError(w, r, "That sign-in method is not configured correctly.")
+			s.federationRefusal(w, r, "federr.misconfigured")
 			return
 		}
 	}
@@ -147,7 +147,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		// and what an attacker would use to find which check to satisfy next.
 		s.log.WarnContext(ctx, "SAML assertion refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -157,7 +157,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	// operator is the only person who can fix it.
 	if err := saml.CheckSubjectFormat(assertion.SubjectFormat); err != nil {
 		s.log.WarnContext(ctx, "transient NameID from a SAML source", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not configured correctly.")
+		s.federationRefusal(w, r, "federr.misconfigured")
 		return
 	}
 
@@ -166,7 +166,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		assertion.AssertionID, assertion.NotOnOrAfter); err != nil {
 		s.log.WarnContext(ctx, "SAML assertion replay", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 

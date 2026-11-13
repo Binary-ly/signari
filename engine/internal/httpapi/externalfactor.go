@@ -49,7 +49,7 @@ func (s *Server) beginExternalFactor(w http.ResponseWriter, r *http.Request,
 			Detail: map[string]any{"reason": "external_factor_unavailable", "factor": name},
 		})
 		s.clearPending(w)
-		s.federationError(w, r, "This sign-in cannot be completed. Please tell an administrator.")
+		s.federationRefusal(w, r, "federr.tellanadmin")
 	}
 
 	// Gone since the flow was applied, which removing it refuses but a stored
@@ -117,12 +117,12 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 	pending, err := s.readPending(r)
 	if err != nil {
-		s.federationError(w, r, "That sign-in has expired. Please start again.")
+		s.federationRefusal(w, r, "federr.expired")
 		return
 	}
 	name, ok := strings.CutPrefix(pending.Stage, factorStagePrefix)
 	if !ok {
-		s.federationError(w, r, "That sign-in has expired. Please start again.")
+		s.federationRefusal(w, r, "federr.expired")
 		return
 	}
 	refuse := func(why error) {
@@ -133,7 +133,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 			CorrelationID: correlationID(ctx), Detail: map[string]any{"factor": name},
 		})
 		s.clearPending(w)
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 	}
 
 	// One answer. Two are refused rather than one chosen, because what was
@@ -158,7 +158,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 	spent, err := store.SpendFactorChallenge(ctx, s.db, pending.OrgID, name, pending.Subject, answer.Nonce)
 	if err != nil {
 		s.log.ErrorContext(ctx, "spending an external factor's nonce", "err", err, "correlation_id", correlationID(ctx))
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	if !spent {
@@ -168,7 +168,7 @@ func (s *Server) handleExternalFactorCallback(w http.ResponseWriter, r *http.Req
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()

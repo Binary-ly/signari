@@ -345,8 +345,9 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 		}))
 	}
 
+	tr := s.tr(r)
 	if email == "" || !strings.Contains(email, "@") {
-		fail("Enter the email address this account should use.")
+		fail(tr.Text("error.signup.email"))
 		return
 	}
 	// The shared gate: length, context, reuse and the breach corpus. Not a
@@ -390,8 +391,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			if !errors.Is(err, store.ErrInvitationNotUsable) {
 				s.log.ErrorContext(ctx, "claiming an invitation failed unexpectedly", "err", err)
 			}
-			fail("That invitation link is not valid. It may have been used " +
-				"already, or expired.")
+			fail(tr.Text("error.invite.invalid"))
 			return
 		}
 		invitationID, orgID, groups = inv.ID, inv.OrgID, inv.Groups
@@ -400,7 +400,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 		// address the finder chooses.
 		if inv.Email != "" && !strings.EqualFold(inv.Email, email) {
 			_ = store.ReleaseInvitation(ctx, s.db, inv.ID)
-			fail("This invitation is for " + inv.Email + ". Sign up with that address.")
+			fail(tr.Text("error.signup.invitefor", map[string]any{"Email": inv.Email}))
 			return
 		}
 	} else {
@@ -410,8 +410,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			return
 		}
 		if !rule.Permits(email) {
-			fail("That address cannot create an account here. Allowed: " +
-				strings.Join(rule.AllowedDomains, ", "))
+			fail(tr.Text("error.signup.domain", map[string]any{"Domains": strings.Join(rule.AllowedDomains, ", ")}))
 			return
 		}
 		orgID, groups, verify, pending = rule.OrgID, rule.DefaultGroups, rule.RequireVerify, rule.RequireApproval
@@ -444,8 +443,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			_ = store.ReleaseInvitation(ctx, s.db, invitationID)
 		}
 		if errors.Is(err, errAddressTaken) {
-			fail("There is already an account with that address. Try signing in, " +
-				"or use the forgotten-password link.")
+			fail(tr.Text("error.signup.taken"))
 			return
 		}
 		if errors.Is(err, store.ErrAttributeRequired) || errors.Is(err, store.ErrInvalidAttributeValue) ||
@@ -454,12 +452,11 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 			return
 		}
 		if errors.Is(err, errAccountRefused) {
-			fail("An account cannot be created with that address. Please contact your administrator.")
+			fail(tr.Text("error.signup.refused"))
 			return
 		}
 		s.log.ErrorContext(ctx, "creating an account", "err", err)
-		fail("The account could not be created. Reference: " +
-			shortCode(correlationID(ctx)))
+		fail(tr.Text("error.signup.failed", map[string]any{"Reference": shortCode(correlationID(ctx))}))
 		return
 	}
 	if invitationID != "" {

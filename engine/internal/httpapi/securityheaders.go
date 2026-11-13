@@ -125,7 +125,7 @@ func setCSP(w http.ResponseWriter, policy string) {
 //	handleConnectedApps        no policy, no cache header
 //	writeAuthzError            no policy, no cache header
 //	samlRefuse                 no policy, no cache header
-//	federationError            no policy
+//	federationRefusal          no policy
 //	renderLogoutConfirmation   no policy
 //	renderAuthzFailure         no policy
 //

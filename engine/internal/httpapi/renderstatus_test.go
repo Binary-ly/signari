@@ -107,7 +107,7 @@ func TestTheErrorAndCodePagesCarryTheBrandsPolicy(t *testing.T) {
 				Code: "invalid_request", Description: "probe", Disposition: oauth.DispositionDirect})
 		}},
 		"federr (federation)": {http.StatusBadRequest, func(w http.ResponseWriter, r *http.Request) {
-			s.federationError(w, r, "probe")
+			s.federationRefusal(w, r, "federr.generic")
 		}},
 		"federr (authorization)": {http.StatusBadRequest, func(w http.ResponseWriter, r *http.Request) {
 			s.renderAuthzFailure(w, r, "probe")

@@ -349,7 +349,7 @@ func ConsumeFederatedLogin(ctx context.Context, tx pgx.Tx, state, binding string
 		&storedBinding, &p.LinkUserID, &p.ReturnTo, &p.VPPresented, &p.VPResponseCodeHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("this sign-in link has already been used or has expired")
+			return nil, ErrFederatedLoginGone
 		}
 		return nil, err
 	}
@@ -357,10 +357,17 @@ func ConsumeFederatedLogin(ctx context.Context, tx pgx.Tx, state, binding string
 	// Compared AFTER the row is destroyed, so a wrong binding still burns the
 	// state rather than leaving it for another attempt.
 	if len(storedBinding) != len(bindingHash) || !constantTimeEqual(storedBinding, bindingHash[:]) {
-		return nil, fmt.Errorf("this sign-in was started in a different browser")
+		return nil, ErrFederatedLoginOtherBrowser
 	}
 	return &p, nil
 }
+
+// What ConsumeFederatedLogin refuses with, so a page can say which in the reader's
+// language rather than show this text.
+var (
+	ErrFederatedLoginGone         = errors.New("this sign-in link has already been used or has expired")
+	ErrFederatedLoginOtherBrowser = errors.New("this sign-in was started in a different browser")
+)
 
 // FindFederatedIdentity looks up a link by (provider, external subject).
 //

@@ -336,7 +336,7 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
 		// A cross-site POST that removes a credential is the shape this guards.
-		s.federationError(w, r, "That request could not be verified. Please try again.")
+		s.federationRefusal(w, r, "federr.requestunverified")
 		return
 	}
 	sid, userID, orgID, ok := s.currentSession(r)
@@ -369,8 +369,7 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	if remaining == 0 {
 		_ = tx.Rollback(ctx)
-		s.federationError(w, r, "That is the only way to sign in to this account. Set a "+
-			"password or add a passkey first, then remove it.")
+		s.federationRefusal(w, r, "federr.onlyway")
 		return
 	}
 

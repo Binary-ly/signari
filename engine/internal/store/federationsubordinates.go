@@ -118,6 +118,28 @@ func Subordinates(ctx context.Context, q Querier, instanceID string) ([]Subordin
 	return out, rows.Err()
 }
 
+// TrustMarkedSubjects is the entities this instance has issued a Trust Mark to that is
+// still valid, of markType or of any type when it is "": what §8.2.1's trust_marked
+// and trust_mark_type filter a list by. Neither revoked nor past its exp counts.
+func TrustMarkedSubjects(ctx context.Context, q Querier, instanceID, markType string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT subject FROM core.federation_trust_marks_issued
+		 WHERE instance_id = $1::uuid AND status = 'active' AND (expires_at IS NULL OR expires_at > now())
+		   AND ($2 = '' OR trust_mark_type = $2)`, instanceID, markType)
+	if err != nil {
+		return nil, err
+	}
+	subjects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(subjects))
+	for _, s := range subjects {
+		out[s] = true
+	}
+	return out, nil
+}
+
 // SubordinateOf is one of them, or nil.
 func SubordinateOf(ctx context.Context, q rowQuerier, instanceID, entityID string) (*Subordinate, error) {
 	sub := Subordinate{EntityID: entityID}

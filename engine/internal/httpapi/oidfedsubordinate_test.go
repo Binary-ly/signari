@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 // This deployment as what others in a federation look up to (12.11). What is under test
@@ -31,6 +33,10 @@ type anchorFixture struct {
 	leafKey *ecdsa.PrivateKey
 	// hints is what the leaf says of its superiors.
 	hints []string
+	// marks are the Trust Marks the leaf's configuration carries.
+	marks []oidfed.TrustMarkEntry
+	// elsewhere answers for another host, a second anchor, when set.
+	elsewhere func(r *http.Request) (string, bool)
 }
 
 func newAnchorFixture(t *testing.T, change store.FederationChange) *anchorFixture {
@@ -68,7 +74,10 @@ func newAnchorFixture(t *testing.T, change store.FederationChange) *anchorFixtur
 	f.srv.outboundHTTP = func(time.Duration) *http.Client {
 		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
-			if r.URL.Host == strings.TrimPrefix(leafEntity, "https://") {
+			if body, ok := a.answerElsewhere(r); ok {
+				rec.Header().Set("Content-Type", oidfed.MediaType)
+				_, _ = rec.WriteString(body)
+			} else if r.URL.Host == strings.TrimPrefix(leafEntity, "https://") {
 				rec.Header().Set("Content-Type", oidfed.MediaType)
 				_, _ = rec.WriteString(a.leafStatement(t))
 			} else {
@@ -78,6 +87,13 @@ func newAnchorFixture(t *testing.T, change store.FederationChange) *anchorFixtur
 		})}
 	}
 	return a
+}
+
+func (a *anchorFixture) answerElsewhere(r *http.Request) (string, bool) {
+	if a.elsewhere == nil {
+		return "", false
+	}
+	return a.elsewhere(r)
 }
 
 func (a *anchorFixture) leafJWKS(t *testing.T) json.RawMessage {
@@ -97,11 +113,15 @@ func (a *anchorFixture) leafStatement(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(map[string]any{"iss": leafEntity, "sub": leafEntity,
+	claims := map[string]any{"iss": leafEntity, "sub": leafEntity,
 		"iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 		"jwks": json.RawMessage(a.leafJWKS(t)), "authority_hints": a.hints,
 		"metadata": map[string]any{"openid_relying_party": map[string]any{
-			"client_name": "Leaf", "contacts": []string{"ops@leaf.example.test"}}}})
+			"client_name": "Leaf", "contacts": []string{"ops@leaf.example.test"}}}}
+	if len(a.marks) > 0 {
+		claims["trust_marks"] = a.marks
+	}
+	payload, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,10 +343,32 @@ func TestTheListIsWhoThisEntitySpeaksFor(t *testing.T) {
 		t.Errorf("intermediates are %v", got)
 	}
 	// §8.2.1: a filter it cannot apply is refused, or the list would look filtered and be wrong.
-	for _, param := range []string{"entity_type=openid_provider", "trust_marked=true", "trust_mark_type=x"} {
-		if e := a.errorOf(t, "/federation/list?"+param, http.StatusBadRequest); e != "unsupported_parameter" {
-			t.Errorf("%s answered %q", param, e)
+	if e := a.errorOf(t, "/federation/list?entity_type=openid_provider", http.StatusBadRequest); e != "unsupported_parameter" {
+		t.Errorf("entity_type answered %q", e)
+	}
+	// The marks this entity issued it can filter by: a live one counts, a revoked one does not.
+	const member = "https://anchor.example.test/marks/member"
+	if got := listed("/federation/list?trust_marked=true"); len(got) != 0 {
+		t.Errorf("with no marks issued, trust_marked listed %v", got)
+	}
+	a.issue(t, member, leafEntity, time.Hour)
+	for path, want := range map[string]string{
+		"/federation/list?trust_marked=true":                                            leafEntity,
+		"/federation/list?trust_marked=false":                                           "https://inter.example.test " + leafEntity,
+		"/federation/list?trust_mark_type=" + url.QueryEscape(member):                   leafEntity,
+		"/federation/list?trust_mark_type=https%3A%2F%2Fother.test%2Fm":                 "",
+		"/federation/list?trust_marked=true&intermediate=true":                          "",
+		"/federation/list?trust_marked=true&trust_mark_type=" + url.QueryEscape(member): leafEntity,
+	} {
+		if got := strings.Join(listed(path), " "); got != want {
+			t.Errorf("%s listed %q, want %q", path, got, want)
 		}
+	}
+	if err := store.RevokeTrustMark(context.Background(), a.pool, a.instanceID, member, leafEntity, "a test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := listed("/federation/list?trust_marked=true"); len(got) != 0 {
+		t.Errorf("a revoked mark still lists %v", got)
 	}
 }
 
@@ -340,6 +382,156 @@ func TestOnlyAnEntityThatSpeaksForSomebodyPublishesTheEndpoints(t *testing.T) {
 	a.speakFor(t, store.Subordinate{EntityID: leafEntity, JWKS: a.leafJWKS(t)})
 	if entity := a.federationEntity(t); entity["federation_fetch_endpoint"] == nil {
 		t.Errorf("an Intermediate publishes %v", entity)
+	}
+}
+
+// signedStatement signs claims as an entity statement with key, as another entity would.
+func signedStatement(t *testing.T, key *ecdsa.PrivateKey, kid, typ string, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
+		(&jose.SignerOptions{}).WithType(jose.ContentType(typ)).WithHeader("kid", kid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// §8.3.2: a resolve response carries the subject's Trust Marks this entity can stand
+// behind, and lasts no longer than the first of them to expire; one signed in this
+// entity's name by anybody else is left out.
+func TestAResolveResponseCarriesOnlyVerifiedTrustMarks(t *testing.T) {
+	a := newAnchorFixture(t, store.FederationChange{})
+	a.speakFor(t, store.Subordinate{EntityID: leafEntity, JWKS: a.leafJWKS(t)})
+	const member, forgedType = "https://anchor.example.test/marks/member", "https://anchor.example.test/marks/forged"
+	// Issued as this entity issues one: signed with the Federation Entity Key it publishes.
+	fedKey, err := a.srv.fedKeys.Active(keys.ES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := func(markType string, life time.Duration) *oidfed.TrustMark {
+		t.Helper()
+		mark, err := oidfed.BuildTrustMark(oidfed.TrustMarkParams{Issuer: a.issuer, Subject: leafEntity, Type: markType,
+			Lifetime: life}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mark
+	}
+	genuine, err := tokens.NewSigner(fedKey).SignJSON(built(member, 10*time.Minute), oidfed.TrustMarkTyp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same, in this entity's name, signed by the leaf.
+	raw, _ := json.Marshal(built(forgedType, time.Hour))
+	var markClaims map[string]any
+	_ = json.Unmarshal(raw, &markClaims)
+	forged := signedStatement(t, a.leafKey, "leaf-1", oidfed.TrustMarkTyp, markClaims)
+	a.marks = []oidfed.TrustMarkEntry{{Type: member, JWT: genuine}, {Type: forgedType, JWT: forged}}
+
+	rec := a.get(t, "/federation/resolve?sub="+url.QueryEscape(leafEntity)+"&trust_anchor="+url.QueryEscape(a.issuer))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resolving gave %d: %s", rec.Code, rec.Body)
+	}
+	claims := claimsOfJWT(t, rec.Body.String())
+	marks, _ := claims["trust_marks"].([]any)
+	if len(marks) != 1 || marks[0].(map[string]any)["trust_mark"] != genuine {
+		t.Fatalf("the response carries %v", claims["trust_marks"])
+	}
+	if exp, _ := claims["exp"].(float64); int64(exp) > time.Now().Add(10*time.Minute+time.Second).Unix() {
+		t.Errorf("the response outlives its trust mark: exp %v", claims["exp"])
+	}
+}
+
+// A chain ending at a Trust Anchor the operator listed resolves, verified with the keys
+// the operator gave; listed with other keys, it does not; not listed, it is refused.
+func TestAChainEndingAtAListedAnchorResolves(t *testing.T) {
+	a := newAnchorFixture(t, store.FederationChange{})
+	ctx := context.Background()
+	const other = "https://other-anchor.example.test"
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keySet := func(k *ecdsa.PrivateKey) json.RawMessage {
+		raw, _ := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			{Key: k.Public(), KeyID: "other-1", Algorithm: "ES256", Use: "sig"}}})
+		return raw
+	}
+	a.hints = []string{other}
+	a.elsewhere = func(r *http.Request) (string, bool) {
+		if r.URL.Host != strings.TrimPrefix(other, "https://") {
+			return "", false
+		}
+		now := time.Now()
+		switch {
+		case r.URL.Path == "/.well-known/openid-federation":
+			return signedStatement(t, key, "other-1", oidfed.Typ, map[string]any{"iss": other, "sub": other,
+				"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(), "jwks": keySet(key),
+				"metadata": map[string]any{"federation_entity": map[string]any{
+					"federation_fetch_endpoint": other + "/fetch"}}}), true
+		case r.URL.Path == "/fetch" && r.URL.Query().Get("sub") == leafEntity:
+			return signedStatement(t, key, "other-1", oidfed.Typ, map[string]any{"iss": other, "sub": leafEntity,
+				"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+				"jwks": json.RawMessage(a.leafJWKS(t))}), true
+		}
+		return "", false
+	}
+	resolve := "/federation/resolve?sub=" + url.QueryEscape(leafEntity) + "&trust_anchor=" + url.QueryEscape(other)
+	if e := a.errorOf(t, resolve, http.StatusNotFound); e != "invalid_trust_anchor" {
+		t.Errorf("an anchor nobody listed answered %q", e)
+	}
+
+	var org string
+	if err := a.pool.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
+		VALUES ($1::uuid, $2, 'listed anchor') RETURNING id::text`, a.instanceID,
+		"listed-"+strconv.FormatInt(time.Now().UnixNano(), 36)).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = a.pool.Exec(context.Background(), `DELETE FROM core.organizations WHERE id = $1::uuid`, org)
+	})
+	list := func(jwks json.RawMessage) {
+		t.Helper()
+		if err := store.SetFederationAnchor(ctx, a.pool, a.instanceID, store.FederationAnchor{EntityID: other, OrgID: org,
+			JWKS: jwks}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list(keySet(key))
+	rec := a.get(t, resolve)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a chain to a listed anchor gave %d: %s", rec.Code, rec.Body)
+	}
+	claims := claimsOfJWT(t, rec.Body.String())
+	links, _ := claims["trust_chain"].([]any)
+	if claims["iss"] != a.issuer || len(links) != 3 {
+		t.Fatalf("resolved by %v through %d statements", claims["iss"], len(links))
+	}
+	if last := claimsOfJWT(t, links[2].(string)); last["sub"] != other {
+		t.Errorf("the chain ends at %v", last["sub"])
+	}
+
+	// Listed with keys the anchor does not sign with: whoever answers there is not it.
+	stranger, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list(keySet(stranger))
+	if e := a.errorOf(t, resolve, http.StatusBadRequest); e != "invalid_trust_chain" {
+		t.Errorf("an anchor answering with other keys gave %q", e)
 	}
 }
 

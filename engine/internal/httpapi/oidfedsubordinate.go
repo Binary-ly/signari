@@ -92,7 +92,11 @@ func (s *Server) handleFederationFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFederationList answers §8.2. The filters this entity cannot apply are refused as
-// §8.2.1 says: a list that ignored one would look filtered and be wrong.
+// §8.2.1 says: a list that ignored one would look filtered and be wrong. entity_type is
+// one: an operator gives a subordinate's keys and policy, not its types, so this entity
+// does not know them, and learning them would take a fetch of every subordinate's
+// configuration for every list. trust_marked and trust_mark_type are answered from the
+// Trust Marks this entity issued, which it knows (specs/oidfed.txt:3675-3703).
 func (s *Server) handleFederationList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
@@ -101,12 +105,10 @@ func (s *Server) handleFederationList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	for _, name := range []string{"entity_type", "trust_marked", "trust_mark_type"} {
-		if q.Has(name) {
-			writeFederationError(w, http.StatusBadRequest, "unsupported_parameter",
-				"this entity does not filter its subordinates by "+name)
-			return
-		}
+	if q.Has("entity_type") {
+		writeFederationError(w, http.StatusBadRequest, "unsupported_parameter",
+			"this entity does not know its subordinates' entity types, so cannot filter by entity_type")
+		return
 	}
 	rows, err := store.Subordinates(ctx, s.db, s.instanceID)
 	if err != nil {
@@ -114,20 +116,72 @@ func (s *Server) handleFederationList(w http.ResponseWriter, r *http.Request) {
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
+	// Each filter asked for is a set of subordinates to keep; together, all of them.
+	var marked []map[string]bool
+	markedBy := func(markType string) bool {
+		set, err := store.TrustMarkedSubjects(ctx, s.db, s.instanceID, markType)
+		if err != nil {
+			s.log.ErrorContext(ctx, "reading issued trust marks", "err", err, "correlation_id", correlationID(ctx))
+			writeFederationError(w, http.StatusInternalServerError, "server_error", "")
+			return false
+		}
+		marked = append(marked, set)
+		return true
+	}
+	if q.Get("trust_marked") == "true" && !markedBy("") {
+		return
+	}
+	if markType := q.Get("trust_mark_type"); markType != "" && !markedBy(markType) {
+		return
+	}
 	onlyIntermediates := q.Get("intermediate") == "true"
 	out := make([]string, 0, len(rows))
 	for _, row := range rows {
-		if !onlyIntermediates || row.Intermediate {
+		keep := !onlyIntermediates || row.Intermediate
+		for _, set := range marked {
+			keep = keep && set[row.EntityID]
+		}
+		if keep {
 			out = append(out, row.EntityID)
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleFederationResolve answers §8.3 for chains ending at this entity. It holds no other
-// anchor's keys, so any other trust_anchor could only be taken on the word of whoever
-// answers at that address. A fetch of whatever a stranger names is bounded by the same
-// guards as every outbound call and by the budget this endpoint shares.
+// resolveAnchor is the first trust_anchor asked for that this entity holds keys for:
+// itself, or an anchor on the operator's list. Answers for itself when there is none.
+func (s *Server) resolveAnchor(ctx context.Context, w http.ResponseWriter, asked []string) (oidfed.TrustAnchor, bool) {
+	listed, err := store.FederationAnchors(ctx, s.db, s.instanceID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the trust anchors", "err", err, "correlation_id", correlationID(ctx))
+		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
+		return oidfed.TrustAnchor{}, false
+	}
+	for _, id := range asked {
+		if id == s.cfg.Issuer {
+			jwks, err := s.fedKeys.MarshalJWKS()
+			if err != nil {
+				s.log.ErrorContext(ctx, "marshalling the federation JWKS", "err", err)
+				writeFederationError(w, http.StatusInternalServerError, "server_error", "")
+				return oidfed.TrustAnchor{}, false
+			}
+			return oidfed.TrustAnchor{EntityID: id, JWKS: jwks}, true
+		}
+		if at := slices.IndexFunc(listed, func(a store.FederationAnchor) bool { return a.EntityID == id }); at >= 0 {
+			return oidfed.TrustAnchor{EntityID: id, JWKS: listed[at].JWKS}, true
+		}
+	}
+	writeFederationError(w, http.StatusNotFound, "invalid_trust_anchor",
+		"this entity resolves chains ending at itself or at a trust anchor its operator listed")
+	return oidfed.TrustAnchor{}, false
+}
+
+// handleFederationResolve answers §8.3 for chains ending at this entity or at a Trust
+// Anchor an operator listed (`federation add-anchor`), whose keys were given with it. Any
+// other trust_anchor could only be taken on the word of whoever answers at that address,
+// so it is refused. Of several, §8.3.1 lets any be used, and the first this entity can
+// stand behind is. A fetch of whatever a stranger names is bounded by the same guards as
+// every outbound call and by the budget this endpoint shares.
 func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
@@ -141,28 +195,22 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 		writeFederationError(w, http.StatusBadRequest, "invalid_request", "sub and trust_anchor are both required")
 		return
 	}
-	if !slices.Contains(q["trust_anchor"], s.cfg.Issuer) {
-		writeFederationError(w, http.StatusNotFound, "invalid_trust_anchor", "this entity resolves chains ending at itself")
-		return
-	}
 	cfg, err := store.FederationConfig(ctx, s.db, s.instanceID)
 	if err != nil || s.fedKeys == nil {
 		writeFederationError(w, http.StatusNotFound, "not_found", "this instance is not federated")
 		return
 	}
-	jwks, err := s.fedKeys.MarshalJWKS()
-	if err != nil {
-		s.log.ErrorContext(ctx, "marshalling the federation JWKS", "err", err)
-		writeFederationError(w, http.StatusInternalServerError, "server_error", "")
+	anchor, ok := s.resolveAnchor(ctx, w, q["trust_anchor"])
+	if !ok {
 		return
 	}
 	fetcher := &oidfed.Fetcher{HTTP: s.outboundClient(oidfed.FetchTimeout)}
-	resolver := oidfed.Resolver{Fetcher: fetcher, Anchors: []oidfed.TrustAnchor{{EntityID: s.cfg.Issuer, JWKS: jwks}}}
+	resolver := oidfed.Resolver{Fetcher: fetcher, Anchors: []oidfed.TrustAnchor{anchor}}
 	now := time.Now()
 	result, chain, err := resolver.ResolveChain(ctx, sub, now)
 	if err != nil {
 		s.log.InfoContext(ctx, "a federation chain did not resolve", "sub", sub, "err", err, "correlation_id", correlationID(ctx))
-		writeFederationError(w, http.StatusBadRequest, "invalid_trust_chain", "no valid chain from that subject to this entity")
+		writeFederationError(w, http.StatusBadRequest, "invalid_trust_chain", "no valid chain from that subject to that trust anchor")
 		return
 	}
 	declared, err := oidfed.EntityTypesOf(chain[0])
@@ -189,19 +237,31 @@ func (s *Server) handleFederationResolve(w http.ResponseWriter, r *http.Request)
 	for _, st := range chain {
 		links = append(links, st.Raw)
 	}
-	// §4: a chain "logically always ends with the Entity Configuration of the Trust Anchor,
-	// even though it MAY be omitted", and §8.3.2 wants it from the subject to the anchor.
-	if own, err := fetcher.EntityConfigurationOf(ctx, s.cfg.Issuer); err == nil {
-		links = append(links, own.Raw)
-	}
 	// No longer than what it rests on (§10.4), or than this entity would say anything for.
 	expiry := now.Add(time.Duration(cfg.LifetimeSeconds) * time.Second)
 	if result.Expiry.Before(expiry) {
 		expiry = result.Expiry
 	}
-	signed, err := store.SignAsFederationEntity(ctx, s.db, s.root, s.instanceID, map[string]any{"iss": s.cfg.Issuer,
-		"sub": sub, "iat": now.Unix(), "exp": expiry.Unix(), "metadata": metadata, "trust_chain": links},
-		oidfed.ResolveResponseTyp)
+	claims := map[string]any{"iss": s.cfg.Issuer, "sub": sub, "iat": now.Unix(), "metadata": metadata}
+	// §4: a chain "logically always ends with the Entity Configuration of the Trust Anchor,
+	// even though it MAY be omitted", and §8.3.2 wants it from the subject to the anchor.
+	// Verified with the anchor's keys, and what the subject's Trust Marks are held to:
+	// only those the anchor trusts their issuers for appear (specs/oidfed.txt:3918-3924),
+	// and the response lasts no longer than the first to expire (:3900-3902).
+	if anchorStatement, aerr := resolver.AnchorConfiguration(ctx, anchor.EntityID); aerr == nil {
+		links = append(links, anchorStatement.Raw)
+		if marks, earliest := resolver.VerifiedTrustMarks(ctx, chain[0], anchorStatement, now); len(marks) > 0 {
+			claims["trust_marks"] = marks
+			if !earliest.IsZero() && earliest.Before(expiry) {
+				expiry = earliest
+			}
+		}
+	} else {
+		s.log.InfoContext(ctx, "the trust anchor's configuration did not verify; resolved without it or any trust mark",
+			"trust_anchor", anchor.EntityID, "err", aerr, "correlation_id", correlationID(ctx))
+	}
+	claims["exp"], claims["trust_chain"] = expiry.Unix(), links
+	signed, err := store.SignAsFederationEntity(ctx, s.db, s.root, s.instanceID, claims, oidfed.ResolveResponseTyp)
 	if err != nil {
 		s.log.ErrorContext(ctx, "signing a resolve response", "err", err, "correlation_id", correlationID(ctx))
 		writeFederationError(w, http.StatusInternalServerError, "server_error", "")

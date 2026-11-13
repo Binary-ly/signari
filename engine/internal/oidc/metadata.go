@@ -50,8 +50,9 @@ type Metadata struct {
 	// issued an auth_req_id it would wait on forever. That is the rule this file
 	// exists to keep: the document may only claim what the server enforces.
 	// UMA 2.0 Federated Authorization §2: where a resource server asks for a
-	// permission ticket.
+	// permission ticket, and where it registers the resources it asks about.
 	PermissionEndpoint                string   `json:"permission_endpoint,omitempty"`
+	ResourceRegistrationEndpoint      string   `json:"resource_registration_endpoint,omitempty"`
 	BackchannelAuthenticationEndpoint string   `json:"backchannel_authentication_endpoint,omitempty"`
 	BackchannelTokenDeliveryModes     []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
 	BackchannelUserCodeSupported      *bool    `json:"backchannel_user_code_parameter_supported,omitempty"`
@@ -311,6 +312,7 @@ func Build(cfg Config) (*Metadata, error) {
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
 		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
 		PermissionEndpoint:                 at("/uma2/permission"),
+		ResourceRegistrationEndpoint:       at("/uma2/resource_set"),
 		BackchannelAuthenticationEndpoint:  at("/oauth2/backchannel"),
 		// Ping is per-client: a client registered for poll experiences no change
 		// from this being advertised, and a client registered for ping is refused

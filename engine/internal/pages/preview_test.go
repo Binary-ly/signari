@@ -449,6 +449,20 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 					"Granted": "2 January 2026", "ActiveTokens": 0},
 			},
 		},
+		"resources": map[string]any{
+			"CSRF": "8f2c1d94a7be4e0f", "Message": "shared",
+			"Resources": []map[string]any{
+				{"ID": "kX3A39WEq0", "Name": "Q3 board pack", "Description": "Slides and minutes for the October board.",
+					"Server": "Fabrikam Docs", "Scopes": []string{"read", "comment"},
+					"Shares": []map[string]any{
+						{"Who": "grace@example.com", "Relation": "viewer"},
+						{"Who": "auditors@example.com", "Relation": "commenter"},
+					},
+					"Relations": []string{"commenter", "viewer"}},
+				{"ID": "9UQUdUWW1b", "Name": "Holiday photos", "Description": "", "Server": "Northwind Photos",
+					"Scopes": []string{"read"}, "Shares": []map[string]any{}, "Relations": []string{"viewer"}},
+			},
+		},
 		"portal": map[string]any{
 			"Empty": false,
 			"Open": []map[string]any{

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0293 uma_resources
+
+Compatible with the release before: its binary may still serve this schema.
+
+UMA resource registration (11.12, Federated Authorization §3): a resource server puts a resource under this server's protection with a protection API access token, and a permission may then name it by the id this server gave it alone. Each is the resource server's and, when a person issued the token, that person's: the owner whose policy decides who may reach it, and who shares it from their account page. Its type is a type of the organisation's authorization model, so a registered resource is an object the model already knows how to decide about. Compatible with the previous release, which ignores the table and goes on refusing a permission that names no resource_type, as it always did.
+
 ## 0292 scim_target_authorization_code
 
 Compatible with the release before: its binary may still serve this schema.

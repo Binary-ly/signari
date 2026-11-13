@@ -76,13 +76,13 @@ const MaxPermissions = 32
 
 // Permission is one {resource, scopes} entry.
 //
-// `resource_type` is ours, and it is not in the specification. UMA identifies a
-// resource by an opaque `resource_id` issued by the resource registration
-// endpoint (Federated Authorization §2), which we do not implement -- so there is
-// nothing that would tell us what KIND of thing an id refers to, and our
-// authorization model is typed. Requiring the type is the honest way to bridge
-// that: the alternative is a registration endpoint whose only purpose is to
-// remember a string.
+// UMA identifies a resource by the opaque `resource_id` the resource registration
+// endpoint issued (Federated Authorization §3, §4.1), and since November 2026 a
+// permission may name one so: its type is the one the registration gave, a type of
+// the organisation's authorization model. `resource_type` is ours, and it is not in
+// the specification: given, it names an object of the model that was never
+// registered, which is how this server answered before it had registration, and
+// still does for a resource server that keeps its resources to itself.
 type Permission struct {
 	ResourceType   string   `json:"resource_type"`
 	ResourceID     string   `json:"resource_id"`
@@ -122,6 +122,15 @@ func InvalidGrant(desc string) *Error {
 
 func InvalidRequest(desc string) *Error {
 	return &Error{Code: "invalid_request", Description: desc, Status: http.StatusBadRequest}
+}
+
+// Errors defined by Federated Authorization §4.3, both 400.
+func InvalidResourceID(desc string) *Error {
+	return &Error{Code: "invalid_resource_id", Description: desc, Status: http.StatusBadRequest}
+}
+
+func InvalidScope(desc string) *Error {
+	return &Error{Code: "invalid_scope", Description: desc, Status: http.StatusBadRequest}
 }
 
 // NewTicket mints a permission ticket.
@@ -172,11 +181,9 @@ func ParsePermissions(body []byte) ([]Permission, *Error) {
 		if p.ResourceID == "" {
 			return nil, InvalidRequest("a permission must name a resource_id")
 		}
-		if p.ResourceType == "" {
-			return nil, InvalidRequest("a permission must name a resource_type: " +
-				"this server's authorization model is typed, and \"document 42\" and " +
-				"\"invoice 42\" are different things")
-		}
+		// No resource_type is a resource registered here (Federated Authorization
+		// §4.1), whose type the registration gave: the caller resolves it, or
+		// answers invalid_resource_id (§4.3).
 		if len(p.ResourceScopes) == 0 {
 			return nil, InvalidRequest("a permission must name at least one " +
 				"resource_scope; asking for no scopes on a resource is not a question")

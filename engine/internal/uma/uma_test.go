@@ -46,12 +46,11 @@ func TestAPermissionThatIsNotAQuestionIsRefused(t *testing.T) {
 		{"too many", "[" + strings.Join(tooMany, ",") + "]", fmt.Sprintf("at most %d", MaxPermissions)},
 		{"no resource_id", `{"resource_type":"document","resource_scopes":["read"]}`, "resource_id"},
 		{"a blank resource_id", `{"resource_type":"document","resource_id":"  ","resource_scopes":["read"]}`, "resource_id"},
-		{"no resource_type", `{"resource_id":"42","resource_scopes":["read"]}`, "resource_type"},
 		{"no scopes", `{"resource_type":"document","resource_id":"42","resource_scopes":[]}`, "at least one"},
 		{"a blank scope", `{"resource_type":"document","resource_id":"42","resource_scopes":["read"," "]}`, "may not be empty"},
 		// One bad entry refuses the whole request, wherever it sits.
 		{"a bad second entry", `[{"resource_type":"document","resource_id":"1","resource_scopes":["read"]},
-			{"resource_id":"2","resource_scopes":["read"]}]`, "resource_type"},
+			{"resource_id":"2","resource_scopes":[]}]`, "at least one"},
 	} {
 		got, perr := ParsePermissions([]byte(c.body))
 		if perr == nil {

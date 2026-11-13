@@ -303,6 +303,9 @@ approving a month-old one is approving a context they cannot remember.
 - `claims_interaction_endpoint` — §2's static value. §3.3.2 assumes it is
   declared, because that is what lets a client redirect a requesting party
   *before* being told to.
+- `permission_endpoint` and `resource_registration_endpoint`, Federated
+  Authorization §2's two required values, from the shared builder, so the OpenID
+  document carries them too.
 - `uma_profiles_supported` — the one claim token format this server acts on.
 
 ## Single use is a MUST
@@ -329,16 +332,60 @@ bearer credential from the moment the resource server receives it until the
 client spends it, travelling through a 401 header and back through a token
 request, so it passes any number of proxies and logs.
 
-## `resource_type` is ours, and it is not in the specification
+## Registering resources (Federated Authorization §3)
 
-UMA identifies a resource by an opaque `resource_id` issued by the resource
-registration endpoint (Federated Authorization §2), which is not implemented —
-so nothing would tell us what *kind* of thing an id refers to, and our
-authorization model is typed. `"document 42"` and `"invoice 42"` are different
-things.
+A resource server puts a resource under this server's protection at the resource
+registration endpoint, and a permission then names it by the id it was given alone:
 
-Requiring the type is the honest bridge. The alternative is a registration
-endpoint whose only purpose is to remember a string.
+    POST   /uma2/resource_set        {"resource_scopes": ["read"], "type": "document", "name": "Q3 report"}
+                                      -> 201, Location, {"_id": "...", "user_access_policy_uri": "..."}
+    GET    /uma2/resource_set        -> ["_id", ...]
+    GET    /uma2/resource_set/{id}   -> the description, with _id
+    PUT    /uma2/resource_set/{id}   the whole description again -> {"_id": "..."}
+    DELETE /uma2/resource_set/{id}   -> 204
+    POST   /uma2/permission          {"resource_id": "<_id>", "resource_scopes": ["read"]}
+
+Each needs a **protection API access token** (PAT): an access token with the scope
+`uma_protection`, issued to the resource server. Who granted it is the **resource
+owner**. A person who signed in to the resource server and agreed owns what it
+registers with their PAT; a PAT by the client credentials grant registers for the
+organisation. A resource server reads, replaces and deletes only what it registered
+for that owner, and anything else is a 404, as a resource that is not there is. The
+client needs the `uma_protection` scope among its scopes, and the client credentials
+grant for an organisation's PAT.
+
+**`type` is required here**, and names a type of the organisation's authorization
+model, because the model is what decides who may reach a resource: `"document 42"`
+and `"invoice 42"` are different things. Every scope must be an action the model
+defines for that type, or no permission on it could ever be given and nothing would
+say why. A registered resource keeps its type, since what it has been shared as is
+relations on an object of that type; deregistering it removes those relations with
+it. Other HTTP methods are answered `405` with `unsupported_method_type`.
+
+At the permission endpoint, a `resource_id` with no `resource_type` must be one this
+resource server registered, each scope one it registered for it, or the answer is
+`invalid_resource_id` or `invalid_scope` (§4.3). One request names one owner's
+resources (§4). The endpoint takes a PAT, and still takes the client's own
+credentials as it did before it had registration, which §1.3's "MUST ... require a
+valid PAT" does not allow: a resource server that sends credentials is held to the
+same resource server's registrations, the first named deciding the owner.
+
+`resource_type` is ours, and not in the specification. Given, it names an object of
+the model that was never registered, which is how this server answered before it had
+registration, and still does for a resource server that keeps its resources to
+itself.
+
+### What a person shares
+
+A person's registered resources are listed at `/account/resources`, the
+`user_access_policy_uri` a registration answers. Each can be shared with somebody
+by address, as one of the relations the model gives its type, and the sharing
+stopped; a share is a relation on the resource's object, so the requesting party's
+decision at the token endpoint is the model's, as for anything else. The model's
+author decides what each relation lets somebody do; the owner decides who holds one.
+A share made by an administrator to a group or a client is listed nowhere on that
+page and is not the owner's to remove. Each share and its removal are audited
+(`uma.resource_shared`, `uma.resource_unshared`).
 
 ## Upgrading an RPT (§3.3.5.1)
 
@@ -392,6 +439,6 @@ person using it now is the person the token was issued for, which only the clien
 
 ## Still not implemented
 
-- **Resource registration** (Federated Authorization §2), which is why a
-  permission carries `resource_type` — see above.
 - **`claim_token` formats** beyond an ID token this server issued.
+- **A link to `/account/resources` from the account page.** A person reaches it from
+  the `user_access_policy_uri` a resource server shows them, or by its address.

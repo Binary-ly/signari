@@ -588,6 +588,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /account", s.handleAccount)
 	mux.HandleFunc("GET /account/broker/{slug}/token", s.handleBrokerToken)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
+	mux.HandleFunc("GET "+umaResourcePage, s.handleResourcesPage)
 	// SPNEGO answers only for a host with a keytab behind it. A route that answers
 	// 401 Negotiate with none makes every domain browser show a credential dialog
 	// for a service that cannot check the answer, so handleKerberos says 404.
@@ -670,6 +671,10 @@ func (s *Server) mux() *http.ServeMux {
 	// grant is dispatched from the token endpoint; the claims interaction
 	// endpoint authenticates the REQUESTING PARTY, who is neither.
 	mux.HandleFunc("POST /uma2/permission", s.handleUMAPermission)
+	// Federated Authorization §3, behind a PAT. Every method reaches the handler,
+	// which answers §3.2's 405 for one it does not take.
+	mux.HandleFunc("/uma2/resource_set", s.handleUMAResources)
+	mux.HandleFunc("/uma2/resource_set/{id}", s.handleUMAResource)
 	mux.HandleFunc("GET "+claimsInteractionPath, s.handleUMAClaims)
 	mux.HandleFunc("POST "+claimsInteractionPath, s.handleUMAClaims)
 	// UMA 2.0 §2: "The discovery document MUST be available at an endpoint
@@ -702,6 +707,8 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /rac/connections", s.handleRACList)
 	mux.HandleFunc("GET /rac/connect/{slug}", s.handleRACConnect)
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
+	mux.HandleFunc("POST "+umaResourcePage+"/share", s.handleResourceShare)
+	mux.HandleFunc("POST "+umaResourcePage+"/unshare", s.handleResourceShare)
 	mux.HandleFunc("GET /account/sessions", s.handleSessions)
 	mux.HandleFunc("GET /account/devices", s.handleDevices)
 	mux.HandleFunc("GET /account/delete", s.handleAccountDelete)

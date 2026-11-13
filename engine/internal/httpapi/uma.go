@@ -35,9 +35,23 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
-	c, ok := s.authenticateResourceServer(w, r)
-	if !ok {
-		return
+	// A PAT, as Federated Authorization §4 has the resource server present
+	// (specs/uma-fedauthz.txt:122), or the client's own credentials, which this
+	// endpoint took before it had resource registration and still does.
+	var c *clients.Client
+	var owner string
+	pat := false
+	if raw, _ := bearerTokenAndScheme(r); raw != "" {
+		caller, ok := s.protectionToken(w, r, "uma permission")
+		if !ok {
+			return
+		}
+		c, owner, pat = caller.client, caller.owner, true
+	} else {
+		var ok bool
+		if c, ok = s.authenticateResourceServer(w, r); !ok {
+			return
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -47,6 +61,10 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	perms, uerr := uma.ParsePermissions(body)
 	if uerr != nil {
+		writeUMAError(w, uerr)
+		return
+	}
+	if uerr := s.resolveRegistered(ctx, perms, c.ClientID, owner, pat); uerr != nil {
 		writeUMAError(w, uerr)
 		return
 	}

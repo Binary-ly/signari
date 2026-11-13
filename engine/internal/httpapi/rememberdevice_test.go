@@ -139,8 +139,11 @@ func TestARememberedDeviceSkipsTheSecondFactorUntilForgotten(t *testing.T) {
 		t.Error("an unknown device cookie skipped the second factor")
 	}
 
-	// Forgotten by the person.
-	f.formPost(t, cookie, "/account/devices", "/account/devices/forget", url.Values{"id": {"all"}})
+	// Forgotten by the person. The answer is checked: a refused forget once read
+	// as "a forgotten device still skipped the second factor", naming the wrong thing.
+	if rec := f.formPost(t, cookie, "/account/devices", "/account/devices/forget", url.Values{"id": {"all"}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("forgetting the devices answered %d: %.300s", rec.Code, rec.Body.String())
+	}
 	if rec := f.signInWith(t, "", device); !challenged(rec) {
 		t.Fatal("a forgotten device still skipped the second factor")
 	}

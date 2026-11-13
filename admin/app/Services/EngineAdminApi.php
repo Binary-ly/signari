@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -265,6 +266,17 @@ class EngineAdminApi
         return $this->request('post', "/admin/subjects/{$userId}/erase", ['confirm_subject_id' => $userId], $this->readAt());
     }
 
+    /**
+     * Everything the engine keeps about a person, the signari-subject-export/1 document
+     * (docs/data-export.md), as the engine wrote it: decoded and encoded again in PHP, an
+     * empty section's {} would come out as []. Needs the subjects:export scope, and the
+     * engine records the export against this token and the operator.
+     */
+    public function exportSubject(string $userId): string
+    {
+        return $this->send('get', '/admin/subjects/'.rawurlencode($userId).'/export')->body();
+    }
+
     /** Reword one message for the organisation, in one language, as plain text. */
     public function setOrganisationMessage(string $orgId, string $locale, string $key, string $text): int
     {
@@ -367,6 +379,12 @@ class EngineAdminApi
 
     private function request(string $method, string $path, array $body = [], ?int $ifMatch = null): array
     {
+        return (array) $this->send($method, $path, $body, $ifMatch)->json();
+    }
+
+    /** The answer as the engine sent it, every refusal already turned into a RuntimeException. */
+    private function send(string $method, string $path, array $body = [], ?int $ifMatch = null): Response
+    {
         try {
             $request = Http::withToken($this->token)
                 ->timeout($this->timeoutSeconds)
@@ -460,6 +478,6 @@ class EngineAdminApi
             ));
         }
 
-        return (array) $response->json();
+        return $response;
     }
 }

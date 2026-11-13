@@ -8,6 +8,7 @@ however it is asked for:
 |---|---|
 | The person | `/account/export`, linked from their account page: a recent sign-in, never an impersonation, and every channel the account has is told when a copy is downloaded |
 | An operator | `signari export subject -subject-id <uuid> -out <file>`, which needs `SIGNARI_ROOT_KEY` and writes the file readable by its owner only |
+| An operator in the console | "Export their data" on the person's row, after a confirmation, offered only when the operator's sign-in carries `subjects:export`. The file is the engine's document as it came, named by the person's id rather than their address, and the engine's record names the console's token and the operator |
 | Automation | `GET /admin/subjects/{subjectID}/export` with a `subjects:export` token ([admin-tokens.md](admin-tokens.md)) |
 
 Each one is recorded before the document leaves: `account.exported` for the

@@ -107,6 +107,7 @@ class EngineUsersTable
                 self::setPasswordAction(),
                 self::removeFactorAction(),
                 self::sendPasskeyLinkAction(),
+                self::exportAction(),
                 self::eraseAction(),
             ])
             ->toolbarActions([])
@@ -291,6 +292,41 @@ class EngineUsersTable
                     return;
                 }
                 Notification::make()->title(__('Person erased'))->success()->send();
+            });
+    }
+
+    /**
+     * Everything kept about the person, for a request to see their data or take it
+     * elsewhere: the engine's export document, downloaded as it was sent. It has a scope
+     * of its own, since somebody who may manage people may not thereby carry their data
+     * off, and the engine records the export against the token and the operator. The
+     * file is named by the person's id, not their address, since it lands in a folder of
+     * downloads.
+     */
+    private static function exportAction(): Action
+    {
+        return Action::make('export')
+            ->label(__('Export their data'))
+            ->icon('heroicon-m-arrow-down-tray')
+            ->visible(fn (): bool => SignariSignIn::may('subjects:export'))
+            ->requiresConfirmation()
+            ->modalDescription(__('A file of everything kept about them is downloaded to this computer, every password and secret left out. The engine records that you took it.'))
+            ->action(function ($record) {
+                try {
+                    $document = EngineAdminApi::fromConfig()->exportSubject($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was exported'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return null;
+                }
+
+                return response()->streamDownload(function () use ($document): void {
+                    echo $document;
+                }, 'subject-'.$record->id.'.json', [
+                    'Content-Type' => 'application/json',
+                    'Cache-Control' => 'no-store',
+                ]);
             });
     }
 

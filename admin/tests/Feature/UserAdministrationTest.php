@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Resources\EngineUsers\Pages\ListEngineUsers;
 use App\Models\EngineUser;
 use App\Models\User;
+use App\Services\SignariSignIn;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
@@ -220,6 +221,65 @@ class UserAdministrationTest extends TestCase
                 ->callAction(TestAction::make('sendPasskeyLink')->table($user))
                 ->assertNotified(__('No link was sent'));
         });
+    }
+
+    /**
+     * The export downloads the engine's document byte for byte, named by the person's
+     * id: decoded and encoded again in PHP, an empty section's {} would turn into [].
+     */
+    public function test_a_persons_data_is_exported_as_the_engine_wrote_it(): void
+    {
+        $user = $this->plantedUser();
+        $document = '{"format":"signari-subject-export/1","sections":{"sessions":[],"consents":{}}}';
+        Http::fake(['*/admin/subjects/*/export' => Http::response($document, 200, ['Content-Type' => 'application/json'])]);
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user, $document) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('export')->table($user))
+                ->assertHasNoActionErrors()
+                ->assertFileDownloaded('subject-'.$user->id.'.json', $document);
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_ends_with($r->url(), "/admin/subjects/{$user->id}/export"));
+    }
+
+    /** A token without the scope is told why, and nothing is downloaded. */
+    public function test_a_refused_export_is_reported_and_downloads_nothing(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(['*/admin/subjects/*/export' => Http::response(['error' => 'forbidden',
+            'detail' => 'this token lacks subjects:export'], 403)]);
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('export')->table($user))
+                ->assertNotified(__('Nothing was exported'))
+                ->assertNoFileDownloaded();
+        });
+    }
+
+    /** Offered to an operator whose sign-in carries subjects:export, and to nobody else. */
+    public function test_the_export_is_offered_only_to_an_operator_who_may_export(): void
+    {
+        config(['services.signari.issuer' => 'https://signari.test', 'services.signari.client_id' => 'console']);
+        $user = $this->plantedUser();
+        $this->actingAs($this->operator);
+
+        foreach ([['users:read', 'users:write'], ['users:read', 'subjects:export']] as $scopes) {
+            session([SignariSignIn::ME => ['scopes' => $scopes, 'delegated' => []]]);
+            DB::transaction(function () use ($user, $scopes) {
+                DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+                $page = Livewire::test(ListEngineUsers::class);
+                in_array('subjects:export', $scopes, true)
+                    ? $page->assertActionVisible(TestAction::make('export')->table($user))
+                    : $page->assertActionHidden(TestAction::make('export')->table($user));
+            });
+        }
     }
 
     private function plantedUser(): EngineUser

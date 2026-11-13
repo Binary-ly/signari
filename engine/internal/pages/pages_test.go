@@ -813,6 +813,20 @@ func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
 				"internal/i18n/locales/en.json", key)
 		}
 	}
+	// The store names the message for a refused attribute value, and a page says
+	// it later: a key missing there would put the key itself on the page.
+	refusal := regexp.MustCompile(`refuseAttribute\("([^"]+)"`)
+	refusals := keysUsedInGo(t, refusal)
+	if len(refusals) == 0 {
+		t.Error("no refuseAttribute call was found; this check is reading nothing")
+	}
+	for _, key := range refusals {
+		used[key] = true
+		if !bundle.HasKey(key) {
+			t.Errorf("the store refuses an attribute with the message %q, which is not in "+
+				"internal/i18n/locales/en.json", key)
+		}
+	}
 
 	// A third way a key gets used, and the one that is easiest to lose track
 	// of: written as a bare literal because it is STORED and resolved later.
@@ -955,8 +969,9 @@ func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
 
 	var out []string
 	// adminapi as well as httpapi: the Admin API sets a password-change reason,
-	// and that reason is a message key rendered on a page this package owns.
-	for _, pkg := range []string{"httpapi", "adminapi"} {
+	// and that reason is a message key rendered on a page this package owns. store
+	// too: a refused attribute value carries the key a page says it with.
+	for _, pkg := range []string{"httpapi", "adminapi", "store"} {
 		dir := filepath.Join("..", pkg)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

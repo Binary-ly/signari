@@ -79,3 +79,57 @@ func TestAPromptAnswerBecomesAnAttributeAndAMappedClaim(t *testing.T) {
 		t.Errorf("the mapped claims are %v, want department = finance from the prompt's answer", claims)
 	}
 }
+
+// An answer its attribute's type refuses is said in the reader's language and names
+// the field as the prompt labels it; nobody is signed in.
+func TestAPromptAnswerTheAttributeRefusesIsSaidInTheReadersLanguage(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.SetRootKey(root)
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.DeclareAttribute(ctx, tx, f.orgID, store.Attribute{Name: "age", ValueType: "number"}); err != nil {
+		t.Fatal(err)
+	}
+	var slug string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.prompts (org_id, slug, title, fields, once, enabled)
+		VALUES ($1::uuid, 'age-'||substr(gen_random_uuid()::text,1,8), 'Your age',
+		        '[{"name":"age","type":"text","label":"Age in years","required":true,"attribute":"age"}]'::jsonb,
+		        true, true)
+		RETURNING slug`, f.orgID).Scan(&slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clearSignInBucket(t, f.pool)
+	page := f.postLogin(t, nil)
+	m := csrfValue.FindStringSubmatch(page.Body.String())
+	if m == nil || !strings.Contains(page.Body.String(), `name="age"`) {
+		t.Fatalf("the prompt was not shown: %s", truncate(page.Body.String(), 300))
+	}
+	form := url.Values{"prompt": {slug}, "version": {"1"}, "age": {"forty"}, csrfFormField: {m[1]}}
+	r := httptest.NewRequest(http.MethodPost, "/login/prompt", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Accept-Language", "ar")
+	r.AddCookie(cookieFrom(page, PendingCookieName))
+	r.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: m[1]})
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, r)
+	if c := cookieFrom(rec, SessionCookieName); c != nil && c.Value != "" {
+		t.Fatal("an answer the attribute refused signed somebody in")
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "يجب أن تكون قيمة الحقل «Age in years» رقمًا.") ||
+		strings.Contains(body, "is a number") {
+		t.Errorf("the refusal is not in Arabic, naming the field: %s", truncate(body, 600))
+	}
+}

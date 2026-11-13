@@ -450,7 +450,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done m
 		}
 		if errors.Is(err, store.ErrAttributeRequired) || errors.Is(err, store.ErrInvalidAttributeValue) ||
 			errors.Is(err, store.ErrNoSuchAttribute) {
-			fail(err.Error())
+			fail(s.attributeRefusalText(r, err, ""))
 			return
 		}
 		if errors.Is(err, errAccountRefused) {

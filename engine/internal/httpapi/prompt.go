@@ -169,7 +169,7 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		if err := store.SetUserAttribute(ctx, tx, pending.Subject, pending.OrgID, f.Attribute,
 			answers[f.Name], s.root); errors.Is(err, store.ErrInvalidAttributeValue) {
 			_ = tx.Rollback(ctx)
-			rerender(f.Label + ": " + err.Error())
+			rerender(s.attributeRefusalText(r, err, f.Label))
 			return
 		} else if err != nil {
 			s.log.ErrorContext(ctx, "writing a prompt answer to its attribute", "err", err, "attribute", f.Attribute)

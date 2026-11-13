@@ -65,6 +65,32 @@ func heldAttributes(t *testing.T, pool *pgxpool.Pool, userID, orgID string, root
 	return out
 }
 
+// postIn is the profile form posted by a browser that asks for lang.
+func postIn(t *testing.T, f *signInFixture, cookie, lang string, form url.Values) string {
+	t.Helper()
+	rec := accountGET(f, cookie, "/account/profile")
+	m := csrfValue.FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatal("the profile carries no CSRF field")
+	}
+	var csrfCookie string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == CSRFCookieName {
+			csrfCookie = c.Value
+		}
+	}
+	form.Set(csrfFormField, m[1])
+	r := httptest.NewRequest(http.MethodPost, "/account/profile", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Accept-Language", lang)
+	r.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+	r.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
+	r.RemoteAddr = testClientIP(t) + ":5555"
+	out := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(out, r)
+	return out.Body.String()
+}
+
 func TestAPersonSeesAndSetsOnlyWhatTheirProfileAllows(t *testing.T) {
 	f, cookie := enrolFixture(t)
 	clearSignInBucket(t, f.pool)
@@ -127,8 +153,21 @@ func TestAPersonSeesAndSetsOnlyWhatTheirProfileAllows(t *testing.T) {
 	}
 
 	// Required cannot be emptied; optional can.
-	if body := post(url.Values{"attr." + dept: {""}}); !strings.Contains(body, `role="alert">this attribute is required`) {
+	if body := post(url.Values{"attr." + dept: {""}}); !strings.Contains(body, `role="alert">`+dept+` is required.`) {
 		t.Errorf("emptying a required attribute was not refused: %s", truncate(body, 300))
+	}
+	// Said in the reader's language, naming the attribute, and never the store's
+	// English: a page once showed every reader "this attribute is required".
+	for lang, want := range map[string]string{
+		"ar": `role="alert">الحقل «` + dept + `» مطلوب.`,
+		"en": `role="alert">` + dept + ` is required.`,
+	} {
+		if body := postIn(t, f, cookie, lang, url.Values{"attr." + dept: {""}}); !strings.Contains(body, want) {
+			t.Errorf("%s: the refusal is not %q: %s", lang, want, truncate(body, 400))
+		}
+	}
+	if body := postIn(t, f, cookie, "ar", url.Values{"attr." + dept: {""}}); strings.Contains(body, "this attribute is required") {
+		t.Error("the store's English reached an Arabic page")
 	}
 	post(url.Values{"attr." + nick: {""}})
 	if held := heldAttributes(t, f.pool, f.userID, f.orgID, f.srv.cfg.Root); held[dept] != "Platform" || held[nick] != "" {
@@ -167,7 +206,7 @@ func TestSignUpAsksForTheAttributesAPersonSets(t *testing.T) {
 	email := fmt.Sprintf("attrs-%d@example.test", time.Now().UnixNano())
 	t.Cleanup(func() { _, _ = f.pool.Exec(context.Background(), `DELETE FROM core.users WHERE email = $1`, email) })
 	refused := postSignup(t, f, url.Values{"email": {email}, "password": {verifyTestPassword}})
-	if accountExists(t, f, email) || !strings.Contains(refused.Body.String(), `role="alert">this attribute is required`) {
+	if accountExists(t, f, email) || !strings.Contains(refused.Body.String(), `role="alert">`+team+` is required.`) {
 		t.Fatalf("a sign-up without a required attribute: account %v, %s", accountExists(t, f, email),
 			truncate(refused.Body.String(), 300))
 	}

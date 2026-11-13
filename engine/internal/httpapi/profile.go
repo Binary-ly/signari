@@ -123,6 +123,21 @@ func (s *Server) renderProfile(w http.ResponseWriter, r *http.Request, userID, o
 	})
 }
 
+// attributeRefusalText says why a value was refused for an attribute, in the reader's
+// language: the attribute named as label, or as the store's refusal names it when
+// label is empty. Any other error is said as a refusal to save, never as its English.
+func (s *Server) attributeRefusalText(r *http.Request, err error, label string) string {
+	tr := s.tr(r)
+	var refused *store.AttributeRefusal
+	if !errors.As(err, &refused) {
+		return tr.Text("error.attribute.unsaved")
+	}
+	if label == "" {
+		label = refused.Label
+	}
+	return tr.Text(refused.Key, map[string]any{"Name": label})
+}
+
 // handleProfilePost saves what the person may set.
 func (s *Server) handleProfilePost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -152,7 +167,7 @@ func (s *Server) handleProfilePost(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, store.ErrAttributeRequired), errors.Is(err, store.ErrInvalidAttributeValue):
 		_ = tx.Rollback(ctx)
-		s.renderProfile(w, r, userID, orgID, posted, "", err.Error())
+		s.renderProfile(w, r, userID, orgID, posted, "", s.attributeRefusalText(r, err, ""))
 		return
 	case err != nil:
 		s.log.ErrorContext(ctx, "saving the profile", "err", err)

@@ -50,6 +50,24 @@ var ErrInvalidAttributeValue = errors.New("the value does not fit the attribute'
 // ErrAttributeTypeInUse is a change of type to an attribute holding values.
 var ErrAttributeTypeInUse = errors.New("the attribute holds values, so its type cannot change")
 
+// AttributeRefusal is a value refused for an attribute, carrying what a page needs to
+// say so in the reader's language: Key names the message and Label is the attribute as
+// the person knows it. Error is English, for logs and the Admin API, and errors.Is still
+// finds the sentinel it was refused as. A page used to show Error, in English to everyone.
+type AttributeRefusal struct {
+	Key, Label string
+	sentinel   error
+	text       string
+}
+
+func (e *AttributeRefusal) Error() string { return e.text }
+func (e *AttributeRefusal) Unwrap() error { return e.sentinel }
+
+func refuseAttribute(key, label string, sentinel error, format string, args ...any) *AttributeRefusal {
+	return &AttributeRefusal{Key: key, Label: label, sentinel: sentinel,
+		text: sentinel.Error() + ": " + fmt.Sprintf(format, args...)}
+}
+
 // jsonNumber is the form a number claim carries, RFC 8259 §6
 // (rfc-editor.org/rfc/rfc8259.txt): `number = [ minus ] int [ frac ] [ exp ]`,
 // `int = zero / ( digit1-9 *DIGIT )`, `frac = decimal-point 1*DIGIT`,
@@ -68,11 +86,12 @@ func checkAttributeValue(name, valueType, value string) error {
 	switch valueType {
 	case "boolean":
 		if value != "true" && value != "false" {
-			return fmt.Errorf("%w: %q is a boolean, true or false", ErrInvalidAttributeValue, name)
+			return refuseAttribute("error.attribute.boolean", name, ErrInvalidAttributeValue,
+				"%q is a boolean, true or false", name)
 		}
 	case "number":
 		if !jsonNumber.MatchString(value) {
-			return fmt.Errorf("%w: %q is a number", ErrInvalidAttributeValue, name)
+			return refuseAttribute("error.attribute.number", name, ErrInvalidAttributeValue, "%q is a number", name)
 		}
 	}
 	return nil
@@ -497,7 +516,8 @@ func SetOwnAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string, valu
 	}
 	for name := range values {
 		if _, ok := writable[name]; !ok {
-			return nil, fmt.Errorf("%w: %q is not one you can set", ErrNoSuchAttribute, name)
+			return nil, refuseAttribute("error.attribute.notyours", name, ErrNoSuchAttribute,
+				"%q is not one you can set", name)
 		}
 	}
 	for _, a := range decl {
@@ -507,12 +527,21 @@ func SetOwnAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string, valu
 		}
 		if v == "" {
 			if a.Required {
-				return nil, fmt.Errorf("%w: %s", ErrAttributeRequired, attributeLabel(a))
+				return nil, refuseAttribute("error.attribute.required", attributeLabel(a), ErrAttributeRequired,
+					"%s", attributeLabel(a))
 			}
 			if err := ClearUserAttribute(ctx, tx, userID, orgID, a.Name); err != nil {
 				return nil, err
 			}
-		} else if err := SetUserAttribute(ctx, tx, userID, orgID, a.Name, v, root); err != nil {
+			changed = append(changed, a.Name)
+			continue
+		}
+		// Checked here as well as in SetUserAttribute, so the refusal names the
+		// attribute as the person's page labels it.
+		if err := checkAttributeValue(attributeLabel(a), a.ValueType, v); err != nil {
+			return nil, err
+		}
+		if err := SetUserAttribute(ctx, tx, userID, orgID, a.Name, v, root); err != nil {
 			return nil, err
 		}
 		changed = append(changed, a.Name)

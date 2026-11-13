@@ -63,6 +63,7 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [client-authentication.md](client-authentication.md) | How a confidential client proves who it is |
 | [mutual-tls.md](mutual-tls.md) | RFC 8705 — certificate-bound tokens |
+| [encrypted-client-hello.md](encrypted-client-hello.md) | RFC 9849 — the name a browser asks for, encrypted |
 | [attestation-based-client-auth.md](attestation-based-client-auth.md) | Client attestation, current draft |
 | [par.md](par.md) | RFC 9126 — Pushed Authorization Requests |
 | [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |

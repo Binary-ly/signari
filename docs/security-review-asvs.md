@@ -1208,7 +1208,7 @@ for one.
 | V12.1.2 recommended suites, forward secrecy at L3 | **met, and the right action was to change nothing** — see below |
 | V12.1.3 mTLS client certificates validated before use | met — `SetClientCAs`, and a nil pool means `tls_client_auth` is refused rather than accepted unverified |
 | V12.1.4 OCSP stapling | L3, deployment concern; not configured by the engine |
-| V12.1.5 Encrypted Client Hello | L3, not enabled |
+| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([encrypted-client-hello.md](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
 | V12.2.1 TLS to external services, no fallback | met — see SMTP below |
 | V12.2.2 publicly trusted certificates | deployment |
 | V12.3.1 encrypted in and out, no insecure fallback | met |

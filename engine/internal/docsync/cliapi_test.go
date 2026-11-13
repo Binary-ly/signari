@@ -48,6 +48,7 @@ var cliAPI = map[string]string{
 	"restore finalize":    cliOnly("run against a restored database before anything serves it"),
 	"passwords calibrate": cliOnly("measures the host it runs on"),
 	"keys rewrap-root":    cliOnly("handles the root key itself, which never reaches the API"),
+	"ech new":             cliOnly("writes a TLS private key to a file on the host that serves it, as for the certificate"),
 
 	// Declarative configuration: files read and applied from where they are kept.
 	"plan":  reads,

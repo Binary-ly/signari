@@ -53,6 +53,7 @@ import (
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/duo"
+	"signari.dev/engine/internal/ech"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/flow"
@@ -125,6 +126,7 @@ var twoWordCommands = map[string]bool{
 	"resource":   true,
 	"passwords":  true,
 	"role":       true,
+	"ech":        true,
 }
 
 func usage() error {
@@ -156,6 +158,7 @@ running it:
   completion           a completion script for bash or zsh
   api                  send one request to the Admin API: signari api GET /admin/me
   passwords calibrate  time Argon2id on this host against a target duration
+  ech new              an Encrypted Client Hello key for the listener, and its DNS record
 
 instances and organisations:
   instance create             create an instance and its first signing keys
@@ -656,6 +659,9 @@ func run(args []string) (err error) {
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
 	dirFilter := fs.String("filter", "", "user filter: Google query or Entra OData")
 	outFile := fs.String("out", "", "write to this file instead of stdout")
+	echPublicName := fs.String("public-name", "",
+		"`ech new`: the DNS name sent in the clear in place of the one asked for; the server needs a certificate for it")
+	echConfigID := fs.Int("config-id", -1, "`ech new`: 0 to 255, the id clients name this key by; random when not given")
 	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
@@ -1242,6 +1248,8 @@ func run(args []string) (err error) {
 	switch cmd {
 	case "policy test":
 		return policyTest(*policyFile)
+	case "ech new":
+		return echNew(os.Stdout, *echPublicName, *outFile, *echConfigID)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
 	case "authz test":
@@ -3514,6 +3522,20 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	}
 	ln = withProxyProtocol(ln, proxied["http"], ips)
 
+	// Encrypted Client Hello keys, newest first (internal/ech). Read before either
+	// branch: keys named for a listener with no certificate are a mistake to stop
+	// on, not a setting to drop, since the operator believes the name is hidden.
+	var echPaths []string
+	for _, p := range strings.Split(os.Getenv("SIGNARI_TLS_ECH_KEYS"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			echPaths = append(echPaths, p)
+		}
+	}
+	if len(echPaths) > 0 && (tlsCert == "" || tlsKey == "") {
+		return fmt.Errorf("SIGNARI_TLS_ECH_KEYS is set and the listener has no -tls-cert: " +
+			"Encrypted Client Hello is part of TLS, so there would be nothing to encrypt it in")
+	}
+
 	if tlsCert == "" || tlsKey == "" {
 		log.Info("serving over plaintext HTTP", "addr", addr, "issuer", issuer,
 			"algs", set.Algorithms())
@@ -3553,6 +3575,26 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
+	}
+	// Encrypted Client Hello (ASVS V12.1.5): the name a client asks for travels
+	// encrypted, with the public name of the key's configuration in the clear in
+	// its place. TLS 1.3 only, then: ECH is a TLS 1.3 mechanism (RFC 9849,
+	// specs/rfc9849.txt:643-645), and crypto/tls refuses keys on a listener that
+	// would take less.
+	if len(echPaths) > 0 {
+		keys, configs, err := ech.Load(echPaths)
+		if err != nil {
+			return err
+		}
+		h.TLSConfig.MinVersion = tls.VersionTLS13
+		h.TLSConfig.EncryptedClientHelloKeys = keys
+		published, err := ech.MarshalConfigList(keys[0].Config)
+		if err != nil {
+			return err
+		}
+		log.Info("Encrypted Client Hello on; the listener takes TLS 1.3 only",
+			"keys", len(keys), "config_id", configs[0].ID, "public_name", configs[0].PublicName,
+			"ech_config_list", base64.StdEncoding.EncodeToString(published))
 	}
 	log.Info("serving over HTTPS", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
 	if err := h.ServeTLS(ln, tlsCert, tlsKey); err != nil &&

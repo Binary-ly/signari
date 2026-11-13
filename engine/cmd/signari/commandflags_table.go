@@ -85,6 +85,7 @@ var commandFlags = map[string][]string{
 	"duo enroll":                      {"duo-username", "email", "org"},
 	"duo set":                         {"duo-api-host", "duo-client-id", "duo-fail-open", "duo-secret", "org"},
 	"duo show":                        {},
+	"ech new":                         {"config-id", "out", "public-name"},
 	"erase subject":                   {"confirm", "deactivate", "subject-id"},
 	"events enable":                   {"name", "org"},
 	"events list":                     {"o", "org"},

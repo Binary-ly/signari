@@ -755,6 +755,7 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/source/{slug}/metadata", s.handleSAMLSourceMetadata)
 	mux.HandleFunc("GET /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
 	mux.HandleFunc("POST /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
+	mux.HandleFunc("POST /saml/source/{slug}/slo/soap", s.handleSAMLSourceSOAPLogout)
 
 	// Signing in with a credential from a wallet: this server as an OpenID4VP
 	// verifier (oid4vp.go).

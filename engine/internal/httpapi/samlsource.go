@@ -293,6 +293,11 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
     <SingleLogoutService Binding="` + saml.BindingRedirect + `"
         Location="` + xmlAttr(s.cfg.Issuer+"/saml/source/"+slug+"/slo") + `"/>`
 	}
+	// The SOAP binding needs nothing of this deployment's: the upstream signs, and the
+	// answer goes back on its own connection. So it is always offered.
+	logout += `
+    <SingleLogoutService Binding="` + saml.BindingSOAP + `"
+        Location="` + xmlAttr(s.cfg.Issuer+"/saml/source/"+slug+"/slo/soap") + `"/>`
 
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` +

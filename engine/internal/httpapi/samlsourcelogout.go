@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -238,6 +239,73 @@ func (s *Server) handleSAMLSourceSLO(w http.ResponseWriter, r *http.Request) {
 		sep = "&"
 	}
 	http.Redirect(w, r, src.SLOURL+sep+query, http.StatusSeeOther)
+}
+
+// handleSAMLSourceSOAPLogout is an upstream's logout with no browser: a signed
+// LogoutRequest in a SOAP envelope, sent when a session ends at the upstream by an
+// administrator, an expiry or a deactivation (8.04; 8.03 is this server sending one).
+// It ends what the redirect binding's request would, and the answer goes back on the
+// same connection.
+func (s *Server) handleSAMLSourceSOAPLogout(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	slug := r.PathValue("slug")
+	src, err := s.loadSAMLSource(ctx, slug)
+	if err != nil {
+		soapFault(w, "no such provider")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		soapFault(w, "the request could not be read")
+		return
+	}
+	msg, err := saml.ReadSOAPLogoutRequest(body)
+	if err != nil {
+		soapFault(w, err.Error())
+		return
+	}
+	if err := msg.VerifySignature(src.Provider.CertPEM); err != nil {
+		s.log.InfoContext(ctx, "a SOAP logout from a SAML upstream was refused", "slug", slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		soapFault(w, "the LogoutRequest's signature does not verify")
+		return
+	}
+	endpoint := s.cfg.Issuer + "/saml/source/" + slug + "/slo/soap"
+	validated, err := saml.ValidateLogoutRequest(&msg.Request, &saml.Provider{EntityID: src.Provider.EntityID, Enabled: true},
+		endpoint, time.Now())
+	if err != nil {
+		soapFault(w, err.Error())
+		return
+	}
+	status := saml.StatusSuccess
+	if store.RecordSAMLAssertion(ctx, s.db, src.ProviderID, "logout:"+validated.RequestID, time.Now().Add(samlRequestTTL)) != nil {
+		// A replayed request ends nothing more, and is told so.
+		status = saml.StatusRequester
+	} else if err := s.endUpstreamSessions(ctx, src, validated); err != nil {
+		s.log.ErrorContext(ctx, "ending sessions for an upstream's SOAP logout", "slug", slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		soapFault(w, "the sessions could not be ended")
+		return
+	}
+
+	in := saml.LogoutResponseInput{Issuer: src.Provider.SPEntityID, Destination: src.SLOURL,
+		InResponse: validated.RequestID, Status: status, Now: time.Now()}
+	if in.Destination == "" {
+		in.Destination = src.Provider.EntityID
+	}
+	var doc string
+	if signer, cert, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID); serr == nil {
+		doc, err = saml.BuildLogoutResponse(in, signer, cert)
+	} else {
+		doc, err = saml.BuildUnsignedSOAPLogoutResponse(in)
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "building a LogoutResponse for an upstream's SOAP logout", "err", err)
+		soapFault(w, "the answer could not be built")
+		return
+	}
+	soapHeaders(w)
+	_, _ = io.WriteString(w, saml.SOAPEnvelope(doc))
 }
 
 // endUpstreamSessions ends the sessions an upstream's request names, through the one

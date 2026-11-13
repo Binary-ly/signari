@@ -284,6 +284,18 @@ type LogoutResponseInput struct {
 	InResponse  string
 	Status      string
 	Now         time.Time
+	// unsigned is set only by BuildUnsignedSOAPLogoutResponse.
+	unsigned bool
+}
+
+// BuildUnsignedSOAPLogoutResponse is a LogoutResponse with no signature, for one
+// answer alone: an upstream's SOAP logout to a source that holds no signing key. It
+// goes back on the connection the request came in on, over TLS to the address the
+// upstream chose, so nothing in between can alter it; and the logout has happened, so
+// an answer is owed. Every other LogoutResponse is signed (BuildLogoutResponse).
+func BuildUnsignedSOAPLogoutResponse(in LogoutResponseInput) (string, error) {
+	in.unsigned = true
+	return BuildLogoutResponse(in, nil, nil)
 }
 
 // BuildLogoutResponse renders a LogoutResponse.
@@ -320,6 +332,9 @@ func BuildLogoutResponse(in LogoutResponseInput, signer crypto.Signer, certDER [
 	resp.CreateElement("saml:Issuer").SetText(in.Issuer)
 	st := resp.CreateElement("samlp:Status")
 	st.CreateElement("samlp:StatusCode").CreateAttr("Value", status)
+	if in.unsigned {
+		return doc.WriteToString()
+	}
 
 	signed, err := signElement(resp, signer, certDER)
 	if err != nil {

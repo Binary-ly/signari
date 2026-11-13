@@ -406,8 +406,11 @@ func TestASignOutWithNoKeyStopsHere(t *testing.T) {
 	if _, err := u.f.pool.Exec(context.Background(), `UPDATE core.saml_source_keys SET retired_at = now() WHERE provider_id = $1::uuid`, u.providerID); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(u.get("/metadata").Body.String(), "SingleLogoutService") {
-		t.Error("the metadata offers a logout this deployment cannot take part in")
+	// The redirect binding needs a key to sign with; the SOAP binding does not, since
+	// the upstream signs and the answer goes back on its connection.
+	if meta := u.get("/metadata").Body.String(); strings.Contains(meta, saml.BindingRedirect) ||
+		!strings.Contains(meta, saml.BindingSOAP) {
+		t.Errorf("the metadata offers a logout this deployment cannot take part in, or not the one it can: %s", meta)
 	}
 	rec := u.signOut(t, u.signedInThrough(t))
 	if strings.Contains(rec.Header().Get("Location"), "upstream.test") {
@@ -464,6 +467,79 @@ func TestAnUpstreamEndsTheSessionsItBegan(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("%d audit rows", n)
+	}
+}
+
+// soapLogout is the upstream ending a session with no browser: its signed request in a
+// SOAP envelope, posted to the address our metadata gives.
+func (u *samlUpstream) soapLogout(t *testing.T, nameID string, signer saml.SPKey, certDER []byte) (body []byte, id string, code int) {
+	t.Helper()
+	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{Issuer: "https://upstream.test/idp",
+		Destination: u.f.srv.cfg.Issuer + "/saml/source/" + u.slug + "/slo/soap", NameID: nameID,
+		NameIDFormat: saml.NameIDFormatPersistent, Now: time.Now()}, signer, certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent saml.LogoutRequest
+	if err := saml.Unmarshal([]byte(doc), &sent); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/saml/source/"+u.slug+"/slo/soap", strings.NewReader(saml.SOAPEnvelope(doc)))
+	r.Header.Set("Content-Type", "text/xml; charset=utf-8")
+	r.Header.Set("SOAPAction", saml.SOAPAction)
+	rec := httptest.NewRecorder()
+	u.f.srv.Routes().ServeHTTP(rec, r)
+	return rec.Body.Bytes(), sent.ID, rec.Code
+}
+
+// The upstream ends sessions here over the SOAP binding: only signed by it, only once,
+// answered on the connection with a LogoutResponse, signed when a key is held and
+// unsigned when none is.
+func TestAnUpstreamsSOAPLogoutEndsTheSessions(t *testing.T) {
+	u := newSAMLUpstream(t)
+	u.logoutReady(t)
+	if !strings.Contains(u.get("/metadata").Body.String(), `Location="`+u.f.srv.cfg.Issuer+"/saml/source/"+u.slug+`/slo/soap"`) {
+		t.Fatal("the metadata does not offer the SOAP address")
+	}
+	pkcs8, strangerPEM, err := saml.NewSPKey("https://stranger.test", saml.SPKeySigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := saml.ParseSPKey(pkcs8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode([]byte(strangerPEM))
+
+	u.signedInThrough(t)
+	u.signedInThrough(t)
+	if body, _, code := u.soapLogout(t, "ada-at-upstream", stranger, block.Bytes); code != http.StatusInternalServerError ||
+		!strings.Contains(string(body), "Fault") || u.sessionsLeft(t) != 2 {
+		t.Fatalf("somebody else's signature: %d, %d sessions left: %s", code, u.sessionsLeft(t), body)
+	}
+	body, id, code := u.soapLogout(t, "ada-at-upstream", u.signer, u.certDER)
+	if code != http.StatusOK || u.sessionsLeft(t) != 0 {
+		t.Fatalf("the upstream's own: %d, %d sessions left: %s", code, u.sessionsLeft(t), body)
+	}
+	if err := saml.ReadSOAPLogoutResponse(body, id); err != nil || !strings.Contains(string(body), "Signature") {
+		t.Errorf("the answer: %v, signed %v: %s", err, strings.Contains(string(body), "Signature"), body)
+	}
+	var audited int
+	if err := u.f.pool.QueryRow(context.Background(), `SELECT count(*) FROM core.audit_events
+		WHERE event_type = 'saml.logout_completed' AND subject_id = $1::uuid`, u.f.userID).Scan(&audited); err != nil || audited != 1 {
+		t.Errorf("%d audit rows (%v)", audited, err)
+	}
+
+	// With no key of its own held here, the logout still happens and is answered,
+	// unsigned.
+	if _, err := u.f.pool.Exec(context.Background(), `UPDATE core.saml_source_keys SET retired_at = now() WHERE provider_id = $1::uuid`, u.providerID); err != nil {
+		t.Fatal(err)
+	}
+	u.signedInThrough(t)
+	body, id, code = u.soapLogout(t, "ada-at-upstream", u.signer, u.certDER)
+	if code != http.StatusOK || u.sessionsLeft(t) != 0 || saml.ReadSOAPLogoutResponse(body, id) != nil ||
+		strings.Contains(string(body), "Signature") {
+		t.Errorf("with no key here: %d, %d sessions left: %s", code, u.sessionsLeft(t), body)
 	}
 }
 

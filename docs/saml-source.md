@@ -217,10 +217,22 @@ it has said they are signed out. A name nobody here is linked to is answered wit
 success, that being the state it asked for. The answer is signed and goes back by
 redirect.
 
+### With no browser
+
+An upstream that ends a session on its side by itself, because an administrator ended
+it, it expired or the person was deactivated, can say so over the SOAP binding: a
+signed `LogoutRequest` in a SOAP 1.1 envelope posted to `/saml/source/corp/slo/soap`,
+which the metadata always offers, since it needs nothing of this deployment's. It is
+held to everything the redirect binding's request is (the upstream's signature, never
+optional; heard once; the Destination, when it names one) and ends the same sessions.
+The `LogoutResponse` goes back on the same connection, signed when a signing key is
+held here and unsigned when none is, the logout having happened either way. A request
+refused is answered with a SOAP fault.
+
 ## What is not done
 
-No `SOAP` binding for logout, and a logout address that takes only HTTP-POST is left
-out, with a note: a sign-out reaches an upstream as a redirect.
+A logout address that takes only HTTP-POST is left out, with a note: a sign-out from
+here reaches an upstream as a redirect.
 
 It is absent from the metadata document as well as from the code — a
 capability advertised and not implemented is the failure this project sweeps for.

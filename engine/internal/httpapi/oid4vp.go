@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -296,7 +298,8 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	presented, err := oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: clientID, Nonce: nonce,
-		Ask: v.Ask(), Issuers: v.Issuers, Now: time.Now()})
+		Ask: v.Ask(), Issuers: v.Issuers, Now: time.Now(),
+		FetchStatus: func(uri string) ([]byte, string, error) { return s.fetchStatusList(ctx, uri) }})
 	if err == nil {
 		var proved []byte
 		if proved, err = vpIdentity(v, presented); err == nil {
@@ -313,6 +316,43 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 	s.log.InfoContext(ctx, "a presentation was refused", "slug", slug, "err", err,
 		"correlation_id", correlationID(ctx))
 	writeError(w, http.StatusBadRequest, "invalid_request", "the presentation was not accepted")
+}
+
+// A Status List Token is read within this long, and no larger than this. A list of a
+// million credentials at eight bits is a megabyte before compression.
+const (
+	statusListTimeout = 10 * time.Second
+	statusListLimit   = 4 << 20
+)
+
+// fetchStatusList asks for the Status List Token a presented credential names
+// (specs/token-status-list.txt:730-750), through the outbound dialler, so an issuer's
+// list in the private network is refused unless an operator named it.
+func (s *Server) fetchStatusList(ctx context.Context, uri string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, statusListTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept", oid4vp.StatusTokenMedia)
+	resp, err := s.outboundClient(statusListTimeout).Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// "MUST use an HTTP status code in the 2xx range" (:754).
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, "", fmt.Errorf("the status list answered %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, statusListLimit+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(body) > statusListLimit {
+		return nil, "", fmt.Errorf("the status list is larger than %d bytes", statusListLimit)
+	}
+	return body, resp.Header.Get("Content-Type"), nil
 }
 
 // vpIdentity is who a verified presentation says the person is.

@@ -76,7 +76,32 @@ wallet is told at once that it was refused:
   `kb+jwt`, made in the last five minutes, for this deployment's whole client
   identifier, with this request's nonce, over exactly the credential and disclosures
   presented;
-- every claim asked for is there, with one string or number where a person is named.
+- every claim asked for is there, with one string or number where a person is named;
+- none of the claims SD-JWT VC says must be signed (`iss`, `nbf`, `exp`, `cnf`, `vct`,
+  `vct#integrity`, `aka_vcts`, `status`) came in a disclosure. An issuer that made one
+  disclosable let every holder leave it out;
+- if it names a `status`, its issuer has not revoked or suspended it (below).
+
+### Revocation
+
+A credential whose issuer keeps a Token Status List carries a `status_list` claim: an
+`https` address and its place in the list. Once everything above has passed, and not
+before, so nobody without an otherwise good credential can make this server fetch
+anything, the list is fetched from that address through the same outbound rules as
+every other request this server makes (`SIGNARI_OUTBOUND_ALLOW_PRIVATE` for a list in
+the private network). It has to be:
+
+- served as `application/statuslist+jwt`, typed `statuslist+jwt`;
+- signed by a key held for the credential's own issuer. A list kept by a separate status
+  issuer is not believed, since nothing here says who may speak for whom;
+- about this credential's list (`sub` the address the credential names), with an `iat`,
+  not expired, not yet to come, and a positive `ttl` if it has one.
+
+The credential's place has to read `0x00`, valid. Revoked (`0x01`), suspended (`0x02`)
+and every other value refuse, and so does a place past the list's end, a list that cannot
+be read, or a `status` kept by some other mechanism, because none of them shows the
+credential was not revoked. The list is fetched for every presentation and never kept: a
+cached answer would let a credential revoked since sign somebody in again.
 
 An answer that passes is kept, sealed under a key from a fresh code that is not stored,
 and the wallet is told to send the browser to `/oid4vp/<slug>/done` with that code. The
@@ -99,8 +124,8 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
   in both languages.
 - **The Digital Credentials API**, where the browser carries the request to a wallet itself.
 - **mdoc** credentials.
-- **Revocation.** A credential's `status` is not checked, which SD-JWT VC says should be
-  done.
+- **A separate status issuer**, whose key is linked to the credential's issuer by a
+  certificate authority. Only the issuer's own keys sign a list believed here.
 - **Finding an issuer's key** from its metadata or a certificate chain. Keys are pinned.
 
 ## Routes

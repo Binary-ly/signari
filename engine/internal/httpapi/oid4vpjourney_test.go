@@ -21,6 +21,7 @@ import (
 
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/oid4vp"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/sdjwt"
@@ -37,6 +38,8 @@ type holderWallet struct {
 	t              *testing.T
 	holder, issuer *ecdsa.PrivateKey
 	subject        string
+	// status is the credential's status claim, when its issuer keeps one.
+	status map[string]any
 }
 
 func newHolderWallet(t *testing.T, subject string) *holderWallet {
@@ -72,9 +75,12 @@ func (wl *holderWallet) sign(key *ecdsa.PrivateKey, typ string, claims any) stri
 // client id.
 func (wl *holderWallet) present(clientID, nonce string) string {
 	wl.t.Helper()
-	payload, ds, err := sdjwt.Payload(
-		map[string]any{"iss": walletIssuer, "vct": walletVCT, "iat": time.Now().Unix(),
-			"exp": time.Now().Add(time.Hour).Unix()},
+	always := map[string]any{"iss": walletIssuer, "vct": walletVCT, "iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Hour).Unix()}
+	if wl.status != nil {
+		always["status"] = wl.status
+	}
+	payload, ds, err := sdjwt.Payload(always,
 		map[string]any{"personal_id": wl.subject, "email": "wallet-" + wl.subject + "@example.test",
 			"given_name": "Ada"})
 	if err != nil {
@@ -296,6 +302,59 @@ func TestAPersonSignsInWithACredentialFromTheirWallet(t *testing.T) {
 	f.srv.Routes().ServeHTTP(rerec, reuse)
 	if hasSession(rerec) {
 		t.Error("a response code was used twice")
+	}
+}
+
+// A credential its issuer has revoked signs nobody in. The list is the one this
+// engine's own credential issuer makes (oid4vci.StatusListToken), served over TLS,
+// fetched through the outbound client at the response URI, and read again for every
+// presentation, so revoking between two sign-ins stops the second.
+func TestARevokedCredentialDoesNotSignAnybodyIn(t *testing.T) {
+	wl := newHolderWallet(t, "person-1")
+	f, slug, leaf := newVPFixture(t, wl)
+
+	var revoked []int
+	var asked int
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if r.Header.Get("Accept") != oid4vp.StatusTokenMedia {
+			t.Errorf("asked for %q", r.Header.Get("Accept"))
+		}
+		tok, err := oid4vci.StatusListToken("https://"+r.Host+r.URL.Path, walletIssuer, revoked, time.Now(),
+			func(payload []byte, typ string) (string, error) {
+				var claims map[string]any
+				if err := json.Unmarshal(payload, &claims); err != nil {
+					return "", err
+				}
+				return wl.sign(wl.issuer, typ, claims), nil
+			})
+		if err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", oid4vp.StatusTokenMedia)
+		_, _ = w.Write([]byte(tok))
+	}))
+	defer site.Close()
+	f.srv.outboundHTTP = func(time.Duration) *http.Client { return site.Client() }
+	wl.status = map[string]any{"status_list": map[string]any{"idx": 42, "uri": site.URL + "/lists/1"}}
+
+	present := func() int {
+		loc, _ := f.startVP(t, slug)
+		p := f.fetchVP(t, loc, leaf)
+		return f.postVP(t, p["response_uri"].(string), url.Values{"state": {p["state"].(string)},
+			"vp_token": {wl.present(p["client_id"].(string), p["nonce"].(string))}}).Code
+	}
+	// Somebody else's place revoked: this credential is still good.
+	revoked = []int{41, 43}
+	if code := present(); code != http.StatusOK {
+		t.Fatalf("a valid credential answered %d", code)
+	}
+	revoked = []int{42}
+	if code := present(); code != http.StatusBadRequest {
+		t.Fatalf("a revoked credential answered %d", code)
+	}
+	if asked != 2 {
+		t.Errorf("the list was asked for %d times, once for each presentation was expected", asked)
 	}
 }
 

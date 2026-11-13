@@ -30,6 +30,9 @@ type Expect struct {
 	// checked with. An issuer not here is not believed, whatever it signed with.
 	Issuers map[string]*jose.JSONWebKeySet
 	Now     time.Time
+	// FetchStatus reads a Status List Token. A credential that names a status is
+	// refused when this is nil, so leaving it out cannot skip revocation.
+	FetchStatus StatusFetcher
 }
 
 // Presented is a credential that passed every check, and what it said.
@@ -116,6 +119,17 @@ func verifyPresentation(presentation string, e Expect) (*Presented, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The claims SD-JWT VC says "MUST NOT be included in the Disclosures"
+	// (specs/sdjwtvc.txt:527-529) are what this verifier decides on: who issued it,
+	// when it is valid, its type, its holder and whether it is revoked. An issuer
+	// that made one disclosable let every holder withhold it, so one arriving by a
+	// disclosure says the credential cannot be relied on, and it is refused.
+	for _, name := range neverDisclosed {
+		_, signed := payload[name]
+		if _, got := claims[name]; got && !signed {
+			return nil, fmt.Errorf("the credential's %s came in a disclosure, and SD-JWT VC forbids disclosing it", name)
+		}
+	}
 
 	vct, _ := claims["vct"].(string)
 	if !slices.Contains(e.Ask.VCTValues, vct) {
@@ -138,8 +152,26 @@ func verifyPresentation(presentation string, e Expect) (*Presented, error) {
 			return nil, fmt.Errorf("the credential does not carry a claim that was asked for: %w", err)
 		}
 	}
+
+	// Status last: "The processing rules for Referenced Tokens ... MUST precede any
+	// evaluation of a Referenced Token's status", and a token found invalid is not
+	// looked up (specs/token-status-list.txt:789). So nobody without a credential
+	// this verifier would otherwise accept can make it fetch anything.
+	ref, err := statusReference(payload)
+	if err != nil {
+		return nil, err
+	}
+	if ref != nil {
+		if err := checkStatus(*ref, e.Issuers[issuer], e.FetchStatus, e.Now); err != nil {
+			return nil, err
+		}
+	}
 	return &Presented{Issuer: issuer, VCT: vct, Claims: claims}, nil
 }
+
+// neverDisclosed is SD-JWT VC's list of claims that "MUST NOT be included in the
+// Disclosures" (specs/sdjwtvc.txt:527-569).
+var neverDisclosed = []string{"iss", "nbf", "exp", "cnf", "vct", "vct#integrity", "aka_vcts", "status"}
 
 // verifyIssuerSigned checks the Issuer-signed JWT, RFC 9901 §7.1 step 2
 // (specs/rfc9901.txt:1661-1675), with the key found as SD-JWT VC §2.5 has it

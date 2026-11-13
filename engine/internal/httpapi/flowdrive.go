@@ -426,7 +426,7 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 		return f.prompts
 	}
 	f.promptsOnce = true
-	ps, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
+	ps, missing, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
 	if err != nil {
 		f.s.log.ErrorContext(f.ctx, "reading prompts", "err", err)
 		return nil
@@ -434,6 +434,11 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 	f.prompts = slices.DeleteFunc(ps, func(p prompts.Prompt) bool {
 		return flow.Marked(f.amr, flow.StagePrompt, p.Slug)
 	})
+	// After the operator's own, the required attributes the person may write and
+	// has no value for (5.05).
+	if len(missing) > 0 && !flow.Marked(f.amr, flow.StagePrompt, prompts.RequiredAttributesSlug) {
+		f.prompts = append(f.prompts, requiredAttributesPrompt(missing))
+	}
 	return f.prompts
 }
 

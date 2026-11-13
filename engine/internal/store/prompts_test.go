@@ -30,7 +30,7 @@ func TestAnEditedPromptIsAskedAgainAndTheOldAnswerIsKept(t *testing.T) {
 		RETURNING id::text`, orgID).Scan(&promptID))
 	pending := func() []prompts.Prompt {
 		t.Helper()
-		ps, err := PendingPrompts(ctx, tx, orgID, userID)
+		ps, _, err := PendingPrompts(ctx, tx, orgID, userID)
 		must(t, err)
 		var mine []prompts.Prompt
 		for _, p := range ps {
@@ -131,7 +131,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 	}
 
 	// Outstanding to begin with.
-	if got, err := PendingPrompts(ctx, pool, orgID, userID); err != nil || len(got) != 1 {
+	if got, _, err := PendingPrompts(ctx, pool, orgID, userID); err != nil || len(got) != 1 {
 		t.Fatalf("expected one outstanding prompt, got %d (%v)", len(got), err)
 	}
 
@@ -147,7 +147,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 	}
 
 	// The heart of it: the SAME transaction must now see nothing outstanding.
-	got, err := PendingPrompts(ctx, tx, orgID, userID)
+	got, _, err := PendingPrompts(ctx, tx, orgID, userID)
 	if err != nil {
 		t.Fatalf("re-checking inside the transaction: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestPendingPromptsSeesAnUncommittedAnswer(t *testing.T) {
 
 	// And the pool still sees it, because nothing is committed. This is what
 	// makes the bug invisible from outside the transaction.
-	if outside, err := PendingPrompts(ctx, pool, orgID, userID); err != nil ||
+	if outside, _, err := PendingPrompts(ctx, pool, orgID, userID); err != nil ||
 		len(outside) != 1 {
 		t.Errorf("outside the transaction the prompt should still be outstanding, "+
 			"got %d (%v)", len(outside), err)

@@ -402,6 +402,8 @@
   "umaclaims.note": "Confirming tells {ResourceServer} who you are. It does not grant access on its own: whoever owns this decides that.",
 
   "prompt.choose": "Choose&hellip;",
+  "prompt.attributes.title": "A few details first",
+  "prompt.attributes.body": "Your organisation needs these before you go on. You can change them later on your profile.",
   "error.prompt.changed": "This was changed while you were reading it. Please read it again before you answer.",
 
   "err.title": "Sign-in error",

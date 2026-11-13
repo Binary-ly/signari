@@ -549,6 +549,41 @@ func SetOwnAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string, valu
 	return changed, nil
 }
 
+// MissingRequiredAttributes are the attributes declared required that the person may
+// write and holds no value for: what sign-in asks them for before a session, since an
+// account made before the attribute was required, or by an administrator or a
+// directory, never passed sign-up's check. A required attribute the person may not
+// write is not theirs to fill in, so it is not here.
+func MissingRequiredAttributes(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID, userID string) ([]Attribute, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.name, s.display_name, s.value_type, s.personal,
+		       s.user_readable, s.user_writable, s.required
+		FROM core.user_attribute_schema s
+		WHERE s.org_id = $1::uuid AND s.required AND s.user_writable
+		  AND NOT EXISTS (SELECT 1 FROM core.user_attributes a
+		                  WHERE a.attribute_id = s.id AND a.user_id = $2::uuid)
+		ORDER BY s.name`, orgID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing missing attributes: %w", err)
+	}
+	defer rows.Close()
+	var out []Attribute
+	for rows.Next() {
+		var a Attribute
+		if err := rows.Scan(&a.ID, &a.Name, &a.DisplayName, &a.ValueType,
+			&a.Personal, &a.UserReadable, &a.UserWritable, &a.Required); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AttributeLabel is the attribute as a person's page names it.
+func AttributeLabel(a Attribute) string { return attributeLabel(a) }
+
 func attributeLabel(a Attribute) string {
 	if a.DisplayName != "" {
 		return a.DisplayName

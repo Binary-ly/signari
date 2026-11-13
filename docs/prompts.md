@@ -138,6 +138,21 @@ governs the person's own profile page; mapping a field is the operator deciding 
 collect the value. Each write is recorded as `user.attributes_updated` with
 `by: prompt`, naming the attributes and never their values.
 
+## Required attributes nobody has given
+
+Sign-up refuses an account without a `required` attribute the person may write. An
+account made before the attribute was required, by an administrator, by an import or
+by a directory never met that check, so the prompt stage asks for those too, after the
+operator's own prompts and before any session: a page of its own, in the reader's
+language, with one field for each required, `user_writable` attribute the person
+holds no value for (a yes-or-no one as a box, unticked meaning no). A blank one is
+refused, naming it. The answer is written as the person's profile writes it, so
+nothing they could not set there can be set here, and recorded as
+`user.attributes_updated` with `by: sign-in`. Once given, it is not asked again. A
+required attribute the person may not write is an administrator's to fill, and is
+never asked. The page's slug, `signari.required-attributes`, is reserved: no prompt of
+the operator's may take it.
+
 ## `once`
 
 `once: true` asks until answered, then never again — terms acceptance.

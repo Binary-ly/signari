@@ -26,41 +26,62 @@ type Querier interface {
 // current one: it was edited while the person was reading it.
 var ErrPromptChanged = errors.New("the prompt changed while it was being answered")
 
-// Prompts a user still owes an answer to.
+// Prompts a user still owes an answer to, and the required attributes they may write
+// and hold no value for (MissingRequiredAttributes), which sign-in asks for at the
+// same stage. One statement for both: a password sign-in is held to a count of round
+// trips, and the second list used to cost one more.
 //
 // Ordered, and filtered by what they have already answered. A prompt marked
 // `once` disappears once its CURRENT version is answered (5.13), so editing
 // the terms asks everybody again; one that is not once is asked every time,
 // which is right for a notice and wrong for terms acceptance.
 func PendingPrompts(ctx context.Context, db Querier, orgID, userID string) (
-	[]prompts.Prompt, error) {
+	[]prompts.Prompt, []Attribute, error) {
 
 	rows, err := db.Query(ctx, `
-		SELECT p.id::text, p.slug, p.title, COALESCE(p.body,''), p.once, p.fields, p.version
+		SELECT 'prompt', p.id::text, p.slug, p.title, COALESCE(p.body,''), p.once, p.fields, p.version,
+		       p.position, p.slug
 		  FROM core.prompts p
 		 WHERE p.org_id = $1::uuid AND p.enabled
 		   AND (NOT p.once OR NOT EXISTS (
 		         SELECT 1 FROM core.prompt_responses r
 		          WHERE r.prompt_id = p.id AND r.user_id = $2::uuid AND r.prompt_version = p.version))
-		 ORDER BY p.position, p.slug`, orgID, userID)
+		UNION ALL
+		SELECT 'attribute', s.id::text, s.name, s.display_name, s.value_type, false, '[]'::jsonb, 0,
+		       0, s.name
+		  FROM core.user_attribute_schema s
+		 WHERE s.org_id = $1::uuid AND s.required AND s.user_writable
+		   AND NOT EXISTS (SELECT 1 FROM core.user_attributes a
+		                    WHERE a.attribute_id = s.id AND a.user_id = $2::uuid)
+		 ORDER BY 1, 9, 10`, orgID, userID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
 	var out []prompts.Prompt
+	var missing []Attribute
 	for rows.Next() {
+		var kind, sortKey string
+		var position int
 		var p prompts.Prompt
 		var fields []byte
-		if err := rows.Scan(&p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields, &p.Version); err != nil {
-			return nil, err
+		if err := rows.Scan(&kind, &p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields, &p.Version,
+			&position, &sortKey); err != nil {
+			return nil, nil, err
+		}
+		if kind == "attribute" {
+			// Required and the person's to write, by the WHERE above.
+			missing = append(missing, Attribute{ID: p.ID, Name: p.Slug, DisplayName: p.Title, ValueType: p.Body,
+				UserWritable: true, Required: true})
+			continue
 		}
 		if err := json.Unmarshal(fields, &p.Fields); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return out, missing, rows.Err()
 }
 
 // LoadPrompt reads one by slug.

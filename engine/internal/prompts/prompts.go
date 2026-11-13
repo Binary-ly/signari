@@ -65,10 +65,18 @@ type Prompt struct {
 	Fields []Field
 }
 
+// RequiredAttributesSlug names the prompt sign-in makes for itself: the required
+// attributes a person may write and has no value for (5.05). No operator's prompt may
+// take it, or its answers would be read as that one's.
+const RequiredAttributesSlug = "signari.required-attributes"
+
 // Validate checks a prompt's definition.
 func (p *Prompt) Validate() error {
 	if p.Slug == "" {
 		return fmt.Errorf("a prompt needs a slug")
+	}
+	if p.Slug == RequiredAttributesSlug {
+		return fmt.Errorf("the slug %q is the one sign-in uses to ask for missing required attributes", p.Slug)
 	}
 	if p.Title == "" {
 		return fmt.Errorf("prompt %q needs a title: it is the heading somebody "+

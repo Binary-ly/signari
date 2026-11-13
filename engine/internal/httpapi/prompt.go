@@ -41,6 +41,7 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	p = s.promptForPage(r, p)
 	s.renderPage(w, r, "prompt", map[string]any{
 		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields, "Version": p.Version,
 		"CSRF": csrf, "CSRFField": csrfFormField,
@@ -100,6 +101,10 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		// The token expired or was never there. Back to the start rather than a
 		// message about tokens, which means nothing to whoever is reading it.
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if r.PostFormValue("prompt") == prompts.RequiredAttributesSlug {
+		s.answerRequiredAttributes(w, r, pending)
 		return
 	}
 

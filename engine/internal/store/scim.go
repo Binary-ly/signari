@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
 )
@@ -15,7 +17,22 @@ import (
 // by slug alone used to return every tenant's target of that name, and a sync
 // of "slack" provisioned all of them. Without orgID a slug must now name one
 // organisation's target, or the call refuses.
+//
+// A target that takes the authorization code grant is handed what keeps its
+// refresh token, which needs conn to begin a transaction of its own: a pool or a
+// connection outside one does, and anything else leaves the target unable to ask
+// for a token, said when it tries.
 func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
+	return loadSCIMTargets(ctx, conn, root, orgID, only, true)
+}
+
+// beginner is a connection that can begin a transaction.
+type beginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+func loadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string,
+	enabledOnly bool) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT t.id::text, t.org_id::text, t.slug, t.display_name, t.base_url, t.token,
 		       t.dry_run, t.on_deactivate, t.kind,
@@ -24,10 +41,10 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		       ARRAY(SELECT s.group_id::text FROM core.scim_target_scope_groups s WHERE s.target_id = t.id),
 		       t.recreate_missing,
 		       COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''), COALESCE(t.oauth_scope, ''),
-		       t.compatibility, t.oauth_client_auth
+		       t.compatibility, t.oauth_client_auth, COALESCE(t.oauth_authorize_url, '')
 		FROM core.scim_targets t
-		WHERE t.enabled AND ($1 = '' OR t.slug = $1) AND ($2 = '' OR t.org_id = $2::uuid)
-		ORDER BY t.slug`, only, orgID)
+		WHERE (t.enabled OR NOT $3) AND ($1 = '' OR t.slug = $1) AND ($2 = '' OR t.org_id = $2::uuid)
+		ORDER BY t.slug`, only, orgID, enabledOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +58,12 @@ func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgI
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
 			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupIDs, &t.RecreateMissing,
-			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope, &t.Compatibility, &t.OAuthClientAuth); err != nil {
+			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope, &t.Compatibility, &t.OAuthClientAuth,
+			&t.OAuthAuthorizeURL); err != nil {
 			return nil, err
+		}
+		if b, ok := conn.(beginner); ok && t.OAuthAuthorizeURL != "" {
+			t.Refresh = scimRefresh{db: b, root: root, targetID: t.ID}
 		}
 		// A SCIM target's secret is a bearer token; a native one's is a service
 		// account or a client secret. Both are sealed, and only the one this

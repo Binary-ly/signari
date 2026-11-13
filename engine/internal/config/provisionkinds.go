@@ -55,6 +55,10 @@ type SCIMTarget struct {
 	// OAuthClientAuth is client_secret_basic, the default when absent, or
 	// client_secret_post for a token endpoint that takes the secret only in the form.
 	OAuthClientAuth string `yaml:"oauth_client_auth,omitempty"`
+	// OAuthAuthorizeURL has it take the authorization code grant from that client
+	// instead. What the sign-in there leaves is no file's: a new grant is
+	// authorized again, with `signari scim authorize`.
+	OAuthAuthorizeURL string `yaml:"oauth_authorize_url,omitempty"`
 	// Compatibility names what a SCIM target needs that the protocol does not say
 	// it should; left as it is when absent, and [] for none.
 	Compatibility []string `yaml:"compatibility,omitempty"`
@@ -84,12 +88,12 @@ func (w SCIMTarget) oauth() provision.TargetOAuth {
 		auth = scim.ClientSecretBasic
 	}
 	return provision.TargetOAuth{TokenURL: w.OAuthTokenURL, ClientID: w.OAuthClientID, Scope: w.OAuthScope,
-		ClientAuth: auth}
+		ClientAuth: auth, AuthorizeURL: w.OAuthAuthorizeURL}
 }
 
 func heldOAuth(h store.SCIMTargetRow) provision.TargetOAuth {
 	return provision.TargetOAuth{TokenURL: h.OAuthTokenURL, ClientID: h.OAuthClientID, Scope: h.OAuthScope,
-		ClientAuth: h.OAuthClientAuth}
+		ClientAuth: h.OAuthClientAuth, AuthorizeURL: h.OAuthAuthorizeURL}
 }
 
 // spec is the target as provision.AddTarget takes it, its secret resolved.
@@ -98,7 +102,7 @@ func (w SCIMTarget) spec() provision.TargetSpec {
 		Impersonate: w.Impersonate, Domain: w.TargetDomain, OnDeactivate: w.OnDeactivate,
 		DryRun: w.DryRun != nil && *w.DryRun, RecreateMissing: w.RecreateMissing != nil && *w.RecreateMissing,
 		OAuthTokenURL: w.OAuthTokenURL, OAuthClientID: w.OAuthClientID, OAuthScope: w.OAuthScope,
-		OAuthClientAuth: w.OAuthClientAuth, Compatibility: w.Compatibility}
+		OAuthClientAuth: w.OAuthClientAuth, OAuthAuthorizeURL: w.OAuthAuthorizeURL, Compatibility: w.Compatibility}
 	if r, _ := w.secretRef(); r != nil && s.Kind == "scim" {
 		s.Token = r.value
 	} else if r != nil {
@@ -137,22 +141,25 @@ func (scimSection) validate(f *File, add func(string, ...any)) {
 				add("%s: %v", at, err)
 			}
 			switch {
-			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "" && w.OAuthClientAuth == "":
+			case w.OAuthTokenURL == "" && w.OAuthClientID == "" && w.OAuthScope == "" && w.OAuthClientAuth == "" &&
+				w.OAuthAuthorizeURL == "":
 			case !strings.HasPrefix(w.OAuthTokenURL, "https://") || w.OAuthClientID == "":
-				add("%s: the client credentials grant needs oauth_client_id and an https oauth_token_url, where "+
-					"the secret is sent", at)
+				add("%s: the grant needs oauth_client_id and an https oauth_token_url, where the secret is sent", at)
 			case safedial.CheckURL(w.OAuthTokenURL) != nil:
 				add("%s: %v", at, safedial.CheckURL(w.OAuthTokenURL))
 			case w.OAuthClientAuth != "" && scim.CheckClientAuth(w.OAuthClientAuth) != nil:
 				add("%s: oauth_client_auth: %v", at, scim.CheckClientAuth(w.OAuthClientAuth))
+			case w.OAuthAuthorizeURL != "" && scim.CheckAuthorizeURL(w.OAuthAuthorizeURL) != nil:
+				add("%s: oauth_authorize_url: %v", at, scim.CheckAuthorizeURL(w.OAuthAuthorizeURL))
 			}
 		case "google", "entra":
 			if w.BaseURL != "" || w.Token != nil {
 				add("%s: a %s target is reached through its own API with credentials, not a base_url and token",
 					at, k)
 			}
-			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" || w.OAuthClientAuth != "" {
-				add("%s: only a SCIM target takes the client credentials grant", at)
+			if w.OAuthTokenURL != "" || w.OAuthClientID != "" || w.OAuthScope != "" || w.OAuthClientAuth != "" ||
+				w.OAuthAuthorizeURL != "" {
+				add("%s: only a SCIM target takes an OAuth grant", at)
 			}
 			if len(w.Compatibility) > 0 {
 				add("%s: only a SCIM target has compatibility settings", at)
@@ -244,6 +251,9 @@ func (scimSection) plan(ctx context.Context, tx pgx.Tx, orgID string, f *File, p
 			c.note(w.ScopeGroups != nil && !sameSet(h.ScopeGroups, w.ScopeGroups), "scope_groups")
 			c.note(w.RecreateMissing != nil && h.RecreateMissing != *w.RecreateMissing, "recreate_missing")
 			c.note(h.Kind == "scim" && w.oauth() != heldOAuth(h), "oauth")
+			// Said in the plan, since nothing in the file brings it back.
+			c.note(h.OAuthAuthorizedAt != nil && (w.oauth() != heldOAuth(h) || h.BaseURL != w.BaseURL),
+				"the authorization, which `signari scim authorize` makes again")
 			c.note(w.Compatibility != nil && !sameSet(h.Compatibility, w.Compatibility), "compatibility")
 			if r, where := w.secretRef(); r != nil && compared == nil {
 				if compared = p.needsRoot("scim_target", w.Slug, "comparing the secret the file names"); compared == nil {
@@ -392,7 +402,8 @@ func (scimSection) export(ctx context.Context, tx pgx.Tx, orgID string, f *File)
 		dryRun, enabled, recreate := h.DryRun, h.Enabled, h.RecreateMissing
 		w := SCIMTarget{Slug: h.Slug, Kind: h.Kind, Name: h.Name, OnDeactivate: h.OnDeactivate, DryRun: &dryRun,
 			Enabled: &enabled, ScopeGroups: h.ScopeGroups, RecreateMissing: &recreate, OAuthTokenURL: h.OAuthTokenURL,
-			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope, Compatibility: h.Compatibility}
+			OAuthClientID: h.OAuthClientID, OAuthScope: h.OAuthScope, OAuthAuthorizeURL: h.OAuthAuthorizeURL,
+			Compatibility: h.Compatibility}
 		// Basic is what an absent method means, so only the other is written down.
 		if h.OAuthClientAuth == scim.ClientSecretPost {
 			w.OAuthClientAuth = h.OAuthClientAuth

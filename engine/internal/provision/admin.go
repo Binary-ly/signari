@@ -83,6 +83,10 @@ type TargetSpec struct {
 	// OAuthClientAuth is how that client authenticates: client_secret_basic,
 	// the default when empty, or client_secret_post.
 	OAuthClientAuth string
+	// OAuthAuthorizeURL has it take the authorization code grant instead, from
+	// the same client: somebody signs in there (BeginAuthorization) before its
+	// first sync.
+	OAuthAuthorizeURL string
 	// Compatibility names what a SCIM target needs that the protocol does not
 	// say it should.
 	Compatibility []string
@@ -90,17 +94,17 @@ type TargetSpec struct {
 
 // validateOAuth refuses half a grant, a token URL that a secret should not be
 // sent to, and a way of authenticating that is not one or has no grant to go with.
-func validateOAuth(tokenURL, clientID, scope, clientAuth string) error {
+func validateOAuth(tokenURL, clientID, scope, clientAuth, authorizeURL string) error {
 	switch {
-	case tokenURL == "" && clientID == "" && scope == "" && clientAuth == "":
+	case tokenURL == "" && clientID == "" && scope == "" && clientAuth == "" && authorizeURL == "":
 	case tokenURL == "" || clientID == "":
-		return targetInvalid{"the client credentials grant needs both the token URL and the client id"}
+		return targetInvalid{"the grant needs both the token URL and the client id"}
 	case !strings.HasPrefix(tokenURL, "https://"):
 		return targetInvalid{"the token URL must be https: the client secret is sent to it"}
-	case clientAuth != "":
-		if err := scim.CheckClientAuth(clientAuth); err != nil {
-			return targetInvalid{err.Error()}
-		}
+	case clientAuth != "" && scim.CheckClientAuth(clientAuth) != nil:
+		return targetInvalid{scim.CheckClientAuth(clientAuth).Error()}
+	case authorizeURL != "" && scim.CheckAuthorizeURL(authorizeURL) != nil:
+		return targetInvalid{scim.CheckAuthorizeURL(authorizeURL).Error()}
 	}
 	return nil
 }
@@ -143,10 +147,11 @@ func (s *TargetSpec) Validate() error {
 		return targetInvalid{fmt.Sprintf("on deactivate is deactivate, delete or nothing, not %q", s.OnDeactivate)}
 	}
 	if s.Kind != "" && s.Kind != "scim" && (s.OAuthTokenURL != "" || s.OAuthClientID != "" || s.OAuthScope != "" ||
-		s.OAuthClientAuth != "") {
-		return targetInvalid{"only a SCIM target takes the client credentials grant"}
+		s.OAuthClientAuth != "" || s.OAuthAuthorizeURL != "") {
+		return targetInvalid{"only a SCIM target takes an OAuth grant"}
 	}
-	if err := validateOAuth(s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.OAuthClientAuth); err != nil {
+	if err := validateOAuth(s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.OAuthClientAuth,
+		s.OAuthAuthorizeURL); err != nil {
 		return err
 	}
 	if err := validateCompatibility(s.Kind, s.Compatibility); err != nil {
@@ -205,11 +210,13 @@ func AddTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID st
 		_, err = q.Exec(ctx, `
 			INSERT INTO core.scim_targets
 				(org_id, slug, display_name, base_url, token, on_deactivate, dry_run, recreate_missing,
-				 oauth_token_url, oauth_client_id, oauth_scope, compatibility, oauth_client_auth)
+				 oauth_token_url, oauth_client_id, oauth_scope, compatibility, oauth_client_auth,
+				 oauth_authorize_url)
 			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
-			        COALESCE($12::text[], '{}'), $13)`,
+			        COALESCE($12::text[], '{}'), $13, NULLIF($14, ''))`,
 			orgID, s.Slug, s.Name, s.BaseURL, sealed, s.OnDeactivate, s.DryRun, s.RecreateMissing,
-			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.Compatibility, clientAuthOrDefault(s.OAuthClientAuth))
+			s.OAuthTokenURL, s.OAuthClientID, s.OAuthScope, s.Compatibility, clientAuthOrDefault(s.OAuthClientAuth),
+			s.OAuthAuthorizeURL)
 	} else {
 		var sealed []byte
 		if sealed, err = root.Seal(s.Credentials, "provision_credentials"); err != nil {
@@ -244,14 +251,19 @@ type TargetChange struct {
 	Compatibility []string
 }
 
-// TargetOAuth is a target's client credentials grant, without the secret, and how
-// its client authenticates ("" for Basic).
-type TargetOAuth struct{ TokenURL, ClientID, Scope, ClientAuth string }
+// TargetOAuth is a target's grant, without the secret, how its client
+// authenticates ("" for Basic), and for the authorization code grant where
+// somebody signs in ("" for client credentials).
+type TargetOAuth struct{ TokenURL, ClientID, Scope, ClientAuth, AuthorizeURL string }
 
 // UpdateTarget changes a registered target as a configuration file declares
 // it (6.19), checked as AddTarget checks a new one. A SCIM target's base URL
 // changes only with its token: the one held was issued for the old address,
 // and sent to a new one it is handed to whoever answers there.
+//
+// A new grant or base URL forgets the refresh token an authorization left, and
+// any authorization still waiting: somebody agreed to that grant, for that
+// address, and to no other. The target is authorized again before it syncs.
 func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID, slug, kind string,
 	c TargetChange) error {
 	switch {
@@ -273,16 +285,18 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 	case (c.Impersonate != nil || c.Domain != nil) && kind != "google":
 		return targetInvalid{"only a Google target acts as an administrator in a domain"}
 	case c.OAuth != nil && kind != "scim":
-		return targetInvalid{"only a SCIM target takes the client credentials grant"}
+		return targetInvalid{"only a SCIM target takes an OAuth grant"}
 	case c.OAuth != nil && c.Token == nil:
 		return targetInvalid{"a change of grant needs the secret too: the one held belongs to the old " +
 			"grant, and would be sent to whoever answers at the new address"}
 	}
-	var oauthURL, oauthClient, oauthScope, oauthAuth *string
+	var oauthURL, oauthClient, oauthScope, oauthAuth, oauthAuthorize *string
 	if c.OAuth != nil {
-		if err := validateOAuth(c.OAuth.TokenURL, c.OAuth.ClientID, c.OAuth.Scope, c.OAuth.ClientAuth); err != nil {
+		if err := validateOAuth(c.OAuth.TokenURL, c.OAuth.ClientID, c.OAuth.Scope, c.OAuth.ClientAuth,
+			c.OAuth.AuthorizeURL); err != nil {
 			return err
 		}
+		oauthAuthorize = &c.OAuth.AuthorizeURL
 		if c.OAuth.TokenURL != "" {
 			if err := safedial.CheckURL(c.OAuth.TokenURL); err != nil {
 				return err
@@ -340,10 +354,18 @@ func UpdateTarget(ctx context.Context, q store.Execer, root *keys.RootKey, orgID
 			oauth_client_id = CASE WHEN $13::text IS NULL THEN oauth_client_id ELSE NULLIF($13, '') END,
 			oauth_scope     = CASE WHEN $14::text IS NULL THEN oauth_scope ELSE NULLIF($14, '') END,
 			compatibility   = COALESCE($15::text[], compatibility),
-			oauth_client_auth = COALESCE($16::text, oauth_client_auth)
+			oauth_client_auth = COALESCE($16::text, oauth_client_auth),
+			oauth_authorize_url = CASE WHEN $17::text IS NULL THEN oauth_authorize_url ELSE NULLIF($17, '') END,
+			oauth_refresh_token    = CASE WHEN $18 THEN NULL ELSE oauth_refresh_token END,
+			oauth_authorized_at    = CASE WHEN $18 THEN NULL ELSE oauth_authorized_at END,
+			oauth_pending_state    = CASE WHEN $18 THEN NULL ELSE oauth_pending_state END,
+			oauth_pending_verifier = CASE WHEN $18 THEN NULL ELSE oauth_pending_verifier END,
+			oauth_pending_redirect = CASE WHEN $18 THEN NULL ELSE oauth_pending_redirect END,
+			oauth_pending_until    = CASE WHEN $18 THEN NULL ELSE oauth_pending_until END
 		 WHERE org_id = $1::uuid AND slug = $2`,
 		orgID, slug, c.Name, c.BaseURL, c.OnDeactivate, c.Impersonate, c.Domain, c.DryRun, token, creds,
-		c.RecreateMissing, oauthURL, oauthClient, oauthScope, c.Compatibility, oauthAuth)
+		c.RecreateMissing, oauthURL, oauthClient, oauthScope, c.Compatibility, oauthAuth, oauthAuthorize,
+		c.OAuth != nil || c.BaseURL != nil)
 	if err != nil {
 		return err
 	}

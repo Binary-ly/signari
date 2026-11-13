@@ -158,6 +158,52 @@ expires, and asked for once more if the target answers 401 anyway. Changing the
 grant through a configuration file needs the secret in the same file, for the
 reason a new base URL does.
 
+## A target that asks a person to agree
+
+Some targets issue tokens only to somebody who has signed in there and agreed,
+the authorization code grant, and not to a client alone. Register one with where
+to send that person, from the same client:
+
+```sh
+signari scim add -org <uuid> -slug billing \
+  -base-url https://billing.example.com/scim/v2 \
+  -oauth-token-url https://billing.example.com/oauth/token \
+  -oauth-authorize-url https://billing.example.com/oauth/authorize \
+  -oauth-client-id signari -oauth-scope 'scim.write offline_access' -token <client secret>
+
+signari scim authorize -org <uuid> -slug billing
+```
+
+`scim authorize` prints an address to open in a browser. Sign in there as somebody
+who may administer the target and agree. The target sends the browser back to a
+loopback port the command opens for that one request, and the command redeems the
+code with a PKCE verifier that never left it and keeps the refresh token, sealed
+under the root key. A target that allows only fixed addresses is given one with
+`-redirect`: a loopback address with its port is listened on, and anything else is
+the address to copy from the browser back into the terminal, whatever the page
+there shows. The authorization waits ten minutes.
+
+Each sync asks for an access token with the refresh token and keeps the one it is
+given back. An authorization server that rotates refresh tokens treats a spent one
+coming back as stolen and ends the grant, so two syncs of one target at once take
+turns: the second waits for the first's new token rather than spending the old
+one. A response carrying a new refresh token that is lost on the way leaves the
+spent one kept; the target refuses it with `invalid_grant`, the sync says so, and
+the target is authorized again. The same happens when somebody revokes the grant
+at the target, or it expires unused.
+
+A target that answers the sign-in with no refresh token is refused there rather
+than working for an hour: ask for the scope it gives one for, often
+`offline_access`. A new grant or base URL forgets the authorization, since it was
+given for the old one, and a configuration file's plan (`oauth_authorize_url`)
+says so. The Admin API does the same in two steps, for a console that sends the
+browser itself; see [admin-api.md](admin-api.md).
+
+This has been run against another deployment of this engine as the target's
+authorization server, which rotates refresh tokens and ends a grant whose spent
+token comes back, behind a SCIM API that checked every token there, and not against
+a commercial target.
+
 ## A target that does not quite speak SCIM
 
 `-compatibility`, or `compatibility` through the Admin API or a configuration file,

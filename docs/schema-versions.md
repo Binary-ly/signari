@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0292 scim_target_authorization_code
+
+Compatible with the release before: its binary may still serve this schema.
+
+A SCIM target that takes the authorization code grant (7.14): somebody signs in at the target once, and the refresh token that leaves is how each pass asks for an access token. The refresh token is sealed under the root key as the client secret is, and replaced whenever the token endpoint issues another. An authorization somebody has started waits ten minutes with its PKCE verifier sealed and its state kept only as a hash. Compatible with the previous release, which ignores these columns and asks such a target's token endpoint for a client credentials grant as the same client with the same secret: refused there or not, nothing is sent anywhere it was not sent before.
+
 ## 0291 scim_target_client_auth
 
 Compatible with the release before: its binary may still serve this schema.

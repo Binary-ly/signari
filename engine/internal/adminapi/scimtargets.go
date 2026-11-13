@@ -29,24 +29,30 @@ import (
 // record of what was done is written after it.
 
 type scimTargetView struct {
-	ID              string    `json:"id"`
-	Slug            string    `json:"slug"`
-	Name            string    `json:"name"`
-	Kind            string    `json:"kind"`
-	BaseURL         string    `json:"base_url"`
-	OnDeactivate    string    `json:"on_deactivate"`
-	ScopeGroups     []string  `json:"scope_groups"`
-	DryRun          bool      `json:"dry_run"`
-	Enabled         bool      `json:"enabled"`
-	RecreateMissing bool      `json:"recreate_missing"`
-	OAuthTokenURL   string    `json:"oauth_token_url"`
-	OAuthClientID   string    `json:"oauth_client_id"`
-	OAuthScope      string    `json:"oauth_scope"`
-	OAuthClientAuth string    `json:"oauth_client_auth"`
-	Compatibility   []string  `json:"compatibility"`
-	Linked          int       `json:"linked"`
-	ShouldBeGone    int       `json:"should_be_gone"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              string   `json:"id"`
+	Slug            string   `json:"slug"`
+	Name            string   `json:"name"`
+	Kind            string   `json:"kind"`
+	BaseURL         string   `json:"base_url"`
+	OnDeactivate    string   `json:"on_deactivate"`
+	ScopeGroups     []string `json:"scope_groups"`
+	DryRun          bool     `json:"dry_run"`
+	Enabled         bool     `json:"enabled"`
+	RecreateMissing bool     `json:"recreate_missing"`
+	OAuthTokenURL   string   `json:"oauth_token_url"`
+	OAuthClientID   string   `json:"oauth_client_id"`
+	OAuthScope      string   `json:"oauth_scope"`
+	OAuthClientAuth string   `json:"oauth_client_auth"`
+	// OAuthGrant is client_credentials, authorization_code, or "" for a bearer
+	// token; OAuthAuthorizeURL is where somebody signs in for the second, and
+	// OAuthAuthorizedAt when somebody last did, null until then.
+	OAuthGrant        string     `json:"oauth_grant"`
+	OAuthAuthorizeURL string     `json:"oauth_authorize_url"`
+	OAuthAuthorizedAt *time.Time `json:"oauth_authorized_at"`
+	Compatibility     []string   `json:"compatibility"`
+	Linked            int        `json:"linked"`
+	ShouldBeGone      int        `json:"should_be_gone"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 // addSCIMTargetRequest registers a target: a SCIM one by base_url and the
@@ -74,8 +80,22 @@ type addSCIMTargetRequest struct {
 	// OAuthClientAuth is client_secret_basic, the default, or client_secret_post
 	// for a token endpoint that takes the secret only in the form.
 	OAuthClientAuth string `json:"oauth_client_auth"`
+	// OAuthAuthorizeURL has it take the authorization code grant from that client
+	// instead: somebody signs in there before its first sync.
+	OAuthAuthorizeURL string `json:"oauth_authorize_url"`
 	// Compatibility names what it needs that the protocol does not say it should.
 	Compatibility []string `json:"compatibility"`
+}
+
+// startSCIMAuthorizationRequest names where the target sends the person back.
+type startSCIMAuthorizationRequest struct {
+	RedirectURI string `json:"redirect_uri"`
+}
+
+// finishSCIMAuthorizationRequest is what the target sent back to that address.
+type finishSCIMAuthorizationRequest struct {
+	State string `json:"state"`
+	Code  string `json:"code"`
 }
 
 // patchSCIMTargetRequest changes what is given: enabled, recreate_missing,
@@ -112,8 +132,9 @@ func (s *Server) listSCIMTargets(w http.ResponseWriter, r *http.Request) {
 		out = append(out, scimTargetView{ID: t.ID, Slug: t.Slug, Name: t.Name, Kind: t.Kind, BaseURL: t.BaseURL,
 			OnDeactivate: t.OnDeactivate, ScopeGroups: t.ScopeGroups, DryRun: t.DryRun, Enabled: t.Enabled,
 			RecreateMissing: t.RecreateMissing, OAuthTokenURL: t.OAuthTokenURL, OAuthClientID: t.OAuthClientID,
-			OAuthScope: t.OAuthScope, OAuthClientAuth: t.OAuthClientAuth, Compatibility: t.Compatibility, Linked: t.Linked,
-			ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
+			OAuthScope: t.OAuthScope, OAuthClientAuth: t.OAuthClientAuth, OAuthGrant: t.OAuthGrant(),
+			OAuthAuthorizeURL: t.OAuthAuthorizeURL, OAuthAuthorizedAt: t.OAuthAuthorizedAt,
+			Compatibility: t.Compatibility, Linked: t.Linked, ShouldBeGone: t.ShouldBeGone, CreatedAt: t.CreatedAt})
 	}
 	s.writeList(w, r, map[string]any{"org_id": orgID, "targets": out})
 }
@@ -131,7 +152,7 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		OnDeactivate: req.OnDeactivate, DryRun: req.DryRun, RecreateMissing: req.RecreateMissing,
 		OAuthTokenURL: strings.TrimSpace(req.OAuthTokenURL), OAuthClientID: strings.TrimSpace(req.OAuthClientID),
 		OAuthScope: strings.TrimSpace(req.OAuthScope), OAuthClientAuth: strings.TrimSpace(req.OAuthClientAuth),
-		Compatibility: req.Compatibility}
+		OAuthAuthorizeURL: strings.TrimSpace(req.OAuthAuthorizeURL), Compatibility: req.Compatibility}
 	if err := spec.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_target", "detail": err.Error()})
 		return
@@ -170,7 +191,7 @@ func (s *Server) addSCIMTarget(w http.ResponseWriter, r *http.Request) {
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_added", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: map[string]any{"slug": spec.Slug, "kind": spec.Kind, "base_url": spec.BaseURL,
 				"on_deactivate": spec.OnDeactivate, "dry_run": spec.DryRun, "recreate_missing": spec.RecreateMissing,
-				"oauth_token_url": spec.OAuthTokenURL}})
+				"oauth_token_url": spec.OAuthTokenURL, "oauth_authorize_url": spec.OAuthAuthorizeURL}})
 	})
 	if s.writeSCIMTargetFailure(w, err, orgID) {
 		return
@@ -452,6 +473,108 @@ func (s *Server) syncSCIMTarget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, out)
 }
 
+// startSCIMAuthorization starts an authorization of a target that takes the
+// authorization code grant, as `signari scim authorize` does: it answers where to
+// send the person and the state their code comes back with, which the caller
+// holds so it can tell its own redirect from somebody else's.
+func (s *Server) startSCIMAuthorization(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	var req startSCIMAuthorizationRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if narrowedTokenRefused(w, r, scimTargetRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	var started provision.Authorization
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		var err error
+		if started, err = provision.BeginAuthorization(ctx, tx, s.root, orgID, slug,
+			strings.TrimSpace(req.RedirectURI)); err != nil {
+			return err
+		}
+		// Never the state: with a code it is what a refresh token is issued for.
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_authorization_started",
+			AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"slug": slug, "redirect_uri": strings.TrimSpace(req.RedirectURI),
+				"expires_at": started.Until}})
+	})
+	if s.writeSCIMTargetFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusCreated, map[string]any{"slug": slug, "authorization_url": started.URL,
+		"state": started.State, "expires_at": started.Until, "config_version": version})
+}
+
+// finishSCIMAuthorization redeems the code a sign-in at the target sent back, and
+// keeps the refresh token it was issued. The token endpoint is called outside the
+// write's transaction, so If-Match is checked before the call and the token kept
+// after it, as a sync does.
+func (s *Server) finishSCIMAuthorization(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID, slug := r.PathValue("orgID"), r.PathValue("slug")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	var req finishSCIMAuthorizationRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if narrowedTokenRefused(w, r, scimTargetRefusal) {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	if err := s.preconditionHoldsNow(ctx, pre); err != nil {
+		if !writePreconditionFailure(w, err) {
+			s.writeSCIMTargetFailure(w, err, orgID)
+		}
+		return
+	}
+	if !s.orgExists(w, ctx, orgID) {
+		return
+	}
+	hc, err := s.targetClient()
+	if s.writeSCIMTargetFailure(w, err, orgID) {
+		return
+	}
+	grant, err := provision.ExchangeAuthorization(ctx, s.db, s.root, hc, orgID, slug, req.State, req.Code)
+	if s.writeSCIMTargetFailure(w, err, orgID) {
+		return
+	}
+	var at time.Time
+	// Unconditional: the code is spent, and the token it was issued is the only one.
+	version, err := s.mutate(ctx, func(tx pgx.Tx) error {
+		var err error
+		if at, err = grant.Keep(ctx, tx); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.scim_target_authorized", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, Detail: map[string]any{"slug": slug}})
+	})
+	if s.writeSCIMTargetFailure(w, err, orgID) {
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"slug": slug, "authorized_at": at, "config_version": version})
+}
+
 // writeSCIMTargetFailure answers a refused or failed target operation, and
 // reports whether it wrote anything.
 func (s *Server) writeSCIMTargetFailure(w http.ResponseWriter, err error, orgID string) bool {
@@ -472,6 +595,10 @@ func (s *Server) writeSCIMTargetFailure(w http.ResponseWriter, err error, orgID 
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_found"})
 	case errors.Is(err, provision.ErrGroupNotProvisioned):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_provisioned"})
+	case errors.Is(err, store.ErrSCIMAuthorizationUnknown):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "authorization_unknown", "detail": err.Error()})
+	case errors.Is(err, store.ErrSCIMGrantChanged):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "grant_changed", "detail": err.Error()})
 	default:
 		// A target that would not do as asked is the target's failure, named.
 		s.log.Error("operating a provisioning target", "org_id", orgID, "err", err)

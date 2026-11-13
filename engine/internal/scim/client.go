@@ -103,6 +103,13 @@ type Target struct {
 	// or client_secret_post, the id and secret in the form (:883-893), which the
 	// RFC calls NOT RECOMMENDED (:903-904) and some token endpoints take alone.
 	OAuthClientAuth string
+	// OAuthAuthorizeURL, when set, has the target take the authorization code grant
+	// instead: somebody signs in there once (provision.BeginAuthorization), and each
+	// pass asks OAuthTokenURL for an access token with the refresh token that sign-in
+	// left, which Refresh keeps.
+	OAuthAuthorizeURL string
+	// Refresh holds that refresh token between passes. Nil for any other target.
+	Refresh RefreshTokens
 
 	// Compatibility names what this target needs that the protocol does not say
 	// it should (Compatibilities).
@@ -216,6 +223,9 @@ type Error struct {
 	// Conflict marks 409, which for a create means the account already exists --
 	// not a failure to retry forever, but a signal to go and find its id.
 	Conflict bool
+	// OAuthError is the error code a token endpoint refused with, such as
+	// invalid_grant; "" from anything else.
+	OAuthError string
 }
 
 func (e *Error) Error() string {
@@ -476,54 +486,22 @@ func (c *Client) bearer(ctx context.Context, renew bool) (string, error) {
 	if !renew && c.access != "" && time.Now().Before(c.accessUntil) {
 		return c.access, nil
 	}
-	form := url.Values{"grant_type": {"client_credentials"}}
-	if c.target.OAuthScope != "" {
-		form.Set("scope", c.target.OAuthScope)
+	var issued issuedToken
+	var err error
+	if c.target.OAuthAuthorizeURL != "" {
+		issued, err = c.refresh(ctx)
+	} else {
+		form := url.Values{"grant_type": {"client_credentials"}}
+		if c.target.OAuthScope != "" {
+			form.Set("scope", c.target.OAuthScope)
+		}
+		issued, err = requestToken(ctx, c.http, c.target, form)
 	}
-	post := c.target.OAuthClientAuth == ClientSecretPost
-	if post {
-		// Both in the body (specs/rfc6749.txt:887-893), and then not in a header
-		// as well: the client "MUST NOT use more than one authentication method
-		// in each request" (:864-865).
-		form.Set("client_id", c.target.OAuthClientID)
-		form.Set("client_secret", c.target.Token)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.target.OAuthTokenURL,
-		strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
-	if !post {
-		// Form-encoded first, which HTTP Basic alone is not: a secret with a colon
-		// or a percent sign in it is otherwise a different secret at the far end.
-		req.SetBasicAuth(url.QueryEscape(c.target.OAuthClientID), url.QueryEscape(c.target.Token))
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("asking the target's token endpoint: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return "", &Error{Status: resp.StatusCode, Detail: "the token endpoint: " + tokenErrorDetail(raw)}
-	}
-	var issued struct {
-		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   int64  `json:"expires_in"`
-	}
-	if err := json.Unmarshal(raw, &issued); err != nil {
-		return "", fmt.Errorf("the token endpoint's response did not parse: %w", err)
-	}
-	if issued.AccessToken == "" {
-		return "", errors.New("the token endpoint answered no access_token")
-	}
-	if !strings.EqualFold(issued.TokenType, "bearer") {
-		return "", fmt.Errorf("the token endpoint issued a %q token, and a SCIM target is sent a bearer one",
-			issued.TokenType)
+	if err := issued.usable(); err != nil {
+		return "", err
 	}
 	life := time.Duration(issued.ExpiresIn) * time.Second
 	if life <= 0 {
@@ -531,6 +509,66 @@ func (c *Client) bearer(ctx context.Context, renew bool) (string, error) {
 	}
 	c.access, c.accessUntil = issued.AccessToken, time.Now().Add(life-tokenSlack)
 	return c.access, nil
+}
+
+// issuedToken is a token endpoint's answer (specs/rfc6749.txt:2386-2418).
+type issuedToken struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// usable refuses an answer that gives nothing a SCIM request can carry.
+func (t issuedToken) usable() error {
+	if t.AccessToken == "" {
+		return errors.New("the token endpoint answered no access_token")
+	}
+	if !strings.EqualFold(t.TokenType, "bearer") {
+		return fmt.Errorf("the token endpoint issued a %q token, and a SCIM target is sent a bearer one",
+			t.TokenType)
+	}
+	return nil
+}
+
+// requestToken asks t's token endpoint for a token with form, as t's client.
+func requestToken(ctx context.Context, hc *http.Client, t Target, form url.Values) (issuedToken, error) {
+	post := t.OAuthClientAuth == ClientSecretPost
+	if post {
+		// Both in the body (specs/rfc6749.txt:887-893), and then not in a header
+		// as well: the client "MUST NOT use more than one authentication method
+		// in each request" (:864-865).
+		form.Set("client_id", t.OAuthClientID)
+		form.Set("client_secret", t.Token)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.OAuthTokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return issuedToken{}, err
+	}
+	if !post {
+		// Form-encoded first, which HTTP Basic alone is not: a secret with a colon
+		// or a percent sign in it is otherwise a different secret at the far end.
+		req.SetBasicAuth(url.QueryEscape(t.OAuthClientID), url.QueryEscape(t.Token))
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return issuedToken{}, fmt.Errorf("asking the target's token endpoint: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return issuedToken{}, &Error{Status: resp.StatusCode, Detail: "the token endpoint: " + tokenErrorDetail(raw),
+			OAuthError: tokenErrorCode(raw)}
+	}
+	var issued issuedToken
+	if err := json.Unmarshal(raw, &issued); err != nil {
+		return issuedToken{}, fmt.Errorf("the token endpoint's response did not parse: %w", err)
+	}
+	return issued, nil
 }
 
 // tokenErrorDetail is the part of a token endpoint's refusal fit to repeat: what
@@ -547,6 +585,17 @@ func tokenErrorDetail(raw []byte) string {
 		return e.Error
 	}
 	return e.Error + ": " + e.Description
+}
+
+// tokenErrorCode is the error code alone, "" when the body names none.
+func tokenErrorCode(raw []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	return e.Error
 }
 
 // scimErrorDetail pulls the human-readable part out of a SCIM error.

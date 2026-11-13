@@ -287,6 +287,13 @@ scim_targets:                 # where people are provisioned to
     oauth_client_id: signari
     oauth_scope: scim.write   # may be left out
     oauth_client_auth: client_secret_post   # left out, the secret goes by HTTP Basic
+  - slug: payroll
+    base_url: https://payroll.example.com/scim/v2
+    token: {env: PAYROLL_CLIENT_SECRET}
+    oauth_token_url: https://payroll.example.com/oauth/token
+    oauth_client_id: signari
+    oauth_authorize_url: https://payroll.example.com/oauth/authorize   # the authorization code grant:
+                              # `signari scim authorize` signs somebody in once; a new grant forgets it
   - slug: workspace
     kind: google              # or entra; fixed once made
     credentials: {file: google-sa.json}

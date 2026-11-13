@@ -605,6 +605,10 @@ func (s *Server) Routes() http.Handler {
 			s.deprovisionSCIMGroup)
 		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/sync", ScopeOrganizationsWrite,
 			s.syncSCIMTarget)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization", ScopeOrganizationsWrite,
+			s.startSCIMAuthorization)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code", ScopeOrganizationsWrite,
+			s.finishSCIMAuthorization)
 
 		// Shared Signals streams (ssf.go), whose receiver tokens are sealed
 		// with the root key.

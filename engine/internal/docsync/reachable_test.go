@@ -78,6 +78,10 @@ var mustBeReachable = []capability{
 		"cannot authenticate anybody"},
 	{"SetMigrationSource", "nothing can configure the old provider, so delegated " +
 		"verification is built, tested and switched off everywhere"},
+	{"BeginAuthorization", "a SCIM target registered for the authorization code grant can never be " +
+		"signed in at, so it never syncs and every pass fails as unauthorized"},
+	{"ExchangeAuthorization", "somebody signs in at the target and agrees, and nothing redeems the " +
+		"code their sign-in sent back, so the target stays unauthorized"},
 	{"AddGroupMembers", "group membership is provisioned to no target"},
 	{"RemoveGroupMembers", "somebody removed from a group keeps their access at every " +
 		"provisioned target"},

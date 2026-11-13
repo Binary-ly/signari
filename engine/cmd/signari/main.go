@@ -356,6 +356,7 @@ federation out:
   scim list               show provisioning targets
   scim sync               converge targets on this directory (preview unless -apply)
   scim verify             read each target back and report anyone still active
+  scim authorize          sign in at a target that takes the authorization code grant
   scim enable             put a target back in service
   scim disable            take a target out of service, keeping its links
   scim scope              limit a target to the members of these groups
@@ -544,7 +545,8 @@ func run(args []string) (err error) {
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
-	redirect := fs.String("redirect", "", "registered redirect_uri (exact match)")
+	redirect := fs.String("redirect", "", "registered redirect_uri (exact match); `scim authorize`: where the "+
+		"target sends you back, a free loopback port when not given")
 	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
 	// Defaults to true, matching the column default, because PKCE is required for
 	// every client by RFC 9700 and OAuth 2.1. The flag exists because the OIDC
@@ -920,6 +922,8 @@ func run(args []string) (err error) {
 	oauthScope := fs.String("oauth-scope", "", "the scope to ask -oauth-token-url for")
 	oauthClientAuth := fs.String("oauth-client-auth", "",
 		"how the client authenticates at -oauth-token-url: client_secret_basic (the default) or client_secret_post")
+	oauthAuthorizeURL := fs.String("oauth-authorize-url", "",
+		"where somebody signs in at the SCIM target, for the authorization code grant with -oauth-token-url's client")
 	compatibility := fs.String("compatibility", "",
 		"comma-separated, what the SCIM target needs: no-patch, no-filter, typed-members")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
@@ -2212,7 +2216,9 @@ func run(args []string) (err error) {
 			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
 		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing,
-			*oauthTokenURL, *oauthClientID, *oauthScope, *oauthClientAuth, *compatibility)
+			*oauthTokenURL, *oauthClientID, *oauthScope, *oauthClientAuth, *oauthAuthorizeURL, *compatibility)
+	case "scim authorize":
+		return scimAuthorize(ctx, conn, *orgID, *slug, *redirect, os.Stdin, os.Stdout)
 	case "provision add":
 		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
 			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2, *recreateMissing)
@@ -4901,7 +4907,7 @@ func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
 	onDeactivate string, dryRun, recreateMissing bool,
-	oauthTokenURL, oauthClientID, oauthScope, oauthClientAuth, compatibility string) error {
+	oauthTokenURL, oauthClientID, oauthScope, oauthClientAuth, oauthAuthorizeURL, compatibility string) error {
 
 	switch {
 	case orgID == "":
@@ -4917,7 +4923,7 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
 		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing,
 		OAuthTokenURL: oauthTokenURL, OAuthClientID: oauthClientID, OAuthScope: oauthScope,
-		OAuthClientAuth: oauthClientAuth, Compatibility: splitList(compatibility)}
+		OAuthClientAuth: oauthClientAuth, OAuthAuthorizeURL: oauthAuthorizeURL, Compatibility: splitList(compatibility)}
 	if err := spec.Validate(); err != nil {
 		return err
 	}
@@ -4935,6 +4941,10 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 
 	fmt.Printf("registered %s\n  base URL      : %s\n  on deactivate : %s\n  dry run       : %t\n",
 		name, baseURL, onDeactivate, dryRun)
+	if spec.OAuthAuthorizeURL != "" {
+		fmt.Println("\n  It takes the authorization code grant: sign in at it with `signari scim authorize`")
+		fmt.Println("  before the first sync, which until then has no token to send.")
+	}
 	fmt.Println("\n  Nothing is sent until you run `signari scim sync`.")
 	fmt.Println("  Run `signari scim verify` afterwards: it reads the target's actual state")
 	fmt.Println("  back, which is the only way to know a deactivation really happened.")
@@ -5084,7 +5094,8 @@ func scimList(ctx context.Context, conn *pgx.Conn, format string) error {
 	rows, err := conn.Query(ctx, `
 		SELECT t.slug, t.display_name, t.base_url, t.on_deactivate, t.dry_run, t.enabled,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
-		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active)
+		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
+		       t.oauth_authorize_url IS NOT NULL, t.oauth_authorized_at
 		FROM core.scim_targets t ORDER BY t.slug`)
 	if err != nil {
 		return err
@@ -5097,16 +5108,28 @@ func scimList(ctx context.Context, conn *pgx.Conn, format string) error {
 	var n int
 	for rows.Next() {
 		var slug, name, base, onDeact string
-		var dry, enabled bool
+		var dry, enabled, authorizationCode bool
 		var linked, inactive int
-		if err := rows.Scan(&slug, &name, &base, &onDeact, &dry, &enabled, &linked, &inactive); err != nil {
+		var authorizedAt *time.Time
+		if err := rows.Scan(&slug, &name, &base, &onDeact, &dry, &enabled, &linked, &inactive,
+			&authorizationCode, &authorizedAt); err != nil {
 			return err
 		}
 		n++
-		out.add(map[string]any{"slug": slug, "name": name, "base_url": base, "on_deactivate": onDeact,
-			"dry_run": dry, "enabled": enabled, "linked": linked, "should_be_gone": inactive})
+		row := map[string]any{"slug": slug, "name": name, "base_url": base, "on_deactivate": onDeact,
+			"dry_run": dry, "enabled": enabled, "linked": linked, "should_be_gone": inactive}
+		if authorizationCode {
+			row["authorized_at"] = authorizedAt
+		}
+		out.add(row)
 		if out.text() {
 			fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+			switch {
+			case authorizationCode && authorizedAt == nil:
+				fmt.Println("             not authorized: nothing syncs until `signari scim authorize` has been run")
+			case authorizationCode:
+				fmt.Printf("             authorized %s\n", authorizedAt.UTC().Format(time.RFC3339))
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {

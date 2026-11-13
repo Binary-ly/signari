@@ -1635,24 +1635,27 @@ type GetOrganizationsOrgIDSCIMTargetsResponse struct {
 
 // GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem is a JSON object of the Admin API.
 type GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem struct {
-	BaseURL         string   `json:"base_url"`
-	Compatibility   []string `json:"compatibility"`
-	CreatedAt       string   `json:"created_at"`
-	DryRun          bool     `json:"dry_run"`
-	Enabled         bool     `json:"enabled"`
-	ID              string   `json:"id"`
-	Kind            string   `json:"kind"`
-	Linked          int64    `json:"linked"`
-	Name            string   `json:"name"`
-	OauthClientAuth string   `json:"oauth_client_auth"`
-	OauthClientID   string   `json:"oauth_client_id"`
-	OauthScope      string   `json:"oauth_scope"`
-	OauthTokenURL   string   `json:"oauth_token_url"`
-	OnDeactivate    string   `json:"on_deactivate"`
-	RecreateMissing bool     `json:"recreate_missing"`
-	ScopeGroups     []string `json:"scope_groups"`
-	ShouldBeGone    int64    `json:"should_be_gone"`
-	Slug            string   `json:"slug"`
+	BaseURL           string   `json:"base_url"`
+	Compatibility     []string `json:"compatibility"`
+	CreatedAt         string   `json:"created_at"`
+	DryRun            bool     `json:"dry_run"`
+	Enabled           bool     `json:"enabled"`
+	ID                string   `json:"id"`
+	Kind              string   `json:"kind"`
+	Linked            int64    `json:"linked"`
+	Name              string   `json:"name"`
+	OauthAuthorizeURL string   `json:"oauth_authorize_url"`
+	OauthAuthorizedAt *string  `json:"oauth_authorized_at"`
+	OauthClientAuth   string   `json:"oauth_client_auth"`
+	OauthClientID     string   `json:"oauth_client_id"`
+	OauthGrant        string   `json:"oauth_grant"`
+	OauthScope        string   `json:"oauth_scope"`
+	OauthTokenURL     string   `json:"oauth_token_url"`
+	OnDeactivate      string   `json:"on_deactivate"`
+	RecreateMissing   bool     `json:"recreate_missing"`
+	ScopeGroups       []string `json:"scope_groups"`
+	ShouldBeGone      int64    `json:"should_be_gone"`
+	Slug              string   `json:"slug"`
 }
 
 // GetOrganizationsOrgIDScopesResponse is a JSON object of the Admin API.
@@ -3057,22 +3060,23 @@ type PostOrganizationsOrgIDSCIMSourcesResponse struct {
 
 // PostOrganizationsOrgIDSCIMTargetsRequest is a JSON object of the Admin API.
 type PostOrganizationsOrgIDSCIMTargetsRequest struct {
-	BaseURL         *string         `json:"base_url,omitempty"`
-	Compatibility   *[]string       `json:"compatibility,omitempty"`
-	Credentials     json.RawMessage `json:"credentials,omitempty"`
-	DryRun          *bool           `json:"dry_run,omitempty"`
-	Impersonate     *string         `json:"impersonate,omitempty"`
-	Kind            *string         `json:"kind,omitempty"`
-	Name            *string         `json:"name,omitempty"`
-	OauthClientAuth *string         `json:"oauth_client_auth,omitempty"`
-	OauthClientID   *string         `json:"oauth_client_id,omitempty"`
-	OauthScope      *string         `json:"oauth_scope,omitempty"`
-	OauthTokenURL   *string         `json:"oauth_token_url,omitempty"`
-	OnDeactivate    *string         `json:"on_deactivate,omitempty"`
-	RecreateMissing *bool           `json:"recreate_missing,omitempty"`
-	Slug            *string         `json:"slug,omitempty"`
-	TargetDomain    *string         `json:"target_domain,omitempty"`
-	Token           *string         `json:"token,omitempty"`
+	BaseURL           *string         `json:"base_url,omitempty"`
+	Compatibility     *[]string       `json:"compatibility,omitempty"`
+	Credentials       json.RawMessage `json:"credentials,omitempty"`
+	DryRun            *bool           `json:"dry_run,omitempty"`
+	Impersonate       *string         `json:"impersonate,omitempty"`
+	Kind              *string         `json:"kind,omitempty"`
+	Name              *string         `json:"name,omitempty"`
+	OauthAuthorizeURL *string         `json:"oauth_authorize_url,omitempty"`
+	OauthClientAuth   *string         `json:"oauth_client_auth,omitempty"`
+	OauthClientID     *string         `json:"oauth_client_id,omitempty"`
+	OauthScope        *string         `json:"oauth_scope,omitempty"`
+	OauthTokenURL     *string         `json:"oauth_token_url,omitempty"`
+	OnDeactivate      *string         `json:"on_deactivate,omitempty"`
+	RecreateMissing   *bool           `json:"recreate_missing,omitempty"`
+	Slug              *string         `json:"slug,omitempty"`
+	TargetDomain      *string         `json:"target_domain,omitempty"`
+	Token             *string         `json:"token,omitempty"`
 }
 
 // PostOrganizationsOrgIDSCIMTargetsResponse is a JSON object of the Admin API.
@@ -3080,6 +3084,33 @@ type PostOrganizationsOrgIDSCIMTargetsResponse struct {
 	ConfigVersion int64  `json:"config_version"`
 	DryRun        bool   `json:"dry_run"`
 	Kind          string `json:"kind"`
+	Slug          string `json:"slug"`
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationRequest struct {
+	RedirectURI *string `json:"redirect_uri,omitempty"`
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse struct {
+	AuthorizationURL string `json:"authorization_url"`
+	ConfigVersion    int64  `json:"config_version"`
+	ExpiresAt        string `json:"expires_at"`
+	Slug             string `json:"slug"`
+	State            string `json:"state"`
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeRequest is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeRequest struct {
+	Code  *string `json:"code,omitempty"`
+	State *string `json:"state,omitempty"`
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse is a JSON object of the Admin API.
+type PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse struct {
+	AuthorizedAt  string `json:"authorized_at"`
+	ConfigVersion int64  `json:"config_version"`
 	Slug          string `json:"slug"`
 }
 
@@ -6270,6 +6301,30 @@ func (c *Client) PostOrganizationsOrgIDSCIMSources(ctx context.Context, orgID st
 func (c *Client) PostOrganizationsOrgIDSCIMTargets(ctx context.Context, orgID string, body PostOrganizationsOrgIDSCIMTargetsRequest, opts ...Option) (*PostOrganizationsOrgIDSCIMTargetsResponse, int64, error) {
 	var out PostOrganizationsOrgIDSCIMTargetsResponse
 	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/scim-targets", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorization is POST
+// /admin/organizations/{orgID}/scim-targets/{slug}/authorization: Start signing somebody in at a
+// target that takes the authorization code grant. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDSCIMTargetsSlugAuthorization(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationRequest, opts ...Option) (*PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse, int64, error) {
+	var out PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/scim-targets/"+url.PathEscape(slug)+"/authorization", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCode is POST
+// /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code: Redeem the code that
+// sign-in sent back, and keep the refresh token it issues. Needs organizations:write.
+func (c *Client) PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCode(ctx context.Context, orgID string, slug string, body PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeRequest, opts ...Option) (*PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse, int64, error) {
+	var out PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse
+	v, err := c.call(ctx, "POST", "/admin/organizations/"+url.PathEscape(orgID)+"/scim-targets/"+url.PathEscape(slug)+"/authorization/code", body, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

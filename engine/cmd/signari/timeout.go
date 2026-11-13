@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"time"
+
+	"signari.dev/engine/internal/provision"
 )
 
 // defaultCommandTimeout bounds a command that edits configuration. Such a
@@ -48,6 +50,11 @@ func commandTimeout(cmd string, given time.Duration, wasGiven bool) time.Duratio
 		// It probes an application from outside, retrying through redirects
 		// and slow upstreams, and has always been allowed five minutes.
 		return 5 * time.Minute
+	}
+	if cmd == "scim authorize" {
+		// It waits for somebody to sign in at the target, for as long as the
+		// authorization it started lasts, and then redeems the code.
+		return provision.AuthorizationWait + time.Minute
 	}
 	return defaultCommandTimeout
 }

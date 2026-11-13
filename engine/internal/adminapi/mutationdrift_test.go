@@ -915,6 +915,23 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
 		},
 		{
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftCodeTarget(t, s) + "/scim-targets/billing/authorization"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"redirect_uri":"https://console.example.test/scim/callback"}`
+			},
+		},
+		{
+			// Started and signed in for, so the route redeems a code the fake issued.
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftCodeTarget(t, s) + "/scim-targets/billing/authorization/code"
+			},
+			body: signedInAtTheTarget,
+		},
+		{
 			// A poll stream, which needs no endpoint or token.
 			name: "POST /admin/organizations/{orgID}/ssf-streams", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {

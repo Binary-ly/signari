@@ -53,6 +53,8 @@ func TestTheTimeoutIsWhatWasAskedForOrTheCommandsOwn(t *testing.T) {
 		{"export audit", 0, false, 0},
 		{"migrate up", 0, false, 0},
 		{"proxy check", 0, false, 5 * time.Minute},
+		// Waits for somebody to sign in for as long as the authorization lasts.
+		{"scim authorize", 0, false, 11 * time.Minute},
 		{"export audit", 30 * time.Second, true, 30 * time.Second},
 		{"client set-par", 0, true, 0},
 	} {

@@ -344,6 +344,10 @@ var summaries = map[string]string{
 	"DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}": "Delete a group this deployment created at a target.",
 	"POST /admin/organizations/{orgID}/scim-targets/{slug}/sync":             "Converge a target on who should have an account there, or preview it.",
 
+	// A target that takes the authorization code grant (7.14).
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization":      "Start signing somebody in at a target that takes the authorization code grant.",
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code": "Redeem the code that sign-in sent back, and keep the refresh token it issues.",
+
 	// Shared Signals (6.07).
 	"GET /admin/organizations/{orgID}/ssf-streams":  "The relying parties' Shared Signals streams; never a receiver token.",
 	"POST /admin/organizations/{orgID}/ssf-streams": "Register a client's stream, pushed or polled.",

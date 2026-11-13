@@ -231,6 +231,7 @@ var cliAPI = map[string]string{
 	"scim deprovision-group":   "DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}",
 	"scim sync":                "POST /admin/organizations/{orgID}/scim-targets/{slug}/sync",
 	"scim verify":              reads,
+	"scim authorize":           "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code",
 	"provision add":            "POST /admin/organizations/{orgID}/scim-targets",
 	"dir add":                  "POST /admin/organizations/{orgID}/directories",
 	"dir list":                 reads,

@@ -1233,6 +1233,18 @@ export class SignariAdmin {
     return this.call<PostOrganizationsOrgIDSCIMTargetsResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/scim-targets`, body, opts)
   }
 
+  // POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization: Start signing somebody in
+  // at a target that takes the authorization code grant. Needs organizations:write.
+  postOrganizationsOrgIDSCIMTargetsSlugAuthorization(orgID: string, slug: string, body: PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse>> {
+    return this.call<PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/scim-targets/${encodeURIComponent(slug)}/authorization`, body, opts)
+  }
+
+  // POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code: Redeem the code that
+  // sign-in sent back, and keep the refresh token it issues. Needs organizations:write.
+  postOrganizationsOrgIDSCIMTargetsSlugAuthorizationCode(orgID: string, slug: string, body: PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse>> {
+    return this.call<PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse>("POST", `/admin/organizations/${encodeURIComponent(orgID)}/scim-targets/${encodeURIComponent(slug)}/authorization/code`, body, opts)
+  }
+
   // POST /admin/organizations/{orgID}/scim-targets/{slug}/sync: Converge a target on who should
   // have an account there, or preview it. Needs organizations:write.
   postOrganizationsOrgIDSCIMTargetsSlugSync(orgID: string, slug: string, body: PostOrganizationsOrgIDSCIMTargetsSlugSyncRequest, opts: CallOptions = {}): Promise<Answer<PostOrganizationsOrgIDSCIMTargetsSlugSyncResponse>> {
@@ -3069,8 +3081,11 @@ export interface GetOrganizationsOrgIDSCIMTargetsResponseTargetsItem {
   kind: string
   linked: number
   name: string
+  oauth_authorize_url: string
+  oauth_authorized_at: string | null
   oauth_client_auth: string
   oauth_client_id: string
+  oauth_grant: string
   oauth_scope: string
   oauth_token_url: string
   on_deactivate: string
@@ -4489,6 +4504,7 @@ export interface PostOrganizationsOrgIDSCIMTargetsRequest {
   impersonate?: string
   kind?: string
   name?: string
+  oauth_authorize_url?: string
   oauth_client_auth?: string
   oauth_client_id?: string
   oauth_scope?: string
@@ -4505,6 +4521,33 @@ export interface PostOrganizationsOrgIDSCIMTargetsResponse {
   config_version: number
   dry_run: boolean
   kind: string
+  slug: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationRequest {
+  redirect_uri?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationResponse {
+  authorization_url: string
+  config_version: number
+  expires_at: string
+  slug: string
+  state: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeRequest {
+  code?: string
+  state?: string
+}
+
+/** A JSON object of the Admin API. */
+export interface PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCodeResponse {
+  authorized_at: string
+  config_version: number
   slug: string
 }
 

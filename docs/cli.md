@@ -15,7 +15,8 @@ grows with the data has no limit: `serve`, the three `migrate` commands that
 apply, `export audit`, `audit checkpoint`, `audit verify`, `audit archive`, both `import` commands, `dir sync`,
 `scim sync`, `kerberos sync`, `keys rewrap-root`, `janitor once` and `restore
 finalize`. `proxy
-check` has five minutes. `-timeout` replaces any of these, and `-timeout 0`
+check` has five minutes, and `scim authorize`, which waits for somebody to sign in,
+eleven. `-timeout` replaces any of these, and `-timeout 0`
 removes the limit. Until October 2026 every command was cancelled at 60 seconds,
 which cut off an audit export of a large trail, and a migration building an
 index or waiting for another migrate, partway through.
@@ -253,7 +254,8 @@ existed, and the test that exists to catch exactly that could not see this table
 
 | | |
 |---|---|
-| `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning. `-recreate-missing` on `add` has a sync give somebody a new account when the one linked to them is gone from the target. `-oauth-token-url`, `-oauth-client-id` and `-oauth-scope` authenticate by the client credentials grant, `-token` then being the client secret, sent by HTTP Basic unless `-oauth-client-auth client_secret_post` puts it in the form for a token endpoint that takes it only there. `-compatibility` is what the target needs that the protocol does not say it should: `no-patch`, `no-filter`, `typed-members` |
+| `signari scim add` / `scim list` / `scim sync` / `scim verify` | Outbound SCIM provisioning. `-recreate-missing` on `add` has a sync give somebody a new account when the one linked to them is gone from the target. `-oauth-token-url`, `-oauth-client-id` and `-oauth-scope` authenticate by the client credentials grant, `-token` then being the client secret, sent by HTTP Basic unless `-oauth-client-auth client_secret_post` puts it in the form for a token endpoint that takes it only there. `-oauth-authorize-url` has the same client take the authorization code grant instead, which `scim authorize` then makes. `-compatibility` is what the target needs that the protocol does not say it should: `no-patch`, `no-filter`, `typed-members` |
+| `signari scim authorize` | Sign in at a target registered with `-oauth-authorize-url`, as somebody who may administer it, and keep the refresh token that leaves; every sync then asks for an access token with it and keeps the one it is given back. It prints the address to open and waits up to ten minutes for the target to send the browser back to a loopback port it opens for that one request, or to the address `-redirect` names: a loopback one with its port is listened on, and any other is the address to paste back here once the browser arrives at it. The target must allow that address. A new grant or base URL forgets the authorization, so it is run again then |
 | `signari scim enable` / `scim disable` | Take a target in or out of service. Disabling keeps the configuration, the links and the remote ids, and the next sync skips it — deleting the target would take the links with it and leave the far-end accounts unreachable rather than merely unmanaged |
 | `signari scim scope` | Limit a target to the members of the groups `-group` lists, comma-separated; somebody in any of them is provisioned. Unscoped, a target receives every user in the organisation — right for a company directory, wrong for an application five people use |
 | `signari scim provision-group` / `scim deprovision-group` | Create or delete a group at the target and record that we own it. Reconciliation only ever touches groups this link names, so a group the target's own administrators maintain is left alone however similar its name |

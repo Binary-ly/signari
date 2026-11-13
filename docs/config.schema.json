@@ -1235,6 +1235,9 @@
         "name": {
           "type": "string"
         },
+        "oauth_authorize_url": {
+          "type": "string"
+        },
         "oauth_client_auth": {
           "type": "string"
         },

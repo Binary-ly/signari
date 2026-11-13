@@ -131,8 +131,24 @@ type SCIMTargetRow struct {
 	OAuthTokenURL, OAuthClientID, OAuthScope string
 	// OAuthClientAuth is how that client authenticates, "" with no grant.
 	OAuthClientAuth string
+	// OAuthAuthorizeURL is where somebody signs in for the authorization code
+	// grant, "" for any other, and OAuthAuthorizedAt when somebody last did, nil
+	// until then.
+	OAuthAuthorizeURL string
+	OAuthAuthorizedAt *time.Time
 	// Compatibility names what it needs that the protocol does not say it should.
 	Compatibility []string
+}
+
+// OAuthGrant names the grant a target authenticates with, "" for a bearer token.
+func (t SCIMTargetRow) OAuthGrant() string {
+	switch {
+	case t.OAuthAuthorizeURL != "":
+		return "authorization_code"
+	case t.OAuthTokenURL != "":
+		return "client_credentials"
+	}
+	return ""
 }
 
 // SCIMTargets lists an organisation's targets by slug, with how many people
@@ -149,7 +165,8 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
 		       t.created_at, COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''),
 		       COALESCE(t.oauth_scope, ''), t.compatibility,
-		       CASE WHEN t.oauth_token_url IS NULL THEN '' ELSE t.oauth_client_auth END
+		       CASE WHEN t.oauth_token_url IS NULL THEN '' ELSE t.oauth_client_auth END,
+		       COALESCE(t.oauth_authorize_url, ''), t.oauth_authorized_at
 		  FROM core.scim_targets t
 		 WHERE t.org_id = $1::uuid ORDER BY t.slug`, orgID)
 	if err != nil {
@@ -162,7 +179,7 @@ func SCIMTargets(ctx context.Context, q Querier, orgID string) ([]SCIMTargetRow,
 		if err := rows.Scan(&t.ID, &t.Slug, &t.Name, &t.Kind, &t.BaseURL, &t.OnDeactivate, &t.ScopeGroups,
 			&t.Impersonate, &t.TargetDomain, &t.DryRun, &t.Enabled, &t.RecreateMissing, &t.Linked,
 			&t.ShouldBeGone, &t.CreatedAt, &t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope,
-			&t.Compatibility, &t.OAuthClientAuth); err != nil {
+			&t.Compatibility, &t.OAuthClientAuth, &t.OAuthAuthorizeURL, &t.OAuthAuthorizedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

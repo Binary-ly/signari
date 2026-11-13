@@ -65,6 +65,11 @@ var columnClass = map[string]string{
 	// Under a key from the artifact's message handle, which is not stored, and its hash.
 	"saml_artifacts.message":     "oneWay",
 	"saml_artifacts.handle_hash": "oneWay",
+	// A SCIM target's refresh token and a waiting authorization's PKCE verifier,
+	// and that authorization's state, kept only as its hash (7.14).
+	"scim_targets.oauth_refresh_token":    "rootSealed",
+	"scim_targets.oauth_pending_verifier": "rootSealed",
+	"scim_targets.oauth_pending_state":    "oneWay",
 
 	// The id of a token, which proves nothing without the token.
 	"credential_notifications.token_jti": "public",

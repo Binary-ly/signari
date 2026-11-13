@@ -70,7 +70,7 @@ refused with `412` when the configuration moved since the version it names.
 | [role-bindings](#role-bindings) | 3 |
 | [saml-providers](#saml-providers) | 8 |
 | [scim-sources](#scim-sources) | 3 |
-| [scim-targets](#scim-targets) | 6 |
+| [scim-targets](#scim-targets) | 8 |
 | [scopes](#scopes) | 3 |
 | [sessions](#sessions) | 1 |
 | [settings](#settings) | 2 |
@@ -4048,6 +4048,7 @@ Takes:
 | `impersonate` | string |  |
 | `kind` | string |  |
 | `name` | string |  |
+| `oauth_authorize_url` | string |  |
 | `oauth_client_auth` | string |  |
 | `oauth_client_id` | string |  |
 | `oauth_scope` | string |  |
@@ -4091,6 +4092,49 @@ Answers:
 | `enabled` | boolean |  |
 | `recreate_missing` | boolean |  |
 | `scope_groups` | list of string |  |
+| `slug` | string | always |
+
+### `POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization`
+
+Start signing somebody in at a target that takes the authorization code grant. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDSCIMTargetsSlugAuthorization`, TypeScript `postOrganizationsOrgIDSCIMTargetsSlugAuthorization`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `redirect_uri` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `authorization_url` | string | always |
+| `config_version` | integer | always |
+| `expires_at` | string | always |
+| `slug` | string | always |
+| `state` | string | always |
+
+### `POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code`
+
+Redeem the code that sign-in sent back, and keep the refresh token it issues. Needs organizations:write.
+
+Go `PostOrganizationsOrgIDSCIMTargetsSlugAuthorizationCode`, TypeScript `postOrganizationsOrgIDSCIMTargetsSlugAuthorizationCode`.
+
+Takes:
+
+| Field | Type | |
+|---|---|---|
+| `code` | string |  |
+| `state` | string |  |
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `authorized_at` | string | always |
+| `config_version` | integer | always |
 | `slug` | string | always |
 
 ### `DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}`

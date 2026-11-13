@@ -89,6 +89,8 @@ var rootSealedColumns = []sealedColumn{
 	{table: "radius_clients", column: "secret_enc", key: "id", context: "radius-client-secret"},
 	{table: "scim_targets", column: "token", key: "id", context: "scim_token"},
 	{table: "scim_targets", column: "credentials_enc", key: "id", context: "provision_credentials"},
+	{table: "scim_targets", column: "oauth_refresh_token", key: "id", context: "scim_refresh_token"},
+	{table: "scim_targets", column: "oauth_pending_verifier", key: "id", context: "scim_pkce_verifier"},
 	{table: "ssf_streams", column: "auth_token", key: "id", context: "ssf-stream-token"},
 	{table: "federated_tokens", column: "sealed", key: "id", context: "federated_tokens"},
 	{table: "saml_source_keys", column: "key_sealed", key: "id", context: "saml_source_key"},

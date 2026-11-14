@@ -113,6 +113,11 @@ func TestAPersonSeesAndEndsWhatRemembersThem(t *testing.T) {
 		!strings.Contains(html, "while you are signed out") {
 		t.Fatalf("the page (%d) does not show the application that remembers them:\n%s", page.Code, html)
 	}
+	// It holds no scope, only the right to go on acting for them, so the line that
+	// lists what it can see is not there with nothing after it.
+	if strings.Contains(html, "Can see:") {
+		t.Error("an application holding only a PCT is listed as \"Can see:\" and nothing")
+	}
 
 	form := url.Values{"client_id": {f.clientID}, csrfFormField: {csrfFrom(t, page)}}
 	post := httptest.NewRequest(http.MethodPost, "/account/connected/revoke", strings.NewReader(form.Encode()))

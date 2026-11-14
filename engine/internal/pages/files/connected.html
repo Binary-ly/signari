@@ -27,7 +27,9 @@
   {{range .Apps}}
   <div class="app">
     <strong>{{.Name}}</strong>
-    <div class="scopes">{{T "connected.cansee"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
+    {{/* Only with something after it: an application that holds nothing but the
+         right to go on acting for the person (a UMA PCT) has no scope to name. */}}
+    {{if .Scopes}}<div class="scopes">{{T "connected.cansee"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>{{end}}
     <div class="meta">
       {{T "connected.granted" .}}
       {{/* N, not "session(s)": the same defect front-channel logout had. */}}

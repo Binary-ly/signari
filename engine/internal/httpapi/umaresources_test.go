@@ -252,6 +252,14 @@ func TestAPersonSharesWhatTheyOwnFromTheirPage(t *testing.T) {
 	if body := page(stranger).Body.String(); strings.Contains(body, "Q3 report") {
 		t.Error("somebody else's page lists it")
 	}
+	// And a person finds the page from their account, as they find every other.
+	acct := httptest.NewRequest(http.MethodGet, "/account", nil)
+	acct.AddCookie(&http.Cookie{Name: SessionCookieName, Value: owner})
+	acctRec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(acctRec, acct)
+	if !strings.Contains(acctRec.Body.String(), `href="`+umaResourcePage+`"`) {
+		t.Errorf("the account page (%d) does not link to the resources page", acctRec.Code)
+	}
 
 	post := func(cookie, path string, form url.Values, csrf bool) string {
 		t.Helper()

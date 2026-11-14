@@ -377,8 +377,8 @@ itself.
 
 ### What a person shares
 
-A person's registered resources are listed at `/account/resources`, the
-`user_access_policy_uri` a registration answers. Each can be shared with somebody
+A person's registered resources are listed at `/account/resources`, linked from their
+account page, and the `user_access_policy_uri` a registration answers. Each can be shared with somebody
 by address, as one of the relations the model gives its type, and the sharing
 stopped; a share is a relation on the resource's object, so the requesting party's
 decision at the token endpoint is the model's, as for anything else. The model's
@@ -440,5 +440,3 @@ person using it now is the person the token was issued for, which only the clien
 ## Still not implemented
 
 - **`claim_token` formats** beyond an ID token this server issued.
-- **A link to `/account/resources` from the account page.** A person reaches it from
-  the `user_access_policy_uri` a resource server shows them, or by its address.

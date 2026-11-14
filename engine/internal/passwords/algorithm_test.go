@@ -10,7 +10,7 @@ import (
 
 func TestAlgorithmOfNamesWhatTheHasherMade(t *testing.T) {
 	for hash, want := range map[string]string{
-		"$pbkdf2-sha256$i=600000$c2FsdA$a2V5": "pbkdf2-sha256",
+		"$pbkdf2-sha256$i=600000$c2FsdA$a2V5":          "pbkdf2-sha256",
 		"$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA": "argon2id",
 	} {
 		if got := AlgorithmOf(hash); got != want {

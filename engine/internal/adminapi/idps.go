@@ -69,6 +69,9 @@ type patchIdentityProviderRequest struct {
 	// StoreTokens keeps what the provider hands over at a sign-in, sealed. Turned off,
 	// everything kept is removed.
 	StoreTokens *bool `json:"store_tokens"`
+	// CrossDevice lets a wallet sign-in's wallet be on another device, finished only
+	// by a code emailed to the linked account. A wallet sign-in's alone.
+	CrossDevice *bool `json:"cross_device"`
 }
 
 // idpGroupMapRequest says one of a provider's groups grants a local one.
@@ -141,6 +144,9 @@ type addIdentityProviderRequest struct {
 	NameClaim        string   `json:"name_claim"`
 	RequestKey       string   `json:"request_key"`
 	CertificateChain string   `json:"certificate_chain"`
+	// CrossDevice lets the wallet be on another device too, finished only by a code
+	// emailed to the linked account; a signed prefix only.
+	CrossDevice bool `json:"cross_device"`
 }
 
 func providerHTTPClient() *http.Client { return safedial.Client(15 * time.Second) }
@@ -185,15 +191,16 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	vp := &store.VPSpec{Prefix: req.ClientIDPrefix, WalletURL: strings.TrimSpace(req.WalletURL),
 		ResponseMode: req.ResponseMode, VCTValues: req.VCTValues, SubjectClaim: req.SubjectClaim,
-		EmailClaim: req.EmailClaim, NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain}
+		EmailClaim: req.EmailClaim, NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain,
+		CrossDevice: req.CrossDevice}
 	switch {
 	case req.Kind == "oid4vp":
 		spec.VP = vp
 	case vp.Prefix != "" || vp.WalletURL != "" || vp.ResponseMode != "" || len(vp.VCTValues) > 0 || vp.SubjectClaim != "" ||
-		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "":
+		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "" || vp.CrossDevice:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
-			"detail": "client_id_prefix, wallet_url, response_mode, vct_values, the claim paths, request_key and certificate_chain " +
-				"are a wallet sign-in's, kind oid4vp"})
+			"detail": "client_id_prefix, wallet_url, response_mode, vct_values, the claim paths, request_key, " +
+				"certificate_chain and cross_device are a wallet sign-in's, kind oid4vp"})
 		return
 	}
 	if req.Metadata != "" || req.MetadataURL != "" {
@@ -331,7 +338,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	change := store.IdentityProviderChange{Enabled: req.Enabled, AllowAssertions: req.AllowAssertions,
 		TrustEmailVerification: req.TrustEmailVerification, RequireVerifiedEmail: req.RequireVerifiedEmail,
-		StoreTokens: req.StoreTokens}
+		StoreTokens: req.StoreTokens, CrossDevice: req.CrossDevice}
 	if req.MFAAMR != nil {
 		l := cleanList(*req.MFAAMR, false)
 		change.MFAAMR = &l
@@ -389,6 +396,9 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.StoreTokens != nil {
 			detail["store_tokens"] = *req.StoreTokens
+		}
+		if req.CrossDevice != nil {
+			detail["cross_device"] = *req.CrossDevice
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.identity_provider_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

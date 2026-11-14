@@ -1,0 +1,29 @@
+{{define "title"}}{{T "wallet.title"}}{{end}}
+{{define "content"}}
+{{if eq .Mode "code"}}
+<h1>{{T "wallet.code.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "wallet.code.sent"}}</p>
+<form method="POST" action="{{.Action}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="state" value="{{.State}}">
+<label for="c">{{T "wallet.code.label"}}</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+<button type="submit">{{T "login.submit"}}</button>
+</form>
+<p class="hint">{{T "wallet.code.notyou"}}</p>
+{{else}}
+<h1>{{T "wallet.title"}}</h1>
+{{if .Notice}}<p class="note" role="status">{{.Notice}}</p>{{end}}
+<p><a href="{{.HereURL}}">{{T "wallet.here"}}</a></p>
+{{if .QR}}
+<h2>{{T "wallet.other"}}</h2>
+<p>{{T "wallet.scan"}}</p>
+<div class="qr" role="img" aria-label="{{T "wallet.qr"}}">{{.QR}}</div>
+<p class="err">{{T "wallet.warning"}}</p>
+<p id="wallet-wait" class="hint" role="status" aria-live="polite" data-wait="{{.WaitURL}}" data-next="{{.NextURL}}">{{T "wallet.waiting"}}</p>
+<p class="alt"><a href="{{.NextURL}}">{{T "wallet.continue"}}</a></p>
+<script src="/static/wallet-wait.js"></script>
+{{end}}
+{{end}}
+{{end}}

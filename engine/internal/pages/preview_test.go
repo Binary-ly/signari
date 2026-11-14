@@ -379,6 +379,11 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 		}),
 		"accountexport": csrf(map[string]any{}),
 		"emailcode":     csrf(map[string]any{"Error": ""}),
+		// The cross-device wallet page waiting on a scan; its code step is the
+		// emailcode page's shape with the wallet's words.
+		"wallet": {"Mode": "choose", "Provider": "National ID wallet", "QR": qr,
+			"HereURL": "/oid4vp/wallet/start?device=this", "WaitURL": "/oid4vp/wallet/wait?state=s",
+			"NextURL": "/oid4vp/wallet/confirm?state=s", "Notice": ""},
 		"accounts": csrf(map[string]any{
 			"Accounts": []map[string]any{
 				{"SID": "s-1", "Name": "Amelia Hart", "Active": true},

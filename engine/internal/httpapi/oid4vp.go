@@ -6,15 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/oid4vp"
+	"signari.dev/engine/internal/qr"
 	"signari.dev/engine/internal/store"
 )
 
@@ -25,8 +30,10 @@ import (
 // how a presentation posted from somewhere else cannot finish somebody else's sign-in
 // (:2022-2037). After that it is the ordinary external-identity path.
 //
-// Same device only. A cross-device sign-in needs a page with a code to scan and words to
-// go with it, and this server writes no words a person has not, in either language.
+// With the operator's say-so the wallet may be on another device instead, by a code to
+// scan (handleVPStart). That answer cannot be told from one an attacker relayed to
+// somebody else's phone, so it finishes only with a code emailed to the linked account's
+// own address, typed on the page that began it (handleVPConfirm).
 
 // vpBodyLimit bounds what a wallet may post: a credential, its disclosures and a
 // key binding, with room for a certificate chain in a header.
@@ -72,7 +79,11 @@ func (s *Server) vpRequest(v *store.VPVerifier, clientID, nonce, state, walletNo
 	return req, nil
 }
 
-// handleVPStart begins a sign-in and sends the browser to the wallet.
+// handleVPStart begins a sign-in and sends the browser to the wallet. Where the operator
+// lets the wallet be on another device, and the person has not chosen this one, it shows
+// a page instead: this device, or a code to scan, whose request is a sign-in of its own
+// marked as from another device, so a wallet answering it is never handed a response
+// code and only the account's emailed code finishes it.
 func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	slug := r.PathValue("slug")
@@ -98,6 +109,8 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
+	returnTo := s.validFederationReturn(r.URL.Query().Get("return"))
+	cross := v.CrossDevice && v.Prefix.Signed() && r.URL.Query().Get("device") != "this"
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -106,8 +119,7 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	state, binding, err := store.BeginFederatedLogin(ctx, tx, store.PendingLogin{
-		ProviderID: v.ProviderID, OrgID: v.OrgID, Nonce: nonce,
-		ReturnTo: s.validFederationReturn(r.URL.Query().Get("return")),
+		ProviderID: v.ProviderID, OrgID: v.OrgID, Nonce: nonce, ReturnTo: returnTo, VPCrossDevice: cross,
 	})
 	// An answer encrypted to a key of this request's own, so one key never opens two
 	// people's answers.
@@ -128,20 +140,7 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := s.vpRequest(v, clientID, nonce, state, "", responseKey)
-	if err != nil {
-		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
-		s.federationRefusal(w, r, "federr.generic")
-		return
-	}
-	// A signed request goes by reference, fetched by GET or by POST as the wallet
-	// can; an unsigned one has every parameter in the URL, since a redirect_uri
-	// verifier has nothing to sign with (specs/oid4vp.txt:615).
-	requestURI := ""
-	if v.Prefix.Signed() {
-		requestURI = s.vpBase(slug) + "/request/" + url.PathEscape(state)
-	}
-	target, err := req.URL(v.WalletURL, requestURI, v.Prefix.Signed())
+	target, err := s.vpTarget(v, clientID, nonce, state, responseKey, !cross)
 	if err != nil {
 		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
 		s.federationRefusal(w, r, "federr.unavailable")
@@ -155,7 +154,58 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600,
 	})
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	if !cross {
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+	s.renderVPChoice(w, r, v, state, target, returnTo, "")
+}
+
+// vpTarget is the URL that takes a request to the wallet. A signed request goes by
+// reference, fetched by POST as the wallet can when byPost, or by GET; an unsigned one
+// has every parameter in the URL, since a redirect_uri verifier has nothing to sign with
+// (specs/oid4vp.txt:615). A code to scan names the request by GET, as the cross-device
+// flow has it (:245): by POST the URL also carries the verifier's metadata (:328),
+// which leaves it too long for a code a phone can read across a desk.
+func (s *Server) vpTarget(v *store.VPVerifier, clientID, nonce, state string, responseKey []byte,
+	byPost bool) (string, error) {
+	req, err := s.vpRequest(v, clientID, nonce, state, "", responseKey)
+	if err != nil {
+		return "", err
+	}
+	requestURI := ""
+	if v.Prefix.Signed() {
+		requestURI = s.vpBase(v.Slug) + "/request/" + url.PathEscape(state)
+	}
+	return req.URL(v.WalletURL, requestURI, v.Prefix.Signed() && byPost)
+}
+
+// renderVPChoice is the page a cross-device wallet sign-in starts on: the wallet on this
+// device, which begins a sign-in of its own, or target as a code to scan with the wallet
+// on another, which this page then waits on. notice is a key said above both, or "".
+func (s *Server) renderVPChoice(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, state, target,
+	returnTo, notice string) {
+	base := "/oid4vp/" + url.PathEscape(v.Slug)
+	here := base + "/start?device=this"
+	if returnTo != "" {
+		here += "&return=" + url.QueryEscape(returnTo)
+	}
+	data := map[string]any{"Mode": "choose", "Provider": v.DisplayName, "HereURL": here,
+		"WaitURL": base + "/wait?" + url.Values{"state": {state}}.Encode(),
+		"NextURL": base + "/confirm?" + url.Values{"state": {state}}.Encode(), "WalletScript": true}
+	if notice != "" {
+		data["Notice"] = s.tr(r).Text(notice)
+	}
+	// The code is the other device's only way in, and a request too long for one
+	// leaves this device alone, said in the log where an operator reads it.
+	if code, err := qr.Encode([]byte(target)); err == nil {
+		// template.HTML because the encoder writes this SVG from a matrix of booleans:
+		// integers in coordinates, and nothing of the request's text.
+		data["QR"] = template.HTML(code.SVG(4, 4))
+	} else {
+		s.log.WarnContext(r.Context(), "a wallet request does not fit a code to scan", "slug", v.Slug, "err", err)
+	}
+	s.renderPage(w, r, "wallet", data)
 }
 
 // handleVPRequest answers a wallet fetching a signed request object, by GET as JAR has
@@ -169,7 +219,7 @@ func (s *Server) handleVPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := r.PathValue("state")
-	nonce, responseKey, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
+	pending, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
 	if err != nil {
 		if !errors.Is(err, store.ErrVPRequestGone) {
 			s.log.ErrorContext(ctx, "reading a wallet request", "err", err)
@@ -177,6 +227,7 @@ func (s *Server) handleVPRequest(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	nonce, responseKey := pending.Nonce, pending.ResponseKey
 	walletNonce := ""
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, vpBodyLimit)
@@ -221,6 +272,9 @@ type vpProved struct {
 	Email   string          `json:"email,omitempty"`
 	Name    string          `json:"name,omitempty"`
 	Claims  json.RawMessage `json:"claims"`
+	// Refused is a cross-device request the wallet declined, kept so the page waiting
+	// on it can say so rather than wait out the ten minutes.
+	Refused bool `json:"refused,omitempty"`
 }
 
 // handleVPResponse is the response URI: a wallet posts its presentation here, and it is
@@ -253,11 +307,12 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 	// "checking that the value of the received state parameter corresponds to a
 	// recent Authorization Request" (:2045-2047), before anything is verified, so
 	// nobody without a live request can make this server check signatures.
-	nonce, responseKey, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
+	pending, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "this request has expired or has been answered")
 		return
 	}
+	nonce, responseKey := pending.Nonce, pending.ResponseKey
 	vpToken := r.PostForm.Get("vp_token")
 	switch {
 	case encrypted != nil && responseKey == nil:
@@ -287,6 +342,16 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		// Processed, so a 200 (:1415), and the browser is sent back to be told.
 		// The wallet's text is not shown to anybody: it is the wallet's to choose.
 		s.log.InfoContext(ctx, "a wallet refused", "slug", slug, "error", e, "correlation_id", correlationID(ctx))
+		if pending.CrossDevice {
+			// The browser to tell is on the device the sign-in began on, and learns
+			// it from what is kept here.
+			if err := store.PresentVPCrossDevice(ctx, s.db, s.cfg.Root, v.ProviderID, state,
+				[]byte(`{"refused":true}`)); err != nil {
+				s.log.InfoContext(ctx, "keeping a wallet's refusal", "slug", slug, "err", err)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"redirect_uri": done + "&error=" + url.QueryEscape("access_denied")})
 		return
 	}
@@ -302,7 +367,16 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
 	if err == nil {
 		var proved []byte
-		if proved, err = vpIdentity(v, presented); err == nil {
+		if proved, err = vpIdentity(v, presented); err == nil && pending.CrossDevice {
+			// No redirect_uri: the wallet's browser is not the one that began this,
+			// so "processing at the Wallet stops" (:1912), and the page that began it
+			// finishes with the account's emailed code.
+			if err = store.PresentVPCrossDevice(ctx, s.db, s.cfg.Root, v.ProviderID, state, proved); err == nil {
+				w.Header().Set("Cache-Control", "no-store")
+				writeJSON(w, http.StatusOK, map[string]string{})
+				return
+			}
+		} else if err == nil {
 			var code string
 			code, err = store.PresentVP(ctx, s.db, v.ProviderID, state, proved)
 			if err == nil {
@@ -471,6 +545,247 @@ func (s *Server) handleVPDone(w http.ResponseWriter, r *http.Request) {
 		Subject: proved.Subject, Email: proved.Email, Name: proved.Name,
 		// The issuer attested the address, and whether that counts as
 		// verified is the operator's to say, as for a SAML upstream.
+		EmailVerified: proved.Email != "" && v.Policy.TrustsEmailVerification,
+		RawClaims:     proved.Claims,
+	})
+}
+
+// handleVPWait answers the page a cross-device sign-in began on, which asks every few
+// seconds whether the wallet has answered. Only for the browser holding the sign-in's
+// cookie; nothing is started or spent by asking.
+func (s *Server) handleVPWait(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	w.Header().Set("Cache-Control", "no-store")
+	c, err := r.Cookie(FederationCookieName)
+	v, verr := s.loadVPVerifier(r, r.PathValue("slug"))
+	if err != nil || c.Value == "" || verr != nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"gone": true})
+		return
+	}
+	_, _, err = store.VPCrossDeviceAnswer(ctx, s.db, s.cfg.Root, v.ProviderID, r.URL.Query().Get("state"), c.Value)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]bool{"answered": true})
+	case errors.Is(err, store.ErrVPNotAnswered):
+		writeJSON(w, http.StatusOK, map[string]bool{"answered": false})
+	default:
+		if !errors.Is(err, store.ErrFederatedLoginGone) && !errors.Is(err, store.ErrFederatedLoginOtherBrowser) {
+			s.log.ErrorContext(ctx, "reading a cross-device answer", "err", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"gone": true})
+	}
+}
+
+// vpCrossDeviceAccount is the active account a cross-device answer signs in: the one
+// already linked to its subject at this provider, with an address to send the code to.
+// "" for anybody else, since a code can only go to an account's own address, and an
+// account made from the answer would have none it had shown was its own.
+func (s *Server) vpCrossDeviceAccount(ctx context.Context, v *store.VPVerifier, subject string) (string, error) {
+	var userID string
+	err := s.db.QueryRow(ctx, `
+		SELECT u.id::text FROM core.federated_identities f JOIN core.users u ON u.id = f.user_id
+		WHERE f.provider_id = $1::uuid AND f.subject = $2 AND u.org_id = $3::uuid AND u.status = 'active'
+		  AND u.email IS NOT NULL`, v.ProviderID, subject, v.OrgID).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return userID, err
+}
+
+// handleVPConfirmPage is where the waiting page goes once the wallet has answered: the
+// linked account is sent its code, once, and the page asks for it. Asked before the
+// wallet answered, it is the waiting page again.
+func (s *Server) handleVPConfirmPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	state := r.URL.Query().Get("state")
+	c, err := r.Cookie(FederationCookieName)
+	if err != nil || c.Value == "" || state == "" {
+		s.federationRefusal(w, r, "federr.otherbrowser")
+		return
+	}
+	v, err := s.loadVPVerifier(r, r.PathValue("slug"))
+	if err != nil {
+		s.federationRefusal(w, r, "federr.unavailable")
+		return
+	}
+	raw, _, err := store.VPCrossDeviceAnswer(ctx, s.db, s.cfg.Root, v.ProviderID, state, c.Value)
+	if errors.Is(err, store.ErrVPNotAnswered) {
+		s.renderVPWaitingAgain(w, r, v, state)
+		return
+	}
+	_, userID, key := s.vpCrossDeviceProved(ctx, v, raw, err)
+	if key != "" {
+		s.federationRefusal(w, r, key)
+		return
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sent, err := store.StartVPConfirmation(ctx, tx, userID, v.OrgID, v.ProviderID, state)
+	if err == nil && sent {
+		err = audit.Write(ctx, tx, audit.Event{Type: "federation.wallet_code_sent", OrgID: v.OrgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": v.Slug}})
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "sending a cross-device wallet code", "slug", v.Slug, "err", err)
+		s.federationRefusal(w, r, federatedLoginRefusal(err))
+		return
+	}
+	s.renderVPCode(w, r, v, state, "")
+}
+
+// vpCrossDeviceProved reads what a cross-device answer proved and the account it signs
+// in, or the key of the refusal to show.
+func (s *Server) vpCrossDeviceProved(ctx context.Context, v *store.VPVerifier, raw []byte, err error) (
+	vpProved, string, string) {
+	var proved vpProved
+	if err != nil {
+		if !errors.Is(err, store.ErrFederatedLoginGone) && !errors.Is(err, store.ErrFederatedLoginOtherBrowser) {
+			s.log.ErrorContext(ctx, "reading a cross-device answer", "slug", v.Slug, "err", err)
+		}
+		return proved, "", federatedLoginRefusal(err)
+	}
+	if err := json.Unmarshal(raw, &proved); err != nil {
+		return proved, "", "federr.unverified"
+	}
+	if proved.Refused {
+		return proved, "", "federr.cancelled"
+	}
+	userID, err := s.vpCrossDeviceAccount(ctx, v, proved.Subject)
+	if err != nil {
+		s.log.ErrorContext(ctx, "finding a cross-device answer's account", "slug", v.Slug, "err", err)
+		return proved, "", "federr.generic"
+	}
+	if userID == "" {
+		s.log.InfoContext(ctx, "a cross-device answer names no account with an address", "slug", v.Slug,
+			"correlation_id", correlationID(ctx))
+		return proved, "", "federr.crossnoaccount"
+	}
+	return proved, userID, ""
+}
+
+// renderVPWaitingAgain is the waiting page for a request the wallet has not answered,
+// its code made again from what was kept.
+func (s *Server) renderVPWaitingAgain(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, state string) {
+	ctx := r.Context()
+	pending, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
+	var clientID, target string
+	if err == nil {
+		clientID, err = s.vpClientID(v)
+	}
+	if err == nil {
+		target, err = s.vpTarget(v, clientID, pending.Nonce, state, pending.ResponseKey, false)
+	}
+	if err != nil {
+		s.federationRefusal(w, r, federatedLoginRefusal(err))
+		return
+	}
+	s.renderVPChoice(w, r, v, state, target, "", "wallet.notyet")
+}
+
+// renderVPCode is the page that takes the code sent to the account.
+func (s *Server) renderVPCode(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, state, msg string) {
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	s.renderPage(w, r, "wallet", map[string]any{"Mode": "code", "Provider": v.DisplayName, "State": state,
+		"Action": "/oid4vp/" + url.PathEscape(v.Slug) + "/confirm", "Error": msg,
+		"CSRF": csrf, "CSRFField": csrfFormField})
+}
+
+// handleVPConfirm takes the code sent to the account and, with it, finishes the
+// cross-device sign-in as that account and no other: the ordinary external-identity
+// path, told which account it must end at.
+func (s *Server) handleVPConfirm(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	state := r.PostForm.Get("state")
+	c, err := r.Cookie(FederationCookieName)
+	if err != nil || c.Value == "" || state == "" {
+		s.federationRefusal(w, r, "federr.otherbrowser")
+		return
+	}
+	v, err := s.loadVPVerifier(r, r.PathValue("slug"))
+	if err != nil {
+		s.federationRefusal(w, r, "federr.unavailable")
+		return
+	}
+	raw, attempt, err := store.VPCrossDeviceAnswer(ctx, s.db, s.cfg.Root, v.ProviderID, state, c.Value)
+	if err == nil && attempt == "" {
+		err = store.ErrVPNotAnswered
+	}
+	if errors.Is(err, store.ErrVPNotAnswered) {
+		s.renderVPWaitingAgain(w, r, v, state)
+		return
+	}
+	proved, userID, key := s.vpCrossDeviceProved(ctx, v, raw, err)
+	if key != "" {
+		s.federationRefusal(w, r, key)
+		return
+	}
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	// The second-factor budget, keyed by the account the code is for: whoever holds
+	// this page is the one guessing.
+	if !s.allowSecondFactorAttempt(ctx, w, userID, ip) {
+		return
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	ok, err := store.VerifyEmailSignIn(ctx, tx, userID, attempt, strings.TrimSpace(r.PostForm.Get("code")))
+	if err != nil {
+		s.log.ErrorContext(ctx, "checking a cross-device wallet code", "err", err)
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	if !ok {
+		// Committed: the count against the code outlives the refusal.
+		if err := tx.Commit(ctx); err != nil {
+			s.log.ErrorContext(ctx, "committing a wrong cross-device wallet code", "err", err)
+		}
+		s.recordSecondFactorFailure(ctx, userID, ip)
+		s.auditDetached(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: v.OrgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx), Detail: map[string]any{"reason": "bad_wallet_code", "provider": v.Slug}})
+		s.renderVPCode(w, r, v, state, s.tr(r).Text("wallet.code.wrong"))
+		return
+	}
+	pending, err := store.ConsumeFederatedLogin(ctx, tx, state, c.Value)
+	if err == nil && pending.ProviderID != v.ProviderID {
+		err = store.ErrFederatedLoginGone
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		s.log.InfoContext(ctx, "a cross-device wallet sign-in was refused", "slug", v.Slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		s.federationRefusal(w, r, federatedLoginRefusal(err))
+		return
+	}
+	s.clearFederationCookie(w)
+	pending.RequireUserID = userID
+	s.completeFederation(w, r, &federation.Config{
+		ID: v.ProviderID, OrgID: v.OrgID, Slug: v.Slug, DisplayName: v.DisplayName,
+		Policy: v.Policy, Kind: federation.KindOID4VP,
+	}, pending, federation.ExternalIdentity{
+		Subject: proved.Subject, Email: proved.Email, Name: proved.Name,
 		EmailVerified: proved.Email != "" && v.Policy.TrustsEmailVerification,
 		RawClaims:     proved.Claims,
 	})

@@ -2199,6 +2199,7 @@ type PatchOrganizationsOrgIDDirectoriesSlugResponse struct {
 // PatchOrganizationsOrgIDIdentityProvidersSlugRequest is a JSON object of the Admin API.
 type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	AllowAssertions        *bool     `json:"allow_assertions,omitempty"`
+	CrossDevice            *bool     `json:"cross_device,omitempty"`
 	Enabled                *bool     `json:"enabled,omitempty"`
 	EndSessionURL          *string   `json:"end_session_url,omitempty"`
 	ForwardParameters      *[]string `json:"forward_parameters,omitempty"`
@@ -2790,6 +2791,7 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	ClientID               *string   `json:"client_id,omitempty"`
 	ClientIDPrefix         *string   `json:"client_id_prefix,omitempty"`
 	ClientSecret           *string   `json:"client_secret,omitempty"`
+	CrossDevice            *bool     `json:"cross_device,omitempty"`
 	EmailClaim             *string   `json:"email_claim,omitempty"`
 	EntityID               *string   `json:"entity_id,omitempty"`
 	ForceAuthn             *bool     `json:"force_authn,omitempty"`

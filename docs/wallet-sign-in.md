@@ -7,10 +7,11 @@ that credential identifies. After the check it is an ordinary external sign-in. 
 linking rules, account creation, [attribute and group mapping](social-login.md) and
 the audit events are the same as for any provider.
 
-It works on one device. The sign-in page sends the browser to the wallet, the wallet
-posts its answer back here, and then sends the browser back. Signing in on a computer
-with a phone's wallet needs a page showing a code to scan, with words to go with it in
-every language the sign-in pages speak, and this deployment does not have one.
+By default it works on one device. The sign-in page sends the browser to the wallet,
+the wallet posts its answer back here, and then sends the browser back. Signing in on
+a computer with a phone's wallet can be turned on too, and finishes only with a code
+emailed to the account, because of an attack that flow cannot otherwise tell apart
+([below](#the-wallet-on-another-device)).
 
 ## Setting one up
 
@@ -169,6 +170,54 @@ browser has to bring the code and the cookie set when it left. A presentation po
 from another device therefore cannot finish a sign-in that this browser started, and a
 code used once is gone.
 
+## The wallet on another device
+
+Off unless you turn it on, and only for a signed request (`x509_san_dns` or
+`x509_hash`):
+
+```sh
+signari idp vp-cross-device -slug wallet          # -remove turns it off
+```
+
+The sign-in button then leads to a page with two ways: open the wallet on this
+device, which is the flow above, or scan a QR code with the wallet on a phone. The
+page waits, asking every two seconds whether the wallet has answered, and works without
+its script too, by a link.
+
+**Why it needs a second code.** A sign-in started on one screen and answered on
+another cannot be told apart from one somebody started on their own screen and
+relayed to you with a story. Your wallet shows the real verifier's name, you share,
+and their browser is signed in as you. OpenID4VP says plainly that the verifier has no
+session context to detect this (`direct_post` without a redirect, its section 14.2).
+The cross-device BCP asks for a risk assessment first, and for mitigations that fit
+(draft-ietf-oauth-cross-device-security, sections 2 and 6.1). Here they are:
+
+- **A code to the account's own address.** Once the wallet has answered, the account
+  linked to the credential is emailed a six-digit code (ten minutes, five tries, bound
+  to this sign-in), and only that code typed on the page that began it finishes the
+  sign-in. The mail says somebody is signing in with your wallet on another screen,
+  and not to give the code to anybody. Somebody who relayed the QR code has to phish
+  the code too, and the person they are after receives a mail they did not expect.
+- **Existing accounts only.** The credential has to be linked already to an active
+  account with an address. Nobody is created, and nothing is linked, from another
+  device. The account is read again in the transaction that signs in, so an unlink in
+  between ends it.
+- **No response code.** The wallet answering a cross-device request is given no
+  `redirect_uri`, so no browser can finish the sign-in with a response code. A
+  same-device request never sends a mail, and a cross-device one never takes a
+  response code: they are separate sign-ins, marked as such.
+- **Short-lived, used once.** The request lives five minutes, the sign-in ten, and the
+  answer is taken once.
+- **Words on the page**, in each language: scan only a code on a page you opened
+  yourself.
+
+What the page says while it waits tells nobody whose account it is. The code page does
+not name the address either.
+
+Mail has to be set up, or the code never arrives. The sign-in is recorded as
+`federation.wallet_code_sent`, and a wrong code as `login.failed` with reason
+`bad_wallet_code`, counted against the account's second-factor budget.
+
 ## Tested against
 
 The OpenID Foundation's OpenID4VP 1.0 verifier plan, the suite playing the wallet:
@@ -180,8 +229,6 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 
 ## Not done
 
-- **Another device.** A page with a code to scan, which needs words a person has written
-  in both languages.
 - **The Digital Credentials API**, where the browser carries the request to a wallet itself.
 - **mdoc** credentials.
 - **A separate status issuer**, whose key is linked to the credential's issuer by a
@@ -197,3 +244,6 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 | `GET`, `POST /oid4vp/<slug>/request/<state>` | The signed request object, `application/oauth-authz-req+jwt`; by POST with the wallet's `wallet_nonce` echoed in it |
 | `POST /oid4vp/<slug>/response` | Where the wallet posts its answer: `vp_token` and `state` (`direct_post`), or `response`, the JWE (`direct_post.jwt`) |
 | `GET /oid4vp/<slug>/done` | Where the wallet sends the browser back |
+| `GET /oid4vp/<slug>/wait` | For the page a cross-device sign-in began on, with its cookie: whether the wallet has answered, as JSON |
+| `GET`, `POST /oid4vp/<slug>/confirm` | The code page: sends the linked account its code once, then takes it and signs in |
+| `GET /static/wallet-wait.js` | The waiting page's one script |

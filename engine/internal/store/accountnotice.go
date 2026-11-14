@@ -44,6 +44,9 @@ const (
 	// address (5.16). LinkID names the email_sign_in_codes row; the code is
 	// minted as it is sent, so it never sits in the outbox.
 	NoticeSignInCode = "sign_in_code"
+	// NoticeWalletConfirm: a code confirming a wallet sign-in answered from another
+	// device (StartVPConfirmation), minted as it is sent, as NoticeSignInCode's is.
+	NoticeWalletConfirm = "wallet_confirm"
 	// NoticeRecovery: somebody asked to reset this account (0.13). The reset is
 	// started as this is delivered, so its links never sit in the outbox and the
 	// request answers before anything is sent.

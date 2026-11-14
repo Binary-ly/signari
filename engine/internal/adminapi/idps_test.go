@@ -127,6 +127,23 @@ func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
 		"client_id": "c", "client_secret": "s", "vct_values": []string{"urn:example:pid:1"}}); rec.Code != http.StatusBadRequest {
 		t.Errorf("a wallet's fields on a google provider answered %d", rec.Code)
 	}
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "google", "slug": slug + "-gx",
+		"client_id": "c", "client_secret": "s", "cross_device": true}); rec.Code != http.StatusBadRequest {
+		t.Errorf("cross_device on a google provider answered %d", rec.Code)
+	}
+	// An unsigned request shows a wallet on another device nobody it can check: refused
+	// when made, and when changed.
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "oid4vp", "slug": slug + "-xd",
+		"client_id_prefix": "redirect_uri", "vct_values": []string{"urn:example:pid:1"}, "subject_claim": "sub",
+		"cross_device": true}); rec.Code != http.StatusBadRequest {
+		t.Errorf("an unsigned wallet sign-in made for another device answered %d", rec.Code)
+	}
+	if rec := call(t, s, http.MethodPatch, base+"/"+slug, testToken, map[string]any{"cross_device": true}); rec.Code != http.StatusBadRequest {
+		t.Errorf("an unsigned wallet sign-in turned over to another device answered %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, s, http.MethodPatch, base+"/"+slug, testToken, map[string]any{"cross_device": false}); rec.Code != http.StatusOK {
+		t.Errorf("keeping an unsigned wallet sign-in on one device answered %d %s", rec.Code, rec.Body)
+	}
 
 	issuers := base + "/" + slug + "/vp-issuers"
 	if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": "https://pid.example",

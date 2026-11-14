@@ -17,6 +17,7 @@ G117    internal/store/federatedtokens.go   1      a provider's tokens marshalle
 G124    internal/httpapi/headless.go        1      a cookie on the in-process sub-request a headless step replays, never a Set-Cookie
 G203    internal/httpapi/enrol.go           2      otpauth URI (fixed scheme) and the QR SVG this server generates
 G203    internal/httpapi/enrolmfa.go        2      the same otpauth URI and QR SVG, on the enrolment asked for at sign-in
+G203    internal/httpapi/oid4vp.go          1      the QR SVG this server generates for a cross-device wallet request: rects from a matrix, no request text
 G203    internal/i18n/printer.go            2      catalogue text is trusted; every interpolated value is escaped before marking
 G204    internal/kerberos/sync.go           1      kadmin argv from operator configuration, no shell; the principal is a flag value
 G301    cmd/signari/theme.go                1      theme eject writes page templates, not secrets
@@ -70,6 +71,7 @@ G710    internal/httpapi/forwardauth.go     2      rd checked against core.proxy
 G710    internal/httpapi/saml.go            1      this request's own routed path, sent back as a GET
 G710    internal/httpapi/samlartifactrequest.go 1  this request's own routed path, with the fetched SAMLRequest
 G710    internal/httpapi/samlchain.go       2      registered SP logout URLs; final redirect already validated
+G710    internal/httpapi/oid4vp.go          1      the configured wallet URL with this server's own request parameters; the request only picks this device or the page
 G710    internal/httpapi/samlslo.go         1      registered SLO URL of a provider whose signature verified
 G710    internal/httpapi/samlsourcelogout.go 2     the upstream's configured SLO URL, and a return target validated and stored server-side when the logout began
 G710    internal/httpapi/upstreamlogout.go  1      a validated post-logout target, carried under the root key's MAC and refused without it

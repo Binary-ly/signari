@@ -278,6 +278,15 @@ func (s *Server) completeFederation(w http.ResponseWriter, r *http.Request,
 		fail("federr.notenough")
 		return
 	}
+	// A sign-in confirmed by one account's emailed code ends as that account, read in
+	// this transaction: a link moved or removed since the code was sent does not make
+	// it sign in somebody else, or make anybody new.
+	if pending.RequireUserID != "" && (decision.Outcome != federation.SignIn || decision.UserID != pending.RequireUserID) {
+		s.log.InfoContext(ctx, "a confirmed sign-in no longer leads to the account it was confirmed by",
+			"slug", provider.Slug, "outcome", decision.Outcome.String(), "correlation_id", correlationID(ctx))
+		fail("federr.crossnoaccount")
+		return
+	}
 
 	email, verified := federation.EmailToRecord(ext, provider.Policy)
 	var userID string

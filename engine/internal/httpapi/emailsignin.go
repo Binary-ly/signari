@@ -233,7 +233,10 @@ func (s *Server) startEmailSignIn(ctx context.Context, userID, orgID string) (st
 	return id, nil
 }
 
-// deliverSignInCode sends the code a NoticeSignInCode names, minting it now.
+// deliverSignInCode sends the code a NoticeSignInCode or a NoticeWalletConfirm names,
+// minting it now, in words that say which it is: a code to sign in with, or one that
+// finishes a wallet's answer from another device, which the holder must hear is
+// somebody else's to ask for when it was not theirs.
 func (s *Server) deliverSignInCode(ctx context.Context, n store.AccountNotice) error {
 	var email string
 	if err := s.db.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users
@@ -250,8 +253,12 @@ func (s *Server) deliverSignInCode(ctx context.Context, n store.AccountNotice) e
 		return err
 	}
 	tr := s.notifierFor(ctx, n.UserID)
-	return s.sendMailTo(ctx, n.UserID, mail.Message{To: email, Subject: tr.Text("mail.emailsignin.subject"),
-		Body: tr.Text("mail.emailsignin.body", map[string]any{
+	key := "mail.emailsignin"
+	if n.Notice == store.NoticeWalletConfirm {
+		key = "mail.walletconfirm"
+	}
+	return s.sendMailTo(ctx, n.UserID, mail.Message{To: email, Subject: tr.Text(key + ".subject"),
+		Body: tr.Text(key+".body", map[string]any{
 			"Code": code, "Until": expires.UTC().Format("15:04 MST"),
 		})})
 }

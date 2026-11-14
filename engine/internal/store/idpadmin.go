@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/oid4vp"
 )
 
 // An upstream identity provider's settings as `signari idp` and the Admin API
@@ -80,13 +81,17 @@ type IdentityProviderChange struct {
 	// StoreTokens keeps what the provider hands over at a sign-in. Turning it off
 	// keeps nobody's sign-in from working and removes everything already kept.
 	StoreTokens *bool
+	// CrossDevice lets a wallet sign-in's wallet be on another device, confirmed by a
+	// code emailed to the account. A wallet sign-in's alone.
+	CrossDevice *bool
 }
 
 // Empty reports whether the change names nothing.
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
-		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil && c.StoreTokens == nil
+		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil && c.StoreTokens == nil &&
+		c.CrossDevice == nil
 }
 
 // checkForwardParameters refuses a name nothing would pass on, and a provider with no
@@ -262,6 +267,26 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 	}
 	if c.StoreTokens != nil && *c.StoreTokens && (kind == "saml" || kind == "assertion") {
 		return idpInvalid{fmt.Sprintf("%s is a %s provider, which hands over no token to keep", slug, kind)}
+	}
+	if c.CrossDevice != nil {
+		if kind != "oid4vp" {
+			return idpInvalid{fmt.Sprintf("%s is a %s provider, and only a wallet sign-in has a wallet on another device",
+				slug, kind)}
+		}
+		var prefix string
+		if err := q.QueryRow(ctx, `SELECT x.client_id_prefix FROM core.vp_verifiers x
+			JOIN core.identity_providers p ON p.id = x.provider_id
+			WHERE p.org_id = $1::uuid AND p.slug = $2`, orgID, slug).Scan(&prefix); err != nil {
+			return err
+		}
+		if p, err := oid4vp.ParsePrefix(prefix); *c.CrossDevice && (err != nil || !p.Signed()) {
+			return idpInvalid{crossDeviceNeedsSigning}
+		}
+		if _, err := q.Exec(ctx, `UPDATE core.vp_verifiers x SET cross_device = $3
+			FROM core.identity_providers p
+			WHERE x.provider_id = p.id AND p.org_id = $1::uuid AND p.slug = $2`, orgID, slug, *c.CrossDevice); err != nil {
+			return err
+		}
 	}
 	if c.StoreTokens != nil && !*c.StoreTokens {
 		if _, err := q.Exec(ctx, `DELETE FROM core.federated_tokens t USING core.identity_providers p

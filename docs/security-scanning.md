@@ -400,7 +400,17 @@ chain. It is a path the operator names on their own command line, the class abov
 What is read has to be whole PEM CA certificates or it is refused, and nothing in it
 leaves the process but the certificates themselves.
 
-**Baseline: 179**, every line with its reason in `engine/gosec-baseline.txt`.
+**179 to 181:** two in `internal/httpapi/oid4vp.go`, from the wallet on another
+device. A `G203` for the QR code's SVG, which the encoder writes from a matrix of
+booleans, as the enrolment page's is. A `G710` on the redirect to the wallet, which
+was there before: what the request now picks is a boolean, this device or the page,
+and gosec's taint follows it into the address. The address is the configured wallet
+URL with this server's own `client_id` and `request_uri`. Checked against
+`signari serve` with `device` and `return` set to other origins: every answer sent the
+browser to the wallet URL, and `return` reached only the pending sign-in, through
+the same validation as every provider's.
+
+**Baseline: 181**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

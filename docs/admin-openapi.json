@@ -14568,6 +14568,9 @@
                   "client_secret": {
                     "type": "string"
                   },
+                  "cross_device": {
+                    "type": "boolean"
+                  },
                   "email_claim": {
                     "type": "string"
                   },
@@ -14811,6 +14814,9 @@
                 "additionalProperties": false,
                 "properties": {
                   "allow_assertions": {
+                    "type": "boolean"
+                  },
+                  "cross_device": {
                     "type": "boolean"
                   },
                   "enabled": {

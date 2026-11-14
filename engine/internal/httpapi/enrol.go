@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"signari.dev/engine/internal/mail"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -453,6 +454,10 @@ func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status
 	// ceremony's requests, same-origin and never inline, only on a page that
 	// says it loads them.
 	if on, _ := data["PasskeyScript"].(bool); on {
+		script, connect = append(script, "'self'"), append(connect, "'self'")
+	}
+	// The cross-device wallet page's /static/wallet-wait.js, and the wait address it asks.
+	if on, _ := data["WalletScript"].(bool); on && !slices.Contains(script, "'self'") {
 		script, connect = append(script, "'self'"), append(connect, "'self'")
 	}
 	if on, _ := data["Captcha"].(bool); on {

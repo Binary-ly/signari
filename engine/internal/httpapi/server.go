@@ -764,6 +764,11 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("POST /oid4vp/{slug}/request/{state}", s.handleVPRequest)
 	mux.HandleFunc("POST /oid4vp/{slug}/response", s.handleVPResponse)
 	mux.HandleFunc("GET /oid4vp/{slug}/done", s.handleVPDone)
+	// The wallet on another device: the page waits, then takes the account's code.
+	mux.HandleFunc("GET /oid4vp/{slug}/wait", s.handleVPWait)
+	mux.HandleFunc("GET /oid4vp/{slug}/confirm", s.handleVPConfirmPage)
+	mux.HandleFunc("POST /oid4vp/{slug}/confirm", s.handleVPConfirm)
+	mux.HandleFunc("GET /static/wallet-wait.js", s.handleWalletWaitJS)
 
 	// SCIM as a source: an upstream provisions users INTO this engine. The
 	// mirror of internal/scim's client, which pushes them out.

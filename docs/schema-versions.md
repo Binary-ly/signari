@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0299 vp_cross_device
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may offer the wallet on another device, by a code to scan, when its operator turns that on (vp_verifiers.cross_device, off by default). The verifier cannot tell that answer from one an attacker relayed to somebody else's phone (specs/oid4vp.txt:2032-2037), so it signs nobody in until a code emailed to the linked account's own address is typed where the sign-in began. A cross-device request is marked on its pending sign-in, its answer is kept there sealed under the root key, and the code that confirms it is named there too. Compatible with the previous release, which reads none of it and offers the same device alone.
+
 ## 0298 vp_issuer_x5c
 
 Not compatible with the release before: stop it before migrating.

@@ -91,6 +91,7 @@ var EventTypes = []string{
 	"directory.scheduled_sync",
 	"federation.account_linked", "federation.account_unlinked", "federation.backchannel_logout",
 	"federation.client_registered", "federation.groups_synced", "federation.refused", "federation.token_read", "federation.user_created",
+	"federation.wallet_code_sent",
 	"impersonation.ended", "impersonation.refused", "impersonation.started",
 	"kerberos.user_created", "keys.rotated",
 	"ldap.entry_created", "ldap.entry_deleted", "ldap.entry_modified", "ldap.entry_renamed",

@@ -101,6 +101,11 @@ var mustBeReachable = []capability{
 	{"issuerKeysFromChain", "an issuer believed by certificate is never checked along its chain, " +
 		"so the roots an operator gave decide nothing"},
 	{"checkChainRevocation", "an issuer certificate its authority revoked keeps signing people in"},
+	{"PresentVPCrossDevice", "a wallet answering from another device is refused or, worse, handed a response " +
+		"code that finishes the sign-in without the account's emailed code"},
+	{"StartVPConfirmation", "the account a cross-device answer names is never sent its code, so the page waits " +
+		"for one that never comes"},
+	{"VPCrossDeviceAnswer", "the page a cross-device sign-in began on never learns the wallet answered"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

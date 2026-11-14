@@ -3654,6 +3654,7 @@ export interface PatchOrganizationsOrgIDDirectoriesSlugResponse {
 /** A JSON object of the Admin API. */
 export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   allow_assertions?: boolean
+  cross_device?: boolean
   enabled?: boolean
   end_session_url?: string
   forward_parameters?: string[]
@@ -4245,6 +4246,7 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   client_id?: string
   client_id_prefix?: string
   client_secret?: string
+  cross_device?: boolean
   email_claim?: string
   entity_id?: string
   force_authn?: boolean

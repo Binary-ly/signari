@@ -67,6 +67,26 @@ func idpAddVP(ctx context.Context, conn *pgx.Conn, orgID, slug, name string, all
 	return nil
 }
 
+// idpVPCrossDevice lets a wallet sign-in's wallet be on another device, or with -remove
+// stops it.
+func idpVPCrossDevice(ctx context.Context, conn *pgx.Conn, slug string, on bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug, the wallet sign-in")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{CrossDevice: &on}); err != nil {
+		return err
+	}
+	if !on {
+		fmt.Printf("%s: the wallet has to be on the device the sign-in began on\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: the sign-in page offers a code to scan with a wallet on another device too.\n", slug)
+	fmt.Println("  Such an answer cannot be told from one somebody relayed to another person's phone, so it")
+	fmt.Println("  signs in only an account already linked to the credential, and only once the code emailed")
+	fmt.Println("  to that account's address is typed where the sign-in began. Mail has to be set up.")
+	return nil
+}
+
 // idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile, with
 // -keys-from-metadata those its metadata publishes, or with -root-cert the key of the
 // certificate chain its credentials carry to those roots; or with -remove stops

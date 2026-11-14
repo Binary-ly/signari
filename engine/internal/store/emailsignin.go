@@ -36,6 +36,13 @@ var ErrEmailSignInInvalid = errors.New("no live sign-in code")
 // browser that asked holds it, and a code another browser asked for, or an
 // earlier request made, is no code there.
 func StartEmailSignIn(ctx context.Context, tx pgx.Tx, userID, orgID string) (string, error) {
+	return startEmailCode(ctx, tx, userID, orgID, NoticeSignInCode)
+}
+
+// startEmailCode makes the live code row and queues notice, which says what the code is
+// for: signing in with it alone, or confirming a wallet's answer from another device
+// (StartVPConfirmation). One live code per person, whichever it is for.
+func startEmailCode(ctx context.Context, tx pgx.Tx, userID, orgID, notice string) (string, error) {
 	var id string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO core.email_sign_in_codes (user_id, org_id, expires_at)
@@ -43,9 +50,9 @@ func StartEmailSignIn(ctx context.Context, tx pgx.Tx, userID, orgID string) (str
 		ON CONFLICT (user_id) DO UPDATE SET id = gen_random_uuid(), code_hash = NULL, attempts = 0,
 		       created_at = now(), expires_at = EXCLUDED.expires_at
 		RETURNING id::text`, userID, orgID, int(EmailSignInTTL.Seconds())).Scan(&id); err != nil {
-		return "", fmt.Errorf("starting an emailed sign-in: %w", err)
+		return "", fmt.Errorf("starting an emailed code: %w", err)
 	}
-	return id, EnqueueAccountNotice(ctx, tx, AccountNotice{UserID: userID, Notice: NoticeSignInCode, LinkID: id})
+	return id, EnqueueAccountNotice(ctx, tx, AccountNotice{UserID: userID, Notice: notice, LinkID: id})
 }
 
 // MintEmailSignInCode makes the code for row id, when it is still the live one

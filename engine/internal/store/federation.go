@@ -292,6 +292,13 @@ type PendingLogin struct {
 	// presentation proved, sealed (PresentVP), and the hash of the code the
 	// browser brings back for it. Nil until the wallet has answered.
 	VPPresented, VPResponseCodeHash []byte
+	// VPCrossDevice marks a wallet sign-in whose wallet may be on another device: it is
+	// handed no response code, and only a code emailed to the account finishes it.
+	VPCrossDevice bool
+	// RequireUserID, when set, is the one account this sign-in may finish as: a
+	// cross-device wallet sign-in confirmed by that account's emailed code. Never
+	// stored; completeFederation refuses anything else, a new account included.
+	RequireUserID string
 }
 
 // BeginFederatedLogin records an in-flight login and returns state and the
@@ -319,10 +326,10 @@ func BeginFederatedLogin(ctx context.Context, tx pgx.Tx, p PendingLogin) (state,
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.federated_logins
 			(state_hash, provider_id, org_id, nonce, code_verifier, binding_hash,
-			 link_user_id, return_to)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7,'')::uuid, NULLIF($8,''))`,
+			 link_user_id, return_to, vp_cross_device)
+		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7,'')::uuid, NULLIF($8,''), $9)`,
 		stateHash[:], p.ProviderID, p.OrgID, p.Nonce, p.CodeVerifier, bindingHash[:],
-		p.LinkUserID, p.ReturnTo); err != nil {
+		p.LinkUserID, p.ReturnTo, p.VPCrossDevice); err != nil {
 		return "", "", fmt.Errorf("recording the pending login: %w", err)
 	}
 	return state, binding, nil

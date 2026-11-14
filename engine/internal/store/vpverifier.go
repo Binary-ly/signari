@@ -54,6 +54,9 @@ type VPVerifier struct {
 	// IssuerRoots are believed by the certificate chain their credentials carry,
 	// each with the roots that chain has to lead to.
 	IssuerRoots map[string]*x509.CertPool
+	// CrossDevice offers the wallet on another device, by a code to scan, which
+	// signs nobody in until a code emailed to the account is typed here.
+	CrossDevice bool
 }
 
 // CredentialQueryID names the one credential a verifier asks for, in the query and in
@@ -86,14 +89,15 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		SELECT p.id::text, p.org_id::text, p.slug, p.display_name,
 		       p.allow_signup, p.allow_linking, p.require_verified_email, p.trust_email_verification,
 		       x.client_id_prefix, x.wallet_url, x.vct_values, x.subject_claim, x.email_claim,
-		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode
+		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode, x.cross_device
 		FROM core.identity_providers p
 		JOIN core.vp_verifiers x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'oid4vp' AND p.enabled`, slug).Scan(
 		&v.ProviderID, &v.OrgID, &v.Slug, &v.DisplayName,
 		&v.Policy.AllowSignup, &v.Policy.AllowLinking, &v.Policy.RequireVerifiedEmail,
 		&v.Policy.TrustsEmailVerification,
-		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode)
+		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode,
+		&v.CrossDevice)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrVPVerifierUnknown
 	}
@@ -180,7 +184,17 @@ type VPSpec struct {
 	// KeyPEM signs requests under an x509 prefix, and ChainPEM is its certificate
 	// chain, leaf first.
 	KeyPEM, ChainPEM string
+	// CrossDevice offers the wallet on another device too (VPVerifier.CrossDevice).
+	CrossDevice bool
 }
+
+// crossDeviceNeedsSigning is why a wallet on another device needs a signed request: the
+// wallet there has nothing but the request to show who is asking, which is the one thing
+// a person can check before answering a code somebody may have relayed to them
+// (specs/cross-device-security.txt, 6.1.14), and an unsigned request carries its whole
+// query in a URL too long for a code to scan.
+const crossDeviceNeedsSigning = "a wallet on another device needs a signed request (x509_san_dns or x509_hash): " +
+	"an unsigned one shows the wallet nobody it can check, and is too long for a code to scan"
 
 func (s *IdentityProviderSpec) validateVP() error {
 	v := s.VP
@@ -222,6 +236,9 @@ func (s *IdentityProviderSpec) validateVP() error {
 	}
 	if err := askOf(v).Validate(); err != nil {
 		return s.invalid("%v", err)
+	}
+	if v.CrossDevice && !prefix.Signed() {
+		return s.invalid(crossDeviceNeedsSigning)
 	}
 	switch {
 	case prefix.Signed() && (v.KeyPEM == "" || v.ChainPEM == ""):
@@ -277,10 +294,11 @@ func addVPVerifier(ctx context.Context, q outpostDB, root *keys.RootKey, orgID s
 	_, err := q.Exec(ctx, `
 		INSERT INTO core.vp_verifiers
 			(provider_id, org_id, client_id_prefix, wallet_url, vct_values, subject_claim, email_claim,
-			 name_claim, signing_key, certificate_chain, response_mode)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11)`,
+			 name_claim, signing_key, certificate_chain, response_mode, cross_device)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12)`,
 		id, orgID, s.VP.Prefix, s.VP.WalletURL, s.VP.VCTValues, canonicalPath(s.VP.SubjectClaim),
-		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode)
+		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode,
+		s.VP.CrossDevice)
 	return id, err
 }
 
@@ -447,27 +465,36 @@ func VPSubject(issuer, claim string) string { return issuer + vpSubjectSeparator
 // ErrVPRequestGone is a request that has expired, been answered or never existed.
 var ErrVPRequestGone = errors.New("this wallet request has expired or has been answered")
 
-// PendingVPRequest is an unanswered request: its nonce, and under direct_post.jwt the
-// key its answer is encrypted to, opened with the root key.
-func PendingVPRequest(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string) (
-	nonce string, responseKey []byte, err error) {
+// VPRequest is an unanswered request: its nonce, under direct_post.jwt the key its answer
+// is encrypted to, and whether its wallet may be on another device.
+type VPRequest struct {
+	Nonce       string
+	ResponseKey []byte
+	CrossDevice bool
+}
+
+// PendingVPRequest is the unanswered request state names, its response key opened with
+// the root key.
+func PendingVPRequest(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string) (VPRequest, error) {
 	h := sha256.Sum256([]byte(state))
+	var req VPRequest
 	var sealed []byte
-	err = q.QueryRow(ctx, `
-		SELECT nonce, vp_response_key FROM core.federated_logins
-		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL`,
-		h[:], providerID).Scan(&nonce, &sealed)
+	err := q.QueryRow(ctx, `
+		SELECT nonce, vp_response_key, vp_cross_device FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now()
+		  AND vp_presented IS NULL AND vp_cross_presented IS NULL`,
+		h[:], providerID).Scan(&req.Nonce, &sealed, &req.CrossDevice)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, ErrVPRequestGone
+		return VPRequest{}, ErrVPRequestGone
 	}
 	if err != nil || len(sealed) == 0 {
-		return nonce, nil, err
+		return req, err
 	}
 	if root == nil {
-		return "", nil, errors.New("opening a response key needs the root key")
+		return VPRequest{}, errors.New("opening a response key needs the root key")
 	}
-	responseKey, err = root.Open(sealed, sealContextVPResponseKey)
-	return nonce, responseKey, err
+	req.ResponseKey, err = root.Open(sealed, sealContextVPResponseKey)
+	return req, err
 }
 
 const sealContextVPResponseKey = "vp_response_key"
@@ -512,9 +539,12 @@ func PresentVP(ctx context.Context, q outpostDB, providerID, state string, prove
 	}
 	stateHash := sha256.Sum256([]byte(state))
 	codeHash := sha256.Sum256([]byte(code))
+	// Never for a cross-device request: its response code would finish it in whichever
+	// browser the wallet sent back, without the account's emailed code.
 	tag, err := q.Exec(ctx, `
 		UPDATE core.federated_logins SET vp_presented = $3, vp_response_code_hash = $4
-		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL`,
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL
+		  AND NOT vp_cross_device`,
 		stateHash[:], providerID, sealed, codeHash[:])
 	if err != nil {
 		return "", err
@@ -536,4 +566,103 @@ func OpenVPPresentation(p *PendingLogin, responseCode string) ([]byte, error) {
 		return nil, errors.New("that is not the code the wallet was given")
 	}
 	return openUnder([]byte(responseCode), vpPresentationContext, p.VPPresented, []byte(p.ProviderID))
+}
+
+// A cross-device wallet sign-in (12.12): the wallet answers from another device, so no
+// browser comes back with a response code, and the verifier cannot tell that answer from
+// one an attacker relayed to somebody else's phone (specs/oid4vp.txt:2032-2037). The
+// answer waits here, sealed under the root key, for the browser that began the sign-in;
+// that browser is then sent a code to the linked account's own address
+// (specs/cross-device-security.txt, 6.1.16), and only the code finishes it.
+
+const sealContextVPCross = "vp_cross_presented"
+
+// PresentVPCrossDevice records what a cross-device request's presentation proved. A
+// request is answered once.
+func PresentVPCrossDevice(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string,
+	proved []byte) error {
+	if root == nil {
+		return errors.New("sealing a cross-device answer needs the root key")
+	}
+	sealed, err := root.Seal(proved, sealContextVPCross)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256([]byte(state))
+	tag, err := q.Exec(ctx, `
+		UPDATE core.federated_logins SET vp_cross_presented = $3
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device
+		  AND vp_cross_presented IS NULL AND vp_presented IS NULL`, h[:], providerID, sealed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVPRequestGone
+	}
+	return nil
+}
+
+// ErrVPNotAnswered is a cross-device request the wallet has not answered yet.
+var ErrVPNotAnswered = errors.New("the wallet has not answered yet")
+
+// VPCrossDeviceAnswer is what a cross-device request's answer proved and the attempt
+// its confirming code was sent for ("" before one was), for the browser holding binding
+// alone. Nothing is consumed: the browser asks again until it can finish.
+func VPCrossDeviceAnswer(ctx context.Context, q rowQuerier, root *keys.RootKey, providerID, state, binding string) (
+	proved []byte, attempt string, err error) {
+	h := sha256.Sum256([]byte(state))
+	var held, sealed []byte
+	err = q.QueryRow(ctx, `
+		SELECT binding_hash, vp_cross_presented, COALESCE(vp_confirm_attempt::text, '')
+		FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device`,
+		h[:], providerID).Scan(&held, &sealed, &attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrFederatedLoginGone
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	want := sha256.Sum256([]byte(binding))
+	if !constantTimeEqual(held, want[:]) {
+		return nil, "", ErrFederatedLoginOtherBrowser
+	}
+	if len(sealed) == 0 {
+		return nil, "", ErrVPNotAnswered
+	}
+	if root == nil {
+		return nil, "", errors.New("opening a cross-device answer needs the root key")
+	}
+	proved, err = root.Open(sealed, sealContextVPCross)
+	return proved, attempt, err
+}
+
+// StartVPConfirmation queues a code to userID's address to confirm the answered
+// cross-device sign-in state names, once, and reports whether it did: false is a code
+// already sent for this sign-in, which is then the browser's to type. The pending row is
+// locked first, so two browsers' requests at once send one code, and a code already sent
+// is never replaced by one bound to nobody.
+func StartVPConfirmation(ctx context.Context, tx pgx.Tx, userID, orgID, providerID, state string) (bool, error) {
+	h := sha256.Sum256([]byte(state))
+	var sent bool
+	err := tx.QueryRow(ctx, `
+		SELECT vp_confirm_attempt IS NOT NULL FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device
+		  AND vp_cross_presented IS NOT NULL
+		FOR UPDATE`, h[:], providerID).Scan(&sent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrFederatedLoginGone
+	}
+	if err != nil || sent {
+		return false, err
+	}
+	attempt, err := startEmailCode(ctx, tx, userID, orgID, NoticeWalletConfirm)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.federated_logins SET vp_confirm_attempt = $3::uuid
+		WHERE state_hash = $1 AND provider_id = $2::uuid`, h[:], providerID, attempt); err != nil {
+		return false, err
+	}
+	return true, nil
 }

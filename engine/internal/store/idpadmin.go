@@ -86,7 +86,7 @@ type IdentityProviderChange struct {
 func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
-		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil
+		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil && c.StoreTokens == nil
 }
 
 // checkForwardParameters refuses a name nothing would pass on, and a provider with no

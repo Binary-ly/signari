@@ -271,6 +271,18 @@ func TestAnIdentityProviderIsConfiguredThroughTheAPI(t *testing.T) {
 	if e := errorOf(http.MethodPatch, path, map[string]any{}, http.StatusBadRequest); e != "nothing_to_change" {
 		t.Errorf("an empty change answered %q", e)
 	}
+	// Keeping a provider's tokens is a change on its own, as `idp store-tokens` makes it:
+	// it was read as nothing to change, so it could only be made beside another.
+	for _, keep := range []bool{false, true} {
+		if rec := call(t, s, http.MethodPatch, path, testToken, map[string]any{"store_tokens": keep}); rec.Code != http.StatusOK {
+			t.Fatalf("store_tokens %v alone answered %d %s", keep, rec.Code, rec.Body)
+		}
+		var kept bool
+		if err := s.db.QueryRow(ctx, `SELECT store_tokens FROM core.identity_providers WHERE slug = $1`,
+			slug).Scan(&kept); err != nil || kept != keep {
+			t.Errorf("after store_tokens %v alone the provider keeps %v, %v", keep, kept, err)
+		}
+	}
 	if e := errorOf(http.MethodPatch, "/admin/organizations/"+org+"/identity-providers/elsewhere",
 		map[string]any{"enabled": false}, http.StatusNotFound); e != "provider_not_found" {
 		t.Errorf("an unknown provider answered %q", e)

@@ -185,14 +185,17 @@ func (s *Server) vpTarget(v *store.VPVerifier, clientID, nonce, state string, re
 // on another, which this page then waits on. notice is a key said above both, or "".
 func (s *Server) renderVPChoice(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, state, target,
 	returnTo, notice string) {
-	base := "/oid4vp/" + url.PathEscape(v.Slug)
-	here := base + "/start?device=this"
-	if returnTo != "" {
-		here += "&return=" + url.QueryEscape(returnTo)
+	// Each a route of this verifier's, /oid4vp/{slug}/..., as the journey tests drive them.
+	at := func(route string, q url.Values) string {
+		return (&url.URL{Path: "/oid4vp/" + v.Slug + "/" + route, RawQuery: q.Encode()}).String()
 	}
-	data := map[string]any{"Mode": "choose", "Provider": v.DisplayName, "HereURL": here,
-		"WaitURL": base + "/wait?" + url.Values{"state": {state}}.Encode(),
-		"NextURL": base + "/confirm?" + url.Values{"state": {state}}.Encode(), "WalletScript": true}
+	here := url.Values{"device": {"this"}}
+	if returnTo != "" {
+		here.Set("return", returnTo)
+	}
+	data := map[string]any{"Mode": "choose", "Provider": v.DisplayName, "HereURL": at("start", here),
+		"WaitURL": at("wait", url.Values{"state": {state}}),
+		"NextURL": at("confirm", url.Values{"state": {state}}), "WalletScript": true}
 	if notice != "" {
 		data["Notice"] = s.tr(r).Text(notice)
 	}
@@ -618,26 +621,61 @@ func (s *Server) handleVPConfirmPage(w http.ResponseWriter, r *http.Request) {
 		s.federationRefusal(w, r, key)
 		return
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.federationRefusal(w, r, "federr.generic")
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	sent, err := store.StartVPConfirmation(ctx, tx, userID, v.OrgID, v.ProviderID, state)
-	if err == nil && sent {
-		err = audit.Write(ctx, tx, audit.Event{Type: "federation.wallet_code_sent", OrgID: v.OrgID, SubjectID: userID,
-			CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": v.Slug}})
-	}
-	if err == nil {
-		err = tx.Commit(ctx)
-	}
-	if err != nil {
+	if err := s.sendVPCode(ctx, v, userID, state); err != nil {
 		s.log.ErrorContext(ctx, "sending a cross-device wallet code", "slug", v.Slug, "err", err)
 		s.federationRefusal(w, r, federatedLoginRefusal(err))
 		return
 	}
 	s.renderVPCode(w, r, v, state, "")
+}
+
+// sendVPCode queues userID's code for the cross-device sign-in state names, once, in a
+// transaction of its own that is over before anything is rendered: a page reads the
+// brand from the pool.
+func (s *Server) sendVPCode(ctx context.Context, v *store.VPVerifier, userID, state string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sent, err := store.StartVPConfirmation(ctx, tx, userID, v.OrgID, v.ProviderID, state)
+	if err != nil {
+		return err
+	}
+	if sent {
+		if err := audit.Write(ctx, tx, audit.Event{Type: "federation.wallet_code_sent", OrgID: v.OrgID,
+			SubjectID: userID, CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": v.Slug}}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// spendVPCode checks code for userID against the attempt it was sent for and, when it
+// is right, consumes the sign-in the browser holding binding began, all in one
+// transaction that is over when it returns. A wrong code is counted against the code
+// and the sign-in is kept; ok is false.
+func (s *Server) spendVPCode(ctx context.Context, v *store.VPVerifier, userID, attempt, state, binding,
+	code string) (pending *store.PendingLogin, ok bool, err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if ok, err = store.VerifyEmailSignIn(ctx, tx, userID, attempt, code); err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		// Committed: the count against the code outlives the refusal.
+		return nil, false, tx.Commit(ctx)
+	}
+	if pending, err = store.ConsumeFederatedLogin(ctx, tx, state, binding); err != nil {
+		return nil, true, err
+	}
+	if pending.ProviderID != v.ProviderID {
+		return nil, true, store.ErrFederatedLoginGone
+	}
+	return pending, true, tx.Commit(ctx)
 }
 
 // vpCrossDeviceProved reads what a cross-device answer proved and the account it signs
@@ -743,40 +781,18 @@ func (s *Server) handleVPConfirm(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSecondFactorAttempt(ctx, w, userID, ip) {
 		return
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.federationRefusal(w, r, "federr.generic")
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	ok, err := store.VerifyEmailSignIn(ctx, tx, userID, attempt, strings.TrimSpace(r.PostForm.Get("code")))
-	if err != nil {
-		s.log.ErrorContext(ctx, "checking a cross-device wallet code", "err", err)
-		s.federationRefusal(w, r, "federr.generic")
-		return
-	}
-	if !ok {
-		// Committed: the count against the code outlives the refusal.
-		if err := tx.Commit(ctx); err != nil {
-			s.log.ErrorContext(ctx, "committing a wrong cross-device wallet code", "err", err)
-		}
-		s.recordSecondFactorFailure(ctx, userID, ip)
-		s.auditDetached(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: v.OrgID, SubjectID: userID,
-			CorrelationID: correlationID(ctx), Detail: map[string]any{"reason": "bad_wallet_code", "provider": v.Slug}})
-		s.renderVPCode(w, r, v, state, s.tr(r).Text("wallet.code.wrong"))
-		return
-	}
-	pending, err := store.ConsumeFederatedLogin(ctx, tx, state, c.Value)
-	if err == nil && pending.ProviderID != v.ProviderID {
-		err = store.ErrFederatedLoginGone
-	}
-	if err == nil {
-		err = tx.Commit(ctx)
-	}
+	pending, ok, err := s.spendVPCode(ctx, v, userID, attempt, state, c.Value, strings.TrimSpace(r.PostForm.Get("code")))
 	if err != nil {
 		s.log.InfoContext(ctx, "a cross-device wallet sign-in was refused", "slug", v.Slug, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.federationRefusal(w, r, federatedLoginRefusal(err))
+		return
+	}
+	if !ok {
+		s.recordSecondFactorFailure(ctx, userID, ip)
+		s.auditDetached(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: v.OrgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx), Detail: map[string]any{"reason": "bad_wallet_code", "provider": v.Slug}})
+		s.renderVPCode(w, r, v, state, s.tr(r).Text("wallet.code.wrong"))
 		return
 	}
 	s.clearFederationCookie(w)

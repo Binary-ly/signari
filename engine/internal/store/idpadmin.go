@@ -84,6 +84,9 @@ type IdentityProviderChange struct {
 	// CrossDevice lets a wallet sign-in's wallet be on another device, confirmed by a
 	// code emailed to the account. A wallet sign-in's alone.
 	CrossDevice *bool
+	// DCAPI has a wallet sign-in ask through the browser's Digital Credentials API too.
+	// A wallet sign-in's alone.
+	DCAPI *bool
 }
 
 // Empty reports whether the change names nothing.
@@ -91,7 +94,7 @@ func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
 		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil && c.StoreTokens == nil &&
-		c.CrossDevice == nil
+		c.CrossDevice == nil && c.DCAPI == nil
 }
 
 // checkForwardParameters refuses a name nothing would pass on, and a provider with no
@@ -285,6 +288,17 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		if _, err := q.Exec(ctx, `UPDATE core.vp_verifiers x SET cross_device = $3
 			FROM core.identity_providers p
 			WHERE x.provider_id = p.id AND p.org_id = $1::uuid AND p.slug = $2`, orgID, slug, *c.CrossDevice); err != nil {
+			return err
+		}
+	}
+	if c.DCAPI != nil {
+		if kind != "oid4vp" {
+			return idpInvalid{fmt.Sprintf("%s is a %s provider, and only a wallet sign-in asks a browser for a credential",
+				slug, kind)}
+		}
+		if _, err := q.Exec(ctx, `UPDATE core.vp_verifiers x SET dc_api = $3
+			FROM core.identity_providers p
+			WHERE x.provider_id = p.id AND p.org_id = $1::uuid AND p.slug = $2`, orgID, slug, *c.DCAPI); err != nil {
 			return err
 		}
 	}

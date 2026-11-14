@@ -2200,6 +2200,7 @@ type PatchOrganizationsOrgIDDirectoriesSlugResponse struct {
 type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	AllowAssertions        *bool     `json:"allow_assertions,omitempty"`
 	CrossDevice            *bool     `json:"cross_device,omitempty"`
+	DcAPI                  *bool     `json:"dc_api,omitempty"`
 	Enabled                *bool     `json:"enabled,omitempty"`
 	EndSessionURL          *string   `json:"end_session_url,omitempty"`
 	ForwardParameters      *[]string `json:"forward_parameters,omitempty"`
@@ -2792,6 +2793,7 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	ClientIDPrefix         *string   `json:"client_id_prefix,omitempty"`
 	ClientSecret           *string   `json:"client_secret,omitempty"`
 	CrossDevice            *bool     `json:"cross_device,omitempty"`
+	DcAPI                  *bool     `json:"dc_api,omitempty"`
 	EmailClaim             *string   `json:"email_claim,omitempty"`
 	EntityID               *string   `json:"entity_id,omitempty"`
 	ForceAuthn             *bool     `json:"force_authn,omitempty"`

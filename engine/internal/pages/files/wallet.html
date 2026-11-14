@@ -15,6 +15,18 @@
 {{else}}
 <h1>{{T "wallet.title"}}</h1>
 {{if .Notice}}<p class="note" role="status">{{.Notice}}</p>{{end}}
+{{if .DCProtocol}}
+<div id="wallet-dcapi" hidden data-protocol="{{.DCProtocol}}" data-request="{{.DCRequest}}">
+<form id="wallet-dcapi-form" method="POST" action="{{.DCAction}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="state" value="{{.DCState}}">
+<input type="hidden" name="response" value="">
+<button type="button" id="wallet-dcapi-go">{{T "wallet.dcapi"}}</button>
+</form>
+<p id="wallet-dcapi-failed" class="err" role="alert" hidden>{{T "wallet.dcapi.failed"}}</p>
+</div>
+<script src="/static/wallet-dcapi.js"></script>
+{{end}}
 <p><a href="{{.HereURL}}">{{T "wallet.here"}}</a></p>
 {{if .QR}}
 <h2>{{T "wallet.other"}}</h2>

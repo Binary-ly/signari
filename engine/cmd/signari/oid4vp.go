@@ -87,6 +87,25 @@ func idpVPCrossDevice(ctx context.Context, conn *pgx.Conn, slug string, on bool)
 	return nil
 }
 
+// idpVPDCAPI has a wallet sign-in ask through the browser's Digital Credentials API too,
+// or with -remove stops it.
+func idpVPDCAPI(ctx context.Context, conn *pgx.Conn, slug string, on bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug, the wallet sign-in")
+	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{DCAPI: &on}); err != nil {
+		return err
+	}
+	if !on {
+		fmt.Printf("%s: the browser's Digital Credentials API is not asked\n", slug)
+		return nil
+	}
+	fmt.Printf("%s: where a browser offers its Digital Credentials API, the sign-in page asks through it too.\n", slug)
+	fmt.Println("  The answer comes back to that page and is held to this server's origin; a request")
+	fmt.Println("  asked that way is answered no other way.")
+	return nil
+}
+
 // idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile, with
 // -keys-from-metadata those its metadata publishes, or with -root-cert the key of the
 // certificate chain its credentials carry to those roots; or with -remove stops

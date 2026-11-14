@@ -295,6 +295,13 @@ type PendingLogin struct {
 	// VPCrossDevice marks a wallet sign-in whose wallet may be on another device: it is
 	// handed no response code, and only a code emailed to the account finishes it.
 	VPCrossDevice bool
+	// VPDCAPI marks a wallet sign-in asked through the browser's Digital Credentials
+	// API: answered only through the page that asked, never at the response URI.
+	VPDCAPI bool
+	// Binding, when set, is the browser binding to record instead of a new one, so
+	// one page's several requests are held by the one cookie it sets. Never stored
+	// as given: its hash is.
+	Binding string
 	// RequireUserID, when set, is the one account this sign-in may finish as: a
 	// cross-device wallet sign-in confirmed by that account's emailed code. Never
 	// stored; completeFederation refuses anything else, a new account included.
@@ -316,9 +323,10 @@ func BeginFederatedLogin(ctx context.Context, tx pgx.Tx, p PendingLogin) (state,
 	if err != nil {
 		return "", "", err
 	}
-	binding, err = newOpaqueID()
-	if err != nil {
-		return "", "", err
+	if binding = p.Binding; binding == "" {
+		if binding, err = newOpaqueID(); err != nil {
+			return "", "", err
+		}
 	}
 	stateHash := sha256.Sum256([]byte(state))
 	bindingHash := sha256.Sum256([]byte(binding))
@@ -326,10 +334,10 @@ func BeginFederatedLogin(ctx context.Context, tx pgx.Tx, p PendingLogin) (state,
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.federated_logins
 			(state_hash, provider_id, org_id, nonce, code_verifier, binding_hash,
-			 link_user_id, return_to, vp_cross_device)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7,'')::uuid, NULLIF($8,''), $9)`,
+			 link_user_id, return_to, vp_cross_device, vp_dc_api)
+		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7,'')::uuid, NULLIF($8,''), $9, $10)`,
 		stateHash[:], p.ProviderID, p.OrgID, p.Nonce, p.CodeVerifier, bindingHash[:],
-		p.LinkUserID, p.ReturnTo, p.VPCrossDevice); err != nil {
+		p.LinkUserID, p.ReturnTo, p.VPCrossDevice, p.VPDCAPI); err != nil {
 		return "", "", fmt.Errorf("recording the pending login: %w", err)
 	}
 	return state, binding, nil

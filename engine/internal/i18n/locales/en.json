@@ -39,6 +39,8 @@
   "mail.emailsignin.body": "Your code to sign in is {Code}. It works until {Until}.\n\nIf you did not ask for it, you can ignore this: nobody can sign in with your account without the code, and it will stop working by itself.",
   "wallet.title": "Sign in with your wallet",
   "wallet.here": "Open the wallet on this device",
+  "wallet.dcapi": "Use a wallet through this browser",
+  "wallet.dcapi.failed": "Your browser did not bring back a credential. Try again, or use one of the ways below.",
   "wallet.other": "Or use the wallet on your phone",
   "wallet.scan": "Scan this QR code with your wallet app and share what it asks for. We will then email a six-digit code to the address on your account; type it here to finish.",
   "wallet.qr": "A QR code to scan with your wallet app",

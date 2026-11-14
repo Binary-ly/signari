@@ -769,6 +769,9 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /oid4vp/{slug}/confirm", s.handleVPConfirmPage)
 	mux.HandleFunc("POST /oid4vp/{slug}/confirm", s.handleVPConfirm)
 	mux.HandleFunc("GET /static/wallet-wait.js", s.handleWalletWaitJS)
+	// The browser's Digital Credentials API: the page posts back what it brought.
+	mux.HandleFunc("POST /oid4vp/{slug}/dcapi", s.handleVPDCAPI)
+	mux.HandleFunc("GET /static/wallet-dcapi.js", s.handleWalletDCAPIJS)
 
 	// SCIM as a source: an upstream provisions users INTO this engine. The
 	// mirror of internal/scim's client, which pushes them out.

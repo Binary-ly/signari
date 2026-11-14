@@ -299,6 +299,7 @@ federation in:
   idp add-issuer            register a key-publishing issuer for the jwt-bearer grant
   idp vp-issuer             say whose credentials a wallet sign-in believes, with their keys
   idp vp-cross-device       let a wallet sign-in's wallet be on another device, confirmed by email
+  idp vp-dc-api             let a wallet sign-in ask through the browser's Digital Credentials API
   idp link                  make an upstream subject act as a person
   idp unlink                detach an upstream subject from its person
   idp links                 a provider's subjects and the people they act as
@@ -906,6 +907,8 @@ func run(args []string) (err error) {
 		"direct_post.jwt for the answer encrypted to a key of each request's own")
 	vpCrossDevice := fs.Bool("cross-device", false, "`idp add -kind oid4vp`: let the wallet be on another device "+
 		"too, by a code to scan, finished only by a code emailed to the linked account (a signed prefix only)")
+	vpDCAPI := fs.Bool("dc-api", false, "`idp add -kind oid4vp`: ask through the browser's Digital Credentials "+
+		"API too, the answer bound to this origin")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
@@ -2183,6 +2186,8 @@ func run(args []string) (err error) {
 		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *keysFromMetadata, *credRootCert, *removeMember)
 	case "idp vp-cross-device":
 		return idpVPCrossDevice(ctx, conn, *slug, !*removeMember)
+	case "idp vp-dc-api":
+		return idpVPDCAPI(ctx, conn, *slug, !*removeMember)
 	case "idp link":
 		return idpLink(ctx, conn, *slug, *subject, *email)
 	case "idp unlink":
@@ -2204,7 +2209,7 @@ func run(args []string) (err error) {
 			return idpAddVP(ctx, conn, *orgID, *slug, *name, *allowSignup, *allowLinking, *trustEmail,
 				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, ResponseMode: *vpResponseMode,
 					VCTValues: splitList(*credVCT), SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName,
-					CrossDevice: *vpCrossDevice},
+					CrossDevice: *vpCrossDevice, DCAPI: *vpDCAPI},
 				*idpClientKeyFile, *idpClientCertFile)
 		}
 		nameID := *nameIDFormat

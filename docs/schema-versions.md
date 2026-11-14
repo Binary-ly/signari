@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0300 vp_dc_api
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may ask through the browser's Digital Credentials API, when its operator turns that on (vp_verifiers.dc_api, off by default): the request goes to the browser in the page, and the wallet's answer comes back to that page, bound to its origin (specs/oid4vp.txt:2423-2689). Such a request is marked on its pending sign-in, so it is never answered at the response URI or by a response code. Compatible with the previous release, which reads none of it and offers the other ways alone.
+
 ## 0299 vp_cross_device
 
 Compatible with the release before: its binary may still serve this schema.

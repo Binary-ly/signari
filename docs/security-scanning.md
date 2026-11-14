@@ -410,7 +410,12 @@ URL with this server's own `client_id` and `request_uri`. Checked against
 browser to the wallet URL, and `return` reached only the pending sign-in, through
 the same validation as every provider's.
 
-**Baseline: 181**, every line with its reason in `engine/gosec-baseline.txt`.
+**181 to 180:** that `G710` went when the start handler was rebuilt for the browser's
+Digital Credentials API. The way to this device now begins its request in a helper and
+redirects to what that returns, and gosec no longer follows the request's choice into
+the address. The redirect is the same one, to the same configured wallet URL.
+
+**Baseline: 180**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

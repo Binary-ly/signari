@@ -14571,6 +14571,9 @@
                   "cross_device": {
                     "type": "boolean"
                   },
+                  "dc_api": {
+                    "type": "boolean"
+                  },
                   "email_claim": {
                     "type": "string"
                   },
@@ -14817,6 +14820,9 @@
                     "type": "boolean"
                   },
                   "cross_device": {
+                    "type": "boolean"
+                  },
+                  "dc_api": {
                     "type": "boolean"
                   },
                   "enabled": {

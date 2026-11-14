@@ -106,6 +106,10 @@ var mustBeReachable = []capability{
 	{"StartVPConfirmation", "the account a cross-device answer names is never sent its code, so the page waits " +
 		"for one that never comes"},
 	{"VPCrossDeviceAnswer", "the page a cross-device sign-in began on never learns the wallet answered"},
+	{"ReadDCAPIAnswer", "what the browser's Digital Credentials API brings back is never read, so the button " +
+		"signs nobody in"},
+	{"OriginAudience", "an answer through the browser is checked as made for the client identifier, which " +
+		"the appendix says it never is, and every real wallet's is refused"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

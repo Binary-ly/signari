@@ -144,6 +144,18 @@ func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
 	if rec := call(t, s, http.MethodPatch, base+"/"+slug, testToken, map[string]any{"cross_device": false}); rec.Code != http.StatusOK {
 		t.Errorf("keeping an unsigned wallet sign-in on one device answered %d %s", rec.Code, rec.Body)
 	}
+	// The browser's Digital Credentials API: any wallet sign-in, signed or not, and
+	// nothing else.
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"kind": "google", "slug": slug + "-gd",
+		"client_id": "c", "client_secret": "s", "dc_api": true}); rec.Code != http.StatusBadRequest {
+		t.Errorf("dc_api on a google provider answered %d", rec.Code)
+	}
+	if rec := call(t, s, http.MethodPatch, base+"/"+slug, testToken, map[string]any{"dc_api": true}); rec.Code != http.StatusOK {
+		t.Errorf("an unsigned wallet sign-in asking through the browser answered %d %s", rec.Code, rec.Body)
+	}
+	if v, err := store.LoadVPVerifier(context.Background(), s.db, nil, slug); err != nil || !v.DCAPI {
+		t.Errorf("after dc_api: %v %v", v != nil && v.DCAPI, err)
+	}
 
 	issuers := base + "/" + slug + "/vp-issuers"
 	if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": "https://pid.example",

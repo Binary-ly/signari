@@ -11,7 +11,9 @@ By default it works on one device. The sign-in page sends the browser to the wal
 the wallet posts its answer back here, and then sends the browser back. Signing in on
 a computer with a phone's wallet can be turned on too, and finishes only with a code
 emailed to the account, because of an attack that flow cannot otherwise tell apart
-([below](#the-wallet-on-another-device)).
+([below](#the-wallet-on-another-device)). So can asking through the browser's Digital
+Credentials API, where the browser carries the request to the wallet and the answer
+back ([below](#through-the-browser)).
 
 ## Setting one up
 
@@ -218,6 +220,46 @@ Mail has to be set up, or the code never arrives. The sign-in is recorded as
 `federation.wallet_code_sent`, and a wrong code as `login.failed` with reason
 `bad_wallet_code`, counted against the account's second-factor budget.
 
+## Through the browser
+
+Off unless you turn it on:
+
+```sh
+signari idp vp-dc-api -slug wallet          # -remove turns it off
+```
+
+The sign-in page then asks the browser's Digital Credentials API too, where the
+browser offers it. The page carries the request, and its script shows a button only
+where the browser says it allows the protocol. The click hands the request to
+`navigator.credentials.get` while it is still the person's own click, as the API
+requires. The browser takes it to the wallet the person picks, with this page's
+origin. What comes back is posted by the page itself, so the answer, the redirect and
+the session all happen in the browser that holds the sign-in's cookie. That is the
+OpenID4VP appendix for this API.
+
+- **The request.** Under `x509_san_dns` or `x509_hash` it is signed
+  (`openid4vp-v1-signed`). It names this deployment's client identifier, and
+  `expected_origins` names this server's origin alone, which the wallet holds the
+  browser's origin to. Under `redirect_uri` it is unsigned (`openid4vp-v1-unsigned`),
+  with no client identifier, as the appendix requires. `direct_post.jwt` becomes
+  `dc_api.jwt`, with the request's own key to encrypt to. No `state` and no
+  `response_uri`: the API has no use for either.
+- **The answer.** It has to be made for `origin:` followed by this server's origin,
+  never for the client identifier, signed request or not. The appendix's examples
+  write the origin with a trailing slash. An origin has none, and the normative text
+  names the origin, so none is accepted. Everything else is checked as in
+  [what a presentation has to pass](#what-a-presentation-has-to-pass). An error from
+  the wallet ends the sign-in as cancelled. Closing the browser's dialog leaves the
+  person on the page with the other ways.
+- **Each way its own.** A request handed to the browser is a sign-in of its own. It
+  is never fetched at the request URI, never answered at the response URI, and never
+  given a response code. A sign-in begun any other way is not finished by an answer
+  posted as the browser's. The sign-in is consumed with the browser's cookie before
+  the answer is read, so an answer is tried once.
+
+The page's script is `/static/wallet-dcapi.js`. The page's policy lets it run its own
+scripts and nothing else.
+
 ## Tested against
 
 The OpenID Foundation's OpenID4VP 1.0 verifier plan, the suite playing the wallet:
@@ -229,7 +271,6 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 
 ## Not done
 
-- **The Digital Credentials API**, where the browser carries the request to a wallet itself.
 - **mdoc** credentials.
 - **A separate status issuer**, whose key is linked to the credential's issuer by a
   certificate authority. Only the issuer's own keys sign a list believed here.
@@ -240,10 +281,12 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 
 | | |
 |---|---|
-| `GET /oid4vp/<slug>/start` | The sign-in button. Sends the browser to the wallet |
+| `GET /oid4vp/<slug>/start` | The sign-in button. Sends the browser to the wallet, or with another device or the browser's API turned on, shows the page offering each; `?device=this` goes straight to the wallet |
 | `GET`, `POST /oid4vp/<slug>/request/<state>` | The signed request object, `application/oauth-authz-req+jwt`; by POST with the wallet's `wallet_nonce` echoed in it |
 | `POST /oid4vp/<slug>/response` | Where the wallet posts its answer: `vp_token` and `state` (`direct_post`), or `response`, the JWE (`direct_post.jwt`) |
 | `GET /oid4vp/<slug>/done` | Where the wallet sends the browser back |
 | `GET /oid4vp/<slug>/wait` | For the page a cross-device sign-in began on, with its cookie: whether the wallet has answered, as JSON |
 | `GET`, `POST /oid4vp/<slug>/confirm` | The code page: sends the linked account its code once, then takes it and signs in |
 | `GET /static/wallet-wait.js` | The waiting page's one script |
+| `POST /oid4vp/<slug>/dcapi` | Where the page posts what the browser's Digital Credentials API brought back |
+| `GET /static/wallet-dcapi.js` | The script that asks the browser |

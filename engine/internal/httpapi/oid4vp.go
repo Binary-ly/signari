@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -104,48 +106,104 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		s.federationRefusal(w, r, "federr.unavailable")
 		return
 	}
+	returnTo := s.validFederationReturn(r.URL.Query().Get("return"))
+	cross := v.CrossDevice && v.Prefix.Signed()
+	if (!cross && !v.DCAPI) || r.URL.Query().Get("device") == "this" {
+		req, err := s.beginVPRequest(ctx, v, returnTo, vpSameDevice, "")
+		var target string
+		if err == nil {
+			target, err = s.vpTarget(v, clientID, req.nonce, req.state, req.responseKey, true)
+		}
+		if err != nil {
+			s.log.ErrorContext(ctx, "beginning a wallet sign-in", "slug", slug, "err", err)
+			s.federationRefusal(w, r, "federr.generic")
+			return
+		}
+		s.setVPBinding(w, req.binding)
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+
+	// A page: a request for each way it offers, each a sign-in of its own, all held
+	// by the one cookie it sets.
+	choice := vpChoice{returnTo: returnTo}
+	var binding string
+	if v.DCAPI {
+		req, err := s.beginVPRequest(ctx, v, returnTo, vpDCAPI, binding)
+		if err == nil {
+			binding, choice.dcState = req.binding, req.state
+			choice.dcProtocol, choice.dcRequest, err = s.vpDCAPIRequest(v, clientID, req)
+		}
+		if err != nil {
+			s.log.ErrorContext(ctx, "beginning a wallet sign-in through the browser", "slug", slug, "err", err)
+			s.federationRefusal(w, r, "federr.generic")
+			return
+		}
+	}
+	if cross {
+		req, err := s.beginVPRequest(ctx, v, returnTo, vpCrossDevice, binding)
+		if err == nil {
+			binding, choice.crossState = req.binding, req.state
+			choice.target, err = s.vpTarget(v, clientID, req.nonce, req.state, req.responseKey, false)
+		}
+		if err != nil {
+			s.log.ErrorContext(ctx, "beginning a wallet sign-in from another device", "slug", slug, "err", err)
+			s.federationRefusal(w, r, "federr.generic")
+			return
+		}
+	}
+	s.setVPBinding(w, binding)
+	s.renderVPChoice(w, r, v, choice)
+}
+
+// The ways a wallet answers a request, each marked on its pending sign-in so it is
+// answered that way alone.
+type vpWay int
+
+const (
+	vpSameDevice vpWay = iota
+	vpCrossDevice
+	vpDCAPI
+)
+
+// vpBegun is a pending wallet sign-in just begun.
+type vpBegun struct {
+	state, binding, nonce string
+	responseKey           []byte
+}
+
+// beginVPRequest begins a pending wallet sign-in answered way, held by binding, or by a
+// new one when binding is "". Under an encrypted response mode the request has a key of
+// its own, so one key never opens two people's answers.
+func (s *Server) beginVPRequest(ctx context.Context, v *store.VPVerifier, returnTo string, way vpWay,
+	binding string) (vpBegun, error) {
 	nonce, err := randomToken()
 	if err != nil {
-		s.federationRefusal(w, r, "federr.generic")
-		return
+		return vpBegun{}, err
 	}
-	returnTo := s.validFederationReturn(r.URL.Query().Get("return"))
-	cross := v.CrossDevice && v.Prefix.Signed() && r.URL.Query().Get("device") != "this"
-
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationRefusal(w, r, "federr.generic")
-		return
+		return vpBegun{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	state, binding, err := store.BeginFederatedLogin(ctx, tx, store.PendingLogin{
-		ProviderID: v.ProviderID, OrgID: v.OrgID, Nonce: nonce, ReturnTo: returnTo, VPCrossDevice: cross,
+	b := vpBegun{nonce: nonce}
+	b.state, b.binding, err = store.BeginFederatedLogin(ctx, tx, store.PendingLogin{
+		ProviderID: v.ProviderID, OrgID: v.OrgID, Nonce: nonce, ReturnTo: returnTo, Binding: binding,
+		VPCrossDevice: way == vpCrossDevice, VPDCAPI: way == vpDCAPI,
 	})
-	// An answer encrypted to a key of this request's own, so one key never opens two
-	// people's answers.
-	var responseKey []byte
 	if err == nil && v.ResponseMode == oid4vp.ModeDirectPostJWT {
-		if responseKey, _, err = oid4vp.NewResponseKey(state); err == nil {
-			err = store.SetVPResponseKey(ctx, tx, s.cfg.Root, v.ProviderID, state, responseKey)
+		if b.responseKey, _, err = oid4vp.NewResponseKey(b.state); err == nil {
+			err = store.SetVPResponseKey(ctx, tx, s.cfg.Root, v.ProviderID, b.state, b.responseKey)
 		}
 	}
 	if err != nil {
-		_ = tx.Rollback(ctx)
-		s.log.ErrorContext(ctx, "beginning a wallet sign-in", "err", err)
-		s.federationRefusal(w, r, "federr.generic")
-		return
+		return vpBegun{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		s.federationRefusal(w, r, "federr.generic")
-		return
-	}
+	return b, tx.Commit(ctx)
+}
 
-	target, err := s.vpTarget(v, clientID, nonce, state, responseKey, !cross)
-	if err != nil {
-		s.log.ErrorContext(ctx, "building the wallet request", "slug", slug, "err", err)
-		s.federationRefusal(w, r, "federr.unavailable")
-		return
-	}
+// setVPBinding sets the cookie that binds a wallet sign-in to this browser.
+func (s *Server) setVPBinding(w http.ResponseWriter, binding string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: FederationCookieName, Value: binding, Path: "/",
 		Secure: true, HttpOnly: true,
@@ -154,11 +212,35 @@ func (s *Server) handleVPStart(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   600,
 	})
-	if !cross {
-		http.Redirect(w, r, target, http.StatusSeeOther)
-		return
+}
+
+// vpOrigin is this server's origin, which a page here is served from and an answer
+// through the browser is bound to.
+func (s *Server) vpOrigin() string {
+	u, err := url.Parse(s.cfg.Issuer)
+	if err != nil {
+		return s.cfg.Issuer
 	}
-	s.renderVPChoice(w, r, v, state, target, returnTo, "")
+	return u.Scheme + "://" + u.Host
+}
+
+// vpDCAPIRequest is the request the page hands navigator.credentials.get: signed under a
+// prefix that signs, with this origin as the one expected, and unsigned otherwise.
+func (s *Server) vpDCAPIRequest(v *store.VPVerifier, clientID string, b vpBegun) (string, string, error) {
+	req, err := s.vpRequest(v, clientID, b.nonce, b.state, "", b.responseKey)
+	if err != nil {
+		return "", "", err
+	}
+	var key crypto.Signer
+	if v.Prefix.Signed() {
+		key = v.Key
+	}
+	protocol, data, err := req.DCAPI(s.vpOrigin(), key, v.Chain, time.Now())
+	if err != nil {
+		return "", "", err
+	}
+	raw, err := json.Marshal(data)
+	return protocol, string(raw), err
 }
 
 // vpTarget is the URL that takes a request to the wallet. A signed request goes by
@@ -180,33 +262,55 @@ func (s *Server) vpTarget(v *store.VPVerifier, clientID, nonce, state string, re
 	return req.URL(v.WalletURL, requestURI, v.Prefix.Signed() && byPost)
 }
 
-// renderVPChoice is the page a cross-device wallet sign-in starts on: the wallet on this
-// device, which begins a sign-in of its own, or target as a code to scan with the wallet
-// on another, which this page then waits on. notice is a key said above both, or "".
-func (s *Server) renderVPChoice(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, state, target,
-	returnTo, notice string) {
+// vpChoice is what the page a wallet sign-in starts on offers besides this device: a
+// request for the browser's Digital Credentials API (dcState), and a code to scan with a
+// wallet on another device (crossState and target), each "" when not offered.
+type vpChoice struct {
+	dcState, dcProtocol, dcRequest string
+	crossState, target             string
+	returnTo, notice               string
+}
+
+// renderVPChoice is the page a wallet sign-in starts on when it offers more than this
+// device: the wallet in this browser through the Digital Credentials API, the wallet on
+// this device, which begins a sign-in of its own, or a code to scan with the wallet on
+// another, which this page then waits on. notice is a key said above them, or "".
+func (s *Server) renderVPChoice(w http.ResponseWriter, r *http.Request, v *store.VPVerifier, c vpChoice) {
 	// Each a route of this verifier's, /oid4vp/{slug}/..., as the journey tests drive them.
 	at := func(route string, q url.Values) string {
 		return (&url.URL{Path: "/oid4vp/" + v.Slug + "/" + route, RawQuery: q.Encode()}).String()
 	}
 	here := url.Values{"device": {"this"}}
-	if returnTo != "" {
-		here.Set("return", returnTo)
+	if c.returnTo != "" {
+		here.Set("return", c.returnTo)
 	}
 	data := map[string]any{"Mode": "choose", "Provider": v.DisplayName, "HereURL": at("start", here),
-		"WaitURL": at("wait", url.Values{"state": {state}}),
-		"NextURL": at("confirm", url.Values{"state": {state}}), "WalletScript": true}
-	if notice != "" {
-		data["Notice"] = s.tr(r).Text(notice)
+		"WalletScript": true}
+	if c.notice != "" {
+		data["Notice"] = s.tr(r).Text(c.notice)
 	}
-	// The code is the other device's only way in, and a request too long for one
-	// leaves this device alone, said in the log where an operator reads it.
-	if code, err := qr.Encode([]byte(target)); err == nil {
-		// template.HTML because the encoder writes this SVG from a matrix of booleans:
-		// integers in coordinates, and nothing of the request's text.
-		data["QR"] = template.HTML(code.SVG(4, 4))
-	} else {
-		s.log.WarnContext(r.Context(), "a wallet request does not fit a code to scan", "slug", v.Slug, "err", err)
+	if c.dcState != "" {
+		csrf, err := s.csrfToken(w, r)
+		if err != nil {
+			s.federationRefusal(w, r, "federr.generic")
+			return
+		}
+		data["DCProtocol"], data["DCRequest"], data["DCState"] = c.dcProtocol, c.dcRequest, c.dcState
+		data["DCAction"] = at("dcapi", nil)
+		data["CSRF"], data["CSRFField"] = csrf, csrfFormField
+	}
+	if c.crossState != "" {
+		data["WaitURL"] = at("wait", url.Values{"state": {c.crossState}})
+		data["NextURL"] = at("confirm", url.Values{"state": {c.crossState}})
+		// The code is the other device's only way in, and a request too long for one
+		// leaves this device alone, said in the log where an operator reads it.
+		if code, err := qr.Encode([]byte(c.target)); err == nil {
+			// template.HTML because the encoder writes this SVG from a matrix of booleans:
+			// integers in coordinates, and nothing of the request's text.
+			data["QR"] = template.HTML(code.SVG(4, 4))
+		} else {
+			s.log.WarnContext(r.Context(), "a wallet request does not fit a code to scan", "slug", v.Slug, "err", err)
+		}
 	}
 	s.renderPage(w, r, "wallet", data)
 }
@@ -227,6 +331,11 @@ func (s *Server) handleVPRequest(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, store.ErrVPRequestGone) {
 			s.log.ErrorContext(ctx, "reading a wallet request", "err", err)
 		}
+		http.NotFound(w, r)
+		return
+	}
+	// A request handed to the browser travels in the page, and is never fetched.
+	if pending.DCAPI {
 		http.NotFound(w, r)
 		return
 	}
@@ -313,6 +422,12 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 	pending, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "this request has expired or has been answered")
+		return
+	}
+	// A request handed to the browser is answered through the page that asked, bound to
+	// its origin, and has no response URI (specs/oid4vp.txt:2511).
+	if pending.DCAPI {
+		writeError(w, http.StatusBadRequest, "invalid_request", "this request is answered through the browser")
 		return
 	}
 	nonce, responseKey := pending.Nonce, pending.ResponseKey
@@ -724,7 +839,7 @@ func (s *Server) renderVPWaitingAgain(w http.ResponseWriter, r *http.Request, v 
 		s.federationRefusal(w, r, federatedLoginRefusal(err))
 		return
 	}
-	s.renderVPChoice(w, r, v, state, target, "", "wallet.notyet")
+	s.renderVPChoice(w, r, v, vpChoice{crossState: state, target: target, notice: "wallet.notyet"})
 }
 
 // renderVPCode is the page that takes the code sent to the account.
@@ -805,4 +920,106 @@ func (s *Server) handleVPConfirm(w http.ResponseWriter, r *http.Request) {
 		EmailVerified: proved.Email != "" && v.Policy.TrustsEmailVerification,
 		RawClaims:     proved.Claims,
 	})
+}
+
+// handleVPDCAPI takes what the browser's Digital Credentials API brought back, posted by
+// the page that asked: the DigitalCredential's data (specs/digital-credentials.txt:1542-1546)
+// and the sign-in it answers. The sign-in is consumed with this browser's cookie first, as
+// any provider's callback is, so an answer is tried once; then the presentation is checked
+// as any other, made for this origin rather than for a client identifier
+// (specs/oid4vp.txt:2663), and it is the ordinary external-identity path.
+func (s *Server) handleVPDCAPI(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	r.Body = http.MaxBytesReader(w, r.Body, vpBodyLimit)
+	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
+		s.federationRefusal(w, r, "federr.generic")
+		return
+	}
+	state := r.PostForm.Get("state")
+	c, err := r.Cookie(FederationCookieName)
+	if err != nil || c.Value == "" || state == "" {
+		s.federationRefusal(w, r, "federr.otherbrowser")
+		return
+	}
+	v, err := s.loadVPVerifier(r, r.PathValue("slug"))
+	if err != nil {
+		s.federationRefusal(w, r, "federr.unavailable")
+		return
+	}
+	asked, err := store.PendingVPRequest(ctx, s.db, s.cfg.Root, v.ProviderID, state)
+	if err == nil && !asked.DCAPI {
+		err = store.ErrVPRequestGone
+	}
+	var pending *store.PendingLogin
+	if err == nil {
+		pending, err = s.consumeVPLogin(ctx, v, state, c.Value)
+	}
+	if err != nil {
+		s.log.InfoContext(ctx, "a wallet sign-in through the browser was refused", "slug", v.Slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		s.federationRefusal(w, r, federatedLoginRefusal(err))
+		return
+	}
+	s.clearFederationCookie(w)
+
+	var key *ecdsa.PrivateKey
+	if asked.ResponseKey != nil {
+		if key, err = oid4vp.ParseResponseKey(asked.ResponseKey); err != nil {
+			s.log.ErrorContext(ctx, "opening a wallet request's key", "slug", v.Slug, "err", err)
+			s.federationRefusal(w, r, "federr.generic")
+			return
+		}
+	}
+	vpToken, refused, err := oid4vp.ReadDCAPIAnswer([]byte(r.PostForm.Get("response")), key, state)
+	if refused {
+		s.federationRefusal(w, r, "federr.cancelled")
+		return
+	}
+	var proved []byte
+	if err == nil {
+		var presented *oid4vp.Presented
+		presented, err = oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: oid4vp.OriginAudience(s.vpOrigin()),
+			Nonce: asked.Nonce, Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata,
+			Anchors: v.IssuerRoots, Now: time.Now(),
+			Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
+		if err == nil {
+			proved, err = vpIdentity(v, presented)
+		}
+	}
+	var identity vpProved
+	if err == nil {
+		err = json.Unmarshal(proved, &identity)
+	}
+	if err != nil {
+		s.log.InfoContext(ctx, "a presentation through the browser was refused", "slug", v.Slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		s.federationRefusal(w, r, "federr.unverified")
+		return
+	}
+	s.completeFederation(w, r, &federation.Config{
+		ID: v.ProviderID, OrgID: v.OrgID, Slug: v.Slug, DisplayName: v.DisplayName,
+		Policy: v.Policy, Kind: federation.KindOID4VP,
+	}, pending, federation.ExternalIdentity{
+		Subject: identity.Subject, Email: identity.Email, Name: identity.Name,
+		EmailVerified: identity.Email != "" && v.Policy.TrustsEmailVerification,
+		RawClaims:     identity.Claims,
+	})
+}
+
+// consumeVPLogin consumes the pending sign-in state names for the browser holding binding,
+// in a transaction of its own that is over when it returns.
+func (s *Server) consumeVPLogin(ctx context.Context, v *store.VPVerifier, state, binding string) (*store.PendingLogin, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	pending, err := store.ConsumeFederatedLogin(ctx, tx, state, binding)
+	if err != nil {
+		return nil, err
+	}
+	if pending.ProviderID != v.ProviderID {
+		return nil, store.ErrFederatedLoginGone
+	}
+	return pending, tx.Commit(ctx)
 }

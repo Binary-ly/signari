@@ -90,7 +90,8 @@ var criticalFields = []string{
 	//	           answer is refused as made to changed terms, and nobody with a
 	//	           prompt outstanding can finish signing in
 	//	State      which cross-device wallet sign-in the emailed code finishes
-	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID", "Version", "State",
+	//	DCState    which wallet sign-in the browser's Digital Credentials API answers
+	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID", "Version", "State", "DCState",
 }
 
 // sentinel is what a critical field is set to while probing.

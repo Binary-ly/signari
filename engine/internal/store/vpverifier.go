@@ -57,6 +57,9 @@ type VPVerifier struct {
 	// CrossDevice offers the wallet on another device, by a code to scan, which
 	// signs nobody in until a code emailed to the account is typed here.
 	CrossDevice bool
+	// DCAPI asks through the browser's Digital Credentials API too, its answer
+	// coming back to the page that asked, bound to this origin.
+	DCAPI bool
 }
 
 // CredentialQueryID names the one credential a verifier asks for, in the query and in
@@ -89,7 +92,8 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		SELECT p.id::text, p.org_id::text, p.slug, p.display_name,
 		       p.allow_signup, p.allow_linking, p.require_verified_email, p.trust_email_verification,
 		       x.client_id_prefix, x.wallet_url, x.vct_values, x.subject_claim, x.email_claim,
-		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode, x.cross_device
+		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode, x.cross_device,
+		       x.dc_api
 		FROM core.identity_providers p
 		JOIN core.vp_verifiers x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'oid4vp' AND p.enabled`, slug).Scan(
@@ -97,7 +101,7 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		&v.Policy.AllowSignup, &v.Policy.AllowLinking, &v.Policy.RequireVerifiedEmail,
 		&v.Policy.TrustsEmailVerification,
 		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode,
-		&v.CrossDevice)
+		&v.CrossDevice, &v.DCAPI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrVPVerifierUnknown
 	}
@@ -186,6 +190,8 @@ type VPSpec struct {
 	KeyPEM, ChainPEM string
 	// CrossDevice offers the wallet on another device too (VPVerifier.CrossDevice).
 	CrossDevice bool
+	// DCAPI asks through the browser's Digital Credentials API too (VPVerifier.DCAPI).
+	DCAPI bool
 }
 
 // crossDeviceNeedsSigning is why a wallet on another device needs a signed request: the
@@ -294,11 +300,11 @@ func addVPVerifier(ctx context.Context, q outpostDB, root *keys.RootKey, orgID s
 	_, err := q.Exec(ctx, `
 		INSERT INTO core.vp_verifiers
 			(provider_id, org_id, client_id_prefix, wallet_url, vct_values, subject_claim, email_claim,
-			 name_claim, signing_key, certificate_chain, response_mode, cross_device)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12)`,
+			 name_claim, signing_key, certificate_chain, response_mode, cross_device, dc_api)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13)`,
 		id, orgID, s.VP.Prefix, s.VP.WalletURL, s.VP.VCTValues, canonicalPath(s.VP.SubjectClaim),
 		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode,
-		s.VP.CrossDevice)
+		s.VP.CrossDevice, s.VP.DCAPI)
 	return id, err
 }
 
@@ -471,6 +477,9 @@ type VPRequest struct {
 	Nonce       string
 	ResponseKey []byte
 	CrossDevice bool
+	// DCAPI is a request handed to the browser's Digital Credentials API, answered
+	// only through the page that asked.
+	DCAPI bool
 }
 
 // PendingVPRequest is the unanswered request state names, its response key opened with
@@ -480,10 +489,10 @@ func PendingVPRequest(ctx context.Context, q outpostDB, root *keys.RootKey, prov
 	var req VPRequest
 	var sealed []byte
 	err := q.QueryRow(ctx, `
-		SELECT nonce, vp_response_key, vp_cross_device FROM core.federated_logins
+		SELECT nonce, vp_response_key, vp_cross_device, vp_dc_api FROM core.federated_logins
 		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now()
 		  AND vp_presented IS NULL AND vp_cross_presented IS NULL`,
-		h[:], providerID).Scan(&req.Nonce, &sealed, &req.CrossDevice)
+		h[:], providerID).Scan(&req.Nonce, &sealed, &req.CrossDevice, &req.DCAPI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VPRequest{}, ErrVPRequestGone
 	}
@@ -544,7 +553,7 @@ func PresentVP(ctx context.Context, q outpostDB, providerID, state string, prove
 	tag, err := q.Exec(ctx, `
 		UPDATE core.federated_logins SET vp_presented = $3, vp_response_code_hash = $4
 		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL
-		  AND NOT vp_cross_device`,
+		  AND NOT vp_cross_device AND NOT vp_dc_api`,
 		stateHash[:], providerID, sealed, codeHash[:])
 	if err != nil {
 		return "", err
@@ -592,7 +601,7 @@ func PresentVPCrossDevice(ctx context.Context, q outpostDB, root *keys.RootKey, 
 	tag, err := q.Exec(ctx, `
 		UPDATE core.federated_logins SET vp_cross_presented = $3
 		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device
-		  AND vp_cross_presented IS NULL AND vp_presented IS NULL`, h[:], providerID, sealed)
+		  AND NOT vp_dc_api AND vp_cross_presented IS NULL AND vp_presented IS NULL`, h[:], providerID, sealed)
 	if err != nil {
 		return err
 	}

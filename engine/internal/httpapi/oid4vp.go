@@ -298,7 +298,7 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	presented, err := oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: clientID, Nonce: nonce,
-		Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata, Now: time.Now(),
+		Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata, Anchors: v.IssuerRoots, Now: time.Now(),
 		Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
 	if err == nil {
 		var proved []byte
@@ -326,8 +326,9 @@ const (
 )
 
 // fetchForVerifier GETs what a presentation's check needs: the Status List Token a
-// credential names (specs/token-status-list.txt:730-750), or a believed issuer's JWT VC
-// Issuer Metadata and key set (specs/sdjwtvc.txt:1140-1170). Through the outbound
+// credential names (specs/token-status-list.txt:730-750), a believed issuer's JWT VC
+// Issuer Metadata and key set (specs/sdjwtvc.txt:1140-1170), or a CRL its certificates
+// name (specs/rfc5280.txt:2554-2558). Through the outbound
 // dialler, so an address in the private network is refused unless an operator named it.
 func (s *Server) fetchForVerifier(ctx context.Context, uri, accept string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, verifierFetchTimeout)

@@ -1006,7 +1006,8 @@ func run(args []string) (err error) {
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
 	credRootCert := fs.String("root-cert", "",
-		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root)")
+		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root), "+
+			"or of the CAs a believed issuer's credentials carry their x5c chain to (idp vp-issuer)")
 	idpMFAAMR := fs.String("upstream-amr", "",
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
@@ -2176,7 +2177,7 @@ func run(args []string) (err error) {
 	case "idp enable":
 		return idpSetEnabled(ctx, conn, *slug, true)
 	case "idp vp-issuer":
-		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *keysFromMetadata, *removeMember)
+		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *keysFromMetadata, *credRootCert, *removeMember)
 	case "idp link":
 		return idpLink(ctx, conn, *slug, *subject, *email)
 	case "idp unlink":

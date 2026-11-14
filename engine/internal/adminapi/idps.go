@@ -447,9 +447,12 @@ func (s *Server) putIdPTokenAuth(w http.ResponseWriter, r *http.Request) {
 type vpIssuerRequest struct {
 	Issuer string          `json:"issuer"`
 	JWKS   json.RawMessage `json:"jwks"`
-	// KeysFrom is "pinned", the default, with jwks, or "metadata", without: the keys
-	// the issuer's JWT VC Issuer Metadata publishes, read for each presentation.
+	// KeysFrom is "pinned", the default, with jwks; "metadata", without: the keys the
+	// issuer's JWT VC Issuer Metadata publishes, read for each presentation; or "x5c",
+	// with roots: the key of the certificate chain each credential carries.
 	KeysFrom string `json:"keys_from,omitempty"`
+	// Roots are the PEM CA certificates an x5c issuer's chain has to lead to.
+	Roots string `json:"roots,omitempty"`
 }
 
 func (s *Server) putVPIssuer(w http.ResponseWriter, r *http.Request) {
@@ -457,17 +460,27 @@ func (s *Server) putVPIssuer(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
+	refuse := func(detail string) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider", "detail": detail})
+	}
+	jwks := len(req.JWKS) > 0 && string(req.JWKS) != "null"
 	switch req.KeysFrom {
-	case "", store.VPKeysPinned:
-	case store.VPKeysFromMetadata:
-		if len(req.JWKS) > 0 && string(req.JWKS) != "null" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
-				"detail": "keys_from metadata takes no jwks: the keys are read from the issuer"})
+	case "", store.VPKeysPinned, store.VPKeysFromMetadata:
+		if req.Roots != "" {
+			refuse(`roots belong to keys_from "x5c" alone: an issuer is believed one way`)
+			return
+		}
+		if req.KeysFrom == store.VPKeysFromMetadata && jwks {
+			refuse("keys_from metadata takes no jwks: the keys are read from the issuer")
+			return
+		}
+	case store.VPKeysFromX5C:
+		if jwks {
+			refuse("keys_from x5c takes no jwks: the key is the one its certificate chain carries")
 			return
 		}
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
-			"detail": `keys_from is "pinned" or "metadata"`})
+		refuse(`keys_from is "pinned", "metadata" or "x5c"`)
 		return
 	}
 	s.changeVPIssuer(w, r, req, true)
@@ -497,9 +510,13 @@ func (s *Server) changeVPIssuer(w http.ResponseWriter, r *http.Request, req vpIs
 		if believe {
 			set := func() error { return store.SetVPTrustedIssuer(ctx, tx, orgID, slug, req.Issuer, req.JWKS) }
 			detail["keys_from"] = store.VPKeysPinned
-			if req.KeysFrom == store.VPKeysFromMetadata {
+			switch req.KeysFrom {
+			case store.VPKeysFromMetadata:
 				set = func() error { return store.SetVPTrustedIssuerByMetadata(ctx, tx, orgID, slug, req.Issuer) }
 				detail["keys_from"] = store.VPKeysFromMetadata
+			case store.VPKeysFromX5C:
+				set = func() error { return store.SetVPTrustedIssuerByX5C(ctx, tx, orgID, slug, req.Issuer, req.Roots) }
+				detail["keys_from"] = store.VPKeysFromX5C
 			}
 			if err := set(); err != nil {
 				return err

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -42,6 +43,8 @@ type holderWallet struct {
 	status map[string]any
 	// iss is the credential's issuer, walletIssuer unless a test moves it.
 	iss string
+	// chain is the issuer's certificate chain the credential carries in x5c, if any.
+	chain []*x509.Certificate
 }
 
 func newHolderWallet(t *testing.T, subject string) *holderWallet {
@@ -56,10 +59,17 @@ func newHolderWallet(t *testing.T, subject string) *holderWallet {
 	return &holderWallet{t: t, holder: gen(), issuer: gen(), subject: subject}
 }
 
-func (wl *holderWallet) sign(key *ecdsa.PrivateKey, typ string, claims any) string {
+func (wl *holderWallet) sign(key *ecdsa.PrivateKey, typ string, claims any, chain ...*x509.Certificate) string {
 	wl.t.Helper()
-	s, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
-		(&jose.SignerOptions{}).WithType(jose.ContentType(typ)))
+	opts := (&jose.SignerOptions{}).WithType(jose.ContentType(typ))
+	if len(chain) > 0 {
+		x5c := make([]string, len(chain))
+		for i, c := range chain {
+			x5c[i] = base64.StdEncoding.EncodeToString(c.Raw)
+		}
+		opts = opts.WithHeader("x5c", x5c)
+	}
+	s, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, opts)
 	if err != nil {
 		wl.t.Fatal(err)
 	}
@@ -93,7 +103,7 @@ func (wl *holderWallet) present(clientID, nonce string) string {
 		wl.t.Fatal(err)
 	}
 	payload["cnf"] = map[string]any{"jwk": jose.JSONWebKey{Key: wl.holder.Public()}}
-	sd := sdjwt.Combine(wl.sign(wl.issuer, "dc+sd-jwt", payload), ds)
+	sd := sdjwt.Combine(wl.sign(wl.issuer, "dc+sd-jwt", payload, wl.chain...), ds)
 	kb := wl.sign(wl.holder, oid4vp.TypKeyBinding, map[string]any{"iat": time.Now().Unix(), "aud": clientID,
 		"nonce": nonce, "sd_hash": sdjwt.DigestOf(sd)})
 	b, _ := json.Marshal(map[string][]string{store.CredentialQueryID: {sd + kb}})
@@ -458,6 +468,137 @@ func TestAnIssuerBelievedByItsMetadataSignsThePersonIn(t *testing.T) {
 	wl.issuer = rotated
 	if rec, _ := present(); rec.Code != http.StatusOK {
 		t.Errorf("a credential signed with the issuer's new key answered %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// An issuer believed by its certificate (SD-JWT VC section 2.5's second mechanism): the
+// credential carries the issuer's chain in x5c, to a root the operator gave, and the
+// intermediate's CRL is served over TLS and fetched through the outbound client at the
+// response URI. The linked person signs in; once the issuer's certificate is on the CRL,
+// the same credential signs nobody in, and a chain to another root never did.
+func TestAnIssuerBelievedByItsCertificateSignsThePersonIn(t *testing.T) {
+	ctx := context.Background()
+	wl := newHolderWallet(t, "person-1")
+	f, slug, leaf := newVPFixture(t, wl)
+
+	var revoked []*big.Int
+	var asked int
+	var inter *x509.Certificate
+	var interKey *ecdsa.PrivateKey
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/intermediate.crl" {
+			http.NotFound(w, r)
+			return
+		}
+		asked++
+		tmpl := &x509.RevocationList{Number: big.NewInt(int64(asked)), ThisUpdate: time.Now().Add(-time.Minute),
+			NextUpdate: time.Now().Add(time.Hour)}
+		for _, s := range revoked {
+			tmpl.RevokedCertificateEntries = append(tmpl.RevokedCertificateEntries,
+				x509.RevocationListEntry{SerialNumber: s, RevocationTime: time.Now()})
+		}
+		der, err := x509.CreateRevocationList(rand.Reader, tmpl, inter, interKey)
+		if err != nil {
+			t.Error(err)
+		}
+		w.Header().Set("Content-Type", oid4vp.CRLMedia)
+		_, _ = w.Write(der)
+	}))
+	defer site.Close()
+	f.srv.outboundHTTP = func(time.Duration) *http.Client { return site.Client() }
+
+	// The issuer's authority: a root the operator holds, an intermediate, and the
+	// issuer's certificate, which names it and the intermediate's CRL.
+	gen := func() *ecdsa.PrivateKey {
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	issue := func(serial int64, tmpl, parent *x509.Certificate, pub any, signer *ecdsa.PrivateKey) *x509.Certificate {
+		tmpl.SerialNumber, tmpl.NotBefore, tmpl.NotAfter = big.NewInt(serial), time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+		if parent == nil {
+			parent = tmpl
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	authority := func(name string) *x509.Certificate {
+		return &x509.Certificate{Subject: pkix.Name{CommonName: name}, IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	}
+	rootKey := gen()
+	interKey = gen()
+	root := issue(1, authority("PID Root"), nil, rootKey.Public(), rootKey)
+	inter = issue(2, authority("PID Intermediate"), root, interKey.Public(), rootKey)
+	iss, _ := url.Parse(walletIssuer)
+	issuerCert := issue(3, &x509.Certificate{Subject: pkix.Name{CommonName: "PID Issuer"}, URIs: []*url.URL{iss},
+		KeyUsage: x509.KeyUsageDigitalSignature, CRLDistributionPoints: []string{site.URL + "/intermediate.crl"}},
+		inter, wl.issuer.Public(), interKey)
+	wl.chain = []*x509.Certificate{issuerCert, inter}
+
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetVPTrustedIssuerByX5C(ctx, tx, f.orgID, slug, walletIssuer,
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw}))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	present := func() (*httptest.ResponseRecorder, *http.Cookie) {
+		loc, cookie := f.startVP(t, slug)
+		p := f.fetchVP(t, loc, leaf)
+		return f.postVP(t, p["response_uri"].(string), url.Values{"state": {p["state"].(string)},
+			"vp_token": {wl.present(p["client_id"].(string), p["nonce"].(string))}}), cookie
+	}
+	rec, cookie := present()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a credential whose chain leads to the operator's root answered %d: %s", rec.Code, rec.Body)
+	}
+	if asked != 1 {
+		t.Errorf("the CRL was asked for %d times", asked)
+	}
+	var answer struct {
+		RedirectURI string `json:"redirect_uri"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &answer)
+	back, _ := url.Parse(answer.RedirectURI)
+	done := httptest.NewRequest(http.MethodGet, back.RequestURI(), nil)
+	done.AddCookie(cookie)
+	out := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(out, done)
+	if !hasSession(out) {
+		t.Fatalf("the linked person was not signed in: %d %s", out.Code, out.Body)
+	}
+
+	// The authority revokes the issuer's certificate. Nothing was kept, so the next
+	// presentation reads the CRL again and is refused.
+	revoked = []*big.Int{issuerCert.SerialNumber}
+	if rec, _ := present(); rec.Code != http.StatusBadRequest {
+		t.Errorf("a credential whose issuer's certificate is revoked answered %d", rec.Code)
+	}
+	if asked != 2 {
+		t.Errorf("the CRL was asked for %d times, once for each presentation was expected", asked)
+	}
+
+	// A chain to a root nobody gave is refused, CRL or not.
+	revoked = nil
+	otherKey := gen()
+	other := issue(4, authority("Another Root"), nil, otherKey.Public(), otherKey)
+	wl.chain = []*x509.Certificate{issue(5, &x509.Certificate{Subject: pkix.Name{CommonName: "PID Issuer"},
+		URIs: []*url.URL{iss}, KeyUsage: x509.KeyUsageDigitalSignature}, other, wl.issuer.Public(), otherKey)}
+	if rec, _ := present(); rec.Code != http.StatusBadRequest {
+		t.Errorf("a chain to a root the operator did not give answered %d", rec.Code)
 	}
 }
 

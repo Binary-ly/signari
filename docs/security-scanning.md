@@ -394,7 +394,13 @@ The rest are false positives:
 - `G203`: the enrolment QR and URI, the same as `enrol.go`'s.
 - `G115` ×5: each value is bounded before the conversion.
 
-**Baseline: 177**, every line with its reason in `engine/gosec-baseline.txt`.
+**177 to 179:** one `G304` and its `G703` twin in `cmd/signari/oid4vp.go`, the
+`-root-cert` file `idp vp-issuer` reads to believe an issuer by its certificate
+chain. It is a path the operator names on their own command line, the class above.
+What is read has to be whole PEM CA certificates or it is refused, and nothing in it
+leaves the process but the certificates themselves.
+
+**Baseline: 179**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

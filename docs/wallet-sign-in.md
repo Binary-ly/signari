@@ -67,7 +67,41 @@ and an issuer whose metadata cannot be read signs nobody in until it can.
 
 Only an issuer named here is ever looked up: a credential naming any other is refused
 before anything is fetched, so a credential cannot choose where this server goes.
-Keys are not taken from a certificate in the credential (`x5c`).
+
+**From its certificate**, with `-root-cert`, for an issuer whose credentials carry
+the X.509 chain of their signing key in `x5c`:
+
+```sh
+signari idp vp-issuer -slug wallet -issuer https://pid.example -root-cert pid-roots.pem
+```
+
+The file holds one or more CA certificates, PEM, and nothing else: a certificate that
+is not a CA's, or a key, is refused. For each presentation from that issuer, the
+chain in the credential's protected header has to lead to one of them, be valid now,
+and its first certificate has to be the key the credential is signed with and name
+the issuer:
+
+- a URI subject alternative name that is the `iss` exactly, or
+- for an `iss` that is `https://<host>` and nothing more, a DNS subject alternative
+  name that is that host. A host does not name an issuer at a path under it, since one
+  host may keep several, and a wildcard names nobody.
+
+Any extended key usage is accepted, since an issuer's certificate is not a server's.
+A key usage that leaves out digital signatures is refused. The issuer's status list,
+if the credential names one, has to be signed by the same key.
+
+Each certificate below the root that names a CRL at an `http` or `https` address is
+checked against it, fetched for each presentation and kept for none, through the same
+outbound rules. The CRL has to be from that certificate's issuer and signed by it,
+current, and carry no critical extension. A delta CRL, an indirect one and one scoped
+by an issuing distribution point each carry one, so each is refused rather than read
+partly. A certificate that is listed, or whose CRL cannot be read or believed, signs
+nobody in. A certificate that names no CRL is left to you: remove the issuer or
+replace the roots to stop believing it. OCSP is not asked.
+
+An issuer is believed one way. A credential naming a pinned issuer is checked with the
+pinned keys, whatever certificate it carries, so a credential cannot choose how its
+issuer is checked.
 
 ## Who is signed in
 
@@ -92,8 +126,8 @@ wallet is told at once that it was refused:
 - the request it answers is live and unanswered, before anything is verified;
 - exactly one credential, for the one query asked;
 - the credential is typed `dc+sd-jwt` (or `vc+sd-jwt`, the name it replaced), signed with
-  an asymmetric algorithm by one of its issuer's keys, pinned or from its metadata, of a type asked for, and not
-  expired or not yet valid;
+  an asymmetric algorithm by one of its issuer's keys, pinned, from its metadata or from
+  its certificate, of a type asked for, and not expired or not yet valid;
 - its disclosures are all referenced by it, none twice;
 - it carries a key binding (`cnf`), and a Key Binding JWT signed by that key, typed
   `kb+jwt`, made in the last five minutes, for this deployment's whole client
@@ -103,6 +137,8 @@ wallet is told at once that it was refused:
 - none of the claims SD-JWT VC says must be signed (`iss`, `nbf`, `exp`, `cnf`, `vct`,
   `vct#integrity`, `aka_vcts`, `status`) came in a disclosure. An issuer that made one
   disclosable let every holder leave it out;
+- for an issuer believed by its certificate, no certificate of its chain is on a CRL that
+  chain names (above);
 - if it names a `status`, its issuer has not revoked or suspended it (below).
 
 ### Revocation
@@ -115,8 +151,9 @@ every other request this server makes (`SIGNARI_OUTBOUND_ALLOW_PRIVATE` for a li
 the private network). It has to be:
 
 - served as `application/statuslist+jwt`, typed `statuslist+jwt`;
-- signed by one of the credential's own issuer's keys, pinned or from its metadata. A list kept by a separate status
-  issuer is not believed, since nothing here says who may speak for whom;
+- signed by one of the credential's own issuer's keys, pinned, from its metadata, or the
+  key of the credential's own certificate. A list kept by a separate status issuer is not
+  believed, since nothing here says who may speak for whom;
 - about this credential's list (`sub` the address the credential names), with an `iat`,
   not expired, not yet to come, and a positive `ttl` if it has one.
 
@@ -149,8 +186,8 @@ old or a year ahead, is answered at the response URI with a 400. How to run it i
 - **mdoc** credentials.
 - **A separate status issuer**, whose key is linked to the credential's issuer by a
   certificate authority. Only the issuer's own keys sign a list believed here.
-- **An issuer's key from a certificate chain** in the credential (`x5c`), validated to
-  a root the operator trusts. Keys are pinned or read from the issuer's metadata.
+- **OCSP** for an issuer's certificates. CRLs are read; a certificate that names
+  neither is left to the operator.
 
 ## Routes
 

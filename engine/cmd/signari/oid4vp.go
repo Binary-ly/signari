@@ -67,25 +67,45 @@ func idpAddVP(ctx context.Context, conn *pgx.Conn, orgID, slug, name string, all
 	return nil
 }
 
-// idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile or
-// with -keys-from-metadata those its metadata publishes, or with -remove stops
+// idpVPIssuer believes an issuer for a wallet sign-in, with the keys in jwksFile, with
+// -keys-from-metadata those its metadata publishes, or with -root-cert the key of the
+// certificate chain its credentials carry to those roots; or with -remove stops
 // believing it.
-func idpVPIssuer(ctx context.Context, conn *pgx.Conn, slug, issuer, jwksFile string, fromMetadata, remove bool) error {
+func idpVPIssuer(ctx context.Context, conn *pgx.Conn, slug, issuer, jwksFile string, fromMetadata bool,
+	rootsFile string, remove bool) error {
+	ways := 0
+	for _, given := range []bool{jwksFile != "", fromMetadata, rootsFile != ""} {
+		if given {
+			ways++
+		}
+	}
 	switch {
 	case slug == "":
 		return fmt.Errorf("give -slug, the wallet sign-in")
 	case issuer == "":
 		return fmt.Errorf("give -issuer, exactly as the iss its credentials carry")
-	case remove && (jwksFile != "" || fromMetadata):
-		return fmt.Errorf("-remove takes no -jwks-file or -keys-from-metadata")
+	case remove && ways > 0:
+		return fmt.Errorf("-remove takes no -jwks-file, -keys-from-metadata or -root-cert")
 	case remove:
 		if err := store.RemoveVPTrustedIssuer(ctx, conn, "", slug, issuer); err != nil {
 			return err
 		}
 		fmt.Printf("%s no longer believes %s\n", slug, issuer)
 		return nil
-	case fromMetadata && jwksFile != "":
-		return fmt.Errorf("give -jwks-file or -keys-from-metadata, not both: keys are either held here or read from the issuer")
+	case ways > 1:
+		return fmt.Errorf("give one of -jwks-file, -keys-from-metadata or -root-cert: an issuer is believed one way, " +
+			"so a credential cannot choose how it is checked")
+	case rootsFile != "":
+		roots, err := os.ReadFile(rootsFile)
+		if err != nil {
+			return err
+		}
+		if err := store.SetVPTrustedIssuerByX5C(ctx, conn, "", slug, issuer, string(roots)); err != nil {
+			return err
+		}
+		fmt.Printf("%s believes credentials from %s whose x5c chain leads to a root in %s and names %s, "+
+			"and checks the CRLs that chain names for each presentation\n", slug, issuer, rootsFile, issuer)
+		return nil
 	case fromMetadata:
 		if err := store.SetVPTrustedIssuerByMetadata(ctx, conn, "", slug, issuer); err != nil {
 			return err
@@ -95,7 +115,8 @@ func idpVPIssuer(ctx context.Context, conn *pgx.Conn, slug, issuer, jwksFile str
 			slug, issuer, where)
 		return nil
 	case jwksFile == "":
-		return fmt.Errorf("give -jwks-file, the issuer's public signing keys as a JWK Set, or -keys-from-metadata")
+		return fmt.Errorf("give -jwks-file, the issuer's public signing keys as a JWK Set, -keys-from-metadata, " +
+			"or -root-cert, the CAs its certificate chain leads to")
 	}
 	jwks, err := os.ReadFile(jwksFile)
 	if err != nil {

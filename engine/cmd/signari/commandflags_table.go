@@ -143,7 +143,7 @@ var commandFlags = map[string][]string{
 	"idp trust-mfa":                   {"slug", "upstream-acr", "upstream-amr"},
 	"idp unlink":                      {"slug", "subject"},
 	"idp verified-email":              {"require-verified-email", "slug", "trust-email-verification"},
-	"idp vp-issuer":                   {"issuer", "jwks-file", "keys-from-metadata", "remove", "slug"},
+	"idp vp-issuer":                   {"issuer", "jwks-file", "keys-from-metadata", "remove", "root-cert", "slug"},
 	"import auth0":                    {"dry-run", "file", "org", "via"},
 	"import authentik":                {"apply", "file", "install-id", "org"},
 	"import entra":                    {"dry-run", "file", "org", "via"},

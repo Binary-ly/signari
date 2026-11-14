@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0298 vp_issuer_x5c
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may believe an issuer by the X.509 chain its credentials carry in x5c, validated to root certificates the operator holds for that issuer (specs/sdjwtvc.txt:1091-1098): keys_from 'x5c', with roots, and neither jwks nor a metadata lookup. Not compatible with the previous release once an issuer is set this way: that release reads the missing keys as an error and refuses that wallet sign-in, which fails closed.
+
 ## 0297 vp_issuer_metadata
 
 Not compatible with the release before: stop it before migrating.

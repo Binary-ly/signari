@@ -96,6 +96,11 @@ var mustBeReachable = []capability{
 		"collector ever receives a span"},
 	{"NoteRoute", "a request's span is named by its method alone, so a trace " +
 		"cannot say which endpoint was slow"},
+	{"SetVPTrustedIssuerByX5C", "a wallet sign-in cannot be told to believe an issuer by the " +
+		"certificate chain its credentials carry, so every such credential is refused"},
+	{"issuerKeysFromChain", "an issuer believed by certificate is never checked along its chain, " +
+		"so the roots an operator gave decide nothing"},
+	{"checkChainRevocation", "an issuer certificate its authority revoked keeps signing people in"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

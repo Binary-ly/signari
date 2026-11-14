@@ -3787,6 +3787,7 @@ type PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest struct {
 	Issuer   *string         `json:"issuer,omitempty"`
 	JWKS     json.RawMessage `json:"jwks,omitempty"`
 	KeysFrom *string         `json:"keys_from,omitempty"`
+	Roots    *string         `json:"roots,omitempty"`
 }
 
 // PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersResponse is a JSON object of the Admin API.

@@ -5,10 +5,15 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 
@@ -71,6 +76,30 @@ func issuerJWKS(t *testing.T, private bool) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// testCertificates is a CA's certificate and one it issued, each PEM.
+func testCertificates(t *testing.T) (root, leaf string) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "PID Root"}, IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(time.Hour)}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := x509.ParseCertificate(caDER)
+	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{SerialNumber: big.NewInt(2),
+		Subject: pkix.Name{CommonName: "PID Issuer"}, NotBefore: ca.NotBefore, NotAfter: ca.NotAfter}, parent, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}))
 }
 
 // A wallet sign-in is made and told whom to believe through the Admin API, as `idp
@@ -138,7 +167,38 @@ func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
 		"keys and metadata both":     {"issuer": "https://pid.example", "keys_from": "metadata", "jwks": issuerJWKS(t, false)},
 		"an issuer with no metadata": {"issuer": "urn:example:pid", "keys_from": "metadata"},
 		"a plain http issuer":        {"issuer": "http://pid.example", "keys_from": "metadata"},
-		"an unknown keys_from":       {"issuer": "https://pid.example", "keys_from": "x5c"},
+		"an unknown keys_from":       {"issuer": "https://pid.example", "keys_from": "sideways"},
+	} {
+		if rec := call(t, s, http.MethodPut, issuers, testToken, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s answered %d %s", name, rec.Code, rec.Body)
+		}
+	}
+
+	// Moved to the certificate chain its credentials carry, with the roots it leads to:
+	// held as the certificates alone, and nothing else held for it.
+	root, leaf := testCertificates(t)
+	if rec := call(t, s, http.MethodPut, issuers, testToken, map[string]any{"issuer": "https://pid.example",
+		"keys_from": "x5c", "roots": "a comment the file had\n" + root}); rec.Code != http.StatusOK {
+		t.Fatalf("believing an issuer by its certificate: %d %s", rec.Code, rec.Body)
+	}
+	v, err = store.LoadVPVerifier(context.Background(), s.db, nil, slug)
+	if err != nil || v.IssuerRoots["https://pid.example"] == nil || v.Issuers["https://pid.example"] != nil ||
+		v.IssuersFromMetadata["https://pid.example"] {
+		t.Fatalf("after keys_from x5c: %+v %v", v, err)
+	}
+	var held string
+	if err := s.db.QueryRow(context.Background(), `SELECT roots FROM core.vp_trusted_issuers t
+		JOIN core.identity_providers p ON p.id = t.provider_id WHERE p.slug = $1 AND t.issuer = $2`,
+		slug, "https://pid.example").Scan(&held); err != nil || held != root {
+		t.Errorf("held %q, %v", held, err)
+	}
+	for name, body := range map[string]map[string]any{
+		"x5c with keys":                          {"issuer": "https://pid.example", "keys_from": "x5c", "roots": root, "jwks": issuerJWKS(t, false)},
+		"x5c with no roots":                      {"issuer": "https://pid.example", "keys_from": "x5c"},
+		"a leaf as a root":                       {"issuer": "https://pid.example", "keys_from": "x5c", "roots": leaf},
+		"roots on pinned keys":                   {"issuer": "https://pid.example", "jwks": issuerJWKS(t, false), "roots": root},
+		"roots on metadata":                      {"issuer": "https://pid.example", "keys_from": "metadata", "roots": root},
+		"an issuer that no certificate can name": {"issuer": "pid-issuer", "keys_from": "x5c", "roots": root},
 	} {
 		if rec := call(t, s, http.MethodPut, issuers, testToken, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s answered %d %s", name, rec.Code, rec.Body)
@@ -150,8 +210,10 @@ func TestAWalletSignInIsConfiguredThroughTheAPI(t *testing.T) {
 		t.Fatalf("pinning again: %d %s", rec.Code, rec.Body)
 	}
 	if v, err = store.LoadVPVerifier(context.Background(), s.db, nil, slug); err != nil ||
-		v.Issuers["https://pid.example"] == nil || v.IssuersFromMetadata["https://pid.example"] {
-		t.Fatalf("after pinning again: pinned %v, from metadata %v, %v", v.Issuers, v.IssuersFromMetadata, err)
+		v.Issuers["https://pid.example"] == nil || v.IssuersFromMetadata["https://pid.example"] ||
+		v.IssuerRoots["https://pid.example"] != nil {
+		t.Fatalf("after pinning again: pinned %v, from metadata %v, roots %v, %v", v.Issuers, v.IssuersFromMetadata,
+			v.IssuerRoots, err)
 	}
 	if rec := call(t, s, http.MethodDelete, issuers+"?issuer=https://pid.example", testToken, nil); rec.Code != http.StatusOK {
 		t.Fatalf("no longer believing: %d %s", rec.Code, rec.Body)

@@ -16376,6 +16376,9 @@
                   "jwks": {},
                   "keys_from": {
                     "type": "string"
+                  },
+                  "roots": {
+                    "type": "string"
                   }
                 },
                 "type": "object"

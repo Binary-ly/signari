@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +33,10 @@ type Expect struct {
 	// FromMetadata are the issuers believed with the keys their JWT VC Issuer
 	// Metadata publishes, read through Fetch for each presentation.
 	FromMetadata map[string]bool
-	Now          time.Time
+	// Anchors are the issuers believed by the certificate chain their credentials
+	// carry in x5c, each with the roots that chain has to lead to.
+	Anchors map[string]*x509.CertPool
+	Now     time.Time
 	// Fetch reads a Status List Token and an issuer's metadata and keys. A credential
 	// that names a status is refused when this is nil, so leaving it out cannot skip
 	// revocation.
@@ -107,7 +111,7 @@ func verifyPresentation(presentation string, e Expect) (*Presented, error) {
 		return nil, fmt.Errorf("the presentation has no Key Binding JWT, and one is required")
 	}
 
-	payload, issuer, issuerKeys, err := verifyIssuerSigned(jwt, e)
+	payload, issuer, issuerKeys, chain, err := verifyIssuerSigned(jwt, e)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +164,11 @@ func verifyPresentation(presentation string, e Expect) (*Presented, error) {
 	// Status last: "The processing rules for Referenced Tokens ... MUST precede any
 	// evaluation of a Referenced Token's status", and a token found invalid is not
 	// looked up (specs/token-status-list.txt:789). So nobody without a credential
-	// this verifier would otherwise accept can make it fetch anything.
+	// this verifier would otherwise accept can make it fetch anything. The issuer's
+	// certificates go first: a status list is believed by the key they vouch for.
+	if err := checkChainRevocation(chain, e.Fetch, e.Now); err != nil {
+		return nil, err
+	}
 	ref, err := statusReference(payload)
 	if err != nil {
 		return nil, err
@@ -182,20 +190,22 @@ var neverDisclosed = []string{"iss", "nbf", "exp", "cnf", "vct", "vct#integrity"
 // found: by a mechanism "permitted for the given Issuer according to policy"
 // (specs/sdjwtvc.txt:1080-1083). Here that is keys the operator has pinned for
 // the issuer, or for an issuer the operator named that way, the keys its JWT VC
-// Issuer Metadata publishes (:1085-1089). It returns the keys it used, which a
-// status list is held to as well.
-func verifyIssuerSigned(jwt string, e Expect) (map[string]any, string, *jose.JSONWebKeySet, error) {
+// Issuer Metadata publishes (:1085-1089) or the key of the certificate chain its
+// credential carries, validated to the operator's roots (:1091-1098). It returns
+// the keys it used, which a status list is held to as well, and the chain when
+// there was one, whose revocation is checked last.
+func verifyIssuerSigned(jwt string, e Expect) (map[string]any, string, *jose.JSONWebKeySet, []*x509.Certificate, error) {
 	tok, err := jose.ParseSigned(jwt, Algorithms())
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("the credential did not parse: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("the credential did not parse: %w", err)
 	}
 	if len(tok.Signatures) != 1 {
-		return nil, "", nil, fmt.Errorf("a credential carries exactly one signature")
+		return nil, "", nil, nil, fmt.Errorf("a credential carries exactly one signature")
 	}
 	h := tok.Signatures[0].Protected
 	typ, _ := h.ExtraHeaders[jose.HeaderType].(string)
 	if !slices.Contains(credentialTypes, typ) {
-		return nil, "", nil, fmt.Errorf("the credential's typ is %q, not dc+sd-jwt", typ)
+		return nil, "", nil, nil, fmt.Errorf("the credential's typ is %q, not dc+sd-jwt", typ)
 	}
 
 	// The issuer is read before the signature is checked, to find whose keys to
@@ -206,29 +216,38 @@ func verifyIssuerSigned(jwt string, e Expect) (map[string]any, string, *jose.JSO
 		Issuer string `json:"iss"`
 	}
 	if err := json.Unmarshal(tok.UnsafePayloadWithoutVerification(), &named); err != nil {
-		return nil, "", nil, fmt.Errorf("the credential's payload is not JSON: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("the credential's payload is not JSON: %w", err)
 	}
+	// One issuer is believed one way, so the credential cannot choose: a pinned
+	// issuer's credential is checked with the pinned keys even when it carries x5c.
 	keys := e.Issuers[named.Issuer]
-	if keys == nil && named.Issuer != "" && e.FromMetadata[named.Issuer] {
+	var chain []*x509.Certificate
+	switch {
+	case keys != nil || named.Issuer == "":
+	case e.FromMetadata[named.Issuer]:
 		if keys, err = issuerKeysFromMetadata(named.Issuer, e.Fetch); err != nil {
-			return nil, "", nil, err
+			return nil, "", nil, nil, err
+		}
+	case e.Anchors[named.Issuer] != nil:
+		if keys, chain, err = issuerKeysFromChain(h, named.Issuer, e.Anchors[named.Issuer], e.Now); err != nil {
+			return nil, "", nil, nil, err
 		}
 	}
 	if named.Issuer == "" || keys == nil {
-		return nil, "", nil, fmt.Errorf("the credential is from %q, which is not an issuer this verifier believes", named.Issuer)
+		return nil, "", nil, nil, fmt.Errorf("the credential is from %q, which is not an issuer this verifier believes", named.Issuer)
 	}
 	verified, err := verifyWith(tok, keys)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("the credential's signature does not verify with %s's keys: %w", named.Issuer, err)
+		return nil, "", nil, nil, fmt.Errorf("the credential's signature does not verify with %s's keys: %w", named.Issuer, err)
 	}
 
 	payload := map[string]any{}
 	dec := json.NewDecoder(bytes.NewReader(verified))
 	dec.UseNumber()
 	if err := dec.Decode(&payload); err != nil {
-		return nil, "", nil, fmt.Errorf("the credential's payload is not a JSON object: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("the credential's payload is not a JSON object: %w", err)
 	}
-	return payload, named.Issuer, keys, nil
+	return payload, named.Issuer, keys, chain, nil
 }
 
 // verifyWith checks tok against the pinned keys: the one its kid names, or with

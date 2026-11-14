@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
@@ -50,6 +51,9 @@ type VPVerifier struct {
 	// IssuersFromMetadata are believed with the keys their JWT VC Issuer Metadata
 	// publishes, read for each presentation, rather than keys held here.
 	IssuersFromMetadata map[string]bool
+	// IssuerRoots are believed by the certificate chain their credentials carry,
+	// each with the roots that chain has to lead to.
+	IssuerRoots map[string]*x509.CertPool
 }
 
 // CredentialQueryID names the one credential a verifier asks for, in the query and in
@@ -128,22 +132,31 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		}
 	}
 
-	rows, err := db.Query(ctx, `SELECT issuer, jwks, keys_from FROM core.vp_trusted_issuers WHERE provider_id = $1::uuid`,
-		v.ProviderID)
+	rows, err := db.Query(ctx, `SELECT issuer, jwks, keys_from, coalesce(roots, '') FROM core.vp_trusted_issuers
+		WHERE provider_id = $1::uuid`, v.ProviderID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	v.Issuers = map[string]*jose.JSONWebKeySet{}
 	v.IssuersFromMetadata = map[string]bool{}
+	v.IssuerRoots = map[string]*x509.CertPool{}
 	for rows.Next() {
-		var issuer, keysFrom string
+		var issuer, keysFrom, roots string
 		var raw []byte
-		if err := rows.Scan(&issuer, &raw, &keysFrom); err != nil {
+		if err := rows.Scan(&issuer, &raw, &keysFrom, &roots); err != nil {
 			return nil, err
 		}
-		if keysFrom == VPKeysFromMetadata {
+		switch keysFrom {
+		case VPKeysFromMetadata:
 			v.IssuersFromMetadata[issuer] = true
+			continue
+		case VPKeysFromX5C:
+			pool, err := oid4vp.RootPool(roots)
+			if err != nil {
+				return nil, fmt.Errorf("the roots held for %s: %w", issuer, err)
+			}
+			v.IssuerRoots[issuer] = pool
 			continue
 		}
 		set, err := ParseIssuerKeys(raw)
@@ -311,10 +324,12 @@ func ParseIssuerKeys(raw []byte) (*jose.JSONWebKeySet, error) {
 // ErrVPIssuerUnknown is an issuer a wallet sign-in does not believe.
 var ErrVPIssuerUnknown = errors.New("this wallet sign-in does not believe that issuer")
 
-// Where a believed issuer's keys come from: held here, or its JWT VC Issuer Metadata.
+// Where a believed issuer's keys come from: held here, its JWT VC Issuer Metadata, or
+// the certificate chain its credentials carry, validated to roots held here.
 const (
 	VPKeysPinned       = "pinned"
 	VPKeysFromMetadata = "metadata"
+	VPKeysFromX5C      = "x5c"
 )
 
 // SetVPTrustedIssuer believes issuer, with these keys, for the wallet sign-in slug, or
@@ -333,7 +348,7 @@ func SetVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer st
 	if err != nil {
 		return err
 	}
-	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, canonical, VPKeysPinned)
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, canonical, VPKeysPinned, "")
 }
 
 // SetVPTrustedIssuerByMetadata believes issuer for the wallet sign-in slug with the keys
@@ -348,7 +363,32 @@ func SetVPTrustedIssuerByMetadata(ctx context.Context, q outpostDB, orgID, slug,
 	if _, err := oid4vp.IssuerMetadataURL(issuer); err != nil {
 		return idpInvalid{err.Error()}
 	}
-	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromMetadata)
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromMetadata, "")
+}
+
+// SetVPTrustedIssuerByX5C believes issuer for the wallet sign-in slug with the key of the
+// certificate chain its credentials carry in x5c, which has to lead to one of roots, PEM
+// certificate authorities, and whose leaf has to name issuer (specs/sdjwtvc.txt:1091-1098).
+// It drops any keys held for it. The issuer has to be an absolute URI, the only kind a
+// certificate's subject alternative name can carry.
+func SetVPTrustedIssuerByX5C(ctx context.Context, q outpostDB, orgID, slug, issuer, roots string) error {
+	issuer = strings.TrimSpace(issuer)
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
+	}
+	if err := oid4vp.CanBeNamedByCertificate(issuer); err != nil {
+		return idpInvalid{err.Error()}
+	}
+	parsed, err := oid4vp.ParseRoots(roots)
+	if err != nil {
+		return idpInvalid{"the issuer's roots: " + err.Error()}
+	}
+	// Kept as the certificates alone, so what is held is exactly what is checked with.
+	var canonical strings.Builder
+	for _, c := range parsed {
+		_ = pem.Encode(&canonical, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromX5C, canonical.String())
 }
 
 func checkVPIssuerName(issuer string) error {
@@ -359,14 +399,18 @@ func checkVPIssuerName(issuer string) error {
 	return nil
 }
 
-func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte, keysFrom string) error {
+// putVPTrustedIssuer writes one issuer's row; roots is "" for any but an x5c issuer, and
+// held as NULL, so each way of believing an issuer keeps only what it is checked with.
+func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte, keysFrom,
+	roots string) error {
 	tag, err := q.Exec(ctx, `
-		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks, keys_from)
-		SELECT x.provider_id, x.org_id, $2, $3::jsonb, $5
+		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks, keys_from, roots)
+		SELECT x.provider_id, x.org_id, $2, $3::jsonb, $5, nullif($6, '')
 		FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
 		WHERE p.slug = $1 AND ($4 = '' OR p.org_id::text = $4)
-		ON CONFLICT (provider_id, issuer) DO UPDATE SET jwks = EXCLUDED.jwks, keys_from = EXCLUDED.keys_from`,
-		slug, issuer, jwks, orgID, keysFrom)
+		ON CONFLICT (provider_id, issuer) DO UPDATE
+			SET jwks = EXCLUDED.jwks, keys_from = EXCLUDED.keys_from, roots = EXCLUDED.roots`,
+		slug, issuer, jwks, orgID, keysFrom, roots)
 	if err != nil {
 		return err
 	}

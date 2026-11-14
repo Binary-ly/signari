@@ -23,7 +23,7 @@ G301    cmd/signari/theme.go                1      theme eject writes page templ
 G304    cmd/signari/exportsubject.go        1      files named by the operator's own command-line flags
 G304    cmd/signari/externalfactor.go       1      files named by the operator's own command-line flags
 G304    cmd/signari/main.go                 29     files named by the operator's own command-line flags
-G304    cmd/signari/oid4vp.go               3      files named by the operator's own command-line flags
+G304    cmd/signari/oid4vp.go               4      files named by the operator's own command-line flags
 G304    cmd/signari/orglifecycle.go         1      files named by the operator's own command-line flags
 G304    cmd/signari/trustmark.go            4      files named by the operator's own command-line flags
 G304    cmd/signari/writepaths.go           4      files named by the operator's own command-line flags
@@ -46,7 +46,7 @@ G703    cmd/signari/configsecrets.go        2      a secret file the operator's 
 G703    cmd/signari/exportsubject.go        1      operator-supplied paths, same reasoning as G304
 G703    cmd/signari/externalfactor.go       1      operator-supplied paths, same reasoning as G304
 G703    cmd/signari/main.go                 35     operator-supplied paths, same reasoning as G304
-G703    cmd/signari/oid4vp.go               3      operator-supplied paths, same reasoning as G304
+G703    cmd/signari/oid4vp.go               4      operator-supplied paths, same reasoning as G304
 G703    cmd/signari/orglifecycle.go         1      operator-supplied paths, same reasoning as G304
 G703    cmd/signari/pskc.go                 3      operator-supplied paths, same reasoning as G304
 G703    cmd/signari/theme.go                3      the operator's -dir joined with the embedded page names

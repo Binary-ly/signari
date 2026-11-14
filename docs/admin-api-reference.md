@@ -2042,6 +2042,7 @@ Takes:
 | `issuer` | string |  |
 | `jwks` | any |  |
 | `keys_from` | string |  |
+| `roots` | string |  |
 
 Answers:
 

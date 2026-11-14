@@ -5242,6 +5242,7 @@ export interface PutOrganizationsOrgIDIdentityProvidersSlugVpIssuersRequest {
   issuer?: string
   jwks?: unknown
   keys_from?: string
+  roots?: string
 }
 
 /** A JSON object of the Admin API. */

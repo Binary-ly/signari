@@ -106,8 +106,20 @@ var scenarios = map[string]scenario{
 			if err != nil {
 				return nil, err
 			}
+			endpoint, as := e.md.IntrospectionEndpoint, e.cfg
+			if e.cfg.IntrospectURL != "" {
+				endpoint = e.cfg.IntrospectURL
+			}
+			if e.cfg.IntrospectClientID != "" {
+				other := *e.cfg
+				other.ClientID, other.ClientSecret = e.cfg.IntrospectClientID, e.cfg.IntrospectClientSecret
+				as = &other
+			}
+			if endpoint == "" {
+				return nil, fmt.Errorf("the provider advertises no introspection endpoint; -introspect-url names one")
+			}
 			return func(ctx context.Context) error {
-				body, err := postForm(ctx, hc, e.md.IntrospectionEndpoint, e.cfg, url.Values{"token": {tok.AccessToken}})
+				body, err := postForm(ctx, hc, endpoint, as, url.Values{"token": {tok.AccessToken}})
 				if err != nil {
 					return err
 				}

@@ -277,6 +277,54 @@ func TestSetupIsKeptOutOfTheLatency(t *testing.T) {
 	}
 }
 
+// A provider that serves introspection apart from discovery, to a client other than
+// the one that holds the token, is measured there and as that client; with nowhere to
+// introspect, the scenario says so rather than posting to an empty URL.
+func TestIntrospectionCanBeAskedElsewhereAsAnotherClient(t *testing.T) {
+	srv := fakeProvider(t)
+	var asked atomic.Int64
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, secret, ok := r.BasicAuth()
+		// Form-encoded inside Basic, as RFC 6749 §2.3.1 has it and the driver sends it.
+		id, _ = url.QueryUnescape(id)
+		secret, _ = url.QueryUnescape(secret)
+		if !ok || id != "api" || secret != "api+secret" || r.URL.Path != "/admin/introspect" {
+			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+			return
+		}
+		asked.Add(1)
+		_, _ = w.Write([]byte(`{"active":true}`))
+	}))
+	t.Cleanup(api.Close)
+	c := &config{Issuer: srv.URL, ClientID: "bench", ClientSecret: "s+1", Concurrency: 1,
+		Duration: 100 * time.Millisecond, IntrospectURL: api.URL + "/admin/introspect",
+		IntrospectClientID: "api", IntrospectClientSecret: "api+secret"}
+	res, err := measure(context.Background(), c, "introspect", scenarios["introspect"])
+	if err != nil || res.Ops == 0 || res.Errors != 0 || asked.Load() == 0 {
+		t.Fatalf("introspection elsewhere measured %+v, %v, %d asked there", res, err, asked.Load())
+	}
+
+	// The token's own client is refused there, and that is an error, not a measurement.
+	c.IntrospectClientID, c.IntrospectClientSecret = "", ""
+	if res, err := measure(context.Background(), c, "introspect", scenarios["introspect"]); err == nil && res.Errors == 0 {
+		t.Errorf("introspecting as the wrong client measured %+v", res)
+	}
+
+	bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"token_endpoint": srv.URL + "/token"})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(bare.Close)
+	none := &config{Issuer: bare.URL, ClientID: "bench", ClientSecret: "s+1", Concurrency: 1, Duration: 50 * time.Millisecond}
+	if res, err := measure(context.Background(), none, "introspect", scenarios["introspect"]); err == nil &&
+		!strings.Contains(res.FirstError, "-introspect-url") {
+		t.Errorf("a provider with no introspection endpoint measured %+v", res)
+	}
+}
+
 // Every HTTP scenario runs against the fake for a moment, with no errors, and
 // reports what it measured.
 func TestTheHTTPScenariosMeasureAProvider(t *testing.T) {

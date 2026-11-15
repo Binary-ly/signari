@@ -102,6 +102,11 @@ type config struct {
 	Concurrency, People                                int
 	Duration, Warmup                                   time.Duration
 	Insecure                                           bool
+
+	// Introspection where a provider offers it apart from discovery or to another
+	// client: one serves it only on an administrative listener, another only to a
+	// client registered as an API. Empty, the discovered endpoint and -client-id.
+	IntrospectURL, IntrospectClientID, IntrospectClientSecret string
 }
 
 func runCommand(args []string) error {
@@ -139,6 +144,9 @@ func runCommand(args []string) error {
 	fs.DurationVar(&c.Duration, "d", 20*time.Second, "measured duration per scenario")
 	fs.DurationVar(&c.Warmup, "warmup", 5*time.Second, "unmeasured run before each scenario")
 	fs.BoolVar(&c.Insecure, "insecure", false, "skip TLS verification (a self-signed test deployment only)")
+	fs.StringVar(&c.IntrospectURL, "introspect-url", "", "introspect here rather than at the discovered endpoint (introspect)")
+	fs.StringVar(&c.IntrospectClientID, "introspect-client-id", "", "introspect as this client rather than -client-id (introspect)")
+	fs.StringVar(&c.IntrospectClientSecret, "introspect-client-secret", "", "its secret (client_secret_basic)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

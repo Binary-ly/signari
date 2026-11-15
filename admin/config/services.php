@@ -49,4 +49,19 @@ return [
         'redirect' => env('SIGNARI_CONSOLE_REDIRECT_URI'),
     ],
 
+    /*
+     * The engine's Admin API, the console's only way to write (ADR-004): where it
+     * listens, the token for a break-glass account or a console with no Signari
+     * sign-in, and for a listener with SIGNARI_ADMIN_CLIENT_CA, this console's
+     * certificate and key. Read here and nowhere else, because env() outside a
+     * config file returns null once `php artisan config:cache` has run, and the
+     * console would then talk to the default address with no certificate.
+     */
+    'signari_admin' => [
+        'url' => env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'),
+        'token' => env('SIGNARI_ADMIN_TOKEN', ''),
+        'client_cert' => env('SIGNARI_ADMIN_CLIENT_CERT', ''),
+        'client_key' => env('SIGNARI_ADMIN_CLIENT_KEY', ''),
+    ],
+
 ];

@@ -39,6 +39,10 @@ class SignariSignInTest extends TestCase
             'issuer' => self::ISSUER, 'client_id' => 'console', 'client_secret' => 'console-secret',
             'redirect' => 'https://console.example.test/signari/callback',
         ]);
+        // The address faked below, whatever the environment says: CI copies
+        // .env.example, whose https address no fake answered, and every test
+        // that reached /admin/me failed there.
+        config()->set('services.signari_admin.url', self::ADMIN);
         $this->person = (string) Str::uuid();
         $this->org = (string) Str::uuid();
     }

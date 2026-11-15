@@ -48,7 +48,7 @@ class EngineAdminApi
         // The environment token is a break-glass account's, or every
         // operator's on a console with no Signari sign-in: handing it to a
         // person who signed in through Signari would give them everything.
-        $token = (string) env('SIGNARI_ADMIN_TOKEN', '');
+        $token = (string) config('services.signari_admin.token', '');
         if ($user !== null && SignariSignIn::configured() && ! $user->break_glass) {
             $token = app(SignariSignIn::class)->accessToken();
             if ($token === null) {
@@ -66,7 +66,7 @@ class EngineAdminApi
     /** Where the engine's Admin API listens. */
     public static function baseUrl(): string
     {
-        return rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/');
+        return rtrim((string) config('services.signari_admin.url', 'http://127.0.0.1:8090'), '/');
     }
 
     /**
@@ -394,11 +394,11 @@ class EngineAdminApi
                 ->acceptJson();
 
             // For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
-            $certificate = (string) env('SIGNARI_ADMIN_CLIENT_CERT', '');
+            $certificate = (string) config('services.signari_admin.client_cert', '');
             if ($certificate !== '') {
                 $request = $request->withOptions([
                     'cert' => $certificate,
-                    'ssl_key' => (string) env('SIGNARI_ADMIN_CLIENT_KEY', ''),
+                    'ssl_key' => (string) config('services.signari_admin.client_key', ''),
                 ]);
             }
 

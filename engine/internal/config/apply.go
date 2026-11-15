@@ -697,11 +697,12 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		err := tx.QueryRow(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          scopes, enabled, initiate_login_uri, logo_uri,
-			                          portal_hidden, client_secret_hash)
+			                          portal_hidden, client_secret_hash, token_endpoint_auth_method)
 			VALUES ($1, $2::uuid, COALESCE(NULLIF($3, ''), $1), $4,
 			        COALESCE($5::text[], ARRAY['openid','profile','email','offline_access']),
 			        COALESCE($6::boolean, true), NULLIF($7,''), NULLIF($8,''), $9,
-			        CASE WHEN $4 = 'confidential' THEN 'unset' ELSE NULL END)
+			        CASE WHEN $4 = 'confidential' THEN 'unset' ELSE NULL END,
+			        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)
 			ON CONFLICT (client_id) DO UPDATE SET
 				display_name = COALESCE(NULLIF($3, ''), core.clients.display_name),
 				scopes = COALESCE($5::text[], core.clients.scopes),

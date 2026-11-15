@@ -137,10 +137,11 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes,
-			                          require_pkce)
+			                          require_pkce, token_endpoint_auth_method)
 			VALUES ($1, $2::uuid, $3, $4, $5, true,
 			        ARRAY['authorization_code','refresh_token'],
-			        ARRAY['openid','profile','email'], $6)`,
+			        ARRAY['openid','profile','email'], $6,
+			        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)`,
 			req.ClientID, req.OrgID, req.DisplayName, kind, hash, requirePKCE); err != nil {
 			return err
 		}

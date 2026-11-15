@@ -244,8 +244,11 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		INSERT INTO core.clients
 			(client_id, org_id, display_name, client_type, client_secret_hash,
 			 scopes, backchannel_logout_uri, dynamically_registered,
-			 registration_token_hash, registered_at, dpop_bound_access_tokens)
-		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now(), $9)`,
+			 registration_token_hash, registered_at, dpop_bound_access_tokens,
+			 token_endpoint_auth_method)
+		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now(), $9,
+		        -- What the registration response tells the registrant (register.go).
+		        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_basic' END)`,
 		out.ClientID, in.OrgID, in.DisplayName, kind, secretHash, in.Scopes,
 		in.LogoutURI, regHash[:], in.DPoPBound); err != nil {
 		return nil, fmt.Errorf("creating the client: %w", err)

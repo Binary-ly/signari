@@ -4030,10 +4030,11 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, givenOrg, clientID, name,
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, scopes,
 		                          initiate_login_uri, logo_uri, portal_hidden,
-		                          require_pkce)
+		                          require_pkce, token_endpoint_auth_method)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''),
 		        ARRAY['openid','profile','email','offline_access'],
-		        NULLIF($6,''), NULLIF($7,''), $8, $9)`,
+		        NULLIF($6,''), NULLIF($7,''), $8, $9,
+		        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)`,
 		clientID, orgID, name, kind, secretHash,
 		launchURL, logoURL, portalHidden, requirePKCE); err != nil {
 		return fmt.Errorf("creating client: %w", err)

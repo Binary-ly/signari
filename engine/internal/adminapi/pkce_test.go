@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -76,6 +77,17 @@ func TestAnAPICreatedClientRequiresPKCEUnlessItOptsOut(t *testing.T) {
 	public, code, body := create(map[string]any{"public": true})
 	if code != http.StatusCreated {
 		t.Fatalf("creating a public client gave %d %s", code, body)
+	}
+	// Read back as it authenticates: a public client by nothing, not by a secret it was
+	// never given, which is what the column's default said of every one made here.
+	for client, want := range map[string]string{public: "none", id: "client_secret_post"} {
+		rec := call(t, s, http.MethodGet, "/admin/clients/"+client, testToken, nil)
+		var read map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &read)
+		if rec.Code != http.StatusOK || read["token_endpoint_auth_method"] != want {
+			t.Errorf("client %s reads token_endpoint_auth_method %v (%d), want %s", client,
+				read["token_endpoint_auth_method"], rec.Code, want)
+		}
 	}
 	rec = call(t, s, http.MethodPatch, "/admin/clients/"+public, testToken, map[string]any{"require_pkce": false})
 	if rec.Code != http.StatusBadRequest {

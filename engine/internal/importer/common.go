@@ -486,9 +486,11 @@ func importClient(ctx context.Context, tx pgx.Tx, orgID, clientID, name, secret 
 	// opt-out are listed, not left to fail silently in either direction.
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
-		                          client_secret_hash, enabled, grant_types, scopes, require_pkce)
+		                          client_secret_hash, enabled, grant_types, scopes, require_pkce,
+		                          token_endpoint_auth_method)
 		VALUES ($1, $2::uuid, $7, $3, $4, $5, $6,
-		        ARRAY['openid','profile','email'], true)
+		        ARRAY['openid','profile','email'], true,
+		        CASE WHEN $3 = 'public' THEN 'none' ELSE 'client_secret_post' END)
 		ON CONFLICT (client_id) DO NOTHING`,
 		clientID, orgID, kind, secretHash, enabled, grants, name)
 	if err != nil {

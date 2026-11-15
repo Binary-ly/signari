@@ -62,12 +62,27 @@ jobs:
             SIGNARI_DSN=postgres://postgres@localhost:5432/$db go run ./cmd/signari migrate bootstrap
             SIGNARI_DSN=postgres://signari_engine@localhost:5432/$db go run ./cmd/signari migrate up
           done
+      # What the suite expects to find: one instance, with its signing keys, and one
+      # organisation. Without them every test that needs an active ES256 key failed
+      # here (the id-jag audiences, the batch and drift tests through them, a doctor
+      # check), and the fixtures that look for an organisation skipped, so this job
+      # proved less than a run on a developer's machine and failed besides.
+      - name: One instance and one organisation
+        run: |
+          head -c 32 /dev/urandom | base64 > "$RUNNER_TEMP/root-key"
+          chmod 600 "$RUNNER_TEMP/root-key"
+          SIGNARI_ROOT_KEY_FILE="$RUNNER_TEMP/root-key" \
+            SIGNARI_DSN=postgres://signari_engine@localhost:5432/signari_ci \
+            go run ./cmd/signari instance create -issuer https://ci.signari.test
+          PGOPTIONS='-c role=signari_maintenance' psql -q -h localhost -U postgres signari_ci -c \
+            "INSERT INTO core.organizations (instance_id, slug, display_name) SELECT id, 'ci', 'CI' FROM core.instances LIMIT 1"
       # Twice, back to back: shared-test-state failures show up on the second
-      # run, and they have reached main before (docs/BUILD-LOG.md).
+      # run, and they have reached main before. Thirty minutes, not go test's
+      # default ten: httpapi alone takes eleven on a four-core machine.
       - name: Test (first run)
-        run: go test ./...
+        run: go test -timeout 30m ./...
       - name: Test (second run)
-        run: go test -count=1 ./...
+        run: go test -timeout 30m -count=1 ./...
 
   provider:
     runs-on: ubuntu-24.04

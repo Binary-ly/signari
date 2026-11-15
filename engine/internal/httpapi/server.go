@@ -1223,17 +1223,17 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
 	}
-	body, etag = negotiate(w, r, &s.discoveryGzip, body, etag)
+	body, etag, gzipped := negotiate(w, r, &s.discoveryGzip, body, etag)
 	// Discovery is public, stable, and polled. Let it be cached, but not so long
 	// that adding a signing algorithm takes a day to become visible.
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	w.Header().Set("ETag", etag)
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
-		w.Header().Del("Content-Encoding")
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	encodedAs(w, gzipped)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
@@ -1354,12 +1354,11 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "key set unavailable")
 		return
 	}
-	body, etag = negotiate(w, r, &s.jwksGzip, body, etag)
+	body, etag, gzipped := negotiate(w, r, &s.jwksGzip, body, etag)
 	w.Header().Set("ETag", etag)
 	// A conditional request costs nothing and is not counted against the limit:
 	// a client asking "has it changed" is the behaviour we want to encourage.
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
-		w.Header().Del("Content-Encoding")
 		w.Header().Set("Cache-Control",
 			fmt.Sprintf("public, max-age=%d", int(keys.JWKSMaxAge.Seconds())))
 		w.WriteHeader(http.StatusNotModified)
@@ -1375,6 +1374,7 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control",
 		fmt.Sprintf("public, max-age=%d", int(keys.JWKSMaxAge.Seconds())))
 	w.Header().Set("Content-Type", "application/jwk-set+json")
+	encodedAs(w, gzipped)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }

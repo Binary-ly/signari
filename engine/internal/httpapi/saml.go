@@ -115,7 +115,8 @@ func writeMetadata(w http.ResponseWriter, r *http.Request, doc string) {
 	// rotating certificate, and a long cache is what turns rotation into an
 	// outage.
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	body, _ := negotiate(w, r, nil, []byte(doc), "")
+	body, _, gzipped := negotiate(w, r, nil, []byte(doc), "")
+	encodedAs(w, gzipped)
 	_, _ = w.Write(body)
 }
 

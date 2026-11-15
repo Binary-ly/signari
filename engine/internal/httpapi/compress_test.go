@@ -104,18 +104,23 @@ func TestADocumentIsCompressedOnceAndOnlyIfWorthIt(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Accept-Encoding", "gzip")
 	var memo gzipMemo
-	short, tag := negotiate(httptest.NewRecorder(), r, &memo, []byte("short"), `"a"`)
-	if string(short) != "short" || tag != `"a"` {
-		t.Errorf("%q %q", short, tag)
+	short, tag, zipped := negotiate(httptest.NewRecorder(), r, &memo, []byte("short"), `"a"`)
+	if string(short) != "short" || tag != `"a"` || zipped {
+		t.Errorf("%q %q %v", short, tag, zipped)
 	}
 	long := bytes.Repeat([]byte("key "), compressFrom)
-	first, _ := negotiate(httptest.NewRecorder(), r, &memo, long, `"a"`)
-	second, _ := negotiate(httptest.NewRecorder(), r, &memo, long, `"a"`)
+	rec := httptest.NewRecorder()
+	first, _, zipped := negotiate(rec, r, &memo, long, `"a"`)
+	if !zipped || rec.Header().Get("Content-Encoding") != "" {
+		t.Errorf("compressed %v, and Content-Encoding %q set before any body was chosen to carry it",
+			zipped, rec.Header().Get("Content-Encoding"))
+	}
+	second, _, _ := negotiate(httptest.NewRecorder(), r, &memo, long, `"a"`)
 	if len(first) == 0 || &first[0] != &second[0] {
 		t.Error("compressed again for the same ETag")
 	}
 	changed := bytes.Repeat([]byte("new "), compressFrom)
-	third, _ := negotiate(httptest.NewRecorder(), r, &memo, changed, `"b"`)
+	third, _, _ := negotiate(httptest.NewRecorder(), r, &memo, changed, `"b"`)
 	if !bytes.Equal(gunzip(t, third), changed) {
 		t.Error("the old document was served for a new ETag")
 	}

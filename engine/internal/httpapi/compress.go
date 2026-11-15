@@ -74,14 +74,20 @@ func takesGzip(r *http.Request) bool {
 }
 
 // negotiate chooses the form of a public document a request is answered with, and
-// says on the response that the choice was made. The form has an ETag of its own: a
-// content coding is a characteristic of the representation (RFC 9110 §8.4), so one
-// ETag on both would have a cache revalidate the compressed bytes for a client that
-// cannot read them.
-func negotiate(w http.ResponseWriter, r *http.Request, memo *gzipMemo, body []byte, etag string) ([]byte, string) {
+// says whether that form is gzip. The form has an ETag of its own: a content coding
+// is a characteristic of the representation (RFC 9110 §8.4), so one ETag on both
+// would have a cache revalidate the compressed bytes for a client that cannot read
+// them.
+//
+// It does not set Content-Encoding itself. The caller does, on the response that
+// carries this body and on no other: when this set it, every answer the handler gave
+// afterwards inherited it, and the key set's 429 sent a plain JSON refusal labelled
+// gzip, which no client could read (0.110), at the moment after a rotation when
+// relying parties refetch at once and the refusal is the answer most of them get.
+func negotiate(w http.ResponseWriter, r *http.Request, memo *gzipMemo, body []byte, etag string) ([]byte, string, bool) {
 	w.Header().Add("Vary", "Accept-Encoding")
 	if len(body) < compressFrom || !takesGzip(r) {
-		return body, etag
+		return body, etag, false
 	}
 	var out []byte
 	var ok bool
@@ -91,11 +97,17 @@ func negotiate(w http.ResponseWriter, r *http.Request, memo *gzipMemo, body []by
 		out, ok = gzipBytes(body)
 	}
 	if !ok {
-		return body, etag
+		return body, etag, false
 	}
-	w.Header().Set("Content-Encoding", "gzip")
 	if tag, cut := strings.CutSuffix(etag, `"`); cut {
 		etag = tag + `-gzip"`
 	}
-	return out, etag
+	return out, etag, true
+}
+
+// encodedAs marks the response about to carry a negotiated body with its coding.
+func encodedAs(w http.ResponseWriter, gzipped bool) {
+	if gzipped {
+		w.Header().Set("Content-Encoding", "gzip")
+	}
 }

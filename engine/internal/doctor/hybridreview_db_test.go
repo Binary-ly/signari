@@ -48,9 +48,15 @@ func TestAnOverdueHybridExemptionIsReported(t *testing.T) {
 	if err := checkClients(ctx, tx, r); err != nil {
 		t.Fatal(err)
 	}
+	// Only what is said of the hybrid flow: the same check reports other things about
+	// a client, such as signing with an algorithm its instance holds no key for, and in
+	// a database with no instance keys (CI's) that named both clients and failed here.
+	// The client ids hold "hybrid" too, so the match is on the finding's own words.
 	var said []string
 	for _, f := range r.Findings {
-		said = append(said, f.Summary)
+		if strings.Contains(f.Summary, "still allows the hybrid flow") {
+			said = append(said, f.Summary)
+		}
 	}
 	all := strings.Join(said, "\n")
 	if !strings.Contains(all, overdue) || !strings.Contains(all, "2020-01-01") {

@@ -508,8 +508,8 @@ func TestMetadataSignedByXmlsec1Verifies(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command(bin, "--sign", "--lax-key-search", "--privkey-pem", keyPath+","+certPath,
-		"--id-attr:ID", nsMetadata+":EntityDescriptor", "--output", outPath, tmplPath)
+	cmd := exec.Command(bin, xmlsec1Args(bin, "--sign", "--privkey-pem", keyPath+","+certPath,
+		"--id-attr:ID", nsMetadata+":EntityDescriptor", "--output", outPath, tmplPath)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("xmlsec1: %v\n%s", err, out)
 	}

@@ -495,8 +495,8 @@ func TestAnAttributeXmlsec1EncryptedIsRead(t *testing.T) {
 </xenc:EncryptedData></saml:EncryptedAttribute>`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		out, err := exec.Command(bin, "encrypt", "--lax-key-search", "--pubkey-cert-pem", certPath,
-			"--session-key", "aes-256", "--binary-data", data, template).CombinedOutput()
+		out, err := exec.Command(bin, xmlsec1Args(bin, "encrypt", "--pubkey-cert-pem", certPath,
+			"--session-key", "aes-256", "--binary-data", data, template)...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("xmlsec1: %v\n%s", err, out)
 		}
@@ -568,8 +568,8 @@ func TestWhatXmlsec1EncryptsIsRead(t *testing.T) {
 </xenc:EncryptedData></saml:EncryptedAssertion>`), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					out, err := exec.Command(bin, "encrypt", "--lax-key-search", "--pubkey-cert-pem", certPath,
-						"--session-key", c.session, "--binary-data", data, template).CombinedOutput()
+					out, err := exec.Command(bin, xmlsec1Args(bin, "encrypt", "--pubkey-cert-pem", certPath,
+						"--session-key", c.session, "--binary-data", data, template)...).CombinedOutput()
 					if err != nil {
 						t.Fatalf("xmlsec1: %v\n%s", err, out)
 					}

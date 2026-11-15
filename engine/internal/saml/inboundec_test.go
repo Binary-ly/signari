@@ -61,9 +61,9 @@ func xmlsec1Sign(t *testing.T, s ecSender) string {
 			t.Fatal(err)
 		}
 	}
-	if out, err := exec.Command(bin, "--sign", "--lax-key-search", "--privkey-pem", keyPath+","+certPath,
+	if out, err := exec.Command(bin, xmlsec1Args(bin, "--sign", "--privkey-pem", keyPath+","+certPath,
 		"--id-attr:ID", "urn:oasis:names:tc:SAML:2.0:protocol:AuthnRequest",
-		"--output", outPath, tmplPath).CombinedOutput(); err != nil {
+		"--output", outPath, tmplPath)...).CombinedOutput(); err != nil {
 		t.Fatalf("xmlsec1 could not sign: %s", out)
 	}
 	signed, err := os.ReadFile(outPath)

@@ -46,7 +46,8 @@ development CA under `deploy/tls` through `NODE_EXTRA_CA_CERTS`.
 ## What it does, and why each step is there
 
 1. **Discovery,** once per process, in `lib/signari.js`. The issuer the document
-   names has to be the one configured.
+   names has to be the one configured. A discovery that failed, because the server
+   was not answering yet, is not kept, so the next sign-in tries again.
 2. **`/login`** makes a fresh `state`, `nonce` and PKCE verifier and keeps them in a
    cookie of their own: httpOnly, for `/callback` alone, ten minutes. A route handler
    cannot rely on memory between two requests. Signari requires PKCE of every client,

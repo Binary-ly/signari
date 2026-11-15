@@ -16,9 +16,14 @@ export function config() {
     throw new Error("set SIGNARI_ISSUER, CLIENT_ID and REDIRECT_URI, and CLIENT_SECRET for a confidential client");
   }
   const secret = process.env.CLIENT_SECRET;
+  // Kept once it succeeds. A failure is forgotten, so a request made while the server was
+  // not answering yet does not leave this process failing every sign-in after it.
   configured ??= client.discovery(new URL(issuer), clientId, undefined,
     secret ? client.ClientSecretBasic(secret) : client.None(),
-    { execute: [client.enableNonRepudiationChecks] });
+    { execute: [client.enableNonRepudiationChecks] }).catch((err) => {
+    configured = undefined;
+    throw err;
+  });
   return configured;
 }
 

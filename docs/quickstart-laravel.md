@@ -23,7 +23,8 @@ signature type: ES256".
 ```sh
 composer create-project laravel/laravel:13.11.0 myapp && cd myapp
 composer require jumbojett/openid-connect-php:1.0.2
-cp -R <signari>/examples/laravel-quickstart/. .
+cp -R <signari>/examples/laravel-quickstart/app <signari>/examples/laravel-quickstart/config \
+  <signari>/examples/laravel-quickstart/routes .
 ```
 
 That adds `app/Support/SignariClient.php`, `app/Support/RedirectTo.php` and
@@ -39,6 +40,26 @@ SIGNARI_REDIRECT_URI=http://127.0.0.1:8000/callback
 and run `php artisan serve`. Open `http://127.0.0.1:8000/login`, sign in, and the page
 says who signed in. For a certificate your machine does not trust, set
 `SIGNARI_CA_FILE=<file.pem>`. Never turn certificate checking off.
+
+## In compose
+
+The `demo` profile of `deploy/docker-compose.yml` runs this example from its
+[Dockerfile](../examples/laravel-quickstart/Dockerfile) as `demo-laravel`, at
+`http://localhost:8095/login`. With the exports the [README](../README.md#quick-start)
+gives:
+
+```sh
+cd deploy && docker compose --profile first-run --profile demo up -d
+```
+
+The image does what step 2 does, with the settings taken from the container's
+environment instead of an `.env`, and sessions kept in files, so there is no database.
+It makes an `APP_KEY` each time it starts unless it is given one, so none is built into
+it, and runs `php artisan serve`. Its client, `demo-laravel` in
+[deploy/demo/client.yaml](../deploy/demo/client.yaml), is public and set to RS256 there,
+for the reason step 1 gives. The library authenticates a client with no secret by its
+`client_id` and the PKCE verifier alone. It trusts the development CA under
+`deploy/tls` through `SIGNARI_CA_FILE`.
 
 ## What it does, and why each step is there
 

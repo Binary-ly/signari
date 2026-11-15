@@ -27,6 +27,22 @@ Open `http://127.0.0.1:3000/login`, sign in, and the page says who signed in. Th
 versions are pinned in `package.json`. For a certificate your machine does not trust,
 give Node the certificate with `NODE_EXTRA_CA_CERTS=<file.pem>`.
 
+## In compose
+
+The `demo` profile of `deploy/docker-compose.yml` runs this example from its
+[Dockerfile](../examples/nextjs-quickstart/Dockerfile) as `demo-nextjs`, the public client
+`demo-nextjs` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
+`http://localhost:8092/login`. With the exports the [README](../README.md#quick-start)
+gives:
+
+```sh
+cd deploy && docker compose --profile first-run --profile demo up -d
+```
+
+The image runs `next build` once; the settings are read when the container starts,
+since both routes are dynamic. It listens on `PORT` (8092 here) and trusts the
+development CA under `deploy/tls` through `NODE_EXTRA_CA_CERTS`.
+
 ## What it does, and why each step is there
 
 1. **Discovery,** once per process, in `lib/signari.js`. The issuer the document

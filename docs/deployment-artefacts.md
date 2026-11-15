@@ -97,14 +97,18 @@ libraries that already work.
 ## A first run with something to sign in to
 
 The `first-run` profile runs `bootstrap` once the schema is in; the `demo` profile adds
-`examples/go-quickstart` as an application at `http://localhost:8097/login`, and the
-`demo-client` service applies its public client, `demo`, from `deploy/demo/client.yaml` to
-the organisation bootstrap made. `apply` takes the only organisation there is when neither `-org` nor the
+`examples/go-quickstart` as an application at `http://localhost:8097/login`, the Express,
+Next.js, Django, Spring Boot and Laravel quickstarts beside it on ports 8091 to 8095 (each
+guide's "In compose" says where), and the `demo-client` service applies their public
+clients, `demo` and `demo-<framework>`, from `deploy/demo/client.yaml` to the organisation
+bootstrap made. `apply` takes the only organisation there is when neither `-org` nor the
 file names one, so the file names none, and applied again it plans nothing. Together,
 from an empty volume to a signed-in person takes no SQL; the commands are in the
-[README](../README.md#quick-start). The demo runs on the host's network so that it reaches
-the engine at the issuer's own address, the one the browser uses, and trusts the
+[README](../README.md#quick-start). The demos run on the host's network so that they
+reach the engine at the issuer's own address, the one the browser uses, and trust the
 development CA under `deploy/tls`, which signs the engine's certificate for `localhost`.
+The Django demo trusts that certificate itself instead, since Python 3.13 and later
+refuse a CA with no `keyUsage`, as this one is; its guide says more.
 
 With `first-run` on, the engine starts after `bootstrap` has finished. The first
 measured run started them side by side, and the engine found no signing keys yet and
@@ -120,8 +124,8 @@ FIPS-validated) predate this and remain the basis the chart builds on.
 
 ## Base images are pinned by digest
 
-Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile`, `admin/Dockerfile` and
-`examples/go-quickstart/Dockerfile` names its base by tag and digest, for example
+Every `FROM` in `engine/Dockerfile`, `operator/Dockerfile`, `admin/Dockerfile` and the
+quickstarts' `examples/*/Dockerfile` names its base by tag and digest, for example
 `golang:1.26.11@sha256:9579…`. The digest is what gets pulled, and the tag says what
 it is. A tag is whatever its registry says today, so a build from a bare tag can
 differ from the build that was checked, without anyone changing a line here.

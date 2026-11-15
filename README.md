@@ -83,8 +83,10 @@ docker compose --profile first-run --profile demo up -d
 docker compose logs bootstrap     # the one-time link
 ```
 
-Open the link, set a password, and sign in at `http://localhost:8097/login`. The
-certificate under `deploy/tls` is for development and signed by a CA nobody else trusts.
+Open the link, set a password, and sign in at `http://localhost:8097/login`. The same
+profile runs the Express, Next.js, Django, Spring Boot and Laravel quickstarts on ports
+8091 to 8095; each guide's "In compose" section says which. The certificate under
+`deploy/tls` is for development and signed by a CA nobody else trusts.
 
 `SIGNARI_ROOT_KEY` seals every stored secret and is not kept in the database it
 protects. Lose it and the sealed data — signing keys, bind passwords, RADIUS

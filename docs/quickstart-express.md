@@ -31,6 +31,20 @@ If the engine's certificate is one your machine does not trust, as on a laptop, 
 Node the certificate with `NODE_EXTRA_CA_CERTS=<file.pem>`. Never turn certificate
 checking off.
 
+## In compose
+
+The `demo` profile of `deploy/docker-compose.yml` runs this example from its
+[Dockerfile](../examples/express-quickstart/Dockerfile) as `demo-express`, the public
+client `demo-express` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
+`http://localhost:8091/login`. With the exports the [README](../README.md#quick-start)
+gives:
+
+```sh
+cd deploy && docker compose --profile first-run --profile demo up -d
+```
+
+It trusts the development CA under `deploy/tls` through `NODE_EXTRA_CA_CERTS`.
+
 ## What it does, and why each step is there
 
 1. **Discovery.** `client.discovery` reads `/.well-known/openid-configuration` and

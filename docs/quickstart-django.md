@@ -29,6 +29,26 @@ versions are pinned in `requirements.txt`. `runserver` is Django's development s
 serve it as you serve any Django application. For a certificate your machine does not
 trust, give requests the certificate with `REQUESTS_CA_BUNDLE=<file.pem>`.
 
+## In compose
+
+The `demo` profile of `deploy/docker-compose.yml` runs this example from its
+[Dockerfile](../examples/django-quickstart/Dockerfile) as `demo-django`, the public client
+`demo-django` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
+`http://localhost:8093/login/`. With the exports the [README](../README.md#quick-start)
+gives:
+
+```sh
+cd deploy && docker compose --profile first-run --profile demo up -d
+```
+
+The image makes a `DJANGO_SECRET_KEY` each time it starts unless it is given one, so
+none is built into it. `REQUESTS_CA_BUNDLE` names the engine's own certificate under
+`deploy/tls`, not the development CA beside it. Python 3.13 and later hold a CA to RFC
+5280, and that CA has no `keyUsage` extension, so requests refuses it with "CA cert does
+not include key usage extension". The engine must still present exactly that
+certificate, within its dates, for the name `localhost`. A CA made with
+`keyUsage = critical, keyCertSign` is trusted as it is.
+
 ## What it does, and why each step is there
 
 1. **Discovery.** Authlib reads the document from the configured issuer, and holds the

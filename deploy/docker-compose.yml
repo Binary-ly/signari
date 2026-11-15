@@ -181,19 +181,30 @@ services:
     ports:
       - "8098:8080"
 
-  # An application to sign in to, on request, at http://localhost:8097/login (6.21): the Go
-  # quickstart, registered as a public client by applying demo/client.yaml. With the first
-  # run, a database to a signed-in person takes no SQL:
+  # Applications to sign in to, on request (6.21): the Go quickstart at
+  # http://localhost:8097/login, and the same sign-in from each framework quickstart in
+  # examples/, each registered as a public client by applying demo/client.yaml:
+  #
+  #   demo            Go          http://localhost:8097/login
+  #   demo-express    Express     http://localhost:8091/login
+  #   demo-nextjs     Next.js     http://localhost:8092/login
+  #   demo-django     Django      http://localhost:8093/login/
+  #   demo-spring     Spring Boot http://localhost:8094/   (then "Sign in with Signari")
+  #   demo-laravel    Laravel     http://localhost:8095/login
+  #
+  # With the first run, a database to a signed-in person takes no SQL:
   #
   #   export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
   #     SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
   #   docker compose --profile first-run --profile demo up -d
   #   docker compose logs bootstrap        # the one-time link for the first person
   #
-  # then open the link, choose a password, and sign in at http://localhost:8097/login. The
-  # engine serves TLS under tls/, whose CA the demo trusts. The demo is on the host's
-  # network so that it reaches the engine at the issuer's own address, the one the browser
-  # uses: localhost inside a container would be the container.
+  # then open the link, choose a password, and sign in at any of them; each ends on
+  # "Signed in as" that person. The engine serves TLS under tls/, whose CA each demo
+  # trusts the way its language does (Django, the engine's certificate itself; see
+  # demo-django). The demos are on the host's network so that they reach the engine at
+  # the issuer's own address, the one the browser uses: localhost inside a container would
+  # be the container. Each listens on 127.0.0.1 only.
   demo-client:
     profiles: ["demo"]
     build:
@@ -212,7 +223,7 @@ services:
     profiles: ["demo"]
     build:
       context: ../examples/go-quickstart
-    depends_on:
+    depends_on: &demo-depends
       demo-client:
         condition: service_completed_successfully
       engine:
@@ -223,9 +234,93 @@ services:
       CLIENT_ID: demo
       REDIRECT_URI: http://localhost:8097/callback
       SSL_CERT_FILE: /tls/ca.crt
-    volumes:
+    volumes: &demo-tls
       - ./tls:/tls:ro
     # The engine may not be answering yet when this starts, and discovery is the first thing it does.
+    restart: on-failure
+
+  # The framework quickstarts, each with no CLIENT_SECRET, which makes it a public client.
+  demo-express:
+    profiles: ["demo"]
+    build:
+      context: ../examples/express-quickstart
+    depends_on: *demo-depends
+    network_mode: host
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      CLIENT_ID: demo-express
+      # It listens on this URI's port.
+      REDIRECT_URI: http://localhost:8091/callback
+      NODE_EXTRA_CA_CERTS: /tls/ca.crt
+    volumes: *demo-tls
+    restart: on-failure
+
+  demo-nextjs:
+    profiles: ["demo"]
+    build:
+      context: ../examples/nextjs-quickstart
+    depends_on: *demo-depends
+    network_mode: host
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      CLIENT_ID: demo-nextjs
+      REDIRECT_URI: http://localhost:8092/callback
+      PORT: "8092"
+      NODE_EXTRA_CA_CERTS: /tls/ca.crt
+    volumes: *demo-tls
+    restart: on-failure
+
+  demo-django:
+    profiles: ["demo"]
+    build:
+      context: ../examples/django-quickstart
+    depends_on: *demo-depends
+    network_mode: host
+    # No DJANGO_SECRET_KEY: the image makes one at each start.
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      CLIENT_ID: demo-django
+      REDIRECT_URI: http://localhost:8093/callback/
+      PORT: "8093"
+      # The engine's own certificate, not the CA: Python 3.13 and later check a CA as
+      # RFC 5280 says, and tls/ca.crt carries no keyUsage, so requests refuses it with
+      # "CA cert does not include key usage extension". The engine must still present
+      # exactly this certificate, within its dates, for the name localhost.
+      REQUESTS_CA_BUNDLE: /tls/engine.crt
+    volumes: *demo-tls
+    restart: on-failure
+
+  demo-spring:
+    profiles: ["demo"]
+    build:
+      context: ../examples/spring-quickstart
+    depends_on: *demo-depends
+    network_mode: host
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      CLIENT_ID: demo-spring
+      CLIENT_AUTH: none
+      PORT: "8094"
+      # Made into a truststore at each start; see the image.
+      SIGNARI_CA_FILE: /tls/ca.crt
+    volumes: *demo-tls
+    # Spring reads the discovery document as it starts, and exits when the engine is not answering yet.
+    restart: on-failure
+
+  demo-laravel:
+    profiles: ["demo"]
+    build:
+      context: ../examples/laravel-quickstart
+    depends_on: *demo-depends
+    network_mode: host
+    # No APP_KEY: the image makes one at each start.
+    environment:
+      SIGNARI_ISSUER: ${SIGNARI_ISSUER:-https://localhost:8099}
+      SIGNARI_CLIENT_ID: demo-laravel
+      SIGNARI_REDIRECT_URI: http://localhost:8095/callback
+      PORT: "8095"
+      SIGNARI_CA_FILE: /tls/ca.crt
+    volumes: *demo-tls
     restart: on-failure
 
 volumes:

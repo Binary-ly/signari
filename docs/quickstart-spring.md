@@ -28,6 +28,23 @@ Java 17 or later. For a certificate your machine does not trust, import it into 
 truststore with `keytool -importcert` and start Java with
 `-Djavax.net.ssl.trustStore=<file> -Djavax.net.ssl.trustStorePassword=<password>`.
 
+## In compose
+
+The `demo` profile of `deploy/docker-compose.yml` runs this example from its
+[Dockerfile](../examples/spring-quickstart/Dockerfile) as `demo-spring`, the public client
+`demo-spring` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), with
+`CLIENT_AUTH=none`, at `http://localhost:8094/`. With the exports the
+[README](../README.md#quick-start) gives:
+
+```sh
+cd deploy && docker compose --profile first-run --profile demo up -d
+```
+
+Given `SIGNARI_CA_FILE`, the image imports that certificate into a truststore of its
+own each time it starts, under a password made then, and Java trusts only it; the demo
+gives it the development CA under `deploy/tls`. Spring reads the discovery document as
+it starts, so it exits until the engine answers, and compose starts it again.
+
 ## What it does, and the two settings Signari needs
 
 `application.properties` names Signari by `issuer-uri`. Spring reads the discovery

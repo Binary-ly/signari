@@ -201,8 +201,7 @@ services:
   #
   # then open the link, choose a password, and sign in at any of them; each ends on
   # "Signed in as" that person. The engine serves TLS under tls/, whose CA each demo
-  # trusts the way its language does (Django, the engine's certificate itself; see
-  # demo-django). The demos are on the host's network so that they reach the engine at
+  # trusts the way its language does. The demos are on the host's network so that they reach the engine at
   # the issuer's own address, the one the browser uses: localhost inside a container would
   # be the container. Each listens on 127.0.0.1 only.
   demo-client:
@@ -282,11 +281,7 @@ services:
       CLIENT_ID: demo-django
       REDIRECT_URI: http://localhost:8093/callback/
       PORT: "8093"
-      # The engine's own certificate, not the CA: Python 3.13 and later check a CA as
-      # RFC 5280 says, and tls/ca.crt carries no keyUsage, so requests refuses it with
-      # "CA cert does not include key usage extension". The engine must still present
-      # exactly this certificate, within its dates, for the name localhost.
-      REQUESTS_CA_BUNDLE: /tls/engine.crt
+      REQUESTS_CA_BUNDLE: /tls/ca.crt
     volumes: *demo-tls
     restart: on-failure
 

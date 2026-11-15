@@ -107,8 +107,9 @@ from an empty volume to a signed-in person takes no SQL; the commands are in the
 [README](../README.md#quick-start). The demos run on the host's network so that they
 reach the engine at the issuer's own address, the one the browser uses, and trust the
 development CA under `deploy/tls`, which signs the engine's certificate for `localhost`.
-The Django demo trusts that certificate itself instead, since Python 3.13 and later
-refuse a CA with no `keyUsage`, as this one is; its guide says more.
+That CA carries `keyUsage`, as RFC 5280 requires of a CA certificate. Python 3.13 and
+later refuse one without it, and until 15 November 2026 this one had none, so every
+Python client refused the chain.
 
 With `first-run` on, the engine starts after `bootstrap` has finished. The first
 measured run started them side by side, and the engine found no signing keys yet and

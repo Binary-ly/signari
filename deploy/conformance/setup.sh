@@ -36,8 +36,11 @@ CALLBACK="$SUITE_BASE/test/a/signari/callback"
 if [ ! -f ../tls/engine.crt ] ||
    ! openssl x509 -in ../tls/engine.crt -noout -text | grep -q 'DNS:signari-engine'; then
   echo "generating a TLS certificate for signari-engine"
+  # keyUsage, because RFC 5280 says a CA certificate MUST carry it (4.2.1.3), and Python
+  # 3.13 and later hold a CA to that: without it every Python client refuses the chain.
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -keyout ../tls/ca.key -out ../tls/ca.crt -subj "/CN=signari-conformance-ca" 2>/dev/null
+    -keyout ../tls/ca.key -out ../tls/ca.crt -subj "/CN=signari-conformance-ca" \
+    -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
   openssl req -newkey rsa:2048 -nodes -keyout ../tls/engine.key -out ../tls/engine.csr \
     -subj "/CN=signari-engine" 2>/dev/null
   openssl x509 -req -in ../tls/engine.csr -CA ../tls/ca.crt -CAkey ../tls/ca.key \

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("[{\"type\":\"payment_initiLLLLLLLLactions\":[\"initiate\"],\"locations\":[\"https://rs.eaample\"]}]")

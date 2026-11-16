@@ -34,6 +34,7 @@ command or an environment variable exists in code and not on its page.
 | [performance.md](performance.md) | What one instance does under load |
 | [tracing.md](tracing.md) | OpenTelemetry spans to a collector, and what no span carries |
 | [security-scanning.md](security-scanning.md) | `govulncheck`, `gosec`, and the findings left visible on purpose |
+| [fuzzing.md](fuzzing.md) | The fuzz target of every parser that reads a stranger's input, and how they are run continuously |
 | [dependencies.md](dependencies.md) | Third-party inventory (ASVS V15.1.2) |
 
 ## The sign-in experience

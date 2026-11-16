@@ -374,17 +374,17 @@ func TestAMalformedIfMatchIsRefusedNotIgnored(t *testing.T) {
 func TestIfMatchStarProceeds(t *testing.T) {
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
-	before := currentVersion(t, s)
 
-	rec := httptest.NewRecorder()
-	s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch,
-		"/admin/clients/"+clientID, `{"enabled":false}`, "*"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("If-Match: * gave %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	if got := currentVersion(t, s); got != before+1 {
-		t.Errorf("version %d -> %d, want one bump", before, got)
+	if from, to, once := versionBumpsOnce(t, s, func(attempt int) {
+		// Alternate, so every attempt changes something.
+		body := fmt.Sprintf(`{"enabled":%t}`, attempt%2 == 1)
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, adminReq(t, http.MethodPatch, "/admin/clients/"+clientID, body, "*"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("If-Match: * gave %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+	}); !once {
+		t.Errorf("version %d -> %d, want one bump", from, to)
 	}
 }
 

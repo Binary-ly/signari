@@ -228,6 +228,24 @@ func versionStays(t *testing.T, s *Server, request func()) (from, to int64, held
 	return from, to, false
 }
 
+// versionBumpsOnce is versionStays for a write: a request that must move the
+// version by exactly one, tried until an attempt saw no other writer. Packages run
+// in parallel against one database, and one test elsewhere bumping the version
+// inside this window made the single-shot check fail in CI ("696 -> 698"). A
+// handler that bumps twice fails every attempt. request is called with the
+// attempt's number, so it can make each one a real change.
+func versionBumpsOnce(t *testing.T, s *Server, request func(attempt int)) (from, to int64, once bool) {
+	t.Helper()
+	for attempt := range 5 {
+		from = currentVersion(t, s)
+		request(attempt)
+		if to = currentVersion(t, s); to == from+1 {
+			return from, to, true
+		}
+	}
+	return from, to, false
+}
+
 func doPatch(t *testing.T, s *Server, clientID, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPatch, "/admin/clients/"+clientID, strings.NewReader(body))

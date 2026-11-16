@@ -15,12 +15,19 @@ import (
 // idpAddVP registers a wallet sign-in: this deployment as an OpenID4VP verifier
 // (12.12). It believes no issuer until `idp vp-issuer` names one.
 func idpAddVP(ctx context.Context, conn *pgx.Conn, orgID, slug, name string, allowSignup, allowLinking,
-	trustEmail bool, vp store.VPSpec, keyFile, chainFile string) error {
+	trustEmail bool, vp store.VPSpec, keyFile, chainFile, iacaFile string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation this wallet sign-in belongs to")
 	case slug == "":
 		return fmt.Errorf("give -slug, the short name in /oid4vp/<slug>/start")
+	}
+	if iacaFile != "" {
+		b, err := os.ReadFile(iacaFile)
+		if err != nil {
+			return err
+		}
+		vp.IACARootsPEM = string(b)
 	}
 	if keyFile != "" {
 		b, err := os.ReadFile(keyFile)
@@ -84,6 +91,27 @@ func idpVPCrossDevice(ctx context.Context, conn *pgx.Conn, slug string, on bool)
 	fmt.Println("  Such an answer cannot be told from one somebody relayed to another person's phone, so it")
 	fmt.Println("  signs in only an account already linked to the credential, and only once the code emailed")
 	fmt.Println("  to that account's address is typed where the sign-in began. Mail has to be set up.")
+	return nil
+}
+
+// idpVPIACA replaces the IACA certificates an mdoc wallet sign-in believes, as an issuing
+// authority's re-key or a new authority needs.
+func idpVPIACA(ctx context.Context, conn *pgx.Conn, slug, rootsFile string) error {
+	switch {
+	case slug == "":
+		return fmt.Errorf("give -slug, the wallet sign-in")
+	case rootsFile == "":
+		return fmt.Errorf("give -root-cert, a PEM file of the IACA certificates to believe")
+	}
+	b, err := os.ReadFile(rootsFile)
+	if err != nil {
+		return err
+	}
+	roots := string(b)
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{IACARoots: &roots}); err != nil {
+		return err
+	}
+	fmt.Printf("%s: an mdoc is believed when its document signer leads to one of these IACA certificates\n", slug)
 	return nil
 }
 

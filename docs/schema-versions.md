@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0302 vp_mdoc
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may ask for an ISO mdoc rather than an SD-JWT VC (vp_verifiers.format mso_mdoc): one document type (doctype, OID4VP B.2.3's doctype_value) and the IACA certificates its document signers have to lead to (iaca_roots, PEM), as ISO/IEC 18013-5 9.3.3 has a reader hold them. An mdoc names no vct, and an SD-JWT VC no doctype or IACA, so each format's columns are present exactly when it is the format. Not compatible with the previous release: it would read an mdoc sign-in as an SD-JWT one asking for no type.
+
 ## 0301 public_clients_authenticate_by_none
 
 Not compatible with the release before: stop it before migrating.

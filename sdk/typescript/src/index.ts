@@ -3660,6 +3660,7 @@ export interface PatchOrganizationsOrgIDIdentityProvidersSlugRequest {
   end_session_url?: string
   forward_parameters?: string[]
   group_claim?: string
+  iaca_roots?: string
   login_domains?: string[]
   mfa_acr?: string[]
   mfa_amr?: string[]
@@ -4247,11 +4248,14 @@ export interface PostOrganizationsOrgIDIdentityProvidersRequest {
   client_id?: string
   client_id_prefix?: string
   client_secret?: string
+  credential_format?: string
   cross_device?: boolean
   dc_api?: boolean
+  doctype?: string
   email_claim?: string
   entity_id?: string
   force_authn?: boolean
+  iaca_roots?: string
   issuer?: string
   jwks_url?: string
   kind?: string

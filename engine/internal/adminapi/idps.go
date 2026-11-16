@@ -75,6 +75,9 @@ type patchIdentityProviderRequest struct {
 	// DCAPI has a wallet sign-in ask through the browser's Digital Credentials API too.
 	// A wallet sign-in's alone.
 	DCAPI *bool `json:"dc_api"`
+	// IACARoots replaces, PEM, the IACA certificates a wallet sign-in that asks for an
+	// ISO mdoc believes. That sign-in's alone.
+	IACARoots *string `json:"iaca_roots"`
 }
 
 // idpGroupMapRequest says one of a provider's groups grants a local one.
@@ -152,6 +155,12 @@ type addIdentityProviderRequest struct {
 	CrossDevice bool `json:"cross_device"`
 	// DCAPI asks through the browser's Digital Credentials API too.
 	DCAPI bool `json:"dc_api"`
+	// CredentialFormat is dc+sd-jwt, the default, or mso_mdoc for an ISO mdoc, which
+	// names its DocType in place of vct_values and the IACA certificates it is believed
+	// by, PEM, in IACARoots.
+	CredentialFormat string `json:"credential_format"`
+	DocType          string `json:"doctype"`
+	IACARoots        string `json:"iaca_roots"`
 }
 
 func providerHTTPClient() *http.Client { return safedial.Client(15 * time.Second) }
@@ -197,15 +206,18 @@ func (s *Server) addIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	vp := &store.VPSpec{Prefix: req.ClientIDPrefix, WalletURL: strings.TrimSpace(req.WalletURL),
 		ResponseMode: req.ResponseMode, VCTValues: req.VCTValues, SubjectClaim: req.SubjectClaim,
 		EmailClaim: req.EmailClaim, NameClaim: req.NameClaim, KeyPEM: req.RequestKey, ChainPEM: req.CertificateChain,
-		CrossDevice: req.CrossDevice, DCAPI: req.DCAPI}
+		CrossDevice: req.CrossDevice, DCAPI: req.DCAPI, Format: req.CredentialFormat, DocType: req.DocType,
+		IACARootsPEM: req.IACARoots}
 	switch {
 	case req.Kind == "oid4vp":
 		spec.VP = vp
 	case vp.Prefix != "" || vp.WalletURL != "" || vp.ResponseMode != "" || len(vp.VCTValues) > 0 || vp.SubjectClaim != "" ||
-		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "" || vp.CrossDevice || vp.DCAPI:
+		vp.EmailClaim != "" || vp.NameClaim != "" || vp.KeyPEM != "" || vp.ChainPEM != "" || vp.CrossDevice || vp.DCAPI ||
+		vp.Format != "" || vp.DocType != "" || vp.IACARootsPEM != "":
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_identity_provider",
 			"detail": "client_id_prefix, wallet_url, response_mode, vct_values, the claim paths, request_key, " +
-				"certificate_chain, cross_device and dc_api are a wallet sign-in's, kind oid4vp"})
+				"certificate_chain, cross_device, dc_api, credential_format, doctype and iaca_roots are a wallet " +
+				"sign-in's, kind oid4vp"})
 		return
 	}
 	if req.Metadata != "" || req.MetadataURL != "" {
@@ -343,7 +355,7 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	change := store.IdentityProviderChange{Enabled: req.Enabled, AllowAssertions: req.AllowAssertions,
 		TrustEmailVerification: req.TrustEmailVerification, RequireVerifiedEmail: req.RequireVerifiedEmail,
-		StoreTokens: req.StoreTokens, CrossDevice: req.CrossDevice, DCAPI: req.DCAPI}
+		StoreTokens: req.StoreTokens, CrossDevice: req.CrossDevice, DCAPI: req.DCAPI, IACARoots: req.IACARoots}
 	if req.MFAAMR != nil {
 		l := cleanList(*req.MFAAMR, false)
 		change.MFAAMR = &l
@@ -407,6 +419,10 @@ func (s *Server) patchIdentityProvider(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.DCAPI != nil {
 			detail["dc_api"] = *req.DCAPI
+		}
+		if req.IACARoots != nil {
+			// That they changed, not the certificates: the trail is no place for a PEM.
+			detail["iaca_roots"] = "replaced"
 		}
 		return audit.Write(ctx, tx, audit.Event{Type: "admin.identity_provider_updated", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, Detail: detail})

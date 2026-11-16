@@ -415,7 +415,12 @@ Digital Credentials API. The way to this device now begins its request in a help
 redirects to what that returns, and gosec no longer follows the request's choice into
 the address. The redirect is the same one, to the same configured wallet URL.
 
-**Baseline: 180**, every line with its reason in `engine/gosec-baseline.txt`.
+**180 to 184:** `G304` and `G703`, two each, in `cmd/signari/oid4vp.go`, where `idp add`
+and the new `idp vp-iaca` read the IACA certificates an mdoc wallet sign-in believes from
+the file `-root-cert` names. The operator's own flag, on the operator's own machine, read
+as the request key and its chain beside them already are.
+
+**Baseline: 184**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

@@ -87,6 +87,9 @@ type IdentityProviderChange struct {
 	// DCAPI has a wallet sign-in ask through the browser's Digital Credentials API too.
 	// A wallet sign-in's alone.
 	DCAPI *bool
+	// IACARoots replaces, PEM, the IACA certificates a wallet sign-in that asks for an
+	// mdoc believes. That sign-in's alone.
+	IACARoots *string
 }
 
 // Empty reports whether the change names nothing.
@@ -94,7 +97,7 @@ func (c IdentityProviderChange) Empty() bool {
 	return c.Enabled == nil && c.AllowAssertions == nil && c.TrustEmailVerification == nil &&
 		c.RequireVerifiedEmail == nil && c.MFAAMR == nil && c.MFAACR == nil && c.LoginDomains == nil &&
 		c.EndSessionURL == nil && c.ForwardParameters == nil && c.GroupClaim == nil && c.StoreTokens == nil &&
-		c.CrossDevice == nil && c.DCAPI == nil
+		c.CrossDevice == nil && c.DCAPI == nil && c.IACARoots == nil
 }
 
 // checkForwardParameters refuses a name nothing would pass on, and a provider with no
@@ -299,6 +302,14 @@ func ChangeIdentityProvider(ctx context.Context, q outpostDB, orgID, slug string
 		if _, err := q.Exec(ctx, `UPDATE core.vp_verifiers x SET dc_api = $3
 			FROM core.identity_providers p
 			WHERE x.provider_id = p.id AND p.org_id = $1::uuid AND p.slug = $2`, orgID, slug, *c.DCAPI); err != nil {
+			return err
+		}
+	}
+	if c.IACARoots != nil {
+		if kind != "oid4vp" {
+			return idpInvalid{fmt.Sprintf("%s is a %s provider, and only a wallet sign-in believes an IACA", slug, kind)}
+		}
+		if err := SetVPIACARoots(ctx, q, orgID, slug, *c.IACARoots); err != nil {
 			return err
 		}
 	}

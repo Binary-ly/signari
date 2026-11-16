@@ -2,7 +2,8 @@
 
 A person can sign in with a credential from their digital identity wallet. This
 deployment acts as an OpenID for Verifiable Presentations 1.0 verifier: it asks the
-wallet for one SD-JWT VC, checks what comes back, and signs in the person a claim of
+wallet for one SD-JWT VC, or one ISO mdoc such as a mobile driving licence
+([below](#an-iso-mdoc)), checks what comes back, and signs in the person a claim of
 that credential identifies. After the check it is an ordinary external sign-in. The
 linking rules, account creation, [attribute and group mapping](social-login.md) and
 the audit events are the same as for any provider.
@@ -260,6 +261,52 @@ OpenID4VP appendix for this API.
 The page's script is `/static/wallet-dcapi.js`. The page's policy lets it run its own
 scripts and nothing else.
 
+## An ISO mdoc
+
+A wallet sign-in can ask for an mdoc in place of an SD-JWT VC: the format of a mobile
+driving licence (ISO/IEC 18013-5) and of documents built the same way. It names one
+document type rather than credential types, and it believes an issuing authority's
+IACA certificate rather than an issuer's keys:
+
+```sh
+signari idp add -org <org> -kind oid4vp -slug mdl -name "Driving licence" \
+  -client-id-prefix x509_san_dns -client-key-file verifier.key -client-cert-file verifier-chain.pem \
+  -credential-format mso_mdoc -doctype org.iso.18013.5.1.mDL -root-cert iaca.pem \
+  -subject-claim '["org.iso.18013.5.1","document_number"]' \
+  -name-claim '["org.iso.18013.5.1","given_name"]'
+```
+
+A claim of an mdoc is named by two parts, its namespace and its element. Where the
+IACA certificates come from is the operator's choice: an issuing authority publishes
+its own, and `signari idp vp-iaca -slug mdl -root-cert iaca.pem` replaces them when it
+re-keys. The person is identified within the document type and the issuing country,
+and state where the authority is a state's: the subject is
+`mdoc:org.iso.18013.5.1.mDL:<country>[-<state>]|<the subject claim>`, so the same
+document number from two countries is two people.
+
+An mdoc's answer is checked as ISO/IEC 18013-5 has a reader check it:
+
+- **The document signer**, the first certificate the issuer's signature carries, leads
+  to one of the IACA certificates, carries the document signer's extended key usage
+  and a key usage that allows a signature, and has the IACA's country, and its state
+  where the IACA has one. A CRL it names is read, as for an SD-JWT VC's issuer.
+- **The issuer's signature** over the mobile security object, with that certificate's
+  key, by ES256, ES384, ES512 or EdDSA with Ed25519.
+- **Every element returned** has the digest the issuer signed for it, carries at least
+  16 bytes of random, and is returned once. The document type the issuer signed is
+  the one presented.
+- **The validity:** signed while the signer's certificate was valid, valid from now
+  or before, and until now or after.
+- **The device's signature** over this request: the session transcript names this
+  verifier's client identifier, the nonce, the response URI, and for an encrypted
+  answer the key it was encrypted to; through the browser, the origin. An answer made
+  for another request, verifier or key is refused. An element the device signs
+  itself has to be one the issuer authorized its key for, and is never read.
+
+Not accepted: brainpool curves and Ed448, which the standard allows and Go's standard
+library does not implement, and a device that authenticates with a MAC, which needs a
+reader key a request over OpenID4VP does not carry here. Each is refused by name.
+
 ## Tested against
 
 The OpenID Foundation's OpenID4VP 1.0 verifier plan, the suite playing the wallet:
@@ -269,9 +316,17 @@ signed with another key, the wrong `sd_hash`, nonce or audience, and a key bindi
 old or a year ahead, is answered at the response URI with a 400. How to run it is in
 [the harness](../deploy/conformance/README.md).
 
+An mdoc was checked against the example data in ISO/IEC 18013-5 Annex D: its issuer
+signature verifies with its document signer certificate, which leads to its IACA and
+carries the document signer's key usage; its mobile security object reads; the digest
+of an element it returns matches the one signed; and the DeviceAuthenticationBytes made
+here equal the standard's, byte for byte. The session transcripts equal OpenID4VP's own
+examples for a request by redirect and through the browser.
+
 ## Not done
 
-- **mdoc** credentials.
+- **An mdoc authenticated by a MAC**, and mdocs on brainpool curves or Ed448
+  ([above](#an-iso-mdoc)).
 - **A separate status issuer**, whose key is linked to the credential's issuer by a
   certificate authority. Only the issuer's own keys sign a list believed here.
 - **OCSP** for an issuer's certificates. CRLs are read; a certificate that names

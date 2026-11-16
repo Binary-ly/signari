@@ -2205,6 +2205,7 @@ type PatchOrganizationsOrgIDIdentityProvidersSlugRequest struct {
 	EndSessionURL          *string   `json:"end_session_url,omitempty"`
 	ForwardParameters      *[]string `json:"forward_parameters,omitempty"`
 	GroupClaim             *string   `json:"group_claim,omitempty"`
+	IacaRoots              *string   `json:"iaca_roots,omitempty"`
 	LoginDomains           *[]string `json:"login_domains,omitempty"`
 	MfaACR                 *[]string `json:"mfa_acr,omitempty"`
 	MfaAMR                 *[]string `json:"mfa_amr,omitempty"`
@@ -2792,11 +2793,14 @@ type PostOrganizationsOrgIDIdentityProvidersRequest struct {
 	ClientID               *string   `json:"client_id,omitempty"`
 	ClientIDPrefix         *string   `json:"client_id_prefix,omitempty"`
 	ClientSecret           *string   `json:"client_secret,omitempty"`
+	CredentialFormat       *string   `json:"credential_format,omitempty"`
 	CrossDevice            *bool     `json:"cross_device,omitempty"`
 	DcAPI                  *bool     `json:"dc_api,omitempty"`
+	Doctype                *string   `json:"doctype,omitempty"`
 	EmailClaim             *string   `json:"email_claim,omitempty"`
 	EntityID               *string   `json:"entity_id,omitempty"`
 	ForceAuthn             *bool     `json:"force_authn,omitempty"`
+	IacaRoots              *string   `json:"iaca_roots,omitempty"`
 	Issuer                 *string   `json:"issuer,omitempty"`
 	JWKSURL                *string   `json:"jwks_url,omitempty"`
 	Kind                   *string   `json:"kind,omitempty"`

@@ -60,6 +60,10 @@ type VPVerifier struct {
 	// DCAPI asks through the browser's Digital Credentials API too, its answer
 	// coming back to the page that asked, bound to this origin.
 	DCAPI bool
+	// Format is the credential format asked for: dc+sd-jwt, or mso_mdoc for an ISO
+	// mdoc of DocType, believed by the IACA certificates in IACARoots.
+	Format, DocType string
+	IACARoots       *x509.CertPool
 }
 
 // CredentialQueryID names the one credential a verifier asks for, in the query and in
@@ -75,6 +79,9 @@ func (v *VPVerifier) Ask() oid4vp.Ask {
 			claims = append(claims, p)
 		}
 	}
+	if v.Format == oid4vp.FormatMdoc {
+		return oid4vp.Ask{ID: CredentialQueryID, Format: oid4vp.FormatMdoc, DocType: v.DocType, Claims: claims}
+	}
 	return oid4vp.Ask{ID: CredentialQueryID, VCTValues: v.VCTValues, Claims: claims}
 }
 
@@ -86,14 +93,14 @@ var ErrVPVerifierUnknown = errors.New("no such wallet sign-in")
 // LoadVPVerifier reads an enabled verifier by its slug.
 func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, slug string) (*VPVerifier, error) {
 	v := &VPVerifier{}
-	var prefix, subject, email, name, chain string
+	var prefix, subject, email, name, chain, iacaRoots string
 	var sealed []byte
 	err := db.QueryRow(ctx, `
 		SELECT p.id::text, p.org_id::text, p.slug, p.display_name,
 		       p.allow_signup, p.allow_linking, p.require_verified_email, p.trust_email_verification,
 		       x.client_id_prefix, x.wallet_url, x.vct_values, x.subject_claim, x.email_claim,
 		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode, x.cross_device,
-		       x.dc_api
+		       x.dc_api, x.format, COALESCE(x.doctype, ''), COALESCE(x.iaca_roots, '')
 		FROM core.identity_providers p
 		JOIN core.vp_verifiers x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'oid4vp' AND p.enabled`, slug).Scan(
@@ -101,7 +108,7 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 		&v.Policy.AllowSignup, &v.Policy.AllowLinking, &v.Policy.RequireVerifiedEmail,
 		&v.Policy.TrustsEmailVerification,
 		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode,
-		&v.CrossDevice, &v.DCAPI)
+		&v.CrossDevice, &v.DCAPI, &v.Format, &v.DocType, &iacaRoots)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrVPVerifierUnknown
 	}
@@ -110,6 +117,11 @@ func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, s
 	}
 	if v.Prefix, err = oid4vp.ParsePrefix(prefix); err != nil {
 		return nil, err
+	}
+	if iacaRoots != "" {
+		if v.IACARoots, err = oid4vp.RootPool(iacaRoots); err != nil {
+			return nil, fmt.Errorf("the IACA certificates held: %w", err)
+		}
 	}
 	if v.Subject, err = oid4vp.ParsePath(subject); err != nil {
 		return nil, err
@@ -192,6 +204,10 @@ type VPSpec struct {
 	CrossDevice bool
 	// DCAPI asks through the browser's Digital Credentials API too (VPVerifier.DCAPI).
 	DCAPI bool
+	// Format is dc+sd-jwt, the default, or mso_mdoc for an ISO mdoc, which names its
+	// DocType instead of VCTValues and is believed by the IACA certificates in
+	// IACARootsPEM rather than by trusted issuers.
+	Format, DocType, IACARootsPEM string
 }
 
 // crossDeviceNeedsSigning is why a wallet on another device needs a signed request: the
@@ -240,6 +256,23 @@ func (s *IdentityProviderSpec) validateVP() error {
 			return s.invalid("the %s claim: %v", p.what, err)
 		}
 	}
+	switch v.Format {
+	case "", oid4vp.Format:
+		v.Format = oid4vp.Format
+		if v.DocType != "" || v.IACARootsPEM != "" {
+			return s.invalid("a document type and IACA certificates are an mdoc's; this asks for an SD-JWT VC")
+		}
+	case oid4vp.FormatMdoc:
+		if v.IACARootsPEM == "" {
+			return s.invalid("an mdoc is believed by its issuing authority's IACA certificate, and none was given " +
+				"(ISO/IEC 18013-5 9.3.3)")
+		}
+		if _, err := oid4vp.RootPool(v.IACARootsPEM); err != nil {
+			return s.invalid("the IACA certificates: %v", err)
+		}
+	default:
+		return s.invalid("the credential format %q: want %s or %s", v.Format, oid4vp.Format, oid4vp.FormatMdoc)
+	}
 	if err := askOf(v).Validate(); err != nil {
 		return s.invalid("%v", err)
 	}
@@ -265,7 +298,7 @@ func (s *IdentityProviderSpec) validateVP() error {
 // askOf is the ask a spec would make, so an impossible one is refused when it is
 // stored and not at somebody's first sign-in.
 func askOf(s *VPSpec) oid4vp.Ask {
-	c := &VPVerifier{VCTValues: s.VCTValues}
+	c := &VPVerifier{VCTValues: s.VCTValues, Format: s.Format, DocType: s.DocType}
 	c.Subject, _ = oid4vp.ParsePath(s.SubjectClaim)
 	if s.EmailClaim != "" {
 		c.Email, _ = oid4vp.ParsePath(s.EmailClaim)
@@ -300,11 +333,13 @@ func addVPVerifier(ctx context.Context, q outpostDB, root *keys.RootKey, orgID s
 	_, err := q.Exec(ctx, `
 		INSERT INTO core.vp_verifiers
 			(provider_id, org_id, client_id_prefix, wallet_url, vct_values, subject_claim, email_claim,
-			 name_claim, signing_key, certificate_chain, response_mode, cross_device, dc_api)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13)`,
-		id, orgID, s.VP.Prefix, s.VP.WalletURL, s.VP.VCTValues, canonicalPath(s.VP.SubjectClaim),
+			 name_claim, signing_key, certificate_chain, response_mode, cross_device, dc_api,
+			 format, doctype, iaca_roots)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13,
+		        $14, NULLIF($15, ''), NULLIF($16, ''))`,
+		id, orgID, s.VP.Prefix, s.VP.WalletURL, nonNil(s.VP.VCTValues), canonicalPath(s.VP.SubjectClaim),
 		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode,
-		s.VP.CrossDevice, s.VP.DCAPI)
+		s.VP.CrossDevice, s.VP.DCAPI, s.VP.Format, s.VP.DocType, s.VP.IACARootsPEM)
 	return id, err
 }
 
@@ -415,6 +450,38 @@ func SetVPTrustedIssuerByX5C(ctx context.Context, q outpostDB, orgID, slug, issu
 	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromX5C, canonical.String())
 }
 
+// SetVPIACARoots replaces the IACA certificates an mdoc wallet sign-in believes, PEM, as an
+// issuing authority's re-key needs (ISO/IEC 18013-5 9.3.3 leaves how they are obtained
+// to the reader). Only for a sign-in that asks for an mdoc.
+func SetVPIACARoots(ctx context.Context, q outpostDB, orgID, slug, roots string) error {
+	parsed, err := oid4vp.ParseRoots(roots)
+	if err != nil {
+		return idpInvalid{"the IACA certificates: " + err.Error()}
+	}
+	var canonical strings.Builder
+	for _, c := range parsed {
+		_ = pem.Encode(&canonical, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+	}
+	var format string
+	err = q.QueryRow(ctx, `
+		UPDATE core.vp_verifiers x SET iaca_roots = CASE WHEN x.format = 'mso_mdoc' THEN $3 ELSE x.iaca_roots END,
+		       updated_at = now()
+		FROM core.identity_providers p
+		WHERE p.id = x.provider_id AND p.slug = $1 AND ($2 = '' OR p.org_id::text = $2)
+		RETURNING x.format`, slug, orgID, canonical.String()).Scan(&format)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrProviderUnknown
+	}
+	if err != nil {
+		return err
+	}
+	if format != oid4vp.FormatMdoc {
+		return idpInvalid{"IACA certificates are an mdoc's; this wallet sign-in asks for an SD-JWT VC, " +
+			"whose issuers are believed with `signari idp vp-issuer`"}
+	}
+	return nil
+}
+
 func checkVPIssuerName(issuer string) error {
 	if issuer == "" || strings.Contains(issuer, vpSubjectSeparator) {
 		return idpInvalid{fmt.Sprintf("the issuer %q: want the exact iss its credentials carry, which has no %q",
@@ -431,7 +498,7 @@ func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer st
 		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks, keys_from, roots)
 		SELECT x.provider_id, x.org_id, $2, $3::jsonb, $5, nullif($6, '')
 		FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
-		WHERE p.slug = $1 AND ($4 = '' OR p.org_id::text = $4)
+		WHERE p.slug = $1 AND ($4 = '' OR p.org_id::text = $4) AND x.format = 'dc+sd-jwt'
 		ON CONFLICT (provider_id, issuer) DO UPDATE
 			SET jwks = EXCLUDED.jwks, keys_from = EXCLUDED.keys_from, roots = EXCLUDED.roots`,
 		slug, issuer, jwks, orgID, keysFrom, roots)
@@ -439,6 +506,14 @@ func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer st
 		return err
 	}
 	if tag.RowsAffected() == 0 {
+		// An mdoc sign-in believes IACA certificates, not issuers: say so rather than
+		// that it does not exist.
+		var mdoc bool
+		if q.QueryRow(ctx, `SELECT true FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
+			WHERE p.slug = $1 AND ($2 = '' OR p.org_id::text = $2) AND x.format = 'mso_mdoc'`, slug, orgID).Scan(&mdoc) == nil {
+			return idpInvalid{"this wallet sign-in asks for an mdoc, which is believed by IACA certificates " +
+				"(`signari idp vp-iaca`), not by issuers"}
+		}
 		return ErrProviderUnknown
 	}
 	return nil

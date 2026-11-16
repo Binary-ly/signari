@@ -300,6 +300,7 @@ federation in:
   idp vp-issuer             say whose credentials a wallet sign-in believes, with their keys
   idp vp-cross-device       let a wallet sign-in's wallet be on another device, confirmed by email
   idp vp-dc-api             let a wallet sign-in ask through the browser's Digital Credentials API
+  idp vp-iaca               replace the IACA certificates an mdoc wallet sign-in believes
   idp link                  make an upstream subject act as a person
   idp unlink                detach an upstream subject from its person
   idp links                 a provider's subjects and the people they act as
@@ -909,6 +910,8 @@ func run(args []string) (err error) {
 		"too, by a code to scan, finished only by a code emailed to the linked account (a signed prefix only)")
 	vpDCAPI := fs.Bool("dc-api", false, "`idp add -kind oid4vp`: ask through the browser's Digital Credentials "+
 		"API too, the answer bound to this origin")
+	vpDocType := fs.String("doctype", "", "`idp add -kind oid4vp -credential-format mso_mdoc`: the mdoc document "+
+		"type asked for, org.iso.18013.5.1.mDL for a driving licence")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
 	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
@@ -978,7 +981,9 @@ func run(args []string) (err error) {
 	grantTypes := fs.String("grant-types", "",
 		"comma-separated grant types this client may use, replacing what it has: "+
 			strings.Join(knownGrantTypes, ", "))
-	credFormat := fs.String("credential-format", "", "dc+sd-jwt, the default, or jwt_vc_json, a W3C credential disclosed whole (credential define)")
+	credFormat := fs.String("credential-format", "", "dc+sd-jwt, the default, or jwt_vc_json, a W3C credential "+
+		"disclosed whole (credential define); dc+sd-jwt or mso_mdoc, an ISO mdoc, for what a wallet sign-in asks for "+
+		"(idp add -kind oid4vp)")
 	credVCT := fs.String("vct", "", "SD-JWT VC type identifier, a collision-resistant name (credential define)")
 	credAlways := fs.String("always", "",
 		"comma-separated claims every verifier sees, whatever the holder chooses")
@@ -1013,7 +1018,9 @@ func run(args []string) (err error) {
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
 	credRootCert := fs.String("root-cert", "",
 		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root), "+
-			"or of the CAs a believed issuer's credentials carry their x5c chain to (idp vp-issuer)")
+			"of the CAs a believed issuer's credentials carry their x5c chain to (idp vp-issuer), "+
+			"or of the IACA certificates an mdoc's document signer leads to (idp add -credential-format mso_mdoc, "+
+			"idp vp-iaca)")
 	idpMFAAMR := fs.String("upstream-amr", "",
 		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
 	idpMFAACR := fs.String("upstream-acr", "",
@@ -2188,6 +2195,8 @@ func run(args []string) (err error) {
 		return idpVPCrossDevice(ctx, conn, *slug, !*removeMember)
 	case "idp vp-dc-api":
 		return idpVPDCAPI(ctx, conn, *slug, !*removeMember)
+	case "idp vp-iaca":
+		return idpVPIACA(ctx, conn, *slug, *credRootCert)
 	case "idp link":
 		return idpLink(ctx, conn, *slug, *subject, *email)
 	case "idp unlink":
@@ -2209,8 +2218,8 @@ func run(args []string) (err error) {
 			return idpAddVP(ctx, conn, *orgID, *slug, *name, *allowSignup, *allowLinking, *trustEmail,
 				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, ResponseMode: *vpResponseMode,
 					VCTValues: splitList(*credVCT), SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName,
-					CrossDevice: *vpCrossDevice, DCAPI: *vpDCAPI},
-				*idpClientKeyFile, *idpClientCertFile)
+					CrossDevice: *vpCrossDevice, DCAPI: *vpDCAPI, Format: *credFormat, DocType: *vpDocType},
+				*idpClientKeyFile, *idpClientCertFile, *credRootCert)
 		}
 		nameID := *nameIDFormat
 		if *metadataSource != "" {

@@ -480,8 +480,18 @@ func (s *Server) handleVPResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "server_error", "this verifier is not configured")
 		return
 	}
+	// An mdoc's device signs a SessionTranscript naming where its answer went and, for an
+	// encrypted one, the key it was encrypted to (specs/oid4vp.txt:3230-3240), so another
+	// verifier's or another key's answer is refused.
+	var encryptedTo *jose.JSONWebKey
+	if responseKey != nil {
+		if key, kerr := oid4vp.ParseResponseKey(responseKey); kerr == nil {
+			encryptedTo = &jose.JSONWebKey{Key: key.Public()}
+		}
+	}
 	presented, err := oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: clientID, Nonce: nonce,
-		Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata, Anchors: v.IssuerRoots, Now: time.Now(),
+		Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata, Anchors: v.IssuerRoots,
+		MdocRoots: v.IACARoots, ResponseURI: s.vpBase(slug) + "/response", EncryptedTo: encryptedTo, Now: time.Now(),
 		Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
 	if err == nil {
 		var proved []byte
@@ -978,9 +988,16 @@ func (s *Server) handleVPDCAPI(w http.ResponseWriter, r *http.Request) {
 	var proved []byte
 	if err == nil {
 		var presented *oid4vp.Presented
+		// Through the API an mdoc's transcript names the origin, unprefixed, and the key
+		// a dc_api.jwt answer was encrypted to (specs/oid4vp.txt:3352-3375).
+		var encryptedTo *jose.JSONWebKey
+		if key != nil {
+			encryptedTo = &jose.JSONWebKey{Key: &key.PublicKey}
+		}
 		presented, err = oid4vp.Verify(vpToken, oid4vp.Expect{ClientID: oid4vp.OriginAudience(s.vpOrigin()),
 			Nonce: asked.Nonce, Ask: v.Ask(), Issuers: v.Issuers, FromMetadata: v.IssuersFromMetadata,
-			Anchors: v.IssuerRoots, Now: time.Now(),
+			Anchors: v.IssuerRoots, MdocRoots: v.IACARoots, Origin: s.vpOrigin(), EncryptedTo: encryptedTo,
+			Now:   time.Now(),
 			Fetch: func(uri, accept string) ([]byte, string, error) { return s.fetchForVerifier(ctx, uri, accept) }})
 		if err == nil {
 			proved, err = vpIdentity(v, presented)

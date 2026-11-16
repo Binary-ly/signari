@@ -195,6 +195,7 @@ var cliAPI = map[string]string{
 	"idp vp-issuer":       "PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers",
 	"idp vp-cross-device": "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp vp-dc-api":       "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp vp-iaca":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp auth":            "PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth",
 	"idp assertions":      "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
 	"idp link":            "PUT /admin/users/{userID}/identity-links/{slug}",

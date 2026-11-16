@@ -36,7 +36,16 @@ type Expect struct {
 	// Anchors are the issuers believed by the certificate chain their credentials
 	// carry in x5c, each with the roots that chain has to lead to.
 	Anchors map[string]*x509.CertPool
-	Now     time.Time
+	// MdocRoots are the IACA certificates an mdoc's document signer has to lead to
+	// (ISO/IEC 18013-5 9.3.3); an mdoc is refused without them.
+	MdocRoots *x509.CertPool
+	// What an mdoc's SessionTranscript is made from besides ClientID and Nonce
+	// (specs/oid4vp.txt:3198-3260, :3340-3375): the response_uri the answer went to, or,
+	// through the Digital Credentials API, the Origin; and the key an encrypted answer
+	// was encrypted to, nil when it was not.
+	ResponseURI, Origin string
+	EncryptedTo         *jose.JSONWebKey
+	Now                 time.Time
 	// Fetch reads a Status List Token and an issuer's metadata and keys. A credential
 	// that names a status is refused when this is nil, so leaving it out cannot skip
 	// revocation.
@@ -95,6 +104,9 @@ func Verify(vpToken string, e Expect) (*Presented, error) {
 	}
 	if len(list) != 1 {
 		return nil, fmt.Errorf("the answer to %q holds %d presentations, and one was asked", e.Ask.ID, len(list))
+	}
+	if e.Ask.Format == FormatMdoc {
+		return verifyMdoc(list[0], e)
 	}
 	return verifyPresentation(list[0], e)
 }

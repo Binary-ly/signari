@@ -145,6 +145,12 @@ func (r Request) metadata() map[string]any {
 	m := map[string]any{"vp_formats_supported": map[string]any{
 		Format: map[string]any{"sd-jwt_alg_values": algs, "kb-jwt_alg_values": algs},
 	}}
+	if r.Ask.Format == FormatMdoc {
+		// The COSE algorithms checked for the issuer's and the device's signatures
+		// (specs/oid4vp.txt:3088-3100); a MAC is not among them, as it is not checked.
+		m["vp_formats_supported"] = map[string]any{FormatMdoc: map[string]any{
+			"issuerauth_alg_values": MdocAlgorithms(), "deviceauth_alg_values": MdocAlgorithms()}}
+	}
 	if r.EncryptTo != nil {
 		m["jwks"] = map[string]any{"keys": []any{r.EncryptTo}}
 		m["encrypted_response_enc_values_supported"] = ContentEncryptions

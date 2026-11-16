@@ -24,8 +24,13 @@ const Format = "dc+sd-jwt"
 type Ask struct {
 	// ID names the credential in the query and in the vp_token that answers it.
 	ID string
+	// Format is the credential format: empty or dc+sd-jwt for an SD-JWT VC, or mso_mdoc
+	// for an ISO mdoc.
+	Format string
 	// VCTValues are the credential types accepted, B.3.5's vct_values.
 	VCTValues []string
+	// DocType is the one mdoc document type accepted, B.2.3's doctype_value.
+	DocType string
 	// Claims are the claims asked for. Each is requested, and each must be in
 	// what comes back.
 	Claims []Path
@@ -106,6 +111,12 @@ func (a Ask) Validate() error {
 		return fmt.Errorf("the credential query id %q must be letters, digits, _ and - "+
 			"(specs/oid4vp.txt:806-808)", a.ID)
 	}
+	if a.Format == FormatMdoc {
+		return a.validateMdoc()
+	}
+	if a.Format != "" && a.Format != Format {
+		return fmt.Errorf("a credential format %q, which is neither %s nor %s", a.Format, Format, FormatMdoc)
+	}
 	if len(a.VCTValues) == 0 {
 		return fmt.Errorf("name at least one credential type: vct_values is REQUIRED " +
 			"(specs/oid4vp.txt:3612-3614)")
@@ -132,6 +143,37 @@ func (a Ask) Validate() error {
 
 // queryID is a credential query id: "a non-empty string consisting of
 // alphanumeric, underscore (_), or hyphen (-) characters".
+// validateMdoc holds an mdoc ask to what an mdoc query is: one document type,
+// doctype_value being REQUIRED (specs/oid4vp.txt:3166-3172), no vct_values, and every
+// claims path exactly two strings, a namespace and a data element identifier
+// (:1175-1185).
+func (a Ask) validateMdoc() error {
+	if a.DocType == "" {
+		return fmt.Errorf("an mdoc query names its document type: doctype_value is REQUIRED " +
+			"(specs/oid4vp.txt:3166-3172)")
+	}
+	if len(a.VCTValues) > 0 {
+		return fmt.Errorf("vct_values belongs to an SD-JWT VC, not an mdoc")
+	}
+	seen := map[string]bool{}
+	for _, p := range a.Claims {
+		if len(p) != 2 {
+			return fmt.Errorf("an mdoc claim path is a namespace and an element, and %s is not "+
+				"(specs/oid4vp.txt:1175-1185)", p)
+		}
+		for _, c := range p {
+			if s, ok := c.(string); !ok || s == "" {
+				return fmt.Errorf("an mdoc claim path holds two strings, and %s does not", p)
+			}
+		}
+		if seen[p.String()] {
+			return fmt.Errorf("claim %s is asked for twice", p)
+		}
+		seen[p.String()] = true
+	}
+	return nil
+}
+
 func queryID(s string) bool {
 	if s == "" {
 		return false
@@ -153,6 +195,10 @@ func (a Ask) Query() map[string]any {
 		"id":     a.ID,
 		"format": Format,
 		"meta":   map[string]any{"vct_values": a.VCTValues},
+	}
+	if a.Format == FormatMdoc {
+		// The meta of an mdoc query (specs/oid4vp.txt:3166-3172, the example at :3806-3816).
+		cq["format"], cq["meta"] = FormatMdoc, map[string]any{"doctype_value": a.DocType}
 	}
 	if len(a.Claims) > 0 {
 		claims := make([]any, 0, len(a.Claims))

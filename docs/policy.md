@@ -133,7 +133,29 @@ and has none. Test cases give `country:`.
 last five minutes across every account, from the budget the sign-in form keeps. Test
 cases give `recent_failures:`.
 
-All three are about where somebody is, so they are checked at sign-in, not at a
+**A rule can ask which network an address is on**, by the autonomous system that
+announces it: the company's own, or its cloud provider's, or not a hosting provider's.
+
+```yaml
+- name: payroll-from-our-network
+  when: {client: payroll}
+  require:
+    from_asns: [64500, 64501]
+- name: not-from-a-hosting-provider
+  require:
+    not_from_asns: [64666]
+```
+
+The networks need an ASN source: `SIGNARI_GEOIP_ASN_DB`, an IP-to-ASN database in
+MaxMind's format (GeoLite2-ASN, GeoIP2-ISP, or DB-IP's IP-to-ASN Lite), or
+`SIGNARI_GEOIP_ASN_STATIC` for ranges you know. It is a different file from the GeoIP
+one, and a city database given here is refused at startup, by its own description,
+rather than opened to place nobody. The rule is the countries' rule: an address no source
+places does not meet `from_asns` and passes `not_from_asns`, and `signari doctor` warns
+when a policy asks and nothing can answer. `0` is refused in either list, because it is
+what an unplaced address carries. Test cases give `asn:`.
+
+All of these are about where somebody is, so they are checked at sign-in, not at a
 refresh, and not met on a grant nobody watched.
 
 **Unknown fields are an error.** `any_groups` is not a field; `any_group` is.

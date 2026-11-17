@@ -31,6 +31,8 @@ func TestEveryConditionIsDrawn(t *testing.T) {
 		ApplicationRoles:   []string{"admin"},
 		FromCountries:      []string{"GB"},
 		NotFromCountries:   []string{"FR"},
+		FromASNs:           []uint32{64500},
+		NotFromASNs:        []uint32{64666},
 		MaxRecentFailures:  5,
 		Time:               &authzen.TimeWindow{Days: []string{"mon"}},
 	}

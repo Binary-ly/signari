@@ -20,6 +20,67 @@ func (p placeAt) Resolve(ip string) risk.Location {
 	return risk.Location{Country: country, Known: known}
 }
 
+// onNetwork is a resolver that knows one autonomous system per address it knows.
+type onNetwork map[string]uint32
+
+func (n onNetwork) ASN(ip string) uint32 { return n[ip] }
+
+// A rule on which network somebody is on (11.09's ASN), asked of the address the request
+// came from, as a country is: the file's own tests prove the rule, this proves the engine
+// hands it the network.
+func TestARuleIsToldWhichNetworkARequestCameFrom(t *testing.T) {
+	f := newTokenFixture(t)
+	ctx := context.Background()
+	n := time.Now().UnixNano()
+	ours := fmt.Sprintf("203.0.113.%d", n%100+1)
+	hosting := fmt.Sprintf("198.51.100.%d", n%100+1)
+	nowhere := fmt.Sprintf("192.0.2.%d", n%100+1)
+	f.srv.asn = onNetwork{ours: 64500, hosting: 64666}
+
+	decide := func(ip string) bool {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/authorize", nil)
+		r.RemoteAddr = ip + ":443"
+		d := f.srv.checkAccessPolicy(ctx, r, f.orgID, f.clientID, f.userID, "openid", false, nil)
+		return d == nil || d.Allowed
+	}
+
+	applyPolicy(t, f.srv, f.pool, f.orgID, `
+version: 1
+policies:
+  - name: our-network
+    require:
+      from_asns: [64500]
+tests:
+  - {name: ours, given: {client: x, asn: 64500}, expect: allow}
+`)
+	if !decide(ours) {
+		t.Error("an address on a listed network was refused")
+	}
+	if decide(hosting) {
+		t.Error("an address on another network was allowed")
+	}
+	if decide(nowhere) {
+		t.Error("an address nothing places on a network met from_asns")
+	}
+
+	applyPolicy(t, f.srv, f.pool, f.orgID, `
+version: 1
+policies:
+  - name: not-hosting
+    require:
+      not_from_asns: [64666]
+tests:
+  - {name: elsewhere, given: {client: x, asn: 64500}, expect: allow}
+`)
+	if !decide(ours) || !decide(nowhere) {
+		t.Error("not_from_asns refused an address with no evidence against it")
+	}
+	if decide(hosting) {
+		t.Error("an address on a refused network was allowed")
+	}
+}
+
 // A rule on where somebody is, asked from the address a request really came from (11.09).
 // The file's own tests prove the rule; this proves the engine hands it a country and a
 // record, and reads neither for a policy that asks about neither.

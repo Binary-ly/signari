@@ -105,6 +105,15 @@ type Conditions struct {
 	// NotFromCountries refuses these. An address nothing can place passes: this
 	// is evidence against a request, and there is none.
 	NotFromCountries []string `yaml:"not_from_countries"`
+	// FromASNs limits the request to these autonomous systems, the network
+	// operators the ASN database (SIGNARI_GEOIP_ASN_DB) names for its address: a
+	// company's own network, or its cloud provider's. Unplaced, it is not met, as
+	// FromCountries is not.
+	FromASNs []uint32 `yaml:"from_asns"`
+	// NotFromASNs refuses these, a hosting provider bots sign in from, say. An
+	// address nothing places passes, as NotFromCountries does: there is no
+	// evidence against it.
+	NotFromASNs []uint32 `yaml:"not_from_asns"`
 	// MaxRecentFailures refuses an address that has failed more sign-ins than
 	// this lately, across every account: a reputation this deployment earned
 	// for it, read from the budget the sign-in form already keeps.
@@ -180,6 +189,9 @@ type Request struct {
 	// set by the caller only when a rule asks, and by a test case directly.
 	Country        string `yaml:"country"`
 	RecentFailures int    `yaml:"recent_failures"`
+	// ASN is the autonomous system the ASN database places IP in, 0 when nothing
+	// can, set like Country only when a rule asks.
+	ASN uint32 `yaml:"asn"`
 	// At is the moment of the decision as RFC 3339, for a test case: a window
 	// whose tests only pass between nine and five is a test nobody can run. A
 	// real request leaves it empty and is decided by this server's clock.
@@ -295,6 +307,12 @@ func (f *File) validate() error {
 					"it would match nothing, and nobody would see why", r.Name, code)
 			}
 		}
+		// 0 is what a request carries when nothing places its address, so a rule
+		// naming it would match every address the database does not know.
+		if slices.Contains(r.Require.FromASNs, 0) || slices.Contains(r.Require.NotFromASNs, 0) {
+			return fmt.Errorf("policy %q: AS0 is not a network any address belongs to; here it "+
+				"would match every address nothing can place", r.Name)
+		}
 		if r.Require.MaxRecentFailures < 0 {
 			return fmt.Errorf("policy %q: max_recent_failures of %d", r.Name, r.Require.MaxRecentFailures)
 		}
@@ -321,7 +339,8 @@ func (c Conditions) isEmpty() bool {
 		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
 		!c.DeviceManaged && !c.DeviceCompliant &&
-		len(c.FromCountries) == 0 && len(c.NotFromCountries) == 0 && c.MaxRecentFailures == 0 && c.Time == nil
+		len(c.FromCountries) == 0 && len(c.NotFromCountries) == 0 && c.MaxRecentFailures == 0 && c.Time == nil &&
+		len(c.FromASNs) == 0 && len(c.NotFromASNs) == 0
 }
 
 // RunTests evaluates every case in the file.
@@ -504,6 +523,12 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	if contains(c.NotFromCountries, req.Country) {
 		return false
 	}
+	if len(c.FromASNs) > 0 && (req.ASN == 0 || !slices.Contains(c.FromASNs, req.ASN)) {
+		return false
+	}
+	if req.ASN != 0 && slices.Contains(c.NotFromASNs, req.ASN) {
+		return false
+	}
 	if c.MaxRecentFailures > 0 && req.RecentFailures > c.MaxRecentFailures {
 		return false
 	}
@@ -535,7 +560,8 @@ func (c Conditions) satisfiedBy(req Request) bool {
 // what they are holding, which only a request from the person can answer.
 func (c Conditions) asksWhereFrom() bool {
 	return c.DeviceManaged || c.DeviceCompliant || c.NoImpossibleTravel || len(c.FromNetworks) > 0 ||
-		len(c.FromCountries) > 0 || len(c.NotFromCountries) > 0 || c.MaxRecentFailures > 0
+		len(c.FromCountries) > 0 || len(c.NotFromCountries) > 0 || c.MaxRecentFailures > 0 ||
+		len(c.FromASNs) > 0 || len(c.NotFromASNs) > 0
 }
 
 func contains(hay []string, needle string) bool {
@@ -581,6 +607,18 @@ func (f *File) UsesImpossibleTravel() bool {
 func (f *File) UsesCountries() bool {
 	for _, r := range f.Policies {
 		if len(r.Require.FromCountries) > 0 || len(r.Require.NotFromCountries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesASNs reports whether any rule asks which network an address belongs to,
+// for the same reasons as UsesCountries: the lookup is done only when asked, and
+// `signari doctor` warns when nothing could answer it.
+func (f *File) UsesASNs() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.FromASNs) > 0 || len(r.Require.NotFromASNs) > 0 {
 			return true
 		}
 	}

@@ -93,6 +93,68 @@ func TestConditionsOnTimePlaceAndRecord(t *testing.T) {
 	}
 }
 
+const networkPolicy = `
+version: 1
+policies:
+  - name: our-network
+    when: {client: payroll}
+    require:
+      from_asns: [64500, 64501]
+  - name: not-the-hosting-provider
+    when: {client: wiki}
+    require:
+      not_from_asns: [64666]
+tests:
+  - name: from our network
+    given: {client: payroll, asn: 64501}
+    expect: allow
+  - name: from another
+    given: {client: payroll, asn: 64502}
+    expect: deny
+  - name: from an address nothing places on a network
+    given: {client: payroll}
+    expect: deny
+  - name: from the refused network
+    given: {client: wiki, asn: 64666}
+    expect: deny
+  - name: from another network
+    given: {client: wiki, asn: 64500}
+    expect: allow
+  - name: from an address nothing places, which is no evidence against it
+    given: {client: wiki}
+    expect: allow
+`
+
+// The network an address belongs to (11.09's ASN), as the country it is in: the file's
+// own tests above run on Parse, and a rule about networks is a where-from condition, so a
+// refresh keeps what a person has and a grant nobody watched is refused.
+func TestConditionsOnTheNetwork(t *testing.T) {
+	f, err := Parse([]byte(networkPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.UsesASNs() || f.UsesCountries() {
+		t.Error("the file does not say what it reads")
+	}
+	for _, c := range []struct {
+		name string
+		req  Request
+		want bool
+	}{
+		{"a refresh, from a network that is not listed", Request{Client: "payroll", Refresh: true, ASN: 64999}, true},
+		{"a grant nobody watched", Request{Client: "payroll", Unobserved: true, ASN: 64500}, false},
+		{"a grant nobody watched, by a refusal", Request{Client: "wiki", Unobserved: true}, false},
+		{"a listed network", Request{Client: "payroll", ASN: 64500}, true},
+	} {
+		if d := f.Evaluate(c.req); d.Allowed != c.want {
+			t.Errorf("%s: allowed %v, want %v", c.name, d.Allowed, c.want)
+		}
+	}
+	if got := strings.Join(describeConditions(f.Policies[0].Require), "; "); !strings.Contains(got, "AS64500, AS64501") {
+		t.Errorf("the rule describes itself as %q", got)
+	}
+}
+
 // What could never match, or says nothing, does not load.
 func TestConditionsThatCouldNeverMatchAreRefused(t *testing.T) {
 	head := "version: 1\npolicies:\n  - name: r\n    require:\n      "
@@ -105,6 +167,8 @@ func TestConditionsThatCouldNeverMatchAreRefused(t *testing.T) {
 		{"a day that is not one", "time: {days: [someday]}", "day"},
 		{"a window of nothing", "time: {}", "restricts nothing"},
 		{"a negative record", "max_recent_failures: -1", "max_recent_failures"},
+		{"AS0, which an unplaced address carries", "from_asns: [0]", "AS0"},
+		{"AS0 refused as well", "not_from_asns: [64500, 0]", "AS0"},
 	} {
 		if _, err := Parse([]byte(head + c.condition + tail)); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want a refusal naming %q", c.name, err, c.want)

@@ -140,6 +140,9 @@ type Server struct {
 	// tests and cleared the static safety analysis is ever cached.
 	flows *flowCache
 	geo   risk.Resolver
+	// asn names an address's network operator for from_asns rules, read once at
+	// startup from SIGNARI_GEOIP_ASN_DB like geo.
+	asn risk.ASNResolver
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
@@ -407,6 +410,7 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		flows:      newFlowCache(),
 		ssfKeys:    &ssf.KeyFetcher{},
 		geo:        risk.NewResolver(),
+		asn:        risk.NewASNResolver(),
 		mailer:     mailer,
 		texter:     texter,
 		guacdAddr:  os.Getenv("SIGNARI_GUACD_ADDR"),
@@ -425,6 +429,9 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// reasonably assumes it is working.
 	if why := risk.Explain(srv.geo); why != "" {
 		log.Warn("location lookup unavailable", "detail", why)
+	}
+	if why := risk.ExplainASN(srv.asn); why != "" {
+		log.Warn("network operator lookup unavailable", "detail", why)
 	}
 
 	// The keytab is loaded at startup, not on the first SPNEGO request.

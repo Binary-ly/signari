@@ -66,7 +66,7 @@ it is signal.
 | G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, SAML status URNs. No secrets. Excluded by flag rather than 17 annotations. |
 | G710 open redirect | 11 | **Guarded, in a different function.** Taint analysis cannot follow the validation. Each site checked by hand — see below. |
 | G304 file inclusion | 7 | TLS certificate, key, CA-bundle, client-JWKS, policy-file and GeoIP-database paths from operator configuration. Someone who can set them can already read any file the process can. |
-| G703 path traversal | 3 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB` and the policy file path, same reasoning. |
+| G703 path traversal | 4 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB`, `SIGNARI_GEOIP_ASN_DB` and the policy file path, same reasoning. |
 | G203 no auto-escape | 1 | `template.URL` on the `otpauth://` enrolment URI. Deliberate: `html/template`'s URL sanitiser rewrites unknown schemes to `#ZgotmplZ`, producing a dead QR link with no error anywhere. It only bypasses the *URL* sanitiser — contextual attribute escaping still applies — and the scheme is fixed. |
 
 ### Each open-redirect site
@@ -420,7 +420,13 @@ and the new `idp vp-iaca` read the IACA certificates an mdoc wallet sign-in beli
 the file `-root-cert` names. The operator's own flag, on the operator's own machine, read
 as the request key and its chain beside them already are.
 
-**Baseline: 184**, every line with its reason in `engine/gosec-baseline.txt`.
+**184 to 185:** a `G703` in `internal/risk/asn.go`, the `os.Stat` on the file
+`SIGNARI_GEOIP_ASN_DB` names, the twin of `geoip.go`'s. The path is the operator's
+setting, read once at startup; nothing a request carries reaches it. What is opened has
+to be a MaxMind-format database describing itself as an ASN or ISP one, or it is refused
+and logged, and one number per address is all that is read from it.
+
+**Baseline: 185**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

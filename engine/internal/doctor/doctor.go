@@ -36,6 +36,7 @@ import (
 	"signari.dev/engine/internal/pages"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/store"
 	"sort"
@@ -929,12 +930,17 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"to every user",
 			"that may be correct. If not, write one and apply it with `signari policy apply`")
 	}
-	if os.Getenv("SIGNARI_GEOIP_DB") != "" || os.Getenv("SIGNARI_GEOIP_STATIC") != "" {
+	noGeo := os.Getenv("SIGNARI_GEOIP_DB") == "" && os.Getenv("SIGNARI_GEOIP_STATIC") == ""
+	// The ASN source as the engine would build it, so a file that is named and
+	// unreadable, or is not an ASN database, counts as no source.
+	asn := risk.NewASNResolver()
+	noASN := !risk.ASNConfigured(asn)
+	if !noGeo && !noASN {
 		return nil
 	}
 	// Nothing to place an address with, and a rule that asks where it is: from_countries
 	// is not met by an address it cannot place, so everybody it covers is refused, and
-	// not_from_countries refuses nobody.
+	// not_from_countries refuses nobody. The same for networks and from_asns.
 	rows, err := conn.Query(ctx, `SELECT o.slug, p.document FROM core.access_policies p
 		JOIN core.organizations o ON o.id = p.org_id`)
 	if err != nil {
@@ -946,11 +952,24 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 		if err := rows.Scan(&slug, &doc); err != nil {
 			return err
 		}
-		if f, err := policy.Parse([]byte(doc)); err == nil && f.UsesCountries() {
+		f, err := policy.Parse([]byte(doc))
+		if err != nil {
+			continue
+		}
+		if noGeo && f.UsesCountries() {
 			r.add(Warning, "policy", fmt.Sprintf("%s's access policy asks where an address is, and no GeoIP "+
 				"source is configured, so nothing can be placed", slug),
 				"set SIGNARI_GEOIP_DB or SIGNARI_GEOIP_STATIC: until then from_countries refuses "+
 					"everybody it covers and not_from_countries refuses nobody")
+		}
+		if noASN && f.UsesASNs() {
+			why := risk.ExplainASN(asn)
+			if why == "" {
+				why = "set SIGNARI_GEOIP_ASN_DB or SIGNARI_GEOIP_ASN_STATIC: until then from_asns refuses " +
+					"everybody it covers and not_from_asns refuses nobody"
+			}
+			r.add(Warning, "policy", fmt.Sprintf("%s's access policy asks which network an address is on, "+
+				"and no ASN source can answer", slug), why)
 		}
 	}
 	return rows.Err()

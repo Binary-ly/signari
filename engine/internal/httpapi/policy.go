@@ -218,6 +218,9 @@ func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.R
 		if f.UsesCountries() {
 			req.Country = s.geo.Resolve(req.IP).Country
 		}
+		if f.UsesASNs() {
+			req.ASN = s.asn.ASN(req.IP)
+		}
 		if f.UsesRecentFailures() {
 			// The budget the sign-in form keeps. Unread is refused like anything
 			// else this rule cannot be sure of.

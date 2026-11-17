@@ -396,25 +396,37 @@ func TestTheETagFromAWriteIsAcceptedAsTheNextIfMatch(t *testing.T) {
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
 
-	first := httptest.NewRecorder()
-	s.Routes().ServeHTTP(first, adminReq(t, http.MethodPatch,
-		"/admin/clients/"+clientID, `{"enabled":false}`, "*"))
-	if first.Code != http.StatusOK {
-		t.Fatalf("first write: %d", first.Code)
-	}
-	tag := first.Header().Get("ETag")
-	if tag == "" {
-		t.Fatal("a successful mutation returned no ETag, so a caller cannot make " +
-			"the next request conditional without a second round trip")
-	}
+	// Packages share one database and run in parallel, so another's write can land
+	// between the two, moving the version past the tag; CI saw exactly that (704
+	// against 703). It cannot land there five times running, while a tag that does
+	// not name the version the write left fails every attempt.
+	var last string
+	for range 5 {
+		first := httptest.NewRecorder()
+		s.Routes().ServeHTTP(first, adminReq(t, http.MethodPatch,
+			"/admin/clients/"+clientID, `{"enabled":false}`, "*"))
+		if first.Code != http.StatusOK {
+			t.Fatalf("first write: %d", first.Code)
+		}
+		tag := first.Header().Get("ETag")
+		if tag == "" {
+			t.Fatal("a successful mutation returned no ETag, so a caller cannot make " +
+				"the next request conditional without a second round trip")
+		}
 
-	second := httptest.NewRecorder()
-	s.Routes().ServeHTTP(second, adminReq(t, http.MethodPatch,
-		"/admin/clients/"+clientID, `{"enabled":true}`, tag))
-	if second.Code != http.StatusOK {
-		t.Fatalf("chaining the returned ETag gave %d, want 200: %s",
-			second.Code, second.Body.String())
+		second := httptest.NewRecorder()
+		s.Routes().ServeHTTP(second, adminReq(t, http.MethodPatch,
+			"/admin/clients/"+clientID, `{"enabled":true}`, tag))
+		if second.Code == http.StatusOK {
+			return
+		}
+		if second.Code != http.StatusPreconditionFailed {
+			t.Fatalf("chaining the returned ETag gave %d, want 200: %s", second.Code, second.Body.String())
+		}
+		last = second.Body.String()
 	}
+	t.Fatalf("chaining the returned ETag gave 412 in five attempts, so it is not another "+
+		"package's write landing between them: %s", last)
 }
 
 // GET /admin/config-version is the read half of the protocol and must carry the

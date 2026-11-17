@@ -154,5 +154,15 @@ Not exercised: the `ServiceMonitor`, which needs the Prometheus operator.
 The render tests are `TestTheHelmChartCanInstall`, which also checks the instance
 Job's place, and `TestTheHelmChartRendersItsOptions`.
 
+CI repeats the install on kind whenever the chart or anything that goes into the
+image changes (`.github/workflows/helm.yml`). It builds the image, starts
+PostgreSQL 17 beside the chart and creates the Secret by hand, with a superuser
+DSN under its own key for the migration. It then installs with metrics on and
+waits for two ready replicas. After that it checks that both hook Jobs ran, that
+`helm test` passed, and that `/readyz`, discovery naming the issuer, the key set
+and the `signari_` metrics were all served through their Services. Last, it
+upgrades to three replicas and checks that both hooks ran again. The console is
+not in that job, because building its images would double the job's time.
+
 See `docs/configuration.md` for every environment variable; put optional ones
 (SMTP, SMS, GeoIP, audit streaming) under `extraEnv`.

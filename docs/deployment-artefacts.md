@@ -11,8 +11,9 @@ engine that cannot start or one whose signing keys reset on restart. A second ho
 makes the instance the engine serves. Validated with `helm lint` and `helm
 template`, and installed on kind in November 2026. That run found that no pod
 could start, because the image named its user, and that the engine never became
-ready, because nothing made its instance. Both are fixed.
-See `deploy/helm/signari/README.md`.
+ready, because nothing made its instance. Both are fixed. CI now installs and
+upgrades the chart on kind whenever the chart or the engine changes
+(`.github/workflows/helm.yml`). See `deploy/helm/signari/README.md`.
 
 The chart deploys the engine, not PostgreSQL: a production identity provider's
 database wants backup, HA and tuning that belong to your data platform, not to an

@@ -448,6 +448,40 @@ func verifyInbound(doc *etree.Document, certPEM string, root, assertion *etree.E
 	assertionSigned := assertion.FindElement("./Signature") != nil
 
 	switch {
+	case assertionSigned && responseSigned:
+		// Both, as an identity provider told to sign the response and the assertion
+		// does. Each signature sits in its one position, a direct child of the element
+		// it covers, and each is verified: a response signed by the provider around an
+		// assertion signed by somebody else is not a signed assertion. These two are
+		// the only signatures allowed; a third anywhere refuses the document, as when
+		// only one is expected. Until November 2026 the two were counted together and
+		// every such response was refused, though this comment said both were legal.
+		//
+		// The response first, on the document as it arrived: its signature covers the
+		// assertion's, and verifying an ECDSA signature rewrites its value in place.
+		responseID := root.SelectAttrValue("ID", "")
+		if responseID == "" {
+			return nil, fmt.Errorf("the response is signed but has no ID")
+		}
+		responseSig := root.SelectElement("Signature")
+		assertionSig := assertion.SelectElement("Signature")
+		verified, err := verifySignedElement(doc, root, certPEM, "Response", responseID, assertionSig)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := verifySignedElement(doc, assertion, certPEM, "Assertion", assertionID, responseSig); err != nil {
+			return nil, err
+		}
+		inner := verified.FindElement("./Assertion")
+		if inner == nil {
+			return nil, fmt.Errorf("the signed response contains no assertion")
+		}
+		if got := inner.SelectAttrValue("ID", ""); got != assertionID {
+			return nil, fmt.Errorf("the signed response carries assertion %q, not the "+
+				"assertion being processed (%q)", got, assertionID)
+		}
+		return inner, nil
+
 	case assertionSigned:
 		// Preferred: the signature covers exactly the element read afterwards.
 		return verifySignedElement(doc, assertion, certPEM, "Assertion", assertionID)

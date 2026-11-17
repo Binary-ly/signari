@@ -66,6 +66,16 @@ forged assertion nested inside the signed one      refused
 duplicate IDs                                      refused
 ```
 
+### Where a signature may be
+
+The response, the assertion, or both, each signature a direct child of the element it
+covers and naming that element's ID. When both are signed, both must verify: a response
+the provider signed around an assertion somebody else signed is refused. Any other
+signature in the document, wherever it is, refuses the whole document. Many providers sign
+both levels when told to sign the response and the assertion. Until November 2026 the two
+were counted together and every such response was refused, which a sign-in through a
+public test provider found.
+
 The test runs each **twice** — once normally, once with the outermost guard
 switched off — because a layered defence claimed in a comment is not a layered
 defence. That experiment corrected the claim originally written here: without

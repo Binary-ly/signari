@@ -427,6 +427,63 @@ func TestResponseLevelSignatureAccepted(t *testing.T) {
 	}
 }
 
+// An identity provider may sign the response and the assertion both, and many do
+// when told to "sign the response and the assertion"; a live run against a public
+// test provider found every such response refused, two signatures being counted
+// in the document where only one was allowed. Both are accepted now, each in its
+// one position and each verified; a signature anywhere else is still refused.
+func TestBothSignaturesAccepted(t *testing.T) {
+	u := newUpstream(t)
+	p := inboundProvider(u)
+	opts := ConsumeOptions{ExpectedInResponseTo: "_req-1", Destination: p.ACSURL, Now: time.Now()}
+
+	raw := u.response(t, respOpts{
+		inResponseTo: "_req-1", destination: p.ACSURL, signAssertion: true, signResponse: true,
+	})
+	if _, err := ConsumeResponse(raw, p, opts); err != nil {
+		t.Fatalf("a response signed at both levels was refused: %v", err)
+	}
+
+	// The assertion signed by somebody else and the response by the provider: the
+	// response's signature verifies, and the assertion's must as well.
+	stranger := newUpstream(t)
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(stranger.response(t, respOpts{
+		inResponseTo: "_req-1", destination: p.ACSURL, signAssertion: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signElement(doc.Root(), u.key, u.certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.SetRoot(signed)
+	mixed, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConsumeResponse(mixed, p, opts); err == nil {
+		t.Error("a response signed by the provider around an assertion signed by a stranger was accepted")
+	}
+
+	// A third signature, somewhere neither signer puts one: refused, as before. It is
+	// put where no digest covers it, inside the response's own Signature beside its
+	// SignedInfo, so the refusal is the placement rule's and not a broken digest's.
+	doc = etree.NewDocument()
+	if err := doc.ReadFromBytes(raw); err != nil {
+		t.Fatal(err)
+	}
+	extra := doc.Root().FindElement("./Assertion/Signature").Copy()
+	doc.Root().SelectElement("Signature").AddChild(extra)
+	third, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConsumeResponse(third, p, opts); err == nil {
+		t.Error("a response carrying a third signature was accepted")
+	}
+}
+
 // TestSignatureWrapping is the attack this consumer exists to survive.
 //
 // The attacker takes a legitimately signed assertion and adds a second,

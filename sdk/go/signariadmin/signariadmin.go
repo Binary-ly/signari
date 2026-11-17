@@ -854,6 +854,7 @@ type GetInstancesInstanceIDKeysResponse struct {
 type GetInstancesInstanceIDKeysResponseKeysItem struct {
 	Algorithm    string  `json:"algorithm"`
 	DemotedAt    *string `json:"demoted_at"`
+	HeldIn       string  `json:"held_in"`
 	Kid          string  `json:"kid"`
 	PublishedAt  string  `json:"published_at"`
 	RetirableInS int64   `json:"retirable_in_s,omitempty"`

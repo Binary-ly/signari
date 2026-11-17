@@ -2309,6 +2309,7 @@ export interface GetInstancesInstanceIDKeysResponse {
 export interface GetInstancesInstanceIDKeysResponseKeysItem {
   algorithm: string
   demoted_at: string | null
+  held_in: string
   kid: string
   published_at: string
   retirable_in_s?: number

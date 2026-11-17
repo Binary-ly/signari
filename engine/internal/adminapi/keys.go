@@ -25,6 +25,11 @@ type signingKeyView struct {
 	State       string     `json:"state"`
 	PublishedAt time.Time  `json:"published_at"`
 	DemotedAt   *time.Time `json:"demoted_at"`
+	// HeldIn is where the private half is: "database", sealed under the root
+	// key, or the scheme of the module that holds it ("pkcs11",
+	// "vault-transit"), as `signari keys list` shows it. An operator moving to
+	// a module reads here which keys still sit in the database.
+	HeldIn string `json:"held_in"`
 	// RetirableInS, for a passive key, is how long until it may leave the
 	// published set; 0 once it may.
 	RetirableInS *int `json:"retirable_in_s,omitempty"`
@@ -87,7 +92,7 @@ func (s *Server) listSigningKeys(w http.ResponseWriter, r *http.Request) {
 	out := []signingKeyView{}
 	for _, k := range set.Keys() {
 		v := signingKeyView{KID: k.KID(), Algorithm: string(k.Algorithm()), State: string(k.State()),
-			PublishedAt: k.PublishedAt()}
+			PublishedAt: k.PublishedAt(), HeldIn: keys.HeldIn(k)}
 		if d := k.DemotedAt(); !d.IsZero() {
 			v.DemotedAt = &d
 		}

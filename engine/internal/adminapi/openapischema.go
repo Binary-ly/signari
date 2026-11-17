@@ -976,9 +976,9 @@ var opSchemas = map[string]opSchema{
 			"allowed_claims": arrayOf(str())}))},
 	"GET /admin/instances/{instanceID}/keys": {http.StatusOK, nil, object([]string{"instance_id", "keys"},
 		map[string]jsonSchema{"instance_id": uuidStr(), "keys": arrayOf(object(
-			[]string{"kid", "algorithm", "state", "published_at", "demoted_at"}, map[string]jsonSchema{
+			[]string{"kid", "algorithm", "state", "published_at", "demoted_at", "held_in"}, map[string]jsonSchema{
 				"kid": str(), "algorithm": str(), "state": str(), "published_at": dateTime(),
-				"demoted_at": nullable(dateTime()), "retirable_in_s": integer()}))})},
+				"demoted_at": nullable(dateTime()), "held_in": str(), "retirable_in_s": integer()}))})},
 	"POST /admin/instances/{instanceID}/keys/rotate": {http.StatusOK, typeOf[rotateKeysRequest](), object(
 		[]string{"instance_id", "steps", "config_version"}, withVersion(map[string]jsonSchema{
 			"instance_id": uuidStr(), "steps": arrayOf(object([]string{"algorithm"}, map[string]jsonSchema{

@@ -2,6 +2,10 @@ package adminapi
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -104,6 +108,75 @@ func TestAnInstancesKeysAreRotatedThroughTheAPI(t *testing.T) {
 		[]string{ScopeOrganizationsWrite, ScopeConfigRead}, nil)
 	if rec := call(t, s, http.MethodPost, base+"/rotate", tenant, map[string]any{}); rec.Code != http.StatusForbidden {
 		t.Errorf("an organisation's token rotated the instance's keys: %d", rec.Code)
+	}
+}
+
+// memoryBackend stands in for a module: what it makes stays in this map, under
+// the name the keyring gave it.
+type memoryBackend struct{ held map[string]crypto.Signer }
+
+func (b *memoryBackend) Scheme() string { return "memory" }
+
+func (b *memoryBackend) Generate(name string, alg keys.Algorithm, _ int) (crypto.Signer, error) {
+	if alg != keys.ES256 {
+		return nil, fmt.Errorf("the memory module makes ES256 keys only, not %s", alg)
+	}
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	b.held[name] = k
+	return k, nil
+}
+
+func (b *memoryBackend) Open(name string) (crypto.Signer, error) {
+	if k, ok := b.held[name]; ok {
+		return k, nil
+	}
+	return nil, fmt.Errorf("no key named %s", name)
+}
+
+// The list says where each private half is, as `signari keys list` does: an
+// operator moving an instance into a module reads from it which keys are still
+// sealed in the database, and those go on signing until they are rotated out.
+func TestEachSigningKeySaysWhereItIsHeld(t *testing.T) {
+	s, _ := newTestServer(t)
+	id := newDriftKeyedInstance(t, s)
+	base := "/admin/instances/" + id + "/keys"
+	s.root = s.root.WithBackend(&memoryBackend{held: map[string]crypto.Signer{}})
+
+	rec := call(t, s, http.MethodPost, base+"/rotate", testToken, map[string]any{})
+	var rotated struct {
+		Steps []rotationStepView `json:"steps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rotated); err != nil || rec.Code != http.StatusOK ||
+		len(rotated.Steps) != 1 || rotated.Steps[0].Published == "" {
+		t.Fatalf("rotating: %d %s", rec.Code, rec.Body)
+	}
+	made := rotated.Steps[0].Published
+
+	list := call(t, s, http.MethodGet, base, testToken, nil)
+	var listed struct {
+		Keys []signingKeyView `json:"keys"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &listed); err != nil || list.Code != http.StatusOK {
+		t.Fatalf("listing: %d %s", list.Code, list.Body)
+	}
+	got := map[string]string{}
+	for _, k := range listed.Keys {
+		got[k.KID] = k.HeldIn
+	}
+	if len(got) != 2 {
+		t.Fatalf("listed %v, want the sealed key and the one just made", got)
+	}
+	for kid, where := range got {
+		want := "database"
+		if kid == made {
+			want = "memory"
+		}
+		if where != want {
+			t.Errorf("key %s is listed as held in %q, want %q", kid, where, want)
+		}
 	}
 }
 

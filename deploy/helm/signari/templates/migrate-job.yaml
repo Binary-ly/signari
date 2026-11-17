@@ -44,7 +44,7 @@ spec:
           # ["/signari"], so the container looked for a binary named `migrate`
           # and the Job, and with it every install, failed.
           {{- if .Values.migrations.superuserDsnSecretKey }}
-          command: ["migrate", "all"]
+          args: ["migrate", "all"]
           env:
             - name: SIGNARI_DSN
               valueFrom:

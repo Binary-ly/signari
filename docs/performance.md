@@ -129,7 +129,63 @@ a real sign-in past the planner and ask of each statement whether any index coul
 rather than keeping a list of statements somebody remembered.
 
 This is one node on one machine, so read it for the shape. What a network between the engine and
-its database does to a sign-in, which makes many round trips, is not in these numbers.
+its database does to a sign-in, which makes many round trips, is not in these numbers. The next
+section is.
+
+## Three nodes, a million people, the database across the network
+
+Measured in November 2026 on two rented Linux machines in one data centre, AMD EPYC 9655P, 16
+threads and 32 GB each. One held PostgreSQL 17 alone, which the engines reached over TLS with a
+scram-sha-256 password. A `SELECT 1` on one connection took 0.121 ms at the median and 0.126 ms
+at p99. Over the day the median moved between 0.05 and 0.12 ms, so this is a LAN in one data
+centre and not a database in another region. The other machine ran three engine processes, each
+on two physical cores of its own, behind nginx dealing requests round-robin on loopback, with
+the load driver on the remaining two cores. The data was 1,001 organisations, 1,000,000 people,
+1,000,000 sessions and 10,000,000 audit events, 5.1 GB.
+
+Sixteen workers, a 10-second warm-up, then five rounds of 15 seconds of each operation. The
+table gives the mean of the rounds with its 95% interval, and the p99 is the mean of the rounds'
+p99. No round had an error or a 429, and no node logged an error.
+
+```
+                         ops/s              p50 ms    p99 ms
+discovery                27,433 ± 1,077      0.45      2.37
+client credentials       21,415 ±   274      0.66      1.86
+introspection            17,574 ±   974      0.89      1.85
+sign-in                     274 ±     6     54.65    121.43
+refresh                   9,867 ±   144      1.54      3.19
+userinfo                 19,359 ± 2,175      0.63      2.20
+```
+
+A sign-in crosses the nodes: the authorization request, the password, the consent and the code
+each reach whichever node the balancer picks, and every one finished. It is Argon2id that sets
+its price, as on one machine.
+
+Two settings were changed for the run, and each refusal that led to them was the engine doing
+what it should:
+
+- **Sign-in took turns through 1,000 people.** With sixteen workers signing one person in
+  together, every refusal in the audit trail was `{"reason": "throttled"}`: each attempt is
+  charged to the account before the password is checked, so sixteen at once look like guessing.
+  `bench run -signin-people` makes each sign-in somebody else.
+- **The organisation's budgets were raised** to their maximum, 1,000,000 tokens and 1,000,000
+  sign-ins a minute, with `signari instance org-budgets`. At the defaults, 6,000 tokens and
+  1,200 sign-ins, the warm-up alone spent the sign-in budget and the next sign-in was a 429.
+
+PostgreSQL's data was on tmpfs. The machines' own disk stalled commits for up to 1.5 seconds at a
+time (`pg_test_fsync` measured 2 synced writes a second at worst), and every token-issuing worker
+stopped together while discovery, which writes nothing, did not. With the data in memory a commit
+still runs PostgreSQL's own path, `fsync` and `synchronous_commit` on, at no cost. A deployment's
+disk adds its own flush time to everything that writes.
+
+The driver had two cores, so the cheapest operations may be held by the driver rather than the
+nodes. The one-machine table above compares one person with a million. This one is a different
+shape, and it is not a before-and-after.
+
+The run is [`tools/bench/scale`](../tools/bench/scale/README.md): `database.sh` and `seed.sql` on
+the database's machine, `nodes.sh` on the nodes'. Run again from those scripts on a second, fresh
+pair of machines, every operation came within the first run's interval: client credentials
+20,673 ± 891 a second, sign-in 281 ± 3, refresh 9,809 ± 216, still with no errors.
 
 ## A hundred thousand people
 
@@ -142,6 +198,25 @@ SCIM, 100 people a page     first page   p50  9 ms   p99 40 ms
                             last page    p50 21 ms   p99 64 ms
 AuthZEN, 100 evaluations    one request  p50  2 ms   p99 7-11 ms, five statements
 ```
+
+The same measurements again in November 2026 on a rented Linux machine (AMD EPYC 9655P), the
+engine and PostgreSQL sharing four physical cores and the client on four others, against one
+organisation of 100,000 people. Each page shows the median p50 and the worst p99 of three runs of
+200 requests. The LDAP line is five rounds of 15 seconds:
+
+```
+SCIM, 100 people a page     first page   p50  5.6 ms   p99  8.8 ms
+                            middle       p50  7.5 ms   p99 12.5 ms
+                            last page    p50  9.8 ms   p99 14.6 ms
+SCIM, a group PUT replacing all 10,000 members              0.23 s
+LDAP, one person found among 100,000, 16 clients      p50 0.79 ms   p99 2.30 ms   18,307 a second
+```
+
+Every page costs two walks of the whole source: the count `totalResults` requires (RFC 7644
+§3.4.2), and the offset to the page, an index-only scan. On a table loaded seconds before, with
+no vacuum yet, the same last page was p50 22 ms and p99 27 ms, because every row the two walks
+pass was still read from the table to see whether it was visible. Autovacuum fixed that within a
+minute, and the figures above are from after it.
 
 The evaluations were 17 ms until this was measured. A batch named its subject once per
 question and the join found their relations once per mention, so a hundred questions cost

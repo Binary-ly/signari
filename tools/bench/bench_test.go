@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,10 +155,13 @@ func fakeProvider(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		if r.Form.Get("username") != "alice" || r.Form.Get("password") != "pw" {
+		name := r.Form.Get("username")
+		seeded := strings.HasPrefix(name, "bench-") && strings.HasSuffix(name, "@"+benchDomain)
+		if (name != "alice" && !seeded) || r.Form.Get("password") != "pw" {
 			http.Error(w, "wrong", http.StatusUnauthorized)
 			return
 		}
+		signedIn.Store(name, true)
 		authz, _ := url.ParseQuery(r.Form.Get("authz"))
 		http.Redirect(w, r, "/consent", http.StatusSeeOther)
 		_ = authz
@@ -322,6 +326,51 @@ func TestIntrospectionCanBeAskedElsewhereAsAnotherClient(t *testing.T) {
 	if res, err := measure(context.Background(), none, "introspect", scenarios["introspect"]); err == nil &&
 		!strings.Contains(res.FirstError, "-introspect-url") {
 		t.Errorf("a provider with no introspection endpoint measured %+v", res)
+	}
+}
+
+// signedIn is every name the fake provider's login form accepted.
+var signedIn sync.Map
+
+// With -signin-people the sign-in scenario is many people, not -username over and
+// over: each turn the next seeded person, in a browser of their own.
+func TestSignInTakesTurnsThroughSeededPeople(t *testing.T) {
+	srv := fakeProvider(t)
+	signedIn.Clear()
+	c := &config{Issuer: srv.URL, ClientID: "bench", ClientSecret: "s+1",
+		RedirectURI: "https://bench.invalid/cb", Scope: "openid offline_access",
+		Username: "alice", Password: "pw", Concurrency: 2, Duration: 150 * time.Millisecond, SignInPeople: 3}
+	res, err := measure(context.Background(), c, "signin", scenarios["signin"])
+	if err != nil || res.Ops < 3 || res.Errors != 0 {
+		t.Fatalf("signin with -signin-people measured %+v, %v", res, err)
+	}
+	got := map[string]bool{}
+	signedIn.Range(func(k, _ any) bool { got[k.(string)] = true; return true })
+	want := map[string]bool{"bench-1@" + benchDomain: true, "bench-2@" + benchDomain: true, "bench-3@" + benchDomain: true}
+	if len(got) != len(want) {
+		t.Fatalf("signed in %v, want exactly %v", got, want)
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("signed in %s, which is not one of the three seeded people (-username is alice)", name)
+		}
+	}
+
+	// A worker of a scenario that signs in once to begin, refresh here, is one of them
+	// too: two workers, two seeded people, and never -username.
+	signedIn.Clear()
+	if res, err := measure(context.Background(), c, "refresh", scenarios["refresh"]); err != nil || res.Errors != 0 {
+		t.Fatalf("refresh with -signin-people measured %+v, %v", res, err)
+	}
+	got = map[string]bool{}
+	signedIn.Range(func(k, _ any) bool { got[k.(string)] = true; return true })
+	if len(got) != 2 || got["alice"] {
+		t.Errorf("refresh's two workers signed in as %v, want two of the seeded people", got)
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("a refresh worker signed in as %s", name)
+		}
 	}
 }
 

@@ -93,13 +93,13 @@ type config struct {
 	Issuer, ClientID, ClientSecret, RedirectURI, Scope string
 	CCScope                                            string
 	Username, Password                                 string
-	LDAPAddr, LDAPDNTemplate, LDAPBase                 string
+	LDAPAddr, LDAPDNTemplate, LDAPBase, LDAPFilter     string
 	RADIUSAddr, RADIUSSecret                           string
 	SCIMURL, SCIMToken, PDPURL, PDPToken               string
 	AdminURL, AdminToken                               string
 	AuthZENBody, Via, TOTPSeed                         string
 	AssertionKey, AssertionIssuer, AssertionSubject    string
-	Concurrency, People                                int
+	Concurrency, People, SignInPeople                  int
 	Duration, Warmup                                   time.Duration
 	Insecure                                           bool
 
@@ -124,6 +124,9 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.LDAPAddr, "ldap", "", "ldap:// or ldaps:// URL")
 	fs.StringVar(&c.LDAPDNTemplate, "ldap-dn", "uid=%s,dc=example,dc=com", "bind DN, %s replaced by -username")
 	fs.StringVar(&c.LDAPBase, "ldap-base", "dc=example,dc=com", "search base")
+	// A directory that keeps the sign-in name in cn and gives uid something else
+	// finds nobody by uid, so the attribute searched is the directory's to name.
+	fs.StringVar(&c.LDAPFilter, "ldap-filter", "(uid=%s)", "ldap-search's filter, %s replaced by -username, escaped")
 	fs.StringVar(&c.RADIUSAddr, "radius", "", "host:port of a RADIUS server")
 	fs.StringVar(&c.RADIUSSecret, "radius-secret", "", "its shared secret")
 	fs.StringVar(&c.SCIMURL, "scim", "", "SCIM base URL, e.g. https://id.example.com/scim/v2")
@@ -134,7 +137,9 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.PDPToken, "pdp-token", "", "bearer token for the PDP")
 	fs.StringVar(&c.AuthZENBody, "authzen-body", `{"subject":{"type":"user","id":"bench"},`+
 		`"action":{"name":"read"},"resource":{"type":"document","id":"1"}}`, "evaluation request")
-	fs.IntVar(&c.People, "people", 0, "how many seeded people to take turns with (ciba-start); see `bench seed`")
+	fs.IntVar(&c.People, "people", 0, "how many seeded people to take turns with (ciba-start, mfa); see `bench seed`")
+	fs.IntVar(&c.SignInPeople, "signin-people", 0, "signin, and the sign-in each worker of refresh, userinfo, token-exchange "+
+		"and end-session makes, take turns through this many seeded people instead of -username; see `bench seed`")
 	fs.StringVar(&c.Via, "via", "", "the slug of the upstream provider to sign in through (federated)")
 	fs.StringVar(&c.TOTPSeed, "totp-seed", "", "the base32 seed the -people hold, each as `user assign-otp` gave it (mfa)")
 	fs.StringVar(&c.AssertionKey, "assertion-key", "", "PKCS#8 P-256 key that signs assertions (jwt-bearer)")

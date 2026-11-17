@@ -360,7 +360,7 @@ var scenarios = map[string]scenario{
 			return func(ctx context.Context) error {
 				var tok tokenResponse
 				if err := outside(ctx, func() (err error) {
-					tok, err = signIn(ctx, hc, e)
+					tok, err = signIn(ctx, hc, asNextPerson(e))
 					return err
 				}); err != nil {
 					return err
@@ -388,7 +388,7 @@ var scenarios = map[string]scenario{
 		help: "exchange a person's access token for another (RFC 8693), after one signin per worker", needsDiscovery: true,
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
 			hc := httpClient(e.cfg)
-			tok, err := signIn(ctx, hc, e)
+			tok, err := signIn(ctx, hc, asNextPerson(e))
 			if err != nil {
 				return nil, err
 			}
@@ -425,8 +425,25 @@ var scenarios = map[string]scenario{
 	"signin": {
 		help: "a person's password sign-in, Signari's login form through to a redeemed authorization code", needsDiscovery: true,
 		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.SignInPeople < 1 {
+				return func(ctx context.Context) error {
+					_, err := signIn(ctx, httpClient(e.cfg), e)
+					return err
+				}, nil
+			}
+			// With -signin-people, each sign-in is a different seeded person in a
+			// browser of their own. One person signed in by every worker at once is
+			// throttled by design, as each attempt is charged to the account before the
+			// password is checked, so it measures the throttle and not sign-in.
+			hc := httpClient(e.cfg)
 			return func(ctx context.Context) error {
-				_, err := signIn(ctx, httpClient(e.cfg), e)
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					return err
+				}
+				fresh := *hc
+				fresh.Jar = jar
+				_, err = signIn(ctx, &fresh, asNextPerson(e))
 				return err
 			}, nil
 		},
@@ -435,7 +452,7 @@ var scenarios = map[string]scenario{
 		help: "a refresh token chain, each refresh spending the last (after one signin per worker)", needsDiscovery: true,
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
 			hc := httpClient(e.cfg)
-			tok, err := signIn(ctx, hc, e)
+			tok, err := signIn(ctx, hc, asNextPerson(e))
 			if err != nil {
 				return nil, err
 			}
@@ -465,7 +482,7 @@ var scenarios = map[string]scenario{
 		help: "GET userinfo with a person's access token (after one signin per worker)", needsDiscovery: true,
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
 			hc := httpClient(e.cfg)
-			tok, err := signIn(ctx, hc, e)
+			tok, err := signIn(ctx, hc, asNextPerson(e))
 			if err != nil {
 				return nil, err
 			}
@@ -496,7 +513,7 @@ var scenarios = map[string]scenario{
 			if err := conn.Bind(fmt.Sprintf(e.cfg.LDAPDNTemplate, ldap.EscapeDN(e.cfg.Username)), e.cfg.Password); err != nil {
 				return nil, fmt.Errorf("binding: %w", err)
 			}
-			filter := "(uid=" + ldap.EscapeFilter(e.cfg.Username) + ")"
+			filter := fmt.Sprintf(e.cfg.LDAPFilter, ldap.EscapeFilter(e.cfg.Username))
 			return func(context.Context) error {
 				res, err := conn.Search(ldap.NewSearchRequest(e.cfg.LDAPBase, ldap.ScopeWholeSubtree,
 					ldap.NeverDerefAliases, 0, 0, false, filter, []string{"uid", "mail"}, nil))
@@ -576,6 +593,20 @@ type tokenResponse struct {
 	// spentCode says a TOTP code was asked for on the way. Without it a sign-in that
 	// was never asked for one reads as a result, timed as the whole sign-in.
 	spentCode bool
+}
+
+// asNextPerson is e signing in as the next of -signin-people when that is given, and
+// as -username otherwise. Sixteen workers each signing one account in at once, or
+// one after another for minutes, are throttled by design.
+func asNextPerson(e *env) *env {
+	if e.cfg.SignInPeople < 1 {
+		return e
+	}
+	person := *e.cfg
+	person.Username = fmt.Sprintf("bench-%d@%s", int(nextPerson.Add(1))%e.cfg.SignInPeople+1, benchDomain)
+	next := *e
+	next.cfg = &person
+	return &next
 }
 
 func clientCredentials(ctx context.Context, hc *http.Client, e *env) (tokenResponse, error) {

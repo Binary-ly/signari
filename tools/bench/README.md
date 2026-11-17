@@ -20,10 +20,10 @@ cd tools/bench && go build .
 | `discovery`, `jwks` | GET the discovery document, the key set |
 | `client-credentials` | a token by the client credentials grant; `-cc-scope` names what to ask for |
 | `introspect` | introspect one token (RFC 7662), issued before the window opens. Where a provider serves introspection off its discovery document or only to another client, `-introspect-url` and `-introspect-client-id`/`-introspect-client-secret` name them |
-| `signin` | a person's password sign-in through Signari's login and consent forms, to a redeemed code (PKCE) |
+| `signin` | a person's password sign-in through Signari's login and consent forms, to a redeemed code (PKCE). With `-signin-people`, each sign-in is the next seeded person in a fresh browser, and so is the one sign-in each worker of `refresh`, `userinfo`, `token-exchange` and `end-session` makes: one person signed in by every worker at once, or again and again for minutes, is throttled by design, each attempt being charged to the account before the password is checked |
 | `refresh` | one refresh in a chain that spends each token, after one `signin` per worker |
 | `userinfo` | userinfo with that person's access token |
-| `ldap-bind`, `ldap-search` | a simple bind on an open connection; a subtree search for one person |
+| `ldap-bind`, `ldap-search` | a simple bind on an open connection; a subtree search for one person, by `-ldap-filter` (`(uid=%s)` unless a directory keeps the name elsewhere, such as `(cn=%s)`) |
 | `radius-pap` | an Access-Request with PAP and a Message-Authenticator, answered Access-Accept |
 | `scim-list` | the first hundred SCIM users |
 | `revoke` | an access token issued and revoked (RFC 7009), the pair, as a token revokes once |

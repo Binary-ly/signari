@@ -235,7 +235,8 @@ func PeopleInRelations(ctx context.Context, q Querier, orgID string, limit int, 
 			UNION
 			SELECT m.user_id::text FROM core.relations r
 			  JOIN core.groups g ON g.name = split_part(r.subject_id, '#', 1) AND g.org_id = $1::uuid
-			  JOIN core.group_members m ON m.group_id = g.id
+			  CROSS JOIN LATERAL core.groups_below(g.id) b
+			  JOIN core.group_members m ON m.group_id = b.group_id
 			 WHERE r.org_id = $1::uuid AND r.subject_type = 'group'
 		) people
 		 WHERE ($3 = '' OR sid > $3)

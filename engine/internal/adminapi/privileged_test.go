@@ -283,6 +283,8 @@ func TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets(t *testing.T) {
 			case onGroup:
 				path = strings.ReplaceAll(path, "{groupID}", newFlaggedGroup(t, s))
 				path = strings.ReplaceAll(path, "{userID}", newDriftUser(t, s))
+				// A group put inside it is an ordinary one, as the member is.
+				path = strings.ReplaceAll(path, "{memberGroupID}", newDriftGroup(t, s))
 			default:
 				admin := newPrivilegedUser(t, s)
 				path = strings.ReplaceAll(path, "{userID}", admin)

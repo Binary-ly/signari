@@ -96,9 +96,12 @@ func personConditionSQL(c *ldapd.Condition, bind func(any) int) (string, bool) {
 			bind(c.Value)), true
 
 	case ldapd.CondGroup:
+		// memberOf: in the group or in a group inside it (11.09), as the entry's
+		// own memberOf lists every group above.
 		return fmt.Sprintf(`u.id IN (SELECT m.user_id
-			  FROM core.group_members m
-			  JOIN core.groups g ON g.id = m.group_id
+			  FROM core.groups g
+			  CROSS JOIN LATERAL core.groups_below(g.id) d
+			  JOIN core.group_members m ON m.group_id = d.group_id
 			 WHERE g.org_id = $1::uuid AND lower(g.name) = lower($%d))`, bind(c.Value)), true
 	}
 	return "", false
@@ -113,8 +116,8 @@ func groupConditionSQL(c *ldapd.Condition, bind func(any) int) (string, bool) {
 	case ldapd.CondMember:
 		n := bind(c.Value)
 		return fmt.Sprintf(`g.id IN (SELECT m.group_id
-			  FROM core.group_members m
-			  JOIN core.users u ON u.id = m.user_id
+			  FROM core.users u
+			  CROSS JOIN LATERAL core.groups_of(u.id) m
 			 WHERE u.org_id = $1::uuid AND (u.username_fold = lower($%d) OR u.email_fold = lower($%d)))`, n, n), true
 	}
 	return "", false
@@ -131,7 +134,9 @@ var _ ldapd.GroupLister = (*LDAPAuthenticator)(nil)
 
 // Groups answers a page of the organisation's groups that have somebody active
 // in them (7.02), each with its members, ordered by id as List is. Inactive
-// people are not members here, as they are not entries here.
+// people are not members here, as they are not entries here. A group's members
+// are everybody in it, through the groups inside it too (11.09), each once: a
+// client of the directory asking who is in `engineering` is asking that.
 func (a *LDAPAuthenticator) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd.Group, error) {
 	if q.Limit <= 0 {
 		return nil, nil
@@ -158,16 +163,18 @@ func (a *LDAPAuthenticator) Groups(ctx context.Context, q ldapd.Query) ([]*ldapd
 			SELECT g.id, g.name, g.posix_gid
 			  FROM core.groups g
 			 WHERE g.org_id = $1::uuid AND `+store.OrgInService("g.org_id")+where.String()+`
-			   AND EXISTS (SELECT 1 FROM core.group_members m
+			   AND EXISTS (SELECT 1 FROM core.groups_below(g.id) d
+			                 JOIN core.group_members m ON m.group_id = d.group_id
 			                 JOIN core.users u ON u.id = m.user_id
-			                WHERE m.group_id = g.id AND u.status = 'active')
+			                WHERE u.status = 'active')
 			 ORDER BY g.id
 			 LIMIT $2)
 		SELECT p.id::text, p.name, p.posix_gid,
 		       (SELECT array_agg(COALESCE(NULLIF(u.username,''), u.email, u.id::text) ORDER BY u.id)
-		          FROM core.group_members m
-		          JOIN core.users u ON u.id = m.user_id
-		         WHERE m.group_id = p.id AND u.status = 'active')
+		          FROM core.users u
+		         WHERE u.status = 'active' AND u.id IN (
+		               SELECT m.user_id FROM core.groups_below(p.id) d
+		                 JOIN core.group_members m ON m.group_id = d.group_id))
 		  FROM page p
 		 ORDER BY p.id`, args...)
 	if err != nil {

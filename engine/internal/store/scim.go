@@ -134,9 +134,11 @@ func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]
 		       -- account's own status instead would leave a live account for
 		       -- somebody who lost access — the precise failure that
 		       -- reconciling from desired state is supposed to make impossible.
+		       --
+		       -- In a scope group or a group inside one (11.09).
 		       u.status = 'active' AND (cardinality($3::uuid[]) = 0 OR EXISTS (
-		           SELECT 1 FROM core.group_members gm
-		           WHERE gm.user_id = u.id AND gm.group_id = ANY($3::uuid[]))),
+		           SELECT 1 FROM core.groups_of(u.id) gm
+		           WHERE gm.group_id = ANY($3::uuid[]))),
 		       COALESCE(l.remote_id,''),
 		       l.last_synced_at IS NOT NULL
 		FROM core.users u
@@ -157,8 +159,8 @@ func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]
 		  -- which is the exact failure reconciling-from-desired-state exists to
 		  -- prevent.
 		  AND (cardinality($3::uuid[]) = 0 OR l.remote_id IS NOT NULL OR EXISTS (
-		        SELECT 1 FROM core.group_members gm
-		        WHERE gm.user_id = u.id AND gm.group_id = ANY($3::uuid[])))
+		        SELECT 1 FROM core.groups_of(u.id) gm
+		        WHERE gm.group_id = ANY($3::uuid[])))
 		ORDER BY u.created_at`, target.ID, target.OrgID, scope)
 	if err != nil {
 		return nil, err

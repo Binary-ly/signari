@@ -128,6 +128,12 @@ export class SignariAdmin {
     return this.call<DeleteGroupsGroupIDResponse>("DELETE", `/admin/groups/${encodeURIComponent(groupID)}`, undefined, opts)
   }
 
+  // DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}: Take a group out of this one.
+  // Needs groups:write. A target that may impersonate others also needs privileged-users:write.
+  deleteGroupsGroupIDMemberGroupsMemberGroupID(groupID: string, memberGroupID: string, opts: CallOptions = {}): Promise<Answer<DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse>> {
+    return this.call<DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse>("DELETE", `/admin/groups/${encodeURIComponent(groupID)}/member-groups/${encodeURIComponent(memberGroupID)}`, undefined, opts)
+  }
+
   // DELETE /admin/groups/{groupID}/members/{userID}: Remove a member. Needs groups:write. A target
   // that may impersonate others also needs privileged-users:write.
   deleteGroupsGroupIDMembersUserID(groupID: string, userID: string, opts: CallOptions = {}): Promise<Answer<DeleteGroupsGroupIDMembersUserIDResponse>> {
@@ -457,6 +463,12 @@ export class SignariAdmin {
   // GET /admin/groups/{groupID}: One group. Needs groups:read.
   getGroupsGroupID(groupID: string, opts: CallOptions = {}): Promise<Answer<GetGroupsGroupIDResponse>> {
     return this.call<GetGroupsGroupIDResponse>("GET", `/admin/groups/${encodeURIComponent(groupID)}`, undefined, opts)
+  }
+
+  // GET /admin/groups/{groupID}/member-groups: List the groups directly inside a group. Needs
+  // groups:read.
+  getGroupsGroupIDMemberGroups(groupID: string, opts: CallOptions = {}): Promise<Answer<GetGroupsGroupIDMemberGroupsResponse>> {
+    return this.call<GetGroupsGroupIDMemberGroupsResponse>("GET", `/admin/groups/${encodeURIComponent(groupID)}/member-groups`, undefined, opts)
   }
 
   // GET /admin/groups/{groupID}/members: List a group's members. Needs groups:read.
@@ -1337,6 +1349,13 @@ export class SignariAdmin {
     return this.call<PutClientsClientIDIDJagAudiencesResponse>("PUT", `/admin/clients/${encodeURIComponent(clientID)}/id-jag-audiences`, body, opts)
   }
 
+  // PUT /admin/groups/{groupID}/member-groups/{memberGroupID}: Put a group inside this one, so its
+  // members are in this one too. Needs groups:write. A target that may impersonate others also
+  // needs privileged-users:write.
+  putGroupsGroupIDMemberGroupsMemberGroupID(groupID: string, memberGroupID: string, opts: CallOptions = {}): Promise<Answer<PutGroupsGroupIDMemberGroupsMemberGroupIDResponse>> {
+    return this.call<PutGroupsGroupIDMemberGroupsMemberGroupIDResponse>("PUT", `/admin/groups/${encodeURIComponent(groupID)}/member-groups/${encodeURIComponent(memberGroupID)}`, undefined, opts)
+  }
+
   // PUT /admin/groups/{groupID}/members/{userID}: Add a member. Needs groups:write. A target that
   // may impersonate others also needs privileged-users:write.
   putGroupsGroupIDMembersUserID(groupID: string, userID: string, opts: CallOptions = {}): Promise<Answer<PutGroupsGroupIDMembersUserIDResponse>> {
@@ -1664,6 +1683,15 @@ export interface DeleteGroupsGroupIDResponse {
   config_version: number
   id: string
   members_removed?: number
+}
+
+/** A JSON object of the Admin API. */
+export interface DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse {
+  changed: boolean
+  config_version: number
+  group_id: string
+  member: boolean
+  member_group_id: string
 }
 
 /** A JSON object of the Admin API. */
@@ -2172,6 +2200,7 @@ export interface GetGroupsResponseGroupsItem {
   display_name: string
   id: string
   may_impersonate: boolean
+  member_of: string[]
   name: string
   org_id: string
   posix_gid?: number
@@ -2184,9 +2213,22 @@ export interface GetGroupsGroupIDResponse {
   display_name: string
   id: string
   may_impersonate: boolean
+  member_of: string[]
   name: string
   org_id: string
   posix_gid?: number
+}
+
+/** A JSON object of the Admin API. */
+export interface GetGroupsGroupIDMemberGroupsResponse {
+  member_groups: GetGroupsGroupIDMemberGroupsResponseMemberGroupsItem[]
+}
+
+/** A JSON object of the Admin API. */
+export interface GetGroupsGroupIDMemberGroupsResponseMemberGroupsItem {
+  added_at: string
+  id: string
+  name: string
 }
 
 /** A JSON object of the Admin API. */
@@ -4829,6 +4871,15 @@ export interface PutClientsClientIDIDJagAudiencesResponse {
   audience: string
   client_id: string
   config_version: number
+}
+
+/** A JSON object of the Admin API. */
+export interface PutGroupsGroupIDMemberGroupsMemberGroupIDResponse {
+  changed: boolean
+  config_version: number
+  group_id: string
+  member: boolean
+  member_group_id: string
 }
 
 /** A JSON object of the Admin API. */

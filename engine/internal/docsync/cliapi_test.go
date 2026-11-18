@@ -106,6 +106,7 @@ var cliAPI = map[string]string{
 	"group create":        "POST /admin/groups",
 	"group list":          reads,
 	"group member":        "PUT /admin/groups/{groupID}/members/{userID}",
+	"group nest":          "PUT /admin/groups/{groupID}/member-groups/{memberGroupID}",
 	"group release":       "PUT /admin/clients/{clientID}/group-release",
 	"group impersonation": cliOnly("deliberately not in the Admin API: a groups:write token must not be able to make anyone able to act as anyone"),
 

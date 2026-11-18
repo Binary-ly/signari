@@ -501,6 +501,11 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/groups/{groupID}/members", ScopeGroupsRead, s.listGroupMembers)
 	privileged("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.addGroupMember)
 	privileged("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.removeGroupMember)
+	// Groups inside groups (groupnesting.go): {groupID} is the group that gains or
+	// loses the members, so the privileged check falls on it.
+	route("GET /admin/groups/{groupID}/member-groups", ScopeGroupsRead, s.listMemberGroups)
+	privileged("PUT /admin/groups/{groupID}/member-groups/{memberGroupID}", ScopeGroupsWrite, targetGroup, s.addMemberGroup)
+	privileged("DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}", ScopeGroupsWrite, targetGroup, s.removeMemberGroup)
 	// The VLAN or Filter-Id a group's members are given (radius.go). Under
 	// groups:write, which already decides who is in the group.
 	route("GET /admin/organizations/{orgID}/radius-authorizations", ScopeConfigRead, s.listRADIUSAuthorizations)

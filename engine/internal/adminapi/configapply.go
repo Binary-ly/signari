@@ -248,6 +248,24 @@ func mayApply(ctx context.Context, tx pgx.Tx, orgID string, plan *config.Plan) e
 				return fmt.Errorf("%w: members of group %s may impersonate others, and changing it needs %s",
 					errConfigScope, c.Name, ScopePrivilegedUsersWrite)
 			}
+			// Put inside other groups (11.09): its members gain what each of
+			// them grants, so a group above that may impersonate needs the scope
+			// its own membership would, and a delegate may not widen the reach
+			// of the roles over those groups, as PUT .../member-groups refuses.
+			if len(c.Inside) > 0 && len(p.UserGroups) > 0 {
+				return fmt.Errorf("%w: group %s would be put inside other groups, and a role delegated over "+
+					"groups cannot nest groups", errConfigScope, c.Name)
+			}
+			for _, above := range c.Inside {
+				privileged, err := store.GroupMayImpersonate(ctx, tx, orgID, above)
+				if err != nil {
+					return err
+				}
+				if privileged && !p.Can(ScopePrivilegedUsersWrite) {
+					return fmt.Errorf("%w: group %s would be inside %s, whose members may impersonate "+
+						"others, and that needs %s", errConfigScope, c.Name, above, ScopePrivilegedUsersWrite)
+				}
+			}
 		}
 	}
 	return nil

@@ -655,14 +655,17 @@ email or SMS factor.
 
 | | |
 |---|---|
-| `GET /admin/groups` | List, paged |
+| `GET /admin/groups` | List, paged. Each group's `member_of` is the ids of the groups it is directly inside |
 | `GET /admin/groups/{groupID}` | One group |
 | `POST /admin/groups` | Create |
 | `PATCH /admin/groups/{groupID}` | Rename, change the description, or set `posix_gid` to a number kept from a directory being replaced, 1000 to 1999999999; `400 invalid_posix_id` outside that, `409 already_exists` when another group here has it. See [ldap.md](ldap.md#posix-accounts) |
 | `DELETE /admin/groups/{groupID}` | Delete, taking its memberships with it |
-| `GET /admin/groups/{groupID}/members` | List members, paged |
+| `GET /admin/groups/{groupID}/members` | List members, paged: the people put in it by name, not those in it through a group inside it |
 | `PUT /admin/groups/{groupID}/members/{userID}` | Add a member |
 | `DELETE /admin/groups/{groupID}/members/{userID}` | Remove a member |
+| `GET /admin/groups/{groupID}/member-groups` | The groups directly inside it, each with its `id`, `name` and `added_at`, whole and in id order. A token narrowed to some groups sees only those. `groups:read` |
+| `PUT /admin/groups/{groupID}/member-groups/{memberGroupID}` | Put the second group inside the first, as `signari group nest` does: everybody in it is then in the first and every group above, for every claim, directory answer and decision (see [groups.md](groups.md#groups-inside-groups)). `409 nesting_loop` when the first is already inside the second, at any depth, or is it; `400 cross_organisation_membership` across organisations. Refused `403 outside_token_objects` to a token limited to named applications, groups or attributes and to a role delegated over groups, since a nesting reaches people neither names; when the first group, or one it is inside, may impersonate, it needs `privileged-users:write`. `changed` says whether it was not already there. Audited `admin.group_nested`; `groups:write`, honours `If-Match` |
+| `DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}` | Take it out again, as `group nest -remove` does: whoever was in the first only through it is out of it, and of everything above, from their next token. The same refusals. Audited `admin.group_unnested`; `groups:write`, honours `If-Match` |
 
 **Changing an email address clears its verified mark, always, and there is no
 field to opt out.** `email_verified_at` is what makes this server assert

@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0303 nested_groups
+
+Compatible with the release before: its binary may still serve this schema.
+
+A group may be a member of another (11.09): whoever is in `oncall-eu` is in `oncall`, and whoever is in `oncall` is in `engineering`, so a person put in one group is in every group above it, for every claim, directory answer and access decision. One edge per nesting, with who made it, as a membership records who granted it.
+
 ## 0302 vp_mdoc
 
 Not compatible with the release before: stop it before migrating.

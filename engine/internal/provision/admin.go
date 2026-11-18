@@ -689,12 +689,15 @@ func syncGroups(ctx context.Context, db DB, t scim.Target, hc *http.Client, appl
 	return out, nil
 }
 
+// remoteMembers is everybody in the group at the target, through the groups inside
+// it too (11.09), as people: a target is sent who is in the group, not a group inside
+// another, which not every target can hold.
 func remoteMembers(ctx context.Context, db DB, targetID, groupID string) (map[string]bool, error) {
 	rows, err := db.Query(ctx, `
-		SELECT sl.remote_id
-		FROM core.group_members gm
-		JOIN core.scim_links sl ON sl.user_id = gm.user_id AND sl.target_id = $1::uuid
-		WHERE gm.group_id = $2::uuid`, targetID, groupID)
+		SELECT DISTINCT sl.remote_id
+		FROM core.groups_below($2::uuid) b
+		JOIN core.group_members gm ON gm.group_id = b.group_id
+		JOIN core.scim_links sl ON sl.user_id = gm.user_id AND sl.target_id = $1::uuid`, targetID, groupID)
 	if err != nil {
 		return nil, err
 	}

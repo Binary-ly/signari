@@ -35,6 +35,7 @@ refused with `412` when the configuration moved since the version it names.
 | [event-subscriptions](#event-subscriptions) | 6 |
 | [external-factors](#external-factors) | 3 |
 | [groups](#groups) | 5 |
+| [groups / member-groups](#groups--member-groups) | 3 |
 | [groups / members](#groups--members) | 3 |
 | [groups / radius](#groups--radius) | 2 |
 | [identity-providers](#identity-providers) | 15 |
@@ -1599,6 +1600,7 @@ Answers:
 | `display_name` | string | always |
 | `id` | string | always |
 | `may_impersonate` | boolean | always |
+| `member_of` | list of string | always |
 | `name` | string | always |
 | `org_id` | string | always |
 | `posix_gid` | integer |  |
@@ -1623,6 +1625,52 @@ Answers:
 |---|---|---|
 | `config_version` | integer | always |
 | `id` | string | always |
+
+## groups / member-groups
+
+### `GET /admin/groups/{groupID}/member-groups`
+
+List the groups directly inside a group. Needs groups:read.
+
+Go `GetGroupsGroupIDMemberGroups`, TypeScript `getGroupsGroupIDMemberGroups`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `member_groups` | list of object | always |
+
+### `DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}`
+
+Take a group out of this one. Needs groups:write. A target that may impersonate others also needs privileged-users:write.
+
+Go `DeleteGroupsGroupIDMemberGroupsMemberGroupID`, TypeScript `deleteGroupsGroupIDMemberGroupsMemberGroupID`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `changed` | boolean | always |
+| `config_version` | integer | always |
+| `group_id` | string | always |
+| `member` | boolean | always |
+| `member_group_id` | string | always |
+
+### `PUT /admin/groups/{groupID}/member-groups/{memberGroupID}`
+
+Put a group inside this one, so its members are in this one too. Needs groups:write. A target that may impersonate others also needs privileged-users:write.
+
+Go `PutGroupsGroupIDMemberGroupsMemberGroupID`, TypeScript `putGroupsGroupIDMemberGroupsMemberGroupID`.
+
+Answers:
+
+| Field | Type | |
+|---|---|---|
+| `changed` | boolean | always |
+| `config_version` | integer | always |
+| `group_id` | string | always |
+| `member` | boolean | always |
+| `member_group_id` | string | always |
 
 ## groups / members
 

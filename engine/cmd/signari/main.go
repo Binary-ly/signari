@@ -201,6 +201,7 @@ people:
   group create         create a group
   group list           show groups and their sizes
   group member         add or remove a member (-remove)
+  group nest           put a group inside another, so its members are in that one too (-remove)
   group release        let a client see group membership
   group impersonation  grant or revoke a group's ability to act as another user
   role grant           give a person or an application an administrative role in one organisation
@@ -948,7 +949,9 @@ func run(args []string) (err error) {
 	dryRun2 := fs.Bool("scim-dry-run", false, "register the target in dry-run mode: record, never send")
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
-	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	removeMember := fs.Bool("remove", false, "remove the member instead of adding (group member), "+
+		"or take the group out instead of putting it in (group nest)")
+	parentGroup := fs.String("in", "", "the group -group is put inside (group nest)")
 	racProtocol := fs.String("protocol", "rdp", "rdp, vnc or ssh")
 	racHost := fs.String("host", "", "hostname: of the machine (rac), or of the protected "+
 		"application, with its port if not 443 (proxy add-host and friends)")
@@ -2295,6 +2298,8 @@ func run(args []string) (err error) {
 		return groupCreate(ctx, conn, *orgID, *groupName, *name)
 	case "group member":
 		return groupMember(ctx, conn, *orgID, *groupName, *memberEmail, *removeMember)
+	case "group nest":
+		return groupNest(ctx, conn, *orgID, *groupName, *parentGroup, *removeMember)
 	case "group release":
 		return groupRelease(ctx, conn, *orgID, *clientID, *onlyGroups)
 	case "group list":
@@ -5281,6 +5286,73 @@ func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string,
 	return nil
 }
 
+// groupNest puts the group named name inside the one named in, so everybody in it is in
+// that one and every group above it (11.09), or with remove takes it out. A loop is
+// refused by the database, whoever writes it.
+func groupNest(ctx context.Context, conn *pgx.Conn, orgID, name, in string, remove bool) error {
+	if orgID == "" || name == "" || in == "" {
+		return fmt.Errorf("give -org, -group and -in")
+	}
+	groupID, err := store.GroupIDNamed(ctx, conn, orgID, name)
+	if err != nil {
+		return err
+	}
+	parentID, err := store.GroupIDNamed(ctx, conn, orgID, in)
+	if err != nil {
+		return err
+	}
+	for n, id := range map[string]string{name: groupID, in: parentID} {
+		if id == "" {
+			return fmt.Errorf("no group named %q in that organisation", n)
+		}
+	}
+	if remove {
+		removed, err := store.UnnestGroup(ctx, conn, orgID, groupID, parentID)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Printf("%s was not inside %s; nothing to do\n", name, in)
+			return nil
+		}
+		fmt.Printf("took %s out of %s\n", name, in)
+		fmt.Printf("\n  Whoever was in %s only through %s is out of it, and of every group above it,\n", in, name)
+		fmt.Println("  from their next token. Tokens ALREADY ISSUED keep their claims until they expire.")
+		return nil
+	}
+	var wasPrivileged bool
+	if err := conn.QueryRow(ctx, `SELECT core.group_may_impersonate($1::uuid)`, groupID).Scan(&wasPrivileged); err != nil {
+		return err
+	}
+	added, err := store.NestGroup(ctx, conn, orgID, groupID, parentID, "")
+	if errors.Is(err, store.ErrNestingLoop) {
+		return fmt.Errorf("%s cannot go inside %s: %w", name, in, err)
+	}
+	if err != nil {
+		return err
+	}
+	if !added {
+		fmt.Printf("%s is already inside %s; nothing to do\n", name, in)
+		return nil
+	}
+	var members int
+	if err := conn.QueryRow(ctx, `SELECT count(DISTINCT m.user_id) FROM core.groups_below($1::uuid) b
+		JOIN core.group_members m ON m.group_id = b.group_id`, groupID).Scan(&members); err != nil {
+		return err
+	}
+	fmt.Printf("put %s inside %s: its %d member(s) are now in %s and every group above it\n",
+		name, in, members, in)
+	var privileged bool
+	if err := conn.QueryRow(ctx, `SELECT core.group_may_impersonate($1::uuid)`, groupID).Scan(&privileged); err != nil {
+		return err
+	}
+	if privileged && !wasPrivileged {
+		fmt.Printf("\n  A group above %s may impersonate, so every one of them can now act as\n", name)
+		fmt.Println("  any other person in the organisation. Take it out with -remove if that was not meant.")
+	}
+	return nil
+}
+
 // groupRelease permits a client to see group membership.
 func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only string) error {
 	if orgID == "" || clientID == "" {
@@ -5305,7 +5377,9 @@ func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only str
 	return nil
 }
 
-// groupList shows groups and their sizes.
+// groupList shows groups, their sizes, and the groups each is inside. members is
+// everybody in the group, through the groups inside it too (11.09), and
+// direct_members those put in it by name.
 func groupList(ctx context.Context, conn *pgx.Conn, format string) error {
 	out, err := newOutput(format)
 	if err != nil {
@@ -5313,26 +5387,32 @@ func groupList(ctx context.Context, conn *pgx.Conn, format string) error {
 	}
 	rows, err := conn.Query(ctx, `
 		SELECT g.name, g.display_name, g.org_id::text,
-		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id)
+		       (SELECT count(DISTINCT m.user_id) FROM core.groups_below(g.id) b
+		          JOIN core.group_members m ON m.group_id = b.group_id),
+		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id),
+		       COALESCE((SELECT array_agg(p.name ORDER BY p.name) FROM core.group_parents n
+		                   JOIN core.groups p ON p.id = n.parent_id WHERE n.group_id = g.id), '{}')
 		FROM core.groups g ORDER BY g.name`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	if out.text() {
-		fmt.Printf("%-24s %-28s %s\n", "NAME", "DISPLAY NAME", "MEMBERS")
+		fmt.Printf("%-24s %-28s %-8s %s\n", "NAME", "DISPLAY NAME", "MEMBERS", "IN")
 	}
 	var n int
 	for rows.Next() {
 		var name, disp, org string
-		var members int
-		if err := rows.Scan(&name, &disp, &org, &members); err != nil {
+		var members, direct int
+		var in []string
+		if err := rows.Scan(&name, &disp, &org, &members, &direct, &in); err != nil {
 			return err
 		}
 		n++
-		out.add(map[string]any{"name": name, "display_name": disp, "org_id": org, "members": members})
+		out.add(map[string]any{"name": name, "display_name": disp, "org_id": org, "members": members,
+			"direct_members": direct, "in": in})
 		if out.text() {
-			fmt.Printf("%-24s %-28s %d\n", name, disp, members)
+			fmt.Printf("%-24s %-28s %-8d %s\n", name, disp, members, strings.Join(in, ", "))
 		}
 	}
 	if err := rows.Err(); err != nil {

@@ -254,9 +254,11 @@ var (
 	userSummarySchema = object([]string{"id", "org_id", "email", "username", "status", "created_at"},
 		map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "email": str(), "username": str(),
 			"status": str(), "created_at": dateTime()})
-	groupSummarySchema = object([]string{"id", "org_id", "name", "display_name", "description", "may_impersonate", "created_at"},
+	groupSummarySchema = object([]string{"id", "org_id", "name", "display_name", "description", "may_impersonate", "created_at",
+		"member_of"},
 		map[string]jsonSchema{"id": uuidStr(), "org_id": uuidStr(), "name": str(), "display_name": str(),
-			"description": str(), "may_impersonate": boolean(), "created_at": dateTime(), "posix_gid": integer()})
+			"description": str(), "may_impersonate": boolean(), "created_at": dateTime(), "posix_gid": integer(),
+			"member_of": arrayOf(uuidStr())})
 	organizationSchema = object([]string{"id", "instance_id", "slug", "display_name", "status", "created_at"},
 		map[string]jsonSchema{"id": uuidStr(), "instance_id": uuidStr(), "slug": str(), "display_name": str(),
 			"status": str(), "created_at": dateTime()})
@@ -348,6 +350,9 @@ var opSchemas = map[string]opSchema{
 	"GET /admin/groups/{groupID}": {http.StatusOK, nil, groupSummarySchema},
 	"GET /admin/groups/{groupID}/members": {http.StatusOK, nil, object([]string{"members"}, map[string]jsonSchema{
 		"members": arrayOf(userSummarySchema), "next_cursor": str()})},
+	"GET /admin/groups/{groupID}/member-groups": {http.StatusOK, nil, object([]string{"member_groups"}, map[string]jsonSchema{
+		"member_groups": arrayOf(object([]string{"id", "name", "added_at"},
+			map[string]jsonSchema{"id": uuidStr(), "name": str(), "added_at": dateTime()}))})},
 	"GET /admin/invitations": {http.StatusOK, nil, object([]string{"invitations"}, map[string]jsonSchema{
 		"next_cursor": str(),
 		"invitations": arrayOf(object([]string{"id", "org_id", "groups", "state", "created_at", "expires_at"},
@@ -1135,8 +1140,10 @@ var opSchemas = map[string]opSchema{
 	"PATCH /admin/groups/{groupID}": {http.StatusOK, typeOf[patchGroupRequest](), idVersionSchema},
 	"DELETE /admin/groups/{groupID}": {http.StatusOK, nil, object([]string{"id", "config_version"},
 		withVersion(map[string]jsonSchema{"id": uuidStr(), "members_removed": integer()}))},
-	"PUT /admin/groups/{groupID}/members/{userID}":    {http.StatusOK, nil, membershipSchema},
-	"DELETE /admin/groups/{groupID}/members/{userID}": {http.StatusOK, nil, membershipSchema},
+	"PUT /admin/groups/{groupID}/members/{userID}":                 {http.StatusOK, nil, membershipSchema},
+	"DELETE /admin/groups/{groupID}/members/{userID}":              {http.StatusOK, nil, membershipSchema},
+	"PUT /admin/groups/{groupID}/member-groups/{memberGroupID}":    {http.StatusOK, nil, nestingSchema},
+	"DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}": {http.StatusOK, nil, nestingSchema},
 	"DELETE /admin/users/{userID}/sessions": {http.StatusOK, nil, object([]string{"user_id", "sessions_ended", "config_version"},
 		withVersion(merge(sessionsEndedSchema, map[string]jsonSchema{"user_id": uuidStr()})))},
 	"DELETE /admin/sessions/{sid}": {http.StatusOK, nil, object([]string{"sid", "sessions_ended", "config_version"},
@@ -1153,5 +1160,8 @@ var (
 		withVersion(map[string]jsonSchema{"id": uuidStr()}))
 	membershipSchema = object([]string{"group_id", "user_id", "member", "changed", "config_version"},
 		withVersion(map[string]jsonSchema{"group_id": uuidStr(), "user_id": uuidStr(), "member": boolean(),
+			"changed": boolean()}))
+	nestingSchema = object([]string{"group_id", "member_group_id", "member", "changed", "config_version"},
+		withVersion(map[string]jsonSchema{"group_id": uuidStr(), "member_group_id": uuidStr(), "member": boolean(),
 			"changed": boolean()}))
 )

@@ -445,10 +445,12 @@ func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []stri
 			SELECT subject_id AS sid FROM direct WHERE subject_type = 'user'
 			UNION
 			-- Group grants expand to their members: the question is about
-			-- people, and answering "group:finance" is true and useless.
+			-- people, and answering "group:finance" is true and useless. Members
+			-- of the groups inside it hold it too (11.09).
 			SELECT m.user_id::text FROM direct d
 			  JOIN core.groups g ON g.name = d.subject_id AND g.org_id = $1::uuid
-			  JOIN core.group_members m ON m.group_id = g.id
+			  CROSS JOIN LATERAL core.groups_below(g.id) b
+			  JOIN core.group_members m ON m.group_id = b.group_id
 			 WHERE d.subject_type = 'group'
 		) all_subjects
 		 WHERE ($6 = '' OR sid > $6)
@@ -569,9 +571,9 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	rows, err := q.Query(ctx, `
 		SELECT u.status = 'active', u.email_verified_at IS NOT NULL,
 		       COALESCE((SELECT array_agg(g.name)
-		                   FROM core.group_members m
+		                   FROM core.groups_of(u.id) m
 		                   JOIN core.groups g ON g.id = m.group_id
-		                  WHERE m.user_id = u.id AND g.org_id = u.org_id), '{}'),
+		                  WHERE g.org_id = u.org_id), '{}'),
 		       COALESCE((SELECT jsonb_object_agg(s.name, a.value)
 		                   FROM core.user_attributes a
 		                   JOIN core.user_attribute_schema s ON s.id = a.attribute_id
@@ -641,8 +643,8 @@ func ApplicationRoles(ctx context.Context, q Querier, orgID, userID, clientID st
 		   AND (r.expires_at IS NULL OR r.expires_at > now())
 		   AND ((r.subject_type = 'user' AND lower(r.subject_id) IN (u.id::text, u.email_fold, u.username_fold))
 		     OR (r.subject_type = 'group' AND r.subject_id IN (
-		           SELECT g.name FROM core.group_members m JOIN core.groups g ON g.id = m.group_id
-		            WHERE m.user_id = u.id AND g.org_id = u.org_id)))
+		           SELECT g.name FROM core.groups_of(u.id) m JOIN core.groups g ON g.id = m.group_id
+		            WHERE g.org_id = u.org_id)))
 		 ORDER BY r.relation`, orgID, userID, clientID, ApplicationObject)
 	if err != nil {
 		return nil, err

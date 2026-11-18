@@ -457,9 +457,12 @@ func requireReach(ctx context.Context, q interface {
 	if !narrowed {
 		return nil
 	}
+	// In one of its groups or a group inside one (11.09): the role was delegated
+	// over the group, and whoever is in it by nesting is in it. Only an
+	// organisation-wide caller can nest, so no delegate widens its own reach.
 	var member bool
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.group_members
-		WHERE user_id = $1::uuid AND group_id = ANY($2::uuid[]))`, store.ExactUUIDOrNil(userID), groups).Scan(&member); err != nil {
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.groups_of($1::uuid)
+		WHERE group_id = ANY($2::uuid[]))`, store.ExactUUIDOrNil(userID), groups).Scan(&member); err != nil {
 		return err
 	}
 	if !member {

@@ -167,6 +167,7 @@ var notAbout = map[string]string{
 	"sessions.impersonator_id":        "the session is the impersonated person's",
 	"impersonations.actor_id":         "the impersonation is recorded for the person impersonated",
 	"group_members.added_by":          "the membership is the member's",
+	"group_parents.added_by":          "a nesting is two groups', about nobody; who made it acted on them",
 	"invitations.created_by":          "the address invited is the invitee's",
 	"relations.granted_by":            "the grant is its subject's",
 	"authorization_models.updated_by": "an organisation's model, not a person's data",

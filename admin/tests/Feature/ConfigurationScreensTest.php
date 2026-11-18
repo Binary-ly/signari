@@ -206,6 +206,45 @@ class ConfigurationScreensTest extends TestCase
         }
     }
 
+    /**
+     * A user manager delegated over a group sees the members of the groups inside it
+     * too (11.09), as the Admin API lets the role act on them, and nobody else.
+     */
+    public function test_a_delegated_user_manager_sees_the_members_of_groups_inside_theirs(): void
+    {
+        $org = $this->plantOrganisation();
+        $below = $this->plantUser($org);
+        $outsider = $this->plantUser($org);
+        $email = fn (string $id): string => $this->maintenance()
+            ->selectOne('SELECT email FROM core.users WHERE id = ?::uuid', [$id])->email;
+        $group = fn (string $name): string => $this->maintenance()->selectOne(
+            'INSERT INTO core.groups (org_id, name, display_name) VALUES (?::uuid, ?, ?) RETURNING id::text AS id',
+            [$org, $name.'-'.Str::lower(Str::random(8)), $name]
+        )->id;
+        $managed = $group('managed');
+        $inside = $group('inside');
+        $elsewhere = $group('elsewhere');
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_parents (group_id, parent_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid)',
+            [$inside, $managed, $org]
+        );
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_members (group_id, user_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid), (?::uuid, ?::uuid, ?::uuid)',
+            [$inside, $below, $org, $elsewhere, $outsider, $org]
+        );
+
+        try {
+            $this->actingAs($this->operatorFor($org))
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => ['users:read' => [$managed]]]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($below))
+                ->assertDontSee($email($outsider));
+        } finally {
+            $this->maintenance()->delete('DELETE FROM core.groups WHERE org_id = ?::uuid', [$org]);
+        }
+    }
+
     public function test_relations_and_the_model_are_scoped_and_live(): void
     {
         $org = $this->plantOrganisation();

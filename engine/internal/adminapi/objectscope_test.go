@@ -39,7 +39,10 @@ var (
 	// narrowed token. Both were missing until a token restricted to one
 	// application could list every application and register new ones.
 	selectsClients = regexp.MustCompile(`FROM core\.clients`)
-	selectsGroups  = regexp.MustCompile(`FROM core\.groups`)
+	// The table, not core.groups_of or core.groups_below (migration 0303): those
+	// walk one person's or one group's nesting, and no relation but the table and
+	// its view is named groups-anything.
+	selectsGroups  = regexp.MustCompile(`FROM core\.groups\b`)
 	insertsClient  = regexp.MustCompile(`INSERT INTO core\.clients`)
 	insertsGroup   = regexp.MustCompile(`INSERT INTO core\.groups`)
 	filtersClients = regexp.MustCompile(`clientFilter\(ctx\)`)

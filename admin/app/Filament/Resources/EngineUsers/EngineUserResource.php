@@ -34,14 +34,25 @@ class EngineUserResource extends Resource
         return SignariSignIn::may('users:read');
     }
 
-    /** A user manager delegated over groups sees those groups' members and nobody else. */
+    /**
+     * A user manager delegated over groups sees those groups' members and nobody else:
+     * the people in them and in every group inside them (11.09), as the Admin API
+     * reaches them, so the screen lists who the role may act on.
+     */
     public static function getEloquentQuery(): Builder
     {
         $groups = SignariSignIn::delegatedGroups('users:read');
         $query = parent::getEloquentQuery();
 
         return $groups === [] ? $query : $query->whereIn('id', function ($members) use ($groups) {
-            $members->select('user_id')->from('core_v1.group_members')->whereIn('group_id', $groups);
+            $members->select('user_id')->from('core_v1.group_members')->whereRaw(
+                'group_id IN (WITH RECURSIVE below(id) AS (
+                    SELECT unnest(?::uuid[])
+                    UNION
+                    SELECT p.group_id FROM below JOIN core_v1.group_parents p ON p.parent_id = below.id
+                ) SELECT id FROM below)',
+                ['{'.implode(',', $groups).'}']
+            );
         });
     }
 

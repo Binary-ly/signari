@@ -831,13 +831,20 @@ func groupImpersonation(ctx context.Context, conn *pgx.Conn, orgID, group string
 		return nil
 	}
 
-	var members int
+	// Everybody in it, through the groups inside it too (11.09): each of them holds
+	// the power, and a count of direct members alone would understate it.
+	var members, inside int
 	_ = conn.QueryRow(ctx, `
-		SELECT count(*) FROM core.group_members m
-		JOIN core.groups g ON g.id = m.group_id
-		WHERE g.org_id = $1::uuid AND g.name = $2`, orgID, group).Scan(&members)
+		SELECT count(DISTINCT m.user_id), count(DISTINCT b.group_id) - 1
+		  FROM core.groups g
+		  CROSS JOIN LATERAL core.groups_below(g.id) b
+		  LEFT JOIN core.group_members m ON m.group_id = b.group_id
+		 WHERE g.org_id = $1::uuid AND g.name = $2`, orgID, group).Scan(&members, &inside)
 
 	fmt.Printf("%q may now impersonate. %d member(s) hold that power.\n", group, members)
+	if inside > 0 {
+		fmt.Printf("  %d group(s) are inside it, and their members are counted: they hold it too.\n", inside)
+	}
 	fmt.Println("\n  Every one of them can obtain a session as any other user in the")
 	fmt.Println("  organisation. Each act is written to the audit trail with both")
 	fmt.Println("  identities, and the token carries `act` so a resource server can see")

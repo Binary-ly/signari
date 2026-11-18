@@ -119,9 +119,9 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 	// whichever one's VLAN sorted first -- the other tenant's network.
 	err := a.inner.db.QueryRow(ctx, `
 		SELECT ra.vlan_id, ra.filter_id, ra.session_timeout, ra.class, ra.vendor_attributes
-		FROM core.radius_group_authorization ra
-		JOIN core.group_members gm ON gm.group_id = ra.group_id
-		JOIN core.users u          ON u.id = gm.user_id
+		FROM core.users u
+		CROSS JOIN LATERAL core.groups_of(u.id) gm
+		JOIN core.radius_group_authorization ra ON ra.group_id = gm.group_id
 		WHERE u.status = 'active' AND `+store.OrgInService("u.org_id")+`
 		  AND u.org_id = $2::uuid AND ra.org_id = $2::uuid
 		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))

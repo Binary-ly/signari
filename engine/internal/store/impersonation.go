@@ -248,9 +248,9 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 	rows, err := q.Query(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			  FROM core.group_members m
+			  FROM core.groups_of($1::uuid) m
 			  JOIN core.groups g ON g.id = m.group_id
-			 WHERE m.user_id = $1::uuid AND g.org_id = $2::uuid AND g.may_impersonate)`,
+			 WHERE g.org_id = $2::uuid AND g.may_impersonate)`,
 		userID, orgID)
 	if err != nil {
 		return false, err
@@ -299,12 +299,14 @@ func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID str
 	return orgID, privileged, true, nil
 }
 
-// privilegedPerson is the one definition, for the person u.
+// privilegedPerson is the one definition, for the person u. A group that may
+// impersonate grants it to everybody in the groups inside it too (11.09), so the
+// person is privileged by any group above them.
 const privilegedPerson = `(EXISTS (
 			SELECT 1
-			  FROM core.group_members m
+			  FROM core.groups_of(u.id) m
 			  JOIN core.groups g ON g.id = m.group_id
-			 WHERE m.user_id = u.id AND g.org_id = u.org_id AND g.may_impersonate)
+			 WHERE g.org_id = u.org_id AND g.may_impersonate)
 		    OR EXISTS (SELECT 1 FROM core.admin_role_bindings b WHERE b.user_id = u.id))`
 
 // PrivilegedUsers is PrivilegedUser for many people in one query: which of
@@ -353,8 +355,12 @@ func PrivilegedGroup(ctx context.Context, q rowQuerier, groupID string) (orgID s
 	if !ok {
 		return "", false, false, nil
 	}
+	// The group, or any group it is inside (11.09): a member added to it is a
+	// member of every group above, so a group inside one that may impersonate is as
+	// privileged as that one. Its own flag alone let groups:write grant impersonation
+	// by adding somebody to the group below.
 	err = q.QueryRow(ctx,
-		`SELECT org_id::text, may_impersonate FROM core.groups WHERE id = $1::uuid`,
+		`SELECT org_id::text, core.group_may_impersonate(id) FROM core.groups WHERE id = $1::uuid`,
 		groupID).Scan(&orgID, &privileged)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, false, nil

@@ -532,6 +532,12 @@
         "display_name": {
           "type": "string"
         },
+        "member_of": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "name": {
           "type": "string"
         }

@@ -563,8 +563,10 @@ func (s *Server) createAccount(ctx context.Context, orgID, email, password strin
 		// written against.
 		var groupID string
 		var mayImpersonate bool
+		// Impersonation by its own flag or a group above it (11.09): a sign-up
+		// default inside a group that may impersonate would grant it to strangers.
 		err := tx.QueryRow(ctx,
-			`SELECT id::text, may_impersonate FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+			`SELECT id::text, core.group_may_impersonate(id) FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
 			orgID, g).Scan(&groupID, &mayImpersonate)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

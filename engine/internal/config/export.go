@@ -29,6 +29,14 @@ func Export(ctx context.Context, tx pgx.Tx, orgID string) (*File, error) {
 	}
 	f := &File{Version: 1, Org: orgID}
 	for _, g := range cur.groups {
+		// What it is inside, sorted, and left out when nothing: an exported file
+		// says member_of only where there is one to keep.
+		if in := g.memberOf(); len(in) == 0 {
+			g.MemberOf = nil
+		} else {
+			sorted := sortedCopy(in)
+			g.MemberOf = &sorted
+		}
 		f.Groups = append(f.Groups, g)
 	}
 	sort.Slice(f.Groups, func(i, j int) bool { return f.Groups[i].Name < f.Groups[j].Name })

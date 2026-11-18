@@ -44,12 +44,14 @@ func GroupsForUser(ctx context.Context, db interface {
 		return nil, fmt.Errorf("reading the group release policy: %w", err)
 	}
 
+	// Every group the person is in, through groups inside groups too (11.09): an
+	// application told of `engineering` is told of whoever is in it by way of
+	// `oncall`. A release naming only `engineering` releases that name alone.
 	rows, err := db.Query(ctx, `
 		SELECT g.name
-		FROM core.group_members m
+		FROM core.groups_of($1::uuid) m
 		JOIN core.groups g ON g.id = m.group_id
-		WHERE m.user_id = $1::uuid
-		  AND (cardinality($2::text[]) = 0 OR g.name = ANY($2::text[]))
+		WHERE cardinality($2::text[]) = 0 OR g.name = ANY($2::text[])
 		ORDER BY g.name`, userID, onlyGroups)
 	if err != nil {
 		return nil, fmt.Errorf("reading group membership: %w", err)
@@ -83,10 +85,9 @@ func GroupsForSAML(ctx context.Context, tx claimReader, userID, providerID strin
 
 	rows, qerr := tx.Query(ctx, `
 		SELECT g.name
-		FROM core.group_members m
+		FROM core.groups_of($1::uuid) m
 		JOIN core.groups g ON g.id = m.group_id
-		WHERE m.user_id = $1::uuid
-		  AND (cardinality($2::text[]) = 0 OR g.name = ANY($2::text[]))
+		WHERE cardinality($2::text[]) = 0 OR g.name = ANY($2::text[])
 		ORDER BY g.name`, userID, only)
 	if qerr != nil {
 		return "", nil, qerr
@@ -102,18 +103,20 @@ func GroupsForSAML(ctx context.Context, tx claimReader, userID, providerID strin
 	return attr, groups, rows.Err()
 }
 
-// AllGroupsForUser returns every group a user is in, ignoring release policy.
+// AllGroupsForUser returns every group a user is in, directly or through a
+// group inside it, ignoring release policy.
 //
-// For the account page and the admin API only. Deliberately a different
-// function from GroupsForUser so that a caller reaching for "the user's groups"
-// on a token path cannot get the unfiltered set by accident.
+// For decisions that are not a client's claim -- access policy, forward auth,
+// the directory -- and the account page. Deliberately a different function from
+// GroupsForUser so that a caller reaching for "the user's groups" on a token
+// path cannot get the unfiltered set by accident.
 func AllGroupsForUser(ctx context.Context, db interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, userID string) ([]string, error) {
 	rows, err := db.Query(ctx, `
-		SELECT g.name FROM core.group_members m
+		SELECT g.name FROM core.groups_of($1::uuid) m
 		JOIN core.groups g ON g.id = m.group_id
-		WHERE m.user_id = $1::uuid ORDER BY g.name`, userID)
+		ORDER BY g.name`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,12 +147,13 @@ func GroupIDNamed(ctx context.Context, q interface {
 }
 
 // GroupMayImpersonate reports whether the organisation's group of that name
-// lets its members impersonate others; false for no such group.
+// lets its members impersonate others, by its own flag or a group it is inside
+// (11.09); false for no such group.
 func GroupMayImpersonate(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID, name string) (bool, error) {
 	var may bool
-	err := q.QueryRow(ctx, `SELECT may_impersonate FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+	err := q.QueryRow(ctx, `SELECT core.group_may_impersonate(id) FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
 		orgID, name).Scan(&may)
 	if err == pgx.ErrNoRows {
 		return false, nil

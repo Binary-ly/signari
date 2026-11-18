@@ -48,6 +48,7 @@ var knownUnindexedFKs = map[string]string{
 	"federated_logins.provider_id":              unindexedBacklog,
 	"federation_trust_marks_issued.instance_id": unindexedBacklog,
 	"group_members.org_id":                      unindexedOrg,
+	"group_parents.org_id":                      unindexedOrg,
 	"identity_providers.org_id":                 unindexedOrg,
 	"idp_attribute_map.attribute_id":            unindexedBacklog,
 	"idp_attribute_map.org_id":                  unindexedOrg,

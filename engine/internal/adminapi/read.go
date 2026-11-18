@@ -322,9 +322,10 @@ func userListQuery(cursor string, org *string, limit int, email, prefix, status 
 	if status != "" {
 		l.add("status = $?", status)
 	}
-	// A role delegated over groups lists their members only (6.01).
+	// A role delegated over groups lists their members only (6.01), through the
+	// groups inside them too, as requireReach decides one.
 	if reach != nil {
-		l.add("EXISTS (SELECT 1 FROM core.group_members gm WHERE gm.user_id = core.users.id AND gm.group_id = ANY($?::uuid[]))", reach)
+		l.add("EXISTS (SELECT 1 FROM core.groups_of(core.users.id) gm WHERE gm.group_id = ANY($?::uuid[]))", reach)
 	}
 	return `
 		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),

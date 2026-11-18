@@ -93,7 +93,8 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 			var mayImpersonate bool
 			// Among the groups this token may act on, so one narrowed to
 			// some is told of no others, as if they did not exist.
-			err := tx.QueryRow(ctx, `SELECT id::text, may_impersonate FROM core.groups
+			// Impersonation by its own flag or a group above it (11.09).
+			err := tx.QueryRow(ctx, `SELECT id::text, core.group_may_impersonate(id) FROM core.groups
 				WHERE org_id = $1::uuid AND name = $2
 				  AND ($3::text[] IS NULL OR id::text = ANY($3::text[]))`,
 				req.OrgID, name, groupFilter(ctx)).Scan(&groupID, &mayImpersonate)

@@ -182,7 +182,11 @@ this came from" as "inside the office" is how a network restriction becomes
 decorative behind a proxy that strips the address.
 
 **Group membership and MFA are read at decision time**, not from anything cached
-on the session — the same rule the group claims follow.
+on the session — the same rule the group claims follow. A person is in a group
+through any group inside it too, so `groups: [engineering]` admits somebody whose
+only group is `oncall`, when `oncall` is inside `engineering` (see
+[groups.md](groups.md#groups-inside-groups)). Test cases give the groups a person
+ends up in, nesting included.
 
 ## Where it is asked
 

@@ -51,6 +51,7 @@ resource "signari_group_member" "ada_engineering" {
 | `signari_group` | `display_name`, `description` | `org_id`, `name` | the id |
 | `signari_user` | `email`, `username`, the names, `locale`, `active`, `password` | `org_id` | the id |
 | `signari_group_member` | nothing | `group_id`, `user_id` | `<group_id>/<user_id>` |
+| `signari_group_member_group` | nothing: `member_group_id` is put inside `group_id`, so everybody in it is in that group and every group above | `group_id`, `member_group_id` | `<group_id>/<member_group_id>` |
 | `signari_client_group_release` | `only_groups` (left out, every group) | `client_id` | the client id |
 | `signari_scope` | `display_name`, `description`, `advertise` | `org_id`, `name` | `<org_id>/<name>` |
 | `signari_proxy_host` | `enabled` | `org_id`, `host` (in lower case) | `<org_id>/<host>` |
@@ -63,6 +64,12 @@ than the provider's own token, as the API refuses any wider. Its `secret` is in
 state from the apply that minted it, because the server keeps only a hash. A
 destroy revokes it, and one revoked outside Terraform is dropped at the next
 refresh so the plan after it mints another.
+
+A `signari_group_member_group` needs the provider's token to reach every group: the
+engine refuses a nesting to a token narrowed to named groups, since the members it adds
+to the groups above are people that token never names, and asks `privileged-users:write`
+when a group above may impersonate. A loop is refused by the engine, whichever writer
+made the rest of it.
 
 `signari_organization_configuration` applies an organisation's configuration
 file, as `signari apply` does (see [config-as-code.md](../docs/config-as-code.md)).

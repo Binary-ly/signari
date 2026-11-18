@@ -124,6 +124,90 @@ type Group struct {
 	Name        string `yaml:"name"`
 	DisplayName string `yaml:"display_name"`
 	Description string `yaml:"description"`
+	// MemberOf is the groups this one is inside (11.09), the file's or the
+	// organisation's, so everybody in it is in those and every group above them.
+	// Left out, what the group is inside is left as it is; empty takes it out of
+	// all of them. A loop among them is refused.
+	MemberOf *[]string `yaml:"member_of,omitempty"`
+}
+
+// nestingLoop is a path of names that comes back to where it started through the
+// file's member_of, or nil when there is none. Depth first, in the file's order, so
+// the loop named is the same on every run.
+func nestingLoop(groups []Group) []string {
+	parents := map[string][]string{}
+	for _, g := range groups {
+		parents[g.Name] = g.memberOf()
+	}
+	const (
+		unseen = iota
+		onPath
+		done
+	)
+	state := map[string]int{}
+	var path []string
+	var visit func(string) []string
+	visit = func(name string) []string {
+		switch state[name] {
+		case onPath:
+			for i, n := range path {
+				if n == name {
+					return append(append([]string{}, path[i:]...), name)
+				}
+			}
+		case done:
+			return nil
+		}
+		state[name] = onPath
+		path = append(path, name)
+		for _, p := range parents[name] {
+			if loop := visit(p); loop != nil {
+				return loop
+			}
+		}
+		path = path[:len(path)-1]
+		state[name] = done
+		return nil
+	}
+	for _, g := range groups {
+		if loop := visit(g.Name); loop != nil {
+			return loop
+		}
+	}
+	return nil
+}
+
+// insideThroughFile is every group name reachable upward from name by the file's
+// member_of, without name itself, sorted. A group the file says nothing about ends the
+// walk there: what it is inside already, the database answers for.
+func insideThroughFile(groups []Group, name string) []string {
+	parents := map[string][]string{}
+	for _, g := range groups {
+		parents[g.Name] = g.memberOf()
+	}
+	seen := map[string]bool{name: true}
+	var out []string
+	queue := append([]string{}, parents[name]...)
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+		queue = append(queue, parents[n]...)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// memberOf is what the file says the group is inside, nil when it says nothing.
+func (g Group) memberOf() []string {
+	if g.MemberOf == nil {
+		return nil
+	}
+	return *g.MemberOf
 }
 
 // shownAs is the group's display name, its name when the file gives none, as
@@ -306,6 +390,24 @@ func (f *File) Validate() error {
 			add("groups[%d]: %q appears twice", i, g.Name)
 		}
 		seenGroup[g.Name] = true
+		seenParent := map[string]bool{}
+		for _, parent := range g.memberOf() {
+			switch {
+			case parent == "":
+				add("groups[%d]: member_of names a group with no name", i)
+			case parent == g.Name:
+				add("groups[%d]: %q is in its own member_of; a group cannot be inside itself", i, g.Name)
+			case seenParent[parent]:
+				add("groups[%d]: member_of names %q twice", i, parent)
+			}
+			seenParent[parent] = true
+		}
+	}
+	// A loop among the file's own nestings is refused here, where `signari plan`
+	// in CI sees it with no database; one closed through the organisation's
+	// existing nestings is refused by the database when the file is applied.
+	if loop := nestingLoop(f.Groups); loop != nil {
+		add("groups: member_of makes a loop, %s: each would be inside itself", strings.Join(loop, " -> "))
 	}
 
 	seenClient := map[string]bool{}
@@ -510,6 +612,11 @@ type Change struct {
 	Detail string
 	// Destructive marks a change that removes something.
 	Destructive bool
+	// Inside is, for a group the file puts inside others, every group it will be
+	// inside by the file's member_of, at any depth. A caller deciding whether the
+	// change grants what one of those groups grants -- impersonation -- asks of
+	// each, and the database answers for whatever is above them already.
+	Inside []string
 }
 
 // Plan is everything that would change.

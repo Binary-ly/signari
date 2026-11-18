@@ -81,6 +81,15 @@ func allReadRoutes() []readRoute {
 		{"GET /admin/groups/{groupID}/members", func(t *testing.T, s *Server) string {
 			return "/admin/groups/" + newDriftGroup(t, s) + "/members"
 		}},
+		// With one group inside it, so the item's schema is held to something.
+		{"GET /admin/groups/{groupID}/member-groups", func(t *testing.T, s *Server) string {
+			parent, child := newDriftGroup(t, s), newDriftGroup(t, s)
+			if _, err := s.db.Exec(context.Background(), `INSERT INTO core.group_parents (group_id, parent_id, org_id)
+				SELECT $1::uuid, $2::uuid, org_id FROM core.groups WHERE id = $2::uuid`, child, parent); err != nil {
+				t.Fatal(err)
+			}
+			return "/admin/groups/" + parent + "/member-groups"
+		}},
 		{"GET /admin/invitations", func(*testing.T, *Server) string { return "/admin/invitations" }},
 		{"GET /admin/me", func(*testing.T, *Server) string { return "/admin/me" }},
 		{"GET /admin/organizations", func(*testing.T, *Server) string { return "/admin/organizations" }},

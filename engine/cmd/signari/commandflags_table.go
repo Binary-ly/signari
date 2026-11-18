@@ -115,6 +115,7 @@ var commandFlags = map[string][]string{
 	"group impersonation":             {"grant", "group", "org"},
 	"group list":                      {"o"},
 	"group member":                    {"email-member", "group", "org", "remove"},
+	"group nest":                      {"group", "in", "org", "remove"},
 	"group release":                   {"client-id", "only", "org"},
 	"i18n keys":                       {"theme-dir"},
 	"i18n list":                       {"theme-dir"},

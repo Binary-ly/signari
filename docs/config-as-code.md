@@ -18,6 +18,8 @@ org: 25924b75-63ad-4dc3-bdeb-4791dcffbdbe
 groups:
   - name: platform
     display_name: Platform Engineering
+  - name: platform-oncall
+    member_of: [platform]       # its members are in platform too (groups.md)
 
 clients:
   - client_id: wiki
@@ -534,7 +536,9 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 
 ## What it covers
 
-Groups, OAuth/OIDC clients and their redirect URIs, SAML service providers and
+Groups and the groups each is inside (`member_of`: left out, a group stays where it is;
+`[]` takes it out of everything; a loop among the file's own is refused by `signari
+plan`, and see [groups.md](groups.md#groups-inside-groups)), OAuth/OIDC clients and their redirect URIs, SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, dynamic registration, the WebAuthn policy,

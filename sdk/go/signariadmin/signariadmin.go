@@ -211,6 +211,15 @@ type DeleteGroupsGroupIDResponse struct {
 	MembersRemoved int64  `json:"members_removed,omitempty"`
 }
 
+// DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse is a JSON object of the Admin API.
+type DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse struct {
+	Changed       bool   `json:"changed"`
+	ConfigVersion int64  `json:"config_version"`
+	GroupID       string `json:"group_id"`
+	Member        bool   `json:"member"`
+	MemberGroupID string `json:"member_group_id"`
+}
+
 // DeleteGroupsGroupIDMembersUserIDResponse is a JSON object of the Admin API.
 type DeleteGroupsGroupIDMembersUserIDResponse struct {
 	Changed       bool   `json:"changed"`
@@ -712,26 +721,40 @@ type GetGroupsResponse struct {
 
 // GetGroupsResponseGroupsItem is a JSON object of the Admin API.
 type GetGroupsResponseGroupsItem struct {
-	CreatedAt      string `json:"created_at"`
-	Description    string `json:"description"`
-	DisplayName    string `json:"display_name"`
-	ID             string `json:"id"`
-	MayImpersonate bool   `json:"may_impersonate"`
-	Name           string `json:"name"`
-	OrgID          string `json:"org_id"`
-	PosixGid       int64  `json:"posix_gid,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	Description    string   `json:"description"`
+	DisplayName    string   `json:"display_name"`
+	ID             string   `json:"id"`
+	MayImpersonate bool     `json:"may_impersonate"`
+	MemberOf       []string `json:"member_of"`
+	Name           string   `json:"name"`
+	OrgID          string   `json:"org_id"`
+	PosixGid       int64    `json:"posix_gid,omitempty"`
 }
 
 // GetGroupsGroupIDResponse is a JSON object of the Admin API.
 type GetGroupsGroupIDResponse struct {
-	CreatedAt      string `json:"created_at"`
-	Description    string `json:"description"`
-	DisplayName    string `json:"display_name"`
-	ID             string `json:"id"`
-	MayImpersonate bool   `json:"may_impersonate"`
-	Name           string `json:"name"`
-	OrgID          string `json:"org_id"`
-	PosixGid       int64  `json:"posix_gid,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	Description    string   `json:"description"`
+	DisplayName    string   `json:"display_name"`
+	ID             string   `json:"id"`
+	MayImpersonate bool     `json:"may_impersonate"`
+	MemberOf       []string `json:"member_of"`
+	Name           string   `json:"name"`
+	OrgID          string   `json:"org_id"`
+	PosixGid       int64    `json:"posix_gid,omitempty"`
+}
+
+// GetGroupsGroupIDMemberGroupsResponse is a JSON object of the Admin API.
+type GetGroupsGroupIDMemberGroupsResponse struct {
+	MemberGroups []GetGroupsGroupIDMemberGroupsResponseMemberGroupsItem `json:"member_groups"`
+}
+
+// GetGroupsGroupIDMemberGroupsResponseMemberGroupsItem is a JSON object of the Admin API.
+type GetGroupsGroupIDMemberGroupsResponseMemberGroupsItem struct {
+	AddedAt string `json:"added_at"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
 }
 
 // GetGroupsGroupIDMembersResponse is a JSON object of the Admin API.
@@ -3376,6 +3399,15 @@ type PutClientsClientIDIDJagAudiencesResponse struct {
 	ConfigVersion int64  `json:"config_version"`
 }
 
+// PutGroupsGroupIDMemberGroupsMemberGroupIDResponse is a JSON object of the Admin API.
+type PutGroupsGroupIDMemberGroupsMemberGroupIDResponse struct {
+	Changed       bool   `json:"changed"`
+	ConfigVersion int64  `json:"config_version"`
+	GroupID       string `json:"group_id"`
+	Member        bool   `json:"member"`
+	MemberGroupID string `json:"member_group_id"`
+}
+
 // PutGroupsGroupIDMembersUserIDResponse is a JSON object of the Admin API.
 type PutGroupsGroupIDMembersUserIDResponse struct {
 	Changed       bool   `json:"changed"`
@@ -4251,6 +4283,18 @@ func (c *Client) DeleteGroupsGroupID(ctx context.Context, groupID string, opts .
 	return &out, v, nil
 }
 
+// DeleteGroupsGroupIDMemberGroupsMemberGroupID is DELETE
+// /admin/groups/{groupID}/member-groups/{memberGroupID}: Take a group out of this one. Needs
+// groups:write. A target that may impersonate others also needs privileged-users:write.
+func (c *Client) DeleteGroupsGroupIDMemberGroupsMemberGroupID(ctx context.Context, groupID string, memberGroupID string, opts ...Option) (*DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse, int64, error) {
+	var out DeleteGroupsGroupIDMemberGroupsMemberGroupIDResponse
+	v, err := c.call(ctx, "DELETE", "/admin/groups/"+url.PathEscape(groupID)+"/member-groups/"+url.PathEscape(memberGroupID), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
 // DeleteGroupsGroupIDMembersUserID is DELETE /admin/groups/{groupID}/members/{userID}: Remove a
 // member. Needs groups:write. A target that may impersonate others also needs
 // privileged-users:write.
@@ -4888,6 +4932,17 @@ func (c *Client) GetGroups(ctx context.Context, opts ...Option) (*GetGroupsRespo
 func (c *Client) GetGroupsGroupID(ctx context.Context, groupID string, opts ...Option) (*GetGroupsGroupIDResponse, int64, error) {
 	var out GetGroupsGroupIDResponse
 	v, err := c.call(ctx, "GET", "/admin/groups/"+url.PathEscape(groupID), nil, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// GetGroupsGroupIDMemberGroups is GET /admin/groups/{groupID}/member-groups: List the groups
+// directly inside a group. Needs groups:read.
+func (c *Client) GetGroupsGroupIDMemberGroups(ctx context.Context, groupID string, opts ...Option) (*GetGroupsGroupIDMemberGroupsResponse, int64, error) {
+	var out GetGroupsGroupIDMemberGroupsResponse
+	v, err := c.call(ctx, "GET", "/admin/groups/"+url.PathEscape(groupID)+"/member-groups", nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}
@@ -6555,6 +6610,19 @@ func (c *Client) PutClientsClientIDGroupRelease(ctx context.Context, clientID st
 func (c *Client) PutClientsClientIDIDJagAudiences(ctx context.Context, clientID string, body PutClientsClientIDIDJagAudiencesRequest, opts ...Option) (*PutClientsClientIDIDJagAudiencesResponse, int64, error) {
 	var out PutClientsClientIDIDJagAudiencesResponse
 	v, err := c.call(ctx, "PUT", "/admin/clients/"+url.PathEscape(clientID)+"/id-jag-audiences", body, &out, opts)
+	if err != nil {
+		return nil, v, err
+	}
+	return &out, v, nil
+}
+
+// PutGroupsGroupIDMemberGroupsMemberGroupID is PUT
+// /admin/groups/{groupID}/member-groups/{memberGroupID}: Put a group inside this one, so its
+// members are in this one too. Needs groups:write. A target that may impersonate others also needs
+// privileged-users:write.
+func (c *Client) PutGroupsGroupIDMemberGroupsMemberGroupID(ctx context.Context, groupID string, memberGroupID string, opts ...Option) (*PutGroupsGroupIDMemberGroupsMemberGroupIDResponse, int64, error) {
+	var out PutGroupsGroupIDMemberGroupsMemberGroupIDResponse
+	v, err := c.call(ctx, "PUT", "/admin/groups/"+url.PathEscape(groupID)+"/member-groups/"+url.PathEscape(memberGroupID), nil, &out, opts)
 	if err != nil {
 		return nil, v, err
 	}

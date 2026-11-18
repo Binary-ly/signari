@@ -491,9 +491,8 @@ func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.I
 		       COALESCE(p.display_name,''), COALESCE(p.surname,''),
 		       COALESCE(p.given_name,''), p.posix_uid,
 		       COALESCE((SELECT array_agg(g.name ORDER BY g.name)
-		                   FROM core.group_members m
-		                   JOIN core.groups g ON g.id = m.group_id
-		                  WHERE m.user_id = p.id), '{}')
+		                   FROM core.groups_of(p.id) m
+		                   JOIN core.groups g ON g.id = m.group_id), '{}')
 		FROM page p
 		ORDER BY p.id`, args...)
 	if err != nil {

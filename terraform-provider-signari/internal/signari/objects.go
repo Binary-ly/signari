@@ -163,3 +163,20 @@ func (c *Client) IsMember(ctx context.Context, groupID, userID string) (bool, in
 		})
 	return found, version, err
 }
+
+// IsNested reports whether the group memberGroupID is directly inside groupID, from
+// the groups inside it, which the API lists whole.
+func (c *Client) IsNested(ctx context.Context, groupID, memberGroupID string) (bool, int64, error) {
+	found := false
+	version, err := c.List(ctx, "/admin/groups/"+url.PathEscape(groupID)+"/member-groups", "member_groups",
+		func(raw json.RawMessage) error {
+			var m struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &m) == nil && m.ID == memberGroupID {
+				found = true
+			}
+			return nil
+		})
+	return found, version, err
+}

@@ -80,6 +80,43 @@ func TestAnOrganisationDestroyRefusesAndSendsNothing(t *testing.T) {
 	}
 }
 
+// A group inside another is imported as <group_id>/<member_group_id>, read from the
+// groups inside the first, and gone from the state when the engine no longer has it.
+func TestANestingImportsAndIsForgottenWhenTakenOut(t *testing.T) {
+	var mu sync.Mutex
+	inside := `[{"id":"g2","name":"oncall","added_at":"2026-11-18T00:00:00Z"}]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("ETag", `"9"`)
+		if r.URL.Path == "/admin/groups/g1/member-groups" {
+			fmt.Fprintf(w, `{"member_groups":%s}`, inside)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	h := newHarness[groupMemberGroupModel](t, &groupMemberGroupResource{}, &providerData{client: &signari.Client{
+		Endpoint: srv.URL, Token: "t"}, conditional: true})
+	st, d := h.imported("g1/g2")
+	if d.HasError() {
+		t.Fatal(d)
+	}
+	if m := h.model(st); m.GroupID.ValueString() != "g1" || m.MemberGroupID.ValueString() != "g2" ||
+		m.ConfigVersion.ValueInt64() != 9 {
+		t.Errorf("imported %+v", m)
+	}
+	if _, d := h.imported("g1"); !d.HasError() {
+		t.Error("an import id with no member group was taken")
+	}
+	mu.Lock()
+	inside = `[]`
+	mu.Unlock()
+	if gone, d := h.imported("g1/g2"); d.HasError() || !gone.Raw.IsNull() {
+		t.Errorf("a nesting the engine no longer has stayed in the state: %v", d)
+	}
+}
+
 // A membership is imported as <group_id>/<user_id>, and anything else is
 // refused rather than half-read.
 func TestAMembershipImportsByGroupAndUser(t *testing.T) {

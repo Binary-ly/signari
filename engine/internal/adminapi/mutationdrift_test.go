@@ -1760,6 +1760,20 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/groups/{groupID}/member-groups/{memberGroupID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/member-groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/member-groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "DELETE /admin/users/{userID}/sessions", method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/users/" + newDriftUser(t, s) + "/sessions"

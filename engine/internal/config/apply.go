@@ -66,6 +66,22 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading the groups: %w", err)
 	}
+	// What each group is inside (11.09), every group given a list, empty for none,
+	// so a file's member_of is compared with what is there and not with nothing.
+	for name, g := range c.groups {
+		none := []string{}
+		g.MemberOf = &none
+		c.groups[name] = g
+	}
+	nestings, err := store.GroupNestings(ctx, tx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("reading what the groups are inside: %w", err)
+	}
+	for _, n := range nestings {
+		if g, ok := c.groups[n.Group]; ok {
+			*g.MemberOf = append(*g.MemberOf, n.Parent)
+		}
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
@@ -258,12 +274,36 @@ func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune 
 
 	for _, g := range f.Groups {
 		have, ok := cur.groups[g.Name]
+		// What it is to be inside, when the file says: each the organisation's or
+		// the file's own, and different from what it is inside now.
+		var nests bool
+		var inside []string
+		if want := g.memberOf(); g.MemberOf != nil {
+			missing, err := missingGroups(ctx, tx, orgID, f, prune, want)
+			if err != nil {
+				return nil, err
+			}
+			if len(missing) > 0 {
+				return nil, refuse("group %s: member_of names %s, which the organisation does not have; "+
+					"declare it in groups", g.Name, strings.Join(missing, ", "))
+			}
+			nests = !sameSet(have.memberOf(), want)
+			if nests && len(want) > 0 {
+				inside = insideThroughFile(f.Groups, g.Name)
+			}
+		}
 		switch {
 		case !ok:
-			p.Add(Change{Action: "create", Kind: "group", Name: g.Name})
+			p.Add(Change{Action: "create", Kind: "group", Name: g.Name, Inside: inside})
 		case have.DisplayName != g.shownAs() || have.Description != g.Description:
+			detail := "display name or description"
+			if nests {
+				detail += ", and the groups it is inside"
+			}
+			p.Add(Change{Action: "update", Kind: "group", Name: g.Name, Detail: detail, Inside: inside})
+		case nests:
 			p.Add(Change{Action: "update", Kind: "group", Name: g.Name,
-				Detail: "display name or description"})
+				Detail: "the groups it is inside: " + strings.Join(sortedCopy(g.memberOf()), ", "), Inside: inside})
 		}
 	}
 
@@ -647,6 +687,9 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			orgID, g.Name, g.shownAs(), g.Description); err != nil {
 			return fmt.Errorf("group %q: %w", g.Name, err)
 		}
+	}
+	if err := applyNestings(ctx, tx, orgID, f, planned); err != nil {
+		return err
 	}
 
 	for _, cl := range f.Clients {

@@ -15,7 +15,7 @@ import (
 // declaredBy is the kind a table's rows are written by.
 var declaredBy = map[string]string{
 	"access_policies": "access_policy", "claim_mappers": "claim_mapper", "clients": "client",
-	"event_subscriptions": "event_subscription", "groups": "group", "identity_providers": "identity_provider",
+	"event_subscriptions": "event_subscription", "groups": "group", "group_parents": "group", "identity_providers": "identity_provider",
 	"idp_attribute_map": "identity_provider", "idp_group_map": "identity_provider", "saml_sources": "identity_provider", "prompts": "prompt",
 	"providers": "provider", "proxy_hosts": "proxy_host", "rac_connections": "rac_connection",
 	"radius_clients": "radius_client", "resource_servers": "resource", "saml_providers": "saml_provider",

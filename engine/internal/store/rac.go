@@ -98,9 +98,9 @@ func ListRACConnections(ctx context.Context, db *pgxpool.Pool, orgID, userID str
 		FROM core.rac_connections c
 		WHERE c.org_id = $1::uuid AND c.enabled
 		  AND (c.require_group IS NULL OR EXISTS (
-		        SELECT 1 FROM core.group_members gm
+		        SELECT 1 FROM core.groups_of($2::uuid) gm
 		        JOIN core.groups g ON g.id = gm.group_id
-		        WHERE gm.user_id = $2::uuid AND g.name = c.require_group))
+		        WHERE g.name = c.require_group AND g.org_id = c.org_id))
 		ORDER BY c.display_name`, orgID, userID)
 	if err != nil {
 		return nil, err
@@ -136,9 +136,9 @@ func MayUse(ctx context.Context, db *pgxpool.Pool, c *RACConnection, userID stri
 	var ok bool
 	err := db.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM core.group_members gm
+			SELECT 1 FROM core.groups_of($1::uuid) gm
 			JOIN core.groups g ON g.id = gm.group_id
-			WHERE gm.user_id = $1::uuid AND g.name = $2 AND g.org_id = $3::uuid)`,
+			WHERE g.name = $2 AND g.org_id = $3::uuid)`,
 		userID, c.RequireGroup, c.OrgID).Scan(&ok)
 	return ok, err
 }

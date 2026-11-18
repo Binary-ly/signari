@@ -43,15 +43,20 @@ type groupSummary struct {
 	MayImpersonate bool   `json:"may_impersonate"`
 	CreatedAt      string `json:"created_at"`
 	PosixGID       int    `json:"posix_gid"`
+	// MemberOf is the ids of the groups this one is directly inside (11.09), so
+	// everybody in it is in those and every group above them.
+	MemberOf []string `json:"member_of"`
 }
 
 const groupColumns = `id::text, org_id::text, name, display_name,
 	coalesce(description, ''), may_impersonate,
-	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), posix_gid`
+	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), posix_gid,
+	ARRAY(SELECT n.parent_id::text FROM core.group_parents n WHERE n.group_id = core.groups.id
+	       ORDER BY n.group_id, n.parent_id)`
 
 func scanGroup(row pgx.Row, g *groupSummary) error {
 	return row.Scan(&g.ID, &g.OrgID, &g.Name, &g.DisplayName, &g.Description,
-		&g.MayImpersonate, &g.CreatedAt, &g.PosixGID)
+		&g.MayImpersonate, &g.CreatedAt, &g.PosixGID, &g.MemberOf)
 }
 
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {

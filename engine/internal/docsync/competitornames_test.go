@@ -92,6 +92,7 @@ func TestNoCompetitorIsNamedInAPublishedFile(t *testing.T) {
 		"PROGRESS.md",
 		"CLAUDE.md",
 		"deploy/benchmark/",
+		"tools/bench/rival_",
 		"specs/",
 	}
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,9 @@ type discovery struct {
 type env struct {
 	cfg *config
 	md  discovery
+	// passkey, when set, is what a flow-driven sign-in answers a passkey challenge with
+	// (a flow's first stage may offer one beside the name).
+	passkey *softPasskey
 }
 
 func discoveryURL(issuer string) string {
@@ -232,7 +236,7 @@ var scenarios = map[string]scenario{
 			return func(ctx context.Context) error {
 				n := int(nextPerson.Add(1))%e.cfg.People + 1
 				body, err := postForm(ctx, hc, e.md.BackchannelEndpoint, e.cfg, url.Values{"scope": {"openid"},
-					"login_hint": {fmt.Sprintf("bench-%d@%s", n, benchDomain)}})
+					"login_hint": {personName(e.cfg, n)}})
 				if err != nil {
 					return err
 				}
@@ -256,8 +260,18 @@ var scenarios = map[string]scenario{
 			hc := httpClient(e.cfg)
 			return func(ctx context.Context) error {
 				now := time.Now()
-				assertion, err := signES256(key, map[string]any{
-					"iss": e.cfg.AssertionIssuer, "sub": e.cfg.AssertionSubject, "aud": e.cfg.Issuer,
+				kid := e.cfg.AssertionKID
+				if kid == "" {
+					kid = signingKID
+				}
+				// The issuer names the authorization server (RFC 7523 §3); one provider
+				// accepts only its token endpoint's URL, which §3 says MAY be used.
+				audience := e.cfg.AssertionAudience
+				if audience == "" {
+					audience = e.cfg.Issuer
+				}
+				assertion, err := signES256As(key, kid, map[string]any{
+					"iss": e.cfg.AssertionIssuer, "sub": e.cfg.AssertionSubject, "aud": audience,
 					"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "jti": randomString(16),
 				})
 				if err != nil {
@@ -307,8 +321,17 @@ var scenarios = map[string]scenario{
 			// A person of its own, past those -people names: a passkey is a second
 			// factor, so a second worker's password sign-in would be asked for one.
 			person := *e.cfg
-			person.Username = fmt.Sprintf("bench-%d@%s", e.cfg.People+int(nextWorker.Add(1)), benchDomain)
-			key, err := enrolPasskey(ctx, hc, &env{cfg: &person, md: e.md})
+			person.Username = personName(e.cfg, e.cfg.People+int(nextWorker.Add(1)))
+			d, err := driverFor(e.cfg)
+			if err != nil {
+				return nil, err
+			}
+			enrol, use := enrolPasskey, (*softPasskey).signIn
+			if d.enrol != nil {
+				enrol, use = d.enrol, d.passkey
+			}
+			self := &env{cfg: &person, md: e.md}
+			key, err := enrol(ctx, hc, self)
 			if err != nil {
 				return nil, fmt.Errorf("enrolling a passkey: %w", err)
 			}
@@ -319,15 +342,21 @@ var scenarios = map[string]scenario{
 				}
 				fresh := *hc
 				fresh.Jar = jar
-				return key.signIn(ctx, &fresh, e)
+				// Usernameless where the product allows it; where it asks for the name
+				// first, the worker's own person's.
+				return use(key, ctx, &fresh, self)
 			}, nil
 		},
 	},
 	"mfa": {
 		help: "spend a TOTP code at sign-in, -people taking turns as a code is good once; the password is outside the latency", needsDiscovery: true,
 		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
-			if e.cfg.TOTPSeed == "" || e.cfg.People < 1 {
-				return nil, fmt.Errorf("give -totp-seed and -people")
+			if (e.cfg.TOTPSeed == "" && e.cfg.TOTPSeeds == "") || e.cfg.People < 1 {
+				return nil, fmt.Errorf("give -totp-seed or -totp-seeds, and -people")
+			}
+			seeds, err := readSeeds(e.cfg.TOTPSeeds)
+			if err != nil {
+				return nil, err
 			}
 			hc := httpClient(e.cfg)
 			return func(ctx context.Context) error {
@@ -338,7 +367,12 @@ var scenarios = map[string]scenario{
 				fresh := *hc
 				fresh.Jar = jar
 				person := *e.cfg
-				person.Username = fmt.Sprintf("bench-%d@%s", int(nextPerson.Add(1))%e.cfg.People+1, benchDomain)
+				person.Username = personName(e.cfg, int(nextPerson.Add(1))%e.cfg.People+1)
+				if seeds != nil {
+					if person.TOTPSeed = seeds[person.Username]; person.TOTPSeed == "" {
+						return fmt.Errorf("-totp-seeds has no secret for %s", person.Username)
+					}
+				}
 				tok, err := signIn(ctx, &fresh, &env{cfg: &person, md: e.md})
 				if err != nil {
 					return err
@@ -356,8 +390,18 @@ var scenarios = map[string]scenario{
 			if e.md.EndSessionEndpoint == "" {
 				return nil, fmt.Errorf("the provider advertises no end session endpoint")
 			}
-			hc := httpClient(e.cfg)
+			base := httpClient(e.cfg)
 			return func(ctx context.Context) error {
+				// A browser of its own for each person, signed in and then out: one browser
+				// passed from person to person is offered an account picker by a provider
+				// that remembers who used it, which is not what is measured.
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					return err
+				}
+				fresh := *base
+				fresh.Jar = jar
+				hc := &fresh
 				var tok tokenResponse
 				if err := outside(ctx, func() (err error) {
 					tok, err = signIn(ctx, hc, asNextPerson(e))
@@ -368,19 +412,42 @@ var scenarios = map[string]scenario{
 				if tok.IDToken == "" {
 					return fmt.Errorf("the sign-in issued no ID token; ask for openid with -scope")
 				}
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.md.EndSessionEndpoint+"?"+url.Values{
-					"id_token_hint": {tok.IDToken}, "client_id": {e.cfg.ClientID}}.Encode(), nil)
+				at, err := url.Parse(e.md.EndSessionEndpoint + "?" + url.Values{
+					"id_token_hint": {tok.IDToken}, "client_id": {e.cfg.ClientID}}.Encode())
 				if err != nil {
 					return err
 				}
-				status, body, err := doStatus(hc, req)
-				if err != nil {
-					return err
+				// A provider may end the session on a page it redirects to rather than at the
+				// endpoint, so the browser follows it while it stays on the provider's host,
+				// as a person's would; leaving that host is the sign-out done.
+				for hop := 0; hop < 5; hop++ {
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, at.String(), nil)
+					if err != nil {
+						return err
+					}
+					resp, err := hc.Do(req)
+					if err != nil {
+						return err
+					}
+					body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+					_ = resp.Body.Close()
+					traceHop(hop, req, resp, body)
+					if resp.StatusCode >= 400 {
+						return fmt.Errorf("the sign-out at %s answered %d: %s", at.Path, resp.StatusCode, trim(body))
+					}
+					if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+						return nil
+					}
+					next, err := at.Parse(resp.Header.Get("Location"))
+					if err != nil {
+						return err
+					}
+					if next.Host != at.Host {
+						return nil
+					}
+					at = next
 				}
-				if status >= 400 {
-					return fmt.Errorf("the sign-out answered %d: %s", status, trim(body))
-				}
-				return nil
+				return fmt.Errorf("the sign-out was still redirecting after five hops")
 			}, nil
 		},
 	},
@@ -416,8 +483,23 @@ var scenarios = map[string]scenario{
 				return nil, fmt.Errorf("give -admin")
 			}
 			hc := httpClient(e.cfg)
+			list := e.cfg.AdminList
+			if list == "" {
+				list = signariAdminList
+			}
+			at := strings.TrimRight(e.cfg.AdminURL, "/") + list
 			return func(ctx context.Context) error {
-				_, err := get(ctx, hc, strings.TrimRight(e.cfg.AdminURL, "/")+"/admin/users?limit=100", e.cfg.AdminToken)
+				if e.cfg.AdminListBody == "" {
+					_, err := get(ctx, hc, at, e.cfg.AdminToken)
+					return err
+				}
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, at, strings.NewReader(e.cfg.AdminListBody))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+e.cfg.AdminToken)
+				_, err = do(hc, req)
 				return err
 			}, nil
 		},
@@ -598,12 +680,44 @@ type tokenResponse struct {
 // asNextPerson is e signing in as the next of -signin-people when that is given, and
 // as -username otherwise. Sixteen workers each signing one account in at once, or
 // one after another for minutes, are throttled by design.
+// readSeeds reads -totp-seeds, a line per person of their sign-in name and their TOTP
+// secret in base32, for a product that makes each person's secret itself when they enrol.
+// Empty, it is nil and -totp-seed serves everybody.
+func readSeeds(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- a file the operator of the bench names
+	if err != nil {
+		return nil, fmt.Errorf("-totp-seeds: %w", err)
+	}
+	seeds := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if name, seed, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+			seeds[name] = strings.TrimSpace(seed)
+		}
+	}
+	if len(seeds) == 0 {
+		return nil, fmt.Errorf("-totp-seeds: no line of a name and a secret in %s", path)
+	}
+	return seeds, nil
+}
+
+// personName is the n'th person's sign-in name, by -person: bench-n@bench.invalid, as
+// `bench seed` makes them, unless a product's people for a scenario are named apart.
+func personName(c *config, n int) string {
+	if c.PersonFormat == "" {
+		return fmt.Sprintf("bench-%d@%s", n, benchDomain)
+	}
+	return fmt.Sprintf(c.PersonFormat, n)
+}
+
 func asNextPerson(e *env) *env {
 	if e.cfg.SignInPeople < 1 {
 		return e
 	}
 	person := *e.cfg
-	person.Username = fmt.Sprintf("bench-%d@%s", int(nextPerson.Add(1))%e.cfg.SignInPeople+1, benchDomain)
+	person.Username = personName(e.cfg, int(nextPerson.Add(1))%e.cfg.SignInPeople+1)
 	next := *e
 	next.cfg = &person
 	return &next
@@ -631,7 +745,10 @@ var nextPerson, nextWorker atomic.Int64
 
 // startDevice starts a device authorization and answers its device code.
 func startDevice(ctx context.Context, hc *http.Client, e *env) (string, error) {
-	body, err := postForm(ctx, hc, e.md.DeviceEndpoint, e.cfg, url.Values{"scope": {"openid"}})
+	// client_id is sent even when the client authenticates, which RFC 8628 §3.1 allows and
+	// most device clients do; one provider refuses a start without it (E.21).
+	body, err := postForm(ctx, hc, e.md.DeviceEndpoint, e.cfg, url.Values{"scope": {"openid"},
+		"client_id": {e.cfg.ClientID}})
 	if err != nil {
 		return "", err
 	}

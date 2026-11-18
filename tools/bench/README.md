@@ -102,6 +102,37 @@ Those two have no scenario here, as each is one long run and not many short ones
 the command. `bench totp <seed>` prints the code a seed gives now, for a script
 enrolling the people of the `mfa` scenario, as `user assign-otp` asks for one.
 
+The directory answers what it is asked: a search for particular people (by `uid`,
+`entryUUID`, `mail` or `cn`) finds those people, a search for anything that is not a
+person finds nobody, a base search of `""` reads its root DSE, and an unpaged search
+stops at its size limit with `sizeLimitExceeded`. Only a search for everybody walks it.
+
+## Another provider's pages
+
+`-driver` names whose sign-in pages `signin`, `mfa`, `federated`, `passkey`,
+`end-session` and `token-exchange` fill in: `signari`, the default, or a driver of
+another provider's pages. Such a driver is a file of its own that adds itself to the
+bench at init: which fields its forms take, how it allows consent, how it finds an
+upstream provider's link, and, where its pages are a front end to an API or its passkeys
+are registered somewhere other than an account page, the hooks that do those (`driver`
+in `signin.go`). Each walks the product's own pages as a browser would, and a run that
+did not do the thing fails rather than reports a number. `BENCH_TRACE=1` prints every
+hop of a sign-in and every search the directory is sent, which is how a driver is
+written.
+
+What differs between products is given as flags rather than assumed:
+
+| flag | for |
+|---|---|
+| `-person mfa-%d@bench.invalid` | people named apart from `bench-N`, where a product has no realms to keep its MFA or passkey people apart in |
+| `-totp-seeds <file>` | a line per person of name and base32 secret, where a product makes each person's secret when they enrol |
+| `-admin-list <path>`, `-admin-list-body <json>` | where a product's administrative API lists people, and the query it takes as a body |
+| `-assertion-kid`, `-assertion-audience` | the key id a product named the assertion key by, and the audience it insists on (one takes only its token endpoint's URL, which RFC 7523 §3 allows) |
+
+A passkey cell enrols each worker's person through the product's own registration (an
+account page, a required action, a registration link or a setup flow), so a person
+enrolled once is not enrolled again: give each run people of its own with `-people`.
+
 ## Making a measurement worth comparing
 
 - **Same budget.** Give the server and its database one CPU limit between them.

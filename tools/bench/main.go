@@ -85,11 +85,23 @@ func dispatch(args []string) error {
 		}
 		return nil
 	}
+	if command, ok := commands[args[0]]; ok {
+		return command(args[1:])
+	}
 	return fmt.Errorf("unknown command %q: run, seed, upstream or scenarios", args[0])
 }
 
+// commands are further commands a file of its own adds at init, as a driver of another
+// provider's pages does (signin.go's drivers).
+var commands = map[string]func([]string) error{}
+
+// signariAdminList is a page of the Admin API's people, which admin-list reads by default.
+const signariAdminList = "/admin/users?limit=100"
+
 // config is everything a scenario may need. Most use a handful of fields.
 type config struct {
+	// Driver names the product whose sign-in pages a scenario fills in (signin.go).
+	Driver                                             string
 	Issuer, ClientID, ClientSecret, RedirectURI, Scope string
 	CCScope                                            string
 	Username, Password                                 string
@@ -97,6 +109,9 @@ type config struct {
 	RADIUSAddr, RADIUSSecret                           string
 	SCIMURL, SCIMToken, PDPURL, PDPToken               string
 	AdminURL, AdminToken                               string
+	AdminList, AdminListBody                           string
+	PersonFormat, AssertionKID, TOTPSeeds              string
+	AssertionAudience                                  string
 	AuthZENBody, Via, TOTPSeed                         string
 	AssertionKey, AssertionIssuer, AssertionSubject    string
 	Concurrency, People, SignInPeople                  int
@@ -133,6 +148,12 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.SCIMToken, "scim-token", "", "bearer token for SCIM")
 	fs.StringVar(&c.AdminURL, "admin", "", "the Admin API's base URL, e.g. https://127.0.0.1:8090")
 	fs.StringVar(&c.AdminToken, "admin-token", "", "bearer token for the Admin API")
+	// Another product's administrative API lists its people elsewhere, and one of them
+	// takes the page it wants as a JSON query rather than in the URL (E.21).
+	fs.StringVar(&c.AdminList, "admin-list", signariAdminList, "admin-list's path under -admin")
+	fs.StringVar(&c.AdminListBody, "admin-list-body", "", "a JSON body to POST to it; empty is a GET")
+	// A product with no realms keeps its MFA people apart from its password people by name.
+	fs.StringVar(&c.PersonFormat, "person", "", "the n'th person's sign-in name, %d the number (bench-%d@bench.invalid when empty)")
 	fs.StringVar(&c.PDPURL, "pdp", "", "AuthZEN PDP base URL (defaults to -issuer)")
 	fs.StringVar(&c.PDPToken, "pdp-token", "", "bearer token for the PDP")
 	fs.StringVar(&c.AuthZENBody, "authzen-body", `{"subject":{"type":"user","id":"bench"},`+
@@ -141,10 +162,14 @@ func runCommand(args []string) error {
 	fs.IntVar(&c.SignInPeople, "signin-people", 0, "signin, and the sign-in each worker of refresh, userinfo, token-exchange "+
 		"and end-session makes, take turns through this many seeded people instead of -username; see `bench seed`")
 	fs.StringVar(&c.Via, "via", "", "the slug of the upstream provider to sign in through (federated)")
+	fs.StringVar(&c.Driver, "driver", "signari", "whose sign-in pages to fill in: signari, or a driver of another provider's pages that a file of its own adds")
 	fs.StringVar(&c.TOTPSeed, "totp-seed", "", "the base32 seed the -people hold, each as `user assign-otp` gave it (mfa)")
+	fs.StringVar(&c.TOTPSeeds, "totp-seeds", "", "a file of a line per person, their name and base32 seed, where each has their own (mfa)")
 	fs.StringVar(&c.AssertionKey, "assertion-key", "", "PKCS#8 P-256 key that signs assertions (jwt-bearer)")
 	fs.StringVar(&c.AssertionIssuer, "assertion-issuer", "", "the assertions' iss")
 	fs.StringVar(&c.AssertionSubject, "assertion-subject", "", "the assertions' sub, linked to a person")
+	fs.StringVar(&c.AssertionKID, "assertion-kid", "", "the assertions' kid, where the provider named the key (the upstream's when empty)")
+	fs.StringVar(&c.AssertionAudience, "assertion-audience", "", "the assertions' aud (-issuer when empty; a token endpoint's URL where only that is taken)")
 	fs.IntVar(&c.Concurrency, "c", 8, "concurrent workers")
 	fs.DurationVar(&c.Duration, "d", 20*time.Second, "measured duration per scenario")
 	fs.DurationVar(&c.Warmup, "warmup", 5*time.Second, "unmeasured run before each scenario")

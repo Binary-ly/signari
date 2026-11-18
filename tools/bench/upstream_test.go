@@ -181,6 +181,92 @@ func TestTheUpstreamDirectoryPagesToTheEnd(t *testing.T) {
 	}
 }
 
+// A client that reads the root DSE before it syncs, as one does on connecting, gets the
+// directory's description of itself, and a read of any other single entry finds nothing:
+// the directory once answered both with all of its people.
+func TestTheUpstreamDirectoryDescribesItselfAndNoOneElse(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() { _ = serveDirectory(l, 25) }()
+	conn, err := ldap.DialURL("ldap://" + l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	root, err := conn.Search(ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases,
+		0, 0, false, "(objectClass=*)", []string{"*", "+"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Entries) != 1 || root.Entries[0].GetAttributeValue("supportedControl") != ldap.ControlTypePaging ||
+		root.Entries[0].GetAttributeValue("namingContexts") != "dc=load,dc=test" {
+		t.Fatalf("the root DSE read as %d entries: %+v", len(root.Entries), root.Entries)
+	}
+	one, err := conn.Search(ldap.NewSearchRequest("cn=Subschema", ldap.ScopeBaseObject, ldap.NeverDerefAliases,
+		0, 0, false, "(objectClass=*)", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Entries) != 0 {
+		t.Fatalf("a read of one entry that is not here found %d", len(one.Entries))
+	}
+}
+
+// A directory answers the search it is sent: a person looked up by name is that person, a
+// search for groups finds none here, a search for everybody with a name is everybody, and an
+// unpaged search stops at its size limit, saying so. It once sent all of its people to each,
+// and a product that lists people through a federated directory read 100,000 a page.
+func TestTheUpstreamDirectoryAnswersTheSearchItIsSent(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() { _ = serveDirectory(l, 25) }()
+	conn, err := ldap.DialURL("ldap://" + l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	search := func(filter string, limit int) (*ldap.SearchResult, error) {
+		return conn.Search(ldap.NewSearchRequest("dc=load,dc=test", ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+			limit, 0, false, filter, []string{"uid", "entryUUID"}, nil))
+	}
+	for filter, want := range map[string][]string{
+		"(&(objectClass=inetOrgPerson)(uid=dir-7))":        {"dir-7"},
+		"(entryUUID=00000000-0000-4000-8000-000000000012)": {"dir-12"},
+		"(|(uid=dir-3)(mail=dir-4@" + benchDomain + "))":   {"dir-3", "dir-4"},
+		"(uid=dir-26)":                          nil,
+		"(objectClass=groupOfNames)":            nil,
+		"(&(objectClass=inetOrgPerson)(uid=*))": nil, // everybody, below
+	} {
+		res, err := search(filter, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", filter, err)
+		}
+		var got []string
+		for _, e := range res.Entries {
+			got = append(got, e.GetAttributeValue("uid"))
+		}
+		if filter == "(&(objectClass=inetOrgPerson)(uid=*))" {
+			if len(got) != 25 {
+				t.Errorf("%s found %d, not everybody", filter, len(got))
+			}
+			continue
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s found %v, not %v", filter, got, want)
+		}
+	}
+	res, err := search("(objectClass=inetOrgPerson)", 10)
+	if !ldap.IsErrorWithCode(err, ldap.LDAPResultSizeLimitExceeded) || res == nil || len(res.Entries) != 10 {
+		t.Fatalf("a search limited to 10 of 25: %v, %v", err, res)
+	}
+}
+
 // RFC 4226 Appendix D's first two vectors, the secret "12345678901234567890", which is
 // what the TOTP scenario's codes are computed by.
 func TestAnHOTPCodeIsWhatAnAppWouldShow(t *testing.T) {

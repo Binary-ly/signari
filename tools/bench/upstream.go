@@ -145,6 +145,10 @@ func (u *upstream) token(w http.ResponseWriter, r *http.Request) {
 		"iss": u.issuer, "sub": "upstream-" + person, "aud": audience, "iat": now.Unix(),
 		"exp": now.Add(5 * time.Minute).Unix(), "nonce": nonce,
 		"email": "upstream-" + person + "@" + benchDomain, "email_verified": true,
+		// The profile scope's names, which a provider that creates people from an
+		// upstream on their first sign-in needs to make one (E.21).
+		"given_name": "Upstream", "family_name": "Person " + person,
+		"preferred_username": "upstream-" + person,
 	})
 	if err != nil {
 		http.Error(w, "signing", http.StatusInternalServerError)
@@ -265,9 +269,15 @@ func readSigningKey(path string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// signES256 is a compact JWS (RFC 7515) over claims.
+// signES256 is a compact JWS (RFC 7515) over claims, under the upstream's key id.
 func signES256(key *ecdsa.PrivateKey, claims map[string]any) (string, error) {
-	head, err := json.Marshal(map[string]string{"alg": "ES256", "typ": "JWT", "kid": signingKID})
+	return signES256As(key, signingKID, claims)
+}
+
+// signES256As is the same under the key id kid: a provider that registers an assertion's
+// key itself names it, and finds it by that name (E.21).
+func signES256As(key *ecdsa.PrivateKey, kid string, claims map[string]any) (string, error) {
+	head, err := json.Marshal(map[string]string{"alg": "ES256", "typ": "JWT", "kid": kid})
 	if err != nil {
 		return "", err
 	}

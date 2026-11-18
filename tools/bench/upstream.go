@@ -32,12 +32,128 @@ type upstream struct {
 	key    *ecdsa.PrivateKey
 	people int
 
-	next                      atomic.Int64
-	tokens, created, replaced atomic.Int64
+	next                               atomic.Int64
+	tokens, created, replaced, deleted atomic.Int64
 
 	mu    sync.Mutex
 	users map[string]map[string]any
 	order []string
+
+	groups scimGroups
+}
+
+// scimGroups are the groups a SCIM client has made at this target, kept as sent.
+type scimGroups struct {
+	created, changed atomic.Int64
+
+	mu    sync.Mutex
+	byID  map[string]map[string]any
+	order []string
+}
+
+var displayNameFilter = regexp.MustCompile(`displayName eq "([^"]*)"`)
+
+func (g *scimGroups) list(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	page := []map[string]any{}
+	m := displayNameFilter.FindStringSubmatch(r.URL.Query().Get("filter"))
+	for _, id := range g.order {
+		if m == nil || g.byID[id]["displayName"] == m[1] {
+			page = append(page, g.byID[id])
+		}
+		if len(page) == 100 {
+			break
+		}
+	}
+	writeUpstreamJSON(w, http.StatusOK, map[string]any{
+		"schemas":      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
+		"totalResults": len(page), "startIndex": 1, "itemsPerPage": len(page), "Resources": page,
+	})
+}
+
+func (g *scimGroups) create(w http.ResponseWriter, r *http.Request) {
+	var group map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
+		http.Error(w, "not JSON", http.StatusBadRequest)
+		return
+	}
+	id := randomString(12)
+	group["id"] = id
+	g.mu.Lock()
+	if g.byID == nil {
+		g.byID = map[string]map[string]any{}
+	}
+	g.byID[id] = group
+	g.order = append(g.order, id)
+	g.mu.Unlock()
+	g.created.Add(1)
+	writeUpstreamJSON(w, http.StatusCreated, group)
+}
+
+func (g *scimGroups) get(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	group, ok := g.byID[r.PathValue("id")]
+	g.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeUpstreamJSON(w, http.StatusOK, group)
+}
+
+func (g *scimGroups) replace(w http.ResponseWriter, r *http.Request) {
+	var group map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
+		http.Error(w, "not JSON", http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	group["id"] = id
+	g.mu.Lock()
+	_, ok := g.byID[id]
+	if ok {
+		g.byID[id] = group
+	}
+	g.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	g.changed.Add(1)
+	writeUpstreamJSON(w, http.StatusOK, group)
+}
+
+// patch takes a change to a group's members (RFC 7644 §3.5.2), which it counts and does not
+// apply: what a sync is measured doing is sending them, not this target keeping score.
+func (g *scimGroups) patch(w http.ResponseWriter, r *http.Request) {
+	var ops map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&ops); err != nil {
+		http.Error(w, "not JSON", http.StatusBadRequest)
+		return
+	}
+	g.mu.Lock()
+	_, ok := g.byID[r.PathValue("id")]
+	g.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	g.changed.Add(1)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (g *scimGroups) remove(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	_, ok := g.byID[r.PathValue("id")]
+	delete(g.byID, r.PathValue("id"))
+	g.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	g.changed.Add(1)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func upstreamCommand(args []string) error {
@@ -102,9 +218,33 @@ func (u *upstream) routes() http.Handler {
 	mux.HandleFunc("GET /scim/v2/Users/{id}", u.getUser)
 	mux.HandleFunc("PUT /scim/v2/Users/{id}", u.replaceUser)
 	mux.HandleFunc("PATCH /scim/v2/Users/{id}", u.replaceUser)
+	mux.HandleFunc("DELETE /scim/v2/Users/{id}", u.deleteUser)
+	// Groups, as a real target keeps them: a client that provisions groups beside people
+	// stops at the first group a target cannot take (E.21).
+	mux.HandleFunc("GET /scim/v2/Groups", u.groups.list)
+	mux.HandleFunc("POST /scim/v2/Groups", u.groups.create)
+	mux.HandleFunc("GET /scim/v2/Groups/{id}", u.groups.get)
+	mux.HandleFunc("PUT /scim/v2/Groups/{id}", u.groups.replace)
+	mux.HandleFunc("PATCH /scim/v2/Groups/{id}", u.groups.patch)
+	mux.HandleFunc("DELETE /scim/v2/Groups/{id}", u.groups.remove)
+	// What this target does (RFC 7644 §4), which a client reads before it syncs.
+	mux.HandleFunc("GET /scim/v2/ServiceProviderConfig", func(w http.ResponseWriter, _ *http.Request) {
+		writeUpstreamJSON(w, http.StatusOK, map[string]any{
+			"schemas":        []string{"urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"},
+			"patch":          map[string]bool{"supported": true},
+			"bulk":           map[string]any{"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
+			"filter":         map[string]any{"supported": true, "maxResults": 100},
+			"changePassword": map[string]bool{"supported": false},
+			"sort":           map[string]bool{"supported": false},
+			"etag":           map[string]bool{"supported": false},
+			"authenticationSchemes": []map[string]string{{"type": "oauthbearertoken", "name": "OAuth Bearer Token",
+				"description": "a bearer token, any token"}},
+		})
+	})
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, _ *http.Request) {
 		writeUpstreamJSON(w, http.StatusOK, map[string]int64{"tokens": u.tokens.Load(),
-			"created": u.created.Load(), "replaced": u.replaced.Load()})
+			"created": u.created.Load(), "replaced": u.replaced.Load(), "deleted": u.deleted.Load(),
+			"groups": u.groups.created.Load(), "group_changes": u.groups.changed.Load()})
 	})
 	return mux
 }
@@ -238,6 +378,28 @@ func (u *upstream) replaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u.replaced.Add(1)
 	writeUpstreamJSON(w, http.StatusOK, user)
+}
+
+func (u *upstream) deleteUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	u.mu.Lock()
+	_, ok := u.users[id]
+	if ok {
+		delete(u.users, id)
+		for i, o := range u.order {
+			if o == id {
+				u.order = append(u.order[:i], u.order[i+1:]...)
+				break
+			}
+		}
+	}
+	u.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	u.deleted.Add(1)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeUpstreamJSON(w http.ResponseWriter, status int, v any) {

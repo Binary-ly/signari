@@ -74,8 +74,10 @@ nothing is ever mailed to one.
 An OpenID provider, a SCIM server and, with `-ldap-addr`, a directory, for what the
 engine does outward. The provider has discovery, a key set and signed ID tokens, and
 signs in whoever comes next at once, as a person's minutes at somebody else's password
-page are no part of what the engine does. The SCIM server keeps what it is sent, so a
-second sync finds it there. The directory answers a bind and a paged search over
+page are no part of what the engine does. The SCIM server keeps the people and groups it
+is sent, so a second sync finds them there, and says what it supports at
+`/ServiceProviderConfig` (RFC 7644 §4); a change to a group's members is counted, not
+applied. The directory answers a bind and a paged search over
 `-directory` people. `/stats` counts tokens issued and people created and replaced.
 
 The key must be a PKCS#8 P-256 key, which also signs ID tokens, and is what

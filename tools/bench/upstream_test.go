@@ -114,6 +114,63 @@ func TestTheUpstreamAnswersAsAProviderWould(t *testing.T) {
 	}
 }
 
+// The SCIM target takes groups as well as people, and says what it does, as a client that
+// provisions both reads it and stops at the first group a target cannot take: one stopped
+// at a 404 on its first group and provisioned nobody.
+func TestTheUpstreamKeepsGroupsAndDescribesItself(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newUpstream("https://upstream.test", key, 3).routes())
+	t.Cleanup(srv.Close)
+	do := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/scim+json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	if status, spc := do("GET", "/scim/v2/ServiceProviderConfig", ""); status != 200 || spc["patch"] == nil {
+		t.Fatalf("the service provider config answered %d: %v", status, spc)
+	}
+	status, group := do("POST", "/scim/v2/Groups", `{"displayName":"admins","members":[]}`)
+	id, _ := group["id"].(string)
+	if status != http.StatusCreated || id == "" {
+		t.Fatalf("creating a group answered %d: %v", status, group)
+	}
+	if status, list := do("GET", "/scim/v2/Groups?"+url.Values{"filter": {`displayName eq "admins"`}}.Encode(), ""); status != 200 ||
+		list["totalResults"] != float64(1) {
+		t.Fatalf("the group was not found by name: %d %v", status, list)
+	}
+	if status, _ := do("PATCH", "/scim/v2/Groups/"+id, `{"Operations":[{"op":"add","path":"members","value":[]}]}`); status != http.StatusNoContent {
+		t.Fatalf("a change to the members answered %d", status)
+	}
+	if status, _ := do("DELETE", "/scim/v2/Groups/"+id, ""); status != http.StatusNoContent {
+		t.Fatalf("deleting the group answered %d", status)
+	}
+	if status, _ := do("GET", "/scim/v2/Groups/"+id, ""); status != http.StatusNotFound {
+		t.Fatalf("a deleted group answered %d", status)
+	}
+	status, person := do("POST", "/scim/v2/Users", `{"userName":"a@b.test"}`)
+	pid, _ := person["id"].(string)
+	if s, _ := do("DELETE", "/scim/v2/Users/"+pid, ""); status != http.StatusCreated || s != http.StatusNoContent {
+		t.Fatalf("a person made and deleted answered %d then %d", status, s)
+	}
+	if s, _ := do("GET", "/scim/v2/Users/"+pid, ""); s != http.StatusNotFound {
+		t.Fatalf("a deleted person answered %d", s)
+	}
+}
+
 // A provider that cannot be taken is an error, not a result: the scenario would
 // otherwise time a password sign-in and call it a federated one.
 func TestASignInViaAProviderTakesItsLink(t *testing.T) {

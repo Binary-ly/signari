@@ -62,7 +62,7 @@ backup host is what failed.
 The chart runs the two commands above on a schedule:
 
 ```sh
-helm upgrade signari deploy/helm/signari --reuse-values \
+helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
   --set backup.enabled=true \
   --set backup.dsnSecretKey=BOOTSTRAP_DSN \
   --set backup.schedule="0 2 * * *" --set backup.retentionDays=14

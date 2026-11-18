@@ -35,6 +35,25 @@ func TestPercentilesAreNearestRank(t *testing.T) {
 }
 
 // The RFC 7636 Appendix B pair, as engine/internal/oauth/pkce_test.go holds it.
+// A run carries on taking turns where the last stopped, so that run after run nobody is taken
+// twice before everybody has been once: a TOTP code replayed inside its 30 seconds is refused.
+func TestTurnsCarryOnFromTheLastRun(t *testing.T) {
+	path := t.TempDir() + "/turns"
+	nextPerson.Store(0)
+	save := resumeTurns(path) // no file yet: the start
+	if got := nextPerson.Load(); got != 0 {
+		t.Fatalf("a first run starts at %d", got)
+	}
+	nextPerson.Add(41)
+	save()
+	nextPerson.Store(0) // the next run is another process
+	defer resumeTurns(path)()
+	if got := nextPerson.Load(); got != 41 {
+		t.Fatalf("the next run starts at %d, not where the last stopped (41)", got)
+	}
+	nextPerson.Store(0)
+}
+
 func TestThePKCEChallengeIsS256(t *testing.T) {
 	if got := pkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"); got != "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" {
 		t.Errorf("challenge = %s", got)

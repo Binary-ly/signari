@@ -126,6 +126,8 @@ What differs between products is given as flags rather than assumed:
 |---|---|
 | `-person mfa-%d@bench.invalid` | people named apart from `bench-N`, where a product has no realms to keep its MFA or passkey people apart in |
 | `-totp-seeds <file>` | a line per person of name and base32 secret, where a product makes each person's secret when they enrol |
+| `-person-counter <file>` | where the turns through `-people` stand, carried from run to run, so nobody is taken again until everybody has been: a TOTP code is good once in its 30 s, so `mfa` needs more than 30 people per sign-in a second, and a provider that limits what is asked of one person (CIBA prompts) is measured over people it has not been asked about |
+| `-person-offset N` | added to every person's number |
 | `-admin-list <path>`, `-admin-list-body <json>` | where a product's administrative API lists people, and the query it takes as a body |
 | `-assertion-kid`, `-assertion-audience` | the key id a product named the assertion key by, and the audience it insists on (one takes only its token endpoint's URL, which RFC 7523 §3 allows) |
 

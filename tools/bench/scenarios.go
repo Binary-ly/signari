@@ -706,6 +706,7 @@ func readSeeds(path string) (map[string]string, error) {
 // personName is the n'th person's sign-in name, by -person: bench-n@bench.invalid, as
 // `bench seed` makes them, unless a product's people for a scenario are named apart.
 func personName(c *config, n int) string {
+	n += c.PersonOffset
 	if c.PersonFormat == "" {
 		return fmt.Sprintf("bench-%d@%s", n, benchDomain)
 	}

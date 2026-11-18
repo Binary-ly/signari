@@ -40,6 +40,7 @@ import (
 	"net/http/cookiejar"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,10 +112,11 @@ type config struct {
 	AdminURL, AdminToken                               string
 	AdminList, AdminListBody                           string
 	PersonFormat, AssertionKID, TOTPSeeds              string
+	PersonCounter                                      string
 	AssertionAudience                                  string
 	AuthZENBody, Via, TOTPSeed                         string
 	AssertionKey, AssertionIssuer, AssertionSubject    string
-	Concurrency, People, SignInPeople                  int
+	Concurrency, People, SignInPeople, PersonOffset    int
 	Duration, Warmup                                   time.Duration
 	Insecure                                           bool
 
@@ -154,6 +156,10 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.AdminListBody, "admin-list-body", "", "a JSON body to POST to it; empty is a GET")
 	// A product with no realms keeps its MFA people apart from its password people by name.
 	fs.StringVar(&c.PersonFormat, "person", "", "the n'th person's sign-in name, %d the number (bench-%d@bench.invalid when empty)")
+	// A provider that limits what is asked of one person in a window (CIBA prompts) is
+	// measured over people no earlier run has asked, each run from its own offset.
+	fs.IntVar(&c.PersonOffset, "person-offset", 0, "added to every person's number")
+	fs.StringVar(&c.PersonCounter, "person-counter", "", "a file holding where the turns through -people stand, read at the start and written at the end")
 	fs.StringVar(&c.PDPURL, "pdp", "", "AuthZEN PDP base URL (defaults to -issuer)")
 	fs.StringVar(&c.PDPToken, "pdp-token", "", "bearer token for the PDP")
 	fs.StringVar(&c.AuthZENBody, "authzen-body", `{"subject":{"type":"user","id":"bench"},`+
@@ -189,6 +195,9 @@ func runCommand(args []string) error {
 	if c.PDPURL == "" {
 		c.PDPURL = c.Issuer
 	}
+	if c.PersonCounter != "" {
+		defer resumeTurns(c.PersonCounter)()
+	}
 	enc := json.NewEncoder(os.Stdout)
 	for _, name := range fs.Args() {
 		sc, ok := scenarios[name]
@@ -204,6 +213,21 @@ func runCommand(args []string) error {
 		}
 	}
 	return nil
+}
+
+// resumeTurns carries on from where the last run stopped taking turns through -people, and
+// returns what writes where this run stopped, so a person is not taken again until everybody
+// has been: a TOTP code is good once in its 30 seconds, and a run that started again from the
+// first person would replay one. A missing file is the start.
+func resumeTurns(path string) (save func()) {
+	if raw, err := os.ReadFile(path); err == nil { // #nosec G304 -- a file the operator of the bench names
+		if n, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil {
+			nextPerson.Store(n)
+		}
+	}
+	return func() {
+		_ = os.WriteFile(path, []byte(strconv.FormatInt(nextPerson.Load(), 10)+"\n"), 0o600)
+	}
 }
 
 // result is one scenario's line of output.

@@ -228,6 +228,7 @@ clients:
   client set-state                 refuse an authorization request with no state
   client set-logout                post-logout redirects and front- and back-channel logout
   client set-lifetimes             token lifetimes, and how long consent lasts
+  client name                      the client's name in another language (-locale), or not (-remove)
   client set-alg                   what signs the client's ID and access tokens and responses
   client set-issuer-alias          mint the client's tokens under a legacy issuer
   client set-admin-api             let the client obtain tokens for the Admin API
@@ -1059,7 +1060,7 @@ func run(args []string) (err error) {
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
 			"Empty clears it, which returns them to the deployment default. "+
-			"For a message, the language it is reworded in")
+			"For a message, the language it is reworded in; for client name, the language of the name")
 	messageKey := fs.String("message-key", "", "the message to reword; `signari i18n keys` prints every key (message set|remove)")
 	messageText := fs.String("message-text", "", "what it says instead, as plain text (message set)")
 	attestation := fs.String("attestation", "none",
@@ -1600,6 +1601,8 @@ func run(args []string) (err error) {
 			}
 		})
 		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
+	case "client name":
+		return clientLocalizedName(ctx, conn, *clientID, *localeTag, *name, *removeMember)
 	case "client set-alg":
 		var accessAlg, responseAlg, userinfoAlg, introspectionAlg *string
 		fs.Visit(func(f *flag.Flag) {
@@ -5283,6 +5286,55 @@ func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string,
 		return err
 	}
 	fmt.Printf("added %s to %s\n", email, name)
+	return nil
+}
+
+// clientLocalizedName gives a client its name in one language (10.12), RFC 7591's
+// client_name#<locale>, shown to a person who asks for that language; with remove it takes
+// that one away. Its other names are kept.
+func clientLocalizedName(ctx context.Context, conn *pgx.Conn, clientID, locale, name string, remove bool) error {
+	if clientID == "" || locale == "" || (name == "" && !remove) {
+		return fmt.Errorf("give -client-id, -locale and -name, or -remove")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	names, err := store.ClientNames(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	// One name a tag, compared without regard to case: the new spelling replaces any.
+	had := false
+	for tag := range names {
+		if strings.EqualFold(tag, locale) {
+			delete(names, tag)
+			had = true
+		}
+	}
+	if remove && !had {
+		fmt.Printf("%s has no name in %s; nothing to do\n", clientID, locale)
+		return nil
+	}
+	if !remove {
+		names[locale] = name
+	}
+	if err := store.SetClientNames(ctx, tx, orgID, clientID, names); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if remove {
+		fmt.Printf("%s no longer has a name in %s; a person asking for it sees the untagged name\n", clientID, locale)
+		return nil
+	}
+	fmt.Printf("%s is named %q to a person asking for %s\n", clientID, store.CleanClientName(name), locale)
 	return nil
 }
 

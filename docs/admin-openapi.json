@@ -1072,6 +1072,12 @@
                       },
                       "type": "array"
                     },
+                    "localized_names": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
                     "login_ui_url": {
                       "type": [
                         "string",
@@ -1420,6 +1426,12 @@
                   },
                   "keep_auth_method": {
                     "type": "boolean"
+                  },
+                  "localized_names": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
                   },
                   "login_ui_url": {
                     "type": "string"

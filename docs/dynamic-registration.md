@@ -22,6 +22,38 @@ as it stands now, so a policy tightened since narrows the client. A secret canno
 chosen, and the registration access token stays as it is. Nothing else a client
 registered with changes.
 
+## The name in other languages
+
+A client may name itself in several languages, RFC 7591 section 2.2's
+`"client_name#ja": "クライアント名"`, alongside the untagged `client_name`:
+
+```json
+{"redirect_uris": ["https://rp.example/cb"], "client_name": "My Client",
+ "client_name#ja-Jpan-JP": "クライアント名", "client_name#de": "Mein Client"}
+```
+
+Each tag is a BCP 47 language tag, compared without regard to case, so `#de` and
+`#DE` are one name and sending both is refused (`invalid_client_metadata`), as is a
+tag that is not one or a member that is not a string. At most 32 languages. Each name
+is cleaned as `client_name` is, and to sixty characters. The registration, the read
+and the update answer with the members as they were sent. An update replaces them, so
+a name it leaves out is gone.
+
+The consent screen, and every page that names an application (the device and
+back-channel approvals, the UMA claims page, the application portal, the connected
+applications page), shows the name in a language the person asked for. That is the
+application's `ui_locales` first, then the language they chose here, then their
+browser's. The language must be the same: a reader asking for `pt` gets `pt-BR`, never
+another language because it is the closest there is. With no such name the untagged
+one is shown as it is, which is what the section says a value with no tag must be. A
+language does not need these pages to be translated into it.
+
+Only the name. The other fields the section lists, `logo_uri`, `tos_uri`,
+`policy_uri` and `client_uri`, are not shown anywhere here, so they are ignored with or
+without a tag, as RFC 7591 section 2 has unknown metadata ignored. An operator names a
+client the same way with `signari client name`, the Admin API's `localized_names`, or
+`localized_names:` in a configuration file.
+
 ## Off by default, and why
 
 An open registration endpoint lets anybody create clients on your identity
@@ -30,7 +62,10 @@ provider:
 - **Unbounded rows**, created by anyone who can reach it.
 - **A phishing surface.** The registrant chooses `client_name`, and that name
   goes on a consent screen. "Microsoft 365 wants access to your account" is
-  convincing, and it came from whoever registered.
+  convincing, and it came from whoever registered. Control characters and the
+  marks that reverse the text around them (U+202A to U+202E, U+2066 to U+2069) are
+  taken out of it, so it cannot rearrange the screen it is shown on, and the screen
+  shows the `client_id` beside it. Neither makes the name trustworthy.
 - **Enumeration.** Register, read back what was accepted, learn what the
   deployment supports.
 

@@ -60,8 +60,20 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	}
 	var open, blocked []tile
 
+	// Each application in the reader's language when it has a name in it (10.12),
+	// every one's names read at once.
+	ids := make([]string, 0, len(candidates))
 	for _, a := range candidates {
-		name := a.DisplayName
+		ids = append(ids, a.ClientID)
+	}
+	names, err := store.ClientNamesOf(ctx, s.db, ids)
+	if err != nil {
+		s.log.WarnContext(ctx, "reading applications' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
+
+	for _, a := range candidates {
+		name := pickClientName(names[a.ClientID], prefs, a.DisplayName)
 		if name == "" {
 			name = a.ClientID
 		}

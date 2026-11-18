@@ -24,6 +24,7 @@ groups:
 clients:
   - client_id: wiki
     name: Company Wiki
+    localized_names: {ja: 社内ウィキ}   # shown to a reader asking for Japanese
     redirect_uris: [https://wiki.example.com/oauth/callback]
     launch_url: https://wiki.example.com/
 
@@ -538,7 +539,8 @@ diff cry wolf, and a diff that cries wolf is a diff nobody reads.
 
 Groups and the groups each is inside (`member_of`: left out, a group stays where it is;
 `[]` takes it out of everything; a loop among the file's own is refused by `signari
-plan`, and see [groups.md](groups.md#groups-inside-groups)), OAuth/OIDC clients and their redirect URIs, SAML service providers and
+plan`, and see [groups.md](groups.md#groups-inside-groups)), OAuth/OIDC clients, their redirect URIs and their names in
+other languages (`localized_names`, by BCP 47 tag: left out, they are kept; `{}` takes them away), SAML service providers and
 their ACS URLs, RADIUS clients, protected hosts, declared scopes, user
 attributes, resource servers, the sign-up rule, claim mappers, prompts, the
 access policy, the sign-in flows, dynamic registration, the WebAuthn policy,

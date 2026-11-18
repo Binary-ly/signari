@@ -46,7 +46,7 @@ resource "signari_group_member" "ada_engineering" {
 
 | Resource | Changed in place | Replaced by a change of | Imported as |
 |---|---|---|---|
-| `signari_client` | `enabled`, `display_name`, `redirect_uris` | `client_id`, `org_id`, `public` | the client id |
+| `signari_client` | `enabled`, `display_name`, `redirect_uris`, `localized_names` (its name by BCP 47 tag; left out, kept) | `client_id`, `org_id`, `public` | the client id |
 | `signari_organization` | `status` (`active` or `suspended`) | `slug`, `display_name`, `instance_id` | the id |
 | `signari_group` | `display_name`, `description` | `org_id`, `name` | the id |
 | `signari_user` | `email`, `username`, the names, `locale`, `active`, `password` | `org_id` | the id |

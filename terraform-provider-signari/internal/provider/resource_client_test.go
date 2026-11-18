@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -55,6 +56,8 @@ func clientState(t *testing.T, r *clientResource, ty tftypes.Type,
 		"enabled":        tftypes.NewValue(tftypes.Bool, enabled),
 		"client_secret":  tftypes.NewValue(tftypes.String, "s3cret"),
 		"config_version": tftypes.NewValue(tftypes.Number, configVersion),
+		// Said nothing about, so the update sends none.
+		"localized_names": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, nil),
 	})
 	return tfsdk.State{Schema: resp.Schema, Raw: raw}
 }
@@ -246,7 +249,7 @@ func TestEveryAttributeUpdateCannotSendRequiresReplacement(t *testing.T) {
 	resp := &resource.SchemaResponse{}
 	r.Schema(ctx, resource.SchemaRequest{}, resp)
 
-	inPlace := map[string]bool{"enabled": true, "display_name": true, "redirect_uris": true}
+	inPlace := map[string]bool{"enabled": true, "display_name": true, "redirect_uris": true, "localized_names": true}
 	replaces := func(descs []string) bool {
 		for _, d := range descs {
 			if strings.Contains(d, "destroy and recreate") {
@@ -296,8 +299,14 @@ func TestEveryAttributeUpdateCannotSendRequiresReplacement(t *testing.T) {
 	res := newResource(t, srv.URL, true)
 	_, ty := clientSchema(t)
 	up := &resource.UpdateResponse{State: clientState(t, res, ty, true, 0)}
+	// A plan naming the client in another language, so the check below sees
+	// whether Update sends what it says.
+	planned := clientState(t, res, ty, false, 42)
+	if d := planned.SetAttribute(ctx, path.Root("localized_names"), map[string]string{"ja": "アプリ"}); d.HasError() {
+		t.Fatal(d)
+	}
 	res.Update(ctx, resource.UpdateRequest{
-		Plan:  tfsdk.Plan(clientState(t, res, ty, false, 42)),
+		Plan:  tfsdk.Plan(planned),
 		State: clientState(t, res, ty, true, 42),
 	}, up)
 	if up.Diagnostics.HasError() {
@@ -353,6 +362,8 @@ func TestCreateRecordsWhatTheServerHolds(t *testing.T) {
 		"enabled":        tftypes.NewValue(tftypes.Bool, false),
 		"client_secret":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
 		"config_version": tftypes.NewValue(tftypes.Number, tftypes.UnknownValue),
+		// Left out of the configuration, so computed from what the server holds.
+		"localized_names": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, tftypes.UnknownValue),
 	})
 	resp := &resource.CreateResponse{State: clientState(t, r, ty, true, 0)}
 	r.Create(context.Background(), resource.CreateRequest{Plan: tfsdk.Plan(plan)}, resp)

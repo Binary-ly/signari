@@ -248,7 +248,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		}
 		if d != nil {
 			data["Confirm"] = true
-			data["ClientName"] = s.clientDisplayName(ctx, d.ClientID)
+			data["ClientName"] = s.clientDisplayName(ctx, r, d.ClientID)
 			data["Scopes"] = strings.Fields(d.Scope)
 		}
 		s.renderPage(w, r, "device", data)
@@ -504,12 +504,14 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 
 // clientDisplayName is what the person is asked to trust. Falls back to the id,
 // never to something invented.
-func (s *Server) clientDisplayName(ctx context.Context, clientID string) string {
+func (s *Server) clientDisplayName(ctx context.Context, r *http.Request, clientID string) string {
 	var name string
 	if err := s.db.QueryRow(ctx,
 		`SELECT display_name FROM core.clients WHERE client_id = $1`, clientID).Scan(&name); err != nil {
 		return clientID
 	}
+	// In the reader's language when the client has a name in it (10.12).
+	name = s.clientNameFor(ctx, r, clientID, name)
 	if strings.TrimSpace(name) == "" {
 		return clientID
 	}

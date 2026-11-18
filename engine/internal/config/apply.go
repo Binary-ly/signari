@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -130,6 +131,11 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 			return nil, err
 		}
 		cl.PostLogoutRedirectURIs, cl.FrontchannelLogoutURI, cl.FrontchannelSessionRequired = &uris, &fc, &sid
+		names, err := store.ClientNames(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		cl.LocalizedNames = &names
 		st, err := store.ClientSettingsOf(ctx, tx, id)
 		if errors.Is(err, store.ErrClientNotFound) {
 			delete(c.clients, id)
@@ -509,6 +515,12 @@ func clientDiff(have, want Client) string {
 	if w, h := want.PostLogoutRedirectURIs, have.PostLogoutRedirectURIs; w != nil && h != nil && !sameSet(*w, *h) {
 		d = append(d, "post_logout_redirect_uris")
 	}
+	if w, h := want.LocalizedNames, have.LocalizedNames; w != nil && h != nil {
+		clean, err := store.NormaliseClientNames(*w)
+		if err != nil || !maps.Equal(clean, *h) {
+			d = append(d, "localized_names")
+		}
+	}
 	if w, h := want.FrontchannelLogoutURI, have.FrontchannelLogoutURI; w != nil && h != nil && *w != *h {
 		d = append(d, "frontchannel_logout_uri")
 	}
@@ -793,6 +805,11 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 		if err := store.SetClientSettings(ctx, tx, cl.ClientID, cl.settings()); err != nil {
 			return fmt.Errorf("client %q: %w", cl.ClientID, err)
+		}
+		if cl.LocalizedNames != nil {
+			if err := store.SetClientNames(ctx, tx, orgID, cl.ClientID, *cl.LocalizedNames); err != nil {
+				return fmt.Errorf("client %q localized_names: %w", cl.ClientID, err)
+			}
 		}
 	}
 

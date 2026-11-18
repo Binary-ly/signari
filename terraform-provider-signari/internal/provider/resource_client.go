@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -50,6 +51,8 @@ type clientModel struct {
 	Public       types.Bool   `tfsdk:"public"`
 	RedirectURIs types.Set    `tfsdk:"redirect_uris"`
 	Enabled      types.Bool   `tfsdk:"enabled"`
+	// LocalizedNames is the client's name in other languages by BCP 47 tag.
+	LocalizedNames types.Map `tfsdk:"localized_names"`
 	// ClientSecret is returned once, at creation, and never again.
 	ClientSecret types.String `tfsdk:"client_secret"`
 	// ConfigVersion is the precondition for the next write.
@@ -111,6 +114,15 @@ func (r *clientResource) Schema(_ context.Context, _ resource.SchemaRequest,
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 				MarkdownDescription: "Whether the client may be used. Disabling is the emergency lever.",
+			},
+			"localized_names": schema.MapAttribute{
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				MarkdownDescription: "The client's name in other languages, by BCP 47 tag (`ja`, `pt-BR`), " +
+					"shown to a person who asks for that language; `display_name` is shown to everybody " +
+					"else. Left out, the server's are kept; `{}` takes them all away. Changed in place.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.UseStateForUnknown()},
 			},
 			"client_secret": schema.StringAttribute{
 				Computed:  true,
@@ -185,6 +197,23 @@ func (r *clientResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 	plan.ClientSecret = types.StringValue(created.ClientSecret)
 
+	// Its names in other languages, which the create request does not carry: a second
+	// write, conditional on the version the create produced, as `enabled` is below.
+	if names := mapToStrings(ctx, plan.LocalizedNames, &resp.Diagnostics); len(names) > 0 {
+		if err := r.data.write(version, func(ifMatch int64) (int64, error) {
+			res, err := r.data.client.UpdateClient(ctx, in.ClientID, signari.ClientUpdate{
+				Enabled: true, DisplayName: in.DisplayName, RedirectURIs: in.RedirectURIs, LocalizedNames: names,
+			}, ifMatch)
+			if err != nil {
+				return 0, err
+			}
+			version = res.Version
+			return res.Version, nil
+		}); err != nil {
+			resp.Diagnostics.AddError("naming the new client in other languages", err.Error())
+		}
+	}
+
 	// A client is created enabled; the create request has no say in it. So
 	// `enabled = false` is a second write, conditional on the version the
 	// create produced, and without it the client would be live while state
@@ -233,6 +262,14 @@ func applyServerState(ctx context.Context, m *clientModel, got *signari.ClientSt
 		uris, d := types.SetValueFrom(ctx, types.StringType, *got.RedirectURIs)
 		diags.Append(d...)
 		m.RedirectURIs = uris
+	}
+	// Likewise its names: an engine that does not report them leaves state as it was.
+	if got.LocalizedNames != nil {
+		names, d := types.MapValueFrom(ctx, types.StringType, *got.LocalizedNames)
+		diags.Append(d...)
+		m.LocalizedNames = names
+	} else if m.LocalizedNames.IsUnknown() {
+		m.LocalizedNames = types.MapNull(types.StringType)
 	}
 	// The version observed by THIS read is what the next write is conditional on.
 	m.ConfigVersion = types.Int64Value(version)
@@ -287,6 +324,8 @@ func (r *clientResource) Update(ctx context.Context, req resource.UpdateRequest,
 	err := r.data.write(state.ConfigVersion.ValueInt64(), func(ifMatch int64) (int64, error) {
 		res, err := r.data.client.UpdateClient(ctx, plan.ClientID.ValueString(), signari.ClientUpdate{
 			Enabled: plan.Enabled.ValueBool(), DisplayName: plan.DisplayName.ValueString(), RedirectURIs: uris,
+			// Sent only when the configuration says what they are.
+			LocalizedNames: mapToStrings(ctx, plan.LocalizedNames, &resp.Diagnostics),
 		}, ifMatch)
 		if err != nil {
 			return 0, err

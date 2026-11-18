@@ -208,7 +208,8 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request,
 		authzQuery = withDetailsShown(authzQuery)
 	}
 	s.renderPage(w, r, "consent", map[string]any{
-		"Client": c.DisplayName, "ClientID": c.ClientID,
+		// In the reader's language when the client has a name in it (10.12).
+		"Client": s.clientNameFor(r.Context(), r, c.ClientID, c.DisplayName), "ClientID": c.ClientID,
 		"Scopes": items, "Details": describeDetails(details), "Authz": authzQuery,
 		"CSRF": csrf, "CSRFField": csrfFormField,
 	})

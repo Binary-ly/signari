@@ -263,6 +263,9 @@ type ClientState struct {
 	// older than this field does not. A caller then has nothing to compare, and
 	// must not read the absence as "none".
 	RedirectURIs *[]string `json:"redirect_uris"`
+	// LocalizedNames is its name in other languages by tag, nil when the server did
+	// not report them, as an engine before 0304 does not.
+	LocalizedNames *map[string]string `json:"localized_names"`
 	// CreatedAt is when the client was registered, which an update leaves and
 	// a replacement does not.
 	CreatedAt string `json:"created_at"`
@@ -299,14 +302,21 @@ type ClientUpdate struct {
 	Enabled      bool
 	DisplayName  string
 	RedirectURIs []string
+	// LocalizedNames replaces the client's names in other languages, by BCP 47 tag;
+	// nil sends nothing and leaves them, an empty map takes them all away.
+	LocalizedNames map[string]string
 }
 
 // UpdateClient writes an update in one request, conditional on the version it
 // was read at, as SetClientEnabled is.
 func (c *Client) UpdateClient(ctx context.Context, clientID string, u ClientUpdate, ifMatch int64) (*Result, error) {
-	return c.do(ctx, http.MethodPatch, "/admin/clients/"+clientID, map[string]any{
+	body := map[string]any{
 		"enabled": u.Enabled, "display_name": u.DisplayName, "redirect_uris": u.RedirectURIs,
-	}, ifMatch)
+	}
+	if u.LocalizedNames != nil {
+		body["localized_names"] = u.LocalizedNames
+	}
+	return c.do(ctx, http.MethodPatch, "/admin/clients/"+clientID, body, ifMatch)
 }
 
 // DeleteClient removes a client and everything issued under it, conditional on

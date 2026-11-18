@@ -230,6 +230,10 @@ type Client struct {
 	LogoURL      string   `yaml:"logo_url"`
 	PortalHidden bool     `yaml:"portal_hidden"`
 	Enabled      *bool    `yaml:"enabled"`
+	// LocalizedNames is the client's name in other languages by BCP 47 tag (10.12),
+	// RFC 7591's client_name#<tag>, shown to a person who asks for that language;
+	// name is shown to everybody else. Absent leaves them; {} takes them all away.
+	LocalizedNames *map[string]string `yaml:"localized_names,omitempty"`
 	// TokenExchange grants RFC 8693 token exchange. Absent leaves the client's
 	// current permission alone, as an omitted `enabled` does.
 	TokenExchange *TokenExchange `yaml:"token_exchange"`
@@ -420,6 +424,12 @@ func (f *File) Validate() error {
 			add("clients[%d]: %q appears twice", i, c.ClientID)
 		}
 		seenClient[c.ClientID] = true
+
+		if c.LocalizedNames != nil {
+			if _, err := store.NormaliseClientNames(*c.LocalizedNames); err != nil {
+				add("clients[%s]: localized_names: %v", c.ClientID, err)
+			}
+		}
 
 		if len(c.RedirectURIs) == 0 {
 			add("clients[%s]: at least one redirect_uri is required", c.ClientID)

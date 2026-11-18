@@ -42,6 +42,10 @@ func Export(ctx context.Context, tx pgx.Tx, orgID string) (*File, error) {
 	sort.Slice(f.Groups, func(i, j int) bool { return f.Groups[i].Name < f.Groups[j].Name })
 	for _, c := range cur.clients {
 		sort.Strings(c.RedirectURIs)
+		// Its names in other languages, said only when it has some.
+		if c.LocalizedNames != nil && len(*c.LocalizedNames) == 0 {
+			c.LocalizedNames = nil
+		}
 		f.Clients = append(f.Clients, c)
 	}
 	sort.Slice(f.Clients, func(i, j int) bool { return f.Clients[i].ClientID < f.Clients[j].ClientID })

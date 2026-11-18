@@ -191,6 +191,12 @@
         "launch_url": {
           "type": "string"
         },
+        "localized_names": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "login_ui_url": {
           "type": "string"
         },

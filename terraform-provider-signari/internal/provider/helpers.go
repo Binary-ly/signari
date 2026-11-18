@@ -24,6 +24,17 @@ func setToStrings(ctx context.Context, l types.Set, diags *diag.Diagnostics) []s
 	return out
 }
 
+// mapToStrings is a map attribute's values: nil when the configuration says nothing,
+// so nothing is sent, and a map, empty when it says {}, so an empty one is.
+func mapToStrings(ctx context.Context, m types.Map, diags *diag.Diagnostics) map[string]string {
+	if m.IsNull() || m.IsUnknown() {
+		return nil
+	}
+	out := map[string]string{}
+	diags.Append(m.ElementsAs(ctx, &out, false)...)
+	return out
+}
+
 // decodeInto parses a response body, ignoring a body that does not fit.
 //
 // Deliberately lossy. The fields being read are optional extras -- a secret shown

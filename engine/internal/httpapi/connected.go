@@ -47,10 +47,21 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Each in the reader's language when it has a name in it (10.12), read at once.
+	ids := make([]string, 0, len(apps))
+	for _, a := range apps {
+		ids = append(ids, a.ClientID)
+	}
+	names, err := store.ClientNamesOf(ctx, s.db, ids)
+	if err != nil {
+		s.log.WarnContext(ctx, "reading applications' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
+
 	view := make([]connectedApp, 0, len(apps))
 	for _, a := range apps {
 		app := connectedApp{
-			ClientID: a.ClientID, Name: a.DisplayName, Scopes: a.Scopes,
+			ClientID: a.ClientID, Name: pickClientName(names[a.ClientID], prefs, a.DisplayName), Scopes: a.Scopes,
 			Granted: a.GrantedAt.Format("2 January 2006"), ActiveTokens: a.ActiveTokens,
 		}
 		// A persisted claims token is acting for them while they are away as

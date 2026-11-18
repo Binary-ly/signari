@@ -34,6 +34,7 @@ var commandFlags = map[string][]string{
 	"client id-jag-allow":             {"alg", "audience", "client-id", "remote-client-id", "resources", "scopes"},
 	"client id-jag-audiences":         {"client-id", "o"},
 	"client id-jag-forget":            {"audience", "client-id"},
+	"client name":                     {"client-id", "locale", "name", "remove"},
 	"client set-acr":                  {"client-id", "minimum-acr"},
 	"client set-admin-api":            {"admin-api", "client-id"},
 	"client set-alg":                  {"access-alg", "alg", "client-id", "introspection-alg", "response-alg", "userinfo-alg"},

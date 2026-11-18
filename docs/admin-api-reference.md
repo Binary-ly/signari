@@ -692,6 +692,7 @@ Answers:
 | `issuer_alias` | string or null |  |
 | `jwks` | object or null |  |
 | `jwt_bearer_providers` | list of string |  |
+| `localized_names` | object |  |
 | `login_ui_url` | string or null |  |
 | `logo_uri` | string or null |  |
 | `may_exchange` | boolean |  |
@@ -770,6 +771,7 @@ Takes:
 | `jwks` | any |  |
 | `jwt_bearer_providers` | list of string |  |
 | `keep_auth_method` | boolean |  |
+| `localized_names` | object |  |
 | `login_ui_url` | string |  |
 | `logo_uri` | string |  |
 | `may_exchange` | boolean |  |

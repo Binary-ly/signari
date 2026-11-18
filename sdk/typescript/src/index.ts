@@ -2127,6 +2127,7 @@ export interface GetClientsClientIDResponse {
   issuer_alias?: string | null
   jwks?: Record<string, unknown> | null
   jwt_bearer_providers?: string[]
+  localized_names?: Record<string, unknown>
   login_ui_url?: string | null
   logo_uri?: string | null
   may_exchange?: boolean
@@ -3553,6 +3554,7 @@ export interface PatchClientsClientIDRequest {
   jwks?: unknown
   jwt_bearer_providers?: string[]
   keep_auth_method?: boolean
+  localized_names?: Record<string, unknown>
   login_ui_url?: string
   logo_uri?: string
   may_exchange?: boolean

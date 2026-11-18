@@ -43,6 +43,10 @@ func clientState(ctx context.Context, tx pgx.Tx, clientID string) (map[string]an
 		       || jsonb_build_object('authorization_detail_types', COALESCE(
 		            (SELECT jsonb_agg(t.type ORDER BY t.type)
 		               FROM core.client_authorization_detail_types t WHERE t.client_id = c.client_id), '[]'::jsonb))
+		       -- Its name in other languages, by tag (10.12).
+		       || jsonb_build_object('localized_names', COALESCE(
+		            (SELECT jsonb_object_agg(n.tag, n.name)
+		               FROM core.client_localized_names n WHERE n.client_id = c.client_id), '{}'::jsonb))
 		  FROM core.clients c WHERE c.client_id = $1`, clientID).Scan(&raw); err != nil {
 		return nil, err
 	}

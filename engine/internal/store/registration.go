@@ -175,6 +175,10 @@ type NewClientRegistration struct {
 	// JWKS is the registrant's public keys, nil for none: what it signs requests with
 	// and has responses encrypted to. How it authenticates is another matter.
 	JWKS []byte
+
+	// LocalizedNames is RFC 7591 section 2.2's client_name#<tag> members, by tag as
+	// sent. Written by SetClientNames in the same transaction.
+	LocalizedNames map[string]string
 }
 
 // RegisteredClient is what came back.
@@ -283,6 +287,9 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 	if err := SetClientSettings(ctx, tx, out.ClientID, in.Settings); err != nil {
 		return nil, err
 	}
+	if err := SetClientNames(ctx, tx, in.OrgID, out.ClientID, in.LocalizedNames); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -327,19 +334,24 @@ func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string
 type RegisteredSubject struct{ Type, Sector string }
 
 // UpdateRegisteredClient replaces what a registrant may change of their own client:
-// its name, where it may be redirected, what it may ask for and how it names people.
-// In one transaction, since a client caught between the statements would have no
-// redirect at all.
-func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, redirectURIs, scopes []string,
-	subject RegisteredSubject) error {
+// its name, in each language it gives one in, where it may be redirected, what it may
+// ask for and how it names people. In one transaction, since a client caught between
+// the statements would have no redirect at all. RFC 7592 section 2.2's update replaces
+// the metadata, so names it leaves out are gone.
+func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, names map[string]string,
+	redirectURIs, scopes []string, subject RegisteredSubject) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `UPDATE core.clients SET display_name = $2, scopes = $3, updated_at = now()
-		WHERE client_id = $1 AND dynamically_registered`, clientID, name, scopes); err != nil {
+	var orgID string
+	if err := tx.QueryRow(ctx, `UPDATE core.clients SET display_name = $2, scopes = $3, updated_at = now()
+		WHERE client_id = $1 AND dynamically_registered RETURNING org_id::text`, clientID, name, scopes).Scan(&orgID); err != nil {
 		return fmt.Errorf("updating a registered client: %w", err)
+	}
+	if err := SetClientNames(ctx, tx, orgID, clientID, names); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM core.client_redirect_uris WHERE client_id = $1`, clientID); err != nil {
 		return fmt.Errorf("replacing a registered client's redirects: %w", err)

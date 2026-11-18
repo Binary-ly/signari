@@ -221,9 +221,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req registrationRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata",
 			"the request body is not valid JSON")
+		return
+	}
+	// The name in other languages, client_name#<tag> (RFC 7591 section 2.2), which no
+	// struct field can name.
+	names, err := localizedNamesIn(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
 
@@ -381,16 +392,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		settings.Sector = &sector
 	}
 	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
-		Settings:     settings,
-		JWKS:         req.JWKS,
-		OrgID:        orgID,
-		DisplayName:  displayNameFor(req.ClientName),
-		RedirectURIs: req.RedirectURIs,
-		Scopes:       granted,
-		Confidential: confidential,
-		LogoutURI:    strings.TrimSpace(req.LogoutURI),
-		TokenID:      tokenID,
-		DPoPBound:    req.DPoPBoundAccessTokens,
+		Settings:       settings,
+		JWKS:           req.JWKS,
+		OrgID:          orgID,
+		DisplayName:    displayNameFor(req.ClientName),
+		RedirectURIs:   req.RedirectURIs,
+		Scopes:         granted,
+		Confidential:   confidential,
+		LogoutURI:      strings.TrimSpace(req.LogoutURI),
+		TokenID:        tokenID,
+		DPoPBound:      req.DPoPBoundAccessTokens,
+		LocalizedNames: names,
 		Logout: store.ClientLogout{
 			PostLogoutRedirectURIs:      &req.PostLogoutRedirectURIs,
 			FrontchannelURI:             &req.FrontchannelLogoutURI,
@@ -402,7 +414,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			BackchannelURI: &req.LogoutURI,
 		},
 	})
-	if errors.Is(err, store.ErrInvalidLogoutRegistration) || errors.Is(err, store.ErrInvalidClientSetting) {
+	if errors.Is(err, store.ErrInvalidLogoutRegistration) || errors.Is(err, store.ErrInvalidClientSetting) ||
+		errors.Is(err, store.ErrInvalidClientName) {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
@@ -436,6 +449,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// silently not would believe it was constrained when it was not.
 		"dpop_bound_access_tokens": req.DPoPBoundAccessTokens,
 	}
+	withLocalizedNames(body, names)
 	if len(req.PostLogoutRedirectURIs) > 0 {
 		body["post_logout_redirect_uris"] = req.PostLogoutRedirectURIs
 	}
@@ -517,6 +531,13 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 		if st, err := store.ClientSettingsOf(ctx, s.db, c.ClientID); err == nil {
 			body["subject_type"] = st.SubjectType
 		}
+		names, err := store.ClientNames(ctx, s.db, c.ClientID)
+		if err != nil {
+			s.log.ErrorContext(ctx, "reading a registered client's names", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "")
+			return
+		}
+		withLocalizedNames(body, names)
 		writeJSON(w, http.StatusOK, body)
 	case http.MethodPut:
 		s.replaceRegisteredClient(w, r, c)
@@ -547,8 +568,17 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "the request body is not valid JSON")
+		return
+	}
+	names, err := localizedNamesIn(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
 	if req.ClientID != c.ClientID {
@@ -588,9 +618,9 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	name := displayNameFor(req.ClientName)
-	err = store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, req.RedirectURIs, granted,
+	err = store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, names, req.RedirectURIs, granted,
 		store.RegisteredSubject{Type: kind, Sector: sector})
-	if errors.Is(err, store.ErrInvalidClientSetting) {
+	if errors.Is(err, store.ErrInvalidClientSetting) || errors.Is(err, store.ErrInvalidClientName) {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
@@ -608,6 +638,7 @@ func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request,
 		"grant_types":             []string{"authorization_code", "refresh_token"},
 		"registration_client_uri": s.cfg.Issuer + "/oauth2/register/" + c.ClientID,
 	}
+	withLocalizedNames(body, names)
 	if req.SectorIdentifierURI != "" {
 		body["sector_identifier_uri"] = req.SectorIdentifierURI
 	}
@@ -677,19 +708,12 @@ func validateRegisteredRedirect(u string) error {
 // characters. It is NOT sanitised into something trustworthy -- it cannot be,
 // since a stranger chose it -- which is why the consent screen shows the
 // client_id beside it.
+//
+// The cleaning is store.CleanClientName's, which the names in other languages get too,
+// so a mark that reverses the text around it is taken out of either.
 func displayNameFor(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, name)
-	if name == "" {
+	if name = store.CleanClientName(name); name == "" {
 		return "Unnamed application"
-	}
-	if len([]rune(name)) > 60 {
-		return string([]rune(name)[:60])
 	}
 	return name
 }

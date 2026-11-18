@@ -185,7 +185,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.renderPage(w, r, "umaclaims", map[string]any{
-		"ClientName":     c.DisplayName,
+		"ClientName":     s.clientNameFor(r.Context(), r, c.ClientID, c.DisplayName),
 		"ResourceServer": t.ResourceServer,
 		"Asks":           asks,
 		"Handle":         handle,

@@ -379,9 +379,19 @@ func (s *Server) renderBackchannel(w http.ResponseWriter, r *http.Request, userI
 	}
 	printer := s.tr(r)
 	rows := make([]row, 0, len(pending))
+	ids := make([]string, 0, len(pending))
+	for _, p := range pending {
+		ids = append(ids, p.ClientID)
+	}
+	// Each in the reader's language when it has a name in it (10.12), read at once.
+	names, err := store.ClientNamesOf(r.Context(), s.db, ids)
+	if err != nil {
+		s.log.WarnContext(r.Context(), "reading clients' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
 	for _, p := range pending {
 		rows = append(rows, row{
-			ID: p.ID, ClientName: p.ClientName, Scope: p.Scope,
+			ID: p.ID, ClientName: pickClientName(names[p.ClientID], prefs, p.ClientName), Scope: p.Scope,
 			BindingMessage: p.BindingMessage,
 			Expires:        expiresIn(printer, time.Until(p.ExpiresAt)),
 		})

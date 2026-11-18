@@ -279,6 +279,7 @@ var (
 		map[string]jsonSchema{
 			"access_token_ttl_s": integer(), "admin_api": boolean(), "allow_hybrid": boolean(),
 			"authorization_detail_types":               arrayOf(str()),
+			"localized_names":                          mapOf(str()),
 			"backchannel_client_notification_endpoint": nullable(str()),
 			"backchannel_logout_session_required":      boolean(), "backchannel_logout_uri": nullable(str()),
 			"backchannel_token_delivery_mode": str(), "claims_redirect_uris": nullable(arrayOf(str())),

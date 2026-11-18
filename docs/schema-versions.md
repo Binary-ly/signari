@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0304 client_localized_names
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client's name in other languages (10.12), RFC 7591 section 2.2's "client_name#ja": a BCP 47 tag after the member name, compared without regard to case, which is what a page that names the client shows to a person whose language it is. The untagged display name stays the name used as is everywhere else, as the section says a value without a tag must be. Only the name: it is the one human-readable field this server shows, and storing logo or policy addresses in languages nothing displays would be metadata nothing reads.
+
 ## 0303 nested_groups
 
 Compatible with the release before: its binary may still serve this schema.

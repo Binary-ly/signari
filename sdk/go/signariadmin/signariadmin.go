@@ -653,6 +653,7 @@ type GetClientsClientIDResponse struct {
 	IssuerAlias                           *string        `json:"issuer_alias,omitempty"`
 	JWKS                                  map[string]any `json:"jwks,omitempty"`
 	JWTBearerProviders                    []string       `json:"jwt_bearer_providers,omitempty"`
+	LocalizedNames                        map[string]any `json:"localized_names,omitempty"`
 	LoginUiURL                            *string        `json:"login_ui_url,omitempty"`
 	LogoURI                               *string        `json:"logo_uri,omitempty"`
 	MayExchange                           bool           `json:"may_exchange,omitempty"`
@@ -2079,6 +2080,7 @@ type PatchClientsClientIDRequest struct {
 	JWKS                                  json.RawMessage `json:"jwks,omitempty"`
 	JWTBearerProviders                    *[]string       `json:"jwt_bearer_providers,omitempty"`
 	KeepAuthMethod                        *bool           `json:"keep_auth_method,omitempty"`
+	LocalizedNames                        *map[string]any `json:"localized_names,omitempty"`
 	LoginUiURL                            *string         `json:"login_ui_url,omitempty"`
 	LogoURI                               *string         `json:"logo_uri,omitempty"`
 	MayExchange                           *bool           `json:"may_exchange,omitempty"`

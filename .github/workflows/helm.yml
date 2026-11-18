@@ -192,6 +192,65 @@ jobs:
           done
           helm test "$RELEASE"
 
+      # The chart's backup (3.10), drilled as the runbook restores: the CronJob run once,
+      # its newest dump restored into a fresh database on the same server (so the roles
+      # are already there), and the engine image, given the root key that was written
+      # beside the dump, passing the runbook's three checks and then finalize. keys list
+      # is the one that proves the pair: it decrypts the signing keys with that key.
+      - name: Backup, restore and the runbook's checks
+        run: |
+          helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
+            --set backup.enabled=true --set backup.dsnSecretKey=BOOTSTRAP_DSN \
+            --set backup.persistence.size=1Gi --wait --timeout 10m
+          kubectl create job --from="cronjob/$NAME-backup" backup-drill
+          kubectl wait --for=condition=complete job/backup-drill --timeout=300s
+          kubectl logs job/backup-drill
+          image=$(kubectl get deploy "$NAME" -o jsonpath='{.spec.template.spec.containers[0].image}')
+          kubectl apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata: {name: restore-drill}
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                securityContext: {runAsUser: 999, runAsGroup: 999, fsGroup: 999}
+                volumes: [{name: backup, persistentVolumeClaim: {claimName: $NAME-backup}}]
+                initContainers:
+                  - name: restore
+                    image: postgres:17
+                    volumeMounts: [{name: backup, mountPath: /backup}]
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        # The engine refuses a root key file anybody else can read.
+                        umask 077
+                        dump=\$(ls /backup/signari-*.dump | sort | tail -1)
+                        ts=\${dump#/backup/signari-}; ts=\${ts%.dump}
+                        cp "/backup/signari-rootkey-\$ts.b64" /backup/restore-rootkey.b64
+                        psql "postgres://postgres@postgres:5432/postgres" -c "CREATE DATABASE signari_restore"
+                        pg_restore --dbname="postgres://postgres@postgres:5432/signari_restore" \
+                          --clean --if-exists --exit-on-error "\$dump"
+                        echo "restored \$dump"
+                  - {name: verify, image: "$image", args: ["verify"], env: &engine [
+                      {name: SIGNARI_DSN, value: "postgres://signari_engine@postgres:5432/signari_restore?sslmode=disable"},
+                      {name: SIGNARI_ROOT_KEY_FILE, value: /backup/restore-rootkey.b64}],
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                  - {name: keys, image: "$image", args: ["keys", "list"], env: *engine,
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                  - {name: audit, image: "$image", args: ["audit", "verify"], env: *engine,
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                containers:
+                  - {name: finalize, image: "$image", args: ["restore", "finalize", "-confirm", "signari_restore"],
+                     env: *engine, volumeMounts: [{name: backup, mountPath: /backup}]}
+          EOF
+          kubectl wait --for=condition=complete job/restore-drill --timeout=300s
+          for c in restore verify keys audit finalize; do
+            echo "== $c"; kubectl logs job/restore-drill -c "$c"
+          done
+
       - name: What the cluster held
         if: failure()
         run: |

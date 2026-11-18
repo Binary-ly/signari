@@ -92,6 +92,11 @@ not select them.
   empty).
 - `cronJobs` runs engine commands on a schedule with the same Secret, for
   example `signari audit verify` every night.
+- `backup.enabled` dumps the database on `backup.schedule` and writes the root
+  key beside each dump, keeping `backup.retentionDays` of both. It needs
+  `backup.dsnSecretKey`, a superuser or `BYPASSRLS` DSN in the Secret. See
+  [the runbook](../../../docs/runbook-backup-restore.md#on-kubernetes-with-the-chart),
+  whose restore CI drills on kind.
 
 ## Installing, and what was wrong before
 

@@ -1,0 +1,95 @@
+{{- if .Values.backup.enabled }}
+{{- if not .Values.backup.dsnSecretKey }}
+{{- fail "backup.enabled needs backup.dsnSecretKey: a key in the chart's Secret holding a superuser or BYPASSRLS DSN, since signari_engine's dump stops at the first table (docs/runbook-backup-restore.md)" }}
+{{- end }}
+{{- $claim := .Values.backup.persistence.existingClaim | default (printf "%s-backup" (include "signari.fullname" .)) }}
+{{- if not .Values.backup.persistence.existingClaim }}
+---
+# Where the dumps go, made because no existingClaim was given.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.backup.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size }}
+{{- end }}
+---
+# The runbook's backup, on a schedule: a custom-format dump that pg_restore takes with
+# --clean --if-exists, and the root key beside it under the same timestamp. A dump is
+# written under .partial and renamed once whole, so a failed run leaves nothing that
+# looks like a backup; what is older than retentionDays goes, both halves together.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-backup" (include "signari.fullname" .) | trunc 52 | trimSuffix "-" }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: {{ .Values.backup.image | quote }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              env:
+                - name: BACKUP_DSN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "signari.secretName" . }}
+                      key: {{ .Values.backup.dsnSecretKey }}
+                - name: SIGNARI_ROOT_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "signari.secretName" . }}
+                      key: SIGNARI_ROOT_KEY
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | quote }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  umask 077
+                  rm -f /backup/*.partial
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  pg_dump --format=custom --clean --if-exists --dbname="$BACKUP_DSN" \
+                    --file="/backup/signari-$ts.dump.partial"
+                  mv "/backup/signari-$ts.dump.partial" "/backup/signari-$ts.dump"
+                  printf '%s' "$SIGNARI_ROOT_KEY" > "/backup/signari-rootkey-$ts.b64"
+                  find /backup -maxdepth 1 -name 'signari-*' -mtime "+$RETENTION_DAYS" -delete
+                  ls -l /backup
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ $claim }}
+{{- end }}

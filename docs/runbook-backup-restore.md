@@ -57,6 +57,35 @@ Keep a **second copy of the root key somewhere a database compromise cannot
 reach** — a password manager is fine, and it is the copy that saves you when the
 backup host is what failed.
 
+### On Kubernetes, with the chart
+
+The chart runs the two commands above on a schedule:
+
+```sh
+helm upgrade signari deploy/helm/signari --reuse-values \
+  --set backup.enabled=true \
+  --set backup.dsnSecretKey=BOOTSTRAP_DSN \
+  --set backup.schedule="0 2 * * *" --set backup.retentionDays=14
+```
+
+`dsnSecretKey` names a key in the chart's Secret holding a superuser or `BYPASSRLS` DSN.
+The chart refuses to render without one, because a dump as `signari_engine` stops at
+the first table. Each run writes `signari-<UTC time>.dump`, written as `.partial` and
+renamed once whole, and `signari-rootkey-<the same time>.b64` beside it, both
+owner-only. Files older than `retentionDays` are deleted, the two halves together. The
+volume is one the chart makes (`backup.persistence.size`) or yours
+(`backup.persistence.existingClaim`). Where it is copied to after that, how often the
+CronJob runs and how long you keep what it writes are your decisions. The defaults are
+a nightly run and two weeks, not a recommendation. To restore from it, take the newest
+pair off the volume and follow the next section. Give the key file mode `0400` before
+the engine reads it: a volume with `fsGroup` can add group bits to it, and the engine
+refuses a root key file anybody else can read.
+
+CI runs this on kind for every change to the chart or the engine
+(`.github/workflows/helm.yml`). The CronJob runs once, its newest dump is restored
+into a fresh database, and the engine, given the key that was written beside the dump,
+passes `verify`, `keys list` and `audit verify`, then `restore finalize`.
+
 ## Restore
 
 ```sh

@@ -118,6 +118,26 @@ networkPolicy:
 #       args: ["audit", "verify"]
 cronJobs: []
 
+# A scheduled database backup, the runbook's (docs/runbook-backup-restore.md): pg_dump in
+# custom format, with the root key written beside each dump with the same retention,
+# since either without the other restores nothing. Off by default: where backups go, how
+# often and for how long are yours to decide. Keep a second copy of the root key
+# somewhere a compromise of this volume cannot reach.
+backup:
+  enabled: false
+  schedule: "0 2 * * *"
+  retentionDays: 14
+  # pg_dump of the server's major version or later. Runs as its postgres user (999).
+  image: postgres:17
+  # The key in the chart's Secret holding a DSN that can read every row: a superuser
+  # or a BYPASSRLS role. signari_engine cannot: every core table forces row-level
+  # security on its owner, and pg_dump as the engine stops at the first one.
+  dsnSecretKey: ""
+  persistence:
+    existingClaim: ""   # a volume of yours to write to; otherwise one is made
+    size: 10Gi
+    storageClass: ""
+
 ingress:
   enabled: false
   className: ""

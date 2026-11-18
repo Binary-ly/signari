@@ -28,6 +28,7 @@ retention, is the most common way this goes wrong.
 | Artefact | Where it lives | Lose it and… |
 |---|---|---|
 | `SIGNARI_ROOT_KEY` | the engine's environment | every signing key, TOTP secret and migration secret is permanently unreadable |
+| `SIGNARI_ROOT_KEY_REF`, where set | the engine's environment | the engine refuses every sealed value until it is given the same label again: each one names the label it was sealed under |
 | PostgreSQL database | your database host | everything else |
 | `SIGNARI_ADMIN_TOKEN` | env | the console cannot write; regenerate and update both sides |
 | TLS certificate + key | disk / cert manager | reissue; no data loss |
@@ -51,6 +52,10 @@ pg_dump --format=custom --clean --if-exists \
 # drifts apart and the older half becomes useless without anyone noticing.
 printf '%s' "$SIGNARI_ROOT_KEY" > "signari-rootkey-$(date -u +%Y%m%dT%H%M%SZ).b64"
 chmod 0400 signari-rootkey-*.b64
+# And the key's label, if the deployment sets one: a restore given the key under
+# another label (or none) refuses every signing key it sealed.
+[ -n "${SIGNARI_ROOT_KEY_REF:-}" ] &&
+  printf '%s' "$SIGNARI_ROOT_KEY_REF" > "signari-rootkey-$(date -u +%Y%m%dT%H%M%SZ).ref"
 ```
 
 Keep a **second copy of the root key somewhere a database compromise cannot
@@ -73,7 +78,9 @@ helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
 The chart refuses to render without one, because a dump as `signari_engine` stops at
 the first table. Each run writes `signari-<UTC time>.dump`, written as `.partial` and
 renamed once whole, and `signari-rootkey-<the same time>.b64` beside it, both
-owner-only. Files older than `retentionDays` are deleted, the two halves together. The
+owner-only, with `signari-rootkey-<the same time>.ref` holding the key's label when the
+Secret sets `SIGNARI_ROOT_KEY_REF`. Files older than `retentionDays` are deleted, the
+set together. The
 volume is a PersistentVolumeClaim you make, named by `backup.persistence.existingClaim`,
 and the chart refuses to render without one. A claim the chart made would hold
 `helm install --wait` until it bound, and a storage class that binds on first use, as
@@ -87,8 +94,11 @@ refuses a root key file anybody else can read.
 
 CI runs this on kind for every change to the chart or the engine
 (`.github/workflows/helm.yml`). The CronJob runs once, its newest dump is restored
-into a fresh database, and the engine, given the key that was written beside the dump,
-passes `verify`, `keys list` and `audit verify`, then `restore finalize`.
+into a fresh database, and the engine, given the key and the label that were written
+beside the dump, passes `verify`, `keys list` and `audit verify`, then
+`restore finalize`. Its first run restored the key without its label, and the engine
+refused every signing key: *"key … was wrapped with root key "k8s" but "" is
+configured"*.
 
 ## Restore
 
@@ -182,6 +192,8 @@ A restore that "completed" proves nothing. These three commands prove it:
 ```sh
 export SIGNARI_DSN="postgres://…/signari_restore"
 export SIGNARI_ROOT_KEY="$(cat signari-rootkey-TIMESTAMP.b64)"
+# Only if the backup has one: the label the key sealed everything under.
+[ -f signari-rootkey-TIMESTAMP.ref ] && export SIGNARI_ROOT_KEY_REF="$(cat signari-rootkey-TIMESTAMP.ref)"
 
 # 1. Schema is intact and at a version this binary may serve, and matches what
 #    its ledger recorded. A restore renders the schema the way the original

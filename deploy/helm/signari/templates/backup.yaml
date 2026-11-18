@@ -55,6 +55,14 @@ spec:
                     secretKeyRef:
                       name: {{ include "signari.secretName" . }}
                       key: SIGNARI_ROOT_KEY
+                # The key's label is stored beside every value it seals, and the engine
+                # refuses one sealed under another label, so the label goes in the backup too.
+                - name: SIGNARI_ROOT_KEY_REF
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "signari.secretName" . }}
+                      key: SIGNARI_ROOT_KEY_REF
+                      optional: true
                 - name: RETENTION_DAYS
                   value: {{ .Values.backup.retentionDays | quote }}
               command: ["/bin/sh", "-c"]
@@ -68,6 +76,9 @@ spec:
                     --file="/backup/signari-$ts.dump.partial"
                   mv "/backup/signari-$ts.dump.partial" "/backup/signari-$ts.dump"
                   printf '%s' "$SIGNARI_ROOT_KEY" > "/backup/signari-rootkey-$ts.b64"
+                  if [ -n "${SIGNARI_ROOT_KEY_REF:-}" ]; then
+                    printf '%s' "$SIGNARI_ROOT_KEY_REF" > "/backup/signari-rootkey-$ts.ref"
+                  fi
                   find /backup -maxdepth 1 -name 'signari-*' -mtime "+$RETENTION_DAYS" -delete
                   ls -l /backup
               volumeMounts:

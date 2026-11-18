@@ -199,9 +199,17 @@ jobs:
       # is the one that proves the pair: it decrypts the signing keys with that key.
       - name: Backup, restore and the runbook's checks
         run: |
+          # The claim is the operator's, as the chart requires: it binds when the backup
+          # Job first mounts it (kind's storage class waits for a consumer).
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata: {name: ci-backups}
+          spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+          EOF
           helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
             --set backup.enabled=true --set backup.dsnSecretKey=BOOTSTRAP_DSN \
-            --set backup.persistence.size=1Gi --wait --timeout 10m
+            --set backup.persistence.existingClaim=ci-backups --wait --timeout 10m
           kubectl create job --from="cronjob/$NAME-backup" backup-drill
           kubectl wait --for=condition=complete job/backup-drill --timeout=300s
           kubectl logs job/backup-drill
@@ -216,7 +224,7 @@ jobs:
               spec:
                 restartPolicy: Never
                 securityContext: {runAsUser: 999, runAsGroup: 999, fsGroup: 999}
-                volumes: [{name: backup, persistentVolumeClaim: {claimName: $NAME-backup}}]
+                volumes: [{name: backup, persistentVolumeClaim: {claimName: ci-backups}}]
                 initContainers:
                   - name: restore
                     image: postgres:17

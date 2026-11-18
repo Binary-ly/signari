@@ -65,6 +65,7 @@ The chart runs the two commands above on a schedule:
 helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
   --set backup.enabled=true \
   --set backup.dsnSecretKey=BOOTSTRAP_DSN \
+  --set backup.persistence.existingClaim=signari-backups \
   --set backup.schedule="0 2 * * *" --set backup.retentionDays=14
 ```
 
@@ -73,8 +74,11 @@ The chart refuses to render without one, because a dump as `signari_engine` stop
 the first table. Each run writes `signari-<UTC time>.dump`, written as `.partial` and
 renamed once whole, and `signari-rootkey-<the same time>.b64` beside it, both
 owner-only. Files older than `retentionDays` are deleted, the two halves together. The
-volume is one the chart makes (`backup.persistence.size`) or yours
-(`backup.persistence.existingClaim`). Where it is copied to after that, how often the
+volume is a PersistentVolumeClaim you make, named by `backup.persistence.existingClaim`,
+and the chart refuses to render without one. A claim the chart made would hold
+`helm install --wait` until it bound, and a storage class that binds on first use, as
+kind's and most clouds' do, binds it only when the first backup runs. CI's first run
+of this recipe hung for exactly that reason. Where the claim is copied to after that, how often the
 CronJob runs and how long you keep what it writes are your decisions. The defaults are
 a nightly run and two weeks, not a recommendation. To restore from it, take the newest
 pair off the volume and follow the next section. Give the key file mode `0400` before

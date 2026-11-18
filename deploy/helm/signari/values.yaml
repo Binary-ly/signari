@@ -134,9 +134,10 @@ backup:
   # security on its owner, and pg_dump as the engine stops at the first one.
   dsnSecretKey: ""
   persistence:
-    existingClaim: ""   # a volume of yours to write to; otherwise one is made
-    size: 10Gi
-    storageClass: ""
+    # A PersistentVolumeClaim of yours for the dumps (required). Not made here: a claim
+    # this chart made would hold `helm install --wait` until it bound, and a storage class
+    # that binds on first use binds it only when the first backup runs.
+    existingClaim: ""
 
 ingress:
   enabled: false

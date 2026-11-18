@@ -2,25 +2,10 @@
 {{- if not .Values.backup.dsnSecretKey }}
 {{- fail "backup.enabled needs backup.dsnSecretKey: a key in the chart's Secret holding a superuser or BYPASSRLS DSN, since signari_engine's dump stops at the first table (docs/runbook-backup-restore.md)" }}
 {{- end }}
-{{- $claim := .Values.backup.persistence.existingClaim | default (printf "%s-backup" (include "signari.fullname" .)) }}
 {{- if not .Values.backup.persistence.existingClaim }}
----
-# Where the dumps go, made because no existingClaim was given.
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ $claim }}
-  labels:
-    {{- include "signari.labels" . | nindent 4 }}
-spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- with .Values.backup.persistence.storageClass }}
-  storageClassName: {{ . }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.backup.persistence.size }}
+{{- fail "backup.enabled needs backup.persistence.existingClaim, a PersistentVolumeClaim of yours for the dumps: one made by this chart would hold `helm install --wait` until it bound, and a storage class that binds on first use (kind's, and most clouds') binds it only when the first backup runs" }}
 {{- end }}
+{{- $claim := .Values.backup.persistence.existingClaim }}
 ---
 # The runbook's backup, on a schedule: a custom-format dump that pg_restore takes with
 # --clean --if-exists, and the root key beside it under the same timestamp. A dump is

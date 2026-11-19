@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,28 +17,67 @@ import (
 
 // LoadLocal reads the users this source has previously linked, plus the
 // organisation's active count for the ceiling.
+//
+// Two reads in one round trip, joined here (E.27). As one LEFT JOIN, a sync started right
+// after a large one was planned on statistics from before it: 531 people and 2 links were
+// expected, a nested loop was chosen, and 106,351 people were each compared with all 100,000
+// links, 566 seconds for a sync with nothing to do. Apart, each is a read of its own table
+// however stale the statistics, and the join is a map.
 func LoadLocal(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string) ([]LocalUser, error) {
-	rows, err := db.Query(ctx, `
-		SELECT u.id::text, COALESCE(l.remote_id,''), COALESCE(u.email,''),
-		       COALESCE(l.remote_name,''), u.status = 'active'
-		FROM core.users u
-		LEFT JOIN core.directory_links l ON l.user_id = u.id AND l.source_id = $1::uuid
-		WHERE u.org_id = $2::uuid`, sourceID, orgID)
-	if err != nil {
+	type link struct{ remoteID, name string }
+	links := map[string]link{}
+	var out []LocalUser
+	var b pgx.Batch
+	b.Queue(`SELECT user_id::text, remote_id, remote_name FROM core.directory_links WHERE source_id = $1::uuid`,
+		sourceID).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var user string
+			var l link
+			if err := rows.Scan(&user, &l.remoteID, &l.name); err != nil {
+				return err
+			}
+			links[user] = l
+		}
+		return rows.Err()
+	})
+	b.Queue(`SELECT id::text, COALESCE(email, ''), status = 'active' FROM core.users WHERE org_id = $1::uuid`,
+		orgID).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var l LocalUser
+			if err := rows.Scan(&l.UserID, &l.Email, &l.Active); err != nil {
+				return err
+			}
+			out = append(out, l)
+		}
+		return rows.Err()
+	})
+	if err := db.SendBatch(ctx, &b).Close(); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []LocalUser
-	for rows.Next() {
-		var l LocalUser
-		if err := rows.Scan(&l.UserID, &l.RemoteID, &l.Email, &l.Name, &l.Active); err != nil {
-			return nil, err
+	for i := range out {
+		if l, ok := links[out[i].UserID]; ok {
+			out[i].RemoteID, out[i].Name = l.remoteID, l.name
 		}
-		out = append(out, l)
 	}
-	return out, rows.Err()
+	return out, nil
 }
+
+// analyseAfterBulk has PostgreSQL read again the tables a sync has just changed in bulk (E.27):
+// until autovacuum reaches them their statistics are from before it, and every query after it
+// is planned for a directory of the size it was. PostgreSQL 17's documentation, 14.4.8 "Run
+// ANALYZE Afterwards": "strongly recommended" after "bulk loading large amounts of data into
+// the table". A sync of fewer than
+// bulkAnalyseFloor people, or of under a tenth of those it found, leaves it to autovacuum.
+// Its failure fails nothing: the people are in, and only a later plan may suffer.
+func analyseAfterBulk(ctx context.Context, db *pgxpool.Pool, written, before int) error {
+	if written < bulkAnalyseFloor || written*10 < before {
+		return nil
+	}
+	_, err := db.Exec(ctx, `ANALYZE core.users, core.directory_links`)
+	return err
+}
+
+const bulkAnalyseFloor = 1000
 
 // Apply writes a plan.
 //
@@ -78,7 +118,7 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 		return err
 	}
 
-	create, update, deactivate, _ := p.Counts()
+	create, update, deactivate, reactivate := p.Counts()
 	create -= skippedCreates
 	update -= skippedUpdates
 	if _, err := tx.Exec(ctx, `
@@ -89,7 +129,14 @@ func Apply(ctx context.Context, db *pgxpool.Pool, sourceID, orgID string, p *Pla
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if err := analyseAfterBulk(ctx, db, create+update+deactivate+reactivate, p.ActiveBefore); err != nil {
+		slog.WarnContext(ctx, "analysing the tables a directory sync changed; the next sync may be planned "+
+			"on statistics from before this one", "source_id", sourceID, "err", err)
+	}
+	return nil
 }
 
 // lastOfEachRemote keeps one action per remote id, the later one, in the order

@@ -122,7 +122,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	// Asked about the scope the token will carry, not the one requested: an
 	// absent scope parameter mints the client's whole registration, and a rule
 	// on one of those scopes was otherwise passed by leaving the parameter out.
-	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, userID, "",
+	if s.grantRefusedByPolicy(w, r, c, userID, "",
 		joinScopes(scopes), "jwt_bearer") {
 		return
 	}

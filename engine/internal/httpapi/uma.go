@@ -219,7 +219,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 			scopes = append(scopes, permission)
 		}
 	}
-	if party.userID != "" && s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, party.userID, "",
+	if party.userID != "" && s.grantRefusedByPolicy(w, r, c, party.userID, "",
 		joinScopes(scopes), "uma") {
 		return
 	}

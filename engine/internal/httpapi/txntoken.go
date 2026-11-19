@@ -46,7 +46,7 @@ func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *cl
 		return true
 	}
 	if err == nil {
-		return s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, subject, sid, scope, "txn_token")
+		return s.grantRefusedByPolicy(w, r, c, subject, sid, scope, "txn_token")
 	}
 	// A machine subject, from a client-credentials token: the client it names
 	// must belong where the workload does.

@@ -106,7 +106,7 @@ func (s *Server) handleIDJAGExchange(w http.ResponseWriter, r *http.Request, c *
 		refuse("access_denied", "this person has withdrawn this client's access")
 		return
 	}
-	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, userID, idToken.SessionID, strings.Join(scopes, " "), "id_jag") {
+	if s.grantRefusedByPolicy(w, r, c, userID, idToken.SessionID, strings.Join(scopes, " "), "id_jag") {
 		return
 	}
 	// The operator's provider has a veto over what is issued, and a grant buys tokens

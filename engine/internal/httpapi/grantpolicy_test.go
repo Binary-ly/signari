@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/txntoken"
 	"signari.dev/engine/internal/uma"
@@ -209,14 +210,14 @@ func TestAGrantNamingAPersonFromAnotherOrganisationIsRefused(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/oauth2/token", nil)
 	elsewhere := "00000000-0000-4000-8000-000000000001"
-	if !f.srv.grantRefusedByPolicy(rec, r, elsewhere, f.clientID, f.userID, "", "", "test") {
+	if !f.srv.grantRefusedByPolicy(rec, r, &clients.Client{OrgID: elsewhere, ClientID: f.clientID}, f.userID, "", "", "test") {
 		t.Fatal("a person from another organisation passed")
 	}
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_grant") {
 		t.Fatalf("refusal = %d %s", rec.Code, rec.Body.String())
 	}
 	rec = httptest.NewRecorder()
-	if f.srv.grantRefusedByPolicy(rec, r, f.orgID, f.clientID, f.userID, "", "", "test") {
+	if f.srv.grantRefusedByPolicy(rec, r, &clients.Client{OrgID: f.orgID, ClientID: f.clientID}, f.userID, "", "", "test") {
 		t.Fatalf("the person's own organisation was refused: %s", rec.Body.String())
 	}
 }

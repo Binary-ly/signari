@@ -166,7 +166,7 @@ func (s *Server) handlePreAuthorizedCodeGrant(w http.ResponseWriter, r *http.Req
 	// No session, so a rule demanding MFA is not met. Asked about the scope the
 	// token will carry; this grant has no scope parameter, and asking about an
 	// empty one passed every rule written about a scope.
-	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, stored.UserID, "",
+	if s.grantRefusedByPolicy(w, r, c, stored.UserID, "",
 		joinScopes(scopes), "pre_authorized_code") {
 		return
 	}

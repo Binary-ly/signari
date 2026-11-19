@@ -3652,7 +3652,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// the session the subject token came from. And the subject must be in this
 	// client's organisation: a token audienced here from another tenant's
 	// client was otherwise exchangeable into one issued under this tenant.
-	if s.grantRefusedByPolicy(w, r, c.OrgID, c.ClientID, subject.Subject, subject.SessionID,
+	if s.grantRefusedByPolicy(w, r, c, subject.Subject, subject.SessionID,
 		strings.Join(granted, " "), "token_exchange") {
 		return
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/risk"
@@ -312,10 +313,16 @@ func sessionFactors(ctx context.Context, db interface {
 //
 // Called before the grant opens a transaction (guard 0.08e), and listed by
 // name in TestEveryIssuingPathAsksTheAccessPolicy as an asking function.
-func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, orgID, clientID,
+//
+// The organisation's policy, and the session's factors it is judged with, are read only
+// when the client's lookup on this request found the organisation has one, as the
+// authorization endpoint asks (E.25): most have none, and every exchange, jwt-bearer and
+// pre-authorized grant read both for nothing.
+func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, c *clients.Client,
 	userID, sid, scope, via string) bool {
 
 	ctx := r.Context()
+	orgID, clientID := c.OrgID, c.ClientID
 	if userOrg, err := store.OrgOfUser(ctx, s.db, userID); err != nil || userOrg != orgID {
 		s.log.InfoContext(ctx, "a grant named a person outside the client's organisation",
 			"client_id", clientID, "via", via, "correlation_id", correlationID(ctx))
@@ -323,6 +330,9 @@ func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, or
 			Description: "this grant does not name a person this client may act for",
 			Status:      http.StatusBadRequest})
 		return true
+	}
+	if !c.HasAccessPolicy {
+		return false
 	}
 
 	mfa, amr := false, []string(nil)

@@ -122,19 +122,22 @@ func TestTwoNestingsThatCloseALoopTogetherCannotBothPass(t *testing.T) {
 	if _, err := NestGroup(ctx, first, orgID, a, b, ""); err != nil {
 		t.Fatal(err)
 	}
+	// Answered once the transaction is over, rollback and all: it answered before its
+	// deferred rollback ran, and the test's cleanup closed the connection under it (a data
+	// race, go test -race, 19 Nov).
 	second := make(chan error, 1)
 	go func() {
-		tx, err := other.Begin(ctx)
-		if err != nil {
-			second <- err
-			return
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if _, err := NestGroup(ctx, tx, orgID, b, a, ""); err != nil {
-			second <- err
-			return
-		}
-		second <- tx.Commit(ctx)
+		second <- func() error {
+			tx, err := other.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := NestGroup(ctx, tx, orgID, b, a, ""); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}()
 	}()
 	select {
 	case err := <-second:

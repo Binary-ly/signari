@@ -165,9 +165,8 @@ func TestAConnectionWithACapRefusesTheNextPersonBeforeGuacdIsAsked(t *testing.T)
 }
 
 func TestASessionEndsAtTheConnectionsMaximumDuration(t *testing.T) {
-	prev := rac.RecheckInterval
-	rac.RecheckInterval = 20 * time.Millisecond
-	t.Cleanup(func() { rac.RecheckInterval = prev })
+	prev := rac.SetRecheckInterval(20 * time.Millisecond)
+	t.Cleanup(func() { rac.SetRecheckInterval(prev) })
 
 	f, opened, connect := racFixture(t, 0, 1)
 	began := time.Now()

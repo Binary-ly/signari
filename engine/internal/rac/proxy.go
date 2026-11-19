@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,15 +13,27 @@ import (
 // why. Asked every RecheckInterval for as long as the channel is open.
 type Recheck func(ctx context.Context) (ok bool, reason string)
 
-// RecheckInterval is how often an open channel asks again. A variable only so a
-// test does not wait half a minute.
+// RecheckInterval is how often an open channel asks again.
 //
 // Thirty seconds is the bound on how long a channel outlives the thing that
 // should end it. Without the question at all it was the channel's whole life:
 // signing out, an administrator revoking the session and deactivating the
 // account each ended every other way into the deployment, and left a remote
 // desktop open in the browser that had it until somebody closed the tab.
-var RecheckInterval = 30 * time.Second
+func RecheckInterval() time.Duration { return time.Duration(recheckInterval.Load()) }
+
+// SetRecheckInterval changes it and answers what it was, only so a test does not wait half a
+// minute. Held atomically: as a plain variable, a test shortening it while another test's
+// channel was still opening was a data race (go test -race, 19 Nov).
+func SetRecheckInterval(d time.Duration) (was time.Duration) {
+	return time.Duration(recheckInterval.Swap(int64(d)))
+}
+
+var recheckInterval = func() *atomic.Int64 {
+	var v atomic.Int64
+	v.Store(int64(30 * time.Second))
+	return &v
+}()
 
 // Copying between a browser and guacd.
 //
@@ -65,7 +78,7 @@ func Proxy(ctx context.Context, peer Peer, guac *Session, recheck Recheck) strin
 
 	if recheck != nil {
 		go func() {
-			t := time.NewTicker(RecheckInterval)
+			t := time.NewTicker(RecheckInterval())
 			defer t.Stop()
 			for {
 				select {

@@ -74,9 +74,8 @@ func dialIdle(t *testing.T) *Session {
 }
 
 func TestAChannelEndsWhenTheRecheckSaysNo(t *testing.T) {
-	prev := RecheckInterval
-	RecheckInterval = 20 * time.Millisecond
-	t.Cleanup(func() { RecheckInterval = prev })
+	prev := SetRecheckInterval(20 * time.Millisecond)
+	t.Cleanup(func() { SetRecheckInterval(prev) })
 
 	guac := dialIdle(t)
 	var asked atomic.Int32
@@ -105,9 +104,8 @@ func TestAChannelEndsWhenTheRecheckSaysNo(t *testing.T) {
 // Without a recheck the channel is held as before -- the harness and anything
 // else that has no session to ask about are unchanged.
 func TestWithoutARecheckTheChannelIsHeld(t *testing.T) {
-	prev := RecheckInterval
-	RecheckInterval = 10 * time.Millisecond
-	t.Cleanup(func() { RecheckInterval = prev })
+	prev := SetRecheckInterval(10 * time.Millisecond)
+	t.Cleanup(func() { SetRecheckInterval(prev) })
 
 	guac := dialIdle(t)
 	ctx, cancel := context.WithCancel(context.Background())

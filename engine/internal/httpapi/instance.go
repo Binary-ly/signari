@@ -73,6 +73,11 @@ func (s *Server) loadIdentityProvider(ctx context.Context, slug string) (*federa
 	if err == nil && !s.ownedBy(ctx, s.db, p.OrgID, "identity provider") {
 		return nil, store.ErrProviderUnknown
 	}
+	if p != nil {
+		// Its ID tokens' keys through the cache the server keeps for remote issuers' keys
+		// (E.30), fetched again for a kid it has not seen. p is this request's own copy.
+		p.Keys = &s.assertionKeys
+	}
 	return p, err
 }
 

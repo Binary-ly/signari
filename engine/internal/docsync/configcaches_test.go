@@ -101,8 +101,9 @@ var declaredCaches = []declaredCache{
 	{
 		symbol: "assertionKeys",
 		delays: false,
-		why: "Trusted issuers' signing keys for the RFC 7523 jwt-bearer grant. " +
-			"Remote, same reasoning as ssfKeys.",
+		why: "Trusted issuers' signing keys for the RFC 7523 jwt-bearer grant, " +
+			"providers' logout tokens and the ID tokens of a sign-in through a " +
+			"provider (E.30). Remote, same reasoning as ssfKeys.",
 	},
 	{
 		symbol: "policies",

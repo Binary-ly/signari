@@ -52,6 +52,15 @@ type Config struct {
 	Forward []string
 	// Userinfo says where a KindOAuth2 provider's answer holds the person.
 	Userinfo UserinfoClaims
+	// Keys is the cache an ID token's key set is read through, set by whoever holds one for
+	// the life of the process; nil fetches the set for every token. A sign-in through a
+	// provider fetched the provider's keys every time, so a provider whose key endpoint had a
+	// bad minute failed every sign-in it would have verified, and each sign-in waited on a
+	// round trip to it. The cache fetches again for a kid it has not seen, which is OpenID
+	// Connect Core 1.0 §10.1.1's model of rotation (specs/oidc-core.txt:5557-5559). What it
+	// costs: a key the provider withdraws is believed until the set's ten minutes are up
+	// (jwksTTL), as it already was for a jwt-bearer assertion and a logout token.
+	Keys *JWKSCache
 }
 
 // UserinfoClaims are paths into a userinfo answer, read as ClaimAt reads them.
@@ -447,11 +456,20 @@ type idTokenClaims struct {
 // verifiedPayload is what a token from this provider says, once a key in its JWKS has
 // verified the signature. kind names the token in an error.
 func (c Config) verifiedPayload(ctx context.Context, hc *http.Client, raw, kind string) ([]byte, error) {
-	jwks, err := c.fetchJWKS(ctx, hc)
+	sig, err := parseSignedToken(raw, kind)
 	if err != nil {
 		return nil, err
 	}
-	sig, err := parseSignedToken(raw, kind)
+	var jwks *jose.JSONWebKeySet
+	if u := c.jwksURL(); c.Keys != nil && u != "" {
+		kid := ""
+		if len(sig.Signatures) > 0 {
+			kid = sig.Signatures[0].Header.KeyID
+		}
+		jwks, err = c.Keys.Get(ctx, hc, u, kid)
+	} else {
+		jwks, err = c.fetchJWKS(ctx, hc)
+	}
 	if err != nil {
 		return nil, err
 	}

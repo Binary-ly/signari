@@ -57,7 +57,8 @@ type Server struct {
 	// ssfKeys caches transmitters' signing keys.
 	ssfKeys *ssf.KeyFetcher
 	// assertionKeys caches trusted issuers' signing keys for the RFC 7523
-	// jwt-bearer grant. On the Server rather than per-request because a cache
+	// jwt-bearer grant, a provider's logout tokens, and the ID tokens of a sign-in
+	// through a provider (E.30). On the Server rather than per-request because a cache
 	// rebuilt per request is not a cache: it would put an outbound HTTP fetch on
 	// the token endpoint for every single grant.
 	assertionKeys federation.JWKSCache

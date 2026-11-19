@@ -351,8 +351,8 @@ a token issued and revoked      1,165 ± 113       1,465 ± 227     +26%
 
 The same night two more cuts were measured on the same machine. A device that is waiting for a
 person to approve it is now answered in one statement a poll, where each poll was a transaction
-of four round trips: 3,027 ± 71 polls a second became 3,833 ± 155, one turn each and back to
-back. A sign-in through an upstream provider had been opening a new connection to the provider
+of four round trips: 2,897 polls a second became 3,764 (+30%), three turns of five rounds each,
+the two builds taking turns on one database. A sign-in through an upstream provider had been opening a new connection to the provider
 for every sign-in and leaving it open. It now uses the same connections throughout, and goes
 from 228 a second, with 6,142 sign-ins failed for want of a port, to 292 with none.
 

@@ -83,6 +83,14 @@ jobs:
         run: go test -timeout 30m ./...
       - name: Test (second run)
         run: go test -timeout 30m -count=1 ./...
+      # The race detector over the packages whose code runs on goroutines of its
+      # own: the token budget's grouped charge, the shared outbound transports,
+      # the key cache, the remote-access proxy, the in-process buckets. The whole
+      # suite under it took an hour on sixteen threads; these take minutes. Its
+      # first run over everything found two races, both tests racing with their
+      # own fixtures.
+      - name: Test (race detector)
+        run: go test -race -timeout 30m -count=1 ./internal/store/... ./internal/safedial/ ./internal/federation/ ./internal/rac/ ./internal/ratelimit/ ./internal/directory/
 
   provider:
     runs-on: ubuntu-24.04

@@ -3,6 +3,8 @@ package janitor
 import (
 	"context"
 	"testing"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // A credential offer is swept once no token minted from it can still be live,
@@ -12,11 +14,25 @@ func TestASpentCredentialOfferIsSweptOnlyOnceItsTokenCannotBeLive(t *testing.T) 
 	pool := newPool(t)
 	ctx := context.Background()
 
+	// A person of its own. It borrowed whoever came first in core.users, whom a test of
+	// another package running alongside could delete before the offer named them.
 	var orgID, userID string
-	if err := pool.QueryRow(ctx, `SELECT org_id::text, id::text FROM core.users LIMIT 1`).
-		Scan(&orgID, &userID); err != nil {
-		t.Skipf("no user to make an offer for: %v", err)
+	if err := pool.QueryRow(ctx, `
+		WITH i AS (
+			INSERT INTO core.instances (issuer, display_name)
+			VALUES ('https://janitor-offers-' || gen_random_uuid() || '.test', 'J') RETURNING id
+		), o AS (
+			INSERT INTO core.organizations (instance_id, slug, display_name)
+			SELECT id, 'jo' || substr(gen_random_uuid()::text, 1, 8), 'Offers' FROM i RETURNING id
+		)
+		INSERT INTO core.users (org_id, email, user_handle)
+		SELECT id, 'jo' || substr(gen_random_uuid()::text, 1, 8) || '@example.test',
+		       decode(md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text), 'hex')
+		FROM o
+		RETURNING org_id::text, id::text`).Scan(&orgID, &userID); err != nil {
+		t.Fatalf("fixture person: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	plant := func(age, redeemed string) string {
 		t.Helper()
 		var id string

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The JSON report carries every finding with a lower-case severity and every
@@ -66,6 +68,27 @@ func TestATableLeftOpenAndAJanitorThatStoppedAreReported(t *testing.T) {
 		t.Fatalf("the test database already has an open table: %v", r.Findings)
 	}
 
+	// A person of its own, to hang the session off. It borrowed whoever came first in
+	// core.users, whom a test of another package could delete first. Made before the
+	// transaction and forgotten after it, as the shared database's other fixtures are.
+	var org, user string
+	if err := conn.QueryRow(ctx, `
+		WITH i AS (
+			INSERT INTO core.instances (issuer, display_name)
+			VALUES ('https://doctor-' || gen_random_uuid() || '.test', 'D') RETURNING id
+		), o AS (
+			INSERT INTO core.organizations (instance_id, slug, display_name)
+			SELECT id, 'dr' || substr(gen_random_uuid()::text, 1, 8), 'Doctor' FROM i RETURNING id
+		)
+		INSERT INTO core.users (org_id, email, user_handle)
+		SELECT id, 'dr' || substr(gen_random_uuid()::text, 1, 8) || '@example.test',
+		       decode(md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text), 'hex')
+		FROM o
+		RETURNING org_id::text, id::text`).Scan(&org, &user); err != nil {
+		t.Fatalf("fixture person: %v", err)
+	}
+	storetest.Forget(t, conn, org)
+
 	if _, err := conn.Exec(ctx, `BEGIN`); err != nil {
 		t.Fatal(err)
 	}
@@ -77,10 +100,6 @@ func TestATableLeftOpenAndAJanitorThatStoppedAreReported(t *testing.T) {
 		t.Errorf("a table no longer forcing row-level security was reported as %v", r.Findings)
 	}
 
-	var org, user string
-	if err := conn.QueryRow(ctx, `SELECT org_id::text, id::text FROM core.users LIMIT 1`).Scan(&org, &user); err != nil {
-		t.Skipf("no user to hang a session off: %v", err)
-	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)
 		VALUES ('doctor-backlog-' || gen_random_uuid(), $1::uuid, $2::uuid, now() - interval '3 hours',

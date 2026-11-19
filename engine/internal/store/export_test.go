@@ -192,15 +192,17 @@ func TestAPersonsExportHoldsTheirRowsAndNoSecret(t *testing.T) {
 	root := profileRoot(t)
 	stamp := time.Now().UnixNano()
 
-	var clientID string
-	if err := conn.QueryRow(ctx, `SELECT client_id FROM core.clients ORDER BY created_at LIMIT 1`).
-		Scan(&clientID); err != nil {
-		t.Skipf("no client to have signed in to: %v", err)
-	}
-
 	tx, err := conn.Begin(ctx)
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// A client of its own, in the transaction that goes with the test. It borrowed the
+	// oldest client in the database, which a test of another package running alongside
+	// could delete between the borrowing and the session that names it.
+	clientID := fmt.Sprintf("export-client-%d", stamp)
+	_, err = tx.Exec(ctx, `INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash)
+		VALUES ($1, $2::uuid, 'Export', 'public', '')`, clientID, orgID)
+	must(t, err)
 
 	hash := fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=4$exportsalt%d$exporthashvalue", stamp)
 	_, err = tx.Exec(ctx, `INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)

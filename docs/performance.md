@@ -324,6 +324,38 @@ just taken, because the links it had written had not been counted yet, and the p
 100,000 rows for a handful and walked all of them per person. A sync that writes many links
 counts them now, and the same run takes 262 milliseconds.
 
+## Round trips on the token paths, November 2026
+
+The token endpoint, introspection and revocation spent more of their time waiting on the
+database than computing. Every decision a request needs is still read on that request: whether
+the client is enabled and its organisation in service, whether the token or its session has been
+revoked, whether the caller has spent its guesses. What changed is how many round trips that
+takes. The client and its two failure counters are read in one. Introspection asks the token's
+standing in that same round trip, the token verified first against the keys in memory, so that
+nothing is read on behalf of a caller that has not authenticated. Tokens that arrive while their
+organisation's budget is being charged are charged together by the next statement, each
+answered from its own place in the count, so the limit is exactly what it was. A client revoking
+its own access token is one statement, with the audit record written apart so that a record
+that cannot be written never undoes a revocation.
+
+Four physical cores were shared by the engine and PostgreSQL (data on tmpfs, `fsync` on), and
+the driver ran on four others. Sixteen workers, the old build and the new taking turns in
+15-second windows, five turns each, mean and 95% interval:
+
+```
+                                before            after
+client credentials              3,701 ± 103       5,274 ± 258     +42%
+introspection                   2,250 ±  40       2,777 ± 106     +23%
+a token issued and revoked      1,165 ± 113       1,465 ± 227     +26%
+```
+
+The same night two more cuts were measured on the same machine. A device that is waiting for a
+person to approve it is now answered in one statement a poll, where each poll was a transaction
+of four round trips: 3,027 ± 71 polls a second became 3,833 ± 155, one turn each and back to
+back. A sign-in through an upstream provider had been opening a new connection to the provider
+for every sign-in and leaving it open. It now uses the same connections throughout, and goes
+from 228 a second, with 6,142 sign-ins failed for want of a port, to 292 with none.
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

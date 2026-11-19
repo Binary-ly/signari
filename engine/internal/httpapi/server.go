@@ -1074,6 +1074,13 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, authzQuery,
 }
 
 func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authzQuery, msg string, status int) {
+	// One answer to whose page this is for the whole render, as the login page's own
+	// handlers have had. The authorization endpoint renders the page too, with no
+	// answer kept, and its render asked six times over, a read of the client each: 8 of
+	// the 18 statements an authorization request without a session made (E.34).
+	if _, kept := r.Context().Value(loginOrgKey{}).(*loginOrgMemo); !kept {
+		r = r.WithContext(withLoginOrgMemo(r.Context()))
+	}
 	// Minted before any header is written: Set-Cookie after WriteHeader is
 	// silently dropped, which would produce a form whose token can never match.
 	csrf, err := s.csrfToken(w, r)

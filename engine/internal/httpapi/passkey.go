@@ -905,9 +905,18 @@ func (s *Server) userByHandle(ctx context.Context, handle []byte) (*passkeys.Use
 // multi-tenant deployment must instead scope by hostname, because the RP ID (and
 // therefore which credentials the browser will even offer) is per instance --
 // left explicit here rather than silently guessing wrong later.
+//
+// Asked once in a request that keeps a sign-in page's answers (loginOrgMemo).
 func (s *Server) defaultOrg(ctx context.Context) (string, error) {
+	memo, _ := ctx.Value(loginOrgKey{}).(*loginOrgMemo)
+	if memo != nil && memo.defaultAsked {
+		return memo.defaultOrg, memo.defaultErr
+	}
 	var orgID string
 	err := s.db.QueryRow(ctx, firstOrgOfIssuer, s.cfg.Issuer).Scan(&orgID)
+	if memo != nil {
+		memo.defaultAsked, memo.defaultOrg, memo.defaultErr = true, orgID, err
+	}
 	return orgID, err
 }
 

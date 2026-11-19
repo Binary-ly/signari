@@ -46,6 +46,12 @@ type loginOrgKey struct{}
 type loginOrgMemo struct {
 	asked      bool
 	query, org string
+
+	// And the instance's first organisation, defaultOrg's answer: the page's
+	// recovery link and its sign-up link each asked it, a statement each (E.35).
+	defaultAsked bool
+	defaultOrg   string
+	defaultErr   error
 }
 
 func withLoginOrgMemo(ctx context.Context) context.Context {

@@ -97,6 +97,10 @@ type Flow struct {
 	Stages []Step `yaml:"stages"`
 	// Tests are run by Parse. Required.
 	Tests []TestCase `yaml:"tests"`
+
+	// proofs keeps AdmitsProof's answers, given by Parse; nil for a flow built
+	// some other way, which works each answer out every time it is asked.
+	proofs *proofAnswers
 }
 
 // Step is one position in a flow.
@@ -262,6 +266,9 @@ func Parse(data []byte) (*File, error) {
 	}
 	if err := f.RunTests(); err != nil {
 		return nil, err
+	}
+	for i := range f.Flows {
+		f.Flows[i].proofs = &proofAnswers{}
 	}
 	return &f, nil
 }

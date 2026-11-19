@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // StageName identifies a stage.
@@ -423,7 +424,49 @@ func (fl *Flow) checkOneProof() error {
 // it to say when an applied flow refuses a way in the organisation uses.
 // A flow with too many conditions to enumerate is taken to admit it, so the
 // answer only ever warns about what is certain.
+//
+// A parsed flow works each answer out once and keeps it (E.33). The answer is
+// the flow's alone, working it out plans every state of the flow's conditions,
+// and the sign-in page asks it on every render, whether to offer an emailed code
+// and a passkey: on a federated sign-in that was 6% of the server's CPU. A flow
+// is not changed once parsed; one reloaded is a new flow, and works it out anew.
 func (fl *Flow) AdmitsProof(stage StageName) bool {
+	i := slices.Index(proofStages[:], stage)
+	if fl.proofs == nil || i < 0 {
+		return fl.admitsProof(stage)
+	}
+	switch fl.proofs.answer[i].Load() {
+	case admitted:
+		return true
+	case refused:
+		return false
+	}
+	a := fl.admitsProof(stage)
+	if a {
+		fl.proofs.answer[i].Store(admitted)
+	} else {
+		fl.proofs.answer[i].Store(refused)
+	}
+	return a
+}
+
+// proofStages are signInProofs' stages, each with its place in a proofAnswers.
+var proofStages = [...]StageName{StagePassword, StagePasskey, StageKerberos, StageFederated, StageEmailOTP}
+
+// proofAnswers is what AdmitsProof has worked out for one flow, by proofStages'
+// places: unknown until asked, then admitted or refused. Reached through a pointer
+// the parse gives each flow, so a Flow copied by value shares it and carries no lock.
+type proofAnswers struct {
+	answer [len(proofStages)]atomic.Int32
+}
+
+const (
+	admitted int32 = 1
+	refused  int32 = 2
+)
+
+// admitsProof is AdmitsProof worked out.
+func (fl *Flow) admitsProof(stage StageName) bool {
 	want, ok := signInProofs[stage]
 	if !ok || fl.On != Authentication {
 		return false

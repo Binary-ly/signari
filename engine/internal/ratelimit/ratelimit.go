@@ -36,6 +36,9 @@ func New(ratePerSec, capacity float64) *Bucket {
 	return b
 }
 
+// Rate is what the bucket refills at, a second.
+func (b *Bucket) Rate() float64 { return b.rate }
+
 func (b *Bucket) clock() time.Time {
 	if b.now != nil {
 		return b.now()

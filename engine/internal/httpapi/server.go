@@ -395,7 +395,9 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// second), so this is set at five times one, which one tenant spending
 		// all of its budget cannot fill. At 50 it was the number two busy
 		// tenants shared.
-		login:        ratelimit.New(100, 200),
+		// Sized from this machine since E.28 (loginguard.go): it was this fixed 100,
+		// which four cores' worth of sign-ins already exceeded.
+		login:        ratelimit.New(loginGuard(), 2*loginGuard()),
 		tokenCharges: store.NewRateCombiner(),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket

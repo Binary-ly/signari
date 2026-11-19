@@ -296,6 +296,9 @@ func SharedConfigError() error {
 // here is the first sign of a login flood.
 func (h *Hasher) Concurrency() int { return cap(h.sem) }
 
+// Params are the cost new hashes are made with, for sizing what may wait in front of them.
+func (h *Hasher) Params() Params { return h.cfg.params() }
+
 // InFlight reports how many evaluations are running or waiting for a slot.
 func (h *Hasher) InFlight() int64 { return h.inFlight.Load() }
 

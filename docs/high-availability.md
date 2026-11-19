@@ -101,7 +101,11 @@ A generous in-process guard still runs first on the sign-in path. Its job is
 protecting the database from a flood, not bounding guesses — the shared limits
 cost a round trip each, and an unbounded flood of them is its own denial of
 service. It is set high enough that a real deployment never sees it and an
-attacker reaches the keyed limits instead.
+attacker reaches the keyed limits instead: half again what the machine can hash,
+measured when the engine starts with the cost new hashes are made with, and never less
+than 100 a second. It was a fixed 100, which four cores' worth of sign-ins already
+exceeded. How many hash at once is the hasher's own bound, so sign-ins beyond what the
+machine can hash wait for a slot.
 
 The same reasoning keeps JWKS on a local bucket: high volume, nothing expensive
 behind it, and no security decision resting on the count.

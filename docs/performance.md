@@ -378,6 +378,46 @@ jwt-bearer (writes no record)   2,124       2,140     level, as it should be
 The chain verified afterwards over all 1,201,088 entries the run had appended, by both builds in
 turn.
 
+## The database connection, November 2026
+
+A CPU profile of the engine under these cells put a fifth of its time in TLS, under the
+database driver's writes. The connection string named no `sslmode`, so the driver used its
+default, `prefer`, and PostgreSQL on the same host offered TLS. The same binary, the two
+connection strings taking turns on one database, five turns each:
+
+```
+                       sslmode=prefer (TLS)   sslmode=disable
+sign-in via provider          315                  358        +14%
+token exchange              2,248                2,496        +11%
+device poll                 5,327                5,897        +11%
+client credentials          6,388                6,522         +2%
+```
+
+Over TCP on loopback, not a Unix socket, which was not measured. Across a network the
+connection stays encrypted and verified (`sslmode=verify-full`); see
+[configuration.md](configuration.md).
+
+## The sign-in page, November 2026
+
+The same profile put 6% of the server's CPU, on a sign-in through an upstream provider, in
+deciding on every render of the sign-in page whether the sign-in flow takes an emailed code.
+That answer depends on the flow alone, and a loaded flow now keeps it once worked out. Counting
+each request's statements then showed an authorization request that renders the page reading
+its client 8 times in 18 statements. The page asks whose it is several times over, and only
+the login page's own handlers kept the answer for the request; every render keeps it now, and
+the instance's first organisation with it. Sign-ins through a provider, each change against
+the build before it, taking turns on one database as above:
+
+```
+                                              before    after
+the flow keeps its answers                      321       339    +6%
+the page keeps whose it is                      329       382    +16%   (p50 48.6 → 41.9 ms)
+and the first organisation, once a render       390       396    within its turns' spread
+```
+
+Device polls, which render no page, were measured alongside as the control: level, 95% and
+102%.
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

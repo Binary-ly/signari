@@ -359,6 +359,10 @@ func appendRecords(ctx context.Context, tx pgx.Tx, rs []record, version int) err
 	// Lock, tail and insert are one statement (migration 0239), since each round
 	// trip inside the lock is one every other audited transaction waits out. The
 	// bytes hashed are built here, and the function puts the tail in front of them.
+	//
+	// The column is a smallint, and a version is 1 or 2, so the one conversion holds it
+	// for both paths.
+	stored := int16(version)
 	if len(rs) == 1 {
 		e, detail := rs[0].e, rs[0].detail
 		body, tail := hashParts(version, e, detail)
@@ -367,7 +371,7 @@ func appendRecords(ctx context.Context, tx pgx.Tx, rs []record, version int) err
 			                         $10::uuid, $11, $12, $13, $14)`,
 			auditChainLock, nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
 			nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention, detail,
-			nullIfEmpty(e.AdminTokenID), e.OccurredAt, int16(version), body, tail); err != nil {
+			nullIfEmpty(e.AdminTokenID), e.OccurredAt, stored, body, tail); err != nil {
 			return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 		}
 		return nil
@@ -386,7 +390,7 @@ func appendRecords(ctx context.Context, tx pgx.Tx, rs []record, version int) err
 		org[i], subject[i], actor[i] = nilIfEmpty(e.OrgID), nilIfEmpty(e.SubjectID), nilIfEmpty(e.ActorID)
 		client[i], correlation[i], token[i] = nilIfEmpty(e.ClientID), nilIfEmpty(e.CorrelationID), nilIfEmpty(e.AdminTokenID)
 		types[i], retention[i], details[i] = e.Type, e.Retention, r.detail
-		at[i], versions[i] = e.OccurredAt, int16(version)
+		at[i], versions[i] = e.OccurredAt, stored
 		bodies[i], tails[i] = hashParts(version, e, r.detail)
 	}
 	if _, err := tx.Exec(ctx, `

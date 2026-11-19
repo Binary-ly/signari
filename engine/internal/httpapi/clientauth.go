@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/abca"
 	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
@@ -192,9 +194,15 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		ip = "unknown"
 	}
 
-	spent, err := store.CountRates(ctx, s.db,
-		store.RateWindow{Key: "clientauth:fail:pair:" + clientID + ":" + budgetIP(ip), Window: clientAuthPerPairWindow},
-		store.RateWindow{Key: "clientauth:fail:ip:" + budgetIP(ip), Window: clientAuthPerIPWindow})
+	// Read with the client, in the same round trip, when the endpoint asked for both
+	// (lookupClientToAuthenticate); the same counters, read on this request either way.
+	var spent []int
+	var err error
+	if b, ok := ctx.Value(clientAuthBudgetKey{}).(*clientAuthBudget); ok && b.clientID == clientID && b.ip == ip {
+		spent, err = b.spent, b.err
+	} else {
+		spent, err = store.CountRates(ctx, s.db, clientAuthWindows(clientID, ip)...)
+	}
 	if err != nil {
 		// Fail closed, for the reason allowSignInAttempt gives: authenticating a
 		// client needs the database one query later anyway, so refusing here costs
@@ -204,6 +212,67 @@ func (s *Server) clientAuthAllowed(ctx context.Context, r *http.Request, clientI
 		return false
 	}
 	return spent[0] < clientAuthPerPairLimit && spent[1] < clientAuthPerIPLimit
+}
+
+// clientAuthWindows are the two failure budgets a client authenticates under: this
+// client from this address, and this address for every client.
+func clientAuthWindows(clientID, ip string) []store.RateWindow {
+	return []store.RateWindow{
+		{Key: "clientauth:fail:pair:" + clientID + ":" + budgetIP(ip), Window: clientAuthPerPairWindow},
+		{Key: "clientauth:fail:ip:" + budgetIP(ip), Window: clientAuthPerIPWindow},
+	}
+}
+
+type clientAuthBudgetKey struct{}
+
+// clientAuthBudget is the failure counters read alongside a client, for the client and
+// address they were read for.
+type clientAuthBudget struct {
+	clientID, ip string
+	spent        []int
+	err          error
+}
+
+// lookupClientToAuthenticate is lookupClient for an endpoint about to authenticate the
+// client, with that authentication's failure counters read in the same round trip (E.23):
+// the client and the counters were two, one after the other, on every client-authenticated
+// request. Every refusal lookupClient makes is made here alike, and the counters are read
+// on this request, as before, so a guess is still counted the moment it is made.
+func (s *Server) lookupClientToAuthenticate(ctx context.Context, r *http.Request, clientID string) (
+	context.Context, *clients.Client, error) {
+	if clientID == "" {
+		return ctx, nil, clients.ErrNotFound
+	}
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	var b pgx.Batch
+	client := clients.QueueLookup(&b, clientID)
+	counts := store.QueueCountRates(&b, clientAuthWindows(clientID, ip)...)
+	if also, ok := ctx.Value(alsoInBatchKey{}).(func(*pgx.Batch)); ok {
+		also(&b)
+	}
+	if err := s.db.SendBatch(ctx, &b).Close(); err != nil {
+		return ctx, nil, err
+	}
+	spent, cerr := counts()
+	ctx = context.WithValue(ctx, clientAuthBudgetKey{}, &clientAuthBudget{clientID: clientID, ip: ip, spent: spent, err: cerr})
+	c, err := client()
+	if err != nil {
+		return ctx, nil, err
+	}
+	c, err = s.servedClient(ctx, c)
+	return ctx, c, err
+}
+
+// alsoInBatchKey carries a read that depends on the request alone, for the round trip that
+// finds the client to ask it too (E.23). It must change nothing: the client has not
+// authenticated when it is asked, and its answer is used only once the client has.
+type alsoInBatchKey struct{}
+
+func withAlsoInBatch(ctx context.Context, queue func(*pgx.Batch)) context.Context {
+	return context.WithValue(ctx, alsoInBatchKey{}, queue)
 }
 
 // recordClientAuthFailure charges both budgets. Called only when the proof was

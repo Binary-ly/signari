@@ -921,7 +921,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, lookupErr := s.lookupClient(ctx, req.ClientID)
+	// The client and, in the same round trip, the failure counters its authentication
+	// below consults (E.23).
+	ctx, c, lookupErr := s.lookupClientToAuthenticate(ctx, r, req.ClientID)
 	if lookupErr != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 			Description: "unknown client", Status: http.StatusUnauthorized})
@@ -2912,6 +2914,23 @@ func (s *Server) lookupClient(ctx context.Context, clientID string) (*clients.Cl
 	if err != nil {
 		return nil, err
 	}
+	return s.usableClient(ctx, c)
+}
+
+// servedClient makes of a client read some other way the refusals lookupClient makes:
+// another instance's is unknown here, and a disabled one or a suspended organisation's
+// is refused.
+func (s *Server) servedClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
+	c, err := s.ourClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return s.usableClient(ctx, c)
+}
+
+// usableClient refuses a disabled client, and a client of a suspended organisation.
+func (s *Server) usableClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
+	clientID := c.ClientID
 	if !c.Enabled {
 		s.log.InfoContext(ctx, "a disabled client was refused", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
@@ -2938,11 +2957,15 @@ func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*cl
 	if err != nil {
 		return nil, err
 	}
-	// Another instance's client is not one this issuer has (6.12): it was
-	// registered with the other issuer, and its relying parties verify that
-	// issuer's tokens. Answered as unknown, so nobody learns it exists there.
+	return s.ourClient(ctx, c)
+}
+
+// ourClient refuses another instance's client: it is not one this issuer has (6.12). It
+// was registered with the other issuer, and its relying parties verify that issuer's
+// tokens. Answered as unknown, so nobody learns it exists there.
+func (s *Server) ourClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
 	if !s.serves(c.InstanceID) {
-		s.log.InfoContext(ctx, "a client of another instance was refused", "client_id", clientID,
+		s.log.InfoContext(ctx, "a client of another instance was refused", "client_id", c.ClientID,
 			"correlation_id", correlationID(ctx))
 		return nil, clients.ErrNotFound
 	}

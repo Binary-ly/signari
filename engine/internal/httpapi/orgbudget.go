@@ -27,7 +27,7 @@ func (s *Server) orgBudgetSpent(ctx context.Context, w http.ResponseWriter, orgI
 
 // tokenBudgetSpent is orgBudgetSpent for a client, which came with its budget.
 func (s *Server) tokenBudgetSpent(ctx context.Context, w http.ResponseWriter, c *clients.Client) (bool, error) {
-	res, err := store.ChargeOrgBudget(ctx, s.db, c.OrgID, store.BudgetTokens,
+	res, err := store.ChargeOrgBudget(ctx, s.tokenCharges, s.db, c.OrgID, store.BudgetTokens,
 		store.OrgBudgets{TokensPerMinute: c.TokenBudget})
 	return s.budgetAnswer(ctx, w, c.OrgID, store.BudgetTokens, res, err)
 }

@@ -74,36 +74,65 @@ func tokenSessionLive(sid, grant string) string {
 func TokenStandingOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, c *tokens.AccessTokenClaims) (TokenStanding, error) {
+	args, err := tokenStandingArgs(c)
+	if err != nil {
+		return endedForAll, err
+	}
+	return scanTokenStanding(q.QueryRow(ctx, tokenStandingStatement, args...))
+}
+
+// QueueTokenStandingOf is TokenStandingOf as one more statement in a batch the caller sends:
+// what it asks depends on the token alone, so introspection asks it in the round trip that
+// finds the client (E.23). The answer is read once the batch is closed, and is the same
+// fail-closed answer TokenStandingOf gives when it could not be asked.
+func QueueTokenStandingOf(b *pgx.Batch, c *tokens.AccessTokenClaims) func() (TokenStanding, error) {
+	args, err := tokenStandingArgs(c)
+	if err != nil {
+		return func() (TokenStanding, error) { return endedForAll, err }
+	}
+	st, serr := endedForAll, errors.New("the batch holding a token's standing was not sent")
+	b.Queue(tokenStandingStatement, args...).QueryRow(func(row pgx.Row) error {
+		st, serr = scanTokenStanding(row)
+		return nil
+	})
+	return func() (TokenStanding, error) { return st, serr }
+}
+
+func tokenStandingArgs(c *tokens.AccessTokenClaims) ([]any, error) {
 	if c.JTI == "" {
 		// A token with no jti cannot be individually revoked. Treated as revoked
 		// rather than guessed at: every token minted here has one, so an absent
 		// jti means it did not come from here in the shape expected.
-		return endedForAll, errors.New("access token has no jti")
+		return nil, errors.New("access token has no jti")
 	}
 	var person *string
 	if id, err := uuid.Parse(c.Subject); err == nil {
 		s := id.String()
 		person = &s
 	}
+	return []any{c.JTI, c.GrantID, c.SessionID, c.ClientID, person, c.Subject}, nil
+}
+
+func scanTokenStanding(row pgx.Row) (TokenStanding, error) {
 	var st TokenStanding
-	err := q.QueryRow(ctx, `
-		SELECT $2 <> '' AND NOT EXISTS (SELECT 1 FROM core.refresh_token_families
-		                                 WHERE id = NULLIF($2, '')::uuid AND revoked_at IS NULL),
-		       EXISTS (SELECT 1 FROM core.revoked_jtis WHERE jti = $1),
-		       $3 <> '' AND NOT `+tokenSessionLive("$3", "$2")+`,
-		       NOT (EXISTS (SELECT 1 FROM core.clients c WHERE c.client_id = $4 AND c.enabled
-		                     AND `+OrgInService("c.org_id")+`)
-		            AND CASE
-		                  WHEN EXISTS (SELECT 1 FROM core.users WHERE id = $5::uuid)
-		                    THEN EXISTS (SELECT 1 FROM core.users u WHERE u.id = $5::uuid AND u.status = 'active'
-		                                  AND `+OrgInService("u.org_id")+`)
-		                  ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $6 AND enabled)
-		                END),
-		       EXISTS (SELECT 1 FROM core.clients WHERE client_id = $4 AND security_profile <> 'none')`,
-		c.JTI, c.GrantID, c.SessionID, c.ClientID, person, c.Subject).
-		Scan(&st.GrantRevoked, &st.JTIRevoked, &st.SessionEnded, &st.HolderGone, &st.HeldToProfile)
-	if err != nil {
+	if err := row.Scan(&st.GrantRevoked, &st.JTIRevoked, &st.SessionEnded, &st.HolderGone, &st.HeldToProfile); err != nil {
 		return endedForAll, fmt.Errorf("reading what has become of a token: %w", err)
 	}
 	return st, nil
 }
+
+// tokenStandingStatement is TokenStandingOf's one statement.
+var tokenStandingStatement = `
+		SELECT $2 <> '' AND NOT EXISTS (SELECT 1 FROM core.refresh_token_families
+		                                 WHERE id = NULLIF($2, '')::uuid AND revoked_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.revoked_jtis WHERE jti = $1),
+		       $3 <> '' AND NOT ` + tokenSessionLive("$3", "$2") + `,
+		       NOT (EXISTS (SELECT 1 FROM core.clients c WHERE c.client_id = $4 AND c.enabled
+		                     AND ` + OrgInService("c.org_id") + `)
+		            AND CASE
+		                  WHEN EXISTS (SELECT 1 FROM core.users WHERE id = $5::uuid)
+		                    THEN EXISTS (SELECT 1 FROM core.users u WHERE u.id = $5::uuid AND u.status = 'active'
+		                                  AND ` + OrgInService("u.org_id") + `)
+		                  ELSE EXISTS (SELECT 1 FROM core.clients WHERE client_id = $6 AND enabled)
+		                END),
+		       EXISTS (SELECT 1 FROM core.clients WHERE client_id = $4 AND security_profile <> 'none')`

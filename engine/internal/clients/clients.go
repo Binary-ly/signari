@@ -290,12 +290,25 @@ type Querier interface {
 // tolerance, and no normalisation beyond what the client registered -- every one
 // of those "conveniences" has produced a redirect-bypass CVE somewhere.
 func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
-	c := &Client{ClientID: clientID}
-	var secret *string
-	var alias *string
-	var tlsDN, tlsDNS, tlsURI, tlsIP, tlsEmail *string
+	return scanLookup(q.QueryRow(ctx, lookupStatement, clientID), clientID)
+}
 
-	err := q.QueryRow(ctx, `
+// QueueLookup queues Lookup's statement on b, so it travels with whatever else the
+// request asks of the database in one round trip (E.23); the client is read with the
+// returned function once the batch has been sent and closed.
+func QueueLookup(b *pgx.Batch, clientID string) func() (*Client, error) {
+	var c *Client
+	err := errors.New("the batch holding the client lookup was not sent")
+	b.Queue(lookupStatement, clientID).QueryRow(func(row pgx.Row) error {
+		c, err = scanLookup(row, clientID)
+		return nil
+	})
+	return func() (*Client, error) { return c, err }
+}
+
+// lookupStatement is Lookup's one statement, read per request as every decision that can
+// refuse a client is (ADR-007).
+const lookupStatement = `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
 		       grant_types, response_types, scopes, require_pkce,
 		       id_token_signed_alg, COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''),
@@ -343,28 +356,35 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'client_access'),
 		       COALESCE(login_ui_url, '')
 		FROM core.clients
-		WHERE client_id = $1`, clientID).
-		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
-			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
-			&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.AccessFormat, &c.SubjectType, &c.Sector,
-			&c.SecurityProfile, &c.RefreshTTL, &c.FirstParty, &alias,
-			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
-			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
-			&c.TLSThumbprint, &c.TLSBoundTokens,
-			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
-			&c.ExchangeRequiresAudienceMatch,
-			&c.BackchannelTokenDeliveryMode,
-			&c.BackchannelClientNotificationEndpoint,
-			&c.ClaimsRedirectURIs,
-			&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest,
-			&c.AuthorizationResponseAlg, &c.UserinfoSignedAlg,
-			&c.IDTokenEncryption.Alg, &c.IDTokenEncryption.Enc,
-			&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
-			&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.IntrospectionSignedAlg,
-			&c.IntrospectionEncryption.Alg, &c.IntrospectionEncryption.Enc, &c.EncryptionKeys,
-			&c.FederationExpiry, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
-			&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
-			&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
+		WHERE client_id = $1`
+
+// scanLookup reads lookupStatement's row into a client.
+func scanLookup(row pgx.Row, clientID string) (*Client, error) {
+	c := &Client{ClientID: clientID}
+	var secret *string
+	var alias *string
+	var tlsDN, tlsDNS, tlsURI, tlsIP, tlsEmail *string
+	err := row.Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
+		&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
+		&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.AccessFormat, &c.SubjectType, &c.Sector,
+		&c.SecurityProfile, &c.RefreshTTL, &c.FirstParty, &alias,
+		&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
+		&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
+		&c.TLSThumbprint, &c.TLSBoundTokens,
+		&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
+		&c.ExchangeRequiresAudienceMatch,
+		&c.BackchannelTokenDeliveryMode,
+		&c.BackchannelClientNotificationEndpoint,
+		&c.ClaimsRedirectURIs,
+		&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest,
+		&c.AuthorizationResponseAlg, &c.UserinfoSignedAlg,
+		&c.IDTokenEncryption.Alg, &c.IDTokenEncryption.Enc,
+		&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
+		&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.IntrospectionSignedAlg,
+		&c.IntrospectionEncryption.Alg, &c.IntrospectionEncryption.Enc, &c.EncryptionKeys,
+		&c.FederationExpiry, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
+		&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
+		&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

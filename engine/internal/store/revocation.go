@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,9 +15,12 @@ import (
 //
 // Idempotent: revoking twice is not an error. RFC 7009 requires that a client
 // revoking an already-revoked token still gets a success, and a client that
-// retries after a timeout must not be punished for it.
-func RevokeJTI(ctx context.Context, tx pgx.Tx, jti, clientID string, expiresAt time.Time) error {
-	_, err := tx.Exec(ctx, `
+// retries after a timeout must not be punished for it. One statement, so it needs no
+// transaction of its own, and joins the caller's when there is one.
+func RevokeJTI(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, jti, clientID string, expiresAt time.Time) error {
+	_, err := q.Exec(ctx, `
 		INSERT INTO core.revoked_jtis (jti, client_id, expires_at)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (jti) DO NOTHING`, jti, clientID, expiresAt)

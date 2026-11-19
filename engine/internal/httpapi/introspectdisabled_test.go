@@ -194,12 +194,17 @@ func TestEveryPlaceThatAcceptsAnAccessTokenReadsItsHolder(t *testing.T) {
 					}
 				case *ast.CallExpr:
 					// The token is the argument after the context, or after the
-					// database for the store's own.
+					// database for the store's own. QueueTokenStandingOf is that
+					// statement queued on a batch (b, claims), and introspectionStanding
+					// reads the batch's answer or asks TokenStandingOf when nothing was
+					// queued (E.23).
 					var asked ast.Expr
 					switch {
 					case isCall(n, "store", "TokenStandingOf") && len(n.Args) == 3:
 						asked = n.Args[2]
-					case isCall(n, "s", "standing") && len(n.Args) == 3,
+					case isCall(n, "store", "QueueTokenStandingOf") && len(n.Args) == 2,
+						isCall(n, "s", "standing") && len(n.Args) == 3,
+						isCall(n, "s", "introspectionStanding") && len(n.Args) == 3,
 						isCall(n, "s", "exchangeRefusal") && len(n.Args) == 4:
 						asked = n.Args[1]
 					}

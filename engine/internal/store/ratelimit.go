@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -110,34 +111,53 @@ func (r Reservation) Release(ctx context.Context, q interface {
 func AllowRate(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, key string, limit int, window time.Duration) (RateResult, error) {
+	if err := usableRate(key, limit, window); err != nil {
+		return RateResult{}, err
+	}
+	res := RateResult{Limit: limit}
+	var err error
+	res.Count, res.RetryAfter, err = chargeRate(ctx, q, key, 1, window)
+	if err != nil {
+		return res, err
+	}
+	res.Allowed = res.Count <= limit
+	return res, nil
+}
 
+func usableRate(key string, limit int, window time.Duration) error {
 	if limit <= 0 || window <= 0 {
-		return RateResult{}, fmt.Errorf("rate limit for %q is not configured "+
+		return fmt.Errorf("rate limit for %q is not configured "+
 			"(limit %d, window %s)", key, limit, window)
 	}
 	if window > MaxRateWindow {
-		return RateResult{}, fmt.Errorf("rate limit for %q has a %s window, longer than "+
+		return fmt.Errorf("rate limit for %q has a %s window, longer than "+
 			"the %s PurgeRateLimits keeps; its counter would be deleted while live", key,
 			window, MaxRateWindow)
 	}
+	return nil
+}
 
-	res := RateResult{Limit: limit}
+// chargeRate counts n requests against key in one statement, and returns the count
+// after them and how long their window has left. n of 1 is one request, as it always
+// was; more is RateCombiner's group, which the row counts exactly as n requests one
+// after another.
+func chargeRate(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, key string, n int, window time.Duration) (count int, retryAfter time.Duration, err error) {
 	// The window start is derived from the clock, not stored per caller, so
 	// every instance agrees on which window it is in without coordinating.
-	err := q.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		INSERT INTO core.rate_limits (bucket_key, window_start, count)
-		VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / $2) * $2), 1)
+		VALUES ($1, to_timestamp(floor(extract(epoch FROM now()) / $2) * $2), $3)
 		ON CONFLICT (bucket_key, window_start)
-		DO UPDATE SET count = core.rate_limits.count + 1
+		DO UPDATE SET count = core.rate_limits.count + $3
 		RETURNING count,
 		          to_timestamp(floor(extract(epoch FROM now()) / $2) * $2 + $2) - now()`,
-		key, window.Seconds()).Scan(&res.Count, &res.RetryAfter)
+		key, window.Seconds(), n).Scan(&count, &retryAfter)
 	if err != nil {
-		return res, fmt.Errorf("checking the rate limit for %q: %w", key, err)
+		return 0, 0, fmt.Errorf("checking the rate limit for %q: %w", key, err)
 	}
-
-	res.Allowed = res.Count <= limit
-	return res, nil
+	return count, retryAfter, nil
 }
 
 // MaxRateWindow is the longest window a limit may use, and how far back
@@ -211,23 +231,53 @@ type RateWindow struct {
 func CountRates(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, windows ...RateWindow) ([]int, error) {
-	keys, seconds := make([]string, len(windows)), make([]float64, len(windows))
-	for i, w := range windows {
-		if w.Window <= 0 || w.Window > MaxRateWindow {
-			return nil, fmt.Errorf("no usable window given for %q (%s; at most %s)", w.Key, w.Window, MaxRateWindow)
-		}
-		keys[i], seconds[i] = w.Key, w.Window.Seconds()
+	keys, seconds, err := rateArguments(windows)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := q.Query(ctx, `
-		SELECT COALESCE(r.count, 0)
-		  FROM unnest($1::text[], $2::float8[]) WITH ORDINALITY AS v(key, seconds, i)
-		  LEFT JOIN core.rate_limits r ON r.bucket_key = v.key
-		   AND r.window_start = to_timestamp(floor(extract(epoch FROM now()) / v.seconds) * v.seconds)
-		 ORDER BY v.i`, keys, seconds)
+	rows, err := q.Query(ctx, countRatesStatement, keys, seconds)
 	if err != nil {
 		return nil, fmt.Errorf("reading the counters: %w", err)
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[int])
+}
+
+// QueueCountRates queues CountRates' statement on b (E.23), so the counters are read in
+// the round trip that carries the rest; read them with the returned function once the
+// batch has been sent and closed.
+func QueueCountRates(b *pgx.Batch, windows ...RateWindow) func() ([]int, error) {
+	keys, seconds, err := rateArguments(windows)
+	if err != nil {
+		return func() ([]int, error) { return nil, err }
+	}
+	var counts []int
+	err = errors.New("the batch holding the counters was not sent")
+	b.Queue(countRatesStatement, keys, seconds).Query(func(rows pgx.Rows) error {
+		counts, err = pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			err = fmt.Errorf("reading the counters: %w", err)
+		}
+		return nil
+	})
+	return func() ([]int, error) { return counts, err }
+}
+
+const countRatesStatement = `
+		SELECT COALESCE(r.count, 0)
+		  FROM unnest($1::text[], $2::float8[]) WITH ORDINALITY AS v(key, seconds, i)
+		  LEFT JOIN core.rate_limits r ON r.bucket_key = v.key
+		   AND r.window_start = to_timestamp(floor(extract(epoch FROM now()) / v.seconds) * v.seconds)
+		 ORDER BY v.i`
+
+func rateArguments(windows []RateWindow) ([]string, []float64, error) {
+	keys, seconds := make([]string, len(windows)), make([]float64, len(windows))
+	for i, w := range windows {
+		if w.Window <= 0 || w.Window > MaxRateWindow {
+			return nil, nil, fmt.Errorf("no usable window given for %q (%s; at most %s)", w.Key, w.Window, MaxRateWindow)
+		}
+		keys[i], seconds[i] = w.Key, w.Window.Seconds()
+	}
+	return keys, seconds, nil
 }
 
 // ClearRate forgets a counter, for a caller that has a reason to.

@@ -133,6 +133,8 @@ var timeHeldButNotConfiguration = map[string]string{
 	"device":     "a rate-limit bucket: request counts per window, not configuration",
 	"register":   "a rate-limit bucket: request counts per window, not configuration",
 	"federation": "a rate-limit bucket: request counts per window, not configuration",
+	"tokenCharges": "requests waiting on an organisation's budget statement, counted by the next " +
+		"one together (E.23): counts in flight, not configuration, and nothing once none are",
 	"captcha": "the captcha verifier, configured from the environment at startup; " +
 		"its time is a request timeout, and it reads nothing from the database",
 	"pwPolicy": "the password policy, configured from the environment at startup; " +

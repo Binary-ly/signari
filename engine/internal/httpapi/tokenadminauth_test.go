@@ -36,6 +36,31 @@ func postTokenAdmin(t *testing.T, f *tokenFixture, path, addr string, form url.V
 	return rec.Code, body
 }
 
+// The token endpoint reads the failure counters with the client, in one round trip
+// (E.23); read there, they must bind there, as they do at /introspect below.
+func TestTheTokenEndpointSpendsTheClientAuthenticationBudget(t *testing.T) {
+	f := newTokenFixture(t)
+	clearOfWindowEdge(t, clientAuthPerPairWindow)
+	secret := revocableClient(t, f)
+	n := time.Now().UnixNano()
+	addr := fmt.Sprintf("198.19.%d.%d", n%250, (n/250)%250+1)
+
+	form := func(s string) url.Values {
+		return url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID}, "client_secret": {s}}
+	}
+	if status, body := postTokenAdmin(t, f, "/oauth2/token", addr, form(secret)); status == http.StatusUnauthorized {
+		t.Fatalf("the right secret was refused before any failure: %d %v", status, body)
+	}
+	for i := 0; i < clientAuthPerPairLimit; i++ {
+		postTokenAdmin(t, f, "/oauth2/token", addr, form("not-the-secret"))
+	}
+	if status, body := postTokenAdmin(t, f, "/oauth2/token", addr, form(secret)); status != http.StatusUnauthorized ||
+		body["error"] != "invalid_client" {
+		t.Fatalf("after %d wrong secrets at /token the right one was answered %d %v: the counters read with the "+
+			"client did not bind", clientAuthPerPairLimit, status, body)
+	}
+}
+
 func TestIntrospectionSpendsTheClientAuthenticationBudget(t *testing.T) {
 	f := newTokenFixture(t)
 	clearOfWindowEdge(t, clientAuthPerPairWindow)

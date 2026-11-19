@@ -132,6 +132,29 @@ func TestTwoInstancesOnOneProcessRefuseEachOther(t *testing.T) {
 	if rec := a.at(b).authorizePlain(t, ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("another instance's client was answered %d %q at /authorize", rec.Code, rec.Header().Get("Location"))
 	}
+	// At the token endpoint too, where the client is read with its failure counters in one
+	// round trip (E.23): unknown at the other host, before any secret is weighed, where its
+	// own host gets as far as weighing the wrong one.
+	tokenAt := func(host string) string {
+		t.Helper()
+		form := url.Values{"grant_type": {"client_credentials"}, "client_id": {a.clientID}, "client_secret": {"wrong"}}
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Host = host
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		var out struct {
+			Description string `json:"error_description"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.Description
+	}
+	if got := tokenAt(hostOf(issuerB)); got != "unknown client" {
+		t.Errorf("another instance's client at /token was told %q, want unknown client", got)
+	}
+	if got := tokenAt(hostOf(issuerA)); got == "unknown client" {
+		t.Error("its own instance does not know the client at /token, so the check above proves nothing")
+	}
 	cookie := a.signInAndReturnCookie(t)
 	if code := a.accountPage(t, cookie); code != http.StatusOK {
 		t.Fatalf("its own instance's account page answered %d", code)

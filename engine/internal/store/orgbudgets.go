@@ -95,12 +95,17 @@ func AllowOrgBudget(ctx context.Context, q interface {
 	if err != nil {
 		return RateResult{}, err
 	}
-	return ChargeOrgBudget(ctx, q, orgID, kind, b)
+	return AllowRate(ctx, q, orgBudgetKey(orgID, kind), b.Effective(kind), time.Minute)
 }
 
-// ChargeOrgBudget is AllowOrgBudget for a caller that has read the budgets already.
-func ChargeOrgBudget(ctx context.Context, q interface {
+// ChargeOrgBudget is AllowOrgBudget for a caller that has read the budgets already,
+// counted through rc: the same counter, in the same table, as AllowOrgBudget's.
+func ChargeOrgBudget(ctx context.Context, rc *RateCombiner, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID string, kind BudgetKind, b OrgBudgets) (RateResult, error) {
-	return AllowRate(ctx, q, "org:"+orgID+":"+string(kind), b.Effective(kind), time.Minute)
+	return rc.Allow(ctx, q, orgBudgetKey(orgID, kind), b.Effective(kind), time.Minute)
+}
+
+func orgBudgetKey(orgID string, kind BudgetKind) string {
+	return "org:" + orgID + ":" + string(kind)
 }

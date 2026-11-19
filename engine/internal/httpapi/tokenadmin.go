@@ -3,11 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
@@ -23,7 +26,13 @@ import (
 // Both endpoints are client-authenticated for the same reason: without it,
 // /introspect is a free oracle for validating stolen tokens and /revoke is a
 // denial-of-service primitive against anyone whose token you can guess.
-func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.Request) (*clients.Client, bool) {
+//
+// alsoAsk, when given, queues a read on the round trip that finds the client (E.23). It
+// is called only once the form has been read under its cap and found whole, and the
+// request parsed: a hook that read the form itself read it past the cap, and the
+// refusal was lost.
+func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.Request,
+	alsoAsk func(form url.Values, b *pgx.Batch)) (*clients.Client, bool) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -55,7 +64,12 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 		return nil, false
 	}
 
-	c, err := s.lookupClient(ctx, req.ClientID)
+	// With the failure counters, in one round trip (E.23).
+	if alsoAsk != nil {
+		form := r.PostForm
+		ctx = withAlsoInBatch(ctx, func(b *pgx.Batch) { alsoAsk(form, b) })
+	}
+	ctx, c, err := s.lookupClientToAuthenticate(ctx, r, req.ClientID)
 	if err != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 			Description: "unknown client", Status: http.StatusUnauthorized})
@@ -104,7 +118,7 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 //     accepting it until it expires -- five minutes -- and no issuer of stateless
 //     tokens can do better than that.
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.authenticateTokenEndpointClient(w, r)
+	c, ok := s.authenticateTokenEndpointClient(w, r, nil)
 	if !ok {
 		return
 	}
@@ -119,9 +133,27 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The client's own access token, minted under this instance's issuer, is the common
+	// case, and the one statement that puts its jti on the denylist revokes it (E.23). It
+	// was a transaction of five round trips behind a read of the issuer aliases, the first
+	// asking whether a signed token of ours was a refresh token. Anything else goes the
+	// whole way below, the aliases read only for a token naming an issuer not ours.
+	own, ownErr := s.verifyPresented(ctx, []string{s.cfg.Issuer}, raw)
+	if ownErr == nil && own.ClientID == c.ClientID && own.JTI != "" {
+		if err := store.RevokeJTI(ctx, s.db, own.JTI, c.ClientID, time.Unix(own.Expiry, 0)); err != nil {
+			s.log.ErrorContext(ctx, "denylisting access token", "client_id", c.ClientID, "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		s.answerRevocation(ctx, w, c, true, "access_token", personNamed(own.Subject))
+		return
+	}
 	// Read before the transaction opens: it takes a connection of its own, and
 	// one taken while a transaction is held is how the pool deadlocks.
-	issuers := s.acceptedIssuers(ctx)
+	issuers := []string{s.cfg.Issuer}
+	if errors.Is(ownErr, tokens.ErrWrongIssuer) {
+		issuers = s.acceptedIssuers(ctx)
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -161,12 +193,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 					writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 					return
 				}
-				revoked, revokedKind = true, "access_token"
-				// A person's id; a client's own token names the client, which
-				// the record carries as its client already.
-				if _, perr := uuid.Parse(claims.Subject); perr == nil {
-					revokedSubject = claims.Subject
-				}
+				revoked, revokedKind, revokedSubject = true, "access_token", personNamed(claims.Subject)
 			} else if claims.ClientID != "" && claims.ClientID != c.ClientID {
 				// §2.1: "verifies whether the token was issued to the client
 				// making the revocation request. If this validation fails, the
@@ -226,17 +253,32 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	s.answerRevocation(ctx, w, c, revoked, revokedKind, revokedSubject)
+}
 
+// answerRevocation logs, records and answers a revocation that has committed. The record
+// is written apart from it, so a record that cannot be written never undoes a revocation.
+func (s *Server) answerRevocation(ctx context.Context, w http.ResponseWriter, c *clients.Client,
+	revoked bool, kind, subject string) {
 	// Logged either way, because "the client called revoke and nothing matched"
 	// is the shape of both a retry and a misconfigured integration.
 	s.log.InfoContext(ctx, "token revocation", "client_id", c.ClientID, "matched", revoked)
 	// Recorded when something was revoked, which nothing did before 2.52.
 	if revoked {
 		s.auditDetached(ctx, audit.Event{Type: audit.EventTokenRevoked, OrgID: c.OrgID,
-			SubjectID: revokedSubject, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
-			Detail: map[string]any{"token_type": revokedKind}})
+			SubjectID: subject, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"token_type": kind}})
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// personNamed is a token's subject when it names a person; a client's own token names the
+// client, which the record carries as its client already.
+func personNamed(subject string) string {
+	if _, err := uuid.Parse(subject); err == nil {
+		return subject
+	}
+	return ""
 }
 
 // introspectionResponse is RFC 7662 §2.2. Every field but `active` is omitted
@@ -328,10 +370,33 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	if asJWT {
 		w = unauthenticatedIs400{w}
 	}
-	c, ok := s.authenticateTokenEndpointClient(w, r)
+	// The token's standing is asked in the round trip that finds the client (E.23): what
+	// it asks depends on the token alone, it changes nothing, and nothing is answered
+	// until the client has authenticated. Before then the token costs no round trip of its
+	// own: it is verified against the keys in memory with a reader that refuses, so an
+	// opaque handle, a pairwise subject and another issuer's alias are read after
+	// authentication, as before, and so is a token said to be a refresh token or that is
+	// not one of ours.
+	pre := &prefetchedStanding{}
+	c, ok := s.authenticateTokenEndpointClient(w, r, func(form url.Values, b *pgx.Batch) {
+		if form.Get("token_type_hint") == "refresh_token" {
+			return
+		}
+		raw := form.Get("token")
+		if raw == "" || strings.HasPrefix(raw, store.OpaqueTokenPrefix) {
+			return
+		}
+		claims, err := s.verifyPresentedIn(r.Context(), refusesReads{}, []string{s.cfg.Issuer}, raw)
+		if err != nil {
+			return
+		}
+		pre.raw, pre.claims = raw, claims
+		pre.read = store.QueueTokenStandingOf(b, claims)
+	})
 	if !ok {
 		return
 	}
+	r = r.WithContext(context.WithValue(r.Context(), prefetchedStandingKey{}, pre))
 
 	if c.Type == "public" {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
@@ -437,9 +502,18 @@ func (s *Server) introspectionJWT(c *clients.Client, resp *introspectionResponse
 // introspectAccessToken returns nil when raw is not one of our access tokens, so
 // the caller can try it as a refresh token.
 func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {
-	claims, err := s.verifyAccepted(ctx, raw)
-	if err != nil {
-		return nil
+	pre, _ := ctx.Value(prefetchedStandingKey{}).(*prefetchedStanding)
+	if pre != nil && pre.raw != raw {
+		pre = nil
+	}
+	var claims *tokens.AccessTokenClaims
+	if pre != nil {
+		claims = pre.claims
+	} else {
+		var err error
+		if claims, err = s.verifyAccepted(ctx, raw); err != nil {
+			return nil
+		}
 	}
 
 	if claims.ClientID != c.ClientID && !audienceIncludes(claims.Audience, c.ClientID) {
@@ -463,7 +537,7 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 	}
 	// Inactive rather than an error when it cannot be read: a resource server that
 	// cannot get an answer must not treat the token as good.
-	if !s.standing(ctx, claims, "introspection").Live() {
+	if !s.introspectionStanding(ctx, claims, pre).Live() {
 		return inactive
 	}
 
@@ -483,6 +557,43 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		AuthorizationDetails: claims.AuthorizationDetails,
 		Cnf:                  claims.Cnf,
 	}
+}
+
+// prefetchedStanding is a token's claims, verified before its introspection's client
+// authenticated, and its standing, read in the client's round trip (E.23).
+type prefetchedStanding struct {
+	raw    string
+	claims *tokens.AccessTokenClaims
+	read   func() (store.TokenStanding, error)
+}
+
+type prefetchedStandingKey struct{}
+
+// refusesReads is a database a token is verified against before its caller has
+// authenticated: a token that needs a read to verify is verified afterwards instead.
+type refusesReads struct{}
+
+var errReadBeforeAuthentication = errors.New("no read is made for a caller that has not authenticated")
+
+func (refusesReads) QueryRow(context.Context, string, ...any) pgx.Row { return refusedRow{} }
+
+type refusedRow struct{}
+
+func (refusedRow) Scan(...any) error { return errReadBeforeAuthentication }
+
+// introspectionStanding is the standing read with the client, when it was, and otherwise
+// read now: the same statement, and the same fail-closed answer when it could not be read.
+func (s *Server) introspectionStanding(ctx context.Context, claims *tokens.AccessTokenClaims,
+	pre *prefetchedStanding) store.TokenStanding {
+	if pre == nil || pre.read == nil {
+		return s.standing(ctx, claims, "introspection")
+	}
+	st, err := pre.read()
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading what has become of a token", "where", "introspection", "err", err,
+			"correlation_id", correlationID(ctx))
+	}
+	return st
 }
 
 func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {

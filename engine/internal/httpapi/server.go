@@ -81,6 +81,10 @@ type Server struct {
 	discoveryKeys    string
 
 	login *ratelimit.Bucket
+	// tokenCharges counts each organisation's tokens against its budget (6.10), the
+	// tokens waiting on one organisation's statement counted by the next together
+	// (E.23). It holds nothing once an organisation has nothing in flight.
+	tokenCharges *store.RateCombiner
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -390,7 +394,8 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// second), so this is set at five times one, which one tenant spending
 		// all of its budget cannot fill. At 50 it was the number two busy
 		// tenants shared.
-		login: ratelimit.New(100, 200),
+		login:        ratelimit.New(100, 200),
+		tokenCharges: store.NewRateCombiner(),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it

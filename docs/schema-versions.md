@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0305 audit_append_many
+
+Compatible with the release before: its binary may still serve this schema.
+
+core.audit_append_many appends several audit records in one statement, under the same lock as core.audit_append and to the same chain (E.32): the lock is taken once, the tail is read once, and each record's hash follows from the one before it, exactly as the same records appended one after another would. The engine writes a record that is not part of another transaction (a revocation's, an exchange's, a backchannel request's) together with the others that arrive while one is being written, so the lock and the commit it is held across are paid once for all of them. One record a transaction let 2,190 a second through at 16 writers; sixteen in one statement let 14,157 through, where sixteen calls of core.audit_append in one round trip let 8,029.
+
 ## 0304 client_localized_names
 
 Compatible with the release before: its binary may still serve this schema.

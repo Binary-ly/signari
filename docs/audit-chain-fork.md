@@ -74,6 +74,22 @@ function is volatile, which is what keeps it correct: a volatile function takes 
 new snapshot for each statement inside it, so the read of the tail sees what
 committed while it waited for the lock.
 
+On loopback that was still one commit's worth of records at a time, however many
+wrote them: 2,223 a second from one writer and 2,152 from sixteen, on a machine
+whose plain inserts reached 17,670. So a record written in a transaction of its
+own (a revocation's, a token exchange's, a backchannel request's) is now appended
+with the others that arrive while one is being written, by
+`core.audit_append_many` (migration 0305): the lock taken once, the tail read
+once, each record hashed after the one before it, one commit for all of them.
+Sixteen records a statement let 14,157 a second through, where sixteen calls of
+`core.audit_append` in one round trip let 8,029. Nothing about the chain changes:
+the same bytes are hashed under the same lock, a binary from before appends to
+the same chain, and each record is committed before the request it belongs to is
+answered. A record whose group cannot be appended is written again on its own,
+so the one that fails takes no other request's record with it. A record that
+joins another transaction, as a sign-in's does, still appends in that
+transaction.
+
 ## Proven both ways
 
 12 concurrent writers, on a fresh database:

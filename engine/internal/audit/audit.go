@@ -166,8 +166,37 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 // write is Write at a given hash version; a test writes a version-1 row with it
 // to prove such rows keep verifying.
 func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
+	e, err := prepare(ctx, e)
+	if err != nil {
+		return err
+	}
+	r, err := canonical(ctx, tx, e)
+	if err != nil {
+		return err
+	}
+	fanOut(ctx, tx, r)
+	if err := appendRecords(ctx, tx, []record{r}, version); err != nil {
+		return err
+	}
+	if observe != nil {
+		observe(r.e)
+	}
+	return nil
+}
+
+// record is an event made ready to append: prepared, with its ids and detail in the
+// form PostgreSQL stores them, which is the form hashed.
+type record struct {
+	e      Event
+	detail string
+}
+
+// prepare is what an event takes from its request, and its defaults: who acted, when,
+// and a subject the column can hold. From the request's context, so the request does it
+// even when its record is appended by another request's statement (Detached).
+func prepare(ctx context.Context, e Event) (Event, error) {
 	if e.Type == "" {
-		return fmt.Errorf("audit: event type is required")
+		return e, fmt.Errorf("audit: event type is required")
 	}
 	if e.Retention == "" {
 		// Default to the strictest retention. An event nobody classified is far
@@ -217,9 +246,24 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 		}
 	}
 
+	// Microseconds, which is what timestamptz keeps, so the time hashed is the
+	// time stored.
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
+	return e, nil
+}
+
+// canonical is e made a record: its detail and ids in the form PostgreSQL stores, asked
+// of q. A pure expression, so any connection answers it the same, inside a transaction or
+// not.
+func canonical(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, e Event) (record, error) {
 	raw, err := json.Marshal(e.Detail)
 	if err != nil {
-		return fmt.Errorf("audit: encoding detail: %w", err)
+		return record{}, fmt.Errorf("audit: encoding detail: %w", err)
 	}
 
 	// Hash the form PostgreSQL will actually STORE, not the bytes Go produced.
@@ -243,16 +287,20 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// /admin/users/d578-90c1-... did exactly this to the shared test database.
 	var detail string
 	var org, subject, actor, correlation, token *string
-	if err := tx.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text`,
 		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
 		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID)).
 		Scan(&detail, &org, &subject, &actor, &correlation, &token); err != nil {
-		return fmt.Errorf("audit: canonicalising the entry: %w", err)
+		return record{}, fmt.Errorf("audit: canonicalising the entry: %w", err)
 	}
 	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
 	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
+	return record{e: e, detail: detail}, nil
+}
 
+// fanOut queues r for the subscriptions that want it, in tx.
+func fanOut(ctx context.Context, tx pgx.Tx, r record) {
 	// Fan the event out to subscribers, in THIS transaction.
 	//
 	// Here rather than at each call site for the same reason the audit entry
@@ -272,17 +320,13 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// NOT fatal to the audit write. A subscription that cannot be enqueued must
 	// not stop the thing being audited from happening -- that would make an event
 	// subscription a way to break sign-in.
-	if publish != nil && e.OrgID != "" {
-		_ = publish(ctx, tx, e, detail)
+	if publish != nil && r.e.OrgID != "" {
+		_ = publish(ctx, tx, r.e, r.detail)
 	}
+}
 
-	// Microseconds, which is what timestamptz keeps, so the time hashed is the
-	// time stored.
-	if e.OccurredAt.IsZero() {
-		e.OccurredAt = time.Now()
-	}
-	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
-
+// appendRecords appends rs to the chain in tx, in order, at a hash version.
+func appendRecords(ctx context.Context, tx pgx.Tx, rs []record, version int) error {
 	// An advisory lock on the CHAIN, not a row lock on its current tail.
 	//
 	// The first version took FOR UPDATE on the tail row, reasoning that
@@ -315,19 +359,53 @@ func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
 	// Lock, tail and insert are one statement (migration 0239), since each round
 	// trip inside the lock is one every other audited transaction waits out. The
 	// bytes hashed are built here, and the function puts the tail in front of them.
-	body, tail := hashParts(version, e, detail)
-	if _, err = tx.Exec(ctx, `
-		SELECT core.audit_append($1, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9::jsonb,
-		                         $10::uuid, $11, $12, $13, $14)`,
-		auditChainLock, nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
-		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention, detail,
-		nullIfEmpty(e.AdminTokenID), e.OccurredAt, int16(version), body, tail); err != nil {
-		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
+	if len(rs) == 1 {
+		e, detail := rs[0].e, rs[0].detail
+		body, tail := hashParts(version, e, detail)
+		if _, err := tx.Exec(ctx, `
+			SELECT core.audit_append($1, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9::jsonb,
+			                         $10::uuid, $11, $12, $13, $14)`,
+			auditChainLock, nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+			nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention, detail,
+			nullIfEmpty(e.AdminTokenID), e.OccurredAt, int16(version), body, tail); err != nil {
+			return fmt.Errorf("audit: appending %s: %w", e.Type, err)
+		}
+		return nil
 	}
-	if observe != nil {
-		observe(e)
+	// Several, in one statement (migration 0305): the lock and the tail once, and each
+	// record hashed after the one before it, as the same records appended one by one
+	// would be. One field an array, each record at the same place in every array.
+	n := len(rs)
+	org, subject, actor, client := make([]*string, n), make([]*string, n), make([]*string, n), make([]*string, n)
+	correlation, token := make([]*string, n), make([]*string, n)
+	types, retention, details := make([]string, n), make([]string, n), make([]string, n)
+	at, versions := make([]time.Time, n), make([]int16, n)
+	bodies, tails := make([][]byte, n), make([][]byte, n)
+	for i, r := range rs {
+		e := r.e
+		org[i], subject[i], actor[i] = nilIfEmpty(e.OrgID), nilIfEmpty(e.SubjectID), nilIfEmpty(e.ActorID)
+		client[i], correlation[i], token[i] = nilIfEmpty(e.ClientID), nilIfEmpty(e.CorrelationID), nilIfEmpty(e.AdminTokenID)
+		types[i], retention[i], details[i] = e.Type, e.Retention, r.detail
+		at[i], versions[i] = e.OccurredAt, int16(version)
+		bodies[i], tails[i] = hashParts(version, e, r.detail)
+	}
+	if _, err := tx.Exec(ctx, `
+		SELECT core.audit_append_many($1, $2::text[]::uuid[], $3::text[], $4::text[]::uuid[], $5::text[]::uuid[],
+		                              $6::text[], $7::text[]::uuid[], $8::text[], $9::text[]::jsonb[],
+		                              $10::text[]::uuid[], $11::timestamptz[], $12::smallint[], $13::bytea[], $14::bytea[])`,
+		auditChainLock, org, types, subject, actor, client, correlation, retention, details,
+		token, at, versions, bodies, tails); err != nil {
+		return fmt.Errorf("audit: appending %d records: %w", n, err)
 	}
 	return nil
+}
+
+// nilIfEmpty is nullIfEmpty for an array's element.
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // Publisher fans an audited event out to event subscriptions.

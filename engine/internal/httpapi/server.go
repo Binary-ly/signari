@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/captcha"
 	"signari.dev/engine/internal/clientip"
 	"signari.dev/engine/internal/delegated"
@@ -86,6 +87,10 @@ type Server struct {
 	// tokens waiting on one organisation's statement counted by the next together
 	// (E.23). It holds nothing once an organisation has nothing in flight.
 	tokenCharges *store.RateCombiner
+	// detachedAudit appends the records written in transactions of their own, those
+	// arriving while one group is written appended by the next together (E.32). It
+	// holds nothing once nothing is in flight.
+	detachedAudit *audit.Detached
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -397,8 +402,9 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// tenants shared.
 		// Sized from this machine since E.28 (loginguard.go): it was this fixed 100,
 		// which four cores' worth of sign-ins already exceeded.
-		login:        ratelimit.New(loginGuard(), 2*loginGuard()),
-		tokenCharges: store.NewRateCombiner(),
+		login:         ratelimit.New(loginGuard(), 2*loginGuard()),
+		tokenCharges:  store.NewRateCombiner(),
+		detachedAudit: audit.NewDetached(),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it

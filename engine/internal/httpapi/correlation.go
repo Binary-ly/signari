@@ -86,20 +86,13 @@ func shortCode(id string) string {
 //
 // A failure here is logged, not returned. The operation these accompany has
 // already been refused, so there is no outcome left to fail.
+//
+// Committed before this returns, with the records other requests are writing at
+// the same moment: one transaction and one hold of the chain's lock for all of
+// them (audit.Detached, E.32).
 func (s *Server) auditDetached(ctx context.Context, e audit.Event) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
+	if err := s.detachedAudit.Write(ctx, s.db, e); err != nil {
 		s.log.ErrorContext(ctx, "auditing", "event", e.Type, "err", err)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := audit.Write(ctx, tx, e); err != nil {
-		s.log.ErrorContext(ctx, "auditing", "event", e.Type, "err", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		s.log.ErrorContext(ctx, "committing audit", "event", e.Type, "err", err)
 	}
 }
 

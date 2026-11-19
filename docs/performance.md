@@ -356,6 +356,28 @@ the two builds taking turns on one database. A sign-in through an upstream provi
 for every sign-in and leaving it open. It now uses the same connections throughout, and goes
 from 228 a second, with 6,142 sign-ins failed for want of a port, to 292 with none.
 
+## Audit records written together, November 2026
+
+The audit chain's lock is held until the commit, so records written in transactions of their
+own took turns at the commit itself: on this machine 2,223 a second from one writer and 2,152
+from sixteen, where plain inserts reached 17,670. A token exchange, a backchannel request and a
+revocation each write their record that way. Records that arrive while one is being written are
+now appended together, in one statement and one commit, each hashed after the one before it as
+before, and each committed before its request is answered
+([the audit chain](audit-chain-fork.md#the-fix)). Same machine and method as above, the two
+builds taking turns on one database at the new schema, five turns each:
+
+```
+                                before      after
+token exchange                  1,876       2,322     +24%
+CIBA start                      1,920       2,059     +7%
+a token issued and revoked      1,726       1,780     within its turns' spread (1,597 to 1,925)
+jwt-bearer (writes no record)   2,124       2,140     level, as it should be
+```
+
+The chain verified afterwards over all 1,201,088 entries the run had appended, by both builds in
+turn.
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

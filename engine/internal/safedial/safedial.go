@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -405,7 +406,15 @@ func transportWith(extra []netip.Prefix) *http.Transport {
 		// A subscriber that opens a connection and never speaks holds a
 		// goroutine; an outbox drain that stalls stops delivering everything.
 		ExpectContinueTimeout: 1 * time.Second,
-		MaxIdleConnsPerHost:   2,
+		// A connection is kept for the next call to the same host and closed once idle
+		// this long. With no limit, one left idle in a transport nobody called again
+		// stayed open until the far side closed it, holding a port, a descriptor and two
+		// goroutines; a provider that never closes them ran the ports out (E.21).
+		IdleConnTimeout: 90 * time.Second,
+		// Enough that the calls to one busy host in flight at once go back to the pool,
+		// rather than all but two being closed and dialled again.
+		MaxIdleConnsPerHost: 32,
+		MaxIdleConns:        256,
 		// Not a proxy: the one hook a transport calls for every request, and it can
 		// refuse. Every client built here passes through it, and a wrapper round the
 		// transport would not reach the callers holding it as an *http.Transport.
@@ -479,8 +488,28 @@ func Client(timeout time.Duration) *http.Client { return ClientAllowing(timeout)
 // loopback. Wider allowances belong in SIGNARI_OUTBOUND_ALLOW_PRIVATE, where
 // they are visible.
 func ClientAllowing(timeout time.Duration, extra ...netip.Prefix) *http.Client {
-	return client(timeout, transportWith(extra))
+	return client(timeout, sharedTransport(extra))
 }
+
+// sharedTransport is the one transport every client for these allowances and these roots
+// is built on, so a connection made for one call is there for the next. Each call to Client
+// built a transport of its own: every federated sign-in, hook call and delivery dialled
+// and shook hands afresh, and left its connection open behind it (E.21). A connection is
+// reused only to the address it was dialled to, which the dialler checked then, so sharing
+// opens nothing the guard refuses. Callers that change a transport clone it first, as one
+// shared must be.
+func sharedTransport(extra []netip.Prefix) *http.Transport {
+	key := fmt.Sprintf("%p|%v", roots.Load(), extra)
+	if t, ok := sharedTransports.Load(key); ok {
+		return t.(*http.Transport)
+	}
+	t, _ := sharedTransports.LoadOrStore(key, transportWith(extra))
+	return t.(*http.Transport)
+}
+
+// sharedTransports are keyed by the roots they trust as well, so a bundle set after a
+// client was built is trusted by the next one.
+var sharedTransports sync.Map
 
 // client wraps t in a span per request (3.09), which is why a caller wanting the
 // *http.Transport underneath asks Underneath rather than asserting the type.

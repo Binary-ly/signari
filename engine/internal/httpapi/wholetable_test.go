@@ -16,6 +16,7 @@ import (
 
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/plancheck"
+	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/store/storetest"
 )
 
@@ -29,13 +30,16 @@ var requestReadsWhole = map[string]string{
 // cannot tell: what cost a thousand organisations a sort each sign-in is the Sort.
 func TestTheFirstOrganisationIsNotSorted(t *testing.T) {
 	f := newSignInFixture(t)
-	plan, err := plancheck.Explain(context.Background(), f.pool, plancheck.Statement{SQL: firstOrgOfIssuer,
-		Args: []any{f.srv.cfg.Issuer}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(plan, "Sort") || !strings.Contains(plan, "organizations_instance_age_idx") {
-		t.Errorf("the first organisation is not read from its index:\n%s", plan)
+	// On its own, and inside the sign-in page's question for its sign-up rule (E.36).
+	for _, sql := range []string{store.FirstOrgOfIssuer, store.FirstOrgSignupRule} {
+		plan, err := plancheck.Explain(context.Background(), f.pool, plancheck.Statement{SQL: sql,
+			Args: []any{f.srv.cfg.Issuer}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(plan, "Sort") || !strings.Contains(plan, "organizations_instance_age_idx") {
+			t.Errorf("the first organisation is not read from its index:\n%s", plan)
+		}
 	}
 }
 

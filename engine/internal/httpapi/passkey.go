@@ -196,15 +196,18 @@ func (s *Server) passkeysOffered(ctx context.Context, orgID string) bool {
 		return false
 	}
 	var offered bool
-	if err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(i.rp_id, '') <> ''
-		  FROM core.instances i JOIN core.organizations o ON o.instance_id = i.id
-		 WHERE o.id = $1::uuid`, orgID).Scan(&offered); err != nil {
+	if err := s.db.QueryRow(ctx, passkeysOfferedStatement, orgID).Scan(&offered); err != nil {
 		s.log.ErrorContext(ctx, "reading whether passkeys are offered", "err", err, "correlation_id", correlationID(ctx))
 		return false
 	}
 	return offered
 }
+
+// passkeysOfferedStatement is whether an organisation's instance has an RP ID.
+const passkeysOfferedStatement = `
+		SELECT COALESCE(i.rp_id, '') <> ''
+		  FROM core.instances i JOIN core.organizations o ON o.instance_id = i.id
+		 WHERE o.id = $1::uuid`
 
 // handleWebAuthnWellKnown serves WebAuthn §5.11's document at
 // /.well-known/webauthn: {"origins": [...]}, application/json, the origins a
@@ -913,21 +916,12 @@ func (s *Server) defaultOrg(ctx context.Context) (string, error) {
 		return memo.defaultOrg, memo.defaultErr
 	}
 	var orgID string
-	err := s.db.QueryRow(ctx, firstOrgOfIssuer, s.cfg.Issuer).Scan(&orgID)
+	err := s.db.QueryRow(ctx, store.FirstOrgOfIssuer, s.cfg.Issuer).Scan(&orgID)
 	if memo != nil {
 		memo.defaultAsked, memo.defaultOrg, memo.defaultErr = true, orgID, err
 	}
 	return orgID, err
 }
-
-// firstOrgOfIssuer stands on (instance_id, created_at), or it reads and sorts every
-// organisation of the instance, on every sign-in (0.74). The instance is found first
-// because a join would lose the index's order: through one, the plan seeks the
-// index and sorts what it read all the same.
-const firstOrgOfIssuer = `
-	SELECT o.id::text FROM core.organizations o
-	WHERE o.instance_id = (SELECT i.id FROM core.instances i WHERE i.issuer = $1)
-	ORDER BY o.created_at LIMIT 1`
 
 // passkeyLabel names a passkey for a notice: the nickname the user gave it,
 // and the resolved device model in parentheses when a FIDO metadata source is

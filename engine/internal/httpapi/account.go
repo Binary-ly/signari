@@ -181,16 +181,28 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		// organisation is unknown is the leak this function was written to stop.
 		return nil
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT slug, display_name, kind FROM core.identity_providers
-		WHERE enabled AND org_id = $1::uuid AND kind <> 'assertion'
-		ORDER BY display_name`, orgID)
+	rows, err := s.db.Query(ctx, externalProvidersStatement, orgID)
 	if err != nil {
 		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
 		return nil
 	}
-	defer rows.Close()
+	out, err := scanExternalProviders(rows, authzQuery)
+	if err != nil {
+		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
+	}
+	return out
+}
 
+// externalProvidersStatement is the sign-in page's provider buttons for an organisation.
+const externalProvidersStatement = `
+		SELECT slug, display_name, kind FROM core.identity_providers
+		WHERE enabled AND org_id = $1::uuid AND kind <> 'assertion'
+		ORDER BY display_name`
+
+// scanExternalProviders makes externalProvidersStatement's rows buttons, each carrying the
+// parked request, and answers the rows' error: a row that will not scan ends the list.
+func scanExternalProviders(rows pgx.Rows, authzQuery string) ([]externalProvider, error) {
+	defer rows.Close()
 	query := ""
 	if ret := federationReturn(authzQuery); ret != "" {
 		query = "?" + url.Values{"return": {ret}}.Encode()
@@ -200,7 +212,7 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		var p externalProvider
 		var kind string
 		if err := rows.Scan(&p.Slug, &p.Name, &kind); err != nil {
-			return out
+			return out, nil
 		}
 		switch kind {
 		case "saml":
@@ -212,10 +224,7 @@ func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string
 		}
 		out = append(out, p)
 	}
-	if err := rows.Err(); err != nil {
-		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
-	}
-	return out
+	return out, rows.Err()
 }
 
 // linkedProvider is one row on the account page.

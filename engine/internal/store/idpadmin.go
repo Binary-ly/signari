@@ -208,10 +208,24 @@ func ProviderCalled(ctx context.Context, q rowQuerier, orgID, name string) (slug
 // address, which is what puts the single sign-on button on the page.
 func RoutesByDomain(ctx context.Context, q rowQuerier, orgID string) (bool, error) {
 	var any bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.identity_providers
-		WHERE org_id = $1::uuid AND enabled AND cardinality(login_domains) > 0)`, orgID).Scan(&any)
+	err := q.QueryRow(ctx, routesByDomainStatement, orgID).Scan(&any)
 	return any, err
 }
+
+// QueueRoutesByDomain is RoutesByDomain as one more statement in a batch the caller
+// sends; the answer is read once the batch is closed (E.36).
+func QueueRoutesByDomain(b *pgx.Batch, orgID string) func() (bool, error) {
+	var any bool
+	err := errors.New("the batch asking whether a domain routes was not sent")
+	b.Queue(routesByDomainStatement, orgID).QueryRow(func(row pgx.Row) error {
+		err = row.Scan(&any)
+		return nil
+	})
+	return func() (bool, error) { return any, err }
+}
+
+const routesByDomainStatement = `SELECT EXISTS (SELECT 1 FROM core.identity_providers
+		WHERE org_id = $1::uuid AND enabled AND cardinality(login_domains) > 0)`
 
 // ChangeIdentityProvider applies a change to the organisation's provider of
 // that slug. A setting is refused on a kind that never reads it, since it

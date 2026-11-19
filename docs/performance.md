@@ -418,6 +418,20 @@ and the first organisation, once a render       390       396    within its turn
 Device polls, which render no page, were measured alongside as the control: level, 95% and
 102%.
 
+What the page decides from was then still read a statement at a time: what it wears, its
+provider buttons, whether it links sign-up, keeps a person signed in, routes by address and
+offers passkeys. Those statements now go in one batch, each the one its own reader asks, still
+on every render, so a change shows on the next page. If any of them fails, they are asked one
+by one as before. The login page went from 9 round trips to 4, and an authorization request
+that renders it from 11 to 5. Sign-ins through a provider, on another machine of the same kind
+with the database on disk, the two builds taking turns:
+
+```
+                                              before    after
+the page's settings in one round trip           343       373    +9%    (p50 46.1 → 42.3 ms)
+device polls, the control                     3,899     3,863    level
+```
+
 ## Reproducing
 
 The harness is [`tools/bench`](../tools/bench/README.md): full flows, latency

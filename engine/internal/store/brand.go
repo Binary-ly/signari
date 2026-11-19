@@ -20,20 +20,52 @@ import (
 // A missing row is not an error: an unbranded deployment is the normal state,
 // and returning an error for it would make every page render log something.
 func LoadBrandByIssuer(ctx context.Context, db *pgxpool.Pool, issuer string) (*brand.Brand, error) {
-	var b brand.Brand
-	err := db.QueryRow(ctx, `
+	return scanBrand(db.QueryRow(ctx, instanceBrandStatement, issuer))
+}
+
+// QueueInstanceBrand is LoadBrandByIssuer as one more statement in a batch the caller
+// sends; the answer is read once the batch is closed (E.36).
+func QueueInstanceBrand(b *pgx.Batch, issuer string) func() (*brand.Brand, error) {
+	return queueBrand(b, instanceBrandStatement, issuer)
+}
+
+// QueueOrgBrand is OrgBrandOf as one more statement in a batch the caller sends.
+func QueueOrgBrand(b *pgx.Batch, orgID string) func() (*brand.Brand, error) {
+	return queueBrand(b, orgBrandStatement, orgID)
+}
+
+func queueBrand(b *pgx.Batch, statement, arg string) func() (*brand.Brand, error) {
+	var got *brand.Brand
+	err := errors.New("the batch holding a brand was not sent")
+	b.Queue(statement, arg).QueryRow(func(row pgx.Row) error {
+		got, err = scanBrand(row)
+		return nil
+	})
+	return func() (*brand.Brand, error) { return got, err }
+}
+
+const brandColumns = `
 		SELECT COALESCE(product_name,''), COALESCE(logo_url,''), COALESCE(support_url,''),
 		       COALESCE(colour_primary,''), COALESCE(colour_on_primary,''),
-		       COALESCE(colour_background,''), COALESCE(colour_text,'')
+		       COALESCE(colour_background,''), COALESCE(colour_text,'')`
+
+const instanceBrandStatement = brandColumns + `
 		FROM core.brands b
 		JOIN core.instances i ON i.id = b.instance_id
-		WHERE i.issuer = $1`, issuer).
-		Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
-			&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+		WHERE i.issuer = $1`
+
+const orgBrandStatement = brandColumns + `
+		FROM core.org_brands WHERE org_id = $1::uuid`
+
+// scanBrand reads a brand's row, nil when there is none.
+func scanBrand(row pgx.Row) (*brand.Brand, error) {
+	var b brand.Brand
+	err := row.Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
+		&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &b, nil
@@ -130,21 +162,7 @@ func SaveOrgBrand(ctx context.Context, db Execer, orgID string, b *brand.Brand) 
 func OrgBrandOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID string) (*brand.Brand, error) {
-	var b brand.Brand
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(product_name,''), COALESCE(logo_url,''), COALESCE(support_url,''),
-		       COALESCE(colour_primary,''), COALESCE(colour_on_primary,''),
-		       COALESCE(colour_background,''), COALESCE(colour_text,'')
-		FROM core.org_brands WHERE org_id = $1::uuid`, orgID).
-		Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
-			&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &b, nil
+	return scanBrand(q.QueryRow(ctx, orgBrandStatement, orgID))
 }
 
 // RemoveOrgBrand returns an organisation to its instance's appearance,

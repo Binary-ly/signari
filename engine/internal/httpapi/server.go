@@ -1113,7 +1113,20 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		}
 	}
 	pageOrg := s.loginOrg(r.Context(), authzQuery)
-	b := s.brandOf(r.Context(), pageOrg)
+	// What the page decides from, in one round trip; asked one by one as before when that
+	// could not be read.
+	page, read := s.readSignInPage(r.Context(), pageOrg, authzQuery)
+	if !read {
+		page = signInPage{
+			brand:        s.brandOf(r.Context(), pageOrg),
+			providers:    s.externalProviders(r.Context(), pageOrg, authzQuery),
+			signup:       s.signupOffered(r.Context()),
+			persistent:   s.persistentOffered(r.Context(), pageOrg),
+			singleSignOn: s.singleSignOnOffered(r.Context(), pageOrg),
+			passkeys:     s.passkeysOffered(r.Context(), pageOrg),
+		}
+	}
+	b := page.brand
 	setCSP(w, `default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
 		`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
 		` form-action 'self'; frame-ancestors 'none'`)
@@ -1133,23 +1146,23 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		// startup: adding one should take effect immediately, and an operator who
 		// has to restart the engine to see their new sign-in button will assume it
 		// is broken.
-		"Providers": s.externalProviders(r.Context(), s.loginOrg(r.Context(), authzQuery), authzQuery),
+		"Providers": page.providers,
 		// The ways off this page a person may need, offered only where the
 		// deployment would let them through. Neither was linked at all, so
 		// recovery and sign-up existed and nobody signing in could find them,
 		// while the sign-up page told people to use a link this page lacked.
 		"Recover": s.recoveryOffered(r.Context()),
-		"Signup":  s.signupOffered(r.Context()),
+		"Signup":  page.signup,
 		// "Stay signed in on this device", where the organisation offers it.
-		"StaySignedIn": s.persistentOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		"StaySignedIn": page.persistent,
 		// An emailed code in place of the password, where the sign-in flow takes one.
-		"EmailCode": s.emailSignInOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		"EmailCode": s.emailSignInOffered(r.Context(), pageOrg),
 		// Single sign-on by address, where a provider signs in a domain.
-		"SingleSignOn": s.singleSignOnOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		"SingleSignOn": page.singleSignOn,
 		// Other accounts this browser is signed in with, to choose instead.
-		"Accounts": s.holdsAccounts(r, s.loginOrg(r.Context(), authzQuery)),
+		"Accounts": s.holdsAccounts(r, pageOrg),
 		// The passkey button and the ceremony behind it, where they can work.
-		"Passkeys": s.passkeysOffered(r.Context(), s.loginOrg(r.Context(), authzQuery)),
+		"Passkeys": page.passkeys,
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

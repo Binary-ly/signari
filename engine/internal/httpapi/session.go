@@ -217,12 +217,14 @@ func (s *Server) persistentOffered(ctx context.Context, orgID string) bool {
 		return false
 	}
 	var on bool
-	if err := s.db.QueryRow(ctx, `SELECT persistent_sessions FROM core.organizations WHERE id = $1::uuid`,
-		orgID).Scan(&on); err != nil {
+	if err := s.db.QueryRow(ctx, persistentOfferedStatement, orgID).Scan(&on); err != nil {
 		return false
 	}
 	return on
 }
+
+// persistentOfferedStatement is whether an organisation offers "stay signed in".
+const persistentOfferedStatement = `SELECT persistent_sessions FROM core.organizations WHERE id = $1::uuid`
 
 // clearSessionCookie expires the cookie. The attributes must match the ones used
 // when setting it or the browser will not replace it.

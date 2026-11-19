@@ -354,16 +354,25 @@ func RemoveSignupRule(ctx context.Context, tx Execer, orgID string) (bool, error
 func LoadSignupRule(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, orgID string) (*SignupRule, error) {
+	r, err := scanSignupRule(db.QueryRow(ctx, signupRuleColumns+`
+		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID))
+	if r != nil {
+		r.OrgID = orgID
+	}
+	return r, err
+}
+
+const signupRuleColumns = `
+		SELECT allowed_domains, default_groups, require_verified_email, require_approval`
+
+// scanSignupRule reads a rule's row, nil when there is none.
+func scanSignupRule(row pgx.Row) (*SignupRule, error) {
 	var r SignupRule
-	r.OrgID = orgID
-	err := db.QueryRow(ctx, `
-		SELECT allowed_domains, default_groups, require_verified_email, require_approval
-		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID).
-		Scan(&r.AllowedDomains, &r.DefaultGroups, &r.RequireVerify, &r.RequireApproval)
+	err := row.Scan(&r.AllowedDomains, &r.DefaultGroups, &r.RequireVerify, &r.RequireApproval)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &r, nil

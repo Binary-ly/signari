@@ -199,13 +199,31 @@ func ReadRefreshGrant(ctx context.Context, tx pgx.Tx, hash []byte) (*RefreshGran
 	return &g, nil
 }
 
-// LinkSuccessor records which token replaced another, so an audit can walk a
-// lineage after the fact and see exactly where a replay entered it. sealed is the
-// successor for a client with a retry grace (SealSuccessor), nil for any other.
-func LinkSuccessor(ctx context.Context, tx pgx.Tx, oldHash, newHash, sealed []byte) error {
-	_, err := tx.Exec(ctx, `UPDATE core.refresh_tokens SET successor_hash = $2, successor_sealed = $3
-		WHERE token_hash = $1`, oldHash, newHash, sealed)
-	return err
+// IssueRefreshTokenReplacing is IssueRefreshToken for a rotation, recording in the same
+// statement which token the new one replaces, so an audit can walk a lineage after the
+// fact and see exactly where a replay entered it. sealed is the successor for a client
+// with a retry grace (SealSuccessor), nil for any other. One statement, where the
+// insert and the link were two round trips (E.04).
+func IssueRefreshTokenReplacing(ctx context.Context, tx pgx.Tx, familyID string, hash []byte,
+	scopes, resources []string, ttl time.Duration, oldHash, sealed []byte) error {
+
+	if resources == nil {
+		resources = []string{}
+	}
+	// The link first and the insert after, both in one statement: the link names the
+	// successor by the hash it is about to be written with, and the two touch different
+	// rows.
+	_, err := tx.Exec(ctx, `
+		WITH linked AS (
+			UPDATE core.refresh_tokens SET successor_hash = $1, successor_sealed = $7
+			 WHERE token_hash = $6)
+		INSERT INTO core.refresh_tokens (token_hash, family_id, scopes, resources, expires_at)
+		VALUES ($1,$2,$3,$4, now() + $5::interval)`,
+		hash, familyID, scopes, resources, ttl.String(), oldHash, sealed)
+	if err != nil {
+		return fmt.Errorf("issuing a refresh token in place of another: %w", err)
+	}
+	return nil
 }
 
 // successorContext separates this key from anything else derived from a token.

@@ -187,8 +187,10 @@ func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
 // sends several statements in one trip. Client credentials is the client with its
 // failure counters in one batch, then the organisation's token budget, charged only once
 // the client has proved itself. The ceilings are what each took when this was written,
-// begin and commit counted: 2, 8 and 10. A code was 9 until it stopped reading its row
-// before the transaction that consumes it, which only a token provider needs.
+// begin and commit counted: 2, 8 and 8, E.04's targets. A code was 9 until it stopped
+// reading its row before the transaction that consumes it, which only a token provider
+// needs. A refresh was 10 until the session's touch read what the tokens say of it, and
+// the successor's insert linked the token it replaces, each in one statement.
 func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
 	f := newTokenFixture(t)
 	secret := revocableClient(t, f)
@@ -240,7 +242,7 @@ func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("refreshing: %d %v", status, body)
 	}
-	within("refreshing", 10)
+	within("refreshing", 8)
 }
 
 // A browser with a session coming back to /authorize, which is most of what the

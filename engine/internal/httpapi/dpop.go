@@ -411,6 +411,48 @@ func refreshKeptFrom(ctx context.Context) bool {
 	return kept
 }
 
+type replacingKey struct{}
+
+// replacing is a rotation's token being replaced: its hash, which the successor's own
+// statement links to it, and, for a client with a retry grace, the token itself, which
+// seals the successor for a retry to be given (E.04).
+type replacing struct {
+	oldHash   []byte
+	oldToken  string
+	sealRetry bool
+}
+
+func withReplacing(ctx context.Context, r replacing) context.Context {
+	return context.WithValue(ctx, replacingKey{}, r)
+}
+
+func replacingFrom(ctx context.Context) (replacing, bool) {
+	r, ok := ctx.Value(replacingKey{}).(replacing)
+	return r, ok
+}
+
+type sessionFactsKey struct{}
+
+// carriedSessionFacts is a session's token facts already read in this request, by the
+// statement that touched it, so the mint does not ask again (E.04).
+type carriedSessionFacts struct {
+	sid   string
+	facts store.SessionTokenFacts
+}
+
+func withSessionFacts(ctx context.Context, sid string, f store.SessionTokenFacts) context.Context {
+	return context.WithValue(ctx, sessionFactsKey{}, carriedSessionFacts{sid, f})
+}
+
+// sessionFactsFrom is what withSessionFacts carried for sid, and only for sid.
+func sessionFactsFrom(ctx context.Context, sid string) (store.SessionTokenFacts, bool) {
+	c, ok := ctx.Value(sessionFactsKey{}).(carriedSessionFacts)
+	if !ok || c.sid != sid || sid == "" {
+		return store.SessionTokenFacts{}, false
+	}
+	return c.facts, true
+}
+
 // refuseOutOfProfile holds a client marked for a security profile to it at the token
 // endpoint, before any grant. A client's settings can leave the profile by a command that
 // has never heard of one, and a client out of it is refused rather than served as if

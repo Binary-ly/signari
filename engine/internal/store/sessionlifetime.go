@@ -52,6 +52,35 @@ func TouchSession(ctx context.Context, e Execer, sid string) error {
 	return err
 }
 
+// SessionTokenFacts is what a token issued under a session says of it: who started the
+// session for somebody else, if anybody, and when and how the person signed in.
+type SessionTokenFacts struct {
+	Impersonator *string
+	AuthTime     time.Time
+	ACR          string
+	AMR          []string
+}
+
+// SessionTokenFactsStatement asks them of one session.
+const SessionTokenFactsStatement = `SELECT impersonator_id::text, auth_time, acr, amr FROM core.sessions WHERE sid = $1`
+
+// TouchSessionReading is TouchSession, and the session's SessionTokenFacts read in the
+// same statement (E.04): a refresh touched the session and then asked for it again, a
+// round trip each. The read sees the row as it stood before the touch, which moves
+// neither when it was signed in nor how. pgx.ErrNoRows is a session that is not there.
+func TouchSessionReading(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, sid string) (SessionTokenFacts, error) {
+	var f SessionTokenFacts
+	err := q.QueryRow(ctx, `
+		WITH touched AS (
+			UPDATE core.sessions t SET `+touchSet+`
+			  FROM core.organizations o WHERE t.sid = $1 AND o.id = t.org_id AND `+touchDue+`
+			RETURNING t.sid)
+		`+SessionTokenFactsStatement, sid).Scan(&f.Impersonator, &f.AuthTime, &f.ACR, &f.AMR)
+	return f, err
+}
+
 // SessionLifetimes are an organisation's limits. Idle 0 is none; Offline 0
 // ends a grant of offline_access with its session (5.10).
 type SessionLifetimes struct {

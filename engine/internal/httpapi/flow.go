@@ -1347,12 +1347,17 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	var amr []string
 	var accessAuthTime int64
 	if sid != "" {
-		var impersonator *string
-		if err := tx.QueryRow(ctx,
-			`SELECT impersonator_id::text, auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&impersonator, &authTime, &acr, &amr); err != nil {
-			return nil, nil, fmt.Errorf("loading the session behind a token: %w", err)
+		// Carried from the statement that touched the session, on a refresh (E.04);
+		// asked here otherwise.
+		f, carried := sessionFactsFrom(ctx, sid)
+		if !carried {
+			if err := tx.QueryRow(ctx, store.SessionTokenFactsStatement, sid).
+				Scan(&f.Impersonator, &f.AuthTime, &f.ACR, &f.AMR); err != nil {
+				return nil, nil, fmt.Errorf("loading the session behind a token: %w", err)
+			}
 		}
+		impersonator := f.Impersonator
+		authTime, acr, amr = f.AuthTime, f.ACR, f.AMR
 		if impersonator != nil && *impersonator != "" {
 			act = &tokens.Actor{Subject: *impersonator}
 		}
@@ -1548,7 +1553,22 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	}
 	rtHash := store.HashToken(rt)
 	ttl := time.Duration(c.RefreshTokenTTLSeconds()) * time.Second
-	if err := store.IssueRefreshToken(ctx, tx, familyID, rtHash, scopes, resources, ttl); err != nil {
+	if rep, rotating := replacingFrom(ctx); rotating {
+		// A rotation: the token replaced is linked to this one in the statement that
+		// writes it (E.04).
+		var sealed []byte
+		if rep.sealRetry {
+			var serr error
+			if sealed, serr = store.SealSuccessor(rep.oldToken, rt); serr != nil {
+				// A retry is a kindness. Without it the rotation is still sound.
+				s.log.ErrorContext(ctx, "sealing a successor", "err", serr)
+			}
+		}
+		if err := store.IssueRefreshTokenReplacing(ctx, tx, familyID, rtHash, scopes, resources, ttl,
+			rep.oldHash, sealed); err != nil {
+			return nil, nil, err
+		}
+	} else if err := store.IssueRefreshToken(ctx, tx, familyID, rtHash, scopes, resources, ttl); err != nil {
 		return nil, nil, err
 	}
 	resp.RefreshToken = rt
@@ -1951,10 +1971,20 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	// under, as a browser presenting the cookie is: somebody working in the
 	// application is not idle. In this transaction, so a refresh refused below
 	// moves nothing.
-	if err := store.TouchSession(ctx, tx, grant.SessionID); err != nil {
-		s.log.ErrorContext(ctx, "recording a refresh as a use of its session", "err", err)
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
-		return
+	//
+	// And what the tokens say of the session read in the same statement (E.04), for the
+	// mint to use rather than ask again. A session that is not there touches nothing and
+	// carries nothing; the mint asks, and refuses as it did.
+	if grant.SessionID != "" {
+		f, err := store.TouchSessionReading(ctx, tx, grant.SessionID)
+		switch {
+		case err == nil:
+			ctx = withSessionFacts(ctx, grant.SessionID, f)
+		case !errors.Is(err, pgx.ErrNoRows):
+			s.log.ErrorContext(ctx, "recording a refresh as a use of its session", "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
 	}
 
 	// The client's floor (clientacr.go), against the session the lineage was
@@ -2109,6 +2139,13 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
+	// A plain rotation links the token it replaces in the statement that writes the
+	// successor (E.04). Not a retry, which answers with the successor already written,
+	// nor a kept token, which nothing replaces.
+	if retried == nil && !kept {
+		ctx = withReplacing(ctx, replacing{oldHash: oldHash, oldToken: req.RefreshToken,
+			sealRetry: c.RefreshReuseGrace > 0})
+	}
 	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
 	if err != nil {
 		s.log.ErrorContext(ctx, "minting from refresh", "err", err)
@@ -2132,18 +2169,6 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		resp.RefreshToken = successor
-	} else if !kept {
-		var sealed []byte
-		if c.RefreshReuseGrace > 0 && resp.RefreshToken != "" {
-			var serr error
-			if sealed, serr = store.SealSuccessor(req.RefreshToken, resp.RefreshToken); serr != nil {
-				// A retry is a kindness. Without it the rotation is still sound.
-				s.log.ErrorContext(ctx, "sealing a successor", "err", serr)
-			}
-		}
-		if err := store.LinkSuccessor(ctx, tx, oldHash, newHash, sealed); err != nil {
-			s.log.ErrorContext(ctx, "linking successor", "err", err)
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})

@@ -335,9 +335,9 @@ func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {
 }
 
 // A userinfo waits on one round trip: what has become of the token and the person it
-// names, asked in one batch (E.06). Asked one after the other it was two, and a provider
-// that caches both answers userinfo with none, which is most of why it answered six
-// times as many in turns on one host.
+// names, asked in one batch (E.06). Asked one after the other it was two, and the batch
+// took userinfo from 5,789 to 7,340 a second in turns against its parent. A provider that
+// caches both waits on none; reading the standing on every request is ADR-007's price.
 func TestUserinfoTakesOneRoundTrip(t *testing.T) {
 	f := newTokenFixture(t)
 	access, _ := costlyToken(t, f)

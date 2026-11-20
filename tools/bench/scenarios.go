@@ -106,7 +106,16 @@ var scenarios = map[string]scenario{
 		help: "introspect one access token (RFC 7662), the token issued outside the window", needsDiscovery: true,
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
 			hc := httpClient(e.cfg)
-			tok, err := clientCredentials(ctx, hc, e)
+			var tok tokenResponse
+			var err error
+			if e.cfg.IntrospectPerson {
+				// A person's access token, from one sign-in per worker: what a resource
+				// server is handed, and what a provider that keeps no session for a
+				// client's own token can still answer for.
+				tok, err = signIn(ctx, hc, asNextPerson(e))
+			} else {
+				tok, err = clientCredentials(ctx, hc, e)
+			}
 			if err != nil {
 				return nil, err
 			}

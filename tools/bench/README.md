@@ -19,7 +19,7 @@ cd tools/bench && go build .
 |---|---|
 | `discovery`, `jwks` | GET the discovery document, the key set |
 | `client-credentials` | a token by the client credentials grant; `-cc-scope` names what to ask for |
-| `introspect` | introspect one token (RFC 7662), issued before the window opens. Where a provider serves introspection off its discovery document or only to another client, `-introspect-url` and `-introspect-client-id`/`-introspect-client-secret` name them |
+| `introspect` | introspect one token (RFC 7662), issued before the window opens. Where a provider serves introspection off its discovery document or only to another client, `-introspect-url` and `-introspect-client-id`/`-introspect-client-secret` name them. The token is the client's own, by client credentials, unless `-introspect-person` makes it a signed-in person's, one sign-in per worker, for a provider that keeps nothing behind a client's own token to introspect |
 | `signin` | a person's password sign-in through Signari's login and consent forms, to a redeemed code (PKCE). With `-signin-people`, each sign-in is the next seeded person in a fresh browser, and so is the one sign-in each worker of `refresh`, `userinfo`, `token-exchange` and `end-session` makes: one person signed in by every worker at once, or again and again for minutes, is throttled by design, each attempt being charged to the account before the password is checked |
 | `refresh` | one refresh in a chain that spends each token, after one `signin` per worker |
 | `userinfo` | userinfo with that person's access token |

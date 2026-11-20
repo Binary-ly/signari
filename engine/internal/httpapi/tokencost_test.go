@@ -168,7 +168,8 @@ func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
 // sends several statements in one trip. Client credentials is the client with its
 // failure counters in one batch, then the organisation's token budget, charged only once
 // the client has proved itself. The ceilings are what each took when this was written,
-// begin and commit counted: 2, 9 and 10.
+// begin and commit counted: 2, 8 and 10. A code was 9 until it stopped reading its row
+// before the transaction that consumes it, which only a token provider needs.
 func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
 	f := newTokenFixture(t)
 	secret := revocableClient(t, f)
@@ -212,7 +213,7 @@ func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("redeeming a code: %d %v", status, body)
 	}
-	within("redeeming a code", 9)
+	within("redeeming a code", 8)
 
 	refresh, _ := body["refresh_token"].(string)
 	status, body = f.post(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},

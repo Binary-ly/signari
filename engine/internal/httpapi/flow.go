@@ -1054,14 +1054,20 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// so the provider still sees only a redemption this engine would approve.
 	// A code's columns never change; the transaction below confirms it is the
 	// same record it consumes, and asks again inside if it is not.
+	//
+	// Read only where there is a provider to ask. Without one nothing is asked here,
+	// and the read was a round trip on every redemption for nothing (E.04): a code
+	// that validates is its client's, client_id being the clients' key, so it is in
+	// the client's organisation, and the transaction's own check below asks a
+	// provider of any other.
 	var early *store.ConsumedCode
 	var hook store.TokenHookResult
 	var hookErr error
-	if peeked, perr := store.PeekCode(ctx, s.db, store.HashToken(req.Code)); perr == nil {
-		if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
-			dpopThumbprintFrom(ctx), time.Now()); verr == nil {
-			early = peeked
-			if peeked.OrgID != c.OrgID || c.HasTokenHook {
+	if c.HasTokenHook {
+		if peeked, perr := store.PeekCode(ctx, s.db, store.HashToken(req.Code)); perr == nil {
+			if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
+				dpopThumbprintFrom(ctx), time.Now()); verr == nil {
+				early = peeked
 				hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log,
 					peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
 			}

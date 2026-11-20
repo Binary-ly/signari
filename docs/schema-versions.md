@@ -7,6 +7,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [upgrading.md](upgrading.md).
 
+## 0306 wsfed_reply_url
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where each WS-Federation application of a session was sent its token, so that a sign-out can send it the clean-up message (8.09). WS-Federation 1.2 §13.2.4 has the identity provider's STS send clean-up messages to every relying party it issued a token to for the session, each a GET with wa=wsignoutcleanup1.0 (§13.2.4.2), and §13.1.2 asks for them in parallel rather than chained. Null for a sign-in through SAML, which single logout reaches instead. An older binary writes and reads none, and the applications of its sessions are not told of a sign-out, as before this.
+
 ## 0305 audit_append_many
 
 Compatible with the release before: its binary may still serve this schema.

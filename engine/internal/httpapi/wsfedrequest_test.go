@@ -15,6 +15,7 @@ import (
 	"github.com/beevik/etree"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
@@ -290,10 +291,23 @@ func TestAHomeRealmChoosesTheProvider(t *testing.T) {
 // wsfedSignOut confirms a sign-out as a person does, on the page it is asked on.
 func (rf *realmFixture) wsfedSignOut(t *testing.T, q url.Values) *httptest.ResponseRecorder {
 	t.Helper()
+	return rf.confirmSignOut(t, "/wsfed?"+q.Encode())
+}
+
+// endSessionConfirmed is a sign-out at the OpenID Connect end-session endpoint, confirmed
+// the same way.
+func (rf *realmFixture) endSessionConfirmed(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	return rf.confirmSignOut(t, oidc.PathEndSession)
+}
+
+// confirmSignOut asks for a sign-out at target and confirms it on the page that asks.
+func (rf *realmFixture) confirmSignOut(t *testing.T, target string) *httptest.ResponseRecorder {
+	t.Helper()
 	h := rf.f.srv.Routes()
 	session := &http.Cookie{Name: SessionCookieName, Value: rf.cookie}
 	page := httptest.NewRecorder()
-	get := httptest.NewRequest(http.MethodGet, "/wsfed?"+q.Encode(), nil)
+	get := httptest.NewRequest(http.MethodGet, target, nil)
 	get.AddCookie(session)
 	h.ServeHTTP(page, get)
 	action := regexp.MustCompile(`<form method="post" action="([^"]*)"`).FindStringSubmatch(page.Body.String())
@@ -360,8 +374,12 @@ func TestAWSFederationSignOutLandsOnAReplyURL(t *testing.T) {
 				q[name] = given
 			}
 			rec := rf.wsfedSignOut(t, q)
-			if got := rec.Header().Get("Location"); got != c.landing {
+			if got := landedOn(rec); got != c.landing {
 				t.Errorf("landed on %q: %d %.200s", got, rec.Code, rec.Body.String())
+			}
+			// The application the session holds is told, whatever the landing.
+			if told := strings.Contains(rec.Body.String(), wsfedCleanupFrame); told != c.tokenFirst {
+				t.Errorf("the application's clean-up was sent: %v, want %v", told, c.tokenFirst)
 			}
 			if rec.Code >= http.StatusBadRequest {
 				t.Errorf("answered %d %.200s", rec.Code, rec.Body.String())
@@ -370,6 +388,71 @@ func TestAWSFederationSignOutLandsOnAReplyURL(t *testing.T) {
 				t.Error("the person asked to sign out, and is still signed in")
 			}
 		})
+	}
+}
+
+// wsfedCleanupFrame is the clean-up message to the fixture's application, as the
+// sign-out page loads it.
+const wsfedCleanupFrame = `<iframe src="https://sp.test/acs?wa=wsignoutcleanup1.0"`
+
+// landedOn is where a sign-out takes the person: a redirect's Location, or the way on
+// from the page that tells the session's applications, "" for the signed-out page and
+// for that page's own default, the sign-in page.
+func landedOn(rec *httptest.ResponseRecorder) string {
+	if loc := rec.Header().Get("Location"); loc != "" {
+		return loc
+	}
+	body := rec.Body.String()
+	i := strings.LastIndex(body, "</iframe>")
+	if i < 0 {
+		return ""
+	}
+	m := regexp.MustCompile(`<a href="([^"]*)"`).FindStringSubmatch(body[i:])
+	if m == nil || html.UnescapeString(m[1]) == "/login" {
+		return ""
+	}
+	return html.UnescapeString(m[1])
+}
+
+// A sign-out sends every WS-Federation application the session gave a token to its
+// clean-up message, a GET of the reply URL it took the token at with
+// wa=wsignoutcleanup1.0 (specs/ws-federation-1.2.txt:2222, :2239), whichever
+// application or protocol the sign-out started from. Until November 2026 none was sent,
+// so each application kept its own session after the person had signed out. Not to an
+// application the session never used, and not to a reply URL no longer registered,
+// since the browser is made to load it.
+func TestASignOutSendsEachWSFederationApplicationItsCleanUp(t *testing.T) {
+	rf := newRealmFixture(t)
+	wsfedToken(t, rf.wsfed(http.MethodGet, rf.wsfedAsk(nil), true))
+	rec := rf.wsfedSignOut(t, url.Values{"wa": {"wsignout1.0"}})
+	if rec.Code != http.StatusOK || strings.Count(rec.Body.String(), wsfedCleanupFrame) != 1 {
+		t.Fatalf("a WS-Federation sign-out answered %d without the application's clean-up once: %.400s",
+			rec.Code, rec.Body.String())
+	}
+
+	// From the OpenID Connect end-session endpoint, the same.
+	rf.cookie = rf.f.signInAndReturnCookie(t)
+	wsfedToken(t, rf.wsfed(http.MethodGet, rf.wsfedAsk(nil), true))
+	if rec := rf.endSessionConfirmed(t); !strings.Contains(rec.Body.String(), wsfedCleanupFrame) {
+		t.Errorf("an OpenID Connect sign-out answered %d without the application's clean-up: %.400s",
+			rec.Code, rec.Body.String())
+	}
+
+	// A session that never used it.
+	rf.cookie = rf.f.signInAndReturnCookie(t)
+	if rec := rf.wsfedSignOut(t, url.Values{"wa": {"wsignout1.0"}}); strings.Contains(rec.Body.String(), "wsignoutcleanup1.0") {
+		t.Errorf("an application the session never used was sent a clean-up: %.400s", rec.Body.String())
+	}
+
+	// A reply URL taken away after the token went to it.
+	rf.cookie = rf.f.signInAndReturnCookie(t)
+	wsfedToken(t, rf.wsfed(http.MethodGet, rf.wsfedAsk(nil), true))
+	if _, err := rf.f.pool.Exec(context.Background(), `UPDATE core.saml_acs_urls SET url = 'https://sp.test/moved'
+		WHERE provider_id = $1::uuid`, rf.providerID(t, rf.own)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := rf.wsfedSignOut(t, url.Values{"wa": {"wsignout1.0"}}); strings.Contains(rec.Body.String(), "wsignoutcleanup1.0") {
+		t.Errorf("a reply URL no longer registered was loaded: %.400s", rec.Body.String())
 	}
 }
 

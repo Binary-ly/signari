@@ -123,8 +123,22 @@ are, and they stay here instead of following the link. So a page an application 
 people to land on after signing out has to be registered with `-acs` like any reply
 URL.
 
-An application is not told of a sign-out that started somewhere else. There is no
-`wsignoutcleanup1.0` sent to it, so it keeps its own session until that runs out.
+Every application the session gave a token to is told, wherever the sign-out started:
+here, at another application, or at the OpenID Connect end-session endpoint. The page
+that confirms the sign-out loads each one's reply URL, the one it took its token at,
+with `wa=wsignoutcleanup1.0`, all at once and beside the frames of the OpenID Connect
+applications. That is the clean-up message WS-Federation 1.2 §13.2.4 has the identity
+provider send to every relying party it issued a token to for the session, and the
+application's own cookies, which the browser brings, say whose session to end. A
+reply URL that has since been taken off the provider is not loaded.
+
+It is a page in the person's browser, so it reaches an application only as far as the
+browser lets it: one whose session cookie is `SameSite=Lax` or `Strict` is not sent it
+in a frame from another site, and keeps its session until it runs out. And the page is
+not shown at all when the session also holds a SAML service provider with single
+logout, whose chain takes the browser from one provider to the next instead, as it
+is not for the OpenID Connect applications' frames either. Until November 2026
+nothing was sent at all.
 
 ## The token
 

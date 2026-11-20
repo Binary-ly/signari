@@ -668,8 +668,14 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *sam
 	defer func() { _ = record.Rollback(ctx) }()
 	// An ECP sign-in has no session (samlecp.go), so nothing for a logout to end.
 	if sid != "" {
+		// A WS-Federation token's reply URL, where a sign-out's clean-up message goes
+		// (wsFedCleanup).
+		wsfedReply := ""
+		if v.WSFed {
+			wsfedReply = v.ACSURL
+		}
 		if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID,
-			saml.FullNameIDFormat(p.NameIDFormat)); err != nil {
+			saml.FullNameIDFormat(p.NameIDFormat), wsfedReply); err != nil {
 			return "", "", err
 		}
 	}

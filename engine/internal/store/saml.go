@@ -154,14 +154,55 @@ func EnsureNameID(ctx context.Context, tx claimReader, providerID, userID, orgID
 // single logout can enumerate them later, with the NameID and its format as the
 // assertion carried them.
 func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgID, sessionIndex, nameID,
-	nameIDFormat string) error {
+	nameIDFormat, wsfedReplyURL string) error {
+	// wsfedReplyURL is where a WS-Federation token went, "" for a SAML response. The
+	// latest one is kept: it is where the application last took a token, so where it
+	// reads a clean-up message (WSFedCleanupTargets).
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.saml_session_participants
-			(sid, provider_id, org_id, session_index, name_id, name_id_format)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6)
-		ON CONFLICT (sid, provider_id) DO NOTHING`,
-		sid, providerID, orgID, sessionIndex, nameID, nameIDFormat)
+			(sid, provider_id, org_id, session_index, name_id, name_id_format, wsfed_reply_url)
+		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7, ''))
+		ON CONFLICT (sid, provider_id) DO UPDATE SET wsfed_reply_url = EXCLUDED.wsfed_reply_url
+		 WHERE EXCLUDED.wsfed_reply_url IS NOT NULL`,
+		sid, providerID, orgID, sessionIndex, nameID, nameIDFormat, wsfedReplyURL)
 	return err
+}
+
+// WSFedTarget is a WS-Federation application of a session, and the reply URL it took
+// its token at.
+type WSFedTarget struct {
+	EntityID string
+	ReplyURL string
+}
+
+// WSFedCleanupTargets lists the WS-Federation applications a session gave a token to,
+// each at the reply URL it took it at, for the clean-up message of a sign-out
+// (specs/ws-federation-1.2.txt:2222). Only a reply URL still registered for an enabled
+// provider: the browser is made to load it, so it has to be one an operator put there
+// and has not since taken away.
+func WSFedCleanupTargets(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, sid string) ([]WSFedTarget, error) {
+	rows, err := q.Query(ctx, `
+		SELECT sp.entity_id, p.wsfed_reply_url
+		  FROM core.saml_session_participants p
+		  JOIN core.saml_providers sp ON sp.id = p.provider_id AND sp.enabled
+		  JOIN core.saml_acs_urls u ON u.provider_id = p.provider_id AND u.url = p.wsfed_reply_url
+		 WHERE p.sid = $1
+		 ORDER BY sp.entity_id`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WSFedTarget
+	for rows.Next() {
+		var t WSFedTarget
+		if err := rows.Scan(&t.EntityID, &t.ReplyURL); err != nil {
+			return out, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // SessionHoldsReplyURL reports whether a URL is a reply URL of an application this

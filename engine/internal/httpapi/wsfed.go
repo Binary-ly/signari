@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -96,6 +97,39 @@ func (s *Server) handleWSFed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request",
 			"wa must be wsignin1.0 or wsignout1.0")
 	}
+}
+
+// wsFedCleanup is a sign-out's clean-up message to each WS-Federation application the
+// session gave a token to: a GET of the reply URL it took that token at, with
+// wa=wsignoutcleanup1.0 (specs/ws-federation-1.2.txt:2234-2239), which §13.2.4 has the
+// identity provider's STS send to every one of them (:2222). They go in frames of the
+// front-channel page beside the OpenID Connect applications', so all of them are sent at
+// once, as §13.1.2 asks (:2112), and the browser brings each application its own
+// cookies, which are how it knows whose session to end. No wreply, which is optional
+// (:2241): a frame has nowhere to come back to.
+func (s *Server) wsFedCleanup(ctx context.Context, sid string) []frontChannelTarget {
+	if sid == "" {
+		return nil
+	}
+	targets, err := store.WSFedCleanupTargets(ctx, s.db, sid)
+	if err != nil {
+		s.log.ErrorContext(ctx, "listing the WS-Federation applications of a session; some will not be told",
+			"err", err, "told", len(targets), "correlation_id", correlationID(ctx))
+	}
+	out := make([]frontChannelTarget, 0, len(targets))
+	for _, t := range targets {
+		u, err := url.Parse(t.ReplyURL)
+		if err != nil {
+			s.log.ErrorContext(ctx, "a registered WS-Federation reply URL does not parse",
+				"entity_id", t.EntityID, "err", err)
+			continue
+		}
+		q := u.Query()
+		q.Set("wa", "wsignoutcleanup1.0")
+		u.RawQuery = q.Encode()
+		out = append(out, frontChannelTarget{ClientID: t.EntityID, URL: u.String()})
+	}
+	return out
 }
 
 // wsFedLanding is where a sign-out may send the person, "" for nowhere. A wreply is a

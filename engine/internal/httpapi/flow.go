@@ -3102,6 +3102,9 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered s
 	// Read BEFORE terminating: ending the session cascades session_clients away,
 	// and with it the record of which relying parties to notify.
 	frontChannel := s.frontChannelTargets(ctx, chainSID, s.cfg.Issuer)
+	// And the WS-Federation applications' clean-up, on the same page and for the same
+	// reason: ending the session takes their record with it.
+	frontChannel = append(frontChannel, s.wsFedCleanup(ctx, chainSID)...)
 
 	// The account in use, then every other this browser holds (accounts.go):
 	// signing out of a shared computer leaves nobody signed in on it.

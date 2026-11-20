@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/authzen"
 )
 
@@ -192,6 +194,78 @@ func TestAnExpiredLinkCarriesNothing(t *testing.T) {
 	if held, _, err := WalkRelations(ctx, conn, orgID, m, [][2]string{{"user", "ann"}}, []string{"viewer"},
 		"doc", "file"); err != nil || held != "" {
 		t.Errorf("held %q through a link that ended (%v)", held, err)
+	}
+}
+
+// walkStatements counts what a walk asks.
+type walkStatements struct {
+	q Querier
+	n int
+}
+
+func (w *walkStatements) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	w.n++
+	return w.q.Query(ctx, sql, args...)
+}
+
+// The questions of one request that meet the same folders walk them once (E.17): a
+// document nine folders down costs a statement a folder, and a hundred in one folder
+// cost that a hundred times over before. What a walk settles, held along the path it
+// found and not held wherever it looked and found nothing, answers the next walk of the
+// same subjects; another set of subjects is not answered by it.
+func TestARequestsWalksMeetTheSameFoldersOnce(t *testing.T) {
+	orgID, m, grant := walkFixture(t)
+	conn := connect(t)
+	ctx := context.Background()
+	for n := 0; n < 8; n++ {
+		grant(fmt.Sprintf("doc:memo-f%d", n+1), "parent", fmt.Sprintf("doc:memo-f%d", n))
+	}
+	grant("user:memo-boss", "owner", "doc:memo-f8")
+	for i := 0; i < 10; i++ {
+		grant("doc:memo-f0", "parent", fmt.Sprintf("doc:memo-leaf%d", i))
+	}
+	boss, nobody := [][2]string{{"user", "memo-boss"}}, [][2]string{{"user", "memo-nobody"}}
+	counted := &walkStatements{q: conn}
+	memo := NewWalkMemo()
+	walk := func(who [][2]string, leaf int) (string, int) {
+		t.Helper()
+		before := counted.n
+		held, _, err := WalkRelationsWith(ctx, counted, orgID, m, who, []string{"viewer"}, "doc",
+			fmt.Sprintf("memo-leaf%d", leaf), memo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return held, counted.n - before
+	}
+
+	held, first := walk(boss, 0)
+	if held != "viewer" || first < 9 {
+		t.Fatalf("the first walk held %q in %d statements, want viewer in nine or more", held, first)
+	}
+	for leaf := 1; leaf < 10; leaf++ {
+		if held, n := walk(boss, leaf); held != "viewer" || n > 1 {
+			t.Errorf("leaf %d: held %q in %d statements, want viewer in one", leaf, held, n)
+		}
+	}
+	// Nobody's first walk is a walk of its own, all the way up, and finds nothing; the
+	// next stops at the first folder it already knows is not theirs.
+	if held, n := walk(nobody, 0); held != "" || n < 9 {
+		t.Errorf("another subject's first walk held %q in %d statements, want nothing after walking", held, n)
+	}
+	if held, n := walk(nobody, 1); held != "" || n > 1 {
+		t.Errorf("another subject's second walk held %q in %d statements, want nothing in one", held, n)
+	}
+	// And the boss's answers are untouched by what was settled for nobody.
+	if held, _ := walk(boss, 2); held != "viewer" {
+		t.Errorf("the boss read %q after nobody's walks", held)
+	}
+	// Without a memo every walk is the whole way up, as before.
+	before := counted.n
+	if held, _, err := WalkRelations(ctx, counted, orgID, m, boss, []string{"viewer"}, "doc", "memo-leaf3"); err != nil || held != "viewer" {
+		t.Fatalf("without a memo: %q %v", held, err)
+	}
+	if n := counted.n - before; n < 9 {
+		t.Errorf("a walk with no memo asked %d statements, want the whole way up", n)
 	}
 }
 

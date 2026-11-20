@@ -244,6 +244,9 @@ type evaluation struct {
 	tuples map[store.Tuple]bool
 	// sets are the objects it found a subject set on, as type and id.
 	sets map[[2]string]bool
+	// walked is what this request's walks have settled, so the questions of a batch
+	// or a search that meet the same folders walk them once (E.17).
+	walked *store.WalkMemo
 }
 
 // evaluatedSubject is what our records say about a subject, by the id it was
@@ -254,7 +257,7 @@ type evaluatedSubject struct {
 }
 
 func (s *Server) newEvaluation(orgID string) *evaluation {
-	return &evaluation{s: s, orgID: orgID, subjects: map[[2]string]*evaluatedSubject{}}
+	return &evaluation{s: s, orgID: orgID, subjects: map[[2]string]*evaluatedSubject{}, walked: store.NewWalkMemo()}
 }
 
 func (e *evaluation) loadModel(ctx context.Context) (*authzen.Model, error) {
@@ -440,8 +443,8 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 		subjects = append(subjects, [2]string{"group", g})
 	}
 	if held == "" && e.walks(model, req) {
-		if held, _, err = store.WalkRelations(ctx, e.s.db, e.orgID, model, subjects, relations,
-			req.Resource.Type, req.Resource.ID); err != nil {
+		if held, _, err = store.WalkRelationsWith(ctx, e.s.db, e.orgID, model, subjects, relations,
+			req.Resource.Type, req.Resource.ID, e.walked); err != nil {
 			return authzen.Response{}, err
 		}
 	}

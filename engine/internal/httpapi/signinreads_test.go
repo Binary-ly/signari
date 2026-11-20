@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store"
 )
 
 // clientReads is how many of the statements read a client's row.
@@ -76,11 +78,16 @@ func TestTheSignInPageReadsItsSettingsInOneRoundTrip(t *testing.T) {
 	t.Logf("the login page took %d round trips:%s", trips.n.Load(), trips)
 }
 
-// firstOrgReads is how many of the statements asked the instance's first organisation.
+// firstOrgReads is how many of the statements asked the instance's first organisation
+// as their question. The sign-up rule's statement carries the same query as a subquery,
+// by design (E.36: a batch's statements cannot answer each other), and is not counted:
+// it is the rule it asks for. Counting every statement that contained the query read
+// two once batched statements were counted.
 func firstOrgReads(seen []string) int {
+	first := strings.Join(strings.Fields(store.FirstOrgOfIssuer), " ")
 	n := 0
 	for _, s := range seen {
-		if strings.Contains(s, "ORDER BY o.created_at LIMIT 1") {
+		if s == first {
 			n++
 		}
 	}
@@ -96,16 +103,18 @@ func TestTheSignInPageAsksTheFirstOrganisationOnce(t *testing.T) {
 	if rec := f.authorizeWith(t, "", nil); rec.Code != http.StatusOK {
 		t.Fatalf("the authorization request answered %d, not the sign-in page", rec.Code)
 	}
-	if n := firstOrgReads(spent.take()); n > 1 {
-		t.Errorf("rendering the sign-in page from the authorization endpoint asked the first organisation %d times", n)
+	// Exactly once: the page decides its recovery and sign-up links under it, so none
+	// would mean this count had stopped finding the statement, not that it was saved.
+	if n := firstOrgReads(spent.take()); n != 1 {
+		t.Errorf("rendering the sign-in page from the authorization endpoint asked the first organisation %d times, want 1", n)
 	}
 	rec := httptest.NewRecorder()
 	f.srv.handleLoginGet(rec, httptest.NewRequest(http.MethodGet, "/login?authz="+url.QueryEscape(f.plainAuthz()), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the login page answered %d", rec.Code)
 	}
-	if n := firstOrgReads(spent.take()); n > 1 {
-		t.Errorf("the login page asked the first organisation %d times", n)
+	if n := firstOrgReads(spent.take()); n != 1 {
+		t.Errorf("the login page asked the first organisation %d times, want 1", n)
 	}
 }
 

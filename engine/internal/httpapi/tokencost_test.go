@@ -32,6 +32,22 @@ func (s *statements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.Tra
 
 func (s *statements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
+// A batch's statements count as statements. pgx tells only a tracer that has these
+// about a batch, and without them every ceiling below was blind to whatever a path
+// sent in one: introspection read 0 statements from E.23 on, and userinfo 0 once its
+// two reads went into the standing's batch.
+func (s *statements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (s *statements) TraceBatchQuery(_ context.Context, _ *pgx.Conn, d pgx.TraceBatchQueryData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, strings.Join(strings.Fields(d.SQL), " "))
+}
+
+func (s *statements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
 func (s *statements) take() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,7 +115,10 @@ func transactions(got []string) int {
 }
 
 // A password sign-in, form to session: each transaction is a commit somebody waits
-// for, and each statement a round trip.
+// for, and each statement work the database does. 26 statements, batched ones counted;
+// the ceiling was 25 while the counter could not see a batch (the sign-in page's settings,
+// ten statements in one round trip since E.36), so the two are not comparable. Round
+// trips are TestAPasswordSignInsWalkAsksItsFactsInOneRoundTrip's.
 func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
 	f := newSignInFixture(t)
 	clearSignInBucket(t, f.pool)
@@ -108,7 +127,7 @@ func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
 		t.Fatalf("signing in: %+v", got)
 	}
 	seen := spent.take()
-	underLimit(t, "the form and a password sign-in", seen, 25)
+	underLimit(t, "the form and a password sign-in", seen, 26)
 	if transactions(seen) > 1 {
 		t.Errorf("a sign-in opened %d transactions", transactions(seen))
 	}

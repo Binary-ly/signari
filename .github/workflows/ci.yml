@@ -160,6 +160,23 @@ jobs:
         working-directory: admin
         run: php artisan test
 
+  # The alert rules' PromQL, run. docsync's TestTheMonitoringNamesOnlyExportedSeries
+  # holds their names and structure to what the engine exports; this evaluates every
+  # alert against series that should fire it, and a healthy deployment's, which should
+  # fire none, so an expression that parses and never fires fails here (3.27).
+  monitoring:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check rules and test rules (Prometheus 3.5, the long-term release)
+        run: |
+          promtool() {
+            docker run --rm -v "$PWD/deploy/monitoring:/rules:ro" -w /rules \
+              --entrypoint promtool prom/prometheus:v3.5.0 "$@"
+          }
+          promtool check rules alerts.yaml
+          promtool test rules alerts_test.yaml
+
   security:
     runs-on: ubuntu-24.04
     steps:

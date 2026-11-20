@@ -219,9 +219,11 @@ groups:
       # is at its highest now, at every evaluation for fifteen minutes. A
       # working stream's lag rises and falls with each batch.
       - alert: SignariAuditStreamStuck
+        # The current lag on the left, since `and` keeps the left side's value and the
+        # summary reports it: with the minimum there, a stream 255 behind read as 110.
         expr: |
-          min_over_time(signari_audit_stream_lag_events[30m]) > 0
-          and signari_audit_stream_lag_events >= max_over_time(signari_audit_stream_lag_events[30m])
+          signari_audit_stream_lag_events >= max_over_time(signari_audit_stream_lag_events[30m])
+          and min_over_time(signari_audit_stream_lag_events[30m]) > 0
         for: 15m
         labels:
           severity: warning

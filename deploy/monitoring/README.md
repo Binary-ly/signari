@@ -8,6 +8,7 @@ are documented with the configuration.
 | File | What it is |
 |---|---|
 | `alerts.yaml` | Prometheus alerting rules, in rule-file format |
+| `alerts_test.yaml` | Unit tests for the rules: every alert fired by the series that should fire it, and none by a healthy deployment |
 | `dashboard.json` | A Grafana dashboard: traffic, sign-in, providers, delivery, maintenance, capacity, runtime |
 
 ## Loading the rules
@@ -70,5 +71,13 @@ startup, so the first failure after a restart registers as an increase that
 `TestTheMonitoringNamesOnlyExportedSeries` in `engine/internal/docsync` fails
 when either file names a series the engine does not export. It also fails when
 an alert has no severity, summary, description or runbook, or when a runbook
-link points at a page that is missing or not published. The test checks names
-and structure only, so run `promtool check rules` to check the PromQL itself.
+link points at a page that is missing or not published. That test checks names
+and structure only. The PromQL itself is run by `alerts_test.yaml`, which makes
+each alert fire from the series that should fire it and checks the labels and
+the words an operator would read, and keeps a healthy deployment's series silent.
+CI runs both, from this directory:
+
+```sh
+promtool check rules alerts.yaml
+promtool test rules alerts_test.yaml
+```

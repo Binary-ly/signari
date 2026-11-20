@@ -314,3 +314,39 @@ func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {
 	}
 	underLimit(t, "userinfo", spent.take(), 3)
 }
+
+// A userinfo waits on one round trip: what has become of the token and the person it
+// names, asked in one batch (E.06). Asked one after the other it was two, and a provider
+// that caches both answers userinfo with none, which is most of why it answered six
+// times as many in turns on one host.
+func TestUserinfoTakesOneRoundTrip(t *testing.T) {
+	f := newTokenFixture(t)
+	access, _ := costlyToken(t, f)
+	// As a deployment has them, a root key and an instance, as the test above sets.
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	trips := countRoundTripsOf(t, f.srv)
+	req := httptest.NewRequest(http.MethodGet, oidc.PathUserinfo, nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("userinfo answered %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := trips.n.Load(); n != 1 {
+		t.Errorf("userinfo took %d round trips, want 1:%s", n, trips)
+	}
+	trips.mu.Lock()
+	seen := strings.Join(trips.what, "\n")
+	trips.mu.Unlock()
+	if !strings.Contains(seen, "in the batch: SELECT COALESCE(u.email, '')") {
+		t.Errorf("the person was not asked in the standing's batch:%s", trips)
+	}
+}

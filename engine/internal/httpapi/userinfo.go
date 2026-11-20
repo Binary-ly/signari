@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/keys"
@@ -16,11 +18,18 @@ import (
 
 func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	claims, ok := s.acceptedToken(w, r, "openid", "userinfo")
+	// The person is asked in the round trip that asks the token's standing (E.06): asked
+	// after it, a userinfo waited on two round trips one after the other, where a provider
+	// that caches both waits on none. Read before the standing is known, and used only once
+	// it is good.
+	var person func() (store.UserinfoPerson, error)
+	claims, ok := s.acceptedTokenAsking(w, r, "openid", "userinfo", func(b *pgx.Batch, c *tokens.AccessTokenClaims) {
+		person = store.QueueUserinfoPersonOf(b, c.Subject, c.ClientID)
+	})
 	if !ok {
 		return
 	}
-	s.answerUserinfo(w, r, claims)
+	s.answerUserinfo(w, r, claims, person)
 }
 
 // acceptedToken takes the access token on a request to an endpoint this server is
@@ -29,6 +38,14 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 // the endpoint needs. where names it in the log.
 func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, where string) (
 	claims *tokens.AccessTokenClaims, ok bool) {
+	return s.acceptedTokenAsking(w, r, scope, where, nil)
+}
+
+// acceptedTokenAsking is acceptedToken, asking the token's standing in one batch with
+// whatever also queues once the token is known to be this server's and to carry the
+// scope; with also nil the standing is asked alone. Every refusal is the same either way.
+func (s *Server) acceptedTokenAsking(w http.ResponseWriter, r *http.Request, scope, where string,
+	also func(*pgx.Batch, *tokens.AccessTokenClaims)) (claims *tokens.AccessTokenClaims, ok bool) {
 	ctx := r.Context()
 	raw, scheme := bearerTokenAndScheme(r)
 	if raw == "" {
@@ -83,7 +100,12 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 	// endpoint where /revoke earns its 200: we are the resource server, so there
 	// is no excuse for honouring a token the client told us to drop. The session
 	// must still be live, and the client the token was issued to still enabled.
-	standing := s.standing(ctx, claims, where)
+	var standing store.TokenStanding
+	if also == nil {
+		standing = s.standing(ctx, claims, where)
+	} else {
+		standing = s.standingWith(ctx, claims, where, also)
+	}
 	if ended := endedDescription(standing); ended != "" {
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="`+ended+`"`)
@@ -118,13 +140,23 @@ func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, wh
 }
 
 // answerUserinfo says what a token that was accepted may hear.
-func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *tokens.AccessTokenClaims) {
+func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *tokens.AccessTokenClaims,
+	asked func() (store.UserinfoPerson, error)) {
 	ctx := r.Context()
 	out := map[string]any{"sub": claims.Presented()}
 
 	// Claims are released strictly by granted scope. `profile` and `email` are
 	// separate grants and must not leak into each other.
-	person, err := store.UserinfoPersonOf(ctx, s.db, claims.Subject, claims.ClientID)
+	//
+	// The person as the standing's batch read it. A batch that could not be sent never
+	// gets here: the standing it carried reads as ended, and the token was refused.
+	var person store.UserinfoPerson
+	var err error
+	if asked != nil {
+		person, err = asked()
+	} else {
+		person, err = store.UserinfoPersonOf(ctx, s.db, claims.Subject, claims.ClientID)
+	}
 	if err != nil {
 		// A token for a user who no longer exists or is deactivated.
 		w.Header().Set("WWW-Authenticate",

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -27,6 +29,26 @@ func (s *Server) verifyAccepted(ctx context.Context, raw string) (*tokens.Access
 // given for it is that the token has ended.
 func (s *Server) standing(ctx context.Context, claims *tokens.AccessTokenClaims, where string) store.TokenStanding {
 	st, err := store.TokenStandingOf(ctx, s.db, claims)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading what has become of a token", "where", where, "err", err,
+			"correlation_id", correlationID(ctx))
+	}
+	return st
+}
+
+// standingWith is standing, asked in one batch with whatever also queues. The standing
+// reads as ended if the batch could not be sent, as TokenStandingOf's does when it cannot
+// be asked: the request is refused rather than guessed at.
+func (s *Server) standingWith(ctx context.Context, claims *tokens.AccessTokenClaims, where string,
+	also func(*pgx.Batch, *tokens.AccessTokenClaims)) store.TokenStanding {
+	b := &pgx.Batch{}
+	read := store.QueueTokenStandingOf(b, claims)
+	also(b, claims)
+	if err := s.db.SendBatch(ctx, b).Close(); err != nil {
+		s.log.ErrorContext(ctx, "reading what has become of a token", "where", where, "err", err,
+			"correlation_id", correlationID(ctx))
+	}
+	st, err := read()
 	if err != nil {
 		s.log.ErrorContext(ctx, "reading what has become of a token", "where", where, "err", err,
 			"correlation_id", correlationID(ctx))

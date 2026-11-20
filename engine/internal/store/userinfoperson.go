@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -33,8 +34,37 @@ type UserinfoPerson struct {
 func UserinfoPersonOf(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID, clientID string) (UserinfoPerson, error) {
+	return scanUserinfoPerson(q.QueryRow(ctx, userinfoPersonStatement, userinfoPersonArgs(userID, clientID)...))
+}
+
+// QueueUserinfoPersonOf is UserinfoPersonOf as one more statement in a batch the caller
+// sends: userinfo asks it in the round trip that asks the token's standing (E.06), since
+// what it asks depends on the token alone. The answer is read once the batch is closed.
+func QueueUserinfoPersonOf(b *pgx.Batch, userID, clientID string) func() (UserinfoPerson, error) {
 	var p UserinfoPerson
-	err := q.QueryRow(ctx, `
+	err := errors.New("the batch asking for the person a token names was not sent")
+	b.Queue(userinfoPersonStatement, userinfoPersonArgs(userID, clientID)...).QueryRow(func(row pgx.Row) error {
+		p, err = scanUserinfoPerson(row)
+		return nil
+	})
+	return func() (UserinfoPerson, error) { return p, err }
+}
+
+func userinfoPersonArgs(userID, clientID string) []any {
+	return []any{userID, clientID, string(ClaimInUserInfo), string(provider.HookUserinfo)}
+}
+
+func scanUserinfoPerson(row pgx.Row) (UserinfoPerson, error) {
+	var p UserinfoPerson
+	err := row.Scan(&p.Email, &p.Username, &p.EmailVerified, &p.Name, &p.Given, &p.Family, &p.OrgID,
+		&p.ClientOfOrg, &p.RolesClaim, &p.HasMappers, &p.HasProvider, &p.AsJWT)
+	if err != nil {
+		return p, fmt.Errorf("reading the person a token names: %w", err)
+	}
+	return p, nil
+}
+
+const userinfoPersonStatement = `
 		SELECT COALESCE(u.email, ''), COALESCE(u.username, ''), u.email_verified_at IS NOT NULL,
 		       COALESCE(u.display_name, ''), COALESCE(u.given_name, ''), COALESCE(u.surname, ''),
 		       u.org_id::text, c.client_id IS NOT NULL, COALESCE(c.roles_claim, ''),
@@ -43,12 +73,4 @@ func UserinfoPersonOf(ctx context.Context, q interface {
 		       COALESCE(c.userinfo_signed_response_alg IS NOT NULL OR c.userinfo_encrypted_response_alg IS NOT NULL, false)
 		  FROM core.users u
 		  LEFT JOIN core.clients c ON c.org_id = u.org_id AND c.client_id = $2
-		 WHERE u.id = $1::uuid AND u.status = 'active'`, userID, clientID, string(ClaimInUserInfo),
-		string(provider.HookUserinfo)).
-		Scan(&p.Email, &p.Username, &p.EmailVerified, &p.Name, &p.Given, &p.Family, &p.OrgID,
-			&p.ClientOfOrg, &p.RolesClaim, &p.HasMappers, &p.HasProvider, &p.AsJWT)
-	if err != nil {
-		return p, fmt.Errorf("reading the person a token names: %w", err)
-	}
-	return p, nil
-}
+		 WHERE u.id = $1::uuid AND u.status = 'active'`

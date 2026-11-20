@@ -462,10 +462,16 @@ as it is spelled here, was refused before the application saw it, signed in or n
 Envoy's `normalize_path` resolves some first, and then sends the resolved path to the
 engine and the application alike, so the two still judge one path.
 
-An application whose paths really look like that cannot have rules on the host. Three
-things are still yours to get right. A path is compared with its case, so an
-application that does not care about case has to be given every spelling a `deny`
-should cover. A path is compared with its trailing slash too: `deny * /metrics` leaves
+An application whose paths really look like that cannot have rules on the host.
+
+Case is decided for you. A `deny` or `auth` rule meets every spelling of its path, so
+`deny /admin/**` refuses `/ADMIN/users` to an application that serves it as `/admin/users`,
+and a `public` rule meets only the spelling written, so `public /static/**` does not
+open `/STATIC/` to anybody. No spelling gets more than the one the rule names. Until
+November 2026 every rule minded case, and an application that did not had to be given
+each spelling a `deny` should cover.
+
+Two things are still yours to get right. A path is compared with its trailing slash: `deny * /metrics` leaves
 `/metrics/` open, which many applications serve as `/metrics`, so a `deny` is written
 `/metrics/**`, which is both and everything below. This page's example said
 `/metrics` until November 2026, when running it behind real proxies showed `/metrics/`

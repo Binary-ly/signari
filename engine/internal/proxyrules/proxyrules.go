@@ -167,11 +167,26 @@ func Canonical(uri string) (string, error) {
 // method is empty when the proxy did not say, and the request the proxy is asking about
 // could then be any. So a rule naming methods is applied only where that errs towards
 // refusing: a deny is taken to cover it, and one that would let it through is not.
+//
+// Case the same way. An application that ignores it serves `/ADMIN` as `/admin`, and a
+// rule compared with its case let that spelling past `deny /admin/**` (8.26). So a rule
+// that refuses or holds a path to more, deny and auth, meets every spelling of it, and a
+// public one only its own: no spelling gets more than the rules give the one they
+// wrote, and an application that minds case has a spelling it never serves refused.
 func Match(rules []Rule, method, path string) *Rule {
+	folded := ""
 	for i := range rules {
 		r := &rules[i]
 		if !matchPath(r.Path, path) {
-			continue
+			if r.Effect == EffectPublic {
+				continue
+			}
+			if folded == "" {
+				folded = strings.ToLower(path)
+			}
+			if !matchPath(strings.ToLower(r.Path), folded) {
+				continue
+			}
 		}
 		if len(r.Methods) == 0 || slices.Contains(r.Methods, method) || (method == "" && r.Effect == EffectDeny) {
 			return r

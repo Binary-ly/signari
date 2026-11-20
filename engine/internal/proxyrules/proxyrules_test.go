@@ -125,6 +125,36 @@ func TestTheFirstRuleThatMatchesDecides(t *testing.T) {
 	}
 }
 
+// A rule that refuses or asks for more meets every spelling of its path, and a public
+// one only its own (8.26). An application that ignores case serves /ADMIN as /admin,
+// and the deny written for /admin/** let that spelling through; one that minds case
+// never serves /STATIC as /static, so that spelling is not made public either.
+func TestARuleThatRestrictsMeetsEverySpellingAndOneThatAdmitsOnlyItsOwn(t *testing.T) {
+	rules := []Rule{
+		{Effect: EffectAuth, Path: "/static/private/**"},
+		{Effect: EffectPublic, Path: "/static/**"},
+		{Effect: EffectDeny, Path: "/admin/**"},
+	}
+	for _, c := range []struct{ path, want string }{
+		{"/admin/users", EffectDeny},
+		{"/ADMIN/users", EffectDeny},
+		{"/Admin", EffectDeny},
+		{"/static/app.js", EffectPublic},
+		{"/STATIC/app.js", ""},
+		{"/static/private/key", EffectAuth},
+		{"/static/PRIVATE/key", EffectAuth},
+		{"/Static/Private/key", EffectAuth},
+	} {
+		got := ""
+		if r := Match(rules, "GET", c.path); r != nil {
+			got = r.Effect
+		}
+		if got != c.want {
+			t.Errorf("GET %s: %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
 // With no method from the proxy the request could be any. A rule letting some through
 // does not apply, and one refusing some does.
 func TestARequestOfNoKnownMethodIsHeldToTheStricterReading(t *testing.T) {

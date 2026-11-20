@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,12 +18,15 @@ import (
 )
 
 // protectionClients lets the fixture's two clients act as resource servers: the
-// client credentials grant, and uma_protection among their scopes.
+// client credentials grant, and uma_protection among their scopes. Asked again, it
+// changes nothing.
 func (f *cibaFixture) protectionClients(t *testing.T) {
 	t.Helper()
 	if _, err := f.pool.Exec(context.Background(), `UPDATE core.clients
-		SET grant_types = array_append(grant_types, 'client_credentials'),
-		    scopes = array_append(scopes, 'uma_protection')
+		SET grant_types = CASE WHEN 'client_credentials' = ANY (grant_types) THEN grant_types
+		                       ELSE array_append(grant_types, 'client_credentials') END,
+		    scopes = CASE WHEN 'uma_protection' = ANY (scopes) THEN scopes
+		                  ELSE array_append(scopes, 'uma_protection') END
 		WHERE client_id = ANY($1)`, []string{f.clientID, f.otherClient}); err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +36,16 @@ func (f *cibaFixture) protectionClients(t *testing.T) {
 // real token endpoint.
 func (f *cibaFixture) orgPAT(t *testing.T, clientID, secret string) string {
 	t.Helper()
+	pat, answer := f.mintOrgPAT(clientID, secret)
+	if pat == "" {
+		t.Fatalf("no PAT: %s", answer)
+	}
+	return pat
+}
+
+// mintOrgPAT is orgPAT for credentials the token endpoint may refuse: no PAT, and its
+// answer.
+func (f *cibaFixture) mintOrgPAT(clientID, secret string) (pat, answer string) {
 	form := url.Values{"grant_type": {"client_credentials"}, "scope": {"uma_protection"}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -40,12 +54,11 @@ func (f *cibaFixture) orgPAT(t *testing.T, clientID, secret string) string {
 	f.srv.Routes().ServeHTTP(rec, req)
 	var got struct {
 		AccessToken string `json:"access_token"`
-		Scope       string `json:"scope"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.AccessToken == "" {
-		t.Fatalf("no PAT (%d): %s", rec.Code, rec.Body.String())
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		return "", fmt.Sprintf("%d %s", rec.Code, rec.Body.String())
 	}
-	return got.AccessToken
+	return got.AccessToken, fmt.Sprintf("%d %s", rec.Code, rec.Body.String())
 }
 
 // personPAT is a PAT a person granted the fixture client, minted as a sign-in
@@ -352,16 +365,24 @@ func TestAPersonsResourcesAreTheirsAlone(t *testing.T) {
 	_, out = f.protect(t, http.MethodPost, umaResourcePath, org, reportResource)
 	orgs, _ := out["_id"].(string)
 
-	// With the client's own credentials, the first registered resource decides the owner.
-	if code, got := f.permission(t, f.clientID, f.secret, `{"resource_id":"`+id+`","resource_scopes":["read"]}`); code != http.StatusCreated {
-		t.Errorf("a permission on a person's resource by client credentials answered %d %v", code, got)
+	// The PAT says whose resources a request is about: the person's PAT for theirs, and
+	// neither the organisation's PAT nor a request naming two owners reaches across.
+	one := `{"resource_id":"` + id + `","resource_scopes":["read"]}`
+	if rec, got := f.protect(t, http.MethodPost, "/uma2/permission", ada, one); rec.Code != http.StatusCreated {
+		t.Errorf("a permission on a person's resource with their PAT answered %d %v", rec.Code, got)
+	}
+	if rec, got := f.protect(t, http.MethodPost, "/uma2/permission", org, one); got["error"] != "invalid_resource_id" {
+		t.Errorf("the organisation's PAT asked about a person's resource: %d %v", rec.Code, got)
 	}
 	for _, body := range []string{
 		`[{"resource_id":"` + id + `","resource_scopes":["read"]},{"resource_id":"` + orgs + `","resource_scopes":["read"]}]`,
 		`[{"resource_id":"` + orgs + `","resource_scopes":["read"]},{"resource_id":"` + id + `","resource_scopes":["read"]}]`,
 	} {
-		if code, got := f.permission(t, f.clientID, f.secret, body); code != http.StatusBadRequest || got["error"] != "invalid_resource_id" {
-			t.Errorf("two owners in one request answered %d %v", code, got)
+		for name, pat := range map[string]string{"the person's PAT": ada, "the organisation's PAT": org} {
+			if rec, got := f.protect(t, http.MethodPost, "/uma2/permission", pat, body); rec.Code != http.StatusBadRequest ||
+				got["error"] != "invalid_resource_id" {
+				t.Errorf("two owners in one request with %s answered %d %v", name, rec.Code, got)
+			}
 		}
 	}
 	if rec, out := f.protect(t, http.MethodPost, "/uma2/permission", other, `{"resource_id":"`+id+`","resource_scopes":["read"]}`); out["error"] != "invalid_resource_id" {

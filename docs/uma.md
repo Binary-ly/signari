@@ -365,10 +365,13 @@ it. Other HTTP methods are answered `405` with `unsupported_method_type`.
 At the permission endpoint, a `resource_id` with no `resource_type` must be one this
 resource server registered, each scope one it registered for it, or the answer is
 `invalid_resource_id` or `invalid_scope` (§4.3). One request names one owner's
-resources (§4). The endpoint takes a PAT, and still takes the client's own
-credentials as it did before it had registration, which §1.3's "MUST ... require a
-valid PAT" does not allow: a resource server that sends credentials is held to the
-same resource server's registrations, the first named deciding the owner.
+resources (§4), the owner its PAT stands for: a person's PAT asks about what that
+person registered, and an organisation's about what the organisation did. The
+endpoint takes a PAT and nothing else, as §1.3 has it ("MUST use OAuth and require a
+valid PAT to secure its protection API endpoints"): a client's own credentials, which
+it took until November 2026, are answered `401`. A resource server that sent them
+gets an organisation's PAT by the client credentials grant with the same credentials
+and sends that instead.
 
 `resource_type` is ours, and not in the specification. Given, it names an object of
 the model that was never registered, which is how this server answered before it had

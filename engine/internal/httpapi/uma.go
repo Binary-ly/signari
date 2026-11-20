@@ -19,7 +19,7 @@ import (
 // UMA 2.0, the protocol surface. See internal/uma for what it is and what is
 // deliberately absent.
 //
-//	POST /uma2/permission    resource server authenticates -> ticket
+//	POST /uma2/permission    resource server presents its PAT -> ticket
 //	POST /oauth2/token       grant_type=urn:...:uma-ticket -> RPT
 //	GET  /uma2/claims        the requesting party identifies themselves
 //
@@ -35,24 +35,17 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
-	// A PAT, as Federated Authorization §4 has the resource server present
-	// (specs/uma-fedauthz.txt:122), or the client's own credentials, which this
-	// endpoint took before it had resource registration and still does.
-	var c *clients.Client
-	var owner string
-	pat := false
-	if raw, _ := bearerTokenAndScheme(r); raw != "" {
-		caller, ok := s.protectionToken(w, r, "uma permission")
-		if !ok {
-			return
-		}
-		c, owner, pat = caller.client, caller.owner, true
-	} else {
-		var ok bool
-		if c, ok = s.authenticateResourceServer(w, r); !ok {
-			return
-		}
+	// A PAT and nothing else: "The authorization server MUST use OAuth and require a
+	// valid PAT to secure its protection API endpoints" (Federated Authorization §1.3,
+	// specs/uma-fedauthz.txt:122), and this is one. It took the client's own credentials
+	// too, from before it had resource registration; a secret is the resource server
+	// alone, and the PAT is "the resource owner's authorization to use the protection
+	// API" (:139), which decides whose resources a request may name.
+	caller, ok := s.protectionToken(w, r, "uma permission")
+	if !ok {
+		return
 	}
+	c, owner := caller.client, caller.owner
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 	if err != nil {
@@ -64,7 +57,7 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 		writeUMAError(w, uerr)
 		return
 	}
-	if uerr := s.resolveRegistered(ctx, perms, c.ClientID, owner, pat); uerr != nil {
+	if uerr := s.resolveRegistered(ctx, perms, c.ClientID, owner); uerr != nil {
 		writeUMAError(w, uerr)
 		return
 	}
@@ -84,46 +77,6 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 
 	// §3.2: "HTTP 201 Created" with the ticket.
 	writeJSON(w, http.StatusCreated, map[string]any{"ticket": ticket})
-}
-
-// authenticateResourceServer admits only a confidential client.
-//
-// A resource server is not a browser and has no user in front of it, so there is
-// no public-client case to accommodate. Refused explicitly rather than falling
-// through to a secret comparison that an empty secret would pass.
-func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Request) (*clients.Client, bool) {
-	ctx := r.Context()
-	// Credentials from the HEADER only, and no ParseForm call.
-	//
-	// The permission request's body is JSON (Federated Authorization §3.1), so
-	// there are no form-encoded credentials to find and calling ParseForm would
-	// consume the body this handler is about to read. An earlier version called
-	// it and discarded the error, which the repository's own
-	// TestNoParameterIsDiscardedSilently correctly refused: a discarded error is
-	// shaped like a check and is not one.
-	creds, cerr := oauth.ParseClientCredentials(r.Header, nil)
-	if cerr != nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", cerr.Description)
-		return nil, false
-	}
-	c, err := s.lookupClient(ctx, creds.ClientID)
-	if err != nil || c == nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
-		return nil, false
-	}
-	if c.Type != "confidential" {
-		writeError(w, http.StatusUnauthorized, "invalid_client",
-			"the permission endpoint requires a confidential client: it mints a "+
-				"credential a stranger will present back here")
-		return nil, false
-	}
-	if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-		s.log.InfoContext(ctx, "UMA permission endpoint client authentication failed",
-			"client_id", creds.ClientID, "err", err, "correlation_id", correlationID(ctx))
-		writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
-		return nil, false
-	}
-	return c, true
 }
 
 // handleUMAGrant is §3.3: ticket in, RPT out.

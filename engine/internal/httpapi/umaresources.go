@@ -354,12 +354,9 @@ func (s *Server) deleteUMAResource(w http.ResponseWriter, r *http.Request) {
 // resolveRegistered gives each permission that names no type the type of the
 // resource it names, which must be one this resource server registered, for the
 // owner the request speaks for, with each scope one it registered (Federated
-// Authorization §4.1, §4.3). A request names one owner's resources (:386): with a PAT
-// the owner it stands for, and with the client's own credentials whichever owner
-// the first registered resource has, "" being the organisation.
-func (s *Server) resolveRegistered(ctx context.Context, perms []uma.Permission, clientID, patOwner string,
-	pat bool) *uma.Error {
-	owner, decided := patOwner, pat
+// Authorization §4.1, §4.3). A request names one owner's resources (:386), the owner
+// its PAT stands for, "" being the organisation.
+func (s *Server) resolveRegistered(ctx context.Context, perms []uma.Permission, clientID, owner string) *uma.Error {
 	for i := range perms {
 		p := &perms[i]
 		if p.ResourceType != "" {
@@ -372,7 +369,7 @@ func (s *Server) resolveRegistered(ctx context.Context, perms []uma.Permission, 
 			return uma.InvalidResourceID(fmt.Sprintf("resource %q is not registered by this resource server", p.ResourceID))
 		case err != nil:
 			return &uma.Error{Code: "server_error", Status: http.StatusInternalServerError, Description: "unavailable"}
-		case decided && res.OwnerID != owner:
+		case res.OwnerID != owner:
 			return uma.InvalidResourceID(fmt.Sprintf("resource %q belongs to another resource owner: one request "+
 				"names one owner's resources", p.ResourceID))
 		}
@@ -381,7 +378,6 @@ func (s *Server) resolveRegistered(ctx context.Context, perms []uma.Permission, 
 				return uma.InvalidScope(fmt.Sprintf("scope %q was not registered for resource %q", sc, p.ResourceID))
 			}
 		}
-		owner, decided = res.OwnerID, true
 		p.ResourceType = res.Type
 	}
 	return nil

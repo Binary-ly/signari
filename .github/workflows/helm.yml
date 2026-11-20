@@ -192,6 +192,124 @@ jobs:
           done
           helm test "$RELEASE"
 
+      # A pod being deleted leaves the Service before it stops answering (2.10): on
+      # SIGTERM the engine reports unready for drainSeconds and keeps serving, and the
+      # grace period covers that and the shutdown. A client inside the cluster asks the
+      # Service for discovery every 50 ms throughout (discovery, not /readyz, which a
+      # draining pod rightly answers 503); one pod of three is deleted; its address must
+      # stop being ready in the Service's EndpointSlice while the pod still exists, and
+      # no request may fail.
+      - name: A deleted pod leaves the Service before it stops answering
+        run: |
+          kubectl run prober --image=busybox:1.37.0 --restart=Never --command -- sh -c \
+            'n=0; f=0; end=$(( $(date +%s) + 45 )); while [ "$(date +%s)" -lt "$end" ]; do
+               n=$((n+1)); wget -q -T 2 -O /dev/null "http://'"$NAME"':8080/.well-known/openid-configuration" || f=$((f+1))
+               sleep 0.05; done; echo "requests=$n failed=$f"'
+          kubectl wait --for=condition=Ready pod/prober --timeout=120s
+          sleep 5
+          sel=$(kubectl get deploy "$NAME" -o json | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')
+          pod=$(kubectl get pods -l "$sel" -o jsonpath='{.items[0].metadata.name}')
+          ip=$(kubectl get pod "$pod" -o jsonpath='{.status.podIP}')
+          readiness() {
+            kubectl get endpointslices -l "kubernetes.io/service-name=$NAME" -o json |
+              jq -r --arg ip "$ip" '[.items[] | (.endpoints // [])[] | select(any(.addresses[]; . == $ip)) | .conditions.ready] | first // "gone"'
+          }
+          # Listed and ready first, or the check below would pass on an address that never was.
+          test "$(readiness)" = true
+          echo "deleting $pod ($ip), ready in the Service's EndpointSlice"
+          kubectl delete pod "$pod" --wait=false
+          ready=true
+          for i in $(seq 1 300); do
+            ready=$(readiness)
+            if [ "$ready" != "true" ]; then
+              terminating=$(kubectl get pod "$pod" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)
+              echo "after ${i}00 ms its address reads ready=$ready in the EndpointSlice; the pod still exists: ${terminating:+yes, terminating since $terminating}"
+              test -n "$terminating"
+              break
+            fi
+            sleep 0.1
+          done
+          test "$ready" != "true"
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/prober --timeout=120s
+          result=$(kubectl logs prober | tail -1)
+          echo "the client in the cluster: $result"
+          kubectl delete pod prober
+          case "$result" in *" failed=0") ;; *) exit 1 ;; esac
+
+      # Prometheus scraping the engine through the chart's ServiceMonitor (3.24): the
+      # operator from a pinned release, a Prometheus selecting ServiceMonitors by one
+      # label, the chart given that label, and then Prometheus's own answer that every
+      # replica is a target that is up and that the engine's series arrived.
+      - name: Prometheus scrapes it through the ServiceMonitor
+        run: |
+          kubectl create -f https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.94.2/bundle.yaml > /dev/null
+          kubectl wait --for condition=Established crd/servicemonitors.monitoring.coreos.com crd/prometheuses.monitoring.coreos.com --timeout=120s
+          kubectl wait --for=condition=Available deploy/prometheus-operator --timeout=300s
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: prometheus
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: ci-prometheus
+          rules:
+            - apiGroups: [""]
+              resources: [services, endpoints, pods]
+              verbs: [get, list, watch]
+            - apiGroups: [discovery.k8s.io]
+              resources: [endpointslices]
+              verbs: [get, list, watch]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: ci-prometheus
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: ci-prometheus
+          subjects:
+            - kind: ServiceAccount
+              name: prometheus
+              namespace: default
+          ---
+          apiVersion: monitoring.coreos.com/v1
+          kind: Prometheus
+          metadata:
+            name: prometheus
+          spec:
+            serviceAccountName: prometheus
+            serviceMonitorSelector:
+              matchLabels:
+                release: ci-prometheus
+            serviceMonitorNamespaceSelector: {}
+            scrapeInterval: 5s
+          EOF
+          helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
+            --set metrics.serviceMonitor.enabled=true \
+            --set metrics.serviceMonitor.labels.release=ci-prometheus \
+            --set metrics.serviceMonitor.interval=5s \
+            --wait --timeout 10m
+          kubectl get servicemonitor "$NAME" -o jsonpath='{.metadata.labels.release}' | grep -qx ci-prometheus
+          for i in $(seq 1 90); do kubectl get statefulset prometheus-prometheus > /dev/null 2>&1 && break; sleep 2; done
+          kubectl rollout status statefulset/prometheus-prometheus --timeout=300s
+          kubectl port-forward svc/prometheus-operated 19091:9090 > /dev/null 2>&1 &
+          q() { curl -fsS -G http://127.0.0.1:19091/api/v1/query --data-urlencode "query=$1" | jq -r '.data.result[0].value[1] // "0"'; }
+          up=0
+          for i in $(seq 1 60); do
+            up=$(q "sum(up{service=\"$NAME-metrics\"})" 2>/dev/null || echo 0)
+            [ "$up" = 3 ] && break
+            sleep 5
+          done
+          echo "replicas Prometheus scrapes through the ServiceMonitor and finds up: $up"
+          test "$up" = 3
+          n=$(q 'count({__name__=~"signari_.+"})')
+          echo "signari_ series in Prometheus: $n"
+          test "$n" -gt 0
+
       # The chart's backup (3.10), drilled as the runbook restores: the CronJob run once,
       # its newest dump restored into a fresh database on the same server (so the roles
       # are already there), and the engine image, given the root key and the key's label

@@ -32,8 +32,11 @@ CALLBACK="$SUITE_BASE/test/a/signari/callback"
 
 # TLS, because the issuer above is https. The SAN must carry signari-engine --
 # the compose network alias -- or the suite rejects the certificate before any
-# test runs.
-if [ ! -f ../tls/engine.crt ] ||
+# test runs. And made again when the CA's key is missing, which in a fresh clone it
+# always is: the certificate is committed and the key is ignored, and below the CA
+# signs the CA-issued clients' certificates and the verifier's, so set -e ended the
+# script at the first of them.
+if [ ! -f ../tls/ca.key ] || [ ! -f ../tls/engine.crt ] ||
    ! openssl x509 -in ../tls/engine.crt -noout -text | grep -q 'DNS:signari-engine'; then
   echo "generating a TLS certificate for signari-engine"
   # keyUsage, because RFC 5280 says a CA certificate MUST carry it (4.2.1.3), and Python

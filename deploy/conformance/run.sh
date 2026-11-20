@@ -110,7 +110,8 @@ esac
 # Everything else needs the front channel driven. The suite's own HtmlUnit driver
 # stalls after the callback (see README), so config.json carries no `browser` block
 # and browserdrive.py services the URLs the suite publishes instead.
-LOG="${LOG:-$(mktemp -t signari-conformance)}"
+# Six X's, which GNU mktemp requires and macOS's accepts.
+LOG="${LOG:-$(mktemp -t signari-conformance.XXXXXX)}"
 "$VENV/bin/python" ./browserdrive.py "$LOG" &
 DRIVER=$!
 trap 'kill $DRIVER 2>/dev/null || true' EXIT

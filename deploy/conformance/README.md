@@ -285,6 +285,15 @@ local suite with no authentication, `CONFORMANCE_DEV_MODE=1` and
 `DISABLE_SSL_VERIFY=1`. Always pass `--no-parallel`: every module in a plan shares
 `alias: signari`, so parallel modules interrupt each other.
 
+The [conformance workflow](../../.github/workflows/conformance.yml) does the same on a
+GitHub runner from a fresh clone, every plan above in one job, whenever this
+directory or the workflow changes or when it is started by hand. It keeps each plan's
+output, writes a table of the modules by result, and fails on any failed condition
+outside Hybrid. Two things a fresh clone needed that this machine did not: `setup.sh`
+makes the CA again when its key is missing, since the certificate is committed and
+the key is not, and `run.sh`'s temporary log name carries the X's GNU `mktemp`
+requires.
+
 ## Certification itself
 
 Passing the plans is the engineering half and is what these files are for. Being

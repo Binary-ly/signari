@@ -1,0 +1,227 @@
+# The OpenID Foundation's conformance plans, run whole against the engine built here.
+#
+# The engine's own tests were written from the same reading of the specifications as
+# the code, so where that reading is wrong they agree with it. The suite is a third
+# party driving the protocol and judging the answers (deploy/conformance/README.md).
+# It needs Docker, with the engine's stack and the suite's side by side, so it runs
+# here and not in ci.yml, and only when the harness changes or when asked: the plans
+# take more than an hour.
+#
+# One stack and one suite, set up once by deploy/conformance/setup.sh, then every
+# plan by run.sh, as they are run by hand. The job fails when the harness does (a
+# plan never reached its results) or when any plan has a failed condition, except
+# Hybrid, whose `code token` and `code id_token token` thirds fail by design. Warnings,
+# skips and interrupted modules are listed in the summary and do not fail it: which
+# of them are known is the README's to say, by name.
+name: conformance
+
+on:
+  push:
+    paths:
+      - deploy/conformance/**
+      - .github/workflows/conformance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The suite as the README measured it, its commit of 7 August 2026. The directory's
+  # name is the suite's compose project, which run.sh and setup.sh find its containers by.
+  SUITE_COMMIT: 6b8b809dd07df6ca8b4481a9e921bf48b9ffbffe
+  SUITE_DIR: /home/runner/.cache/idp-conformance
+  # The logout plans last: each sets the Basic clients' logout channels to its own.
+  PLANS: >-
+    config basic formpost hybrid
+    fapi2 fapi2-mtls fapi2-mtls-ca fapi2-ms
+    vci vci-offer vp vp-plain vp-jwt vp-haip
+    rp-logout fc-logout bc-logout
+
+jobs:
+  plans:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the suite at its commit
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://gitlab.com/openid/conformance-suite.git "$SUITE_DIR"
+          git -C "$SUITE_DIR" checkout --quiet "$SUITE_COMMIT"
+
+      - name: Build the suite
+        run: |
+          docker run --rm -v "$SUITE_DIR":/src -w /src -v conformance-m2:/root/.m2 \
+            maven:3-eclipse-temurin-21 mvn -B -q clean package -DskipTests
+          ls -l "$SUITE_DIR/target/fapi-test-suite.jar"
+
+      # par-attempt-to-use-expired-request_uri sleeps the pushed request's whole 300 s
+      # and then needs the browser, and the runner stops waiting at 240 s and takes the
+      # driver with it, so the module is interrupted rather than judged. Run with a
+      # longer wait it finishes (README). This changes only how long the client waits.
+      - name: Let the runner wait out the expired-request module
+        run: |
+          f="$SUITE_DIR/scripts/conformance.py"
+          sed -i 's/required_states, timeout=240)/required_states, timeout=900)/' "$f"
+          grep -q 'required_states, timeout=900)' "$f"
+
+      # Before setup.sh, which puts the engine's CA in the suite's truststore only when
+      # the suite is running, and restarts it so the JVM reads it.
+      - name: Start the suite
+        run: cd "$SUITE_DIR" && docker compose up -d --build --quiet-pull
+
+      # setup.sh waits on the engine's discovery document without a limit of its own.
+      - name: Bring up the engine and register what the plans need
+        working-directory: deploy/conformance
+        timeout-minutes: 30
+        run: |
+          SIGNARI_ROOT_KEY="$(head -c 32 /dev/urandom | base64)"
+          echo "::add-mask::$SIGNARI_ROOT_KEY"
+          export SIGNARI_ROOT_KEY
+          if ./setup.sh > "$RUNNER_TEMP/setup.log" 2>&1; then status=0; else status=$?; fi
+          # The secrets it prints are the throwaway engine's; kept out of the log anyway.
+          sed -E 's/((secret|password|token)[a-z_]*[ =:]+)[^ ]+/\1***/Ig' "$RUNNER_TEMP/setup.log"
+          exit "$status"
+
+      - name: Wait for the suite
+        run: |
+          for _ in $(seq 1 60); do
+            curl -ksf https://localhost:8443/api/runner/available > /dev/null && exit 0
+            sleep 5
+          done
+          echo "the suite did not answer after its restart"; exit 1
+
+      - name: Write the plans' configurations
+        working-directory: deploy/conformance
+        run: |
+          C="$RUNNER_TEMP/conf"; mkdir -p "$C"
+          secret() { awk -v id="$1" '$1 == "client" { c = $2 } $1 == "client_secret" && c == id { print $2; exit }' "$RUNNER_TEMP/setup.log"; }
+          s1="$(secret conformance-1)"; s2="$(secret conformance-2)"; sp="$(secret conformance-post)"
+          for s in "$s1" "$s2" "$sp"; do
+            [ -n "$s" ] || { echo "setup.sh printed no secret for a Basic client"; exit 1; }
+            echo "::add-mask::$s"
+          done
+          jq --arg a "$s1" --arg b "$s2" --arg p "$sp" \
+            '.client.client_secret = $a | .client2.client_secret = $b | .client_secret_post.client_secret = $p' \
+            config.json > "$C/basic.json"
+          python3 fapiconfig.py "$C/fapi.json"
+          python3 fapiconfig.py --mtls "$C/fapitls.json"
+          python3 fapiconfig.py --mtls-ca "$C/fapica.json"
+          python3 fapiconfig.py --message-signing "$C/fapims.json"
+          python3 fapiconfig.py --vci "$C/vci.json"
+          python3 fapiconfig.py --vp "$C/vp.json"
+          echo "CONF=$C" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+
+      - name: Run the plans
+        working-directory: deploy/conformance
+        timeout-minutes: 210
+        run: |
+          # With CI set, the runner prints GitLab's section markers.
+          unset CI
+          mkdir -p "$OUT"
+          for p in $PLANS; do
+            case "$p" in
+              fapi2) c="$CONF/fapi.json" ;;
+              fapi2-mtls) c="$CONF/fapitls.json" ;;
+              fapi2-mtls-ca) c="$CONF/fapica.json" ;;
+              fapi2-ms) c="$CONF/fapims.json" ;;
+              vci | vci-offer) c="$CONF/vci.json" ;;
+              vp | vp-plain | vp-jwt | vp-haip) c="$CONF/vp.json" ;;
+              *) c="$CONF/basic.json" ;; # config reads config-op.json, which needs no secret
+            esac
+            start="$(date +%s)"
+            # LOG is the runner's own output, which the driver reads module ids from;
+            # .out is everything, and the config plan writes only there.
+            if CONFIG="$c" LOG="$OUT/$p.log" ./run.sh "$p" > "$OUT/$p.out" 2>&1; then e=0; else e=$?; fi
+            echo "$p $e $(( $(date +%s) - start ))" >> "$OUT/exits"
+            echo "$p: runner exit $e after $(( $(date +%s) - start )) s"
+          done
+
+      - name: Judge the plans
+        if: always() && env.OUT != ''
+        run: |
+          python3 - <<'PY'
+          import collections, os, re, sys
+
+          out, plans = os.environ["OUT"], os.environ["PLANS"].split()
+          by_design = {"hybrid": "its `code token` and `code id_token token` thirds are refused, "
+                                 "since no access token crosses the front channel"}
+          ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+          module = re.compile(r"^Test \[\d+:\d+\] (\S+) (\S+) (\S+) - result (\S+)\. \d+ log entries - "
+                              r"(\d+) SUCCESS (\d+) FAILURE, (\d+) WARNING")
+          not_run = re.compile(r"^Test \[\d+:\d+\] (\S+) (?:did not run|.*missing module info)", re.M)
+          condition = re.compile(r"Block name: '.*' - Condition: '.*'")
+          exits = {}
+          if os.path.exists(os.path.join(out, "exits")):
+              for line in open(os.path.join(out, "exits")):
+                  p, e, s = line.split()
+                  exits[p] = (e, s)
+          table = ["| Plan | Runner exit | Seconds | Modules | Results | Conditions passed | Failures | Warnings | Not finished |",
+                   "|---|---|---|---|---|---|---|---|---|"]
+          broken, failing, named = [], [], []
+          for p in plans:
+              path = os.path.join(out, p + ".out")
+              text = ansi.sub("", open(path, errors="ignore").read()) if os.path.exists(path) else ""
+              e, s = exits.get(p, ("—", "—"))
+              rows = [m.groups() for m in map(module.match, text.splitlines()) if m]
+              if "Script complete - results:" not in text or not rows:
+                  broken.append(p)
+                  table.append(f"| {p} | {e} | {s} | — | did not reach its results | | | | |")
+                  continue
+              results = collections.Counter(r[3] for r in rows)
+              passed = sum(int(r[4]) for r in rows)
+              failed = sum(int(r[5]) for r in rows)
+              warned = sum(int(r[6]) for r in rows)
+              unfinished = [f"{r[0]} ({r[2]})" for r in rows if r[2] != "FINISHED"]
+              unfinished += [f"{n} (did not run)" for n in not_run.findall(text)]
+              if failed and p not in by_design:
+                  failing.append(p)
+              table.append(f"| {p} | {e} | {s} | {len(rows)} | "
+                           + ", ".join(f"{v} {k}" for k, v in sorted(results.items()))
+                           + f" | {passed} | {failed} | {warned} | {', '.join(unfinished) or '—'} |")
+              current = None
+              for line in text.splitlines():
+                  m = module.match(line)
+                  if m:
+                      current = m.group(1)
+                  elif current and condition.search(line):
+                      named.append(f"{p} · {current} · {line.strip()}")
+
+          report = ["## Conformance plans", "", *table, ""]
+          for p, why in by_design.items():
+              report.append(f"- **{p}** is not judged on failures: {why}.")
+          if named:
+              report += ["", "<details><summary>Every failed or warned condition, as the runner named it "
+                         f"({len(named)})</summary>", "", "```", *named, "```", "</details>"]
+          if broken:
+              report += ["", f"**Did not reach their results:** {', '.join(broken)}."]
+          if failing:
+              report += ["", f"**Failed conditions:** {', '.join(failing)}."]
+          print("\n".join(report))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(report) + "\n")
+          sys.exit(1 if broken or failing else 0)
+          PY
+
+      - name: Keep the engine's and the suite's logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          docker logs signari-engine-1 > "$RUNNER_TEMP/out/engine.log" 2>&1 || true
+          docker logs idp-conformance-server-1 2>&1 | tail -n 20000 > "$RUNNER_TEMP/out/suite-server.log" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: ${{ runner.temp }}/out
+          retention-days: 30

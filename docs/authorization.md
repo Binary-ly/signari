@@ -526,8 +526,12 @@ refusing all of them hides which one was wrong.
 
 A batch reads the model, each subject and the relations it could turn on once,
 so a hundred questions about one person cost five statements rather than six
-hundred. Nothing read for a request outlives it, so a grant revoked is refused
-on the next one. A provider veto is still one call per allowed entry.
+hundred. Walks are shared the same way: what one question's walk settles, a
+relation held along the path it found or not held anywhere it looked, answers the
+next question of the same subjects, so a hundred documents in one folder walk the
+folders above it once and not a hundred times. Nothing read for a request outlives
+it, so a grant revoked is refused on the next one. A provider veto is still one
+call per allowed entry.
 
 ## Recording decisions
 

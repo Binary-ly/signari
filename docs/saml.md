@@ -61,8 +61,11 @@ another's sign-in by registering the same entity ID.
 `signari saml org-endpoint -entity-id <id> [-org <uuid>]` moves a provider to its
 organisation's endpoints, `-remove` back, which is refused while somebody else holds
 the entity ID there. Either way the provider has to be given the new metadata,
-because the entity ID it knows this server by has changed. So does renaming an
-organisation's slug.
+because the entity ID it knows this server by has changed. An organisation's slug
+cannot be changed through Signari, by command, Admin API or configuration file, so
+this entity ID stays as it was issued; changing the slug in the database by hand
+would change it the same way, and every provider at the organisation's endpoints
+would need the new metadata.
 
 Where two organisations hold an entity ID, a command that takes `-entity-id` needs
 `-org` as well, and says so.

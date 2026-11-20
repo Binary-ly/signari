@@ -51,7 +51,7 @@ func TestTheSignInPageReadsItsSettingsInOneRoundTrip(t *testing.T) {
 	}
 	settings := []string{"FROM core.brands", "FROM core.org_brands", "FROM core.identity_providers WHERE enabled AND org_id",
 		"persistent_sessions FROM core.organizations", "rp_id", "cardinality(login_domains)", "FROM core.signup_rules",
-		"ORDER BY o.created_at LIMIT 1"}
+		"ORDER BY o.created_at LIMIT 1", "FROM core.kerberos_realms"}
 	trips.mu.Lock()
 	seen := append([]string(nil), trips.what...)
 	trips.mu.Unlock()

@@ -56,6 +56,7 @@
   "mail.walletconfirm.subject": "Finish signing in with your wallet",
   "mail.walletconfirm.body": "Somebody is signing in to your account with your wallet, on a screen other than the phone your wallet is on.\n\nIf that is you, type this code on that screen: {Code}. It works until {Until}.\n\nIf it is not you, do not give this code to anybody, whoever asks and however they ask. Nobody can finish this sign-in without it, and it will stop working by itself.",
   "login.passkey": "Sign in with a passkey",
+  "login.kerberos": "Sign in with your domain account",
   "login.forgot": "Forgot your password?",
   "login.signup": "Create an account",
   "login.gethelp": "Get help signing in",

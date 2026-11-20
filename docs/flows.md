@@ -332,6 +332,13 @@ will do; one that names none lets any provider through, whatever the others say.
 apply` refuses a provider the organisation does not have enabled, since it would refuse
 everybody who signs in.
 
+A flow a Kerberos ticket is the only way into (`kerberos, session`) skips the page the
+same way: an authorization request goes to `/login/kerberos` carrying itself, and the
+ticket comes back to it signed in. That happens only on a host with a keytab for the
+organisation, its own realm's or, on a host with none, the deployment's for its first
+organisation; anywhere else the page is shown, since the Negotiate route there answers
+`404`. See [kerberos.md](kerberos.md).
+
 **Until October 2026 the walker passed `password` and `passkey` whatever had
 been presented.** `passkey, session` admitted a password, and the `one_of` at
 the top of this page let a passkey holder in on a password. A flow written

@@ -1115,7 +1115,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	pageOrg := s.loginOrg(r.Context(), authzQuery)
 	// What the page decides from, in one round trip; asked one by one as before when that
 	// could not be read.
-	page, read := s.readSignInPage(r.Context(), pageOrg, authzQuery)
+	page, read := s.readSignInPage(r.Context(), pageOrg, authzQuery, kerberosHost(r))
 	if !read {
 		page = signInPage{
 			brand:        s.brandOf(r.Context(), pageOrg),
@@ -1124,6 +1124,7 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 			persistent:   s.persistentOffered(r.Context(), pageOrg),
 			singleSignOn: s.singleSignOnOffered(r.Context(), pageOrg),
 			passkeys:     s.passkeysOffered(r.Context(), pageOrg),
+			kerberos:     s.kerberosLink(r, pageOrg, authzQuery),
 		}
 	}
 	b := page.brand
@@ -1163,6 +1164,9 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 		"Accounts": s.holdsAccounts(r, pageOrg),
 		// The passkey button and the ceremony behind it, where they can work.
 		"Passkeys": page.passkeys,
+		// A Kerberos ticket, where this host has a keytab for the organisation and its
+		// flow admits one. Nothing else linked the Negotiate exchange (8.22).
+		"Kerberos": page.kerberos,
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),

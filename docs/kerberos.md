@@ -12,6 +12,14 @@ SIGNARI_KERBEROS_REALM=EXAMPLE.COM
 SIGNARI_KERBEROS_SPN=HTTP/auth.example.com
 ```
 
+A browser signs in with its ticket at `/login/kerberos`, with `authz=` carrying the
+authorization request it should come back to. The sign-in page links it, "Sign in with
+your domain account", wherever the host it was asked on has a keytab for the page's
+organisation and the organisation's [sign-in flow](flows.md) admits a ticket; an
+organisation whose flow admits a ticket and nothing else is sent there straight from the
+authorization request, with no page at all. Until November 2026 nothing linked it, so a
+ticket signed somebody in only through a link the operator gave people themselves.
+
 `/login/kerberos` answers **only for a host with a keytab behind it**, and is a
 `404` otherwise. A route answering `401 WWW-Authenticate: Negotiate` with no keytab
 behind it makes every domain-joined browser show a native credential dialog for a

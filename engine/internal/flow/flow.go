@@ -506,6 +506,22 @@ func (fl *Flow) OnlyProvider() string {
 	return pins[0]
 }
 
+// OnlyKerberos reports whether a ticket is the only way the flow signs anybody in: it
+// admits the kerberos proof and no other, so the sign-in page could offer nothing that
+// succeeds. A flow with too many conditions to enumerate admits every proof, and so
+// shows the page.
+func (fl *Flow) OnlyKerberos() bool {
+	if fl == nil || !fl.AdmitsProof(StageKerberos) {
+		return false
+	}
+	for stage := range signInProofs {
+		if stage != StageKerberos && fl.AdmitsProof(stage) {
+			return false
+		}
+	}
+	return true
+}
+
 // RedirectTarget is where the flow's redirect sends the browser, or "" when it
 // ends otherwise.
 func (fl *Flow) RedirectTarget() string {

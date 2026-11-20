@@ -12,7 +12,7 @@ import (
 
 // signInPage is what the sign-in page decides from on every render: what it wears, the
 // providers it offers, and whether it links sign-up, keeps a person signed in, routes
-// by address and offers passkeys.
+// by address, offers passkeys and offers a Kerberos ticket (its link, or "").
 type signInPage struct {
 	brand        *brand.Brand
 	providers    []externalProvider
@@ -20,6 +20,7 @@ type signInPage struct {
 	persistent   bool
 	singleSignOn bool
 	passkeys     bool
+	kerberos     string
 }
 
 // readSignInPage reads it in one round trip (E.36), each statement the one its own reader
@@ -29,7 +30,7 @@ type signInPage struct {
 //
 // read is false when anything in the batch failed, and the caller then asks each the way
 // it always has, logging as each does: a failure here is never more than a slower page.
-func (s *Server) readSignInPage(ctx context.Context, orgID, authzQuery string) (page signInPage, read bool) {
+func (s *Server) readSignInPage(ctx context.Context, orgID, authzQuery, host string) (page signInPage, read bool) {
 	if s.db == nil {
 		return page, false
 	}
@@ -37,6 +38,7 @@ func (s *Server) readSignInPage(ctx context.Context, orgID, authzQuery string) (
 	instanceBrand := store.QueueInstanceBrand(b, s.cfg.Issuer)
 	firstOrg := store.QueueFirstOrg(b, s.cfg.Issuer)
 	signup := store.QueueFirstOrgSignupRule(b, s.cfg.Issuer)
+	realmOrg := store.QueueKerberosHostOrg(b, s.instanceID, host)
 
 	unasked := errors.New("not asked")
 	orgBrand := func() (*brand.Brand, error) { return nil, nil }
@@ -68,7 +70,8 @@ func (s *Server) readSignInPage(ctx context.Context, orgID, authzQuery string) (
 	first, ferr := firstOrg()
 	rule, rerr := signup()
 	sso, serr := singleSignOn()
-	for _, err := range []error{ierr, oerr, rerr, serr, providersErr, persistentErr, passkeysErr} {
+	hostOrg, kerr := realmOrg()
+	for _, err := range []error{ierr, oerr, rerr, serr, kerr, providersErr, persistentErr, passkeysErr} {
 		if err != nil {
 			return signInPage{}, false
 		}
@@ -92,5 +95,6 @@ func (s *Server) readSignInPage(ctx context.Context, orgID, authzQuery string) (
 	if memo, _ := ctx.Value(loginOrgKey{}).(*loginOrgMemo); memo != nil {
 		memo.defaultAsked, memo.defaultOrg, memo.defaultErr = true, first, ferr
 	}
+	page.kerberos = s.kerberosLinkWith(ctx, orgID, authzQuery, hostOrg, first, true)
 	return page, true
 }

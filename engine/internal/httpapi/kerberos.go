@@ -1,15 +1,18 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jcmturner/goidentity/v6"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/kerberos"
 	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
@@ -44,11 +47,7 @@ import (
 // names, and with neither there is nothing here, as if the route did not exist.
 func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	host := requestHost(r.Host)
-	if name, _, err := net.SplitHostPort(host); err == nil {
-		host = name
-	}
-	realm, err := store.KerberosRealmForHost(ctx, s.db, s.cfg.Root, s.instanceID, host)
+	realm, err := store.KerberosRealmForHost(ctx, s.db, s.cfg.Root, s.instanceID, kerberosHost(r))
 	if err != nil {
 		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
@@ -71,6 +70,106 @@ func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
 	}
 	signIn := func(w http.ResponseWriter, r *http.Request) { s.handleKerberosLogin(w, r, config, orgID) }
 	kerberos.Negotiate(http.HandlerFunc(signIn), kt, config.ServicePrincipal).ServeHTTP(w, r)
+}
+
+// ticketIsTheOnlyWayIn reports whether orgID's sign-in flow admits a ticket and nothing
+// else, and the host the browser asked can take one for that organisation: its realm's
+// keytab, or with no realm of its own the deployment's, which signs people in to its
+// first organisation. The sign-in page would offer nothing that could succeed, and a
+// redirect to a Negotiate route answering 404 would say less than the page does.
+func (s *Server) ticketIsTheOnlyWayIn(r *http.Request, orgID string) bool {
+	ctx := r.Context()
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil || !fl.OnlyKerberos() {
+		return false
+	}
+	return s.ticketServes(r, orgID)
+}
+
+// ticketServes reports whether the host a request came to can take a ticket for orgID:
+// its realm is the organisation's, or it has none and the deployment's keytab signs
+// people in to the first organisation, which orgID is.
+func (s *Server) ticketServes(r *http.Request, orgID string) bool {
+	if s.db == nil {
+		return false
+	}
+	ctx := r.Context()
+	realmOrg, err := store.KerberosHostOrg(ctx, s.db, s.instanceID, kerberosHost(r))
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		return false
+	}
+	return s.ticketServesWith(ctx, orgID, realmOrg, "", false)
+}
+
+// ticketServesWith is ticketServes from answers already read: the organisation of the
+// host's realm ("" for none) and, when firstKnown, the instance's first organisation.
+func (s *Server) ticketServesWith(ctx context.Context, orgID, realmOrg, firstOrg string, firstKnown bool) bool {
+	if orgID == "" {
+		return false
+	}
+	if realmOrg != "" {
+		return realmOrg == orgID
+	}
+	if s.krbKeytab == nil {
+		return false
+	}
+	if !firstKnown {
+		var err error
+		if firstOrg, err = s.defaultOrg(ctx); err != nil {
+			return false
+		}
+	}
+	return firstOrg == orgID
+}
+
+// kerberosLinkWith is the sign-in page's link to the Negotiate exchange, carrying the
+// parked request, where orgID's flow admits a ticket and the host can take one for it;
+// "" anywhere else, so the page offers nothing that would answer 404.
+func (s *Server) kerberosLinkWith(ctx context.Context, orgID, authzQuery, realmOrg, firstOrg string, firstKnown bool) string {
+	if !s.ticketServesWith(ctx, orgID, realmOrg, firstOrg, firstKnown) {
+		return ""
+	}
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil || !fl.AdmitsProof(flow.StageKerberos) {
+		return ""
+	}
+	return kerberosStart(authzQuery)
+}
+
+// kerberosLink is kerberosLinkWith asking for what it needs itself, for a sign-in page
+// whose batch could not be read.
+func (s *Server) kerberosLink(r *http.Request, orgID, authzQuery string) string {
+	if s.db == nil {
+		// No database to say where a realm is, as the page's other readers find.
+		return ""
+	}
+	ctx := r.Context()
+	realmOrg, err := store.KerberosHostOrg(ctx, s.db, s.instanceID, kerberosHost(r))
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		return ""
+	}
+	return s.kerberosLinkWith(ctx, orgID, authzQuery, realmOrg, "", false)
+}
+
+// kerberosStart is the Negotiate exchange's address, carrying the request to come back
+// to once the ticket has signed somebody in.
+func kerberosStart(authzQuery string) string {
+	if authzQuery == "" {
+		return "/login/kerberos"
+	}
+	return "/login/kerberos?" + url.Values{"authz": {authzQuery}}.Encode()
+}
+
+// kerberosHost is the name a request's host is known by to a realm, without a port, as
+// handleKerberos reads it.
+func kerberosHost(r *http.Request) string {
+	host := requestHost(r.Host)
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return host
 }
 
 // handleKerberosLogin runs behind the SPNEGO middleware; by the time it does, the

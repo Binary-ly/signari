@@ -200,6 +200,37 @@ func KerberosRealmForHost(ctx context.Context, q rowQuerier, root *keys.RootKey,
 		 WHERE k.host = $1 AND `+InInstance("k.org_id", "$2"), host, instanceID), root)
 }
 
+// QueueKerberosHostOrg asks, as one more statement in a batch the caller sends, whose
+// organisation the realm of a host of this instance signs people in to: "" when the host
+// has no realm of its own. The keytab is not read; the Negotiate exchange reads and
+// opens it, and this only says where one would be (the sign-in page's link, E.36).
+func QueueKerberosHostOrg(b *pgx.Batch, instanceID, host string) func() (string, error) {
+	var org string
+	err := errors.New("the batch asking for a host's realm was not sent")
+	b.Queue(kerberosHostOrgStatement, host, instanceID).QueryRow(func(row pgx.Row) error {
+		org, err = scanKerberosHostOrg(row)
+		return nil
+	})
+	return func() (string, error) { return org, err }
+}
+
+// KerberosHostOrg is QueueKerberosHostOrg asked on its own.
+func KerberosHostOrg(ctx context.Context, q rowQuerier, instanceID, host string) (string, error) {
+	return scanKerberosHostOrg(q.QueryRow(ctx, kerberosHostOrgStatement, host, instanceID))
+}
+
+var kerberosHostOrgStatement = `SELECT k.org_id::text FROM core.kerberos_realms k
+		 WHERE k.host = $1 AND ` + InInstance("k.org_id", "$2")
+
+func scanKerberosHostOrg(row pgx.Row) (string, error) {
+	var org string
+	err := row.Scan(&org)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return org, err
+}
+
 // KerberosRealmOfOrg finds an organisation's realm by name, keytab opened, and nil
 // when it has none.
 func KerberosRealmOfOrg(ctx context.Context, q rowQuerier, root *keys.RootKey, orgID, realm string) (*KerberosRealm, error) {

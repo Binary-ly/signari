@@ -420,6 +420,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, providerStart(slug, kind, r.URL.RawQuery), http.StatusSeeOther)
 				return
 			}
+			// A flow a ticket is the only way into goes to the Negotiate exchange, which
+			// comes back here with the request it is given (8.22).
+			if herr == nil && s.ticketIsTheOnlyWayIn(r, c.OrgID) {
+				http.Redirect(w, r, kerberosStart(r.URL.RawQuery), http.StatusSeeOther)
+				return
+			}
 		}
 		// The application's own page, which walks the same stages over JSON. Not for
 		// that walk's own request, or it would be sent to the page it came from.

@@ -115,8 +115,9 @@ RSA-PSS signatures use a salt as long as the hash, as the engine's own do.
 
 ## Tested against
 
-SoftHSM 2.7.0 and OpenBao 2.4.1. The same tests run against each: they make keys of
-every algorithm the module makes, rotate them, move a deployment from software
+SoftHSM 2.7.0, OpenBao 2.4.1 and HashiCorp Vault 2.2.2. The same tests run against
+each: they make keys of every algorithm the module makes, rotate them, move a
+deployment from software
 keys into the module, refuse a module key unlike the published one, leave the
 module's keys alone through a root-key rotation, and sign a token in every
 algorithm that is then verified against the published key, RSA-PSS with its salt
@@ -129,9 +130,12 @@ SIGNARI_TEST_VAULT_ADDR=http://127.0.0.1:8200 SIGNARI_TEST_VAULT_TOKEN=… \
   SIGNARI_TEST_DSN=postgres://… go test ./internal/keys/ ./internal/tokens/
 ```
 
-The binary was also run against each with a fresh database: `instance create`
-and `keys rotate` made their keys in the module, a person signed in, and OpenSSL
-verified the ID token's signature against the JWKS the server published. With the
-token, the SAML metadata it served carried a certificate the token had signed,
-which OpenSSL also verified. The `pkcs11` image itself, given only Debian's SoftHSM
+The binary was also run against SoftHSM and OpenBao with a fresh database:
+`instance create` and `keys rotate` made their keys in the module, a person signed
+in, and OpenSSL verified the ID token's signature against the JWKS the server
+published. With the token, the SAML metadata it served carried a certificate the
+token had signed, which OpenSSL also verified. Against Vault, `instance create` and
+`keys rotate` made four keys in its transit engine, every row holding only a
+`vault-transit:` reference, and the server published those four; signing there is
+what the tests above verify. The `pkcs11` image itself, given only Debian's SoftHSM
 module, made its keys in a token and loaded them back.

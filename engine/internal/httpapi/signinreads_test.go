@@ -108,3 +108,45 @@ func TestTheSignInPageAsksTheFirstOrganisationOnce(t *testing.T) {
 		t.Errorf("the login page asked the first organisation %d times", n)
 	}
 }
+
+// A password sign-in's walk through the built-in flow asks what it decides from, the
+// account's obligations, a second factor and the prompts pending, in one round trip
+// (E.37). Asked as the walk reached each, they were three, one after another, inside the
+// sign-in's transaction. The second factor is also asked once on its own before that
+// transaction, to know whether to challenge at all, and stays so: the answer read inside
+// the transaction is the one the session is issued on.
+func TestAPasswordSignInsWalkAsksItsFactsInOneRoundTrip(t *testing.T) {
+	f := newSignInFixture(t)
+	clearSignInBucket(t, f.pool)
+	trips := countRoundTripsOf(t, f.srv)
+	if got := f.attempt(t, f.email, signInTestPassword); !got.signedIn() {
+		t.Fatalf("signing in: %+v", got)
+	}
+	trips.mu.Lock()
+	seen := append([]string(nil), trips.what...)
+	trips.mu.Unlock()
+	for _, fact := range []struct {
+		what, statement string
+		alone           int
+	}{
+		{"the account's obligations", "COALESCE(p.must_change_reason", 0},
+		{"the prompts pending", "FROM core.prompts p WHERE p.org_id", 0},
+		{"a second factor", "FROM core.totp_credentials", 1},
+	} {
+		batched, alone := 0, 0
+		for _, s := range seen {
+			switch {
+			case !strings.Contains(s, fact.statement):
+			case strings.HasPrefix(s, "in the batch:"):
+				batched++
+			default:
+				alone++
+			}
+		}
+		if batched != 1 || alone > fact.alone {
+			t.Errorf("the sign-in asked %s in %d batches and %d times on its own, want 1 and at most %d",
+				fact.what, batched, alone, fact.alone)
+		}
+	}
+	t.Logf("the sign-in took %d round trips:%s", trips.n.Load(), trips)
+}

@@ -694,8 +694,12 @@ func HasFactorOtherThanDuo(ctx context.Context, db interface {
 func HasFactorOtherThanEmail(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID string) (bool, error) {
-	var any bool
-	err := db.QueryRow(ctx, `
+	return scanFactor(db.QueryRow(ctx, otherThanEmailStatement, userID), "checking for a second factor besides email")
+}
+
+// otherThanEmailStatement is HasFactorOtherThanEmail's question, named so that a batch
+// asks exactly it (QueueSecondFactor). TestEveryFactorTableIsChecked reads this text.
+const otherThanEmailStatement = `
 		SELECT EXISTS (
 			SELECT 1 FROM core.totp_credentials
 			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
@@ -709,9 +713,34 @@ func HasFactorOtherThanEmail(ctx context.Context, db interface {
 		) OR EXISTS (
 			SELECT 1 FROM core.webauthn_credentials
 			WHERE user_id = $1::uuid
-		)`, userID).Scan(&any)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return false, fmt.Errorf("checking for a second factor besides email: %w", err)
+		)`
+
+// QueueSecondFactor asks HasSecondFactor's question, or HasFactorOtherThanEmail's when
+// the mailbox was the first factor, as one more statement in a batch the caller sends
+// (E.37): the sign-in's walk asks its facts in one round trip. The same statements, so
+// the guard that holds them to every factor table holds this too.
+func QueueSecondFactor(b *pgx.Batch, userID string, otherThanEmail bool) func() (bool, error) {
+	statement, what := secondFactorStatement, "checking for a second factor"
+	if otherThanEmail {
+		statement, what = otherThanEmailStatement, "checking for a second factor besides email"
+	}
+	has, err := false, errors.New("the batch asking for a second factor was not sent")
+	b.Queue(statement, userID).QueryRow(func(row pgx.Row) error {
+		has, err = scanFactor(row, what)
+		return nil
+	})
+	return func() (bool, error) { return has, err }
+}
+
+// scanFactor reads the answer to a factor question. No row is no factor, though EXISTS
+// always answers one.
+func scanFactor(row pgx.Row, what string) (bool, error) {
+	var any bool
+	if err := row.Scan(&any); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("%s: %w", what, err)
 	}
 	return any, nil
 }
@@ -740,8 +769,13 @@ func HasFactorOtherThanEmail(ctx context.Context, db interface {
 func HasSecondFactor(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID string) (bool, error) {
-	var any bool
-	err := db.QueryRow(ctx, `
+	return scanFactor(db.QueryRow(ctx, secondFactorStatement, userID), "checking for a second factor")
+}
+
+// secondFactorStatement is HasSecondFactor's question, named so that a batch asks
+// exactly it (QueueSecondFactor). TestEveryFactorTableIsChecked reads this text: every
+// factor table, each by its proved half.
+const secondFactorStatement = `
 		SELECT EXISTS (
 			SELECT 1 FROM core.totp_credentials
 			WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL
@@ -771,12 +805,4 @@ func HasSecondFactor(ctx context.Context, db interface {
 			-- registration's attestation has verified.
 			SELECT 1 FROM core.webauthn_credentials
 			WHERE user_id = $1::uuid
-		)`, userID).Scan(&any)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("checking for a second factor: %w", err)
-	}
-	return any, nil
-}
+		)`

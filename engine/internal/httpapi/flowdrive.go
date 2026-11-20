@@ -400,6 +400,11 @@ func (f *signInFacts) accountObligations() store.Obligations {
 	if err != nil {
 		f.s.log.ErrorContext(f.ctx, "reading what the account must do before signing in", "err", err)
 	}
+	return f.setObligations(o)
+}
+
+// setObligations records what accountObligations read, however it was read.
+func (f *signInFacts) setObligations(o store.Obligations) store.Obligations {
 	f.obligations, f.obligationsKnown = o, true
 	// Both answers recorded whichever condition asked: the password_change
 	// stage reads the recorded answer once changeKnown is set, and an
@@ -431,6 +436,14 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 		f.s.log.ErrorContext(f.ctx, "reading prompts", "err", err)
 		return nil
 	}
+	return f.setPrompts(ps, missing)
+}
+
+// setPrompts records what pendingPrompts read, however it was read: the operator's
+// prompts this sign-in has not answered, then the required attributes the person may
+// write and has no value for.
+func (f *signInFacts) setPrompts(ps []prompts.Prompt, missing []store.Attribute) []prompts.Prompt {
+	f.promptsOnce = true
 	f.prompts = slices.DeleteFunc(ps, func(p prompts.Prompt) bool {
 		return flow.Marked(f.amr, flow.StagePrompt, p.Slug)
 	})
@@ -440,6 +453,91 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 		f.prompts = append(f.prompts, requiredAttributesPrompt(missing))
 	}
 	return f.prompts
+}
+
+// prefetch asks, in one batch through the walk's own transaction, the facts a
+// statement answers that this flow reads (E.37): an account's obligations, a second
+// factor and pending prompts, wherever a condition branches on one or a stage reads
+// one. Asked as the walk reached each, the built-in flow's password sign-in waited on
+// three round trips for them, one after another.
+//
+// Only what the flow mentions, so a flow still pays for nothing it does not branch on;
+// a fact the walk then never reaches, past a stage that takes the response, costs a
+// statement in the same trip and no wait. One fact alone is left to the walk, since a
+// batch of one saves nothing. And whatever the batch did not answer is asked as it was
+// before, one at a time when reached, so a batch that fails costs its trip and nothing
+// else: in a transaction its error leaves the transaction aborted, as the same
+// statement failing on its own would.
+//
+// Through the transaction because the walk reads through it: an address proved by a
+// code this request just took reads as proved. Nothing the walk writes before reaching
+// a fact bears on it; the only write it makes on the way, Duo failing open, is an audit
+// record.
+func (f *signInFacts) prefetch(fl *flow.Flow, db interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}) {
+	reads := map[flow.Condition]bool{}
+	for _, name := range fl.Conditions() {
+		reads[flow.Condition(name)] = true
+	}
+	note := func(stage flow.StageName) {
+		switch stage {
+		case flow.StageMFA, flow.StageEnrolMFA:
+			reads[flow.CondHasSecondFactor] = true
+		case flow.StagePrompt:
+			reads[flow.CondPromptsPending] = true
+		case flow.StageVerifyEmail:
+			reads[flow.CondEmailVerificationPending] = true
+		case flow.StagePasswordChange:
+			reads[flow.CondPasswordChangeRequired] = true
+		}
+	}
+	for _, st := range fl.Stages {
+		note(st.Stage)
+		for _, br := range st.OneOf {
+			note(br.Stage)
+		}
+	}
+
+	b := &pgx.Batch{}
+	var obligations func() (store.Obligations, error)
+	if (reads[flow.CondPasswordChangeRequired] || reads[flow.CondEmailVerificationPending]) && !f.obligationsKnown {
+		obligations = store.QueueAccountObligations(b, f.userID)
+	}
+	var factor func() (bool, error)
+	if _, known := f.known[string(flow.CondHasSecondFactor)]; reads[flow.CondHasSecondFactor] && !known {
+		// The mailbox that was the first factor cannot be the second, as the condition
+		// itself asks.
+		factor = store.QueueSecondFactor(b, f.userID, primaryProof(f.amr) == flow.StageEmailOTP)
+	}
+	var pending func() ([]prompts.Prompt, []store.Attribute, error)
+	if reads[flow.CondPromptsPending] && !f.promptsOnce {
+		pending = store.QueuePendingPrompts(b, f.orgID, f.userID)
+	}
+	if b.Len() < 2 {
+		return
+	}
+	if err := db.SendBatch(f.ctx, b).Close(); err != nil {
+		// Each fact the batch did not answer is asked again when reached, and logged
+		// there if that fails too.
+		f.s.log.WarnContext(f.ctx, "reading a sign-in's facts in one batch", "err", err,
+			"correlation_id", correlationID(f.ctx))
+	}
+	if obligations != nil {
+		if o, err := obligations(); err == nil {
+			f.setObligations(o)
+		}
+	}
+	if factor != nil {
+		if has, err := factor(); err == nil {
+			f.setKnown(flow.CondHasSecondFactor, has)
+		}
+	}
+	if pending != nil {
+		if ps, missing, err := pending(); err == nil {
+			f.setPrompts(ps, missing)
+		}
+	}
 }
 
 // signInReader is what signInState reads through: the open transaction during
@@ -517,6 +615,8 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 	// Settled at the sign-in form, before the flow is walked, which is why
 	// Parse lets it guard nothing but the captcha stage.
 	facts.setKnown(flow.CondCaptchaRequired, false)
+	// What the walk will read, in one round trip rather than one each (E.37).
+	facts.prefetch(fl, tx)
 
 	// Whether Duo already failed open for this sign-in -- on the password path,
 	// before this walk began, or at an earlier mfa stage of this walk.

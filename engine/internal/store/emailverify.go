@@ -57,13 +57,31 @@ type Obligations struct {
 func AccountObligations(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, userID string) (Obligations, error) {
+	return scanObligations(db.QueryRow(ctx, obligationsStatement, userID))
+}
+
+// QueueAccountObligations asks AccountObligations' question as one more statement in a
+// batch the caller sends (E.37).
+func QueueAccountObligations(b *pgx.Batch, userID string) func() (Obligations, error) {
 	var o Obligations
-	err := db.QueryRow(ctx, `
+	err := errors.New("the batch asking for an account's obligations was not sent")
+	b.Queue(obligationsStatement, userID).QueryRow(func(row pgx.Row) error {
+		o, err = scanObligations(row)
+		return nil
+	})
+	return func() (Obligations, error) { return o, err }
+}
+
+const obligationsStatement = `
 		SELECT COALESCE(p.must_change, false), COALESCE(p.must_change_reason, ''),
 		       u.email_verified_at IS NULL
 		         AND EXISTS (SELECT 1 FROM core.email_verifications v WHERE v.user_id = u.id)
 		  FROM core.users u LEFT JOIN core.password_credentials p ON p.user_id = u.id
-		 WHERE u.id = $1::uuid`, userID).Scan(&o.PasswordChange, &o.ChangeReason, &o.EmailPending)
+		 WHERE u.id = $1::uuid`
+
+func scanObligations(row pgx.Row) (Obligations, error) {
+	var o Obligations
+	err := row.Scan(&o.PasswordChange, &o.ChangeReason, &o.EmailPending)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Obligations{}, nil
 	}

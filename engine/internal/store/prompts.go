@@ -38,7 +38,28 @@ var ErrPromptChanged = errors.New("the prompt changed while it was being answere
 func PendingPrompts(ctx context.Context, db Querier, orgID, userID string) (
 	[]prompts.Prompt, []Attribute, error) {
 
-	rows, err := db.Query(ctx, `
+	rows, err := db.Query(ctx, pendingPromptsStatement, orgID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	return scanPendingPrompts(rows)
+}
+
+// QueuePendingPrompts asks PendingPrompts' question as one more statement in a batch
+// the caller sends (E.37).
+func QueuePendingPrompts(b *pgx.Batch, orgID, userID string) func() ([]prompts.Prompt, []Attribute, error) {
+	var out []prompts.Prompt
+	var missing []Attribute
+	err := errors.New("the batch asking for pending prompts was not sent")
+	b.Queue(pendingPromptsStatement, orgID, userID).Query(func(rows pgx.Rows) error {
+		out, missing, err = scanPendingPrompts(rows)
+		return nil
+	})
+	return func() ([]prompts.Prompt, []Attribute, error) { return out, missing, err }
+}
+
+const pendingPromptsStatement = `
 		SELECT 'prompt', p.id::text, p.slug, p.title, COALESCE(p.body,''), p.once, p.fields, p.version,
 		       p.position, p.slug
 		  FROM core.prompts p
@@ -53,12 +74,9 @@ func PendingPrompts(ctx context.Context, db Querier, orgID, userID string) (
 		 WHERE s.org_id = $1::uuid AND s.required AND s.user_writable
 		   AND NOT EXISTS (SELECT 1 FROM core.user_attributes a
 		                    WHERE a.attribute_id = s.id AND a.user_id = $2::uuid)
-		 ORDER BY 1, 9, 10`, orgID, userID)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
+		 ORDER BY 1, 9, 10`
 
+func scanPendingPrompts(rows pgx.Rows) ([]prompts.Prompt, []Attribute, error) {
 	var out []prompts.Prompt
 	var missing []Attribute
 	for rows.Next() {

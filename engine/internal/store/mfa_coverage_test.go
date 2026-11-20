@@ -124,20 +124,22 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The body of HasSecondFactor only -- a mention anywhere else in the file
+	// What HasSecondFactor asks only -- a mention anywhere else in the file
 	// would not gate a sign-in.
-	//
-	// Matched to the next top-level func rather than to the first "\n}": the
-	// signature contains an inline interface literal, so the first closing brace
-	// is the interface's. An earlier version captured the signature alone and
-	// reported every table as missing.
-	body := regexp.MustCompile(`(?s)func HasSecondFactor\(.*?(\n}\n\n|\z)`).Find(src)
-	if body == nil {
-		t.Fatal("HasSecondFactor not found; this test is no longer checking anything")
+	body := factorQuestion(t, src, "HasSecondFactor")
+
+	// The sign-in's walk asks the same question in a batch (E.37). Asked in words of
+	// its own, it could leave out a table this test holds HasSecondFactor to, and the
+	// walk is where the answer gates a session.
+	queued := regexp.MustCompile(`(?s)func QueueSecondFactor\(.*?(\n}\n\n|\z)`).Find(src)
+	if queued == nil {
+		t.Fatal("QueueSecondFactor not found; this test is no longer checking it")
 	}
-	if !strings.Contains(string(body), "SELECT") {
-		t.Fatalf("the extracted body has no query in it, so this test is checking "+
-			"nothing:\n%s", body)
+	if strings.Contains(string(queued), "SELECT") ||
+		!strings.Contains(string(queued), "secondFactorStatement") ||
+		!strings.Contains(string(queued), "otherThanEmailStatement") {
+		t.Errorf("QueueSecondFactor does not ask exactly HasSecondFactor's and "+
+			"HasFactorOtherThanEmail's statements:\n%s", queued)
 	}
 
 	for _, tbl := range found {
@@ -148,7 +150,7 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 				"reason.", tbl)
 			continue
 		}
-		mentioned := strings.Contains(string(body), "core."+tbl)
+		mentioned := strings.Contains(body, "core."+tbl)
 		switch {
 		case gates && !mentioned:
 			t.Errorf("core.%s holds second-factor credentials and HasSecondFactor "+
@@ -168,34 +170,28 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 	// HasFactorOtherThanEmail stands in for HasSecondFactor after an emailed
 	// code, so it must consult every table that one does, except email's: a
 	// factor it missed would be a factor that sign-in never asked for.
-	otherThanEmail := regexp.MustCompile(`(?s)func HasFactorOtherThanEmail\(.*?(\n}\n\n|\z)`).Find(src)
-	if otherThanEmail == nil {
-		t.Fatal("HasFactorOtherThanEmail not found; this test is no longer checking it")
-	}
+	otherThanEmail := factorQuestion(t, src, "HasFactorOtherThanEmail")
 	for _, tbl := range found {
 		if !factorTables[tbl] {
 			continue
 		}
-		mentioned := strings.Contains(string(otherThanEmail), "core."+tbl)
+		mentioned := strings.Contains(otherThanEmail, "core."+tbl)
 		if want := tbl != "email_otp_credentials"; mentioned != want {
 			t.Errorf("HasFactorOtherThanEmail consults core.%s: %v, want %v", tbl, mentioned, want)
 		}
 	}
 
 	for _, fn := range []string{"HasSecondFactor", "HasFactorOtherThanDuo", "HasFactorOtherThanEmail"} {
-		fnBody := regexp.MustCompile(`(?s)func ` + fn + `\(.*?(\n}\n\n|\z)`).Find(src)
-		if fnBody == nil {
-			t.Fatalf("%s not found; this test is no longer checking it", fn)
-		}
+		fnBody := factorQuestion(t, src, fn)
 		for tbl, pred := range provedPredicate {
-			i := strings.Index(string(fnBody), "core."+tbl)
+			i := strings.Index(fnBody, "core."+tbl)
 			if i < 0 {
 				if fn == "HasSecondFactor" {
 					t.Errorf("%s does not consult core.%s", fn, tbl)
 				}
 				continue
 			}
-			clause := string(fnBody[i:])
+			clause := fnBody[i:]
 			if j := strings.Index(clause, "EXISTS"); j >= 0 {
 				clause = clause[:j]
 			}
@@ -205,6 +201,34 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 			}
 		}
 	}
+}
+
+// factorQuestion is what a factor check asks: its body, and the text of every
+// constant it names that ends in Statement, where the query lives so that a batch can
+// ask the same words (E.37).
+//
+// The body is matched to the next top-level func rather than to the first "\n}": the
+// signature contains an inline interface literal, so the first closing brace is the
+// interface's. An earlier version captured the signature alone and reported every
+// table as missing.
+func factorQuestion(t *testing.T, src []byte, fn string) string {
+	t.Helper()
+	body := regexp.MustCompile(`(?s)func ` + fn + `\(.*?(\n}\n\n|\z)`).Find(src)
+	if body == nil {
+		t.Fatalf("%s not found; this test is no longer checking it", fn)
+	}
+	question := string(body)
+	for _, name := range regexp.MustCompile(`\b[a-zA-Z]+Statement\b`).FindAllString(string(body), -1) {
+		text := regexp.MustCompile("(?s)const " + name + " = `(.*?)`").FindSubmatch(src)
+		if text == nil {
+			t.Fatalf("%s asks %s, and no constant of that name was found in mfa.go", fn, name)
+		}
+		question += "\n" + string(text[1])
+	}
+	if !strings.Contains(question, "SELECT") {
+		t.Fatalf("what %s asks has no query in it, so this test is checking nothing:\n%s", fn, question)
+	}
+	return question
 }
 
 // provedPredicate is what makes a row in each second-factor table a factor

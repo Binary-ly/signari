@@ -132,6 +132,9 @@ type config struct {
 	// service provider's entity id the requests are issued as, and the assertion
 	// consumer URL they ask for, which the provider must have registered.
 	SAMLSSO, SAMLSP, SAMLACS string
+
+	// post-json: where to POST, the file holding the body, and a bearer token if any.
+	PostURL, PostBody, PostToken string
 }
 
 func runCommand(args []string) error {
@@ -192,6 +195,9 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.IntrospectClientID, "introspect-client-id", "", "introspect as this client rather than -client-id (introspect)")
 	fs.StringVar(&c.IntrospectClientSecret, "introspect-client-secret", "", "its secret (client_secret_basic)")
 	fs.BoolVar(&c.IntrospectPerson, "introspect-person", false, "introspect a signed-in person's access token, one sign-in per worker, not a client credentials one (introspect)")
+	fs.StringVar(&c.PostURL, "post-url", "", "where post-json sends its body")
+	fs.StringVar(&c.PostBody, "post-body", "", "the file holding post-json's JSON body")
+	fs.StringVar(&c.PostToken, "post-token", "", "a bearer token post-json presents, if any")
 	fs.StringVar(&c.SAMLSSO, "saml-sso", "", "the provider's SAML single sign-on URL, redirect binding (saml-sso)")
 	fs.StringVar(&c.SAMLSP, "saml-sp", "", "the service provider's entity id the AuthnRequests are issued as (saml-sso)")
 	fs.StringVar(&c.SAMLACS, "saml-acs", "", "the assertion consumer URL they ask for, registered with the provider (saml-sso)")

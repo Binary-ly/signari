@@ -40,6 +40,7 @@ cd tools/bench && go build .
 | `passkey` | a passkey sign-in from a software authenticator, begin to finish. Each worker enrols one for a seeded person of its own, past `-people`, as a passkey is a second factor. The instance needs an RP ID, which cannot be an address, so the issuer needs a name |
 | `mfa` | the one request that spends a TOTP code at sign-in. The password before it is kept out of the latency, and a code is good once, so `-people` take turns, each holding `-totp-seed` |
 | `authzen` | one AuthZEN access evaluation |
+| `post-json` | a fixed JSON body, from the file `-post-body`, POSTed to `-post-url` with `-post-token` as a bearer token if given, answered `200`: a batch of authorization questions, for one, to any endpoint that takes a batch. Whether the answers are right is for the caller to check once beforehand; this times the asking |
 
 Each scenario runs a warm-up (`-warmup`, default 5 s), then a measured window
 (`-d`, default 20 s) with `-c` workers, each with its own cookie jar and

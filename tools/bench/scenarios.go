@@ -617,6 +617,31 @@ var scenarios = map[string]scenario{
 			}, nil
 		},
 	},
+	"post-json": {
+		help: "a fixed JSON body POSTed to -post-url, answered 200: a batch of authorization questions, for one, whatever the endpoint; -post-body names the file, -post-token a bearer token",
+		worker: func(_ context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.PostURL == "" || e.cfg.PostBody == "" {
+				return nil, fmt.Errorf("post-json needs -post-url and -post-body")
+			}
+			body, err := os.ReadFile(e.cfg.PostBody)
+			if err != nil {
+				return nil, err
+			}
+			hc := httpClient(e.cfg)
+			return func(ctx context.Context) error {
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.cfg.PostURL, bytes.NewReader(body))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if e.cfg.PostToken != "" {
+					req.Header.Set("Authorization", "Bearer "+e.cfg.PostToken)
+				}
+				_, err = do(hc, req)
+				return err
+			}, nil
+		},
+	},
 	"ldap-bind": {
 		help: "an LDAP simple bind on an open connection",
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {

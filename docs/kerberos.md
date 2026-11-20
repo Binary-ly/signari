@@ -219,10 +219,19 @@ Service and administrative principals are filtered out — `host/web01`,
 `HTTP/auth`, `alice/admin`, `krbtgt`, `kadmin` — because an account created from
 one is an account nobody can explain.
 
-Accounts are created **without a local password**: they sign in with a ticket
-(SPNEGO), and inventing a local password would be a second way in that nobody
-chose. Signing in with the realm password waits on the password backend above. Nothing is ever deleted: what happens to a leaver is a policy decision,
-not something a listing should make. It is a dry run unless `-apply`.
+Accounts are created **without a local password** and marked pending: they sign in
+with a ticket (SPNEGO), or with the realm password through the `kerberos` migration
+source above, and inventing a local password would be a second way in that nobody
+chose. Nothing is ever deleted: what happens to a leaver is a policy decision, not
+something a listing should make. It is a dry run unless `-apply`.
+
+A person already here is counted and left as they are, unless `-adopt-existing` is
+given. With it, somebody with no password here and no finished migration is marked
+pending as well, so the realm password signs them in too, as a ticket by SPNEGO
+already does for the same principal name: the case of people a directory sync brought
+in from the realm's own directory. Somebody with a local password is never adopted,
+since they are checked here and never sent to the realm, and neither is anybody whose
+migration is complete.
 
 **This runs `kadmin`.** The Kerberos administration protocol is RPC over GSSAPI
 with no Go implementation, and writing one to list principals would be a large

@@ -185,7 +185,7 @@ var commandFlags = map[string][]string{
 	"kerberos list-realms":            {"o", "org"},
 	"kerberos principals":             {"admin-principal", "keytab", "realm"},
 	"kerberos remove-realm":           {"org", "realm"},
-	"kerberos sync":                   {"admin-principal", "apply", "keytab", "org", "realm"},
+	"kerberos sync":                   {"admin-principal", "adopt-existing", "apply", "keytab", "org", "realm"},
 	"keys list":                       {"o"},
 	"keys retire":                     {"dry-run"},
 	"keys rewrap-root":                {"dry-run"},

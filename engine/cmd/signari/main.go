@@ -764,6 +764,8 @@ func run(args []string) (err error) {
 	krbStripRealm := fs.Bool("strip-realm", false, "`kerberos add-realm`: match people by the name before the @")
 	krbTrust := fs.String("trust-realms", "", "`kerberos add-realm`: comma-separated other realms whose people may sign in")
 	krbCreate := fs.Bool("create-accounts", false, "`kerberos add-realm`: make an account for a good ticket with none")
+	krbAdopt := fs.Bool("adopt-existing", false,
+		"`kerberos sync`: mark people already here with no password and no finished migration pending too")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
 	targetDomain := fs.String("target-domain", "",
@@ -2097,7 +2099,7 @@ func run(args []string) (err error) {
 	case "signup show":
 		return signupShow(ctx, conn, *orgID)
 	case "kerberos sync":
-		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply)
+		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply, *krbAdopt)
 	case "kerberos add-realm":
 		var trusted []string
 		if *krbTrust != "" {
@@ -8914,8 +8916,14 @@ func kerberosPrincipals(ctx context.Context, realm, adminPrincipal, keytabPath s
 // A dry run unless -apply, like every other sync here. It never deletes: a
 // principal that has gone from the realm is a leaver, and what happens to a
 // leaver's account is a policy decision rather than something a listing decides.
+//
+// Somebody already here is left alone unless adopt: then a person with no password
+// here and a migration never begun is marked pending too, so the realm password signs
+// them in as a ticket for the same principal already does (8.11). A local password
+// is never sent to the realm, so its holder is not adopted, and a finished migration
+// stays finished.
 func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
-	adminPrincipal, keytabPath string, apply bool) error {
+	adminPrincipal, keytabPath string, apply, adopt bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -8925,21 +8933,48 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 	if err != nil {
 		return err
 	}
+	return syncRealmPeople(ctx, conn, orgID, realm, names, apply, adopt)
+}
 
+// syncRealmPeople is kerberosSync once kadmin has listed the realm's people: what it
+// creates and adopts from a list of principals, apart so a test can give it one.
+func syncRealmPeople(ctx context.Context, conn *pgx.Conn, orgID, realm string, names []string,
+	apply, adopt bool) error {
 	cfg := kerberos.Config{Realm: realm}
-	created, existing := 0, 0
+	created, existing, adopted := 0, 0, 0
 	for _, n := range names {
 		email, merr := cfg.UsernameFor(n + "@" + strings.ToUpper(realm))
 		if merr != nil {
 			fmt.Printf("  skipped %s: %v\n", n, merr)
 			continue
 		}
-		var found bool
+		var userID string
+		var adoptable bool
 		if err := conn.QueryRow(ctx, `
-			SELECT true FROM core.users WHERE org_id = $1::uuid AND email_fold = lower($2)`,
-			orgID, email).Scan(&found); err == nil && found {
+			SELECT u.id::text, u.migration_state = 'none'
+			       AND NOT EXISTS (SELECT 1 FROM core.password_credentials pc WHERE pc.user_id = u.id)
+			  FROM core.users u WHERE u.org_id = $1::uuid AND u.email_fold = lower($2)`,
+			orgID, email).Scan(&userID, &adoptable); err == nil {
 			existing++
+			if !adopt || !adoptable {
+				continue
+			}
+			adopted++
+			if !apply {
+				fmt.Printf("  would mark %s pending\n", email)
+				continue
+			}
+			if _, err := conn.Exec(ctx, `
+				UPDATE core.users SET migration_state = 'pending', updated_at = now()
+				 WHERE id = $1::uuid AND migration_state = 'none'
+				   AND NOT EXISTS (SELECT 1 FROM core.password_credentials pc WHERE pc.user_id = core.users.id)`,
+				userID); err != nil {
+				return fmt.Errorf("marking %s pending: %w", email, err)
+			}
+			fmt.Printf("  marked %s pending\n", email)
 			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("looking for %s: %w", email, err)
 		}
 		created++
 		if !apply {
@@ -8961,7 +8996,10 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 	}
 
 	fmt.Printf("\n  %d already here, %d to create\n", existing, created)
-	if !apply && created > 0 {
+	if adopt {
+		fmt.Printf("  %d of those already here marked pending (-adopt-existing)\n", adopted)
+	}
+	if !apply && (created > 0 || adopted > 0) {
 		fmt.Println("\nNothing was changed. Re-run with -apply.")
 	}
 	fmt.Println("\nAccounts are created without a local password: they authenticate")

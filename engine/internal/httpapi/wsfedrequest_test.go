@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beevik/etree"
 
@@ -177,6 +178,60 @@ func TestAFreshnessDemandIsHeldToTheSignIn(t *testing.T) {
 	for _, unreadable := range []string{"soon", "-1", "1.5", "99999999"} {
 		if rec := ask(unreadable); rec.Code != http.StatusBadRequest {
 			t.Errorf("wfresh=%s answered %d", unreadable, rec.Code)
+		}
+	}
+}
+
+// wfresh bounds the token too: "An IP/STS SHOULD NOT issue a token with a longer
+// lifetime" (specs/ws-federation-1.2.txt:2181). The provider's five minutes, cut to the
+// two asked for, in the assertion's conditions and the RSTR's Lifetime alike; and the
+// five minutes when nothing is asked, so the cut is what this measures.
+func TestAFreshnessDemandBoundsTheTokensLifetime(t *testing.T) {
+	rf := newRealmFixture(t)
+	lifetimes := func(extra url.Values) (assertion, rstr time.Duration) {
+		t.Helper()
+		root := wsfedToken(t, rf.wsfed(http.MethodGet, rf.wsfedAsk(extra), true))
+		at := func(el *etree.Element, attr string) time.Time {
+			t.Helper()
+			if el == nil {
+				t.Fatal("the token lacks an element this reads")
+			}
+			v, err := time.Parse(time.RFC3339, el.SelectAttrValue(attr, el.Text()))
+			if err != nil {
+				t.Fatalf("%s %q: %v", el.Tag, attr, err)
+			}
+			return v
+		}
+		a := root.FindElement("RequestedSecurityToken/Assertion")
+		assertion = at(a.FindElement("Conditions"), "NotOnOrAfter").Sub(at(a, "IssueInstant"))
+		rstr = at(root.FindElement("Lifetime/Expires"), "").Sub(at(root.FindElement("Lifetime/Created"), ""))
+		return assertion, rstr
+	}
+	if a, r := lifetimes(nil); a != 5*time.Minute || r != 5*time.Minute {
+		t.Fatalf("with no demand the token lives %s and its RSTR says %s, want the provider's 5m", a, r)
+	}
+	if a, r := lifetimes(url.Values{"wfresh": {"2"}}); a != 2*time.Minute || r != 2*time.Minute {
+		t.Errorf("wfresh=2 gave a token that lives %s and an RSTR that says %s, want 2m", a, r)
+	}
+	// A demand longer than the provider's own lifetime leaves it as it is.
+	if a, _ := lifetimes(url.Values{"wfresh": {"60"}}); a != 5*time.Minute {
+		t.Errorf("wfresh=60 gave a token that lives %s, want the provider's 5m", a)
+	}
+}
+
+// A token request written out in wreq, or pointed to by wreqptr, is "the authoritative
+// source for parameter information" (specs/ws-federation-1.2.txt:2196). Nothing here
+// reads one, so a token issued past it would answer another request: refused, and
+// before any sign-in or token, rather than passed over as it was.
+func TestATokenRequestInWreqIsRefusedRatherThanIgnored(t *testing.T) {
+	rf := newRealmFixture(t)
+	for _, name := range []string{"wreq", "wreqptr"} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			rec := rf.wsfed(method, rf.wsfedAsk(url.Values{name: {"<t:RequestSecurityToken/>"}}), true)
+			if rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "wresult") ||
+				!strings.Contains(rec.Body.String(), name) {
+				t.Errorf("%s by %s answered %d: %.200s", name, method, rec.Code, rec.Body.String())
+			}
 		}
 	}
 }

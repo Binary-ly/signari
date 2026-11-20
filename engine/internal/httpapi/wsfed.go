@@ -56,6 +56,16 @@ func wsFedRequest(r *http.Request) (url.Values, error) {
 	if err := r.ParseForm(); err != nil {
 		return nil, errors.New("the request could not be parsed")
 	}
+	// A token request written out in full, or a pointer to one, is "the authoritative
+	// source for parameter information" (specs/ws-federation-1.2.txt:2196), so a token
+	// issued without reading it answers a different request from the one made. Refused
+	// rather than passed over, as nothing here reads one.
+	for _, name := range []string{"wreq", "wreqptr"} {
+		if _, given := r.Form[name]; given {
+			return nil, fmt.Errorf("%s is not supported: a token request in it would decide the parameters, "+
+				"and it is not read here", name)
+		}
+	}
 	q := url.Values{}
 	for _, name := range wsFedParams {
 		if given := r.Form[name]; len(given) > 1 {
@@ -360,6 +370,18 @@ func (s *Server) wsFedSignIn(w http.ResponseWriter, r *http.Request, q url.Value
 	// the SAML side already gets right, and encryption keeps working without a
 	// second code path knowing about it. The access policy is applied there too,
 	// for both protocols.
+	// wfresh bounds the token as well as the sign-in behind it: "An IP/STS SHOULD NOT
+	// issue a token with a longer lifetime" (specs/ws-federation-1.2.txt:2181). The
+	// assertion's conditions and the RSTR's Lifetime both come from the provider's
+	// lifetime, so a copy of it, cut to wfresh for this answer alone, cuts both. 0 asks
+	// for the sign-in again, which the check above did, and not for a token that is
+	// already spent.
+	if lifetime := time.Duration(p.LifetimeSeconds) * time.Second; demand.fresh && demand.within > 0 &&
+		demand.within < lifetime {
+		capped := *p
+		capped.LifetimeSeconds = int(demand.within / time.Second)
+		p = &capped
+	}
 	v := &saml.Validated{ACSURL: dest, WSFed: true}
 	doc, _, err := s.issueSAMLAssertion(ctx, r, v, p, session)
 	var denied *policyDenied

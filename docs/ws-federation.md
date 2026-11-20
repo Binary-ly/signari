@@ -59,7 +59,7 @@ a `wreply` in both places is two answers to where the token goes.
 | `wtrealm` | The application, by its entity id. Required to sign in |
 | `wreply` | Where the token is posted. See below |
 | `wctx` | Passed back untouched, which is what the application uses to resume whatever the person was doing |
-| `wfresh` | The age a sign-in may be, in whole minutes. `0` asks for a sign-in now |
+| `wfresh` | The age a sign-in may be, in whole minutes, and the longest the token may live. `0` asks for a sign-in now |
 | `wauth` | How the person must have signed in, as a SAML authentication context class, or `urn:oasis:names:tc:SAML:1.0:am:password` |
 | `whr` | Where the person signs in. A provider's slug, its issuer or SAML entity id, or a domain it signs in |
 
@@ -70,6 +70,15 @@ directory offers no way of meeting is refused with `400`, and one this account
 cannot reach with `403`, since signing in again would bring the same session back.
 Neither is ignored when it cannot be read: an application that asked for a fresh
 sign-in must not be handed an old one because of how it spelled it.
+
+A `wfresh` shorter than the provider's token lifetime shortens the token too, the
+assertion's conditions and the response's `Lifetime` alike, since WS-Federation 1.2
+§13.2.2 says the identity provider should not issue a token that lives longer.
+
+`wreq` and `wreqptr` are refused with `400`. Either carries a WS-Trust token request
+that the specification makes the authoritative source of the request's parameters,
+nothing here reads one, and a token issued past it would answer a request the
+application did not make. Until November 2026 both were passed over.
 
 The request is not signed, so anyone holding the browser can edit these off the URL.
 An application that depends on them reads the authentication instant in the token,

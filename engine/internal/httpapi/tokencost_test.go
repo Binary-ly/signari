@@ -162,6 +162,67 @@ func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
 	underLimit(t, "refreshing", spent.take(), 11)
 }
 
+// The same three grants in round trips, a batch counting once: what each waits on, which
+// is what E.04 asked of them (client credentials 5 round trips, a code about 16, a
+// refresh about 15, when it was written) and statement counts cannot show, since a batch
+// sends several statements in one trip. Client credentials is the client with its
+// failure counters in one batch, then the organisation's token budget, charged only once
+// the client has proved itself. The ceilings are what each took when this was written,
+// begin and commit counted: 2, 9 and 10.
+func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
+	f := newTokenFixture(t)
+	secret := revocableClient(t, f)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = grant_types || ARRAY['client_credentials', 'refresh_token'],
+		scopes = scopes || ARRAY['api.read'] WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	const verifier = "verifier-cost-trips-aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid", "offline_access"})
+	trips := countRoundTripsOf(t, f.srv)
+	within := func(what string, limit int64) {
+		t.Helper()
+		if got := trips.n.Load(); got > limit {
+			t.Errorf("%s took %d round trips, want at most %d:%s", what, got, limit, trips)
+		} else {
+			t.Logf("%s took %d round trips", what, got)
+		}
+		trips.reset()
+	}
+
+	status, body := f.post(t, url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID},
+		"client_secret": {secret}, "scope": {"api.read"}})
+	if status != http.StatusOK {
+		t.Fatalf("client credentials: %d %v", status, body)
+	}
+	within("client credentials", 2)
+
+	status, body = f.post(t, url.Values{"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "client_secret": {secret}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier}})
+	if status != http.StatusOK {
+		t.Fatalf("redeeming a code: %d %v", status, body)
+	}
+	within("redeeming a code", 9)
+
+	refresh, _ := body["refresh_token"].(string)
+	status, body = f.post(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+		"client_id": {f.clientID}, "client_secret": {secret}})
+	if status != http.StatusOK {
+		t.Fatalf("refreshing: %d %v", status, body)
+	}
+	within("refreshing", 10)
+}
+
 // A browser with a session coming back to /authorize, which is most of what the
 // endpoint serves once people are signed in: every application they open. Begin
 // and commit counted, in a deployment with a root key, an instance, no provider

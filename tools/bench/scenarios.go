@@ -574,6 +574,40 @@ var scenarios = map[string]scenario{
 			}, nil
 		},
 	},
+	"saml-sso": {
+		help: "a SAML response to a service provider's AuthnRequest (redirect binding) for a person already signed in, after one signin per worker in a browser of its own; -saml-sso, -saml-sp, -saml-acs", needsDiscovery: true,
+		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {
+			if e.cfg.SAMLSSO == "" || e.cfg.SAMLSP == "" {
+				return nil, fmt.Errorf("saml-sso needs -saml-sso, the provider's single sign-on URL, and -saml-sp, the service provider")
+			}
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				return nil, err
+			}
+			fresh := *httpClient(e.cfg)
+			fresh.Jar = jar
+			hc := &fresh
+			if _, err := signIn(ctx, hc, asNextPerson(e)); err != nil {
+				return nil, err
+			}
+			return func(ctx context.Context) error {
+				at, err := authnRequestURL(e.cfg.SAMLSSO, e.cfg.SAMLSP, e.cfg.SAMLACS, time.Now())
+				if err != nil {
+					return err
+				}
+				body, err := get(ctx, hc, at, "")
+				if err != nil {
+					return err
+				}
+				// The auto-posting form carrying the response, which only a person the
+				// provider recognised is given.
+				if !bytes.Contains(body, []byte(`name="SAMLResponse"`)) {
+					return fmt.Errorf("no SAMLResponse in the answer: %s", trim(body))
+				}
+				return nil
+			}, nil
+		},
+	},
 	"ldap-bind": {
 		help: "an LDAP simple bind on an open connection",
 		worker: func(ctx context.Context, e *env) (func(context.Context) error, error) {

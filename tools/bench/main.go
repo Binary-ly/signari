@@ -124,6 +124,11 @@ type config struct {
 	// client: one serves it only on an administrative listener, another only to a
 	// client registered as an API. Empty, the discovered endpoint and -client-id.
 	IntrospectURL, IntrospectClientID, IntrospectClientSecret string
+
+	// SAML, for saml-sso: the provider's single sign-on URL (redirect binding), the
+	// service provider's entity id the requests are issued as, and the assertion
+	// consumer URL they ask for, which the provider must have registered.
+	SAMLSSO, SAMLSP, SAMLACS string
 }
 
 func runCommand(args []string) error {
@@ -183,6 +188,9 @@ func runCommand(args []string) error {
 	fs.StringVar(&c.IntrospectURL, "introspect-url", "", "introspect here rather than at the discovered endpoint (introspect)")
 	fs.StringVar(&c.IntrospectClientID, "introspect-client-id", "", "introspect as this client rather than -client-id (introspect)")
 	fs.StringVar(&c.IntrospectClientSecret, "introspect-client-secret", "", "its secret (client_secret_basic)")
+	fs.StringVar(&c.SAMLSSO, "saml-sso", "", "the provider's SAML single sign-on URL, redirect binding (saml-sso)")
+	fs.StringVar(&c.SAMLSP, "saml-sp", "", "the service provider's entity id the AuthnRequests are issued as (saml-sso)")
+	fs.StringVar(&c.SAMLACS, "saml-acs", "", "the assertion consumer URL they ask for, registered with the provider (saml-sso)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

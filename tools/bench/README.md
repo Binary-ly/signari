@@ -23,6 +23,7 @@ cd tools/bench && go build .
 | `signin` | a person's password sign-in through Signari's login and consent forms, to a redeemed code (PKCE). With `-signin-people`, each sign-in is the next seeded person in a fresh browser, and so is the one sign-in each worker of `refresh`, `userinfo`, `token-exchange` and `end-session` makes: one person signed in by every worker at once, or again and again for minutes, is throttled by design, each attempt being charged to the account before the password is checked |
 | `refresh` | one refresh in a chain that spends each token, after one `signin` per worker |
 | `userinfo` | userinfo with that person's access token |
+| `saml-sso` | a SAML response to a service provider's AuthnRequest in the redirect binding, for a person already signed in (one `signin` per worker, in a browser of its own): `-saml-sso` the provider's single sign-on URL, `-saml-sp` the service provider's entity id, `-saml-acs` its assertion consumer URL, which the provider must have registered. The request is unsigned, so the provider must accept unsigned requests from it |
 | `ldap-bind`, `ldap-search` | a simple bind on an open connection; a subtree search for one person, by `-ldap-filter` (`(uid=%s)` unless a directory keeps the name elsewhere, such as `(cn=%s)`) |
 | `radius-pap` | an Access-Request with PAP and a Message-Authenticator, answered Access-Accept |
 | `scim-list` | the first hundred SCIM users |

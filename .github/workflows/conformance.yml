@@ -65,13 +65,14 @@ jobs:
 
       # par-attempt-to-use-expired-request_uri sleeps the pushed request's whole 300 s
       # and then needs the browser, and the runner stops waiting at 240 s and takes the
-      # driver with it, so the module is interrupted rather than judged. Run with a
-      # longer wait it finishes (README). This changes only how long the client waits.
+      # driver with it, so the module is interrupted rather than judged. Here it takes
+      # 301 s and finishes. This changes only how long the client waits, and the driver
+      # waits longer still for a new module (browserdrive.py).
       - name: Let the runner wait out the expired-request module
         run: |
           f="$SUITE_DIR/scripts/conformance.py"
-          sed -i 's/required_states, timeout=240)/required_states, timeout=900)/' "$f"
-          grep -q 'required_states, timeout=900)' "$f"
+          sed -i 's/required_states, timeout=240)/required_states, timeout=600)/' "$f"
+          grep -q 'required_states, timeout=600)' "$f"
 
       # Before setup.sh, which puts the engine's CA in the suite's truststore only when
       # the suite is running, and restarts it so the JVM reads it.
@@ -156,9 +157,13 @@ jobs:
           by_design = {"hybrid": "its `code token` and `code id_token token` thirds are refused, "
                                  "since no access token crosses the front channel"}
           ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-          module = re.compile(r"^Test \[\d+:\d+\] (\S+) (\S+) (\S+) - result (\S+)\. \d+ log entries - "
+          # The runner stamps each line it prints with the date and time.
+          stamp = r"^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d )?"
+          # A module's name carries its variants, and a variant's value can hold a space
+          # (`response_type=code id_token`), so the name runs up to the id and the status.
+          module = re.compile(stamp + r"Test \[\d+:\d+\] (.+) (\S+) (\S+) - result (\S+)\. \d+ log entries - "
                               r"(\d+) SUCCESS (\d+) FAILURE, (\d+) WARNING")
-          not_run = re.compile(r"^Test \[\d+:\d+\] (\S+) (?:did not run|.*missing module info)", re.M)
+          not_run = re.compile(stamp + r"Test \[\d+:\d+\] (.+?) (?:did not run|.*missing module info)", re.M)
           condition = re.compile(r"Block name: '.*' - Condition: '.*'")
           exits = {}
           if os.path.exists(os.path.join(out, "exits")):

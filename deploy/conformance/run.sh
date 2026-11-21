@@ -32,6 +32,10 @@ VENV="${VENV_DIR:-$SUITE/.runner-venv}"
 # The suite and the engine must share a network, or the suite cannot resolve
 # signari-engine and the issuer check fails before any test runs.
 ( cd "$SUITE" && docker compose up -d )
+# Compose can make the suite's containers again, and a new one has lost what
+# trustsuite.sh put in it; nginx serving any other certificate is the sign of it.
+docker exec idp-conformance-nginx-1 cat /etc/ssl/certs/nginx-selfsigned.crt 2>/dev/null |
+  cmp -s - ../tls/suite.crt || ./trustsuite.sh
 docker network connect signari-net idp-conformance-server-1 2>/dev/null || true
 
 # A locally hosted suite has no authentication, so the runner needs dev mode --

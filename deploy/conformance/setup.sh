@@ -260,23 +260,10 @@ for s in vp vp-plain vp-jwt; do
 done
 
 # The suite is a JVM and will not trust our CA until it is in the truststore AND
-# the process has restarted -- a JVM reads it once, at startup.
+# the process has restarted -- a JVM reads it once, at startup. run.sh does this
+# again if the suite's containers are made again.
 if docker ps --format '{{.Names}}' | grep -q '^idp-conformance-server-1$'; then
-  docker cp ../tls/ca.crt idp-conformance-server-1:/tmp/signari-ca.crt
-  docker cp ../tls/suite.crt idp-conformance-server-1:/tmp/signari-suite.crt
-  docker exec -u 0 idp-conformance-server-1 sh -c \
-    'keytool -importcert -noprompt -trustcacerts -alias signari-conformance \
-       -file /tmp/signari-ca.crt -cacerts -storepass changeit;
-     keytool -importcert -noprompt -trustcacerts -alias signari-suite \
-       -file /tmp/signari-suite.crt -cacerts -storepass changeit' >/dev/null 2>&1 || true
-  docker cp ../tls/suite.crt idp-conformance-nginx-1:/etc/ssl/certs/nginx-selfsigned.crt
-  docker cp ../tls/suite.key idp-conformance-nginx-1:/etc/ssl/private/nginx-selfsigned.key
-  docker exec idp-conformance-nginx-1 nginx -s reload >/dev/null 2>&1
-  docker restart idp-conformance-server-1 >/dev/null
-  docker network connect signari-net idp-conformance-server-1 2>/dev/null || true
-  # The name the suite gives itself, so a logout token posted to it arrives.
-  docker network connect --alias localhost.emobix.co.uk signari-net idp-conformance-nginx-1 2>/dev/null || true
-  echo "suite restarted with the CA trusted"
+  ./trustsuite.sh
 fi
 
 echo

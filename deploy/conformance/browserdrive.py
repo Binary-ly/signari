@@ -379,7 +379,12 @@ def main():
     api = requests.Session()
     handled = set()
     idle = 0
-    while idle < 90:
+    # Fifteen minutes without a new module, to outlast the longest the runner waits
+    # on one: a module left WAITING holds it that long, 240 s as the suite ships and
+    # 600 s in the workflow, and a driver that gave up first left every module after
+    # it with nobody to sign in or deliver an offer. run.sh ends the driver when the
+    # runner exits, so this only bounds a driver run alone.
+    while idle < 450:
         try:
             text = open(logpath, errors="ignore").read()
         except FileNotFoundError:

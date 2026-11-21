@@ -166,6 +166,35 @@ toolchain and newer `grpc`, `x/net` and `x/text`. A clean result is only true on
 the day it was produced, so CI runs govulncheck on every change rather than this
 page recording a verdict.
 
+## CodeQL
+
+[`.github/workflows/codeql.yml`](../.github/workflows/codeql.yml) runs CodeQL over
+every Go module, the TypeScript and JavaScript, and the workflows. It follows a value
+from a request across functions and packages to a sink, which gosec, reading one
+function at a time, does not. Its findings go to the repository's code scanning
+alerts and do not fail the job, so, like gosec's baseline, they are read rather than
+trusted.
+
+Its first run, 21 November 2026, opened 101: 5 critical, 84 high, 12 medium. Each
+was traced to its source by hand. None is a defect in shipped code. By rule:
+
+| Rule | Count | Why it is not a defect |
+|---|---|---|
+| `go/request-forgery` | 4 (critical) | The URL is a stranger's by design: a federation entity's statement, a `sector_identifier_uri`, a client ID metadata document, Duo's configured API host. Every one is fetched through `safedial`, which refuses private, loopback and link-local addresses at the moment of connection, after DNS, where taint analysis cannot see it. `Server.outboundHTTP`, the one way to swap the client, is set only by tests. |
+| `go/email-injection` | 1 (critical) | Headers are built, not interpolated: CR and LF are stripped from every header value, the subject is RFC 2047 encoded, the recipient must parse as an address, and `net/smtp` refuses a line break in `MAIL` and `RCPT` itself. The HTML part is `html/template`. |
+| `go/clear-text-logging` | 43 | Each logs a client id, a grant type, a scope name or an error. A client id is not a secret. CodeQL taints the whole `Authorization` header the id was parsed from, secret included, and none of the errors carries the presented secret: client authentication's are fixed strings ("the client secret did not match"). `SecretRef.String` prints the reference (`$NAME` or a path), never the value, and a password-hash cost refusal names only the costs. |
+| `go/weak-sensitive-data-hashing` | 17 | MD5 and SHA-1 to verify the hashes of a directory being migrated off, never to make one, and a password that verifies is rehashed with Argon2id at once; and the MD5 constructions RFC 2865 §5.2 and RFC 2548 specify for RADIUS. |
+| `go/unvalidated-url-redirection` | 11 | Every destination is registered or checked: a client's registered `redirect_uri`, login page or post-logout URI; a configured SAML logout endpoint; `validateProxyRedirect` against `core.proxy_hosts`; `parkedReturn`, which takes only a single-slash path on this origin; a return target sealed server-side. The eleventh is the benchmark's own test upstream. The section above has the same sites as gosec saw them. |
+| `go/reflected-xss` | 6 | Each is the `Write` of a response-writer wrapper passing bytes through (tracing, metrics, recovery, the access log, the token endpoint's status recorder, the form-redirect writer). The page the form-redirect writer composes escapes every value with `html.EscapeString`, under `default-src 'none'`. |
+| `go/uncontrolled-allocation-size` | 6 | A list sized by `limit`, which `pageParams` caps at 200. |
+| `go/allocation-size-overflow` | 3 | Sums of the lengths of things already in memory: a rendered page, an audit record's detail map. |
+| `go/incorrect-integer-conversion` | 2 | Argon2 iterations and parallelism from the environment, refused below the defaults (2 and 1) and above 16 before the conversion; CodeQL does not see a bound checked inside a closure. |
+| `js/polynomial-redos` | 1 | The TypeScript SDK trims trailing slashes from the endpoint its own caller passes to the constructor. That is the developer's configuration, not an attacker's input. |
+| `js/*` in `interop/`, `tools/`, `examples/` | 6 | Test pages and tools run by whoever runs the tests, and a quickstart with no rate limiting, which an example of how to sign in does not need. The preflight's "incomplete URL sanitization" is an assertion that the engine refused an attacker's address. |
+
+A new alert is read the same way. One this table does not explain is either a defect
+or a new row here.
+
 
 ## SHA-1 in `internal/saml/encrypt.go`
 

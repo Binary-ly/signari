@@ -7,7 +7,64 @@ The `interop/` checks break part of that circle by verifying tokens with an
 independent JOSE library; this breaks the rest, by having a third party drive the
 protocol and judge the answers.
 
-## Current state, measured 3 November 2026
+## Current state, measured 21 November 2026 on a GitHub runner
+
+The [conformance workflow](../../.github/workflows/conformance.yml), run 44887840115:
+the engine at `aa517310`, the suite at the same commit as below, everything from a
+fresh clone in one job. **No plan has a failed condition but Hybrid, whose 50 are
+the by-design refusals below.** Each plan was run whole; until this run, the FAPI
+2.0 plans had last been run whole on 3 November, and only the PKCE module that failed
+then had been rerun alone.
+
+The module counts are the modules that ran. The runner's own "ran N test modules"
+is one more, because the dictionary it counts also holds the plan's name
+(`scripts/run-test-plan.py:544` in the suite), and the 3 November table copies
+the runner's number.
+
+| Plan | Modules | Results | Conditions passed | Failures | Warnings |
+|---|---|---|---|---|---|
+| Config OP | 1 | 1 PASSED | 45 | 0 | 0 |
+| Basic OP | 35 | 22 PASSED, 3 REVIEW, 5 SKIPPED, 5 WARNING | 1737 | 0 | 5, the five below |
+| Form Post OP | 35 | 22 PASSED, 3 REVIEW, 5 SKIPPED, 5 WARNING | 1877 | 0 | 5, the same |
+| Hybrid OP | 96 | 21 PASSED, 5 REVIEW, 15 SKIPPED, 5 WARNING, 50 FAILED | 3618 | 50, every one `code token` or `code id_token token` | 5 |
+| FAPI 2.0 Security Profile | 56 | 47 PASSED, 5 REVIEW, 2 SKIPPED, 2 WARNING | 4133 | **0** | 4 |
+| FAPI 2.0 SP, mutual TLS | 37 | 29 PASSED, 5 REVIEW, 1 SKIPPED, 2 WARNING | 2358 | **0** | 4 |
+| FAPI 2.0 SP, CA-issued mutual TLS | 37 | 29 PASSED, 5 REVIEW, 1 SKIPPED, 2 WARNING | 2358 | **0** | 4 |
+| FAPI 2.0 Message Signing | 70 | 61 PASSED, 4 REVIEW, 3 SKIPPED, 2 WARNING | 5565 | **0** | 4 |
+| OID4VCI issuer | 15 | 12 PASSED, 3 SKIPPED | 1695 | 0 | 0 |
+| OID4VCI issuer, an offer redeemed | 15 | 11 PASSED, 3 SKIPPED, the multiple-clients module left waiting, as below | 1259 | 0 | 0 |
+| OID4VP verifier, signed | 11 | 11 WARNING | 463 | 0 | 22 |
+| OID4VP verifier, unsigned | 11 | 7 PASSED, 4 REVIEW | 302 | 0 | 0 |
+| OID4VP verifier, encrypted | 11 | 11 WARNING | 540 | 0 | 22 |
+| OID4VP verifier, high assurance | 11 | 11 WARNING | 566 | 0 | 22 |
+| RP-Initiated Logout | 11 | 3 PASSED, 8 REVIEW | 556 | 0 | 0 |
+| Front-Channel Logout | 2 | 2 PASSED | 91 | 0 | 0 |
+| Back-Channel Logout | 2 | 2 PASSED | 95 | 0 | 0 |
+
+FAPI 2.0's four warnings, the same in each of its four plans: the access token from
+a reused code still answering after the reuse, as Basic's `oidcc-codereuse-30seconds`
+below; discovery advertising the `refresh_token` grant to clients that were issued
+none, since the plan's clients do not ask for `offline_access`
+(`FAPIEnsureServerConfigurationDoesNotSupportRefreshToken`); and two in the
+claims-parameter module, the requested claims missing because the conformance user
+has only an email, as Basic's `oidcc-claims-essential`, and ID token claims the suite
+does not know. The OID4VP warnings are the two a module described below.
+`par-attempt-to-use-expired-request_uri` finishes, REVIEW, in 301 seconds, now that
+the runner is allowed 600. Five FAPI modules, and Basic's `oidcc-response-type-missing`,
+read REVIEW in the run before this one (44883492414) and PASSED here: they end at
+the suite's callback, and the driver had uploaded a blank screenshot to their
+placeholder on the way, which is all that made them REVIEW.
+
+The runner found four things wrong with the harness, none of which a laptop run
+showed. A fresh clone had the CA's certificate and not its key, so `setup.sh`
+stopped. `docker compose up` recreated the suite's containers before the first plan,
+which lost the certificate nginx serves; the engine then refused, as it should, to
+post a logout token to a certificate naming nobody, and `trustsuite.sh` now puts it
+back whenever nginx is serving anything else. The driver gave up after three minutes
+without a new module while the runner waited longer on one. And it raced the suite's
+own browser to the OID4VP evidence placeholder.
+
+## Measured 3 November 2026, on a laptop
 
 Against the suite as of its commit `6b8b809` (7 August 2026), from nothing: a fresh
 suite, `setup.sh`, then each plan below in one run. Static clients throughout.
@@ -26,7 +83,7 @@ suite, `setup.sh`, then each plan below in one run. Static clients throughout.
 | **FAPI 2.0 Message Signing** (`python3 fapiconfig.py --message-signing /elsewhere/fapims.json; CONFIG=/elsewhere/fapims.json ./run.sh fapi2-ms`: signed requests, JARM, DPoP, `private_key_jwt`) | 71 modules, **5524 conditions, 1 failure, 4 warnings**, the first time it was run: 54 PASSED, 9 REVIEW, 3 SKIPPED, 2 WARNING. The failure and the interrupted module are the Security Profile's two above. The skips are the RS256 tests, which do not apply to the ES256 keys the clients have, and refresh, which the clients do not ask for. |
 | **OID4VCI issuer** (`python3 fapiconfig.py --vci /elsewhere/vci.json; CONFIG=/elsewhere/vci.json ./run.sh vci`: wallet-initiated, authorization details, SD-JWT VC, DPoP) | 16 modules, **1694 conditions, 0 failures, 0 warnings**: 12 PASSED, 3 SKIPPED (signed metadata, key attestation, credential encryption, none of them configured). The plan is the suite's alpha. Its first run found three defects: a batch of proofs under one `c_nonce` was refused at its second proof, a stale nonce was `invalid_proof` instead of `invalid_nonce`, and a missing proof was `invalid_credential_request` instead of `invalid_proof`. A credential whose `vct` is an `https` URL fails five modules, the suite fetching Type Metadata from it, which this issuer does not serve; the SD-JWT VC draft held here leaves that retrieval at "the consumer's discretion", and the suite's own comment says its stricter reading is being settled with the working group. |
 | **OID4VCI issuer, an offer redeemed** (`CONFIG=/elsewhere/vci.json ./run.sh vci-offer`: issuer-initiated, pre-authorized code with a transaction code) | 16 modules, **1258 conditions, 0 failures, 0 warnings**: 11 PASSED, 3 SKIPPED, and the multiple-clients module interrupted, the driver minting each offer for the first client only. The driver is the front desk: when a module waits at its `credential_offer_endpoint` it runs `signari credential offer` and sends the link there, and the transaction code to `tx_code_endpoint` when that appears, separately, as §3.5 has it. Its first run found two codes misnamed: an unknown configuration asked for with a token offered another was the RFC 6750 403 rather than `unknown_credential_configuration`, and an identifier from a token given none was `invalid_credential_request` rather than `unknown_credential_identifier`. |
-| **OID4VP verifier, signed requests** (`python3 fapiconfig.py --vp /elsewhere/vp.json; CONFIG=/elsewhere/vp.json ./run.sh vp`: SD-JWT VC, `x509_san_dns`, the request by reference, `direct_post`) | 11 modules, **463 conditions, 0 failures, 22 warnings**. Here the suite is the wallet. The driver starts each sign-in at `/oid4vp/vp/start`, hands the suite the wallet URL's query, and follows the wallet back to the engine with the cookie it left with. Each positive module ends with the person the suite's credential names signed in. The eight negative modules are refused at the response URI with a 400, each for the reason it tests: a credential or key binding signed by another key, `sd_hash`, nonce, audience, and an `iat` a year either side. The 22 warnings are two a module, both about `client_metadata` in the wallet URL, which OID4VP 1.0 says the verifier SHOULD add with `request_uri_method=post` (`specs/oid4vp.txt:328-329`) and the suite reads as unexpected in the front channel. The plan is the suite's alpha. Now and then, most often in the first plan after the suite restarts, one module is interrupted by the suite's own browser, which looks for its screenshot placeholder before the module has made it. The engine has already answered it 200, and the same plan run again passes. It has happened in this plan and in `vp-jwt`. |
+| **OID4VP verifier, signed requests** (`python3 fapiconfig.py --vp /elsewhere/vp.json; CONFIG=/elsewhere/vp.json ./run.sh vp`: SD-JWT VC, `x509_san_dns`, the request by reference, `direct_post`) | 11 modules, **463 conditions, 0 failures, 22 warnings**. Here the suite is the wallet. The driver starts each sign-in at `/oid4vp/vp/start`, hands the suite the wallet URL's query, and follows the wallet back to the engine with the cookie it left with. Each positive module ends with the person the suite's credential names signed in. The eight negative modules are refused at the response URI with a 400, each for the reason it tests: a credential or key binding signed by another key, `sd_hash`, nonce, audience, and an `iat` a year either side. The 22 warnings are two a module, both about `client_metadata` in the wallet URL, which OID4VP 1.0 says the verifier SHOULD add with `request_uri_method=post` (`specs/oid4vp.txt:328-329`) and the suite reads as unexpected in the front channel. The plan is the suite's alpha. Now and then one module was interrupted by the suite's own browser, and this said it had looked for its screenshot placeholder before the module made it. It had not: `browserdrive.py` filled the same placeholder with a blank image first, and the suite's browser, finding nothing left to fill, threw. The driver now leaves a placeholder alone for its first eight seconds (21 November). |
 | **OID4VP verifier, unsigned** (`CONFIG=/elsewhere/vp.json ./run.sh vp-plain`: `redirect_uri`, every parameter in the URL) | 11 modules, **302 conditions, 0 failures, 0 warnings**: 7 PASSED, 4 REVIEW. |
 | **OID4VP verifier, encrypted answers** (`CONFIG=/elsewhere/vp.json ./run.sh vp-jwt`: signed as `vp` is, `direct_post.jwt`) | 11 modules, **540 conditions, 0 failures, 22 warnings**, the same two a module as `vp`: 3 REVIEW, 8 WARNING. The suite encrypts each answer to the P-256 key its request object names, with ECDH-ES, and the four positive modules each finish a sign-in. |
 | **OID4VP verifier, high-assurance profile** (`CONFIG=/elsewhere/vp.json ./run.sh vp-haip`: as `vp-jwt`, `vp_profile=haip`) | 11 modules, **566 conditions, 0 failures, 22 warnings**: 2 REVIEW, 9 WARNING, the warnings the same two a module. Its first run failed one condition in every module: the profile wants `encrypted_response_enc_values_supported` naming both A128GCM and A256GCM, and the request named none, as the base specification has it for A128GCM alone. Both are offered now, which the base specification also requires once there are two (`specs/oid4vp.txt:316`). The profile itself is not in `specs/`, so this is the suite's reading of it (`ValidateVpClientMetadataEncryptionForHaip`). |

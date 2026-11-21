@@ -340,3 +340,86 @@ tests:
 		t.Error("a model test passed against its own except")
 	}
 }
+
+// A batch's walks take their first step together (E.17). A relation that step finds
+// nothing behind is settled as not held, and its walk then asks nothing at all; one
+// with something behind it, a row of its own or a parent to go through, is left to its
+// walk, which answers as it did without the step. A step read to the edge bound settles
+// nothing, since an answer cut short cannot say a relation has nothing behind it.
+func TestABatchsWalksTakeTheirFirstStepTogether(t *testing.T) {
+	orgID, m, grant := walkFixture(t)
+	conn := connect(t)
+	ctx := context.Background()
+	grant("user:step-ann", "owner", "doc:step-mine")
+	grant("user:step-ann", "owner", "doc:step-folder")
+	grant("doc:step-folder", "parent", "doc:step-inside")
+	ann := [][2]string{{"user", "step-ann"}}
+	ids := []string{"step-mine", "step-inside"}
+	for i := 0; i < 10; i++ {
+		ids = append(ids, fmt.Sprintf("step-none%d", i))
+	}
+	var roots []WalkRoot
+	for _, id := range ids {
+		roots = append(roots, WalkRoot{Type: "doc", ID: id, Relations: []string{"viewer"}})
+	}
+
+	// What each answers with no first step, a walk of its own each.
+	want := map[string]string{}
+	for _, id := range ids {
+		held, _, err := WalkRelations(ctx, conn, orgID, m, ann, []string{"viewer"}, "doc", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[id] = held
+	}
+	if want["step-mine"] == "" || want["step-inside"] == "" || want["step-none0"] != "" {
+		t.Fatalf("the fixture answers %v", want)
+	}
+
+	counted := &walkStatements{q: conn}
+	memo := NewWalkMemo()
+	if err := SettleUnreached(ctx, counted, orgID, m, ann, roots, memo); err != nil {
+		t.Fatal(err)
+	}
+	if counted.n != 1 {
+		t.Fatalf("twelve first steps took %d statements, want one", counted.n)
+	}
+	for _, id := range ids {
+		before := counted.n
+		held, _, err := WalkRelationsWith(ctx, counted, orgID, m, ann, []string{"viewer"}, "doc", id, memo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if held != want[id] {
+			t.Errorf("%s held %q after the first step, %q without it", id, held, want[id])
+		}
+		asked := counted.n - before
+		switch {
+		case want[id] == "" && asked != 0:
+			t.Errorf("%s, with nothing behind it, still asked %d statements", id, asked)
+		case want[id] != "" && asked == 0:
+			t.Errorf("%s, held, was answered without its walk", id)
+		}
+	}
+
+	// Read to the edge bound, the step settles nothing: 2,001 parents of one document
+	// fill it, and a document with nothing behind it is then walked as before.
+	if _, err := conn.Exec(ctx, `INSERT INTO core.relations (org_id, subject_type, subject_id, relation,
+		object_type, object_id) SELECT $1::uuid, 'doc', 'step-p' || i, 'parent', 'doc', 'step-wide'
+		FROM generate_series(1, $2::int) i`, orgID, maxWalkEdges+1); err != nil {
+		t.Fatal(err)
+	}
+	memo = NewWalkMemo()
+	wide := []WalkRoot{{Type: "doc", ID: "step-wide", Relations: []string{"viewer"}},
+		{Type: "doc", ID: "step-none0", Relations: []string{"viewer"}}}
+	if err := SettleUnreached(ctx, conn, orgID, m, ann, wide, memo); err != nil {
+		t.Fatal(err)
+	}
+	before := counted.n
+	if held, _, err := WalkRelationsWith(ctx, counted, orgID, m, ann, []string{"viewer"}, "doc", "step-none0", memo); err != nil || held != "" {
+		t.Fatalf("step-none0 after a cut-short step: %q %v", held, err)
+	}
+	if counted.n == before {
+		t.Error("a step cut short at the edge bound settled a relation it could not have read all of")
+	}
+}

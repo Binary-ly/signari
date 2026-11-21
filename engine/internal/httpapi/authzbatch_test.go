@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/authzen"
 )
 
 // countStatements points the server at a pool that counts, from here on.
@@ -131,6 +133,98 @@ func TestAHundredEvaluationsAskTheDatabaseOnce(t *testing.T) {
 	}
 	if spent > 5 {
 		t.Errorf("a hundred evaluations took %d statements beyond the %d that let the caller in", spent, entry)
+	}
+}
+
+// The same hundred under a model where a document is also viewable through its folder
+// (E.17). Every question not held directly is then walked, and half of them have
+// nothing behind them at all: each was a statement of its own, 49 here, which put a
+// batch of a hundred at 12 ms. Their first steps are taken together now, and only the
+// one held through its folder walks further. The answers are the ones each would have
+// had alone: held directly, held through the folder, and not held.
+func TestAHundredEvaluationsThroughARewriteDoNotWalkOneByOne(t *testing.T) {
+	a := newAuthzProviderFixture(t)
+	ctx := context.Background()
+	compiled, err := json.Marshal(authzen.Model{Types: map[string]authzen.Type{
+		"doc": {
+			Relations:   map[string][]string{"owner": nil, "parent": nil, "viewer": {"owner", "parent->viewer"}},
+			Permissions: map[string][]string{"can_view": {"viewer"}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.f.pool.Exec(ctx, `UPDATE core.authorization_models SET compiled = $2::jsonb WHERE org_id = $1::uuid`,
+		a.f.orgID, compiled); err != nil {
+		t.Fatal(err)
+	}
+	var person string
+	if err := a.f.pool.QueryRow(ctx, `SELECT email FROM core.users WHERE id = $1::uuid`, a.f.userID).Scan(&person); err != nil {
+		t.Fatal(err)
+	}
+	// rw-1..rw-50 the person's own; rw-100 inside a folder of theirs; rw-51..rw-99 nobody's.
+	if _, err := a.f.pool.Exec(ctx, `INSERT INTO core.relations (org_id, subject_type, subject_id, relation,
+		object_type, object_id) SELECT $1::uuid, 'user', $2, 'owner', 'doc', 'rw-' || i
+		FROM generate_series(1, 50) i`, a.f.orgID, a.f.userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.f.pool.Exec(ctx, `INSERT INTO core.relations (org_id, subject_type, subject_id, relation,
+		object_type, object_id) VALUES ($1::uuid, 'user', $2, 'owner', 'doc', 'rw-folder'),
+		($1::uuid, 'doc', 'rw-folder', 'parent', 'doc', 'rw-100')`, a.f.orgID, a.f.userID); err != nil {
+		t.Fatal(err)
+	}
+	var entries []string
+	for i := 1; i <= 100; i++ {
+		entries = append(entries, fmt.Sprintf(`{"resource":{"type":"doc","id":"rw-%d"}}`, i))
+	}
+	body := fmt.Sprintf(`{"subject":{"type":"user","id":%q},"action":{"name":"can_view"},"evaluations":[%s]}`,
+		person, strings.Join(entries, ","))
+
+	queries := countStatements(t, a.f)
+	settle := func() { time.Sleep(200 * time.Millisecond) }
+	refused := func() {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/access/v1/evaluations", strings.NewReader(`{"evaluations":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+a.token)
+		rec := httptest.NewRecorder()
+		a.f.srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("the refused body answered %d", rec.Code)
+		}
+	}
+	refused()
+	settle()
+	queries.n.Store(0)
+	refused()
+	settle()
+	entry := queries.n.Load()
+
+	queries.n.Store(0)
+	raw := a.post(t, "/access/v1/evaluations", body)
+	settle()
+	spent := queries.n.Load() - entry
+
+	var got struct {
+		Evaluations []struct {
+			Decision bool `json:"decision"`
+		} `json:"evaluations"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Evaluations) != 100 {
+		t.Fatalf("%d answers", len(got.Evaluations))
+	}
+	for i, e := range got.Evaluations {
+		if want := i < 50 || i == 99; e.Decision != want {
+			t.Errorf("rw-%d decided %v, want %v", i+1, e.Decision, want)
+		}
+	}
+	// The five of the model without the rewrite, the one first step for all of them, and
+	// rw-100's walk: its parent, then the folder.
+	if spent > 8 {
+		t.Errorf("a hundred evaluations through a rewrite took %d statements beyond the %d that let the caller in", spent, entry)
 	}
 }
 

@@ -529,9 +529,13 @@ so a hundred questions about one person cost five statements rather than six
 hundred. Walks are shared the same way: what one question's walk settles, a
 relation held along the path it found or not held anywhere it looked, answers the
 next question of the same subjects, so a hundred documents in one folder walk the
-folders above it once and not a hundred times. Nothing read for a request outlives
-it, so a grant revoked is refused on the next one. A provider veto is still one
-call per allowed entry.
+folders above it once and not a hundred times. And the questions a batch has to
+walk take their first step together, in one statement: a question with nothing
+behind it at all, no row of its own and nothing a rewrite goes through, is settled
+there and walks no further, so a hundred questions under a model with a rewrite,
+half of them about documents nobody asking holds, no longer cost a statement each
+for that half. Nothing read for a request outlives it, so a grant revoked is
+refused on the next one. A provider veto is still one call per allowed entry.
 
 ## Recording decisions
 

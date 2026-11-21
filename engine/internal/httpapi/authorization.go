@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
@@ -151,6 +152,10 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := e.readAhead(ctx, answerable); err != nil {
 		s.log.ErrorContext(ctx, "reading a batch's relations", "err", err, "correlation_id", correlationID(ctx))
+	}
+	if err := e.settleUnreached(ctx, answerable); err != nil {
+		s.log.ErrorContext(ctx, "settling a batch's unreached relations", "err", err,
+			"correlation_id", correlationID(ctx))
 	}
 
 	out := make([]authzen.Response, 0, len(batch.Evaluations))
@@ -332,6 +337,86 @@ func (e *evaluation) readAhead(ctx context.Context, reqs []authzen.Request) erro
 	return nil
 }
 
+// walkSubjects is who a walk looks for: the subject as given, as the person it
+// resolved to, and as each of their groups. decide and settleUnreached share it, since
+// what one settles answers the other only for the same set.
+func walkSubjects(req authzen.Request, userID string, groups []string) [][2]string {
+	subjects := [][2]string{{req.Subject.Type, req.Subject.ID}}
+	if userID != "" {
+		subjects = append(subjects, [2]string{req.Subject.Type, userID})
+	}
+	for _, g := range groups {
+		subjects = append(subjects, [2]string{"group", g})
+	}
+	return subjects
+}
+
+// settleUnreached takes the first step of the walks the read ahead left to decide, for
+// all of them at once (store.SettleUnreached), so that a question with nothing behind it
+// needs no statement of its own when decide walks it (E.17). Only the questions decide
+// would walk: not held from what was read ahead, and walking. A failure leaves each to
+// walk as before.
+func (e *evaluation) settleUnreached(ctx context.Context, reqs []authzen.Request) error {
+	if e.tuples == nil {
+		return nil
+	}
+	model, err := e.loadModel(ctx)
+	if err != nil || model == nil {
+		return err
+	}
+	type group struct {
+		subjects [][2]string
+		roots    []store.WalkRoot
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, req := range reqs {
+		relations, defined := model.RelationsFor(req.Resource.Type, req.Action.Name)
+		if !defined || !e.walks(model, req) {
+			continue
+		}
+		who, err := e.subject(ctx, req.Subject.ID, sessionFromContext(req.Context))
+		if err != nil {
+			return err
+		}
+		held, err := e.holds(ctx, req.Subject.Type, req.Subject.ID, relations, req.Resource.Type,
+			req.Resource.ID, who.facts.Groups)
+		if err != nil {
+			return err
+		}
+		if held == "" && who.userID != "" && who.userID != req.Subject.ID {
+			if held, err = e.holds(ctx, req.Subject.Type, who.userID, relations, req.Resource.Type,
+				req.Resource.ID, who.facts.Groups); err != nil {
+				return err
+			}
+		}
+		if held != "" {
+			continue
+		}
+		subjects := walkSubjects(req, who.userID, who.facts.Groups)
+		names := make([]string, len(subjects))
+		for i, s := range subjects {
+			names[i] = s[0] + "\x00" + s[1]
+		}
+		slices.Sort(names)
+		key := strings.Join(names, "\x01")
+		g := groups[key]
+		if g == nil {
+			g = &group{subjects: subjects}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.roots = append(g.roots, store.WalkRoot{Type: req.Resource.Type, ID: req.Resource.ID, Relations: relations})
+	}
+	for _, key := range order {
+		g := groups[key]
+		if err := store.SettleUnreached(ctx, e.s.db, e.orgID, model, g.subjects, g.roots, e.walked); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // walks says whether a subject with no relation of their own on this object could
 // still hold one. With nothing read ahead that is not known, so it is looked for.
 func (e *evaluation) walks(model *authzen.Model, req authzen.Request) bool {
@@ -435,13 +520,7 @@ func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.R
 			return authzen.Response{}, err
 		}
 	}
-	subjects := [][2]string{{req.Subject.Type, req.Subject.ID}}
-	if userID != "" {
-		subjects = append(subjects, [2]string{req.Subject.Type, userID})
-	}
-	for _, g := range facts.Groups {
-		subjects = append(subjects, [2]string{"group", g})
-	}
+	subjects := walkSubjects(req, userID, facts.Groups)
 	if held == "" && e.walks(model, req) {
 		if held, _, err = store.WalkRelationsWith(ctx, e.s.db, e.orgID, model, subjects, relations,
 			req.Resource.Type, req.Resource.ID, e.walked); err != nil {

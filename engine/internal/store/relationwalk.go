@@ -31,6 +31,32 @@ const (
 	maxWalkEdges = 2000
 )
 
+// walkStep is one level of a walk, for a whole frontier: $2..$5 the nodes, each a
+// relation on an object and whether it is a relation a rewrite goes through, $6 and $7
+// the subjects. Three arms, each on its own index: a row naming one of the subjects, a
+// row naming a set of them, and whatever a rewrite goes through. All of a relation's
+// rows would be simpler, and an object can have a million viewers. $8 is one more than
+// a level may read, so that reading it says the level was cut short.
+const walkStep = `
+	WITH g AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::bool[]) AS g(typ, id, rel, through)),
+	     s AS (SELECT * FROM unnest($6::text[], $7::text[]) AS s(typ, id))
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	  FROM g JOIN core.relations r
+	    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
+	 WHERE g.through AND (r.expires_at IS NULL OR r.expires_at > now())
+	UNION ALL
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	  FROM g JOIN s ON NOT g.through JOIN core.relations r
+	    ON r.org_id = $1::uuid AND r.subject_type = s.typ AND r.subject_id = s.id
+	   AND r.relation = g.rel AND r.object_type = g.typ AND r.object_id = g.id
+	 WHERE r.expires_at IS NULL OR r.expires_at > now()
+	UNION ALL
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	  FROM g JOIN core.relations r
+	    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
+	 WHERE NOT g.through AND r.subject_id LIKE '%#%' AND (r.expires_at IS NULL OR r.expires_at > now())
+	 LIMIT $8`
+
 // ErrWalkBound is a graph too deep or too wide to finish. It is an error and not a
 // no: the question was not answered, and a caller is told so, as for any decision
 // that could not be made.
@@ -77,6 +103,40 @@ type WalkMemo struct {
 // NewWalkMemo is an empty one, for one request.
 func NewWalkMemo() *WalkMemo { return &WalkMemo{settled: map[string]map[walkKey]bool{}} }
 
+// settledFor is what the memo has settled for these subjects, keyed by them as a set: a
+// node held by one set is not by another. Nil without a memo.
+func (m *WalkMemo) settledFor(subjectTypes, subjectIDs []string) map[walkKey]bool {
+	if m == nil {
+		return nil
+	}
+	names := make([]string, len(subjectTypes))
+	for i := range subjectTypes {
+		names[i] = subjectTypes[i] + "\x00" + subjectIDs[i]
+	}
+	slices.Sort(names)
+	sig := strings.Join(names, "\x01")
+	settled := m.settled[sig]
+	if settled == nil {
+		settled = map[walkKey]bool{}
+		m.settled[sig] = settled
+	}
+	return settled
+}
+
+// distinctSubjects is subjects without repeats, as the walk statement's two arrays and
+// as a set.
+func distinctSubjects(subjects [][2]string) (subjectTypes, subjectIDs []string, isSubject map[[2]string]bool) {
+	isSubject = make(map[[2]string]bool, len(subjects))
+	subjectTypes, subjectIDs = make([]string, 0, len(subjects)), make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		if !isSubject[s] {
+			isSubject[s] = true
+			subjectTypes, subjectIDs = append(subjectTypes, s[0]), append(subjectIDs, s[1])
+		}
+	}
+	return subjectTypes, subjectIDs, isSubject
+}
+
 // WalkRelationsWith is WalkRelations, taking what memo has settled for these subjects and
 // leaving what this walk settles in it. A nil memo is WalkRelations.
 func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *authzen.Model, subjects [][2]string,
@@ -85,28 +145,8 @@ func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *auth
 	if len(relations) == 0 || len(subjects) == 0 {
 		return "", nil, nil
 	}
-	isSubject := make(map[[2]string]bool, len(subjects))
-	subjectTypes, subjectIDs := make([]string, 0, len(subjects)), make([]string, 0, len(subjects))
-	for _, s := range subjects {
-		if !isSubject[s] {
-			isSubject[s] = true
-			subjectTypes, subjectIDs = append(subjectTypes, s[0]), append(subjectIDs, s[1])
-		}
-	}
-	var settled map[walkKey]bool
-	if memo != nil {
-		// Keyed by the subjects as a set: a node held by one set is not by another.
-		names := make([]string, len(subjectTypes))
-		for i := range subjectTypes {
-			names[i] = subjectTypes[i] + "\x00" + subjectIDs[i]
-		}
-		slices.Sort(names)
-		sig := strings.Join(names, "\x01")
-		if settled = memo.settled[sig]; settled == nil {
-			settled = map[walkKey]bool{}
-			memo.settled[sig] = settled
-		}
-	}
+	subjectTypes, subjectIDs, isSubject := distinctSubjects(subjects)
+	settled := memo.settledFor(subjectTypes, subjectIDs)
 
 	visited := map[walkKey]*walkGoal{}
 	var frontier []*walkGoal
@@ -186,29 +226,7 @@ func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *auth
 		}
 		frontier = nil
 
-		// Three arms, each on its own index: a row naming one of the subjects, a
-		// row naming a set of them, and whatever a rewrite goes through. All of a
-		// relation's rows would be simpler, and an object can have a million viewers.
-		rows, err := q.Query(ctx, `
-			WITH g AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::bool[]) AS g(typ, id, rel, through)),
-			     s AS (SELECT * FROM unnest($6::text[], $7::text[]) AS s(typ, id))
-			SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
-			  FROM g JOIN core.relations r
-			    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
-			 WHERE g.through AND (r.expires_at IS NULL OR r.expires_at > now())
-			UNION ALL
-			SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
-			  FROM g JOIN s ON NOT g.through JOIN core.relations r
-			    ON r.org_id = $1::uuid AND r.subject_type = s.typ AND r.subject_id = s.id
-			   AND r.relation = g.rel AND r.object_type = g.typ AND r.object_id = g.id
-			 WHERE r.expires_at IS NULL OR r.expires_at > now()
-			UNION ALL
-			SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
-			  FROM g JOIN core.relations r
-			    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
-			 WHERE NOT g.through AND r.subject_id LIKE '%#%' AND (r.expires_at IS NULL OR r.expires_at > now())
-			 LIMIT $8`,
-			orgID, typs, ids, rels, through, subjectTypes, subjectIDs, maxWalkEdges+1)
+		rows, err := q.Query(ctx, walkStep, orgID, typs, ids, rels, through, subjectTypes, subjectIDs, maxWalkEdges+1)
 		if err != nil {
 			return "", nil, fmt.Errorf("walking relations: %w", err)
 		}
@@ -256,6 +274,116 @@ func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *auth
 	}
 	exhausted()
 	return "", nil, nil
+}
+
+// WalkRoot is where one question's walk would start: the relations an action asks for,
+// on one object.
+type WalkRoot struct {
+	Type, ID  string
+	Relations []string
+}
+
+// SettleUnreached takes the first step of many walks at once, for questions of one
+// request asked for the same subjects, and settles in memo each relation that step finds
+// nothing behind: no row naming one of the subjects, no set of subjects holding it, and
+// no row of anything a rewrite of it goes through. Its own walk would have looked at such
+// a relation once and stopped, and a batch of a hundred documents with a rewrite, half of
+// them held by nobody asking, spent a statement on each of that half (E.17). A relation
+// the step does find something behind is left alone, for its walk to go on from as
+// before. The first step is the walk's own: the relations as Expand gives them, the
+// rewrites of each, the same statement. Nothing at all is settled when the step reads to
+// the edge bound, since an answer cut short cannot say a relation has nothing behind it.
+func SettleUnreached(ctx context.Context, q Querier, orgID string, model *authzen.Model,
+	subjects [][2]string, roots []WalkRoot, memo *WalkMemo) error {
+
+	if memo == nil || len(subjects) == 0 || len(roots) == 0 {
+		return nil
+	}
+	subjectTypes, subjectIDs, _ := distinctSubjects(subjects)
+	settled := memo.settledFor(subjectTypes, subjectIDs)
+
+	// Each relation to settle, with the relations its rewrites go through.
+	type unsettled struct {
+		key      walkKey
+		throughs []string
+	}
+	var pending []unsettled
+	type asked struct {
+		key     walkKey
+		through bool
+	}
+	queued := map[asked]bool{}
+	var typs, ids, rels []string
+	var through []bool
+	queue := func(key walkKey, isThrough bool) {
+		if !queued[asked{key, isThrough}] {
+			queued[asked{key, isThrough}] = true
+			typs, ids, rels, through = append(typs, key.typ), append(ids, key.id),
+				append(rels, key.relation), append(through, isThrough)
+		}
+	}
+	seen := map[walkKey]bool{}
+	for _, root := range roots {
+		t, known := model.Types[root.Type]
+		for _, relation := range root.Relations {
+			expanded := []string{relation}
+			if known {
+				expanded = t.Expand(relation)
+			}
+			for _, r := range expanded {
+				key := walkKey{root.Type, root.ID, r}
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				if _, done := settled[key]; done {
+					continue
+				}
+				u := unsettled{key: key}
+				queue(key, false)
+				for _, rw := range t.RewritesOf(r) {
+					u.throughs = append(u.throughs, rw.Through)
+					queue(walkKey{root.Type, root.ID, rw.Through}, true)
+				}
+				pending = append(pending, u)
+			}
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	rows, err := q.Query(ctx, walkStep, orgID, typs, ids, rels, through, subjectTypes, subjectIDs, maxWalkEdges+1)
+	if err != nil {
+		return fmt.Errorf("settling relations: %w", err)
+	}
+	defer rows.Close()
+	behind := map[walkKey]bool{}
+	read := 0
+	for rows.Next() {
+		var objType, objID, relation, subjectType, subjectID string
+		if err := rows.Scan(&objType, &objID, &relation, &subjectType, &subjectID); err != nil {
+			return fmt.Errorf("settling relations: %w", err)
+		}
+		behind[walkKey{objType, objID, relation}] = true
+		read++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("settling relations: %w", err)
+	}
+	if read > maxWalkEdges {
+		return nil
+	}
+	for _, u := range pending {
+		reached := behind[u.key]
+		for _, th := range u.throughs {
+			reached = reached || behind[walkKey{u.key.typ, u.key.id, th}]
+		}
+		if !reached {
+			settled[u.key] = false
+		}
+	}
+	return nil
 }
 
 // AnySubjectSets reports whether an organisation has a relation held by a set of

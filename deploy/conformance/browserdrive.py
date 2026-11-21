@@ -186,6 +186,18 @@ BLANK_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
              "FcSJAAAADUlEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
 
 
+# Seconds a placeholder is left alone after the driver first sees it. In the OID4VP
+# plans the suite's own scripted browser fills the evidence placeholder itself
+# (fapiconfig.py --vp configures it), within a second of the module making it, and
+# when the driver had filled it first the suite's browser found nothing to fill,
+# threw, and the module was interrupted: three positive modules in one runner run,
+# put down until then to the suite's browser being early. The placeholders the
+# driver exists for wait on a human for ever, so a few seconds cost them nothing.
+# Timed by the driver's own clock, since the suite's may be a VM's.
+PLACEHOLDER_GRACE = 8
+first_seen = {}
+
+
 def fill_placeholders(api, mid, log):
     """Answer any screenshot placeholder the module is waiting on.
 
@@ -211,9 +223,12 @@ def fill_placeholders(api, mid, log):
         entries = r.json()
     except Exception:
         return
+    now = time.monotonic()
     for e in entries:
         ph = e.get("upload")
         if not ph:
+            continue
+        if now - first_seen.setdefault(ph, now) < PLACEHOLDER_GRACE:
             continue
         try:
             resp = api.post(f"{SUITE}/api/log/{mid}/images/{ph}", data=BLANK_PNG,

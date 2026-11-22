@@ -2,7 +2,7 @@
 # profile, at http://localhost:8094/. Built with Maven against pom.xml's Spring Boot
 # 4.1.2, run on Java 17; both bases pinned by digest, as every image here is
 # (TestEveryBaseImageIsPinnedByDigest).
-FROM maven:3.9.16-eclipse-temurin-17-noble@sha256:1a352420f7aba21f5ad08df31bab55f74c013fb491f1ae8ab1dd7ff9ed698584 AS build
+FROM maven:3.9-eclipse-temurin-26-noble@sha256:b2c1ad85954592f9928e84327c65201f308ad9b5d8ed7d5b823717c97bf23fbb AS build
 WORKDIR /src
 COPY pom.xml ./
 COPY src ./src

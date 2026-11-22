@@ -11,7 +11,7 @@
 # packages apk adds below are not pinned, so this image is not one that rebuilds
 # byte for byte; the base it starts from is.
 
-FROM composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c AS vendor
+FROM composer:2.10@sha256:2cf275428757e5435a667bfc0d038b14520ca02be2b1b70d44a05c8c19e2de48 AS vendor
 WORKDIR /app
 COPY composer.json composer.lock ./
 # The runtime below has intl and pdo_pgsql; this stage only lays out vendor/.
@@ -19,7 +19,7 @@ RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-in
 COPY . .
 RUN composer dump-autoload --optimize --classmap-authoritative --no-dev --no-scripts
 
-FROM php:8.4-fpm-alpine@sha256:3c3b93ddd00dbbe0613c663a3cc8646b73c430f87d1a89954d02884d4a89674a AS app
+FROM php:8.6-fpm-alpine@sha256:3892978a38794b348f73d6926fb63e352b5338f8b302cdd2cf0ed968f63b50c5 AS app
 RUN apk add --no-cache icu-libs libpq \
  && apk add --no-cache --virtual .build icu-dev postgresql-dev \
  && docker-php-ext-install intl pdo_pgsql opcache \
@@ -38,7 +38,7 @@ USER 82:82
 EXPOSE 9000
 CMD ["php-fpm", "--nodaemonize"]
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS web
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS web
 COPY docker/default.conf.template /etc/nginx/templates/default.conf.template
 ENV CONSOLE_FPM=console:9000
 # The files a browser fetches, served by nginx; everything else goes to php-fpm.

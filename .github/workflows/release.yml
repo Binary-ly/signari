@@ -4,7 +4,10 @@
 # scripts/build-release.sh builds a release twice and refuses unless the two builds are
 # identical, so anyone with the same toolchain can rebuild one from its tag. This does
 # exactly that, with the same script and Go version, and compares the binary and SBOM it
-# makes with the ones attached to the release. Only if both match does it sign them,
+# makes with the ones attached to the release: the binary byte for byte, the SBOM in
+# everything but the hashes the SBOM tool records of its own executable, which differ
+# with wherever it was installed (v0.1.0's has them; the script now leaves them out).
+# Only if both match does it sign them,
 # keylessly with cosign under this workflow's GitHub identity, and attest SLSA build
 # provenance for the binary's digest. Signatures and provenance go to Sigstore's public
 # transparency log, and the signature bundles are attached to the release.
@@ -84,12 +87,16 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/published" \
             -p "signari-$TAG-linux-amd64" -p "signari-$TAG-linux-amd64.cdx.json"
           cd "$RUNNER_TEMP"
-          for f in "signari-$TAG-linux-amd64" "signari-$TAG-linux-amd64.cdx.json"; do
-            rebuilt=$(sha256sum "rebuilt/$f" | cut -d' ' -f1)
-            published=$(sha256sum "published/$f" | cut -d' ' -f1)
-            echo "$f: rebuilt $rebuilt, published $published"
-            [ "$rebuilt" = "$published" ] || { echo "::error::$f rebuilt here is not what was published"; exit 1; }
-          done
+          bin="signari-$TAG-linux-amd64"
+          rebuilt=$(sha256sum "rebuilt/$bin" | cut -d' ' -f1)
+          published=$(sha256sum "published/$bin" | cut -d' ' -f1)
+          echo "$bin: rebuilt $rebuilt, published $published"
+          [ "$rebuilt" = "$published" ] || { echo "::error::$bin rebuilt here is not what was published"; exit 1; }
+          described() { jq -cS 'del(.metadata.tools[].hashes)' "$1" | sha256sum | cut -d' ' -f1; }
+          rebuilt=$(described "rebuilt/$bin.cdx.json")
+          published=$(described "published/$bin.cdx.json")
+          echo "$bin.cdx.json without the tool's own hashes: rebuilt $rebuilt, published $published"
+          [ "$rebuilt" = "$published" ] || { echo "::error::the SBOM rebuilt here does not describe what the published one does"; exit 1; }
 
       - uses: sigstore/cosign-installer@v4.1.3
 

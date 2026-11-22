@@ -47,9 +47,29 @@ gets one of its own, `signari.image.cdx.json`, because the binary inside it is
 built for another platform. Both are read from the build information the binary
 carries, so they list what was linked: every module with its hash, and the Go
 standard library with its version. The script refuses an SBOM that leaves out a
-module the binary names. Neither has a serial number or a timestamp, so the same
-binary always gives the same SBOM. Every base image is pinned by digest
+module the binary names. Neither has a serial number, a timestamp or the hashes
+the SBOM tool records of its own executable, so the same binary gives the same
+SBOM wherever it is described. (v0.1.0's SBOM has those hashes, which differ with
+wherever the tool was installed.) Every base image is pinned by digest
 ([deployment artefacts](docs/deployment-artefacts.md#base-images-are-pinned-by-digest)).
 
-Signed releases and SLSA provenance are not produced yet. Both need an identity
-to sign with, which a release built on a workstation does not have.
+Each release is signed once it is published, by
+[`.github/workflows/release.yml`](.github/workflows/release.yml). It rebuilds the
+release from its tag on a GitHub runner, with the same script and Go version, and
+goes on only if the binary is byte-identical to the published one and the SBOM
+describes the same build. It then signs both keylessly with cosign, under the
+workflow's own GitHub identity, attaches each signature bundle (`.sigstore.json`)
+to the release, and records SLSA build provenance for the binary. The signatures
+and the provenance are in Sigstore's public transparency log. To check a download:
+
+```sh
+cosign verify-blob signari-v0.1.0-linux-amd64 \
+  --bundle signari-v0.1.0-linux-amd64.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/Binary-ly/signari/\.github/workflows/release\.yml@refs/(heads/main|tags/v[0-9.]+)$'
+gh attestation verify signari-v0.1.0-linux-amd64 -R Binary-ly/signari
+```
+
+The provenance names the workflow run that rebuilt the binary, not the machine
+that first built it. v0.1.0 was built on a throwaway Linux machine and signed
+after its release, once the workflow had rebuilt it to the same bytes.

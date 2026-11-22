@@ -63,10 +63,14 @@ merged.
 Signari is released under [AGPL-3.0-only](LICENSE), and its copyright holder also
 offers it under other terms, which [NOTICE.md](NOTICE.md) explains. That is only
 possible while the copyright stays in one place, so **a first contribution asks you to
-sign a Contributor License Agreement** before it is merged. The CLA Assistant bot
-comments on your first pull request with a link to the agreement, and you sign by
-replying as it asks. The agreement says exactly what it grants, so read it before you
-sign. It covers your later pull requests too.
+sign the [Contributor License Agreement](CLA.md)** before it is merged. The CLA
+Assistant bot comments on your first pull request with a link to it, and you sign by
+replying with exactly:
+
+    I have read the CLA Document and I hereby sign the CLA
+
+The agreement says what it grants, so read it before you sign. It covers your later pull
+requests too.
 
 ## Conduct
 

@@ -12,6 +12,15 @@ and its entry says how.
   signed this way after its release; `SECURITY.md` says how to check a download.
 - The SBOM no longer records the hashes of the SBOM tool's own executable, which
   differed with wherever the tool was installed, so it is the same on any machine.
+- The release's provenance is attached beside the binary as `.intoto.jsonl`.
+- **Dependencies.** go-jose 4.1.9, `golang.org/x/crypto` 0.59.0, `x/net` 0.63.0 and
+  `x/sys` 0.50.0, past published advisories, none of which `govulncheck` found
+  reachable. The workflows' actions are pinned by commit, the Node examples install
+  from a lockfile with `npm ci`, and the Django example's requirements carry hashes.
+  Dependabot proposes updates weekly.
+- A batch's walks take their first level from the rows of the step they share, so a
+  hundred documents in one deep folder cost that step and one walk up the folders:
+  46 to 162 batches a second at one client.
 
 ## v0.1.0 — 2026-11-22
 

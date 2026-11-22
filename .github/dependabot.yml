@@ -1,0 +1,75 @@
+# Dependabot: a pull request when a dependency here has a new release, each one through
+# CI like any other change, and from dependabot[bot], whom the CLA check lets through.
+# Weekly, with the minor and patch releases of an ecosystem in one pull request, so a
+# week's updates are a handful of reviews and not dozens; a major release comes alone,
+# since it is the one likely to need code changed. Security updates are separate and
+# come as soon as an advisory is published, whatever the schedule.
+version: 2
+
+updates:
+  # The workflows' actions, pinned by commit with the release in a comment, which is what
+  # Dependabot moves.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly, day: monday}
+    groups:
+      actions: {update-types: [minor, patch]}
+
+  - package-ecosystem: gomod
+    directories:
+      - /engine
+      - /operator
+      - /terraform-provider-signari
+      - /sdk/go
+      - /tools/bench
+      - /tools/mmdbfixture
+      - /examples/go-quickstart
+    schedule: {interval: weekly, day: monday}
+    groups:
+      go: {update-types: [minor, patch]}
+
+  - package-ecosystem: npm
+    directories:
+      - /admin
+      - /interop
+      - /sdk/typescript
+      - /examples/express-quickstart
+      - /examples/nextjs-quickstart
+    schedule: {interval: weekly, day: monday}
+    groups:
+      npm: {update-types: [minor, patch]}
+
+  - package-ecosystem: composer
+    directory: /admin
+    schedule: {interval: weekly, day: monday}
+    groups:
+      composer: {update-types: [minor, patch]}
+
+  - package-ecosystem: pip
+    directory: /examples/django-quickstart
+    schedule: {interval: weekly, day: monday}
+    groups:
+      pip: {update-types: [minor, patch]}
+
+  - package-ecosystem: maven
+    directory: /examples/spring-quickstart
+    schedule: {interval: weekly, day: monday}
+    groups:
+      maven: {update-types: [minor, patch]}
+
+  # Base images, pinned by digest beside their tag (TestEveryBaseImageIsPinnedByDigest);
+  # Dependabot moves both.
+  - package-ecosystem: docker
+    directories:
+      - /engine
+      - /operator
+      - /admin
+      - /examples/django-quickstart
+      - /examples/express-quickstart
+      - /examples/go-quickstart
+      - /examples/laravel-quickstart
+      - /examples/nextjs-quickstart
+      - /examples/spring-quickstart
+    schedule: {interval: weekly, day: monday}
+    groups:
+      docker: {update-types: [minor, patch]}

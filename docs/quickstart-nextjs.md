@@ -18,13 +18,14 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly.
 
 ```sh
 cd examples/nextjs-quickstart
-npm install && npm run build
+npm ci && npm run build
 SIGNARI_ISSUER=https://id.example.com CLIENT_ID=quickstart CLIENT_SECRET=<the secret> \
   REDIRECT_URI=http://127.0.0.1:3000/callback npm start
 ```
 
 Open `http://127.0.0.1:3000/login`, sign in, and the page says who signed in. The
-versions are pinned in `package.json`. For a certificate your machine does not trust,
+versions are pinned in `package.json`, and everything under them in
+`package-lock.json`, which `npm ci` installs exactly. For a certificate your machine does not trust,
 give Node the certificate with `NODE_EXTRA_CA_CERTS=<file.pem>`.
 
 ## In compose

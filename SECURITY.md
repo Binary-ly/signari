@@ -59,8 +59,9 @@ release from its tag on a GitHub runner, with the same script and Go version, an
 goes on only if the binary is byte-identical to the published one and the SBOM
 describes the same build. It then signs both keylessly with cosign, under the
 workflow's own GitHub identity, attaches each signature bundle (`.sigstore.json`)
-to the release, and records SLSA build provenance for the binary. The signatures
-and the provenance are in Sigstore's public transparency log. To check a download:
+to the release, and records SLSA build provenance for the binary, in GitHub's
+attestation store and beside the binary as `.intoto.jsonl`. The signatures and the
+provenance are in Sigstore's public transparency log. To check a download:
 
 ```sh
 cosign verify-blob signari-v0.1.0-linux-amd64 \
@@ -68,6 +69,9 @@ cosign verify-blob signari-v0.1.0-linux-amd64 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/Binary-ly/signari/\.github/workflows/release\.yml@refs/(heads/main|tags/v[0-9.]+)$'
 gh attestation verify signari-v0.1.0-linux-amd64 -R Binary-ly/signari
+# or against the provenance file attached to the release, without GitHub's API:
+gh attestation verify signari-v0.1.0-linux-amd64 -R Binary-ly/signari \
+  --bundle signari-v0.1.0-linux-amd64.intoto.jsonl
 ```
 
 The provenance names the workflow run that rebuilt the binary, not the machine

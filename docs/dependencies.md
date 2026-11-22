@@ -10,7 +10,7 @@ scanned, and why each thing is here at all.
 
 ## The number is the point
 
-**22 direct dependencies. 75 modules in the whole graph, as `go list -m all`
+**23 direct dependencies. 75 modules in the whole graph, as `go list -m all`
 counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
@@ -28,9 +28,10 @@ named eighteen.
 
 | Module | Version | What it does | Why it is trusted |
 |---|---|---|---|
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | JOSE: JWS, JWE, JWK | the reference Go JOSE library, maintained by the go-jose org after the Square handover; the crypto this whole product rests on |
+| `github.com/go-jose/go-jose/v4` | v4.1.9 | JOSE: JWS, JWE, JWK | the reference Go JOSE library, maintained by the go-jose org after the Square handover; the crypto this whole product rests on |
 | `github.com/jackc/pgx/v5` | v5.10.0 | PostgreSQL driver | the de-facto Go Postgres driver; parameterized queries are its default idiom |
 | `github.com/go-webauthn/webauthn` | v0.18.2 | WebAuthn ceremonies | the maintained successor to duo-labs/webauthn |
+| `github.com/fxamacker/cbor/v2` | v2.9.4 | CBOR, for an ISO mdoc presented over OID4VP and its COSE signatures | already in the graph through the WebAuthn module, whose attestations are CBOR; named directly by `internal/oid4vp` since the mdoc verifier, where it decodes with duplicate map keys refused and nesting, arrays and maps bounded (`mdoc.go`) |
 | `github.com/eclipse-keypont/crypto11` | v1.6.8 | PKCS#11 keys as `crypto.Signer`, for signing keys in a hardware module | compiled only into the `pkcs11` build (`-tags pkcs11`, cgo), so the default binary carries none of it. Thales wrote it, and it moved to this path from `github.com/ThalesGroup/crypto11`, whose `go.mod` at v1.6.7 says so; it brings `github.com/miekg/pkcs11`, the binding to the C interface, `github.com/thales-e-security/pool` and `github.com/pkg/errors`, all three in that build alone |
 | `github.com/beevik/etree` | v1.7.0 | XML tree, for SAML | used only after `scanForUnsafeConstructs` has refused DOCTYPE and comments |
 | `github.com/russellhaering/goxmldsig` | v1.6.1 | XML signatures | the standard Go XML-DSig implementation |
@@ -46,9 +47,9 @@ named eighteen.
 | `go.opentelemetry.io/otel` | v1.47.0 | OpenTelemetry API: attributes, propagation, semantic conventions | the OpenTelemetry project; imported by `internal/tracing` alone, which a test holds |
 | `go.opentelemetry.io/otel/trace` | v1.47.0 | OpenTelemetry tracing API | as above |
 | `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |
-| `golang.org/x/crypto` | v0.57.0 | Argon2id, HKDF, bcrypt | Go project |
-| `golang.org/x/sync` | v0.23.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
-| `golang.org/x/text` | v0.42.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
+| `golang.org/x/crypto` | v0.59.0 | Argon2id, HKDF, bcrypt | Go project |
+| `golang.org/x/sync` | v0.25.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
+| `golang.org/x/text` | v0.44.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
 | `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | operator-supplied input only, never a request |
 
 ## How provenance is verified (V15.2.4, dependency confusion)

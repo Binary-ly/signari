@@ -96,16 +96,20 @@ done
 # The SBOM of a built binary: CycloneDX, read from the build information the binary
 # carries, so it lists what was linked and not what go.mod would allow, with each
 # module's hash. The standard library is in it, whose advisories are as much the
-# release's as any module's. No serial number or timestamp, so it is as repeatable
-# as the binary. Refused when it does not list every module the binary names, or
-# names another platform: the tool takes GOOS and GOARCH from the environment and
-# not the binary, so the image's linux build was first described as darwin's.
+# release's as any module's. No serial number or timestamp, and not the hashes the
+# tool records of its own executable, which differ with wherever it was installed
+# (v0.1.0's SBOM has them), so it is as repeatable as the binary, on any machine.
+# Refused when it does not list every module the binary names, or names another
+# platform: the tool takes GOOS and GOARCH from the environment and not the binary,
+# so the image's linux build was first described as darwin's.
 sbom_of() {
     local goos goarch want got std
     goos="$(go version -m "$1" | awk '$1 == "build" && $2 ~ /^GOOS=/ { sub("GOOS=", "", $2); print $2 }')"
     goarch="$(go version -m "$1" | awk '$1 == "build" && $2 ~ /^GOARCH=/ { sub("GOARCH=", "", $2); print $2 }')"
     GOOS="$goos" GOARCH="$goarch" cyclonedx-gomod bin -json -std -noserial -notimestamp -version "$release" \
-        -output "$2" "$1" 2>/dev/null
+        -output "$2.raw" "$1" 2>/dev/null
+    jq 'del(.metadata.tools[].hashes)' "$2.raw" > "$2"
+    rm -f "$2.raw"
     want="$(go version -m "$1" | awk '$1 == "dep"' | wc -l | tr -d ' ')"
     got="$(jq '[.components[] | select(.name != "std")] | length' "$2")"
     std="$(jq -r '.components[] | select(.name == "std") | .purl' "$2")"

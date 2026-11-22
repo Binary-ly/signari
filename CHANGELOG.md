@@ -4,6 +4,15 @@ Each release, what it changes and what an operator should know before upgrading 
 Versions are `vMAJOR.MINOR.PATCH`; before 1.0, a minor version may change behaviour,
 and its entry says how.
 
+## Unreleased
+
+- **Releases are signed.** `.github/workflows/release.yml` rebuilds each published
+  release from its tag and, only if the binary comes out byte-identical, signs the
+  binary and its SBOM with cosign and records SLSA build provenance. v0.1.0 was
+  signed this way after its release; `SECURITY.md` says how to check a download.
+- The SBOM no longer records the hashes of the SBOM tool's own executable, which
+  differed with wherever the tool was installed, so it is the same on any machine.
+
 ## v0.1.0 — 2026-11-22
 
 The first public release.

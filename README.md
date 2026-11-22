@@ -1,13 +1,17 @@
 # Signari
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16996/badge)](https://www.bestpractices.dev/projects/16996)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Binary-ly/signari/badge)](https://scorecard.dev/viewer/?uri=github.com/Binary-ly/signari)
+
 A self-hosted identity provider. One binary and one PostgreSQL database serve
 OpenID Connect, OAuth 2.0, SAML 2.0, LDAP, RADIUS and SCIM, with a web console
 beside it.
 
-> **Status: pre-release.** It runs, it is tested, and it is not yet certified.
-> The OpenID Foundation conformance suite has a runbook here
-> ([docs/runbook-public-conformance.md](docs/runbook-public-conformance.md)) but
-> certification has not been obtained. Read
+> **Status: v0.1.0, the first release.** It runs, it is tested, and it is neither
+> certified nor independently audited yet. The OpenID Foundation's conformance plans
+> run whole in CI (`.github/workflows/conformance.yml`) and the suite has a runbook
+> here ([docs/runbook-public-conformance.md](docs/runbook-public-conformance.md)),
+> but certification has not been obtained. Read
 > [docs/security-review-asvs.md](docs/security-review-asvs.md) and
 > [docs/fips.md](docs/fips.md) before trusting it with anything that matters.
 

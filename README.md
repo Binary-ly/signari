@@ -112,6 +112,12 @@ The three you will reach for first:
 Those three cannot rot: the engine's `internal/docsync` package fails the build
 when a command or a setting exists in code and not on its page.
 
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says what a
+pull request needs and how a first contribution signs the Contributor License
+Agreement; vulnerabilities go privately, as [SECURITY.md](SECURITY.md) explains.
+
 ## Licence
 
 [AGPL-3.0-only](LICENSE). Running Signari does not make your applications AGPL —

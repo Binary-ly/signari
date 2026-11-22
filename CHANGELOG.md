@@ -4,7 +4,7 @@ Each release, what it changes and what an operator should know before upgrading 
 Versions are `vMAJOR.MINOR.PATCH`; before 1.0, a minor version may change behaviour,
 and its entry says how.
 
-## v0.1.0 — not yet released
+## v0.1.0 — 2026-11-22
 
 The first public release.
 

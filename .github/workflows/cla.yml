@@ -1,0 +1,45 @@
+# The Contributor License Agreement, checked on every pull request (CONTRIBUTING.md).
+#
+# CLA Assistant Lite: a contributor who has not signed CLA.md is asked to, in a comment
+# on the pull request, and signs by replying with the sentence it gives. Signatures are
+# kept in this repository, in the cla-signatures branch, signatures/version1/cla.json,
+# so no outside service holds them or has access to the account.
+#
+# pull_request_target, because a pull request from a fork gets a read-only token under
+# pull_request and could neither comment nor record a signature. That is safe only
+# because nothing here checks out or runs the pull request's code: the action reads the
+# pull request's commits through the API and writes to the signatures branch.
+name: cla
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: CLA Assistant
+        if: >-
+          github.event.comment.body == 'recheck' ||
+          github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA' ||
+          github.event_name == 'pull_request_target'
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/Binary-ly/signari/blob/main/CLA.md
+          path-to-signatures: signatures/version1/cla.json
+          branch: cla-signatures
+          allowlist: sulimanbenhalim,dependabot[bot],github-actions[bot]
+          signed-commit-message: Record that $contributorName signed the CLA in $owner/$repo#$pullRequestNo.
+          create-file-commit-message: Create the file that records CLA signatures.

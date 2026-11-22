@@ -18,14 +18,15 @@ trailing slash Django's URLs end in included.
 
 ```sh
 cd examples/django-quickstart
-python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+python3 -m venv venv && ./venv/bin/pip install --require-hashes -r requirements.txt
 DJANGO_SECRET_KEY=<a long random value> SIGNARI_ISSUER=https://id.example.com \
   CLIENT_ID=quickstart CLIENT_SECRET=<the secret> REDIRECT_URI=http://127.0.0.1:8000/callback/ \
   ./venv/bin/python manage.py runserver 127.0.0.1:8000
 ```
 
 Open `http://127.0.0.1:8000/login/`, sign in, and the page says who signed in. The
-versions are pinned in `requirements.txt`. `runserver` is Django's development server;
+versions are pinned in `requirements.in`, and `requirements.txt`, compiled from it, pins
+everything under them with their hashes. `runserver` is Django's development server;
 serve it as you serve any Django application. For a certificate your machine does not
 trust, give requests the certificate with `REQUESTS_CA_BUNDLE=<file.pem>`.
 

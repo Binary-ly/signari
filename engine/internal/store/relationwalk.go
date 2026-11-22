@@ -36,26 +36,54 @@ const (
 // the subjects. Three arms, each on its own index: a row naming one of the subjects, a
 // row naming a set of them, and whatever a rewrite goes through. All of a relation's
 // rows would be simpler, and an object can have a million viewers. $8 is one more than
-// a level may read, so that reading it says the level was cut short.
+// a level may read, so that reading it says the level was cut short. Each row says
+// whether it was read as something a rewrite goes through, so that the rows of one
+// node, asked once for a whole batch, can be handed to each walk that asks it.
 const walkStep = `
 	WITH g AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::bool[]) AS g(typ, id, rel, through)),
 	     s AS (SELECT * FROM unnest($6::text[], $7::text[]) AS s(typ, id))
-	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id, true
 	  FROM g JOIN core.relations r
 	    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
 	 WHERE g.through AND (r.expires_at IS NULL OR r.expires_at > now())
 	UNION ALL
-	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id, false
 	  FROM g JOIN s ON NOT g.through JOIN core.relations r
 	    ON r.org_id = $1::uuid AND r.subject_type = s.typ AND r.subject_id = s.id
 	   AND r.relation = g.rel AND r.object_type = g.typ AND r.object_id = g.id
 	 WHERE r.expires_at IS NULL OR r.expires_at > now()
 	UNION ALL
-	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id
+	SELECT r.object_type, r.object_id, r.relation, r.subject_type, r.subject_id, false
 	  FROM g JOIN core.relations r
 	    ON r.org_id = $1::uuid AND r.object_type = g.typ AND r.object_id = g.id AND r.relation = g.rel
 	 WHERE NOT g.through AND r.subject_id LIKE '%#%' AND (r.expires_at IS NULL OR r.expires_at > now())
 	 LIMIT $8`
+
+// walkRow is one row of a walk's step.
+type walkRow struct {
+	objType, objID, relation, subjectType, subjectID string
+	through                                          bool
+}
+
+// walkAsk is one node of a step as the statement asks it: a relation on an object, and
+// whether it is asked as something a rewrite goes through.
+type walkAsk struct {
+	key     walkKey
+	through bool
+}
+
+// scanWalkStep reads a step's rows.
+func scanWalkStep(rows pgx.Rows, each func(walkRow)) error {
+	defer rows.Close()
+	for rows.Next() {
+		var r walkRow
+		if err := rows.Scan(&r.objType, &r.objID, &r.relation, &r.subjectType, &r.subjectID, &r.through); err != nil {
+			return err
+		}
+		each(r)
+	}
+	return rows.Err()
+}
 
 // ErrWalkBound is a graph too deep or too wide to finish. It is an error and not a
 // no: the question was not answered, and a caller is told so, as for any decision
@@ -93,19 +121,30 @@ func WalkRelations(ctx context.Context, q Querier, orgID string, model *authzen.
 // any of them: held for each node on the path a walk found, not held for each node a walk
 // visited and exhausted, nothing at all from a walk that stopped at its bounds.
 //
+// It also holds the rows of the first step a batch's walks took together
+// (SettleUnreached), node by node, so that each walk takes its first level from them
+// and does not ask it again.
+//
 // It lives and dies with the request, as everything an evaluation reads does (ADR-007),
 // so a relation revoked is not remembered past it. One request's decisions are taken in
 // turn, and it is not for use by two at once.
 type WalkMemo struct {
-	settled map[string]map[walkKey]bool
+	of map[string]*subjectsMemo
+}
+
+// subjectsMemo is what a memo holds for one set of subjects.
+type subjectsMemo struct {
+	settled map[walkKey]bool
+	read    map[walkAsk][]walkRow
 }
 
 // NewWalkMemo is an empty one, for one request.
-func NewWalkMemo() *WalkMemo { return &WalkMemo{settled: map[string]map[walkKey]bool{}} }
+func NewWalkMemo() *WalkMemo { return &WalkMemo{of: map[string]*subjectsMemo{}} }
 
-// settledFor is what the memo has settled for these subjects, keyed by them as a set: a
-// node held by one set is not by another. Nil without a memo.
-func (m *WalkMemo) settledFor(subjectTypes, subjectIDs []string) map[walkKey]bool {
+// forSubjects is what the memo holds for these subjects, keyed by them as a set: a node
+// held by one set is not by another, and a row naming one of them was read for them.
+// Nil without a memo.
+func (m *WalkMemo) forSubjects(subjectTypes, subjectIDs []string) *subjectsMemo {
 	if m == nil {
 		return nil
 	}
@@ -115,12 +154,12 @@ func (m *WalkMemo) settledFor(subjectTypes, subjectIDs []string) map[walkKey]boo
 	}
 	slices.Sort(names)
 	sig := strings.Join(names, "\x01")
-	settled := m.settled[sig]
-	if settled == nil {
-		settled = map[walkKey]bool{}
-		m.settled[sig] = settled
+	of := m.of[sig]
+	if of == nil {
+		of = &subjectsMemo{settled: map[walkKey]bool{}, read: map[walkAsk][]walkRow{}}
+		m.of[sig] = of
 	}
-	return settled
+	return of
 }
 
 // distinctSubjects is subjects without repeats, as the walk statement's two arrays and
@@ -146,7 +185,14 @@ func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *auth
 		return "", nil, nil
 	}
 	subjectTypes, subjectIDs, isSubject := distinctSubjects(subjects)
-	settled := memo.settledFor(subjectTypes, subjectIDs)
+	// settled is what earlier walks of the request settled, and read the rows, node by
+	// node, that a step taken for the whole batch has read already. Both nil without a
+	// memo.
+	var settled map[walkKey]bool
+	var read map[walkAsk][]walkRow
+	if of := memo.forSubjects(subjectTypes, subjectIDs); of != nil {
+		settled, read = of.settled, of.read
+	}
 
 	visited := map[walkKey]*walkGoal{}
 	var frontier []*walkGoal
@@ -213,53 +259,62 @@ func WalkRelationsWith(ctx context.Context, q Querier, orgID string, model *auth
 		}
 		var typs, ids, rels []string
 		var through []bool
+		// known is the rows of this level's nodes that the batch's first step read; only
+		// the rest are asked.
+		var known []walkRow
+		ask := func(key walkKey, isThrough bool) {
+			if rows, wasRead := read[walkAsk{key, isThrough}]; wasRead {
+				known = append(known, rows...)
+				return
+			}
+			typs, ids, rels, through = append(typs, key.typ), append(ids, key.id), append(rels, key.relation), append(through, isThrough)
+		}
 		follow := map[walkKey][]walkFollow{}
 		for _, g := range frontier {
-			typs, ids, rels, through = append(typs, g.typ), append(ids, g.id), append(rels, g.relation), append(through, false)
+			ask(walkKey{g.typ, g.id, g.relation}, false)
 			for _, rw := range model.Types[g.typ].RewritesOf(g.relation) {
 				key := walkKey{g.typ, g.id, rw.Through}
 				if follow[key] == nil {
-					typs, ids, rels, through = append(typs, g.typ), append(ids, g.id), append(rels, rw.Through), append(through, true)
+					ask(key, true)
 				}
 				follow[key] = append(follow[key], walkFollow{g, rw.Relation})
 			}
 		}
 		frontier = nil
 
-		rows, err := q.Query(ctx, walkStep, orgID, typs, ids, rels, through, subjectTypes, subjectIDs, maxWalkEdges+1)
-		if err != nil {
-			return "", nil, fmt.Errorf("walking relations: %w", err)
-		}
 		edges := 0
 		var hit *walkGoal
-		for rows.Next() {
-			var objType, objID, relation, subjectType, subjectID string
-			if err := rows.Scan(&objType, &objID, &relation, &subjectType, &subjectID); err != nil {
-				rows.Close()
-				return "", nil, err
-			}
+		take := func(r walkRow) {
 			edges++
-			key := walkKey{objType, objID, relation}
+			key := walkKey{r.objType, r.objID, r.relation}
 			if g := visited[key]; g != nil {
-				setID, setRelation, isSet := strings.Cut(subjectID, "#")
+				setID, setRelation, isSet := strings.Cut(r.subjectID, "#")
 				switch {
-				case isSubject[[2]string{subjectType, subjectID}]:
+				case isSubject[[2]string{r.subjectType, r.subjectID}]:
 					hit = g
-				case isSet && subjectType == "group" && setRelation == "member" && isSubject[[2]string{"group", setID}]:
+				case isSet && r.subjectType == "group" && setRelation == "member" && isSubject[[2]string{"group", setID}]:
 					// A directory group's members are not rows here: they are
 					// the groups the person was resolved to.
 					hit = g
 				case isSet:
-					add(subjectType, setID, setRelation, g)
+					add(r.subjectType, setID, setRelation, g)
 				}
 			}
 			for _, f := range follow[key] {
-				add(subjectType, subjectID, f.relation, f.goal)
+				add(r.subjectType, r.subjectID, f.relation, f.goal)
 			}
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return "", nil, fmt.Errorf("walking relations: %w", err)
+		for _, r := range known {
+			take(r)
+		}
+		if len(typs) > 0 {
+			rows, err := q.Query(ctx, walkStep, orgID, typs, ids, rels, through, subjectTypes, subjectIDs, maxWalkEdges+1)
+			if err != nil {
+				return "", nil, fmt.Errorf("walking relations: %w", err)
+			}
+			if err := scanWalkStep(rows, take); err != nil {
+				return "", nil, fmt.Errorf("walking relations: %w", err)
+			}
 		}
 		if hit == nil {
 			hit = settledHit
@@ -289,10 +344,13 @@ type WalkRoot struct {
 // no row of anything a rewrite of it goes through. Its own walk would have looked at such
 // a relation once and stopped, and a batch of a hundred documents with a rewrite, half of
 // them held by nobody asking, spent a statement on each of that half (E.17). A relation
-// the step does find something behind is left alone, for its walk to go on from as
-// before. The first step is the walk's own: the relations as Expand gives them, the
-// rewrites of each, the same statement. Nothing at all is settled when the step reads to
-// the edge bound, since an answer cut short cannot say a relation has nothing behind it.
+// the step does find something behind is left to its walk, which takes its first level
+// from the rows the step read, node by node, and asks only what lies beyond: a hundred
+// documents in one deep folder asked their own first step each before, and paid for the
+// shared one on top. The first step is the walk's own: the relations as Expand gives
+// them, the rewrites of each, the same statement. Nothing at all is settled or kept when
+// the step reads to the edge bound, since an answer cut short cannot say a relation has
+// nothing behind it, nor hand a walk all of a node's rows.
 func SettleUnreached(ctx context.Context, q Querier, orgID string, model *authzen.Model,
 	subjects [][2]string, roots []WalkRoot, memo *WalkMemo) error {
 
@@ -300,7 +358,8 @@ func SettleUnreached(ctx context.Context, q Querier, orgID string, model *authze
 		return nil
 	}
 	subjectTypes, subjectIDs, _ := distinctSubjects(subjects)
-	settled := memo.settledFor(subjectTypes, subjectIDs)
+	of := memo.forSubjects(subjectTypes, subjectIDs)
+	settled := of.settled
 
 	// Each relation to settle, with the relations its rewrites go through.
 	type unsettled struct {
@@ -308,16 +367,14 @@ func SettleUnreached(ctx context.Context, q Querier, orgID string, model *authze
 		throughs []string
 	}
 	var pending []unsettled
-	type asked struct {
-		key     walkKey
-		through bool
-	}
-	queued := map[asked]bool{}
+	var queued []walkAsk
+	isQueued := map[walkAsk]bool{}
 	var typs, ids, rels []string
 	var through []bool
 	queue := func(key walkKey, isThrough bool) {
-		if !queued[asked{key, isThrough}] {
-			queued[asked{key, isThrough}] = true
+		if a := (walkAsk{key, isThrough}); !isQueued[a] {
+			isQueued[a] = true
+			queued = append(queued, a)
 			typs, ids, rels, through = append(typs, key.typ), append(ids, key.id),
 				append(rels, key.relation), append(through, isThrough)
 		}
@@ -357,22 +414,25 @@ func SettleUnreached(ctx context.Context, q Querier, orgID string, model *authze
 	if err != nil {
 		return fmt.Errorf("settling relations: %w", err)
 	}
-	defer rows.Close()
 	behind := map[walkKey]bool{}
+	byAsk := map[walkAsk][]walkRow{}
 	read := 0
-	for rows.Next() {
-		var objType, objID, relation, subjectType, subjectID string
-		if err := rows.Scan(&objType, &objID, &relation, &subjectType, &subjectID); err != nil {
-			return fmt.Errorf("settling relations: %w", err)
-		}
-		behind[walkKey{objType, objID, relation}] = true
+	if err := scanWalkStep(rows, func(r walkRow) {
+		key := walkKey{r.objType, r.objID, r.relation}
+		behind[key] = true
+		// Each node is asked once in the statement, as a rewrite's or not, so the row is
+		// that ask's.
+		byAsk[walkAsk{key, r.through}] = append(byAsk[walkAsk{key, r.through}], r)
 		read++
-	}
-	if err := rows.Err(); err != nil {
+	}); err != nil {
 		return fmt.Errorf("settling relations: %w", err)
 	}
 	if read > maxWalkEdges {
 		return nil
+	}
+	for _, a := range queued {
+		// Asked and read to the end, so no rows is an answer too, and is kept as one.
+		of.read[a] = append([]walkRow{}, byAsk[a]...)
 	}
 	for _, u := range pending {
 		reached := behind[u.key]

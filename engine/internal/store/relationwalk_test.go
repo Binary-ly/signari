@@ -344,8 +344,11 @@ tests:
 // A batch's walks take their first step together (E.17). A relation that step finds
 // nothing behind is settled as not held, and its walk then asks nothing at all; one
 // with something behind it, a row of its own or a parent to go through, is left to its
-// walk, which answers as it did without the step. A step read to the edge bound settles
-// nothing, since an answer cut short cannot say a relation has nothing behind it.
+// walk, which takes its first level from the step's rows, asks only what lies beyond,
+// and answers as it did without the step. So a hundred documents in one deep folder
+// cost the step and one walk up the folders, and not a first step each on top. A step
+// read to the edge bound settles and keeps nothing, since an answer cut short cannot
+// say a relation has nothing behind it, nor hand a walk all of a node's rows.
 func TestABatchsWalksTakeTheirFirstStepTogether(t *testing.T) {
 	orgID, m, grant := walkFixture(t)
 	conn := connect(t)
@@ -393,13 +396,37 @@ func TestABatchsWalksTakeTheirFirstStepTogether(t *testing.T) {
 		if held != want[id] {
 			t.Errorf("%s held %q after the first step, %q without it", id, held, want[id])
 		}
-		asked := counted.n - before
-		switch {
-		case want[id] == "" && asked != 0:
-			t.Errorf("%s, with nothing behind it, still asked %d statements", id, asked)
-		case want[id] != "" && asked == 0:
-			t.Errorf("%s, held, was answered without its walk", id)
+		// Held by a row of its own, step-mine is answered by the step's rows; step-inside
+		// asks its folder and nothing before it.
+		if asked, wantAsked := counted.n-before, map[string]int{"step-inside": 1}[id]; asked != wantAsked {
+			t.Errorf("%s asked %d statements after the first step, want %d", id, asked, wantAsked)
 		}
+	}
+
+	// Ten documents in one folder eight deep: after the step, the first walk asks only
+	// the folders, and the rest ask nothing, the folder above them being settled by then.
+	for n := 0; n < 8; n++ {
+		grant(fmt.Sprintf("doc:step-f%d", n+1), "parent", fmt.Sprintf("doc:step-f%d", n))
+	}
+	grant("user:step-ann", "owner", "doc:step-f8")
+	var deep []WalkRoot
+	for i := 0; i < 10; i++ {
+		grant("doc:step-f0", "parent", fmt.Sprintf("doc:step-leaf%d", i))
+		deep = append(deep, WalkRoot{Type: "doc", ID: fmt.Sprintf("step-leaf%d", i), Relations: []string{"viewer"}})
+	}
+	memo = NewWalkMemo()
+	before := counted.n
+	if err := SettleUnreached(ctx, counted, orgID, m, ann, deep, memo); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		held, _, err := WalkRelationsWith(ctx, counted, orgID, m, ann, []string{"viewer"}, "doc", fmt.Sprintf("step-leaf%d", i), memo)
+		if err != nil || held != "viewer" {
+			t.Fatalf("step-leaf%d after the first step: %q %v", i, held, err)
+		}
+	}
+	if spent := counted.n - before; spent != 1+9 {
+		t.Errorf("ten documents eight folders down took %d statements, want the step and nine folders", spent)
 	}
 
 	// Read to the edge bound, the step settles nothing: 2,001 parents of one document
@@ -415,7 +442,7 @@ func TestABatchsWalksTakeTheirFirstStepTogether(t *testing.T) {
 	if err := SettleUnreached(ctx, conn, orgID, m, ann, wide, memo); err != nil {
 		t.Fatal(err)
 	}
-	before := counted.n
+	before = counted.n
 	if held, _, err := WalkRelationsWith(ctx, counted, orgID, m, ann, []string{"viewer"}, "doc", "step-none0", memo); err != nil || held != "" {
 		t.Fatalf("step-none0 after a cut-short step: %q %v", held, err)
 	}

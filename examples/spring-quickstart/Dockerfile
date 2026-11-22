@@ -8,7 +8,7 @@ COPY pom.xml ./
 COPY src ./src
 RUN mvn -B -q package
 
-FROM eclipse-temurin:17.0.21_9-jre-noble@sha256:042c05a77eb915684fc8c92cfbbef4fd6f8c24ca7d934d1a7db3543453aaa077
+FROM eclipse-temurin:24.0.2_12-jre-noble@sha256:b416d02335e702b0403ff280de9475a3348e29382285969c9d4e17862ce632e7
 COPY --from=build /src/target/spring-quickstart-1.0.0.jar /app/quickstart.jar
 # Java does not read a PEM file as a truststore. With SIGNARI_CA_FILE set, as the demo
 # sets it to the development CA, each start imports that one certificate into a

@@ -6,7 +6,7 @@
 #
 # Built with `next build` here, once. Both routes are force-dynamic, so SIGNARI_ISSUER,
 # CLIENT_ID and REDIRECT_URI are read when the container runs, not baked in.
-FROM node:24.22.3-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
+FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY package.json package-lock.json ./

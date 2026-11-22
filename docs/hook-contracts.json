@@ -1,0 +1,475 @@
+{
+  "hooks": [
+    {
+      "hook": "authorize",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "context": {
+            "type": "object"
+          },
+          "resource": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "subject",
+          "resource",
+          "action"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "context": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "token_issue",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "grant_type": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "client_id",
+          "scopes",
+          "grant_type",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "password_verify",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "authenticate",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "amr": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "client_ip": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "org_id",
+          "amr"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "user_create",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "org_id",
+          "email",
+          "source"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "client_access",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "context": {
+            "type": "object"
+          },
+          "resource": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "properties": {
+                "type": "object"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "subject",
+          "resource",
+          "action"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "userinfo",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "client_id",
+          "scopes",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "saml_assertion",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "entity_id",
+          "org_id"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "type": "object"
+          },
+          "decision": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "hook": "flow_condition",
+      "request": {
+        "additionalProperties": true,
+        "properties": {
+          "amr": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "client_ip": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "org_id",
+          "amr"
+        ],
+        "type": "object"
+      },
+      "response": {
+        "additionalProperties": true,
+        "properties": {
+          "decision": {
+            "type": "boolean"
+          },
+          "facts": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    }
+  ],
+  "version": "1"
+}

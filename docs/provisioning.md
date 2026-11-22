@@ -27,6 +27,11 @@ Credentials are sealed with the root key. A service account JSON file is a
 credential to somebody's entire directory, and a database read must not yield
 one.
 
+The Admin API registers these targets too, with `"kind": "google"` or
+`"entra"` and the file's contents as `credentials`, at
+`POST /admin/organizations/{orgID}/scim-targets`; see
+[admin-api.md](admin-api.md).
+
 ## Why Google and Entra are not SCIM
 
 Neither accepts SCIM as a server.

@@ -69,6 +69,16 @@ const MaxPlausibleSpeedKmh = 900
 // checked" rather than a confident wrong one.
 const MinElapsed = 60 * time.Second
 
+// What a sign-in's risk comes to on the 0 to 100 a session keeps and an authorization
+// rule's max_risk compares with. Two signals, so these are two rungs and not a
+// measurement: a new country happens to everybody who travels, and two places at once
+// happens to nobody. Zero is a sign-in nothing was said against, which includes one
+// that could not be placed.
+const (
+	ScoreNewCountry       = 50
+	ScoreImpossibleTravel = 80
+)
+
 // CheckTravel compares two authentications.
 func CheckTravel(previous, current Location) Verdict {
 	if !previous.Known || !current.Known {

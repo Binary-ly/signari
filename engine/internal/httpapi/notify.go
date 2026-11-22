@@ -111,20 +111,20 @@ func (s *Server) accountChannels(ctx context.Context, userID string) ([]notifyCh
 // messages are the opposite case and deliberately use the request instead: a
 // sign-in code is read by whoever just submitted the form.
 func (s *Server) notifierFor(ctx context.Context, userID string) *i18n.Printer {
-	bundle := s.pageSet().Bundle()
 	var locale *string
+	var orgID string
 	if err := s.db.QueryRow(ctx,
-		`SELECT locale FROM core.users WHERE id = $1::uuid`, userID).Scan(&locale); err != nil {
+		`SELECT locale, org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&locale, &orgID); err != nil {
 		// A notice in the default language beats no notice. This runs on the
 		// path that tells somebody their account was touched, and failing it
 		// over a missing preference would be the wrong trade every time.
-		s.log.Warn("reading a user's locale for a notice", "user_id", userID, "err", err)
-		return bundle.For(i18n.Default)
+		s.log.WarnContext(ctx, "reading a user's locale for a notice", "user_id", userID, "err", err)
+		return s.pageSet().Bundle().For(i18n.Default)
 	}
 	if locale == nil || *locale == "" {
-		return bundle.For(i18n.Default)
+		return s.printerFor(ctx, orgID, i18n.Default)
 	}
-	return bundle.For(*locale)
+	return s.printerFor(ctx, orgID, *locale)
 }
 
 func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, smsBody string) error {
@@ -141,7 +141,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 		var sendErr error
 		switch ch.Kind {
 		case "email":
-			sendErr = s.mailer.Send(ctx, mail.Message{
+			sendErr = s.sendMailTo(ctx, userID, mail.Message{
 				To: ch.Address, Subject: subject, Body: emailBody,
 			})
 		case "sms":
@@ -150,7 +150,7 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 				// error for this call -- the email channel still carried the notice
 				// -- but worth a line so an operator who expected SMS delivery sees
 				// why it did not happen.
-				s.log.Warn("account notice not sent by SMS: no SMS gateway configured",
+				s.log.WarnContext(ctx, "account notice not sent by SMS: no SMS gateway configured",
 					"user_id", userID)
 				continue
 			}
@@ -158,10 +158,10 @@ func (s *Server) notifyAccount(ctx context.Context, userID, subject, emailBody, 
 			if body == "" {
 				body = subject
 			}
-			sendErr = s.texter.Send(ctx, sms.Message{To: ch.Address, Body: body})
+			sendErr = s.sendSMS(ctx, userID, smsNotice, sms.Message{To: ch.Address, Body: body})
 		}
 		if sendErr != nil {
-			s.log.Error("sending account notice", "kind", ch.Kind, "err", sendErr)
+			s.log.ErrorContext(ctx, "sending account notice", "kind", ch.Kind, "err", sendErr)
 			if firstErr == nil {
 				firstErr = sendErr
 			}

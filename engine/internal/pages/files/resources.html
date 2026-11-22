@@ -1,0 +1,73 @@
+{{define "title"}}{{T "resources.title"}}{{end}}
+{{define "style"}}<style>
+:root{--page-w:36rem}
+/* One card a resource, so what is shared, and with whom, sits under its name. */
+.res{
+  margin:.875rem 0;
+  padding:1rem 1.125rem;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-inline-start:.375rem solid var(--accent);
+  border-radius:var(--radius-sm);
+}
+.res strong{font-size:1.0625rem;font-weight:800;letter-spacing:-.02em}
+.res .meta,.res .scopes{margin:.125rem 0 0;font-size:.8125rem}
+.res .scopes{color:var(--muted)}
+.res ul{margin:.5rem 0 0;padding:0;list-style:none}
+.res li{display:flex;gap:.5rem;align-items:center;justify-content:space-between;
+  margin:0;padding:.375rem 0;background:none;border-radius:0;border-top:1px solid var(--border);font-size:.875rem}
+.res li::before{display:none}
+.res li form{margin:0}
+.res .share{display:grid;grid-template-columns:1fr auto auto;gap:.5rem;margin-top:.75rem}
+.res .share label{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%)}
+.res button{display:inline-block;width:auto;margin:0;padding:.375rem .75rem;
+  font-size:.8125rem;color:var(--text);background:transparent;border-color:var(--border-strong)}
+.res button:hover{color:var(--text);box-shadow:3px 3px 0 var(--accent)}
+@media (max-width:28rem){.res .share{grid-template-columns:1fr}}
+</style>{{end}}
+{{define "content"}}<h1>{{T "resources.title"}}</h1>
+{{if eq .Message "shared"}}<p class="note">{{T "resources.done.shared"}}</p>{{end}}
+{{if eq .Message "unshared"}}<p class="note">{{T "resources.done.unshared"}}</p>{{end}}
+{{if eq .Message "refused"}}<p class="note">{{T "resources.done.refused"}}</p>{{end}}
+{{if not .Resources}}
+  <p class="none">{{T "resources.none"}}</p>
+{{else}}
+  {{range $res := .Resources}}
+  <div class="res" id="{{.ID}}">
+    <strong>{{.Name}}</strong>
+    <div class="meta">{{T "resources.kept" .}}</div>
+    {{if .Description}}<div class="meta">{{.Description}}</div>{{end}}
+    <div class="scopes">{{T "resources.scopes"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
+    {{if .Shares}}
+    <ul>
+      {{range $sh := .Shares}}
+      <li><span>{{T "resources.sharedas" $sh}}</span>
+        <form method="post" action="/account/resources/unshare">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="resource" value="{{$res.ID}}">
+          <input type="hidden" name="email" value="{{$sh.Who}}">
+          <input type="hidden" name="relation" value="{{$sh.Relation}}">
+          <button type="submit">{{T "resources.unshare"}}</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <div class="meta">{{T "resources.private"}}</div>
+    {{end}}
+    {{if .Relations}}
+    <form class="share" method="post" action="/account/resources/share">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <input type="hidden" name="resource" value="{{.ID}}">
+      <label for="email-{{.ID}}">{{T "resources.email"}}</label>
+      <input id="email-{{.ID}}" type="email" name="email" required autocomplete="off" placeholder="{{T "resources.email"}}">
+      <label for="relation-{{.ID}}">{{T "resources.relation"}}</label>
+      <select id="relation-{{.ID}}" name="relation">{{range .Relations}}<option>{{.}}</option>{{end}}</select>
+      <button type="submit">{{T "resources.share"}}</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
+{{end}}
+<p class="meta"><a href="/account">{{T "common.backtoaccount"}}</a></p>
+{{end}}

@@ -2,6 +2,7 @@ package keys
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -82,11 +83,56 @@ var rootSealedColumns = []sealedColumn{
 	{table: "duo_integrations", column: "secret_enc", key: "org_id", context: "duo_secret"},
 	{table: "event_subscriptions", column: "secret_sealed", key: "id", context: "event-subscription"},
 	{table: "identity_providers", column: "client_secret", key: "id", context: "idp_client_secret"},
+	{table: "identity_providers", column: "client_key", key: "id", context: "idp_client_key"},
+	{table: "providers", column: "token_wrapped", key: "id", context: "provider-secret", refColumn: "wrap_key_ref"},
 	{table: "rac_connections", column: "secrets_enc", key: "id", context: "rac-connection-secret"},
 	{table: "radius_clients", column: "secret_enc", key: "id", context: "radius-client-secret"},
 	{table: "scim_targets", column: "token", key: "id", context: "scim_token"},
 	{table: "scim_targets", column: "credentials_enc", key: "id", context: "provision_credentials"},
+	{table: "scim_targets", column: "oauth_refresh_token", key: "id", context: "scim_refresh_token"},
+	{table: "scim_targets", column: "oauth_pending_verifier", key: "id", context: "scim_pkce_verifier"},
 	{table: "ssf_streams", column: "auth_token", key: "id", context: "ssf-stream-token"},
+	{table: "federated_tokens", column: "sealed", key: "id", context: "federated_tokens"},
+	{table: "saml_source_keys", column: "key_sealed", key: "id", context: "saml_source_key"},
+	{table: "kerberos_realms", column: "keytab_sealed", key: "id", context: "kerberos_keytab"},
+	{table: "ssf_sources", column: "poll_secret_sealed", key: "id", context: "ssf_source_poll"},
+	{table: "credential_offers", column: "offer_sealed", key: "id", context: "credential_offer"},
+	{table: "vp_verifiers", column: "signing_key", key: "provider_id", context: "vp_verifier_key"},
+	{table: "federated_logins", column: "vp_response_key", key: "state_hash", context: "vp_response_key"},
+	{table: "federated_logins", column: "vp_cross_presented", key: "state_hash", context: "vp_cross_presented"},
+	// Nothing writes this table yet (writepath_test.go says why), but the
+	// sign-in path opens it with the root key, so the day a writer lands its
+	// rows are already rotated.
+	{table: "migration_sources", column: "client_secret_enc", key: "id", context: "migration_source_secret"},
+}
+
+// sealedField is root-sealed material inside a JSON column: a value sealed
+// into an outbox payload, waiting there for delivery. The classifier reads
+// column types and cannot see these, so they are listed by hand, and
+// TestEveryRootSealContextIsRotated derives the contexts from the code that
+// seals them, so a new one cannot be left out of the rotation.
+//
+// Rotating them matters although the rows are short-lived: a delivery being
+// retried when the old key is retired would otherwise fail forever, with an
+// authentication error that names nothing.
+type sealedField struct {
+	table   string
+	column  string
+	field   string
+	key     string
+	context string
+	// where narrows the rows, so a field of the same name elsewhere in the
+	// table is not taken for this one.
+	where string
+}
+
+var rootSealedFields = []sealedField{
+	// CIBA push: the token response, minted once and kept for the retries.
+	{table: "outbox", column: "payload", field: "sealed", key: "id",
+		context: "ciba_push_payload", where: "topic = 'ciba_push'"},
+	// CIBA ping and push: the client's notification token and the auth_req_id.
+	{table: "outbox", column: "payload", field: "credentials", key: "id",
+		context: "ciba_delivery_credentials", where: "topic IN ('ciba_ping', 'ciba_push')"},
 }
 
 // RewrapReport says what a rotation did, per column.
@@ -107,6 +153,9 @@ func RewrapRoot(ctx context.Context, tx pgx.Tx, old, next *RootKey) ([]RewrapRep
 	if old == nil || next == nil {
 		return nil, fmt.Errorf("both the current and the new root key are required")
 	}
+	// Each on its own: a key that also opened with the other would open every
+	// blob, and could not say which ones are already moved.
+	old, next = old.alone(), next.alone()
 	if old.Ref() == next.Ref() {
 		// Refusing rather than proceeding. Identical refs after a rotation make
 		// the two keys indistinguishable in the rows, so a later rotation cannot
@@ -125,7 +174,91 @@ func RewrapRoot(ctx context.Context, tx pgx.Tx, old, next *RootKey) ([]RewrapRep
 		}
 		reports = append(reports, rep)
 	}
+	for _, f := range rootSealedFields {
+		rep, err := rewrapField(ctx, tx, f, old, next)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, rep)
+	}
 	return reports, nil
+}
+
+// keyType is the type of a table's key column, for an update to compare the
+// column itself. Through key::text no index can serve it, so a rotation of
+// subject_keys read the table once for every person (0.53).
+func keyType(ctx context.Context, tx pgx.Tx, table, column string) (string, error) {
+	var name string
+	err := tx.QueryRow(ctx, `
+		SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a
+		 WHERE a.attrelid = ('core.' || $1)::regclass AND a.attname = $2 AND NOT a.attisdropped`,
+		table, column).Scan(&name)
+	if err != nil {
+		return "", fmt.Errorf("reading the type of core.%s.%s: %w", table, column, err)
+	}
+	return name, nil
+}
+
+// rewrapField is rewrapColumn for a sealed value inside a JSON column, where
+// it is held as standard base64 because ciphertext is not valid UTF-8.
+func rewrapField(ctx context.Context, tx pgx.Tx, f sealedField, old, next *RootKey) (RewrapReport, error) {
+	rep := RewrapReport{Table: f.table, Column: f.column + "." + f.field}
+	rows, err := tx.Query(ctx, fmt.Sprintf(
+		`SELECT %s::text, %s::jsonb->>'%s' FROM core.%s
+		  WHERE %s AND %s::jsonb ? '%s' FOR UPDATE`,
+		f.key, f.column, f.field, f.table, f.where, f.column, f.field))
+	if err != nil {
+		return rep, fmt.Errorf("reading core.%s.%s: %w", f.table, rep.Column, err)
+	}
+	type row struct{ id, encoded string }
+	var batch []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.encoded); err != nil {
+			rows.Close()
+			return rep, fmt.Errorf("scanning core.%s: %w", f.table, err)
+		}
+		batch = append(batch, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return rep, fmt.Errorf("reading core.%s.%s: %w", f.table, rep.Column, err)
+	}
+
+	keyAs, err := keyType(ctx, tx, f.table, f.key)
+	if err != nil {
+		return rep, err
+	}
+	for _, r := range batch {
+		sealed, err := base64.StdEncoding.DecodeString(r.encoded)
+		if err != nil {
+			return rep, fmt.Errorf("core.%s.%s row %s is not base64: %w",
+				f.table, rep.Column, r.id, err)
+		}
+		plain, err := old.Open(sealed, f.context)
+		if err != nil {
+			if _, nerr := next.Open(sealed, f.context); nerr == nil {
+				rep.Skipped++
+				continue
+			}
+			return rep, fmt.Errorf(
+				"core.%s.%s row %s cannot be opened with the current root key: %w\n"+
+					"Nothing has been written; the transaction will roll back",
+				f.table, rep.Column, r.id, err)
+		}
+		resealed, err := next.Seal(plain, f.context)
+		if err != nil {
+			return rep, fmt.Errorf("re-sealing core.%s row %s: %w", f.table, r.id, err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(
+			`UPDATE core.%s SET %s = jsonb_set(%s::jsonb, '{%s}', to_jsonb($1::text))
+			  WHERE %s = $2::%s`, f.table, f.column, f.column, f.field, f.key, keyAs),
+			base64.StdEncoding.EncodeToString(resealed), r.id); err != nil {
+			return rep, fmt.Errorf("writing core.%s row %s: %w", f.table, r.id, err)
+		}
+		rep.Rows++
+	}
+	return rep, nil
 }
 
 func rewrapColumn(ctx context.Context, tx pgx.Tx, c sealedColumn, old, next *RootKey) (RewrapReport, error) {
@@ -159,6 +292,10 @@ func rewrapColumn(ctx context.Context, tx pgx.Tx, c sealedColumn, old, next *Roo
 		return rep, fmt.Errorf("reading core.%s.%s: %w", c.table, c.column, err)
 	}
 
+	keyAs, err := keyType(ctx, tx, c.table, c.key)
+	if err != nil {
+		return rep, err
+	}
 	for _, r := range batch {
 		plain, err := openWith(old, r.sealed, c.context)
 		if err != nil {
@@ -191,7 +328,7 @@ func rewrapColumn(ctx context.Context, tx pgx.Tx, c sealedColumn, old, next *Roo
 			args = append(args, next.Ref())
 		}
 		if _, err := tx.Exec(ctx, fmt.Sprintf(
-			`UPDATE core.%s SET %s WHERE %s::text = $2`, c.table, set, c.key), args...); err != nil {
+			`UPDATE core.%s SET %s WHERE %s = $2::%s`, c.table, set, c.key, keyAs), args...); err != nil {
 			return rep, fmt.Errorf("writing core.%s row %s: %w", c.table, r.id, err)
 		}
 		rep.Rows++
@@ -220,6 +357,16 @@ func RootSealedColumns() []string {
 	out := make([]string, 0, len(rootSealedColumns))
 	for _, c := range rootSealedColumns {
 		out = append(out, c.table+"."+c.column)
+	}
+	return out
+}
+
+// RootSealedFields reports the sealed values inside JSON columns a rotation
+// covers, for the command's output.
+func RootSealedFields() []string {
+	out := make([]string, 0, len(rootSealedFields))
+	for _, f := range rootSealedFields {
+		out = append(out, f.table+"."+f.column+"."+f.field)
 	}
 	return out
 }

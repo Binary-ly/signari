@@ -57,6 +57,30 @@ func TestCommentTruncationIsRefused(t *testing.T) {
 	}
 }
 
+// A comment outside the document element is in nobody's text, and Shibboleth's
+// metadata generator opens every document with one. Inside, anywhere, it is still
+// refused, including directly under the document element and in the last element.
+func TestACommentIsRefusedOnlyInsideTheDocumentElement(t *testing.T) {
+	var d issuerDoc
+	for _, ok := range []string{
+		"<!--\nThis is example metadata only.\n -->\n<AuthnRequest><Issuer>sp.example.com</Issuer></AuthnRequest>",
+		`<?xml version="1.0"?><!-- a --><AuthnRequest><Issuer>sp.example.com</Issuer></AuthnRequest><!-- b -->`,
+	} {
+		if err := Unmarshal([]byte(ok), &d); err != nil || d.Issuer != "sp.example.com" {
+			t.Errorf("a comment outside the document element was refused (%v): %q", err, ok)
+		}
+	}
+	for _, bad := range []string{
+		`<!-- a --><AuthnRequest><!-- b --><Issuer>sp.example.com</Issuer></AuthnRequest>`,
+		`<AuthnRequest><Issuer>sp.example.com</Issuer><!-- c --></AuthnRequest>`,
+		`<!-- a --><AuthnRequest><Issuer>admin<!---->@evil.test</Issuer></AuthnRequest><!-- d -->`,
+	} {
+		if err := Unmarshal([]byte(bad), &d); err == nil || !strings.Contains(err.Error(), "comment") {
+			t.Errorf("a comment inside the document element was not refused (%v): %q", err, bad)
+		}
+	}
+}
+
 func TestPlainDocumentStillParses(t *testing.T) {
 	var d issuerDoc
 	if err := Unmarshal([]byte(`<AuthnRequest><Issuer>sp.example.com</Issuer></AuthnRequest>`), &d); err != nil {

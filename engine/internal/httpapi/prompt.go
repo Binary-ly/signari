@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/store"
@@ -29,7 +33,7 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 	userID, orgID string, amr []string, authzQuery string, p prompts.Prompt) {
 
 	if err := s.setPendingCookie(w, userID, orgID, amr, authzQuery); err != nil {
-		s.log.Error("issuing the pending token for a prompt", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing the pending token for a prompt", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -38,8 +42,9 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	p = s.promptForPage(r, p)
 	s.renderPage(w, r, "prompt", map[string]any{
-		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
+		"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields, "Version": p.Version,
 		"CSRF": csrf, "CSRFField": csrfFormField,
 	})
 }
@@ -47,6 +52,13 @@ func (s *Server) beginPrompt(w http.ResponseWriter, r *http.Request,
 // setPendingCookie mints the short-lived token that carries a login in flight.
 func (s *Server) setPendingCookie(w http.ResponseWriter, userID, orgID string,
 	amr []string, authzQuery string) error {
+	return s.setPendingCookieFor(w, userID, orgID, amr, authzQuery, "")
+}
+
+// setPendingCookieFor is setPendingCookie for a sign-in only one stage's pages
+// may continue (pendingClaims.Stage).
+func (s *Server) setPendingCookieFor(w http.ResponseWriter, userID, orgID string,
+	amr []string, authzQuery, stage string) error {
 
 	key, err := s.cfg.Keys.Active(keys.ES256)
 	if err != nil {
@@ -64,6 +76,7 @@ func (s *Server) setPendingCookie(w http.ResponseWriter, userID, orgID string,
 	tok, err := tokens.NewSigner(key).SignJSON(pendingClaims{
 		Issuer: s.cfg.Issuer, Subject: userID, OrgID: orgID, AMR: amr,
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
+		Stage: stage, Attempt: newAttempt(),
 	}, typPending)
 	if err != nil {
 		return err
@@ -74,6 +87,35 @@ func (s *Server) setPendingCookie(w http.ResponseWriter, userID, orgID string,
 		MaxAge: int(pendingTTL.Seconds()),
 	})
 	return nil
+}
+
+// promptAnswerRefusalText says what is wrong with a prompt's answers in the reader's
+// language, naming the fields as the operator labelled them, in that language's way of
+// listing them.
+func (s *Server) promptAnswerRefusalText(r *http.Request, err error) string {
+	tr := s.tr(r)
+	var refused *prompts.AnswerRefusal
+	if !errors.As(err, &refused) {
+		return tr.Text("enrol.generic")
+	}
+	if refused.TooLong != "" {
+		return tr.Text("prompt.refused.toolong", map[string]any{"Field": refused.TooLong})
+	}
+	sep := tr.Text("prompt.refused.separator")
+	var parts []string
+	for _, c := range []struct {
+		key    string
+		labels []string
+	}{
+		{"prompt.refused.missing", refused.Missing},
+		{"prompt.refused.notemail", refused.NotEmail},
+		{"prompt.refused.notoption", refused.NotOption},
+	} {
+		if len(c.labels) > 0 {
+			parts = append(parts, tr.Text(c.key, map[string]any{"Fields": strings.Join(c.labels, sep)}))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // handlePromptPost records an answer and continues the sign-in.
@@ -91,6 +133,10 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if r.PostFormValue("prompt") == prompts.RequiredAttributesSlug {
+		s.answerRequiredAttributes(w, r, pending)
+		return
+	}
 
 	p, err := store.LoadPrompt(ctx, s.db, pending.OrgID, r.PostFormValue("prompt"))
 	if err != nil {
@@ -104,13 +150,23 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 			submitted[f.Name] = r.PostFormValue(f.Name)
 		}
 	}
-	answers, verr := p.ValidateAnswers(submitted)
-	if verr != nil {
+	rerender := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "prompt", map[string]any{
-			"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields,
-			"Error": verr.Error(), "CSRF": csrf, "CSRFField": csrfFormField,
+			"Slug": p.Slug, "Title": p.Title, "Body": p.Body, "Fields": p.Fields, "Version": p.Version,
+			"Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
 		})
+	}
+	// The version the person was shown (5.13). Edited since, the answer would be
+	// to text they did not read, so the current text is shown instead.
+	shown, _ := strconv.Atoi(r.PostFormValue("version"))
+	if shown != p.Version {
+		rerender(s.tr(r).Text("error.prompt.changed"))
+		return
+	}
+	answers, verr := p.ValidateAnswers(submitted)
+	if verr != nil {
+		rerender(s.promptAnswerRefusalText(r, verr))
 		return
 	}
 
@@ -121,23 +177,72 @@ func (s *Server) handlePromptPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := store.RecordAnswer(ctx, tx, p.ID, pending.Subject, pending.OrgID,
-		answers); err != nil {
-		s.log.Error("recording a prompt answer", "err", err)
+	if err := store.RecordAnswer(ctx, tx, p.ID, p.Version, pending.Subject, pending.OrgID,
+		answers); errors.Is(err, store.ErrPromptChanged) {
+		_ = tx.Rollback(ctx)
+		if fresh, lerr := store.LoadPrompt(ctx, s.db, pending.OrgID, p.Slug); lerr == nil {
+			p = fresh
+		}
+		rerender(s.tr(r).Text("error.prompt.changed"))
+		return
+	} else if err != nil {
+		s.log.ErrorContext(ctx, "recording a prompt answer", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Answers that are attributes (5.14), in the answer's transaction, so the
+	// two commit together and a claim mapper can release them from the next
+	// token on. A field left blank leaves its attribute as it was. The operator
+	// mapped the field, so this does not ask user_writable, which governs the
+	// person's own profile page.
+	var written []string
+	for _, f := range p.Fields {
+		if f.Attribute == "" || answers[f.Name] == "" {
+			continue
+		}
+		if err := store.SetUserAttribute(ctx, tx, pending.Subject, pending.OrgID, f.Attribute,
+			answers[f.Name], s.root); errors.Is(err, store.ErrInvalidAttributeValue) {
+			_ = tx.Rollback(ctx)
+			rerender(s.attributeRefusalText(r, err, f.Label))
+			return
+		} else if err != nil {
+			s.log.ErrorContext(ctx, "writing a prompt answer to its attribute", "err", err, "attribute", f.Attribute)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		written = append(written, f.Attribute)
+	}
+	if len(written) > 0 {
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type: "user.attributes_updated", OrgID: pending.OrgID, SubjectID: pending.Subject,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"by": "prompt", "prompt": p.Slug, "attributes": written},
+		}); err != nil {
+			s.log.ErrorContext(ctx, "auditing the attributes a prompt wrote", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Recorded in the audit trail as well as the response table. "When did they
 	// accept the terms" is asked later by somebody who does not have access to
 	// the application database and does have the audit export.
-	s.auditDetached(ctx, audit.Event{
+	// In the answer's own transaction, so the record and the answer commit
+	// together. A detached write took a second connection while this one was
+	// held.
+	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "prompt.answered", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"prompt": p.Slug},
-	})
+		Detail:        map[string]any{"prompt": p.Slug, "version": p.Version},
+	}); aerr != nil {
+		s.log.ErrorContext(ctx, "auditing a prompt answer", "err", aerr)
+	}
 
 	// Back into the funnel. Any remaining prompt is picked up by the same check,
-	// so several in sequence need no special handling.
-	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)
+	// so several in sequence need no special handling. The mark is what lets a
+	// `once: false` notice end: it is outstanding on every sign-in, answered or
+	// not, so the walk would ask it again for ever.
+	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID,
+		flow.Mark(pending.AMR, flow.StagePrompt, p.Slug), pending.Authz)
 }

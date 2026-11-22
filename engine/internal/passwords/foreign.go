@@ -7,17 +7,18 @@ import (
 	// creates a hash: every verified credential is immediately re-hashed with
 	// Argon2id, which is the point of the migration.
 	"crypto/md5"
+	stdpbkdf2 "crypto/pbkdf2"
 	"crypto/sha1" // #nosec G505 -- see the note on the md5 import above
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"strconv"
 	"strings"
 
-	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -55,7 +56,7 @@ func verifyPHPass(stored, password string) error {
 		return ErrMismatch
 	}
 	countLog2 := strings.IndexByte(itoa64, stored[3])
-	if countLog2 < 7 || countLog2 > 30 {
+	if countLog2 < 7 || countLog2 > phpassMaxLog2 {
 		return ErrMismatch
 	}
 	count := 1 << uint(countLog2)
@@ -81,7 +82,7 @@ func verifyDrupal7(stored, password string) error {
 		return ErrMismatch
 	}
 	countLog2 := strings.IndexByte(itoa64, stored[3])
-	if countLog2 < 7 || countLog2 > 30 {
+	if countLog2 < 7 || countLog2 > phpassMaxLog2 {
 		return ErrMismatch
 	}
 	count := 1 << uint(countLog2)
@@ -107,12 +108,11 @@ func verifyDrupal7(stored, password string) error {
 
 // verifySHACrypt handles $5$/$6$ -- glibc crypt(3).
 //
-// NOT WIRED IN. It disagrees with PHP's crypt(3) on real vectors, and the fault
-// is somewhere in the final permutation/encoding rather than the digest loop.
-// Kept because the structure is right and finishing it is a bounded job, but it
-// is deliberately unreachable from Verify until it agrees with published
-// vectors: a verifier that only agrees with itself would tell every imported
-// LDAP user their password was wrong.
+// It was kept out of Verify for months because it disagreed with PHP's
+// crypt(3) on real vectors. Two faults, found against OpenSSL's and PHP's
+// vectors (shacrypt_test.go): the alternate sum was left out for a password
+// whose length is a multiple of the digest size, and every group of three
+// bytes was encoded in reverse order. Now wired in (4.09).
 //
 // Implemented rather than shelled out to crypt(3) because the C library's
 // behaviour varies by platform, and an authentication decision must not depend
@@ -214,9 +214,11 @@ func verifyScrypt(stored, password string) error {
 	if r <= 0 || p <= 0 || len(want) == 0 {
 		return ErrMismatch
 	}
-	// Bounded so a malicious or corrupt import cannot ask for gigabytes of
-	// memory on the login path.
-	if N > 1<<20 || r > 32 || p > 16 {
+	// The format's bounds, which alone would allow 128 x N x r = 4 GiB, and
+	// scryptMaxMemoryKiB. CostRefusal refuses the same before a slot is taken;
+	// this is the same rule where the memory is spent.
+	if N > scryptMaxN || r > scryptMaxR || p > scryptMaxP ||
+		int64(N)*int64(r)*128/1024 > scryptMaxMemoryKiB {
 		return ErrMismatch
 	}
 	got, err := scrypt.Key([]byte(password), salt, N, r, p, len(want))
@@ -260,7 +262,7 @@ func VerifyKeycloak(credentialDataJSON, secretDataJSON, password string) error {
 	if err != nil {
 		return ErrMismatch
 	}
-	if cd.Iterations <= 0 || cd.Iterations > 1_000_000 || len(want) == 0 {
+	if cd.Iterations <= 0 || cd.Iterations > keycloakMaxIterations || len(want) == 0 {
 		return ErrMismatch
 	}
 
@@ -276,7 +278,12 @@ func VerifyKeycloak(credentialDataJSON, secretDataJSON, password string) error {
 		return ErrMismatch
 	}
 
-	got := pbkdf2.Key([]byte(password), salt, cd.Iterations, len(want), newHash)
+	// The standard library's, which returns an error where x/crypto's panics:
+	// fips140=only refuses SHA-1 and a short salt (3.11).
+	got, err := stdpbkdf2.Key(newHash, password, salt, cd.Iterations, len(want))
+	if err != nil {
+		return fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return ErrMismatch
 	}
@@ -327,10 +334,14 @@ func shaCrypt(newHash func() hash.Hash, size int, password, salt []byte, rounds 
 	a := newHash()
 	a.Write(password)
 	a.Write(salt)
-	for i := len(password); i > size; i -= size {
+	// A whole altSum per full block, then what is left -- which is a whole
+	// block again when the length is a multiple of it. This wrote
+	// len%size, nothing at all for a 32- or 64-byte password.
+	left := len(password)
+	for ; left > size; left -= size {
 		a.Write(altSum)
 	}
-	a.Write(altSum[:len(password)%size])
+	a.Write(altSum[:left])
 	for i := len(password); i > 0; i >>= 1 {
 		if i&1 != 0 {
 			a.Write(altSum)
@@ -403,9 +414,12 @@ func shaCryptEncode(sum []byte, size int) string {
 		return ""
 	}
 
+	// Each group of three is read with its LAST listed byte highest: order
+	// lists them low byte first. Packed the other way round, every hash this
+	// produced disagreed with every other implementation.
 	var out strings.Builder
 	for i := 0; i+2 < len(order); i += 3 {
-		v := int(sum[order[i]])<<16 | int(sum[order[i+1]])<<8 | int(sum[order[i+2]])
+		v := int(sum[order[i+2]])<<16 | int(sum[order[i+1]])<<8 | int(sum[order[i]])
 		for j := 0; j < 4; j++ {
 			out.WriteByte(itoa64[v&0x3f])
 			v >>= 6

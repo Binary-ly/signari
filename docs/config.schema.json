@@ -1,0 +1,1770 @@
+{
+  "$defs": {
+    "ArtifactResolutionService": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Attester": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "jwks": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Attribute": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "personal": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "user_readable": {
+          "type": "boolean"
+        },
+        "user_writable": {
+          "type": "boolean"
+        },
+        "value_type": {
+          "enum": [
+            "",
+            "string",
+            "number",
+            "boolean",
+            "date"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Brand": {
+      "additionalProperties": false,
+      "properties": {
+        "colour_background": {
+          "type": "string"
+        },
+        "colour_on_primary": {
+          "type": "string"
+        },
+        "colour_primary": {
+          "type": "string"
+        },
+        "colour_text": {
+          "type": "string"
+        },
+        "logo_url": {
+          "type": "string"
+        },
+        "product_name": {
+          "type": "string"
+        },
+        "support_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ClaimMapper": {
+      "additionalProperties": false,
+      "properties": {
+        "all_clients": {
+          "type": "boolean"
+        },
+        "attribute": {
+          "type": "string"
+        },
+        "claim": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "destination": {
+          "enum": [
+            "id_token",
+            "userinfo",
+            "access_token"
+          ],
+          "type": "string"
+        },
+        "required_scope": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "transform": {
+          "type": "string"
+        },
+        "transform_arg": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Client": {
+      "additionalProperties": false,
+      "properties": {
+        "access_token_format": {
+          "type": "string"
+        },
+        "access_token_signed_response_alg": {
+          "type": "string"
+        },
+        "access_token_ttl": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "authorization_encrypted_response_alg": {
+          "type": "string"
+        },
+        "authorization_encrypted_response_enc": {
+          "type": "string"
+        },
+        "authorization_signed_response_alg": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "first_party": {
+          "type": "boolean"
+        },
+        "frontchannel_logout_session_required": {
+          "type": "boolean"
+        },
+        "frontchannel_logout_uri": {
+          "type": "string"
+        },
+        "id_token_encrypted_response_alg": {
+          "type": "string"
+        },
+        "id_token_encrypted_response_enc": {
+          "type": "string"
+        },
+        "id_token_signed_response_alg": {
+          "type": "string"
+        },
+        "introspection_encrypted_response_alg": {
+          "type": "string"
+        },
+        "introspection_encrypted_response_enc": {
+          "type": "string"
+        },
+        "introspection_signed_response_alg": {
+          "type": "string"
+        },
+        "issuer_alias": {
+          "type": "string"
+        },
+        "launch_url": {
+          "type": "string"
+        },
+        "localized_names": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "login_ui_url": {
+          "type": "string"
+        },
+        "logo_url": {
+          "type": "string"
+        },
+        "minimum_acr": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "portal_hidden": {
+          "type": "boolean"
+        },
+        "post_logout_redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "redirect_uris": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh_token_ttl": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "require_pushed_authorization_requests": {
+          "type": "boolean"
+        },
+        "require_signed_request_object": {
+          "type": "boolean"
+        },
+        "require_state": {
+          "type": "boolean"
+        },
+        "roles_claim": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sector": {
+          "type": "string"
+        },
+        "security_profile": {
+          "type": "string"
+        },
+        "subject_type": {
+          "type": "string"
+        },
+        "token_exchange": {
+          "$ref": "#/$defs/TokenExchange"
+        },
+        "userinfo_encrypted_response_alg": {
+          "type": "string"
+        },
+        "userinfo_encrypted_response_enc": {
+          "type": "string"
+        },
+        "userinfo_signed_response_alg": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Credential": {
+      "additionalProperties": false,
+      "properties": {
+        "always_claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "config_id": {
+          "type": "string"
+        },
+        "deferred": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        },
+        "lifetime": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "require_key_attestation": {
+          "type": "boolean"
+        },
+        "revocable": {
+          "type": "boolean"
+        },
+        "selective_claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "vct": {
+          "type": "string"
+        },
+        "wallet_initiated": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "DetailType": {
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DirectoryMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DirectorySource": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "base_dn": {
+          "type": "string"
+        },
+        "bind_dn": {
+          "type": "string"
+        },
+        "ca": {
+          "type": "string"
+        },
+        "credentials": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fetch_groups": {
+          "type": "boolean"
+        },
+        "filter": {
+          "type": "string"
+        },
+        "flavour": {
+          "enum": [
+            "openldap",
+            "ad",
+            "freeipa"
+          ],
+          "type": "string"
+        },
+        "group_attribute": {
+          "type": "string"
+        },
+        "group_map": {
+          "items": {
+            "$ref": "#/$defs/DirectoryMapping"
+          },
+          "type": "array"
+        },
+        "impersonate": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "google",
+            "entra",
+            "ldap"
+          ],
+          "type": "string"
+        },
+        "max_deactivate_percent": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_missing": {
+          "enum": [
+            "report",
+            "deactivate"
+          ],
+          "type": "string"
+        },
+        "password": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "start_tls": {
+          "type": "boolean"
+        },
+        "sync_interval_seconds": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Duo": {
+      "additionalProperties": false,
+      "properties": {
+        "api_host": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "fail_open": {
+          "type": "boolean"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
+    "ExternalFactor": {
+      "additionalProperties": false,
+      "properties": {
+        "amr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Field": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute": {
+          "type": "string"
+        },
+        "help": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Group": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "member_of": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "GroupRelease": {
+      "additionalProperties": false,
+      "properties": {
+        "all_groups": {
+          "type": "boolean"
+        },
+        "attribute": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "saml_provider": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "IdPGroupMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string"
+        },
+        "remote_group": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "IdPMapping": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute": {
+          "type": "string"
+        },
+        "claim": {
+          "type": "string"
+        },
+        "max_length": {
+          "type": "integer"
+        },
+        "overwrite": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "IdentityProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_assertions": {
+          "type": "boolean"
+        },
+        "allow_linking": {
+          "type": "boolean"
+        },
+        "allow_signup": {
+          "type": "boolean"
+        },
+        "attribute_map": {
+          "items": {
+            "$ref": "#/$defs/IdPMapping"
+          },
+          "type": "array"
+        },
+        "authorize_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "end_session_url": {
+          "type": "string"
+        },
+        "forward_parameters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "group_claim": {
+          "type": "string"
+        },
+        "group_map": {
+          "items": {
+            "$ref": "#/$defs/IdPGroupMapping"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_url": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "apple",
+            "assertion",
+            "atlassian",
+            "discord",
+            "github",
+            "gitlab",
+            "google",
+            "linkedin",
+            "microsoft",
+            "oauth2",
+            "oidc",
+            "saml",
+            "slack",
+            "twitch"
+          ],
+          "type": "string"
+        },
+        "login_domains": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mfa_acr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mfa_amr": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "require_verified_email": {
+          "type": "boolean"
+        },
+        "saml": {
+          "$ref": "#/$defs/SAMLUpstream"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "store_tokens": {
+          "type": "boolean"
+        },
+        "token_url": {
+          "type": "string"
+        },
+        "trust_email_verification": {
+          "type": "boolean"
+        },
+        "userinfo": {
+          "$ref": "#/$defs/UserinfoClaims"
+        },
+        "userinfo_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MigrationSource": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_dn_template": {
+          "type": "string"
+        },
+        "ca": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "oidc_password",
+            "ldap",
+            "hook"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "start_tls": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Outpost": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "ldap",
+            "radius",
+            "proxy",
+            "desktop",
+            "pdp"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "search_group": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "type": "array"
+        },
+        "once": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ProofRoot": {
+      "additionalProperties": false,
+      "properties": {
+        "certificate": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Provider": {
+      "additionalProperties": false,
+      "properties": {
+        "claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "enum": [
+            "authorize",
+            "token_issue",
+            "password_verify",
+            "authenticate",
+            "user_create",
+            "client_access",
+            "userinfo",
+            "saml_assertion",
+            "flow_condition"
+          ],
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "fail_closed",
+            "fail_open"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "timeout": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ProxyHost": {
+      "additionalProperties": false,
+      "properties": {
+        "cookie_domain": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        },
+        "own_cookie": {
+          "type": "boolean"
+        },
+        "release_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/Rule"
+          },
+          "type": "array"
+        },
+        "signed_identity": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "RACConnection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        },
+        "login": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "max_connections": {
+          "type": "integer"
+        },
+        "max_duration_seconds": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "passphrase": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "password": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "private_key": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "protocol": {
+          "enum": [
+            "rdp",
+            "vnc",
+            "ssh"
+          ],
+          "type": "string"
+        },
+        "recording_path": {
+          "type": "string"
+        },
+        "require_group": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "RADIUSAuthorization": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "type": "string"
+        },
+        "filter_id": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "session_timeout": {
+          "type": "integer"
+        },
+        "vendor_attributes": {
+          "items": {
+            "$ref": "#/$defs/VendorAttribute"
+          },
+          "type": "array"
+        },
+        "vlan": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "RADIUSClient": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        },
+        "secret": false
+      },
+      "type": "object"
+    },
+    "Registration": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_confidential": {
+          "type": "boolean"
+        },
+        "allowed_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_clients": {
+          "type": "integer"
+        },
+        "open": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Resource": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SAMLProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_resolution": {
+          "items": {
+            "$ref": "#/$defs/ArtifactResolutionService"
+          },
+          "type": "array"
+        },
+        "default_relay_state": {
+          "type": "string"
+        },
+        "ecp_acs_urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "idp_initiated": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "name_id_format": {
+          "enum": [
+            "",
+            "persistent",
+            "emailAddress",
+            "transient"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SAMLUpstream": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_unsolicited": {
+          "type": "boolean"
+        },
+        "certificate": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "force_authn": {
+          "type": "boolean"
+        },
+        "name_id_format": {
+          "enum": [
+            "persistent",
+            "emailAddress",
+            "unspecified"
+          ],
+          "type": "string"
+        },
+        "skew_seconds": {
+          "type": "integer"
+        },
+        "sso_url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SCIMSource": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_delete": {
+          "enum": [
+            "deactivate",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SCIMTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string"
+        },
+        "compatibility": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "credentials": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "impersonate": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "scim",
+            "google",
+            "entra"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "oauth_authorize_url": {
+          "type": "string"
+        },
+        "oauth_client_auth": {
+          "type": "string"
+        },
+        "oauth_client_id": {
+          "type": "string"
+        },
+        "oauth_scope": {
+          "type": "string"
+        },
+        "oauth_token_url": {
+          "type": "string"
+        },
+        "on_deactivate": {
+          "enum": [
+            "deactivate",
+            "delete",
+            "nothing"
+          ],
+          "type": "string"
+        },
+        "recreate_missing": {
+          "type": "boolean"
+        },
+        "scope_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "target_domain": {
+          "type": "string"
+        },
+        "token": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
+    "SSFSource": {
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "critical_subject_members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "events": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_uri": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SSFStream": {
+      "additionalProperties": false,
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "poll": {
+          "type": "boolean"
+        },
+        "receiver_token": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "type": "object"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "properties": {
+        "advertise": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "SecretRef": {
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Signup": {
+      "additionalProperties": false,
+      "properties": {
+        "any_domain": {
+          "type": "boolean"
+        },
+        "domains": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "require_approval": {
+          "type": "boolean"
+        },
+        "verify_email": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Subscription": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "event_types": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TokenExchange": {
+      "additionalProperties": false,
+      "properties": {
+        "audiences": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "UMA": {
+      "additionalProperties": false,
+      "properties": {
+        "owner_intervention": {
+          "type": "boolean"
+        },
+        "poll_interval": {
+          "pattern": "^-?([0-9]+(\\.[0-9]*)?(ns|us|µs|ms|s|m|h))+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "UserinfoClaims": {
+      "additionalProperties": false,
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "email_verified": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "VendorAttribute": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "integer"
+        },
+        "value": {
+          "type": "string"
+        },
+        "vendor": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "WebAuthnPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithms": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "allowed_aaguids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attachment": {
+          "enum": [
+            "platform",
+            "cross-platform"
+          ],
+          "type": "string"
+        },
+        "attestation": {
+          "enum": [
+            "none",
+            "indirect",
+            "direct",
+            "enterprise"
+          ],
+          "type": "string"
+        },
+        "hints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refuse_cloned": {
+          "type": "boolean"
+        },
+        "resident_key": {
+          "enum": [
+            "required",
+            "preferred",
+            "discouraged"
+          ],
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "type": "integer"
+        },
+        "user_verification": {
+          "enum": [
+            "required",
+            "preferred"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What `signari plan` and `signari apply` take; see docs/config-as-code.md.",
+  "properties": {
+    "access_policy": {
+      "type": "string"
+    },
+    "attributes": {
+      "items": {
+        "$ref": "#/$defs/Attribute"
+      },
+      "type": "array"
+    },
+    "authorization_detail_types": {
+      "items": {
+        "$ref": "#/$defs/DetailType"
+      },
+      "type": "array"
+    },
+    "authorization_model": {
+      "type": "string"
+    },
+    "brand": {
+      "$ref": "#/$defs/Brand"
+    },
+    "claim_mappers": {
+      "items": {
+        "$ref": "#/$defs/ClaimMapper"
+      },
+      "type": "array"
+    },
+    "client_attesters": {
+      "items": {
+        "$ref": "#/$defs/Attester"
+      },
+      "type": "array"
+    },
+    "clients": {
+      "items": {
+        "$ref": "#/$defs/Client"
+      },
+      "type": "array"
+    },
+    "credential_configurations": {
+      "items": {
+        "$ref": "#/$defs/Credential"
+      },
+      "type": "array"
+    },
+    "credential_proof_roots": {
+      "items": {
+        "$ref": "#/$defs/ProofRoot"
+      },
+      "type": "array"
+    },
+    "directory_sources": {
+      "items": {
+        "$ref": "#/$defs/DirectorySource"
+      },
+      "type": "array"
+    },
+    "duo": {
+      "$ref": "#/$defs/Duo"
+    },
+    "event_subscriptions": {
+      "items": {
+        "$ref": "#/$defs/Subscription"
+      },
+      "type": "array"
+    },
+    "external_factors": {
+      "items": {
+        "$ref": "#/$defs/ExternalFactor"
+      },
+      "type": "array"
+    },
+    "group_releases": {
+      "items": {
+        "$ref": "#/$defs/GroupRelease"
+      },
+      "type": "array"
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/Group"
+      },
+      "type": "array"
+    },
+    "identity_providers": {
+      "items": {
+        "$ref": "#/$defs/IdentityProvider"
+      },
+      "type": "array"
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/Message"
+      },
+      "type": "array"
+    },
+    "migration_source": {
+      "$ref": "#/$defs/MigrationSource"
+    },
+    "org": {
+      "type": "string"
+    },
+    "outposts": {
+      "items": {
+        "$ref": "#/$defs/Outpost"
+      },
+      "type": "array"
+    },
+    "prompts": {
+      "items": {
+        "$ref": "#/$defs/Prompt"
+      },
+      "type": "array"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/Provider"
+      },
+      "type": "array"
+    },
+    "proxy_hosts": {
+      "items": {
+        "$ref": "#/$defs/ProxyHost"
+      },
+      "type": "array"
+    },
+    "rac_connections": {
+      "items": {
+        "$ref": "#/$defs/RACConnection"
+      },
+      "type": "array"
+    },
+    "radius_authorizations": {
+      "items": {
+        "$ref": "#/$defs/RADIUSAuthorization"
+      },
+      "type": "array"
+    },
+    "radius_clients": {
+      "items": {
+        "$ref": "#/$defs/RADIUSClient"
+      },
+      "type": "array"
+    },
+    "registration": {
+      "$ref": "#/$defs/Registration"
+    },
+    "resources": {
+      "items": {
+        "$ref": "#/$defs/Resource"
+      },
+      "type": "array"
+    },
+    "saml_providers": {
+      "items": {
+        "$ref": "#/$defs/SAMLProvider"
+      },
+      "type": "array"
+    },
+    "scim_sources": {
+      "items": {
+        "$ref": "#/$defs/SCIMSource"
+      },
+      "type": "array"
+    },
+    "scim_targets": {
+      "items": {
+        "$ref": "#/$defs/SCIMTarget"
+      },
+      "type": "array"
+    },
+    "scopes": {
+      "items": {
+        "$ref": "#/$defs/Scope"
+      },
+      "type": "array"
+    },
+    "sign_in_flow": {
+      "type": "string"
+    },
+    "signup": {
+      "$ref": "#/$defs/Signup"
+    },
+    "ssf_sources": {
+      "items": {
+        "$ref": "#/$defs/SSFSource"
+      },
+      "type": "array"
+    },
+    "ssf_streams": {
+      "items": {
+        "$ref": "#/$defs/SSFStream"
+      },
+      "type": "array"
+    },
+    "uma": {
+      "$ref": "#/$defs/UMA"
+    },
+    "version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "webauthn_policy": {
+      "$ref": "#/$defs/WebAuthnPolicy"
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "title": "Signari configuration",
+  "type": "object"
+}

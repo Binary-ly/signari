@@ -94,12 +94,20 @@ func TestEveryOperationDeclaresItsScope(t *testing.T) {
 				continue
 			}
 			scopes, _ := sec[0].(map[string]any)["bearerAuth"].([]any)
+			key := strings.ToUpper(method) + " " + path
+			// None only where the router enforces none: the batch, whose
+			// operations are each held to their own.
+			if want[key] == "" {
+				if len(scopes) != 0 {
+					t.Errorf("%s declares %v; the router enforces no scope of its own", key, scopes)
+				}
+				continue
+			}
 			if len(scopes) != 1 {
 				t.Errorf("%s %s declares %d scopes, want 1", strings.ToUpper(method), path, len(scopes))
 				continue
 			}
 			got, _ := scopes[0].(string)
-			key := strings.ToUpper(method) + " " + path
 			if got != want[key] {
 				t.Errorf("%s declares scope %q; the router enforces %q",
 					key, got, want[key])
@@ -113,12 +121,32 @@ func TestEveryOperationDeclaresItsScope(t *testing.T) {
 // The map is keyed by route pattern, so a route added without one produces an
 // empty summary rather than a plausible-looking default. A generated client with
 // undocumented methods is worse than one with none, because it looks finished.
+//
+// The table is filled by Routes(), and this test once read it without calling
+// Routes(): it iterated an empty slice and passed whatever the summaries said.
+// So it builds the router, refuses to pass on an empty table, and checks the
+// other direction too: a summary for a pattern nothing registers is a route
+// that was renamed or removed, documented as if it still existed.
 func TestEveryOperationHasASummary(t *testing.T) {
 	s, _ := newTestServer(t)
-	for _, op := range s.routeTable() {
+	s.Routes()
+	ops := s.routeTable()
+	if len(ops) < len(summaries)/2 {
+		t.Fatalf("the route table holds %d operations against %d summaries; it was read "+
+			"before the router was built, and this test is checking nothing", len(ops), len(summaries))
+	}
+	registered := map[string]bool{}
+	for _, op := range ops {
+		registered[strings.ToUpper(op.method)+" "+op.path] = true
 		if strings.TrimSpace(op.summary) == "" {
 			t.Errorf("%s %s has no summary. Add one to `summaries` in openapi.go.",
 				strings.ToUpper(op.method), op.path)
+		}
+	}
+	for pattern := range summaries {
+		if !registered[pattern] {
+			t.Errorf("summaries has %q and no route registers it; remove it or "+
+				"register the route", pattern)
 		}
 	}
 }

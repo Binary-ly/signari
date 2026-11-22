@@ -1,8 +1,10 @@
 # Extending the engine
 
 You extend Signari by running **your own service** and registering it for a named
-hook. The engine calls it over HTTP with a versioned JSON contract, and **no
-third-party code runs inside the engine process**.
+hook. The engine calls it over HTTP with a JSON contract that only grows: no
+version is sent, unknown fields in either direction are ignored, and **no
+third-party code runs inside the engine process**. (This said "versioned"; nothing
+names a version.)
 
 ```sh
 signari provider add -org <uuid> \
@@ -10,6 +12,55 @@ signari provider add -org <uuid> \
   -provider-url https://policy.internal.example.com/decide \
   -mode fail_closed
 ```
+
+The Admin API registers, rotates, bounds and removes providers the same way
+under `/admin/organizations/{orgID}/providers`; see [admin-api.md](admin-api.md).
+
+## Telling the engine's calls from anybody else's
+
+Registration prints a **signing secret, once**, and every call carries
+
+```
+Signari-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">
+```
+
+under it, the scheme event deliveries use (see [events.md](events.md)). Your
+service computes the same MAC over the raw body and refuses a call that does not
+match, or whose `t` is more than a few minutes old, so a stranger who learns the
+URL is refused, and so is a captured call replayed later. The secret is sealed
+under `SIGNARI_ROOT_KEY` and re-sealed by `keys rewrap-root`. It never travels
+in a request.
+
+`signari provider rotate -org <uuid> -hook authorize` prints a new one, and the
+old one stops verifying at once, so give your service the new secret in the same
+change. Registering the same hook again keeps the secret it had. A provider
+registered before October 2026 has none and is called unsigned until it is
+rotated; `provider list` shows which.
+
+## The contract
+
+[`hook-contracts.json`](hook-contracts.json) is the JSON Schema of what each hook
+sends and may answer, and every call says which version it was made under:
+
+```
+Signari-Hook-Version: 1
+```
+
+The version moves when a provider has to act, because something it relies on
+changed or went. A new optional member does not move it, so ignore what you do not
+know, as this engine ignores what it does not know in your answer.
+
+Check a service before anything depends on it:
+
+```sh
+signari provider test -org <uuid> -hook authorize
+```
+
+That makes the same call a decision makes, signed and through the same outbound
+guard, with a request that names nobody and `Signari-Hook-Test: 1`, so your service
+can answer without recording a decision about nobody. It prints the decision and
+how long it took, and exits non-zero when a real call would count as unreachable or
+as no answer.
 
 ## Why out of process
 
@@ -28,8 +79,10 @@ Three alternatives were considered and rejected:
   host exposes. **Deferred, not refused.**
 
 Out-of-process reuses what is already here: the SSRF-safe dialer that refuses
-private destinations, the outbox's retry and parking, and the HTTP-and-JSON shape
-every other integration already speaks.
+private destinations, and the HTTP-and-JSON shape every other integration already
+speaks. A hook is called on the request path and answered there, once: it is not
+queued, retried or parked by the outbox, which is why every provider declares what
+an unanswered call means. (This said the outbox retried them.)
 
 ## The rule that makes it safe
 
@@ -81,6 +134,136 @@ not as a decision — including a 4xx. A provider that rejects our request has n
 made a decision, and treating "I did not understand you" as an answer is how a
 contract mismatch becomes a silent authorization change.
 
+## The `token_issue` hook
+
+Called at **every grant** that issues a token: authorization code, refresh,
+client credentials, device code, CIBA (poll, ping and push), token exchange,
+transaction tokens, jwt-bearer, UMA and the pre-authorized code. It is called
+after this engine has decided to issue, and before the grant's transaction
+opens, so a slow provider holds no database connection. It is told who, which
+client, which scopes and which grant, and is given no credential:
+
+```json
+→  {"subject":"7c1e…","client_id":"web-app","scopes":["openid","offline_access"],
+    "grant_type":"refresh_token","org_id":"…"}
+
+←  {"decision": true, "claims": {"department": "research"}}
+```
+
+**`"decision": false` vetoes the issuance**: the client gets `403
+access_denied`, the provider's `reason` goes to the log and to a `token.vetoed`
+audit record, and never to the client. A vetoed refresh does not spend the
+refresh token, so if the provider allows it later the same token still works.
+The authorization code is spent either way.
+
+**`claims` go into the access token**, for the names `signari provider claims`
+allowed and no others. A claim the engine sets wins over a contributed one with
+the same name, and so does a claim mapper's. No contributed claim may take a
+name the access token defines, `cnf` and `gid` among them, even when this token
+has none. A transaction token takes the veto and not the claims, because its
+members are fixed by its draft.
+
+Until October 2026 the hook was asked at the authorization code only, and the
+claims it was allowed to contribute were checked and then thrown away.
+
+## The `password_verify` hook
+
+Called from the sign-in form for somebody still to be migrated, when the organisation's
+[migration source](password-migration.md) is of kind `hook`. It is for a system the
+engine cannot reach itself, which speaks neither the password grant nor LDAP and whose
+hashes cannot be exported or read here. It is the one hook told a password, so it is called
+for nobody else: not somebody with a password here, and not once a person has migrated.
+
+```json
+→  {"username":"alice@example.com","password":"…","org_id":"…"}
+
+←  {"verified": true}
+```
+
+`"verified": true` takes a local hash in the sign-in's transaction, and the person never
+comes this way again. `false` is a wrong password, charged like any other. A provider that
+gives no answer is an outage: the person is told to try again and is not charged, and the
+failure is recorded against the source.
+
+**It must be registered `fail_closed`**, and `provider add` refuses anything else: a
+password nobody could check is not a correct one, so continuing without an answer would
+sign anybody in. Check `Signari-Signature` on every call: this is the one service that
+would otherwise answer any stranger's question about a password.
+
+## Hooks that can take a yes back
+
+The five below follow the composition rule above: each is asked after this engine has
+decided yes, so a provider can refuse what would have happened and can grant nothing. The
+answer is `{"decision": true}`, or `{"decision": false, "reason": "…"}`. A reason goes to the
+log and to a `provider.refused` audit record, and never to the person or the client, because
+it is written by somebody outside this deployment.
+
+There is no hook for a refresh, because `token_issue` is asked at every grant, and says so
+in `grant_type`.
+
+## The `authenticate` hook
+
+Asked when every step of a sign-in has passed, before the session, for every way in: a
+password, a passkey, a provider, a one-time code. Told `subject`, `org_id`, `amr` and
+`client_ip`. A refusal shows the person the same page a deactivated account does.
+
+## The `user_create` hook
+
+Asked before an account is made by somebody signing themselves up, arriving from an
+identity provider, or arriving with a Kerberos ticket at a realm that creates accounts.
+Told `org_id`, `email` and `source`, `signup`, `federation` or `kerberos`. For a realm that
+strips itself off, `email` holds the bare name. It is not
+asked about what an operator does: an invitation, the Admin API, `signari user create`,
+SCIM, a directory sync or an import.
+
+## The `client_access` hook
+
+Asked when a person reaches an application, after the access policy has let them: at the
+authorization endpoint, and when a device or CIBA request is approved. Told an AuthZEN
+request, a `user` subject, a `client` resource and the action `access`, so a policy engine
+you already run out of process can answer it, as it can `authorize`.
+
+## The `userinfo` hook
+
+Asked when userinfo answers. Told `subject`, `client_id`, `scopes` and `org_id`. A refusal is
+`403`. As with `token_issue`, the answer may carry `claims`, and only names on the list you
+give `signari provider claims` are kept. Nothing overwrites what is already there, and no
+protocol claim can be set.
+
+## The `saml_assertion` hook
+
+Asked when an assertion is built. Told `subject`, `entity_id` and `org_id`. A refusal is told
+to the service provider as a policy refusal is. The answer may add attributes by the same
+list and the same rule as `userinfo`, and a value that is a list becomes several attribute
+values.
+
+On any other hook a list is refused rather than ignored.
+
+## The `flow_condition` hook
+
+Not a veto: this one lets a [sign-in flow](flows.md#conditions) branch on what only your
+service knows, and the flow file says what each answer leads to: a condition adds a stage,
+as every condition does, so what the service decides is who is asked for more. It is asked
+when a sign-in reaches a stage guarded by a condition it answers, once in a request however
+many it asks, so a sign-in cannot disagree with itself, and not at all for a flow that names
+none of them. A sign-in that goes on to a second factor is a second request, and asks again.
+Told `subject`, `org_id`, `amr` and `client_ip`.
+
+```json
+←  {"decision": true,
+    "facts": {"device_managed": true, "device_compliant": false, "network_trusted": true,
+              "risk_elevated": false}}
+```
+
+`decision` answers `provider_condition`. `facts` answers the conditions named the same, and a
+fact left out reads false. `risk_elevated` joins this engine's own signals, so either can
+raise it. **A `fail_closed` provider that does not answer refuses the sign-in**, with the
+reason `flow_provider_down`, because a guess would be running a different flow from the one
+applied. A `fail_open` one reads every condition false.
+
+With no provider registered every condition it answers reads false, and `signari doctor` warns
+about any flow that asks. A `when:` written with `not` therefore asks for more, not less.
+
 ## Constraints on a provider URL
 
 - **https only.** Refused at registration and again in the database.
@@ -89,14 +272,42 @@ contract mismatch becomes a silent authorization change.
   whole DNS-rebinding technique.
 - **Timeout capped at 5 seconds.** A provider call happens while somebody is
   waiting, and a configured value cannot remove the bound.
-- **One provider per hook per organisation**, enforced by the schema. Two
-  providers answering the same question raises "which wins?", and an engine that
-  answers it by whichever row sorts first has made a policy decision nobody asked
-  for.
+- **Several providers on a hook compose as AND.** See below. `password_verify` and
+  `flow_condition` keep one, by the schema, because their answer is a value and not
+  a veto: "which wins?" has no good answer for them.
+
+## Several providers on one hook
+
+An organisation's fraud check and its compliance check can both stand on a sign-in:
+
+```sh
+signari provider add -org <uuid> -hook token_issue -name fraud -position 1 \
+    -provider-url https://fraud.acme.example/hook -mode fail_closed
+signari provider add -org <uuid> -hook token_issue -name compliance -position 2 \
+    -provider-url https://compliance.acme.example/hook -mode fail_open
+signari provider claims -org <uuid> -hook token_issue -name fraud -claims risk
+```
+
+- **Everybody has to agree.** They are asked by `-position`, then by name, and the
+  first refusal ends it, so a provider further down is not asked about what is
+  already refused. Order changes who is asked, never the outcome, so put the cheap
+  one first.
+- **Each by its own mode.** One going away refuses or carries on as that one was
+  registered.
+- **A claim has one source.** `provider claims` refuses a claim another provider on
+  the hook may add (`409 claim_taken`), so what a token says never depends on who
+  was asked last.
+- **A change names which.** `-name` tells them apart on `provider remove`, `rotate`,
+  `test` and `claims`, and on the Admin API as `?name=`. With several and no name the
+  change is refused (`409 name_required`), never applied to whichever came first.
+  With one, nobody has to say.
+
+A provider registered without `-name` is called `provider-<hook>`, as every provider
+was before there could be two.
 
 ## What is not built yet
 
 `signari provider list` reports, per hook, whether any decision point actually
 consults it — so registering a provider for a hook nothing calls tells you at
-that moment rather than leaving a control that silently never fires. Today
-`authorize` is the only hook, and it is consulted.
+that moment rather than leaving a control that silently never fires. All nine hooks
+are consulted.

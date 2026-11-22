@@ -65,13 +65,51 @@ var mustBeReachable = []capability{
 	{"BuildGroupPlan", "a configured directory group mapping never changes any " +
 		"membership"},
 	{"LoadGroupMappings", "the same, from the other end"},
+	{"groupIDs", "an Entra source never reports a group, so its mappings change " +
+		"nothing (2.02: no source fetched one)"},
+	{"groupEmails", "the same for a Google Workspace source"},
+	{"EncryptTo", "a client that asked for encryption is told it has it and is sent the " +
+		"plaintext it asked not to get"},
+	{"RequireTrustMarks", "an operator who listed a Trust Mark is told relying parties need one, " +
+		"and any relying party the anchor vouches for is admitted without"},
+	{"addNestedMembers", "somebody in a group nested inside a mapped Active Directory " +
+		"group reads as outside it"},
 	{"VerifyLDAP", "a migration configured to verify against the old directory " +
 		"cannot authenticate anybody"},
-	{"AddMembers", "group membership is provisioned to no target"},
-	{"RemoveMembers", "somebody removed from a group keeps their access at every " +
+	{"SetMigrationSource", "nothing can configure the old provider, so delegated " +
+		"verification is built, tested and switched off everywhere"},
+	{"BeginAuthorization", "a SCIM target registered for the authorization code grant can never be " +
+		"signed in at, so it never syncs and every pass fails as unauthorized"},
+	{"ExchangeAuthorization", "somebody signs in at the target and agrees, and nothing redeems the " +
+		"code their sign-in sent back, so the target stays unauthorized"},
+	{"AddGroupMembers", "group membership is provisioned to no target"},
+	{"RemoveGroupMembers", "somebody removed from a group keeps their access at every " +
 		"provisioned target"},
 	{"DeleteGroup", "a group provisioned to a target can never be removed from it, " +
 		"so deprovisioning is one-way"},
+	{"SetFactorFailureLimit", "SIGNARI_MFA_FAILURE_LIMIT is documented and parsed, " +
+		"and a deployment that set it stricter still disables factors at 100"},
+	{"ObserveAudit", "signari_signins_total and signari_auth_failures_total are " +
+		"exported and read zero, because nothing hands the audit trail's sign-in " +
+		"events to the metrics engine"},
+	{"Setup", "SIGNARI_OTLP_TRACES_ENDPOINT is documented and parsed, and no " +
+		"collector ever receives a span"},
+	{"NoteRoute", "a request's span is named by its method alone, so a trace " +
+		"cannot say which endpoint was slow"},
+	{"SetVPTrustedIssuerByX5C", "a wallet sign-in cannot be told to believe an issuer by the " +
+		"certificate chain its credentials carry, so every such credential is refused"},
+	{"issuerKeysFromChain", "an issuer believed by certificate is never checked along its chain, " +
+		"so the roots an operator gave decide nothing"},
+	{"checkChainRevocation", "an issuer certificate its authority revoked keeps signing people in"},
+	{"PresentVPCrossDevice", "a wallet answering from another device is refused or, worse, handed a response " +
+		"code that finishes the sign-in without the account's emailed code"},
+	{"StartVPConfirmation", "the account a cross-device answer names is never sent its code, so the page waits " +
+		"for one that never comes"},
+	{"VPCrossDeviceAnswer", "the page a cross-device sign-in began on never learns the wallet answered"},
+	{"ReadDCAPIAnswer", "what the browser's Digital Credentials API brings back is never read, so the button " +
+		"signs nobody in"},
+	{"OriginAudience", "an answer through the browser is checked as made for the client identifier, which " +
+		"the appendix says it never is, and every real wallet's is refused"},
 }
 
 // This test is NOT sufficient, and knowing why is the point.

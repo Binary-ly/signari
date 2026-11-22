@@ -78,10 +78,80 @@ from the rendered form.
 {"accept": "true", "department": "engineering"}
 ```
 
-Not reduced to a boolean. *"When did they accept the terms, and to what?"* is
-asked months later by somebody who needs the date and the content, and a boolean
-cannot answer it. The answer is also written to the audit trail, for whoever has
-the export and not the database.
+Not reduced to a boolean: the stored answer keeps every field. Each answer is its
+own row, with when it was given, the **version** of the prompt it answered and a
+hash of the title, body and fields exactly as they stood, so *"to what did they
+agree, and when?"* is answered by the record and not by memory. A response is
+never changed in place; the database refuses an update to one. The answer is also
+written to the audit trail with its version, for whoever has the export and not
+the database.
+
+## Editing a prompt asks again
+
+The version moves when the title, the body or the fields change, and only then:
+reordering a prompt, or switching it on or off, leaves it. A `once` prompt is
+outstanding until its **current** version is answered, so new terms are put to
+everybody at their next sign-in, and their answers to the old ones are kept.
+
+```
+signari prompt set -org <uuid> -prompt-file terms.yaml
+prompt terms, version 2
+  412 person(s) who answered an earlier version will be asked again; their
+  earlier answers are kept
+```
+
+The version is decided by the database, on every write, so no writer can change
+the terms without moving it. The page carries the version it showed: terms edited
+while somebody was reading them are shown again rather than accepted on their
+behalf. `prompt list` counts the people who have answered the current version.
+
+Until October 2026 an answer replaced the one before it, and editing a prompt kept
+the answers given to the old text and asked nobody again. Answers from before then
+are version 1, and what they answered was not kept.
+
+## An answer can be an attribute
+
+A field with `attribute:` writes its answer to that user attribute, in the same
+transaction as the answer, and a [claim mapper](admin-api.md#claim-mappers) releases it to
+applications from the next token on:
+
+```yaml
+fields:
+  - name: team
+    type: select
+    label: Which team are you in?
+    options: [engineering, finance, support]
+    required: true
+    attribute: department
+```
+
+`prompt set` refuses the field unless the organisation has declared the
+attribute, and unless every answer the field can give fits the attribute's type:
+a checkbox into a boolean is fine, a select offering `yes` and `no` into a boolean
+is not. That is refused when the prompt is defined, not at somebody's sign-in. A
+personal attribute is sealed under the person's key as any other write is. A
+field left blank leaves the attribute as it was, and a notice, which collects
+nothing, cannot name one; neither can two fields name the same one.
+
+The prompt writes whether or not the attribute is `user_writable`. That setting
+governs the person's own profile page; mapping a field is the operator deciding to
+collect the value. Each write is recorded as `user.attributes_updated` with
+`by: prompt`, naming the attributes and never their values.
+
+## Required attributes nobody has given
+
+Sign-up refuses an account without a `required` attribute the person may write. An
+account made before the attribute was required, by an administrator, by an import or
+by a directory never met that check, so the prompt stage asks for those too, after the
+operator's own prompts and before any session: a page of its own, in the reader's
+language, with one field for each required, `user_writable` attribute the person
+holds no value for (a yes-or-no one as a box, unticked meaning no). A blank one is
+refused, naming it. The answer is written as the person's profile writes it, so
+nothing they could not set there can be set here, and recorded as
+`user.attributes_updated` with `by: sign-in`. Once given, it is not asked again. A
+required attribute the person may not write is an administrator's to fill, and is
+never asked. The page's slug, `signari.required-attributes`, is reserved: no prompt of
+the operator's may take it.
 
 ## `once`
 

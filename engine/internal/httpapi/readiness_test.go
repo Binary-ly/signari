@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,6 +95,32 @@ func TestADrainingNodeReportsNotReady(t *testing.T) {
 	if body.Status != "draining" {
 		t.Errorf("status = %q, want draining -- the reason matters to whoever "+
 			"is reading the probe during a deploy", body.Status)
+	}
+}
+
+// An instance whose database answers can still be unfit for traffic: one that
+// has not refreshed its signing keys for five intervals goes on signing with a
+// key the rest of the fleet may have retired. A failing check makes readiness
+// fail, and the probe still names no detail.
+func TestAFailingReadinessCheckMakesTheInstanceNotReady(t *testing.T) {
+	s := readinessServer(t)
+	var failing error
+	s.AddReadinessCheck("signing_keys", func() error { return failing })
+
+	rec := httptest.NewRecorder()
+	s.handleReady(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("not ready while the check passes: %d %s", rec.Code, rec.Body.String())
+	}
+
+	failing = errors.New("the last 5 signing-key refreshes failed")
+	rec = httptest.NewRecorder()
+	s.handleReady(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a failing readiness check answered %d, want 503", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "refreshes") {
+		t.Errorf("the probe body carries the check's error: %s", rec.Body.String())
 	}
 }
 

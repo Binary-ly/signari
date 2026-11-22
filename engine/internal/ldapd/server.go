@@ -25,8 +25,10 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*Identity, error)
 	// Lookup finds a user without verifying a credential, for search.
 	Lookup(ctx context.Context, username string) (*Identity, error)
-	// List returns users for a subtree search.
-	List(ctx context.Context, limit int) ([]*Identity, error)
+	// List answers a page of the people a subtree search could reach, each
+	// with its Position, in an order that does not change between pages. See
+	// Query. A position it did not issue is ErrBadPosition.
+	List(ctx context.Context, q Query) ([]*Identity, error)
 }
 
 // Identity is what the directory exposes about a person.
@@ -52,6 +54,28 @@ type Identity struct {
 	// what happens to rows that predate the column.
 	Surname   string
 	GivenName string
+
+	// UIDNumber is the person's POSIX number, 0 from a core that predates them.
+	UIDNumber int
+
+	// BindProof is what an Authenticator that sits across a trust boundary
+	// returns from a successful bind, for the connection to hand back on every
+	// later Lookup and List (see WithBindProof). Never published as an
+	// attribute. An outpost receives one from the core, which then answers a
+	// directory request with what the person who bound may see rather than
+	// what the outpost's token may; the in-process authenticator leaves it
+	// empty, having no boundary to prove anything across.
+	BindProof string
+
+	// UserID and AMR are who authenticated and how, from a successful
+	// Authenticate, for a caller that issues something of its own on the
+	// strength of it (SAML ECP). Never published as attributes.
+	UserID string
+	AMR    []string
+
+	// Position is where List found this person, for the next page to carry on
+	// from. Never published as an attribute.
+	Position string
 }
 
 // Config is one LDAP listener.
@@ -69,6 +93,16 @@ type Config struct {
 	MaxResults  int
 	ReadTimeout time.Duration
 
+	// POSIX publishes people as posixAccount and groups as posixGroup (7.03), for
+	// hosts that take their accounts from here. Off by default: an application
+	// reading names and addresses has no use for it, and nothing is lost by a
+	// directory that does not claim classes it was not asked to.
+	POSIX bool
+	// HomeTemplate is a person's home directory, {username} replaced. LoginShell
+	// is everybody's shell.
+	HomeTemplate string
+	LoginShell   string
+
 	// WriteGroup names the group whose members may perform Add, Modify, Delete
 	// and Modify DN.
 	//
@@ -82,6 +116,18 @@ type Config struct {
 	// their own `memberOf` and are managed with `signari group member` like every
 	// other privilege.
 	WriteGroup string
+
+	// SearchGroup names the group whose members may search the whole
+	// directory: the service accounts applications bind as to look people up.
+	//
+	// EMPTY MEANS NOBODY, as for WriteGroup. Everyone else who binds sees their
+	// own entry and no other. A bind is a password check, and a password is all
+	// it takes to have one; reading every name, address and group in the
+	// organisation is a different grant, and was being given to anybody who
+	// passed the first. Members of WriteGroup may search too, since they can
+	// already rename and delete anyone, and AllowAnonymousSearch, when an
+	// operator has turned it on, publishes the directory to everyone anyway.
+	SearchGroup string
 }
 
 func (c *Config) withDefaults() {
@@ -156,13 +202,6 @@ type session struct {
 	dn       string
 }
 
-// peerKey carries the connection's remote address down to the Authenticator.
-//
-// A context value rather than a parameter on Authenticate, for the same reason
-// net/http puts the local address in the connection context: every LDAP
-// operation would otherwise have to grow an address argument to serve the one
-// that needs it, and each implementation of the interface would have to be
-// changed to ignore it.
 // ErrBusy is returned by an Authenticator that refused a bind without judging
 // the credential, because the caller has spent a failure budget.
 //
@@ -170,7 +209,37 @@ type session struct {
 // answers on the wire, and only the Authenticator knows which happened.
 var ErrBusy = errors.New("too many recent authentication failures")
 
+// ErrUnavailable is returned by an Authenticator that could not ask: what it
+// depends on is down, as an outpost's core can be. RFC 4511 A.2 has a code for
+// exactly this, unavailable (52), "a subsystem necessary to complete the
+// operation is offline". Read as an invalid credential, an outage tells
+// everybody behind an outpost that a correct password is wrong.
+var ErrUnavailable = errors.New("the service behind this directory cannot be reached")
+
+// peerKey carries the connection's remote address down to the Authenticator.
+//
+// A context value rather than a parameter on Authenticate, for the same reason
+// net/http puts the local address in the connection context: every LDAP
+// operation would otherwise have to grow an address argument to serve the one
+// that needs it, and each implementation of the interface would have to be
+// changed to ignore it.
 type peerKey struct{}
+
+type bindProofKey struct{}
+
+// WithBindProof carries the bound identity's BindProof down to the
+// Authenticator, for the same reason the peer address travels in the context:
+// only the authenticator that issued it reads it.
+func WithBindProof(ctx context.Context, proof string) context.Context {
+	return context.WithValue(ctx, bindProofKey{}, proof)
+}
+
+// BindProof returns the proof of the connection's current bind, or "" when it
+// has none.
+func BindProof(ctx context.Context) string {
+	proof, _ := ctx.Value(bindProofKey{}).(string)
+	return proof
+}
 
 // WithPeerAddr records the address a bind arrived from.
 //
@@ -187,7 +256,8 @@ func WithPeerAddr(ctx context.Context, addr string) context.Context {
 //
 // It exists so an Authenticator can rate-limit a bind by origin. It is the
 // address of the socket and never a value the client supplied, because a limit
-// an attacker can re-key by setting a field is not a limit.
+// an attacker can re-key by setting a field is not a limit. An outpost passes
+// on the address of its own socket, which is the same thing one step away.
 func PeerAddr(ctx context.Context) string {
 	addr, _ := ctx.Value(peerKey{}).(string)
 	return addr
@@ -246,20 +316,89 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 		}
 		op := packet.Children[1]
 
-		if !s.dispatch(ctx, c, sess, messageID, op) {
+		// RFC 4511 §4.1.11 (specs/rfc4511.txt:766-771): a critical control the
+		// server does not apply means it "MUST NOT perform the operation" and
+		// answers unavailableCriticalExtension. Only paged results on a search
+		// is applied, so every other critical one is refused. They were ignored:
+		// a client asking for, say, a server-side sort it relies on got the
+		// operation done without it. Unbind's criticality MUST be ignored, and
+		// abandon has no response.
+		var controls *ber.Packet
+		if len(packet.Children) > 2 {
+			controls = packet.Children[2]
+		}
+		if controls != nil && op.Tag != appUnbindRequest {
+			if oid, critical := criticalControl(controls, op.Tag); critical {
+				if op.Tag == appAbandonRequest {
+					continue
+				}
+				if !s.write(c, newMessage(messageID, newResult(responseTag(op.Tag),
+					resultUnavailableCriticalExtension, "",
+					"the critical control "+oid+" is not supported by this server"))) {
+					return
+				}
+				continue
+			}
+		}
+
+		opCtx := ctx
+		if sess.bound && sess.identity != nil && sess.identity.BindProof != "" {
+			opCtx = WithBindProof(ctx, sess.identity.BindProof)
+		}
+		if !s.dispatch(opCtx, c, sess, messageID, op, controls) {
 			return
 		}
 	}
 }
 
+// criticalControl reports the first control marked critical that the operation
+// tagged op does not apply, among an LDAPMessage's controls ([0] SEQUENCE OF
+// Control, RFC 4511 §4.1.11), and its type. A malformed controls element is
+// treated as critical: refusing is the reading that cannot perform an
+// operation the client meant to constrain.
+func criticalControl(p *ber.Packet, op ber.Tag) (string, bool) {
+	if p.ClassType != ber.ClassContext || p.Tag != 0 {
+		return "", false
+	}
+	for _, ctl := range p.Children {
+		if len(ctl.Children) == 0 {
+			return "(malformed)", true
+		}
+		oid := ber.DecodeString(ctl.Children[0].Data.Bytes())
+		if oid == oidPagedResults && op == appSearchRequest {
+			continue
+		}
+		if len(ctl.Children) > 1 && ctl.Children[1].Tag == ber.TagBoolean {
+			if v, ok := ctl.Children[1].Value.(bool); ok && v {
+				return oid, true
+			}
+		}
+	}
+	return "", false
+}
+
+// responseTag is the response a request is answered in.
+func responseTag(request ber.Tag) ber.Tag {
+	switch request {
+	case appSearchRequest:
+		return appSearchResultDone
+	case appExtendedRequest:
+		return appExtendedResponse
+	default:
+		// Bind, Modify, Add, Del, ModifyDN and Compare: each response is the
+		// request's tag plus one (RFC 4511 §4.2 to §4.10).
+		return request + 1
+	}
+}
+
 // dispatch handles one operation. It returns false to close the connection.
-func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messageID int64, op *ber.Packet) bool {
+func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messageID int64, op, controls *ber.Packet) bool {
 	switch op.Tag {
 	case appBindRequest:
 		return s.handleBind(ctx, c, sess, messageID, op)
 
 	case appSearchRequest:
-		return s.handleSearch(ctx, c, sess, messageID, op)
+		return s.handleSearch(ctx, c, sess, messageID, op, controls)
 
 	case appUnbindRequest:
 		// No response is defined for unbind; the client expects the connection
@@ -299,6 +438,10 @@ func (s *Server) dispatch(ctx context.Context, c net.Conn, sess *session, messag
 			resultProtocolError, "", "unsupported operation")))
 	}
 }
+
+// BindTimeout is the longest a bind may take, waiting for the hasher included.
+// A refusal past it is answered busy, and the client retries.
+const BindTimeout = 10 * time.Second
 
 // Extended operation OIDs.
 const (
@@ -412,7 +555,7 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	// something worth advertising anyway.
 	if req.Password == "" {
 		s.log.Warn("ldap unauthenticated bind refused (empty password)",
-			"dn", req.DN, "remote", c.RemoteAddr().String())
+			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultUnwillingToPerform, "",
 			"a bind with an empty password authenticates nobody (RFC 4513 section 5.1.2)")))
@@ -423,13 +566,20 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 		// Reported as invalid credentials, not as a bad DN. A distinguishable
 		// error here tells an attacker which DNs exist in what shape, and the
 		// application cannot do anything different with the answer anyway.
-		s.log.Info("ldap bind with an unusable DN", "dn", req.DN, "err", err,
+		// The error says what is wrong with the DN without repeating it.
+		s.log.Info("ldap bind with an unusable DN", "err", err,
 			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultInvalidCredentials, "", "invalid credentials")))
 	}
 
-	id, err := s.auth.Authenticate(ctx, username, req.Password)
+	// A deadline of its own. The verification waits for a slot in the hasher
+	// the sign-in form shares, and this context otherwise lives as long as the
+	// connection: a bind flood queued there without end, ahead of people
+	// signing in at the browser, and kept waiting after the client had given up.
+	bctx, cancel := context.WithTimeout(ctx, BindTimeout)
+	defer cancel()
+	id, err := s.auth.Authenticate(bctx, username, req.Password)
 	if errors.Is(err, ErrBusy) {
 		// Reported distinctly, and this is the one place a bind failure is
 		// allowed to be distinguishable.
@@ -446,14 +596,21 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 		// guessing run would read it as a wrong password and rotate a correct
 		// credential, and the attack would stay invisible behind a symptom that
 		// looks like their own misconfiguration.
-		s.log.Warn("ldap bind throttled", "username", username,
-			"remote", c.RemoteAddr().String())
+		// Without the username: the audit trail records each bind by
+		// subject, and this log is kept wherever its collector keeps it.
+		s.log.Warn("ldap bind throttled", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(appBindResponse,
 			resultBusy, "", "too many recent authentication failures")))
 	}
+	if errors.Is(err, ErrUnavailable) {
+		// Before the collapse below, which is about what is said of a person:
+		// this says nothing of anybody, and it is the same for every bind.
+		s.log.Error("ldap bind could not be judged", "err", err, "remote", c.RemoteAddr().String())
+		return s.write(c, newMessage(messageID, newResult(appBindResponse,
+			resultUnavailable, "", "authentication is unavailable")))
+	}
 	if err != nil || id == nil {
-		s.log.Info("ldap bind failed", "username", username,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap bind failed", "remote", c.RemoteAddr().String())
 		// One message for every failure: no such user, wrong password,
 		// deactivated account. Anything else is a user-enumeration oracle
 		// reachable by anyone who can open the port.
@@ -462,22 +619,30 @@ func (s *Server) handleBind(ctx context.Context, c net.Conn, sess *session, mess
 	}
 
 	sess.bound, sess.identity, sess.dn = true, id, req.DN
-	s.log.Info("ldap bind succeeded", "username", username, "remote", c.RemoteAddr().String())
+	s.log.Info("ldap bind succeeded", "remote", c.RemoteAddr().String())
 	return s.write(c, newMessage(messageID, newResult(appBindResponse, resultSuccess, "", "")))
 }
 
 // handleSearch answers a search.
-func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, messageID int64, op *ber.Packet) bool {
+func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, messageID int64, op, controls *ber.Packet) bool {
 	req, err := decodeSearch(op)
 	if err != nil {
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
 			resultProtocolError, "", "malformed search request")))
+	}
+	paged, err := pagedResultsOf(controls)
+	if err != nil {
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultProtocolError, "", "malformed paged results control")))
 	}
 
 	// The root DSE probe: base "", scope base. Clients send it before binding to
 	// discover what the server supports, and answering it discloses nothing.
 	if req.BaseDN == "" && req.Scope == scopeBaseObject {
 		return s.writeRootDSE(c, messageID, req)
+	}
+	if normalDN(req.BaseDN) == normalDN(subschemaDN) && req.Scope == scopeBaseObject {
+		return s.writeSubschema(c, messageID, req)
 	}
 
 	if !sess.bound && !s.cfg.AllowAnonymousSearch {
@@ -493,9 +658,17 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 			resultNoSuchObject, s.cfg.BaseDN, "no such object")))
 	}
 
+	// Size zero with a cookie is a client giving up on a paged search; it has
+	// nothing left to be told. (go-ldap's SearchWithPaging ends one that way.)
+	if paged != nil && paged.size == 0 && paged.cookie != "" {
+		return s.write(c, pagedDone(messageID, resultSuccess, ""))
+	}
 	limit := s.cfg.MaxResults
 	if req.SizeLimit > 0 && req.SizeLimit < limit {
 		limit = req.SizeLimit
+	}
+	if paged != nil && paged.size > 0 && paged.size < limit {
+		limit = paged.size
 	}
 
 	// §4.5.1.5's client-requested time limit. Zero means none, and the server's
@@ -510,7 +683,22 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		defer cancel()
 	}
 
-	entries, err := s.entriesFor(ctx, req, limit)
+	var entries []*entry
+	var position string
+	var more bool
+	if s.maySearchDirectory(ctx, sess) {
+		after := ""
+		if paged != nil {
+			after = paged.cookie
+		}
+		entries, position, more, err = s.entriesFor(ctx, req, after, limit)
+	} else {
+		entries, err = s.ownEntry(ctx, sess, req)
+	}
+	if errors.Is(err, ErrBadPosition) {
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultProtocolError, "", "the paged results cookie is not one this directory issued")))
+	}
 	// `ctx.Err()` rather than `errors.Is(err, context.DeadlineExceeded)` alone:
 	// a backing store is free to report cancellation as its own error type, and
 	// several do -- pgx wraps, some drivers substitute. Asking the context
@@ -524,6 +712,11 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
 			resultTimeLimitExceeded, "", "the search exceeded the requested timeLimit")))
 	}
+	if errors.Is(err, ErrUnavailable) {
+		s.log.Error("ldap search could not be answered", "err", err)
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultUnavailable, "", "the directory is unavailable")))
+	}
 	if err != nil {
 		s.log.Error("ldap search", "err", err)
 		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
@@ -535,44 +728,148 @@ func (s *Server) handleSearch(ctx context.Context, c net.Conn, sess *session, me
 			return false
 		}
 	}
+
+	// A list cut short says so. Success said a directory of 501 had 500 people
+	// in it, which an application reads as the person after them not existing.
+	switch {
+	case paged != nil && more:
+		return s.write(c, pagedDone(messageID, resultSuccess, position))
+	case paged != nil:
+		return s.write(c, pagedDone(messageID, resultSuccess, ""))
+	case more && req.SizeLimit > 0 && req.SizeLimit <= s.cfg.MaxResults:
+		// specs/rfc4511.txt:2780: "the size limit specified by the client".
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultSizeLimitExceeded, "", "more entries match than the size limit asked for")))
+	case more:
+		return s.write(c, newMessage(messageID, newResult(appSearchResultDone,
+			resultAdminLimitExceeded, "", "more entries match than one search returns; "+
+				"ask for them a page at a time with the paged results control")))
+	}
 	return s.write(c, newMessage(messageID, newResult(appSearchResultDone, resultSuccess, "", "")))
 }
 
-// entriesFor resolves a search to entries.
-func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) ([]*entry, error) {
-	// A base-object search on a specific user DN is the common shape: an
-	// application binds as a service account and reads one person.
-	if req.Scope == scopeBaseObject {
-		username, err := s.usernameFromDN(req.BaseDN)
-		if err != nil {
-			return nil, nil
-		}
-		id, err := s.auth.Lookup(ctx, username)
-		if err != nil || id == nil {
-			return nil, nil
-		}
-		e := s.entryFor(id)
-		if req.Filter.Matches(e) {
-			return []*entry{e}, nil
-		}
-		return nil, nil
+// maySearchDirectory reports whether this connection may see entries other
+// than its own, as the bound identity's groups stand now. See
+// Config.SearchGroup and currentIdentity.
+func (s *Server) maySearchDirectory(ctx context.Context, sess *session) bool {
+	if s.cfg.AllowAnonymousSearch {
+		return true
 	}
+	if s.cfg.SearchGroup == "" && !s.writesConfigured() {
+		return false
+	}
+	id, _ := s.currentIdentity(ctx, sess)
+	return inGroup(id, s.cfg.SearchGroup) || (s.writesConfigured() && inGroup(id, s.cfg.WriteGroup))
+}
 
-	users, err := s.auth.List(ctx, limit)
-	if err != nil {
+// ownEntry answers a search for a connection that may see only itself: the
+// bound identity, read again now, if the request's base and filter would
+// include it. Anyone else's DN returns nothing, the same nothing whether or
+// not that person exists, so the base-object form cannot be used to ask who
+// has an account.
+func (s *Server) ownEntry(ctx context.Context, sess *session, req *searchRequest) ([]*entry, error) {
+	self, err := s.currentIdentity(ctx, sess)
+	if err != nil || self == nil {
 		return nil, err
 	}
-	var out []*entry
-	for _, id := range users {
-		e := s.entryFor(id)
-		if req.Filter.Matches(e) {
-			out = append(out, e)
-			if len(out) >= limit {
-				break
-			}
+	if req.Scope == scopeBaseObject {
+		username, uerr := s.usernameFromDN(req.BaseDN)
+		if uerr != nil {
+			return nil, nil
+		}
+		asked, lerr := s.auth.Lookup(ctx, username)
+		if errors.Is(lerr, ErrUnavailable) {
+			return nil, lerr
+		}
+		if lerr != nil || asked == nil || !equalFold(asked.Username, self.Username) {
+			return nil, nil
 		}
 	}
-	return out, nil
+	e := s.entryFor(self)
+	if !s.scopeReaches(req, s.dnFor(self.Username)) || !req.Filter.Matches(e) {
+		return nil, nil
+	}
+	return []*entry{e}, nil
+}
+
+// scopeReaches reports whether a search's base and scope include the person
+// entry at dn, which is always a child of the configured base DN.
+//
+// The base was checked only for lying under the configured one, so a one-level
+// or subtree search based at `ou=groups,…`, or at a person, returned every
+// person in the directory. RFC 4511 §4.5.1.2 scopes are about where entries
+// are, and a person's entry is in exactly one place. (A base-object search was
+// already exact: usernameFromDN requires the rest of the DN to be the base.)
+func (s *Server) scopeReaches(req *searchRequest, dn string) bool {
+	base := normalDN(req.BaseDN)
+	switch req.Scope {
+	case scopeBaseObject:
+		return base == normalDN(dn)
+	case scopeSingleLevel:
+		return base == normalDN(s.cfg.BaseDN)
+	default:
+		return base == normalDN(s.cfg.BaseDN) || base == normalDN(dn)
+	}
+}
+
+// normalDN lowercases a DN and drops the spaces clients put around its commas
+// and equals signs, so `uid=a, dc=x` and `UID=a,DC=x` compare equal.
+func normalDN(dn string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(dn)), ",")
+	for i, p := range parts {
+		attr, value, ok := strings.Cut(p, "=")
+		if ok {
+			parts[i] = strings.TrimSpace(attr) + "=" + strings.TrimSpace(value)
+		} else {
+			parts[i] = strings.TrimSpace(p)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// entriesFor resolves a search to entries, from after, at most limit of them.
+// more says others match past the position it answers.
+func (s *Server) entriesFor(ctx context.Context, req *searchRequest, after string, limit int) (
+	[]*entry, string, bool, error) {
+	if found, position, more, handled, err := s.groupSearch(ctx, req, after, limit); handled {
+		return found, position, more, err
+	}
+	// A base-object search on a specific user DN is the common shape: an
+	// application binds as a service account and reads one person. So is a
+	// subtree search based on that DN, which reaches the same one entry.
+	if req.Scope == scopeBaseObject ||
+		(req.Scope == scopeWholeSubtree && normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN)) {
+		username, err := s.usernameFromDN(req.BaseDN)
+		if err != nil {
+			return nil, "", false, nil
+		}
+		if !s.scopeReaches(req, s.dnFor(username)) {
+			return nil, "", false, nil
+		}
+		id, err := s.auth.Lookup(ctx, username)
+		if errors.Is(err, ErrUnavailable) {
+			// An empty answer is a statement that nobody is there, which a
+			// service reading this directory is entitled to act on.
+			return nil, "", false, err
+		}
+		if err != nil || id == nil {
+			return nil, "", false, nil
+		}
+		e := s.entryFor(id)
+		if req.Filter.Matches(e) {
+			return []*entry{e}, "", false, nil
+		}
+		return nil, "", false, nil
+	}
+	// The people are the base DN's children and nobody else's: a one-level
+	// search anywhere else reaches none of them.
+	if normalDN(req.BaseDN) != normalDN(s.cfg.BaseDN) {
+		return nil, "", false, nil
+	}
+	if req.Scope == scopeWholeSubtree {
+		return s.walkAll(ctx, req, after, limit)
+	}
+	return s.walkPeople(ctx, req, after, limit)
 }
 
 // entryFor renders one identity.
@@ -583,7 +880,7 @@ func (s *Server) entriesFor(ctx context.Context, req *searchRequest, limit int) 
 // else's code.
 func (s *Server) entryFor(id *Identity) *entry {
 	attrs := map[string][]string{
-		"objectClass":  objectClasses,
+		"objectClass":  s.personClasses(),
 		s.cfg.UserAttr: {id.Username},
 		"cn":           {firstNonEmpty(id.DisplayName, id.Username)},
 		// `sn` is a MUST attribute of `person` (RFC 4519), and this entry claims
@@ -617,6 +914,7 @@ func (s *Server) entryFor(id *Identity) *entry {
 		}
 		attrs["memberOf"] = dns
 	}
+	s.addPosixAccount(attrs, id)
 	return &entry{DN: s.dnFor(id.Username), Attrs: attrs}
 }
 
@@ -663,9 +961,8 @@ func (s *Server) usernameFromDN(dn string) (string, error) {
 }
 
 func (s *Server) underBase(dn string) bool {
-	dn = strings.TrimSpace(dn)
-	return equalFold(dn, s.cfg.BaseDN) || strings.HasSuffix(strings.ToLower(dn),
-		","+strings.ToLower(s.cfg.BaseDN))
+	dn, base := normalDN(dn), normalDN(s.cfg.BaseDN)
+	return dn == base || strings.HasSuffix(dn, ","+base)
 }
 
 // writeRootDSE answers the pre-bind capability probe.
@@ -677,7 +974,9 @@ func (s *Server) writeRootDSE(c net.Conn, messageID int64, req *searchRequest) b
 		// No supportedExtension, and specifically no StartTLS: advertising an
 		// extension that is refused is how a client decides to try it, fails,
 		// and falls back to plaintext.
-		"vendorName": {"Signari"},
+		"supportedControl":  {oidPagedResults},
+		"subschemaSubentry": {subschemaDN},
+		"vendorName":        {"Signari"},
 	}}
 	if !s.write(c, newMessage(messageID, newSearchEntry(e, req.Attrs, req.TypesOnly))) {
 		return false

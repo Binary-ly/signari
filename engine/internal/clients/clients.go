@@ -7,14 +7,24 @@ import (
 	"fmt"
 	"net/url"
 	"signari.dev/engine/internal/clientauth"
+	"signari.dev/engine/internal/tokens"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // ErrNotFound means no such client_id.
 var ErrNotFound = errors.New("client not found")
+
+// ErrDisabled means the client exists and is disabled, which every endpoint a
+// client calls refuses on the next request (ADR-007).
+var ErrDisabled = errors.New("client is disabled")
+
+// ErrOrgSuspended means the client's organisation is suspended, refused as a
+// disabled client is (6.09).
+var ErrOrgSuspended = errors.New("the client's organisation is suspended")
 
 // Client is the registry view of a relying party.
 //
@@ -36,6 +46,16 @@ type Client struct {
 	// FirstParty clients skip the consent screen -- see migration 0010. It
 	// suppresses only that question; every other check still applies.
 	FirstParty bool
+
+	// OrgSuspended: the client's organisation is out of service (6.09), which
+	// refuses the client wherever a disabled one is refused. Read with the row,
+	// on the request path, like Enabled.
+	OrgSuspended bool
+
+	// InstanceID is the instance the client's organisation belongs to: a
+	// server serving another instance answers as if the client did not exist
+	// (6.12).
+	InstanceID string
 
 	// IssuerAlias, when set, is a REGISTERED legacy issuer this client's tokens
 	// are minted under, so an application migrated from another provider keeps
@@ -60,6 +80,9 @@ type Client struct {
 	JWTBearerProviders []string
 	TLSThumbprint      []byte
 	TLSBoundTokens     bool
+
+	// AdminAPI lets the client ask for the Admin API's audience (0192, 6.01).
+	AdminAPI bool
 
 	// DPoPBoundAccessTokens is RFC 9449 §5.2's client registration metadata:
 	// "A boolean value specifying whether the client always uses DPoP for token
@@ -104,15 +127,43 @@ type Client struct {
 	// turn -- private_key_jwt, mutual TLS, and attestation-based.
 	TokenEndpointAuthMethod string
 
+	// TokenBudget is the organisation's budget of tokens a minute, nil for the
+	// deployment's default. HasClaimMappers and HasTokenHook say whether a token
+	// has any more to ask, and HasAccessPolicy and HasClientAccessHook whether a
+	// person reaching this client has: most deployments have none of them, and
+	// each was a statement on every token or every authorization. Read with the
+	// client, so on the request as anything security-negative is, not cached.
+	TokenBudget         *int
+	HasClaimMappers     bool
+	HasTokenHook        bool
+	HasAccessPolicy     bool
+	HasClientAccessHook bool
+
 	// AllowHybrid permits response_type "code id_token" for this client.
 	//
 	// Off unless somebody turned it on. It exists for applications being
 	// migrated in that cannot be changed as a precondition of the migration; an
 	// estate should end up with it off everywhere.
-	AllowHybrid  bool
-	PKCEMethods  []string
-	IDTokenAlg   string
-	RedirectURIs []string
+	AllowHybrid bool
+	IDTokenAlg  string
+	// AccessAlg is what signs the client's access tokens, empty for IDTokenAlg.
+	AccessAlg string
+	// RolesClaim is the claim its tokens carry a person's roles in the application
+	// under, empty for none.
+	RolesClaim string
+	// LoginUI is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; empty for this server's page.
+	LoginUI string
+	// AccessFormat is what the client is given as an access token: jwt, or opaque
+	// for a handle a resource server introspects.
+	AccessFormat string
+	// SubjectType is how its tokens name a person: public, or pairwise for an
+	// identifier that means nothing outside Sector.
+	SubjectType string
+	Sector      string
+	// SecurityProfile is none, or fapi2 for a client held to ProfileProblems.
+	SecurityProfile string
+	RedirectURIs    []string
 
 	// ClaimsRedirectURIs is UMA 2.0 §3.3.2's separate list.
 	//
@@ -128,6 +179,68 @@ type Client struct {
 	ClaimsRedirectURIs []string
 
 	RefreshTTL int
+	// RefreshReuseGrace is how long after a rotation, in seconds, a refresh token
+	// may be presented once more for the same answer; 0 for never.
+	RefreshReuseGrace int
+	// AccessTTL is the access-token lifetime in seconds. It is the revocation
+	// window too: an issued access token is self-contained and holds until it
+	// expires (ADR-007). Bounded to a minute and tokens.MaxAccessTokenTTL by the
+	// schema (0144).
+	AccessTTL int
+	// RequirePAR is RFC 9126 §6's require_pushed_authorization_requests: the
+	// client may start an authorization only by pushing it first.
+	RequirePAR bool
+	// RequireSignedRequest is RFC 9101 §10.5's require_signed_request_object: the
+	// client's authorization requests are refused unless they are signed.
+	RequireSignedRequest bool
+	// AuthorizationResponseAlg is JARM §3's authorization_signed_response_alg. Set, a
+	// request must ask for a signed response and this signs it; "" leaves that to the
+	// request, and a signed response is then RS256, as §3 says.
+	AuthorizationResponseAlg string
+	// UserinfoSignedAlg signs the client's userinfo responses; "" answers in JSON.
+	UserinfoSignedAlg string
+	// IntrospectionSignedAlg signs an introspection answer it asks for as a JWT, RS256
+	// when "" as RFC 9701 §6 says.
+	IntrospectionSignedAlg string
+	// These are what the client asked to have encrypted to it. EncryptionKeys is its key
+	// set to do that with, read only for a client that asked, being the one document
+	// here of any size.
+	IDTokenEncryption, UserinfoEncryption, AuthorizationEncryption tokens.Encryption
+	IntrospectionEncryption                                        tokens.Encryption
+	EncryptionKeys                                                 string
+	// FederationExpiry is when what a Trust Chain said of the client stops holding, and
+	// nil for a client an operator made. Past it a request has to be vouched for again.
+	// A client admitted from its metadata document is held to the same thing.
+	FederationExpiry *time.Time
+	// RequireState refuses an authorization request with no `state`.
+	RequireState bool
+	// MinimumACR is the weakest authentication the client accepts, "1" to
+	// "4" (migrations 0166, 0174; oauth.Meets), whatever its request asks for.
+	MinimumACR string
+}
+
+// HeldToSignedResponses is whether a plain authorization response would go against what
+// the client set. An encrypted one is signed first, so asking for that asks for both.
+func (c *Client) HeldToSignedResponses() bool {
+	return c.AuthorizationResponseAlg != "" || c.AuthorizationEncryption.Alg != ""
+}
+
+// AccessTokenAlg is what signs the client's access tokens.
+func (c *Client) AccessTokenAlg() string {
+	if c.AccessAlg != "" {
+		return c.AccessAlg
+	}
+	return c.IDTokenAlg
+}
+
+// AccessTokenTTL is the client's access-token lifetime, with the built-in
+// default for a value outside the bounds the schema enforces.
+func (c *Client) AccessTokenTTL() time.Duration {
+	d := time.Duration(c.AccessTTL) * time.Second
+	if d < time.Minute || d > tokens.MaxAccessTokenTTL {
+		return tokens.DefaultAccessTokenTTL
+	}
+	return d
 }
 
 // HasClaimsRedirectURI reports whether a claims redirection URI is registered.
@@ -177,15 +290,35 @@ type Querier interface {
 // tolerance, and no normalisation beyond what the client registered -- every one
 // of those "conveniences" has produced a redirect-bypass CVE somewhere.
 func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
-	c := &Client{ClientID: clientID}
-	var secret *string
-	var alias *string
-	var tlsDN, tlsDNS, tlsURI, tlsIP, tlsEmail *string
+	return scanLookup(q.QueryRow(ctx, lookupStatement, clientID), clientID)
+}
 
-	err := q.QueryRow(ctx, `
+// QueueLookup queues Lookup's statement on b, so it travels with whatever else the
+// request asks of the database in one round trip (E.23); the client is read with the
+// returned function once the batch has been sent and closed.
+func QueueLookup(b *pgx.Batch, clientID string) func() (*Client, error) {
+	var c *Client
+	err := errors.New("the batch holding the client lookup was not sent")
+	b.Queue(lookupStatement, clientID).QueryRow(func(row pgx.Row) error {
+		c, err = scanLookup(row, clientID)
+		return nil
+	})
+	return func() (*Client, error) { return c, err }
+}
+
+// lookupStatement is Lookup's one statement, read per request as every decision that can
+// refuse a client is (ADR-007).
+const lookupStatement = `
 		SELECT org_id::text, display_name, client_type, client_secret_hash, enabled,
-		       grant_types, response_types, scopes, require_pkce, pkce_methods,
-		       id_token_signed_alg, refresh_token_ttl_s, first_party, issuer_alias,
+		       grant_types, response_types, scopes, require_pkce,
+		       id_token_signed_alg, COALESCE(access_token_signed_alg, ''), COALESCE(roles_claim, ''),
+		       access_token_format, subject_type, sector, security_profile, refresh_token_ttl_s, first_party,
+		       -- The alias only while it is still claimed: past its retirement a
+		       -- token minted under it carries an issuer this deployment no longer
+		       -- accepts, so the client gets the instance's own.
+		       (SELECT a.issuer FROM core.instance_issuer_aliases a
+		         WHERE a.issuer = core.clients.issuer_alias
+		           AND (a.retire_after IS NULL OR a.retire_after > now())),
 		       may_exchange, exchange_audiences, jwt_bearer_providers,
 		       tls_subject_dn, tls_san_dns, tls_san_uri, tls_san_ip, tls_san_email,
 		       tls_thumbprint, tls_bound_tokens,
@@ -193,20 +326,65 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 		       exchange_requires_audience_match,
 		       backchannel_token_delivery_mode,
 		       coalesce(backchannel_client_notification_endpoint, ''),
-		       coalesce(claims_redirect_uris, ARRAY[]::text[])
+		       coalesce(claims_redirect_uris, ARRAY[]::text[]),
+		       access_token_ttl_s, refresh_reuse_grace_s, require_pushed_authorization,
+		       require_signed_request_object, COALESCE(authorization_signed_response_alg, ''),
+		       COALESCE(userinfo_signed_response_alg, ''),
+		       COALESCE(id_token_encrypted_response_alg, ''), COALESCE(id_token_encrypted_response_enc, ''),
+		       COALESCE(userinfo_encrypted_response_alg, ''), COALESCE(userinfo_encrypted_response_enc, ''),
+		       COALESCE(authorization_encrypted_response_alg, ''), COALESCE(authorization_encrypted_response_enc, ''),
+		       COALESCE(introspection_signed_response_alg, ''),
+		       COALESCE(introspection_encrypted_response_alg, ''), COALESCE(introspection_encrypted_response_enc, ''),
+		       COALESCE(CASE WHEN id_token_encrypted_response_alg IS NOT NULL
+		                       OR userinfo_encrypted_response_alg IS NOT NULL
+		                       OR authorization_encrypted_response_alg IS NOT NULL
+		                       OR introspection_encrypted_response_alg IS NOT NULL THEN jwks::text END, ''),
+		       federation_expires_at, require_state, minimum_acr, admin_api,
+		       -- store.OrgInService's question, which this package cannot import.
+		       NOT EXISTS (SELECT 1 FROM core.organizations o
+		                    WHERE o.id = core.clients.org_id AND o.status = 'active'),
+		       (SELECT o.instance_id::text FROM core.organizations o
+		         WHERE o.id = core.clients.org_id),
+		       COALESCE((SELECT array_agg(r.redirect_uri ORDER BY r.redirect_uri) FROM core.client_redirect_uris r
+		                  WHERE r.client_id = core.clients.client_id), ARRAY[]::text[]),
+		       -- What a token for this client will need to know, so that it asks
+		       -- nothing further of a deployment that has none of it.
+		       (SELECT o.token_budget_per_minute FROM core.organizations o WHERE o.id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.claim_mappers m WHERE m.org_id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'token_issue'),
+		       EXISTS (SELECT 1 FROM core.access_policies a WHERE a.org_id = core.clients.org_id),
+		       EXISTS (SELECT 1 FROM core.providers p WHERE p.org_id = core.clients.org_id AND p.hook = 'client_access'),
+		       COALESCE(login_ui_url, '')
 		FROM core.clients
-		WHERE client_id = $1`, clientID).
-		Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
-			&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE, &c.PKCEMethods,
-			&c.IDTokenAlg, &c.RefreshTTL, &c.FirstParty, &alias,
-			&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
-			&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
-			&c.TLSThumbprint, &c.TLSBoundTokens,
-			&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
-			&c.ExchangeRequiresAudienceMatch,
-			&c.BackchannelTokenDeliveryMode,
-			&c.BackchannelClientNotificationEndpoint,
-			&c.ClaimsRedirectURIs)
+		WHERE client_id = $1`
+
+// scanLookup reads lookupStatement's row into a client.
+func scanLookup(row pgx.Row, clientID string) (*Client, error) {
+	c := &Client{ClientID: clientID}
+	var secret *string
+	var alias *string
+	var tlsDN, tlsDNS, tlsURI, tlsIP, tlsEmail *string
+	err := row.Scan(&c.OrgID, &c.DisplayName, &c.Type, &secret, &c.Enabled,
+		&c.GrantTypes, &c.ResponseTypes, &c.Scopes, &c.RequirePKCE,
+		&c.IDTokenAlg, &c.AccessAlg, &c.RolesClaim, &c.AccessFormat, &c.SubjectType, &c.Sector,
+		&c.SecurityProfile, &c.RefreshTTL, &c.FirstParty, &alias,
+		&c.MayExchange, &c.ExchangeAudiences, &c.JWTBearerProviders,
+		&tlsDN, &tlsDNS, &tlsURI, &tlsIP, &tlsEmail,
+		&c.TLSThumbprint, &c.TLSBoundTokens,
+		&c.AllowHybrid, &c.TokenEndpointAuthMethod, &c.DPoPBoundAccessTokens,
+		&c.ExchangeRequiresAudienceMatch,
+		&c.BackchannelTokenDeliveryMode,
+		&c.BackchannelClientNotificationEndpoint,
+		&c.ClaimsRedirectURIs,
+		&c.AccessTTL, &c.RefreshReuseGrace, &c.RequirePAR, &c.RequireSignedRequest,
+		&c.AuthorizationResponseAlg, &c.UserinfoSignedAlg,
+		&c.IDTokenEncryption.Alg, &c.IDTokenEncryption.Enc,
+		&c.UserinfoEncryption.Alg, &c.UserinfoEncryption.Enc,
+		&c.AuthorizationEncryption.Alg, &c.AuthorizationEncryption.Enc, &c.IntrospectionSignedAlg,
+		&c.IntrospectionEncryption.Alg, &c.IntrospectionEncryption.Enc, &c.EncryptionKeys,
+		&c.FederationExpiry, &c.RequireState, &c.MinimumACR, &c.AdminAPI,
+		&c.OrgSuspended, &c.InstanceID, &c.RedirectURIs, &c.TokenBudget, &c.HasClaimMappers, &c.HasTokenHook,
+		&c.HasAccessPolicy, &c.HasClientAccessHook, &c.LoginUI)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -234,21 +412,10 @@ func Lookup(ctx context.Context, q Querier, clientID string) (*Client, error) {
 	if tlsEmail != nil {
 		c.TLSSANEmail = *tlsEmail
 	}
-
-	rows, err := q.Query(ctx,
-		`SELECT redirect_uri FROM core.client_redirect_uris WHERE client_id = $1`, clientID)
-	if err != nil {
-		return nil, fmt.Errorf("loading redirect URIs for %q: %w", clientID, err)
+	if len(c.RedirectURIs) == 0 {
+		c.RedirectURIs = nil
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			return nil, err
-		}
-		c.RedirectURIs = append(c.RedirectURIs, u)
-	}
-	return c, rows.Err()
+	return c, nil
 }
 
 // HasRedirectURI reports whether the candidate is registered, by exact string
@@ -339,7 +506,6 @@ func isLoopbackHost(h string) bool {
 	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
-// AllowsResponseType reports whether the client may use this response_type.
 // AllowsResponseType reports whether the client may use this response type.
 //
 // Both sides are normalised first. response_type is a SET: "id_token code" and
@@ -364,9 +530,6 @@ func normaliseSet(rt string) string {
 
 // AllowsGrantType reports whether the client may use this grant.
 func (c *Client) AllowsGrantType(gt string) bool { return contains(c.GrantTypes, gt) }
-
-// AllowsPKCEMethod reports whether the method is permitted for this client.
-func (c *Client) AllowsPKCEMethod(m string) bool { return contains(c.PKCEMethods, m) }
 
 // UnknownScopes returns any requested scope the client is not registered for.
 func (c *Client) UnknownScopes(requested []string) []string {

@@ -6,6 +6,11 @@ SCIM base URL : <issuer>/scim/v2
 bearer token  : <shown once, stored only as a SHA-256 hash>
 ```
 
+`signari scim-source add` registers an upstream and prints that token; the
+Admin API does the same at `POST /admin/organizations/{orgID}/scim-sources` and
+takes one out of service with `PATCH .../scim-sources/{slug}`. See
+[admin-api.md](admin-api.md).
+
 
 ## PATCH is where every implementation goes wrong
 
@@ -41,6 +46,21 @@ created, and the person locked out of everything they owned.
 
 A create without `externalId` is refused, with that reasoning in the message.
 
+## A source never takes over an administrator
+
+A create whose address matches an existing local account adopts that account
+rather than duplicating it. That covers somebody who signed up before
+provisioning was turned on. There is one exception: a person who **may act as
+other users** (a member of a group that may impersonate) is not adopted, and
+the create is answered `403`. The same applies to changing such a person's
+address through a PUT or PATCH. Resending the address they already have is
+fine, and so is switching them off.
+
+A source is trusted to describe the people it manages. An administrator it
+adopted would have an address the upstream could change, and that is one
+password reset away from an account that may become anybody. Every refusal is
+recorded as `scim.privileged_refused`.
+
 ## Retries are free
 
 
@@ -51,12 +71,27 @@ times.
 
 
 `-on-deactivate delete` is available and prints a warning saying what it costs.
+Under it, a person who may act as other users is still only deactivated. The
+upstream's intent, that they stop getting in, is met, and so is the removal of
+their sessions. The answer is `204`, and the trail records
+`scim.privileged_kept`. Removing an administrator's account outright is left to
+an administrator of this deployment. Refusing the DELETE instead would leave a
+departed administrator signed in.
+
+A DELETE of a person or group that is not there answers `404`, as RFC 7644 §3.6
+requires of a resource already deleted, so a retried deprovisioning learns it is
+done. Until October 2026 it answered `204`, as if somebody had just been removed.
 
 ## Deactivation ends sessions
 
 A deactivated account with a live session is still a signed-in person. Every
-path that deactivates — PATCH, DELETE — revokes sessions in the same
-transaction.
+request that deactivates — a PUT, PATCH or re-sent POST carrying
+`"active": false`, or a DELETE — ends the person's sessions in the same
+transaction, and so does a DELETE under `on_delete = delete` before the row
+goes. Each application the person signed in to is sent a back-channel logout
+notice (`reason` `user_deactivated` or `user_deleted`), CAEP receivers get
+`session-revoked`, and the refresh tokens issued under those sessions stop
+working. A proxy cookie stops passing [forward auth](forward-auth.md) at once.
 
 ## Groups
 
@@ -113,6 +148,25 @@ Matching is on `externalId` alone. Matching on `displayName` would make a rename
 look like the deletion of one group and the creation of another, revoking
 everything the first one granted.
 
+### A source manages only the groups it creates
+
+If a `POST /Groups` derives a name that a group in the organisation already
+has, the request is refused with `409 uniqueness`. The existing group might
+have been made by an operator, made by another source, or have members who may
+impersonate. Each group has at most one source, and a group a source manages
+cannot be given impersonation. Both rules are enforced by the database, so they
+also hold for any other writer:
+
+- `signari group impersonation -grant` on a group a source manages is refused;
+- a source cannot be linked to a group that may impersonate.
+
+The reason is the one directory sync already follows. Whoever administers the
+upstream decides who is in its groups. Before this, sending a matching display
+name took the existing group over: the upstream's users went in, everyone else
+was removed, and the group kept everything it already granted. If you want an
+upstream group to reach an application, let the source create the group and
+then release the application to it.
+
 ### Two deliberate asymmetries with /Users
 
 | | Users | Groups |
@@ -132,19 +186,108 @@ because an upstream retries a 500 unchanged forever and acts on a 400.
 
 | | |
 |---|---|
-| bulk | `ServiceProviderConfig` says `supported: false` |
-| sort, etag, changePassword | same |
+| sort, etag, changePassword | `ServiceProviderConfig` says `supported: false` |
 
 Advertising a capability that 404s is the failure this project sweeps for —
 which is why `/Groups` entered `/ResourceTypes` only when it was implemented,
 and why `ResourceTypes` now counts its own list rather than carrying a number
 beside it that can drift.
 
-Filtering supports exactly `userName eq "..."` on `/Users` and
-`displayName eq "..."` on `/Groups`, which is what both upstreams
-send before every create. Anything else is a **400**, not an ignored parameter:
-ignoring an unrecognised filter returns the whole directory, and a caller
-reading the first result would then match the wrong person.
+A list takes a filter in RFC 7644's grammar: `and`, `or`, `not`, brackets, and
+every operator of its Table 3, over what the two resources return. `totalResults`
+counts what matched.
+
+| Resource | Attribute | Compared | Operators |
+|---|---|---|---|
+| Both | `id` | as an id | `eq` `ne` `pr` |
+| Both | `externalId` | as stored | all |
+| Both | `displayName` | ignoring case | all |
+| Both | `meta.created`, `meta.lastModified` | to the second | `eq` `ne` `gt` `ge` `lt` `le` `pr` |
+| User | `userName`, `emails.value` | ignoring case | all |
+| User | `active` | as a boolean | `eq` `ne` `pr` |
+| User | `emails` | | `pr` |
+| Group | `members` | | `pr` |
+| Group | `members.value` | a member's id | `eq` `pr` |
+
+`/Schemas` says the same: `externalId` is `caseExact`, because an upstream's
+identifier is opaque and two that differ by case are two people. An attribute may
+be written with its schema. A person with no address is not equal to any address
+and `eq null` finds them. `id eq` something that is not one of ours finds nobody,
+since an upstream may hold ids from elsewhere. `co`, `sw` and `ew` take the value
+as text, so `%` is a percent sign.
+
+Anything else is a **400** with `scimType` `invalidFilter` (RFC 7644 Table 9),
+not an ignored parameter: ignoring an unrecognised filter returns the whole
+directory, and a caller reading the first result would then match the wrong
+person. That covers an attribute this engine does not store, even negated,
+because read as absent `not (nickName eq "x")` would match everybody; a value of
+the wrong type; `gt` on a boolean; a value path such as `emails[type eq "work"]`;
+and a filter of more than 256 terms. A value is JSON, so a string is quoted and
+`userName eq "a" or userName eq "b"` is two comparisons, where it used to be read
+as a search for one user with an odd name, which matched nobody and invited a
+duplicate create.
+
+## Bulk
+
+`POST /scim/v2/Bulk` takes up to 1,000 operations in 4 MiB, the limits
+`ServiceProviderConfig` publishes, and past either answers **413** naming it. Each
+operation is a POST to `/Users` or `/Groups`, or a PUT, PATCH or DELETE of one by
+id, and goes through what its single request would: the same validation, the same
+audit record, the same refusals.
+
+- A POST needs a `bulkId`, and `"bulkId:qwerty"` anywhere else in the request is
+  replaced by the id it made: a group's member, a `manager.value`, a path. Only a
+  whole string is a reference.
+- Operations run in the order given, except that one naming a `bulkId` not yet made
+  waits for it. References that wait on each other answer **409**, as does one
+  naming a POST that failed. One naming nothing in the request answers **400**.
+- A failure is that operation's. The rest carry on and the job answers **200** with
+  a line for each, in the order asked. **What succeeded stays**: this is not a
+  transaction, as the RFC requires. `failOnErrors` stops after that many errors, and
+  an operation that never ran has no line.
+- `version` is ignored, since ETags are not supported.
+
+## The enterprise user extension
+
+`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` is kept in the
+organisation's own [user attributes](admin-api.md), so declare the ones you want
+with `PUT /admin/organizations/{orgID}/attributes`:
+
+| Extension attribute | User attribute |
+|---|---|
+| `employeeNumber` | `employee_number` |
+| `costCenter` | `cost_center` |
+| `organization` | `organization` |
+| `division` | `division` |
+| `department` | `department` |
+| `manager.value` | `manager` |
+
+Declaring is the whole decision. The declaration says whether a value is personal
+and so sealed under the person's key and destroyed with it, what type it has, and
+through a claim mapper whether it reaches a token, the same as for a value set any
+other way. `/Schemas` and `/ResourceTypes` offer the attributes this organisation
+declares and no others.
+
+A POST, PUT or PATCH can carry the extension, and a PATCH can write it any of the
+ways upstreams do: a full path, a pathless object of full names, a nested object,
+or the extension whole. A manager can be an id, `{"value": id}` or an array of one,
+and its `displayName` is not kept. `remove`, `null` and an empty string clear a
+value.
+
+- An attribute that is not declared is **not stored and not refused**: the request
+  succeeds, as it does for a phone number, and the log names it. Nobody has decided
+  anything about such a value, so it has no erasure story.
+- A value that does not fit the declared type, or that would clear a required
+  attribute, is a **400** with `scimType` `invalidValue`, and nothing in the request
+  is applied.
+- A PUT with the extension replaces it, so what it leaves out is cleared. A PUT
+  without it changes nothing, since a client that does not send it may not
+  understand it.
+- An upstream cannot change the attributes of a person who may act as other users:
+  a **403**, as for their address. Resending what they already hold succeeds.
+- The audit record names which attributes moved, never their values.
+- These attributes cannot be filtered on: a personal value is sealed, so a query
+  cannot read it.
 
 ## Verified against a running engine
 

@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"slices"
+	"testing"
+)
 
 // An allow-list is only a control when the value it filters is vouched for.
 //
@@ -106,5 +110,62 @@ func TestAnAllowListWithoutAttestationIsRefusedByTheSchema(t *testing.T) {
 		t.Fatal("an allow-list was accepted alongside conveyance 'none'. The " +
 			"AAGUIDs it filters would be self-asserted, so the policy would read " +
 			"as a control and be theatre.")
+	}
+}
+
+// The ceremony settings (migration 0170) are refused outside what the browser
+// and the schema understand, by the writer, before the database is asked; an
+// empty one is its default.
+func TestTheCeremonySettingsAreChecked(t *testing.T) {
+	p := WebAuthnPolicy{}
+	if err := p.checkCeremony(); err != nil {
+		t.Fatalf("an empty ceremony was refused: %v", err)
+	}
+	d := DefaultWebAuthnPolicy()
+	if p.UserVerification != d.UserVerification || p.ResidentKey != d.ResidentKey ||
+		p.TimeoutSeconds != d.TimeoutSeconds || len(p.Algorithms) != len(d.Algorithms) || p.Hints == nil {
+		t.Errorf("an empty ceremony became %+v, not the defaults", p)
+	}
+	for name, p := range map[string]WebAuthnPolicy{
+		"verification discouraged": {UserVerification: "discouraged"},
+		"an unknown resident key":  {ResidentKey: "always"},
+		"an unknown attachment":    {Attachment: "usb"},
+		"RS1":                      {Algorithms: []int{-65535}},
+		"a symmetric algorithm":    {Algorithms: []int{-7, 5}},
+		"a timeout under 30s":      {TimeoutSeconds: 10},
+		"a timeout over 300s":      {TimeoutSeconds: 301},
+		"an unknown hint":          {Hints: []string{"nfc"}},
+	} {
+		if err := p.checkCeremony(); !errors.Is(err, ErrInvalidWebAuthnPolicy) {
+			t.Errorf("%s: %v, want refused", name, err)
+		}
+	}
+	ok := WebAuthnPolicy{UserVerification: "preferred", ResidentKey: "discouraged", Attachment: "platform",
+		Algorithms: []int{-8, -36}, TimeoutSeconds: 30, Hints: []string{"client-device"}}
+	if err := ok.checkCeremony(); err != nil {
+		t.Errorf("a valid ceremony was refused: %v", err)
+	}
+}
+
+// What the writer accepts the schema holds, and reads back the same.
+func TestTheCeremonyIsStoredAndReadBack(t *testing.T) {
+	ctx, orgID, _ := profileFixture(t)
+	conn := connect(t)
+	tx, err := conn.Begin(ctx)
+	must(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	want := WebAuthnPolicy{Conveyance: "none", RefuseCloned: true, UserVerification: "preferred",
+		ResidentKey: "preferred", Attachment: "cross-platform", Algorithms: []int{-8, -7},
+		TimeoutSeconds: 90, Hints: []string{"security-key", "hybrid"}}
+	if _, err := SetWebAuthnPolicy(ctx, tx, orgID, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadWebAuthnPolicy(ctx, tx, orgID)
+	must(t, err)
+	if got.UserVerification != want.UserVerification || got.ResidentKey != want.ResidentKey ||
+		got.Attachment != want.Attachment || !slices.Equal(got.Algorithms, want.Algorithms) ||
+		got.TimeoutSeconds != want.TimeoutSeconds || !slices.Equal(got.Hints, want.Hints) {
+		t.Errorf("stored %+v, read back %+v", want, got)
 	}
 }

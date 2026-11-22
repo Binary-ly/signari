@@ -13,6 +13,8 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/policy"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
@@ -29,11 +31,10 @@ import (
 // RelayState, and refusing to emit anything before the request is validated.
 
 const (
-	// maxRelayState is the value SAML itself specifies: 80 bytes. It is enforced
-	// because RelayState comes back to us from the browser and goes into an HTML
-	// form, and an unbounded attacker-controlled string in a page we render is a
-	// place to put a payload.
-	maxRelayState = 80
+	// maxRelayState is enforced because RelayState comes back to us from the
+	// browser and goes into an HTML form, and an unbounded attacker-controlled
+	// string in a page we render is a place to put a payload.
+	maxRelayState = saml.MaxRelayState
 
 	// samlRequestTTL is how long a seen request id is remembered for replay
 	// detection. Comfortably longer than the assertion lifetime, so a replay
@@ -44,50 +45,64 @@ const (
 func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	certs, err := s.samlCertificates(ctx)
-	if err != nil {
-		s.log.Error("building SAML metadata", "err", err)
-		http.Error(w, "unavailable", http.StatusInternalServerError)
-		return
-	}
-
 	// `?sp=<entityID>` tailors the document to one registered provider. The
 	// signing requirement is per-provider, so without this the operator has to
 	// know a fact the metadata does not state -- and getting it wrong means every
-	// login through that provider is refused with a signature error.
+	// login through that provider is refused with a signature error. So is the
+	// signature algorithm, and with it which certificates the provider is given.
 	//
 	// An unknown entity id is NOT an error: it is answered with the default
 	// document, because failing here would turn this endpoint into a way to
 	// enumerate which service providers are registered.
+	slug, ok := s.pathOrg(w, r)
+	if !ok {
+		return
+	}
 	var wantSigned bool
+	signatureAlg := saml.SignatureAlgRSASHA256
 	if sp := r.URL.Query().Get("sp"); sp != "" {
-		if p, perr := store.LoadSAMLProvider(ctx, s.db, sp); perr == nil {
+		if p, perr := s.providerAt(r, sp); perr == nil {
 			wantSigned = p.WantAuthnRequestsSigned
+			signatureAlg = p.SignatureAlg
 		} else if !errors.Is(perr, store.ErrSAMLProviderUnknown) {
-			s.log.Error("loading SAML provider for metadata", "err", perr)
+			s.log.ErrorContext(ctx, "loading SAML provider for metadata", "err", perr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
 	}
 
+	certs, err := s.samlCertificates(ctx, signatureAlg)
+	if err != nil {
+		s.log.ErrorContext(ctx, "building SAML metadata", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	entityID := saml.EntityID(s.cfg.Issuer, slug)
 	doc, err := saml.Metadata(saml.MetadataInput{
-		EntityID:                s.samlEntityID(),
-		SSOURL:                  s.cfg.Issuer + "/saml/sso",
+		EntityID:                entityID,
+		SSOURL:                  entityID + "/sso",
 		WantAuthnRequestsSigned: wantSigned,
 		// Advertised now that it is implemented, and not before -- the same rule
 		// OIDC discovery follows here. An endpoint in metadata that answers with
 		// an error is worse than one that is absent: the service provider calls
 		// it, fails, and blames its own configuration.
-		SLOURL:       s.cfg.Issuer + "/saml/slo",
+		SLOURL:       entityID + "/slo",
+		ArtifactURL:  entityID + "/artifact",
+		ECPURL:       entityID + "/ecp",
 		Certificates: certs,
 		NameIDFormat: saml.NameIDFormatPersistent,
 	})
 	if err != nil {
-		s.log.Error("rendering SAML metadata", "err", err)
+		s.log.ErrorContext(ctx, "rendering SAML metadata", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
+	writeMetadata(w, r, doc)
+}
 
+// writeMetadata serves a metadata document, of either protocol.
+func writeMetadata(w http.ResponseWriter, r *http.Request, doc string) {
 	// charset stated on the wire, not only in the XML declaration.
 	//
 	// ASVS 5.0.0 V4.1.1 names `*/+xml` among the types whose Content-Type must
@@ -100,24 +115,49 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 	// rotating certificate, and a long cache is what turns rotation into an
 	// outage.
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	_, _ = w.Write([]byte(doc))
+	body, _, gzipped := negotiate(w, r, nil, []byte(doc), "")
+	encodedAs(w, gzipped)
+	_, _ = w.Write(body)
 }
 
-// samlEntityID is our own entity id.
+// samlEntityID is our own entity id at a provider.
 //
 // Derived from the issuer rather than configured separately, because two names
 // for the same thing is how a deployment ends up with metadata that no service
 // provider can match against the assertions it receives.
-func (s *Server) samlEntityID() string { return s.cfg.Issuer + "/saml" }
+func (s *Server) samlEntityID(p *saml.Provider) string {
+	return saml.EntityID(s.cfg.Issuer, p.EndpointOrg)
+}
+
+// pathOrg is the organisation slug a metadata path names, "" for the deployment's
+// endpoints. One that names nothing here is a 404, and ok is false.
+func (s *Server) pathOrg(w http.ResponseWriter, r *http.Request) (slug string, ok bool) {
+	slug = r.PathValue("org")
+	if slug == "" {
+		return "", true
+	}
+	_, err := store.OrgBySlug(r.Context(), s.db, s.instanceID, slug)
+	switch {
+	case errors.Is(err, store.ErrSAMLProviderUnknown):
+		http.NotFound(w, r)
+		return "", false
+	case err != nil:
+		s.log.ErrorContext(r.Context(), "reading the organisation a path names", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return "", false
+	}
+	return slug, true
+}
 
 // handleSAMLSSO answers an AuthnRequest on either binding.
 func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var encoded, relayState string
+	var encoded, artifact, relayState string
 	switch r.Method {
 	case http.MethodGet:
 		encoded = r.URL.Query().Get("SAMLRequest")
+		artifact = r.URL.Query().Get("SAMLart")
 		relayState = r.URL.Query().Get("RelayState")
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
@@ -125,9 +165,10 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		encoded = r.PostForm.Get("SAMLRequest")
+		artifact = r.PostForm.Get("SAMLart")
 		relayState = r.PostForm.Get("RelayState")
 	}
-	if encoded == "" {
+	if encoded == "" && artifact == "" {
 		s.samlRefuse(w, r, "no SAMLRequest")
 		return
 	}
@@ -137,6 +178,20 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		// way nobody can trace back to here.
 		s.samlRefuse(w, r, fmt.Sprintf("RelayState is %d bytes, over the %d the "+
 			"specification allows", len(relayState), maxRelayState))
+		return
+	}
+	if encoded == "" {
+		// By artifact (8.08). No cross-site bounce first: what follows the fetch is a
+		// 303 to this path, a same-site GET, which brings the session cookie anyway.
+		s.resolveSAMLRequestArtifact(w, r, artifact, relayState)
+		return
+	}
+	if crossSiteForm(r) {
+		q := url.Values{"SAMLRequest": {encoded}, "Binding": {"POST"}}
+		if relayState != "" {
+			q.Set("RelayState", relayState)
+		}
+		http.Redirect(w, r, r.URL.Path+"?"+q.Encode(), http.StatusSeeOther)
 		return
 	}
 
@@ -162,7 +217,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := store.LoadSAMLProvider(ctx, s.db, req.Issuer)
+	provider, err := s.providerAt(r, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			// Deliberately NOT a SAML error response. Answering an unknown entity
@@ -172,7 +227,7 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the entity id %q", req.Issuer))
 			return
 		}
-		s.log.Error("loading SAML provider", "entity_id", req.Issuer, "err", err)
+		s.log.ErrorContext(ctx, "loading SAML provider", "entity_id", req.Issuer, "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -183,26 +238,26 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	// so an unauthenticated document must not get that far.
 	if provider.WantAuthnRequestsSigned {
 		if err := verifyAuthnRequestSignature(r, provider, &req, raw); err != nil {
-			s.log.Info("SAML AuthnRequest signature refused", "entity_id", req.Issuer,
+			s.log.InfoContext(ctx, "SAML AuthnRequest signature refused", "entity_id", req.Issuer,
 				"err", err, "correlation_id", correlationID(ctx))
 			s.samlRefuse(w, r, err.Error())
 			return
 		}
 	}
 
-	validated, err := saml.ValidateAuthnRequest(&req, provider, s.cfg.Issuer+"/saml/sso", time.Now())
+	validated, err := saml.ValidateAuthnRequest(&req, provider, s.samlEntityID(provider)+"/sso", time.Now())
 	if err != nil {
 		// Refused locally, again. Every failure here is a statement about the
 		// request itself, so there is no established, trustworthy place to send a
 		// SAML error to -- the ACS URL is exactly what is in dispute.
-		s.log.Info("SAML AuthnRequest refused", "entity_id", req.Issuer, "err", err,
+		s.log.InfoContext(ctx, "SAML AuthnRequest refused", "entity_id", req.Issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
 		return
 	}
 
 	// Is there a live session? If not, park this request and sign in first.
-	sid, userID, orgID, ok := s.currentSession(r)
+	session, ok := s.browserSession(r)
 
 	// # ForceAuthn without an infinite loop
 	//
@@ -218,13 +273,34 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 	// forward is to actually authenticate again.
 	needsAuth := !ok
 	if ok && validated.ForceAuthn {
-		fresh, ferr := s.sessionAuthedAfter(ctx, sid, validated.IssueInstant)
-		if ferr != nil {
-			s.log.Error("checking session freshness for ForceAuthn", "err", ferr)
+		needsAuth = !session.AuthTime.After(validated.IssueInstant)
+	}
+	// What the service provider asked of the sign-in, held to the session as an
+	// authorization request's acr_values are, per request: a password session must
+	// not answer a demand for a second factor because it was live.
+	rung, reachable := saml.RequestedRung(validated.RequestedACR, validated.ACRComparison)
+	if !reachable {
+		s.postSAMLStatus(w, r, validated, provider, saml.StatusNoAuthnContext,
+			"no authentication context this directory offers meets the request", relayState)
+		return
+	}
+	if ok && !needsAuth && rung >= 2 {
+		met, merr := s.samlSessionReaches(ctx, session)
+		if merr != nil {
+			s.log.ErrorContext(ctx, "checking a session against a SAML authentication context", "err", merr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
-		needsAuth = !fresh
+		switch met {
+		case samlContextMet:
+		case samlContextUnreachable:
+			// Signing in again would bring the same session back here for ever.
+			s.postSAMLStatus(w, r, validated, provider, saml.StatusNoAuthnContext,
+				"this account cannot reach the requested authentication context", relayState)
+			return
+		default:
+			needsAuth = true
+		}
 	}
 	if needsAuth {
 		if validated.IsPassive {
@@ -234,36 +310,116 @@ func (s *Server) handleSAMLSSO(w http.ResponseWriter, r *http.Request) {
 				"the user is not signed in and IsPassive was requested", relayState)
 			return
 		}
-		back := "/saml/sso?" + samlResumeQuery(encoded, relayState, r.Method, r.URL.RawQuery)
+		// A request already resumed as POST-encoded keeps saying so when it is parked
+		// again. It used to be read from the method alone, so one parked twice, sent
+		// on to a second factor or arriving by artifact (which hands it on that way),
+		// came back as the redirect binding and was refused after the sign-in. Shibboleth
+		// sending its request by artifact found it.
+		method := r.Method
+		if samlBindingFromQuery(r) {
+			method = http.MethodPost
+		}
+		back := r.URL.Path + "?" + samlResumeQuery(encoded, relayState, method, r.URL.RawQuery)
+		if rung >= 2 {
+			http.Redirect(w, r, parkLoginForMFA(back), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r, parkLogin(back), http.StatusSeeOther)
 		return
 	}
 
-	if provider.OrgID != orgID {
-		// The signed-in user belongs to a different organisation than the service
-		// provider does. Issuing here would be a cross-tenant assertion.
-		s.samlRefuse(w, r, "this service provider belongs to a different organisation")
+	if err := checkSPUsable(provider, session.OrgID); err != nil {
+		s.samlRefuse(w, r, err.Error())
 		return
 	}
 
-	doc, acs, err := s.issueSAMLAssertion(ctx, validated, provider, sid, userID, orgID)
+	// A signed AuthnRequest is answered once. Recorded here, where an assertion
+	// is about to be issued for it, and not on arrival: a request parked across
+	// sign-in comes back carrying the same document, and refusing that would
+	// refuse every first sign-in. The table said it covered signed
+	// AuthnRequests and nothing wrote one, so a captured request kept drawing
+	// fresh assertions for whoever held the browser. Unsigned requests are not
+	// recorded: anyone can mint another ID for one, so remembering it protects
+	// nothing. Namespaced by provider, since two providers may pick one ID.
+	if provider.WantAuthnRequestsSigned {
+		fresh, merr := s.markAuthnRequestAnswered(ctx, validated.RequestID, provider)
+		if merr != nil {
+			s.log.ErrorContext(ctx, "recording a signed AuthnRequest", "err", merr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+		if !fresh {
+			s.log.InfoContext(ctx, "SAML AuthnRequest replayed", "entity_id", provider.EntityID,
+				"request_id", validated.RequestID, "correlation_id", correlationID(ctx))
+			s.postSAMLStatus(w, r, validated, provider, saml.StatusRequester,
+				"this AuthnRequest has already been answered", relayState)
+			return
+		}
+	}
+
+	doc, _, err := s.issueSAMLAssertion(ctx, r, validated, provider, session)
+	var denied *policyDenied
+	if errors.As(err, &denied) {
+		// Told to the service provider as a SAML refusal, at the ACS URL the
+		// request was validated against, so it can show its own page rather
+		// than leave the person on ours with nowhere to go.
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: session.OrgID, SubjectID: session.UserID,
+			CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"reason": "access_policy", "rule": denied.d.Rule,
+				"entity_id": provider.EntityID},
+		})
+		s.postSAMLStatus(w, r, validated, provider, saml.StatusRequestDenied, denied.d.Message, relayState)
+		return
+	}
 	if err != nil {
-		s.log.Error("issuing SAML assertion", "entity_id", provider.EntityID, "err", err,
+		s.log.ErrorContext(ctx, "issuing SAML assertion", "entity_id", provider.EntityID, "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, r, acs, doc, relayState)
+	s.deliverSAMLResponse(w, r, validated, provider, doc, relayState)
 }
 
-// sessionAuthedAfter reports whether this session was authenticated after t.
-func (s *Server) sessionAuthedAfter(ctx context.Context, sid string, t time.Time) (bool, error) {
-	var authTime time.Time
-	if err := s.db.QueryRow(ctx,
-		`SELECT auth_time FROM core.sessions WHERE sid = $1`, sid).Scan(&authTime); err != nil {
-		return false, err
+// policyDenied is an access-policy refusal, carried as an error so a caller
+// can answer it as a refusal rather than as a failure.
+// attributeValues is a value a provider answered in JSON as a SAML attribute's values.
+func attributeValues(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
 	}
-	return authTime.After(t), nil
+	return []string{fmt.Sprint(value)}
+}
+
+type policyDenied struct{ d *policy.Decision }
+
+func (e *policyDenied) Error() string { return "refused by the access policy: " + e.d.Message }
+
+// errSPNotUsable is a service provider this session may not receive an
+// assertion for.
+var errSPNotUsable = errors.New("service provider not usable")
+
+// checkSPUsable reports why a service provider may not be sent an assertion
+// for a session in orgID, or nil. One check for SAML and WS-Federation: the
+// second was written without either half, and issued a signed token for another
+// tenant's realm and for a realm its operator had switched off.
+func checkSPUsable(p *saml.Provider, orgID string) error {
+	if !p.Enabled {
+		return fmt.Errorf("%w: this application has been disabled by its administrator", errSPNotUsable)
+	}
+	if p.OrgID != orgID {
+		// The signed-in user belongs to a different organisation than the service
+		// provider does. Issuing here would be a cross-tenant assertion.
+		return fmt.Errorf("%w: this application belongs to a different organisation", errSPNotUsable)
+	}
+	return nil
 }
 
 // verifyAuthnRequestSignature checks the signature by the binding the request
@@ -345,25 +501,49 @@ func samlResumeQuery(encoded, relayState, method, originalQuery string) string {
 	return q.Encode()
 }
 
-func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *saml.Provider,
-	sid, userID, orgID string) (doc string, acs string, err error) {
+func (s *Server) issueSAMLAssertion(ctx context.Context, r *http.Request, v *saml.Validated,
+	p *saml.Provider, session store.BrowserSession) (doc string, acs string, err error) {
 
-	tx, err := s.db.Begin(ctx)
+	sid, userID, orgID := session.SID, session.UserID, session.OrgID
+
+	// Again here, though every caller checks first: this is the one function
+	// that produces a signed assertion for SAML and WS-Federation alike, and
+	// WS-Federation once reached it with neither check made. A caller added
+	// later inherits the refusal rather than having to remember it.
+	if err := checkSPUsable(p, orgID); err != nil {
+		return "", "", err
+	}
+
+	// The access policy, keyed by the entity ID as a relying party's is keyed by
+	// its client ID. Here rather than in each handler because SAML was never
+	// checked at all: a deny rule written for a service provider refused
+	// WS-Federation and let the same application's SAML sign-ins through, while
+	// the WS-Federation page said both were gated.
+	if p.HasAccessPolicy {
+		if pd := s.checkAccessPolicy(ctx, r, orgID, p.EntityID, userID, "openid",
+			oauth.IsMultiFactor(session.AMR), session.AMR); pd != nil {
+			return "", "", &policyDenied{d: pd}
+		}
+	}
+
+	// Each of these reads is a statement of its own, so none needs a transaction,
+	// and the one that writes, a NameID's first use, is one statement that settles
+	// a race by itself.
+	var nameID string
+	if p.NameIDAttribute != "" {
+		nameID, err = store.NameIDFromAttribute(ctx, s.db, userID, orgID, p.NameIDAttribute, s.root)
+	} else {
+		nameID, err = store.EnsureNameID(ctx, s.db, p.ID, userID, orgID, p.NameIDFormat)
+	}
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
-	nameID, err := store.EnsureNameID(ctx, tx, p.ID, userID, orgID, p.NameIDFormat)
+	key, err := s.samlSigningKey(p.SignatureAlg)
 	if err != nil {
 		return "", "", err
 	}
-
-	key, err := s.samlSigningKey()
-	if err != nil {
-		return "", "", err
-	}
-	certDER, err := saml.EnsureCertificate(ctx, tx, key.KID(), s.cfg.Issuer, key.Signer())
+	certDER, err := s.samlCertificateFor(ctx, key)
 	if err != nil {
 		return "", "", err
 	}
@@ -373,21 +553,17 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 	// go stale.
 	sessionIndex := sid
 
-	acr, amr, authTime, err := store.SessionAuthContext(ctx, tx, sid)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Group attributes, if this provider is released any. Read here, inside the
-	// same transaction that mints the assertion, for the same reason the OIDC
-	// path reads them at issuance: an assertion is an authorization statement
-	// with a lifetime, and a stale group in one is privilege that outlived its
-	// revocation.
+	// Group attributes, if this provider is released any. Read here, at
+	// issuance, for the same reason the OIDC path reads them there: an assertion
+	// is an authorization statement with a lifetime, and a stale group in one is
+	// privilege that outlived its revocation.
 	attrs := map[string][]string{}
-	if attrName, groups, gerr := store.GroupsForSAML(ctx, tx, userID, p.ID); gerr != nil {
-		return "", "", gerr
-	} else if attrName != "" && len(groups) > 0 {
-		attrs[attrName] = groups
+	if p.ReleasesGroups {
+		if attrName, groups, gerr := store.GroupsForSAML(ctx, s.db, userID, p.ID); gerr != nil {
+			return "", "", gerr
+		} else if attrName != "" && len(groups) > 0 {
+			attrs[attrName] = groups
+		}
 	}
 
 	// The provider's declared attribute release.
@@ -403,8 +579,8 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 	// sealed under the subject key here too and an erased subject releases
 	// nothing. A SAML assertion is a token by another name; it must not be the
 	// path where erasure does not reach.
-	if s.root != nil {
-		released, rerr := store.SAMLAttributes(ctx, tx, userID, p.ID, s.root)
+	if s.root != nil && p.ReleasesAttributes {
+		released, rerr := store.SAMLAttributes(ctx, s.db, userID, p.ID, s.root)
 		if rerr != nil {
 			return "", "", rerr
 		}
@@ -418,9 +594,31 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 		}
 	}
 
+	// Everything the assertion says has been read, with no transaction held: the
+	// provider below may take its whole timeout and the signer is a crypto.Signer
+	// that may be a remote key service, and neither may keep a pool connection. The
+	// record of who received it is written after, in a transaction of its own, and
+	// the document is returned only once that commits.
+	//
+	// What the operator's provider adds cannot take a name already released, and
+	// refusing is told to the service provider as a policy refusal is, by the caller.
+	if p.HasAssertionHook {
+		hook := s.askHook(ctx, s.db, orgID, provider.HookSAMLAssertion,
+			store.SAMLAssertionHookRequest{Subject: userID, EntityID: p.EntityID, OrgID: orgID})
+		if hook.Vetoed {
+			s.recordHookRefusal(ctx, provider.HookSAMLAssertion, orgID, userID, "", hook.Reason)
+			return "", "", &policyDenied{&policy.Decision{Rule: "provider", Message: clientAccessRefusal}}
+		}
+		for name, value := range hook.Claims {
+			if _, taken := attrs[name]; !taken {
+				attrs[name] = attributeValues(value)
+			}
+		}
+	}
+
 	lifetime := time.Duration(p.LifetimeSeconds) * time.Second
-	doc, err = saml.BuildResponse(saml.ResponseInput{
-		Issuer:      s.samlEntityID(),
+	input := saml.ResponseInput{
+		Issuer:      s.samlEntityID(p),
 		Destination: v.ACSURL,
 		InResponse:  v.RequestID,
 		Audience:    p.EntityID,
@@ -430,26 +628,58 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 		// is what makes this opt-in without a second code path.
 		EncryptionCert: p.SPEncryptionCert,
 		KeyTransport:   p.SPKeyTransport,
+		// What `signari saml signing` chose. Read and ignored until 2.05: every
+		// response signed the assertion only, whatever the provider was set to.
+		UnsignedAssertion: !p.SignAssertions,
+		SignResponse:      p.SignResponses,
 		Subject: saml.Subject{
 			NameID:       nameID,
 			NameIDFormat: saml.FullNameIDFormat(p.NameIDFormat),
 			SessionIndex: sessionIndex,
-			AuthnInstant: authTime,
+			AuthnInstant: session.AuthTime,
 			// The context reflects what the user ACTUALLY did, not what was asked
 			// for. Claiming multi-factor for a password-only session is a lie the
-			// service provider makes access decisions on.
-			AuthnContext: samlAuthnContext(acr, amr),
+			// service provider makes access decisions on. The stored acr is not
+			// used: it is derived from the methods (samlAuthnContext).
+			AuthnContext: samlAuthnContext(session.AMR),
 			Attributes:   attrs,
 		},
-	}, key.KID(), key.Signer(), certDER)
+	}
+	build := saml.BuildResponse
+	if v.WSFed {
+		// The assertion goes out alone, with no Response around it. What a provider
+		// chose about signing is a choice between the two, and here there is one:
+		// left unsigned because a Response signature stood in for it, the token
+		// reaches the application with a signature on nothing.
+		input.UnsignedAssertion, input.SignResponse = false, false
+		if p.WSFedSAMLVersion == saml.WSFedSAML11 {
+			build = saml.BuildSAML11Assertion
+		}
+	}
+	doc, err = build(input, key.KID(), key.Signer(), certDER)
 	if err != nil {
 		return "", "", err
 	}
 
-	if err := store.RecordSAMLParticipant(ctx, tx, sid, p.ID, orgID, sessionIndex, nameID); err != nil {
+	record, err := s.db.Begin(ctx)
+	if err != nil {
 		return "", "", err
 	}
-	if err := audit.Write(ctx, tx, audit.Event{
+	defer func() { _ = record.Rollback(ctx) }()
+	// An ECP sign-in has no session (samlecp.go), so nothing for a logout to end.
+	if sid != "" {
+		// A WS-Federation token's reply URL, where a sign-out's clean-up message goes
+		// (wsFedCleanup).
+		wsfedReply := ""
+		if v.WSFed {
+			wsfedReply = v.ACSURL
+		}
+		if err := store.RecordSAMLParticipant(ctx, record, sid, p.ID, orgID, sessionIndex, nameID,
+			saml.FullNameIDFormat(p.NameIDFormat), wsfedReply); err != nil {
+			return "", "", err
+		}
+	}
+	if err := audit.Write(ctx, record, audit.Event{
 		Type: "saml.assertion_issued", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 		Detail: map[string]any{
@@ -458,10 +688,37 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 	}); err != nil {
 		return "", "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := record.Commit(ctx); err != nil {
 		return "", "", err
 	}
 	return doc, v.ACSURL, nil
+}
+
+// samlContextState is how a live session stands against a demand for a second factor.
+type samlContextState int
+
+const (
+	// samlContextShort is a session a second factor at sign-in would lift.
+	samlContextShort samlContextState = iota
+	samlContextMet
+	// samlContextUnreachable is one signing in again cannot lift.
+	samlContextUnreachable
+)
+
+// samlSessionReaches holds a live session to a demand for a second factor, as the
+// authorization endpoint holds one to acr_values=2.
+func (s *Server) samlSessionReaches(ctx context.Context, session store.BrowserSession) (samlContextState, error) {
+	if oauth.IsMultiFactor(session.AMR) {
+		return samlContextMet, nil
+	}
+	enrolled, err := store.HasSecondFactor(ctx, s.db, session.UserID)
+	if err != nil {
+		return samlContextShort, err
+	}
+	if !enrolled || s.stepUpNeverAsked(ctx, session.OrgID, session.UserID, samlStepUpQuery) {
+		return samlContextUnreachable, nil
+	}
+	return samlContextShort, nil
 }
 
 // samlAuthnContext reports what the user ACTUALLY did to sign in.
@@ -474,14 +731,12 @@ func (s *Server) issueSAMLAssertion(ctx context.Context, v *saml.Validated, p *s
 // anything other than "0", and a password-only session carries acr "1". So
 // every ordinary login claimed MFA. It was caught by comparing a live assertion
 // against the session row that produced it, not by reading the code.
-func samlAuthnContext(acr string, amr []string) string {
-	for _, m := range amr {
-		switch m {
-		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA:
-			return saml.AuthnContextMFA
-		}
-	}
-	if acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor {
+//
+// It then claimed MFA for a single hardware key, so a passkey used without user
+// verification -- one factor -- satisfied a service provider's step-up. Now the
+// one predicate every MFA decision uses (oauth.IsMultiFactor).
+func samlAuthnContext(amr []string) string {
+	if oauth.IsMultiFactor(amr) {
 		return saml.AuthnContextMFA
 	}
 	return saml.AuthnContextPassword
@@ -498,33 +753,22 @@ func samlAuthnContext(acr string, amr []string) string {
 // language the request asked for; see postAuthzResponse.
 func (s *Server) postSAMLResponse(w http.ResponseWriter, r *http.Request,
 	acs, doc, relayState string) {
-	// NOT htmlPageHeaders, and this is the one HTML response here that must not
-	// use it.
-	//
-	// That helper sets `form-action 'self'`, which is right for every page whose
-	// form posts back to us and wrong for this one: this form posts the assertion
-	// to the service provider's ACS URL, on another origin, so `form-action
-	// 'self'` would block the delivery that is the entire purpose of the page.
-	// The page also auto-submits from an inline `onload`, which the absence of
-	// `default-src` and `script-src` here permits.
-	//
-	// So the policy is deliberately just the framing rule. Written out rather
-	// than layered over the helper: calling the helper and then overwriting its
-	// policy works only because of the order of two lines, and the next person to
-	// tidy that is one edit away from breaking SAML sign-in for every relying
-	// party.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	// The page contains an assertion, so it must not be framed: a framed
-	// auto-submitting form is how an assertion gets delivered without the user
-	// realising anything happened.
-	w.Header().Set("X-Frame-Options", "DENY")
-	setCSP(w, "frame-ancestors 'none'")
-
-	s.renderBare(w, r, "saml", map[string]any{
+	nonce, err := newCSPNonce()
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// `form-action` is left out, which is right for this page and wrong for almost
+	// every other: this form posts the assertion to the service provider's ACS URL,
+	// on another origin, which is the entire purpose of the page. The script is the
+	// page's one line, by nonce, and frame-ancestors matters because an assertion
+	// in a framed auto-submitting form is delivered without the person realising.
+	s.renderBare(w, r, "saml", "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"ACS":        acs,
 		"Response":   base64Std(doc),
 		"RelayState": relayState,
+		"Nonce":      nonce,
 	})
 }
 
@@ -537,7 +781,7 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 	p *saml.Provider, status, reason, relayState string) {
 
 	doc, err := saml.BuildStatusResponse(saml.StatusInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      s.samlEntityID(p),
 		Destination: v.ACSURL,
 		InResponse:  v.RequestID,
 		Status:      status,
@@ -545,11 +789,26 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 		Now:         time.Now(),
 	})
 	if err != nil {
-		s.log.Error("building a SAML status response", "err", err)
+		s.log.ErrorContext(r.Context(), "building a SAML status response", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.postSAMLResponse(w, r, v.ACSURL, doc, relayState)
+	s.deliverSAMLResponse(w, r, v, p, doc, relayState)
+}
+
+// markAuthnRequestAnswered records a signed AuthnRequest's ID, reporting false
+// if it was answered before.
+func (s *Server) markAuthnRequestAnswered(ctx context.Context, requestID string, p *saml.Provider) (bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	fresh, err := store.MarkSAMLRequestSeen(ctx, tx, "authn:"+p.ID+":"+requestID, p.OrgID, p.ID, samlRequestTTL)
+	if err != nil {
+		return false, err
+	}
+	return fresh, tx.Commit(ctx)
 }
 
 // samlRefuse answers the BROWSER, not the service provider.
@@ -559,13 +818,11 @@ func (s *Server) postSAMLStatus(w http.ResponseWriter, r *http.Request, v *saml.
 // request -- would hand an attacker a redirect to anywhere, which is the thing
 // the allow-list exists to prevent.
 func (s *Server) samlRefuse(w http.ResponseWriter, r *http.Request, reason string) {
-	s.log.Info("SAML request refused", "reason", reason,
+	s.log.InfoContext(r.Context(), "SAML request refused", "reason", reason,
 		"correlation_id", correlationID(r.Context()))
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
 	// The reason is rendered as text through the template package, never
 	// concatenated into HTML: much of it is attacker-controlled.
-	s.renderPage(w, r, "samlerr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "samlerr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})
@@ -580,47 +837,45 @@ func samlBindingFromQuery(r *http.Request) bool {
 	return strings.EqualFold(r.URL.Query().Get("Binding"), "POST")
 }
 
-// samlSigningKey picks the key SAML can actually use.
+// samlKeyAlgorithm is the signing key a provider's signature algorithm uses.
+// Anything but ecdsa-sha256 is RSA, which is also what an unknown provider's
+// metadata is built for.
+func samlKeyAlgorithm(signatureAlg string) keys.Algorithm {
+	if signatureAlg == saml.SignatureAlgECDSASHA256 {
+		return keys.ES256
+	}
+	return keys.RS256
+}
+
+// samlSigningKey picks the key a provider is signed with: the active RS256 key
+// unless the provider was set to ecdsa-sha256.
 //
 // Distinct from anySigningKey, which prefers ES256: that is the right default
-// for OIDC and unusable here, because a great deal of service-provider software
-// cannot verify ECDSA. Choosing it would produce assertions that are correct and
-// rejected anyway.
-func (s *Server) samlSigningKey() (keys.Key, error) {
-	if k, err := s.cfg.Keys.Active(keys.RS256); err == nil {
+// for OIDC and wrong as one here, because a great deal of service-provider
+// software cannot verify ECDSA. Signing every provider with it would produce
+// assertions that are correct and rejected anyway, so ECDSA is chosen per
+// provider by whoever knows the far end.
+func (s *Server) samlSigningKey(signatureAlg string) (keys.Key, error) {
+	alg := samlKeyAlgorithm(signatureAlg)
+	if k, err := s.cfg.Keys.Active(alg); err == nil {
 		return k, nil
 	}
-	return nil, fmt.Errorf("SAML needs an active RS256 key and this instance has none; " +
-		"add one with `signari keys rotate -alg RS256`")
+	return nil, fmt.Errorf("SAML %s needs an active %s key and this instance has none; "+
+		"add one with `signari keys rotate -alg %s`", signatureAlg, alg, alg)
 }
 
-// samlCertificateFor returns the stored certificate for one key.
+// samlCertificateFor returns the stored certificate for one key. Held once read:
+// a key's certificate is written while it has none and never after, so what a
+// key id names cannot change underneath this.
 func (s *Server) samlCertificateFor(ctx context.Context, k keys.Key) ([]byte, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
-	if err != nil {
-		return nil, err
-	}
-	return der, tx.Commit(ctx)
-}
-
-// samlCertificates returns every certificate a service provider should accept,
-// so that rotation does not break every integration at the moment of the switch.
-func (s *Server) samlCertificates(ctx context.Context) ([][]byte, error) {
-	k, err := s.samlSigningKey()
-	if err != nil {
-		return nil, err
+	if der, held := s.samlCertCache.Load(k.KID()); held {
+		return der.([]byte), nil
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
 	der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
 	if err != nil {
 		return nil, err
@@ -628,5 +883,53 @@ func (s *Server) samlCertificates(ctx context.Context) ([][]byte, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return [][]byte{der}, nil
+	s.samlCertCache.Store(k.KID(), der)
+	return der, nil
+}
+
+// samlCertificates returns every certificate a service provider should accept,
+// so that rotation does not break every integration at the moment of the switch.
+//
+// For the algorithm one provider is signed with, so a provider on ecdsa-sha256
+// is given the ES256 certificates and every other reader the RS256 ones.
+func (s *Server) samlCertificates(ctx context.Context, signatureAlg string) ([][]byte, error) {
+	active, err := s.samlSigningKey(signatureAlg)
+	if err != nil {
+		return nil, err
+	}
+	// Every key of that algorithm that is not retired: the active one that
+	// signs, the next one so a provider refetching metadata pins it before it
+	// signs, and the passive one a provider may still be holding a response
+	// from. Only the active key's certificate was published, against
+	// docs/saml.md, so a rotation was an outage for every provider that pins:
+	// the first assertion under the new key arrived with a certificate it had
+	// never seen.
+	ordered := []keys.Key{active}
+	for _, k := range s.cfg.Keys.Keys() {
+		if k.KID() == active.KID() || k.Algorithm() != active.Algorithm() {
+			continue
+		}
+		if st := k.State(); st == keys.StateNext || st == keys.StatePassive {
+			ordered = append(ordered, k)
+		}
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var out [][]byte
+	for _, k := range ordered {
+		der, err := saml.EnsureCertificate(ctx, tx, k.KID(), s.cfg.Issuer, k.Signer())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, der)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

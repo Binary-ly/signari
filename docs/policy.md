@@ -9,6 +9,10 @@ signari policy apply -org <uuid> -policy-file access.yaml
 signari policy show  -org <uuid>
 ```
 
+The Admin API reads and applies the same file at
+`/admin/organizations/{orgID}/access-policy`, parsed and tested the same way
+before it is stored; see [admin-api.md](admin-api.md).
+
 ```yaml
 version: 1
 policies:
@@ -82,6 +86,78 @@ requests the earlier rules had just approved, and denied them. Default-deny was
 inexpressible. **The file's own tests caught it**, which is the mechanism this
 package is about, applied to itself.
 
+**A rule can ask about a person's attributes**, as the directory has them when the
+decision is made, by a value or by holding one at all:
+
+```yaml
+- name: finance-from-its-own-cost-centres
+  when: {client: ledger}
+  require:
+    user_attributes:
+      cost_centre: ["4100", "4200"]   # one of these
+      employee_number: []             # any value at all
+```
+
+Only an attribute the organisation has declared and not as `personal`. Storing a
+policy that names another is refused, because an undeclared name is a typo nobody
+could meet, and a personal value is sealed under its subject's key and would be
+opened for every decision. A test case gives a person's attributes with `attributes:`.
+It is about who somebody is, so it is checked at a refresh too.
+
+**A rule can ask when, and from where.**
+
+```yaml
+- name: payroll-in-office-hours
+  when: {client: payroll}
+  require:
+    time: {days: [mon, tue, wed, thu, fri], from: "09:00", to: "17:00", zone: Europe/London}
+    from_countries: [GB, IE]
+- name: not-from-there
+  require:
+    not_from_countries: [KP]
+- name: not-from-a-bad-address
+  require:
+    max_recent_failures: 20
+```
+
+`time` goes by this server's clock and holds at a refresh too, so access for office
+hours stops at the end of them, and a test case pins the moment with `at:`.
+
+The countries need a GeoIP source, `SIGNARI_GEOIP_DB` or `SIGNARI_GEOIP_STATIC`, and
+`signari doctor` warns when a policy asks and there is none. An address nothing can
+place does **not** meet `from_countries`, for the reason it does not meet
+`from_networks`, and it passes `not_from_countries`, which is evidence against a request
+and has none. Test cases give `country:`.
+
+`max_recent_failures` refuses an address that has failed more sign-ins than this in the
+last five minutes across every account, from the budget the sign-in form keeps. Test
+cases give `recent_failures:`.
+
+**A rule can ask which network an address is on**, by the autonomous system that
+announces it: the company's own, or its cloud provider's, or not a hosting provider's.
+
+```yaml
+- name: payroll-from-our-network
+  when: {client: payroll}
+  require:
+    from_asns: [64500, 64501]
+- name: not-from-a-hosting-provider
+  require:
+    not_from_asns: [64666]
+```
+
+The networks need an ASN source: `SIGNARI_GEOIP_ASN_DB`, an IP-to-ASN database in
+MaxMind's format (GeoLite2-ASN, GeoIP2-ISP, or DB-IP's IP-to-ASN Lite), or
+`SIGNARI_GEOIP_ASN_STATIC` for ranges you know. It is a different file from the GeoIP
+one, and a city database given here is refused at startup, by its own description,
+rather than opened to place nobody. The rule is the countries' rule: an address no source
+places does not meet `from_asns` and passes `not_from_asns`, and `signari doctor` warns
+when a policy asks and nothing can answer. `0` is refused in either list, because it is
+what an unplaced address carries. Test cases give `asn:`.
+
+All of these are about where somebody is, so they are checked at sign-in, not at a
+refresh, and not met on a grant nobody watched.
+
 **Unknown fields are an error.** `any_groups` is not a field; `any_group` is.
 Silently ignoring the typo leaves a rule that appears to restrict and demands
 nothing — the most dangerous possible mistake in a file like this.
@@ -106,7 +182,70 @@ this came from" as "inside the office" is how a network restriction becomes
 decorative behind a proxy that strips the address.
 
 **Group membership and MFA are read at decision time**, not from anything cached
-on the session — the same rule the group claims follow.
+on the session — the same rule the group claims follow. A person is in a group
+through any group inside it too, so `groups: [engineering]` admits somebody whose
+only group is `oncall`, when `oncall` is inside `engineering` (see
+[groups.md](groups.md#groups-inside-groups)). Test cases give the groups a person
+ends up in, nesting included.
+
+## Where it is asked
+
+At every way into a relying party or service provider, keyed by its client ID or
+SAML entity ID:
+
+| | |
+|---|---|
+| the authorization endpoint, the portal, remote access | when the person signs in |
+| SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
+| the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
+| every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
+| token exchange, the jwt-bearer grant, UMA (once a person is identified), transaction tokens and the OID4VCI pre-authorized code | before the token is minted. Who the person is is checked as for a refresh; **where they are is not met**, so a network, device or travel condition refuses (`unobserved: true` in a test case). The factors are those of the session behind an exchanged token; the others have none, so **a rule requiring MFA refuses them**. A `scope` rule is matched against the scope the token will carry, not the request's parameter: the client's whole registration when a jwt-bearer request names none or for a pre-authorized code, which has no scope parameter, and the ticket's permissions (`document:42#read`) for an RPT. A refusal is `invalid_grant`; a refused pre-authorized code is not spent. The person must also be in the client's organisation |
+| forward auth | on every request to a protected application, keyed `proxy:<host>`. Network, device and travel conditions refuse there, as for the grants above, because the request comes from the proxy and carries the proxy's address and headers — see [forward auth](forward-auth.md#who-may-reach-which-application) |
+
+Until October 2026 the list stopped at the first row and WS-Federation. A deny
+rule for a client blocked its browser sign-ins and still let through its
+smart-TV, SAML and CIBA ones, plus every refresh of a token it had already
+issued. The four grants in the last row of issuers were found later the same
+month, by a test that follows the code from every function that mints a token
+or builds an assertion back to its route, and fails where no check is on the
+way (`TestEveryIssuingPathAsksTheAccessPolicy`). The authorization code, device
+and CIBA redemptions are listed there with the place their check happens. The
+client-credentials grant is listed as asking nothing, because it has no person,
+and a catch-all rule about people would refuse every machine client.
+
+**A refresh re-checks who the person is, not where they are.** Groups, deny
+rules and the factors the session recorded are evaluated again. Someone removed
+from the group a rule demands stops receiving tokens at the next refresh. The
+network, device and travel conditions are skipped (`refresh: true` in a test
+case says the same). They describe the browser at sign-in and were checked
+then. A refresh request comes from the application's server, and that server's
+address and lack of a device certificate say nothing about the person.
+
+**A grant nobody watched arrive does not meet a where-from condition.** The
+jwt-bearer, pre-authorized code, token exchange, UMA and transaction-token
+grants come from a server or a wallet too, but no sign-in to this client stands
+behind them, so nothing has ever checked where the person was. A network,
+device or travel condition on the client therefore **refuses** them, as it does
+at forward auth. The travel condition is met when it could not be checked for a
+person signing in, so that a first-time user is not locked out. Here nobody is
+signing in, so that reason does not apply.
+
+Until October 2026 these grants were decided like a refresh. A rule admitting a
+client only from the office network held at its sign-in page and did nothing
+for anybody holding an assertion for it. Forward auth refused the network
+condition but let the travel condition through as "not checked". Both now
+follow the one rule:
+
+```yaml
+tests:
+  - name: a grant for the office application
+    given: {client: payroll, ip: "10.1.2.3", unobserved: true}
+    expect: deny
+```
+
+To let a server use such a grant for a client restricted by network, put the
+restriction in a rule for the browser's client and give the server its own
+client.
 
 ## Verified against the running server
 

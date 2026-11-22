@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +55,11 @@ type Worker struct {
 	// place a third party's credential should sit, and rows there outlive the
 	// delivery by design.
 	root *keys.RootKey
+	// notify delivers account notices (accountnotice.go); nil leaves them queued.
+	notify AccountNotifier
+	// instances are what each served instance signs with (instances.go); empty
+	// signs everything with keys and issuer.
+	instances map[string]signer
 }
 
 func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
@@ -64,7 +70,7 @@ func New(db *pgxpool.Pool, keySet *keys.Set, issuer string, root *keys.RootKey,
 		issuer: issuer,
 		root:   root,
 		log:    log,
-		batch:  25,
+		batch:  100,
 		// A relying party's endpoint is a third-party service that may be down,
 		// slow, or hostile. The timeout bounds the wait so one bad receiver
 		// cannot stall every other delivery.
@@ -84,50 +90,77 @@ func withNoRedirects(c *http.Client) *http.Client {
 	return c
 }
 
+// drainer is one topic and what its drain is called in the log.
+type drainer struct {
+	what  string
+	batch int
+	drain func(context.Context) (int, error)
+}
+
+// drainers are the topics. Each has a goroutine of its own, so a receiver that is
+// down holds up nothing but its own topic: they used to share one, in turn, and a
+// batch timing out at one receiver delayed every logout notice behind it.
+func (w *Worker) drainers() []drainer {
+	return []drainer{
+		{"logout notices", w.batch, w.drainOnce},
+		{"SAML logouts", w.batch, w.drainSAMLLogouts},
+		{"security events", w.batch, w.DrainSSF},
+		// Parked rows are invisible to the claim query, so only decided requests
+		// are drained here.
+		{"CIBA ping notifications", w.batch, w.drainCIBAPings},
+		// Separate from pings because they carry tokens rather than an identifier.
+		{"CIBA token pushes", w.batch, w.drainCIBAPushes},
+		{"events", webhookBatch, w.DrainWebhooks},
+		// Notices to account holders the Admin API and the CLI raised.
+		{"account notices", w.batch, w.DrainAccountNotices},
+	}
+}
+
 // Run drains the outbox until the context is cancelled.
 func (w *Worker) Run(ctx context.Context, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+	w.runEach(ctx, interval, w.drainers())
+}
+
+func (w *Worker) runEach(ctx context.Context, interval time.Duration, topics []drainer) {
+	var wg sync.WaitGroup
+	for _, d := range topics {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(interval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					w.drainAll(ctx, d)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// drainAll drains a topic until a batch comes back short, which is when the queue
+// has run out or the rest has to wait for its backoff. One batch to a tick capped
+// a mass logout at 12 notices a second, however fast the receivers were.
+func (w *Worker) drainAll(ctx context.Context, d drainer) {
+	for ctx.Err() == nil {
+		n, err := d.drain(ctx)
+		if err != nil {
+			// Stopping mid-batch is what a shutdown looks like, and what it left comes
+			// round again: an error here is one nobody can act on.
+			if ctx.Err() == nil {
+				w.log.Error("draining "+d.what, "err", err)
+			}
 			return
-		case <-t.C:
-			if n, err := w.drainOnce(ctx); err != nil {
-				w.log.Error("draining outbox", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered logout notices", "count", n)
-			}
-			// Security events drain on the same tick and independently: a
-			// receiver that is down must not hold up logout delivery to everybody
-			// else, and vice versa.
-			if n, err := w.DrainSSF(ctx); err != nil {
-				w.log.Error("draining security events", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered security events", "count", n)
-			}
-			// CIBA ping notifications, same tick, same independence. Parked
-			// rows are invisible to the claim query, so only decided requests
-			// are drained here.
-			if n, err := w.drainCIBAPings(ctx); err != nil {
-				w.log.Error("draining CIBA pings", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered CIBA ping notifications", "count", n)
-			}
-			// CIBA push deliveries. Separate from pings because they carry
-			// tokens rather than an identifier, and a failure in one topic must
-			// not stall the other.
-			if n, err := w.drainCIBAPushes(ctx); err != nil {
-				w.log.Error("draining CIBA pushes", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered CIBA token pushes", "count", n)
-			}
-			// Event subscriptions, on the same tick and equally independently.
-			if n, err := w.DrainWebhooks(ctx); err != nil {
-				w.log.Error("draining event subscriptions", "err", err)
-			} else if n > 0 {
-				w.log.Info("delivered events", "count", n)
-			}
+		}
+		if n > 0 {
+			w.log.Info("delivered "+d.what, "count", n)
+		}
+		if n < d.batch {
+			return
 		}
 	}
 }
@@ -143,8 +176,8 @@ type pending struct {
 // Long enough that a batch in flight is never picked up twice, short enough
 // that an instance which dies mid-batch does not strand a logout for long. With
 // delivery running concurrently and bounded by the HTTP timeout, a batch
-// finishes in about that timeout rather than the sum of them, so a minute is
-// generous.
+// finishes in about that timeout rather than the sum of them: a full batch of
+// dead receivers is three rounds of concurrency, so a minute is generous.
 const claimLease = 60 * time.Second
 
 // deliveryConcurrency bounds parallel POSTs within one batch.
@@ -153,7 +186,23 @@ const claimLease = 60 * time.Second
 // the batch behind it: 25 notices at a 10 second timeout is over four minutes
 // during which a slow receiver blocks everybody else's logout. The failure that
 // matters here is exactly the one where somebody is down.
-const deliveryConcurrency = 8
+const deliveryConcurrency = 32
+
+// inParallel runs each of n, deliveryConcurrency at a time, and waits for them.
+func inParallel(n int, each func(i int)) {
+	sem := make(chan struct{}, deliveryConcurrency)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			each(i)
+		}()
+	}
+	wg.Wait()
+}
 
 // backoffFor is the capped exponential wait after a failed delivery.
 //
@@ -191,7 +240,11 @@ func (w *Worker) drainOnce(ctx context.Context) (int, error) {
 
 // deliver POSTs a signed logout token to one relying party.
 func (w *Worker) deliver(ctx context.Context, n store.LogoutNotice) error {
-	token, err := w.mintLogoutToken(n)
+	as, err := w.signerFor(ctx, n.ClientID)
+	if err != nil {
+		return err
+	}
+	token, err := signLogoutToken(as, n)
 	if err != nil {
 		return fmt.Errorf("minting logout token: %w", err)
 	}
@@ -238,7 +291,14 @@ type logoutClaims struct {
 	Extra    map[string]string `json:"-"`
 }
 
+// mintLogoutToken is signLogoutToken as the set and issuer the worker was
+// built with.
 func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
+	return signLogoutToken(signer{keys: w.keys, issuer: w.issuer}, n)
+}
+
+// signLogoutToken is the logout token for a notice, signed as one instance.
+func signLogoutToken(as signer, n store.LogoutNotice) (string, error) {
 	// A notice naming neither a session nor a subject produces a valid, signed
 	// instruction to end NOTHING. The relying party has no way to act on it, and
 	// no way to tell it apart from a logout it handled correctly -- so the
@@ -256,9 +316,9 @@ func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
 	// Sign with whatever is active. RS256 first: it is the universal floor, and a
 	// logout endpoint is exactly the kind of lightly-maintained code path most
 	// likely to support only RS256.
-	key, err := w.keys.Active(keys.RS256)
+	key, err := as.keys.Active(keys.RS256)
 	if err != nil {
-		if key, err = w.keys.Active(keys.ES256); err != nil {
+		if key, err = as.keys.Active(keys.ES256); err != nil {
 			return "", fmt.Errorf("no active signing key: %w", err)
 		}
 	}
@@ -270,7 +330,7 @@ func (w *Worker) mintLogoutToken(n store.LogoutNotice) (string, error) {
 	now := time.Now()
 
 	c := logoutClaims{
-		Issuer:   w.issuer,
+		Issuer:   as.issuer,
 		Audience: n.ClientID,
 		IssuedAt: now.Unix(),
 		// Short-lived: a logout token is consumed immediately or not at all, and

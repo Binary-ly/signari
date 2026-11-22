@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // Verifying somebody else's Security Event Tokens.
@@ -21,6 +24,30 @@ import (
 // unauthenticated caller end other people's sessions. The endpoint is
 // unauthenticated by design -- the signature IS the credential -- so these are
 // the only thing standing between a POST and a mass sign-out.
+
+// The transmitters here serve their keys from loopback, which the real client
+// refuses. This is the real client told about loopback, so the dialler stays
+// in the path; TestAKeySetOnAPrivateAddressIsNotFetched puts the default back.
+func init() {
+	keyClient = func(t time.Duration) *http.Client {
+		return safedial.ClientAllowing(t, netip.MustParsePrefix("127.0.0.1/32"))
+	}
+}
+
+// A source's key URL that resolves into the private network is refused at
+// dial time: the fetch is triggered by whichever key id a sender names, so
+// without it anyone could make the engine request an internal address.
+func TestAKeySetOnAPrivateAddressIsNotFetched(t *testing.T) {
+	widened := keyClient
+	keyClient = safeKeyClient
+	t.Cleanup(func() { keyClient = widened })
+
+	tr := newTransmitter(t)
+	_, err := (&KeyFetcher{}).Keys(context.Background(), tr.server.URL, tr.kid)
+	if err == nil || !strings.Contains(err.Error(), "refusing to connect") {
+		t.Fatalf("err = %v, want the dialler's refusal", err)
+	}
+}
 
 type transmitter struct {
 	key    *ecdsa.PrivateKey

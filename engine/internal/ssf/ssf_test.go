@@ -173,7 +173,9 @@ func TestSupportedEventsAreOnlyWhatWeSend(t *testing.T) {
 		t.Fatal("nothing is advertised")
 	}
 	for _, e := range supported {
-		if e != EventSessionRevoked && e != EventCredentialChange {
+		switch e {
+		case EventSessionRevoked, EventCredentialChange, EventAccountDisabled, EventAccountEnabled:
+		default:
 			t.Errorf("%q is advertised but this engine does not emit it", e)
 		}
 	}

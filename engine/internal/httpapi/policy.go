@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -10,99 +11,158 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/policy"
-	"signari.dev/engine/internal/posture"
 	"signari.dev/engine/internal/risk"
 	"signari.dev/engine/internal/store"
 )
 
-// Access policy evaluation at the authorization endpoint.
+// Access policy evaluation at every way into a relying party.
 //
-// # Loaded, cached, and re-checked
+// # Read on every decision
 //
-// The policy is read from the database and held in memory, because it is
-// consulted on every authorization and a query there is a query on the login
-// path. It is refreshed on a timer rather than per request.
+// Which document is in force is asked of the database on every decision: one
+// indexed row, its digest only. The document is fetched and parsed again only
+// when the digest has changed, so the parse is memoised and the decision is not.
 //
-// The cache holds only a policy that PARSED AND PASSED ITS OWN TESTS. A file
-// that fails is refused at load and the previous one stays in force -- a broken
-// policy must never become an absent policy, because "absent" means "allow
-// everything" and that is the one outcome nobody would choose deliberately.
+// It used to be a full reload on a thirty-second timer, undeclared, for a
+// document whose rules include `deny: true` -- a security-negative decision,
+// which ADR-007 says is never served from a snapshot. A deny rule written to
+// shut a client out took up to half a minute to start working on each node, and
+// the guard meant to catch undeclared caches matched field names and could not
+// see a field called `policies`.
+//
+// Only a policy that PARSED AND PASSED ITS OWN TESTS is ever used. A stored
+// document that fails -- possible only if it was written directly, bypassing
+// `policy apply` -- keeps the previous one in force, and with no previous one
+// refuses everything: a broken policy must never become an absent policy,
+// because "absent" means "allow everything" and that is the one outcome nobody
+// would choose deliberately.
 
 type policyCache struct {
-	mu       sync.RWMutex
-	byOrg    map[string]*policy.File
-	loadedAt time.Time
+	mu    sync.Mutex
+	byOrg map[string]policyEntry
 }
 
-const policyRefresh = 30 * time.Second
+// policyEntry is the parse of one organisation's document.
+type policyEntry struct {
+	// digest is md5(document) of the row this entry answers for. A broken
+	// document is recorded too, so it is reported once rather than re-parsed
+	// and logged on every request.
+	digest string
+	file   *policy.File
+}
 
 func newPolicyCache() *policyCache {
-	return &policyCache{byOrg: map[string]*policy.File{}}
+	return &policyCache{byOrg: map[string]policyEntry{}}
 }
 
-// policyFor returns the policy in force, refreshing if stale.
-func (s *Server) policyFor(ctx context.Context, orgID string) *policy.File {
-	s.policies.mu.RLock()
-	fresh := time.Since(s.policies.loadedAt) < policyRefresh
-	f := s.policies.byOrg[orgID]
-	s.policies.mu.RUnlock()
-	if fresh {
-		return f
-	}
-	s.reloadPolicies(ctx)
+// refuseEverything stands in for a policy that will not load and has no
+// predecessor.
+var refuseEverything = &policy.File{Version: 1, Default: "deny"}
 
-	s.policies.mu.RLock()
-	defer s.policies.mu.RUnlock()
-	return s.policies.byOrg[orgID]
-}
-
-func (s *Server) reloadPolicies(ctx context.Context) {
-	rows, err := s.db.Query(ctx, `SELECT org_id::text, document FROM core.access_policies`)
-	if err != nil {
-		s.log.Error("loading access policies", "err", err)
-		return
-	}
-	defer rows.Close()
-
-	loaded := map[string]*policy.File{}
-	for rows.Next() {
-		var orgID, doc string
-		if err := rows.Scan(&orgID, &doc); err != nil {
-			continue
-		}
-		f, perr := policy.Parse([]byte(doc))
-		if perr != nil {
-			// The stored document no longer passes its own tests -- which can only
-			// happen if it was written directly to the database, bypassing
-			// `policy apply`. Logged loudly and the PREVIOUS policy kept: dropping
-			// it would silently widen access.
-			s.log.Error("the stored access policy will not load; keeping the previous one",
-				"org_id", orgID, "err", perr)
-			s.policies.mu.RLock()
-			if prev := s.policies.byOrg[orgID]; prev != nil {
-				loaded[orgID] = prev
-			}
-			s.policies.mu.RUnlock()
-			continue
-		}
-		loaded[orgID] = f
-	}
-
+// policyFor returns the policy in force for an organisation, as it is in the
+// database now.
+func (s *Server) policyFor(ctx context.Context, q dbReader, orgID string) *policy.File {
 	s.policies.mu.Lock()
-	s.policies.byOrg = loaded
-	s.policies.loadedAt = time.Now()
+	cached, have := s.policies.byOrg[orgID]
 	s.policies.mu.Unlock()
+
+	// The document travels only when it differs from the one already parsed.
+	var digest string
+	var doc *string
+	err := q.QueryRow(ctx, `
+		SELECT md5(document), CASE WHEN md5(document) = $2 THEN NULL ELSE document END
+		  FROM core.access_policies WHERE org_id = $1::uuid`, orgID, cached.digest).
+		Scan(&digest, &doc)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		s.policies.mu.Lock()
+		delete(s.policies.byOrg, orgID)
+		s.policies.mu.Unlock()
+		return nil
+	case err != nil:
+		// The database could not say. The last answer it gave is the best
+		// available; the request this decision belongs to needs the same
+		// database a moment later and is unlikely to get further.
+		s.log.ErrorContext(ctx, "reading the access policy", "org_id", orgID, "err", err)
+		if have {
+			return cached.file
+		}
+		return refuseEverything
+	case have && digest == cached.digest, doc == nil:
+		// Unchanged. (The document is NULL exactly when its digest is the one
+		// asked about, computed in the same statement.)
+		return cached.file
+	}
+
+	entry := policyEntry{digest: digest}
+	f, perr := policy.Parse([]byte(*doc))
+	switch {
+	case perr == nil:
+		entry.file = f
+	case have:
+		s.log.ErrorContext(ctx, "the stored access policy will not load; keeping the previous one",
+			"org_id", orgID, "err", perr)
+		entry.file = cached.file
+	default:
+		s.log.ErrorContext(ctx, "the stored access policy will not load and there is no previous one; "+
+			"refusing every authorization in this organisation until it is fixed",
+			"org_id", orgID, "err", perr)
+		entry.file = refuseEverything
+	}
+	s.policies.mu.Lock()
+	s.policies.byOrg[orgID] = entry
+	s.policies.mu.Unlock()
+	return entry.file
 }
 
 // checkAccessPolicy evaluates the policy for one authorization.
 //
 // Returns nil when access is permitted, or a message for the person refused.
+//
+// r is the person's own request. It is nil at a refresh-token grant, where the
+// request is the application's server's and carries nothing about where the
+// person is: the decision is then made as policy.Request.Refresh describes.
 func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.checkAccessPolicyIn(ctx, s.db, r, orgID, clientID, userID, scope, mfa, amr)
+}
 
-	f := s.policyFor(ctx, orgID)
+// dbReader is a pool or a transaction.
+type dbReader interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// checkAccessPolicyIn is checkAccessPolicy reading through q, for a caller that
+// holds a transaction: the refresh grant asks while holding one, and reading
+// the policy and the memberships from the pool there took a second connection,
+// which deadlocks the pool under concurrent refreshes.
+func (s *Server) checkAccessPolicyIn(ctx context.Context, q dbReader, r *http.Request,
+	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.evaluateAccessPolicy(ctx, q, r, false, orgID, clientID, userID, scope, mfa, amr)
+}
+
+// checkAccessPolicyUnobserved is checkAccessPolicy for a decision nothing here
+// watched the person arrive for: a grant made by a server or a wallet, or
+// forward auth, whose request is the proxy's. Decided as policy.Request's
+// Unobserved describes, so a network, device or travel condition refuses.
+//
+// No request is passed, deliberately rather than a copy with the address
+// removed: the caller's headers and certificate are the server's or the
+// proxy's, and a device posture read from them describes that machine.
+func (s *Server) checkAccessPolicyUnobserved(ctx context.Context,
+	orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+	return s.evaluateAccessPolicy(ctx, s.db, nil, true, orgID, clientID, userID, scope, mfa, amr)
+}
+
+func (s *Server) evaluateAccessPolicy(ctx context.Context, q dbReader, r *http.Request,
+	unobserved bool, orgID, clientID, userID, scope string, mfa bool, amr []string) *policy.Decision {
+
+	f := s.policyFor(ctx, q, orgID)
 	if f == nil {
 		return nil
 	}
@@ -110,54 +170,96 @@ func (s *Server) checkAccessPolicy(ctx context.Context, r *http.Request,
 	// Groups read fresh, like every other authorization decision that depends on
 	// them. A policy consulting a cached membership would enforce yesterday's
 	// answer.
-	groups, err := store.AllGroupsForUser(ctx, s.db, userID)
-	if err != nil {
-		s.log.Error("reading groups for a policy decision", "err", err)
-		// Fail CLOSED only when a policy exists: we cannot evaluate a rule that
-		// depends on membership, and guessing "not a member" would deny while
-		// guessing "a member" would grant. Refusing is the honest answer.
-		return &policy.Decision{Allowed: false, Rule: "(internal)",
-			Message: "Access could not be checked. Please try again."}
+	//
+	// A service reaching a protected host is no person and belongs to nothing,
+	// which is a fact and not a failure to read one.
+	var groups []string
+	if _, person := store.CanonicalUUID(userID); person {
+		var err error
+		if groups, err = store.AllGroupsForUser(ctx, q, userID); err != nil {
+			s.log.ErrorContext(ctx, "reading groups for a policy decision", "err", err)
+			// Fail CLOSED only when a policy exists: we cannot evaluate a rule that
+			// depends on membership, and guessing "not a member" would deny while
+			// guessing "a member" would grant. Refusing is the honest answer.
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
 	}
 
-	// The travel check runs only when a policy actually asks about it. Resolving
-	// a position and querying history on every authorization would be work done
-	// for nothing in the deployments -- most of them -- whose policy never
-	// mentions it.
-	impossible := false
-	if f.UsesImpossibleTravel() {
-		impossible = s.impossibleTravel(ctx, userID, clientIP(r))
-	}
-
-	// Device posture, likewise only when a rule asks. Evaluating it always would
-	// verify a certificate chain on every authorization for the deployments --
-	// most of them -- whose policy never mentions a device.
-	var device posture.State
-	if f.UsesDevicePosture() {
-		device = s.posture.Evaluate(r)
-		s.log.Debug("device posture", "managed", device.Managed,
-			"compliant", device.Compliant, "source", device.Source)
-	}
-
-	d := f.Evaluate(policy.Request{
+	req := policy.Request{
 		Client: clientID, Scope: scope, Groups: groups, MFA: mfa, AMR: amr,
-		IP: clientIP(r), ImpossibleTravel: impossible,
-		DeviceManaged: device.Managed, DeviceCompliant: device.Compliant,
-	})
+		Refresh: r == nil && !unobserved, Unobserved: unobserved,
+	}
+	if _, person := store.CanonicalUUID(userID); person && len(f.AttributeNames()) > 0 {
+		var err error
+		if req.Attributes, err = store.PlainAttributes(ctx, q, userID); err != nil {
+			s.log.ErrorContext(ctx, "reading attributes for a policy decision", "err", err)
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
+	}
+	if _, person := store.CanonicalUUID(userID); person && f.UsesApplicationRoles() {
+		var err error
+		if req.ApplicationRoles, err = store.ApplicationRoles(ctx, q, orgID, userID, clientID); err != nil {
+			s.log.ErrorContext(ctx, "reading roles for a policy decision", "err", err)
+			return &policy.Decision{Allowed: false, Rule: "(internal)",
+				Message: "Access could not be checked. Please try again."}
+		}
+	}
+	if r != nil {
+		req.IP = clientIP(r)
+
+		// The travel check runs only when a policy actually asks about it.
+		// Resolving a position and querying history on every authorization
+		// would be work done for nothing in the deployments -- most of them --
+		// whose policy never mentions it.
+		if f.UsesImpossibleTravel() {
+			req.ImpossibleTravel = s.impossibleTravel(ctx, userID, req.IP)
+		}
+		if f.UsesCountries() {
+			req.Country = s.geo.Resolve(req.IP).Country
+		}
+		if f.UsesASNs() {
+			req.ASN = s.asn.ASN(req.IP)
+		}
+		if f.UsesRecentFailures() {
+			// The budget the sign-in form keeps. Unread is refused like anything
+			// else this rule cannot be sure of.
+			failures, err := store.CountRate(ctx, q, "signin:fail:ip:"+budgetIP(req.IP), signInPerIPWindow)
+			if err != nil {
+				s.log.ErrorContext(ctx, "reading an address's failures for a policy decision", "err", err)
+				return &policy.Decision{Allowed: false, Rule: "(internal)",
+					Message: "Access could not be checked. Please try again."}
+			}
+			req.RecentFailures = failures
+		}
+
+		// Device posture, likewise only when a rule asks. Evaluating it always
+		// would verify a certificate chain on every authorization for the
+		// deployments -- most of them -- whose policy never mentions a device.
+		if f.UsesDevicePosture() {
+			device := s.posture.Evaluate(r)
+			s.log.DebugContext(ctx, "device posture", "managed", device.Managed,
+				"compliant", device.Compliant, "source", device.Source)
+			req.DeviceManaged, req.DeviceCompliant = device.Managed, device.Compliant
+		}
+	}
+
+	d := f.Evaluate(req)
 	if d.Allowed {
 		return nil
 	}
 	return &d
 }
 
-// clientIP extracts the caller's address for a network condition.
+// clientIP extracts the caller's address for a network condition or a budget.
 //
-// From the socket, NOT from X-Forwarded-For. A header any caller can set is not
-// a location -- honouring it would let anybody claim to be inside the office
-// network by adding one line to their request. Deployments behind a proxy need
-// the proxy to be trusted and the address taken from a configured position in
-// the chain, which is a decision an operator has to make explicitly rather than
-// something to guess at here.
+// From r.RemoteAddr, which withClientIP has already resolved: the socket, or,
+// behind a proxy the operator named in SIGNARI_TRUSTED_PROXIES, the rightmost
+// hop of the forwarding chain that is not one of those proxies. Never a header
+// read here. A header any caller can set is not a location, and honouring it
+// would let anybody claim to be inside the office network, or spend somebody
+// else's budget, by adding one line to their request.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -182,21 +284,82 @@ func clientIP(r *http.Request) string {
 func sessionFactors(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, sid string) (bool, []string) {
-	var acr string
 	var amr []string
 	if err := db.QueryRow(ctx,
-		`SELECT acr, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&acr, &amr); err != nil {
+		`SELECT amr FROM core.sessions WHERE sid = $1`, sid).Scan(&amr); err != nil {
 		// Unknown means NOT multi-factor, and no factors. Guessing the other way
 		// would satisfy an MFA requirement for a session we could not read.
 		return false, nil
 	}
-	for _, m := range amr {
-		switch m {
-		case oauth.AMROTP, oauth.AMRHardwareKey, oauth.AMRMFA, oauth.AMRSMS:
-			return true, amr
-		}
+	// The one predicate (oauth.IsMultiFactor), derived from the methods used
+	// and never from a stored acr. This used to accept any single possession
+	// factor, so a passkey with no user verification satisfied a policy that
+	// requires MFA.
+	return oauth.IsMultiFactor(amr), amr
+}
+
+// grantRefusedByPolicy asks, for a grant that issues a token for a person
+// without a sign-in in front of it, the question /authorize asks before a code
+// exists: is this person in this client's organisation, and does the access
+// policy let them reach it. It writes the refusal and reports true when the
+// answer is no.
+//
+// The token-exchange, jwt-bearer, UMA and pre-authorized code grants issued
+// with neither question asked, so an operator's deny rule on a client was
+// honoured at its sign-in page and nowhere a token could be got without one.
+// The factors are those of the session behind the token when there is one,
+// and none otherwise: a rule that demands MFA is not met by a grant that
+// proved nothing.
+//
+// Called before the grant opens a transaction (guard 0.08e), and listed by
+// name in TestEveryIssuingPathAsksTheAccessPolicy as an asking function.
+//
+// The organisation's policy, and the session's factors it is judged with, are read only
+// when the client's lookup on this request found the organisation has one, as the
+// authorization endpoint asks (E.25): most have none, and every exchange, jwt-bearer and
+// pre-authorized grant read both for nothing.
+func (s *Server) grantRefusedByPolicy(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	userID, sid, scope, via string) bool {
+
+	ctx := r.Context()
+	orgID, clientID := c.OrgID, c.ClientID
+	if userOrg, err := store.OrgOfUser(ctx, s.db, userID); err != nil || userOrg != orgID {
+		s.log.InfoContext(ctx, "a grant named a person outside the client's organisation",
+			"client_id", clientID, "via", via, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this grant does not name a person this client may act for",
+			Status:      http.StatusBadRequest})
+		return true
 	}
-	return acr == oauth.ACRMultiFactor || acr == oauth.ACRPapeMultiFactor, amr
+	if !c.HasAccessPolicy {
+		return false
+	}
+
+	mfa, amr := false, []string(nil)
+	if sid != "" {
+		mfa, amr = sessionFactors(ctx, s.db, sid)
+	}
+	// Unobserved: who the person is, as for a refresh, but where they are is
+	// not met. These calls come from a server or a wallet, whose address and
+	// lack of a device certificate say nothing about the person, and unlike a
+	// refresh no sign-in to this client checked where they were. Counting the
+	// unknown as met let a jwt-bearer assertion through a rule admitting the
+	// client only from the office, which forward auth already refused.
+	pd := s.checkAccessPolicyUnobserved(ctx, orgID, clientID, userID, scope, mfa, amr)
+	if pd == nil {
+		return false
+	}
+	s.log.InfoContext(ctx, "access refused by policy", "client_id", clientID, "via", via,
+		"rule", pd.Rule, "correlation_id", correlationID(ctx))
+	s.auditDetached(ctx, audit.Event{
+		Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID, ClientID: clientID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": via},
+	})
+	writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+		Description: "the access policy does not allow this: " + pd.Message,
+		Status:      http.StatusBadRequest})
+	return true
 }
 
 // impossibleTravel reports whether this sign-in could not have followed the
@@ -207,9 +370,17 @@ func sessionFactors(ctx context.Context, db interface {
 // signal that fails closed when it cannot be evaluated locks out every
 // first-time user.
 func (s *Server) impossibleTravel(ctx context.Context, userID, ip string) bool {
-	previous, err := store.PreviousAuthLocation(ctx, s.db, userID)
+	return s.impossibleTravelIn(ctx, s.db, userID, ip)
+}
+
+// impossibleTravelIn is impossibleTravel reading through q, for the sign-in
+// walk, which holds a transaction.
+func (s *Server) impossibleTravelIn(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) bool {
+	previous, err := store.PreviousAuthLocation(ctx, q, userID)
 	if err != nil {
-		s.log.Error("reading the previous sign-in location", "err", err)
+		s.log.ErrorContext(ctx, "reading the previous sign-in location", "err", err)
 		return false
 	}
 	current := s.geo.Resolve(ip)
@@ -217,8 +388,53 @@ func (s *Server) impossibleTravel(ctx context.Context, userID, ip string) bool {
 
 	v := risk.CheckTravel(previous, current)
 	if v.Impossible {
-		s.log.Warn("impossible travel", "user_id", userID, "reason", v.Reason,
+		s.log.WarnContext(ctx, "impossible travel", "user_id", userID, "reason", v.Reason,
 			"correlation_id", correlationID(ctx))
 	}
 	return v.Impossible
+}
+
+// riskElevated is the flow's `risk_elevated` (4.10): this sign-in could not
+// have followed the last one, or it comes from a country the person has never
+// signed in from. Both need a GeoIP source (SIGNARI_GEOIP_DB or _STATIC) and
+// history; without either nothing fires, so a first sign-in, or a deployment
+// with no database, is never refused for want of a signal. The language named
+// the condition and the sign-in read it false, so `when: risk_elevated` never
+// asked anybody for anything.
+func (s *Server) riskElevated(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) bool {
+	return s.riskScore(ctx, q, userID, ip) > 0
+}
+
+// riskScore is what riskElevated decides on, as the number a session keeps (11.07).
+// Nothing is read for an address no GeoIP source can place, which is every address of
+// a deployment that has none.
+func (s *Server) riskScore(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, ip string) int {
+	if ip == "" {
+		return 0
+	}
+	here := s.geo.Resolve(ip)
+	if !here.Known {
+		return 0
+	}
+	if s.impossibleTravelIn(ctx, q, userID, ip) {
+		return risk.ScoreImpossibleTravel
+	}
+	if here.Country == "" {
+		return 0
+	}
+	seen, history, err := store.CountrySeen(ctx, q, userID, here.Country)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading where a person has signed in from", "err", err)
+		return 0
+	}
+	if history && !seen {
+		s.log.WarnContext(ctx, "a sign-in from a new country", "user_id", userID, "country", here.Country,
+			"correlation_id", correlationID(ctx))
+		return risk.ScoreNewCountry
+	}
+	return 0
 }

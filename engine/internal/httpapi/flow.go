@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,20 +19,21 @@ import (
 	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/delegated"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/rar"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 	"signari.dev/engine/internal/txntoken"
 )
 
-const (
-	codeTTL    = 60 * time.Second // RFC 6749 recommends <= 10 minutes; short is free here
-	sessionTTL = 12 * time.Hour
-)
+// A session's lifetime is its organisation's (store.SessionLifetimesOf), no
+// longer a constant here.
+const codeTTL = 60 * time.Second // RFC 6749 recommends <= 10 minutes; short is free here
 
 // handleAuthorize implements /oauth2/authorize.
 //
@@ -49,6 +51,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, perr.Error())
 		return
 	}
+	// Everything below hands the request on by its URL's query: to the sign-in page,
+	// the consent page and back here. A POST carries none, so the person signed in
+	// and arrived nowhere. On a copy, so the wrappers around this handler go on
+	// seeing what was sent.
+	if r.Method == http.MethodPost {
+		r = r.Clone(ctx)
+		r.URL.RawQuery = query.Encode()
+	}
 
 	// RFC 6749 §3.1, before anything reads a parameter.
 	//
@@ -60,6 +70,25 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.renderAuthzFailure(w, r, err.Error())
 		return
 	}
+	if crossSiteForm(r) {
+		http.Redirect(w, r, r.URL.RequestURI(), http.StatusSeeOther)
+		return
+	}
+
+	// A signed Request Object goes where a pushed request goes, so that from here on
+	// there is one way a protected request travels. The pages after this hand a request
+	// on through the browser, and spread over a URL it would be open to anybody there:
+	// the whole of what a signature buys. Parked, the browser carries a handle, and a
+	// short `exp` does not run out while somebody looks for their phone.
+	objectProblem, byValue := "", false
+	if object := query.Get("request"); object != "" {
+		handle, problem := s.parkRequestObject(r, query.Get("client_id"), query.Get("request_uri"), object)
+		if objectProblem = problem; problem == "" {
+			byValue = true
+			query.Del("request")
+			query.Set("request_uri", handle)
+		}
+	}
 
 	// # Redeeming a pushed request
 	//
@@ -70,10 +99,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Merging the two would undo the whole feature: whoever controls the browser
 	// could append `scope=admin` to a URL whose other parameters are protected,
 	// and the request would be authorized with a scope the client never pushed.
-	if requestURI := query.Get("request_uri"); requestURI != "" {
-		pushed, err := s.consumePushedRequest(ctx, requestURI, query.Get("client_id"))
+	wasPushed, wasSigned := false, false
+	if requestURI := query.Get("request_uri"); requestURI != "" && objectProblem == "" {
+		wasPushed = true
+		pushed, err := s.readPushedRequest(ctx, requestURI, query.Get("client_id"))
 		if err != nil {
-			s.log.Info("pushed request refused", "err", err,
+			s.log.InfoContext(ctx, "pushed request refused", "err", err,
 				"correlation_id", correlationID(ctx))
 			// Rendered locally. There is no validated redirect_uri to send an
 			// error to -- the parameters that would have named one are exactly
@@ -82,14 +113,91 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pushed.Set("client_id", query.Get("client_id"))
+		wasSigned = pushed.Get(signedRequestMark) != ""
+		pushed.Del(signedRequestMark)
+
+		// What the pages from here carry through the browser is the handle, and
+		// the three things they read to choose what to show, which come from the
+		// push and decide nothing: this block replaces them on every arrival.
+		parked := url.Values{"client_id": {query.Get("client_id")}, "request_uri": {requestURI}}
+		for _, hint := range []string{"login_hint", "ui_locales", "acr_values"} {
+			if v := pushed.Get(hint); v != "" {
+				parked.Set(hint, v)
+			}
+		}
+		r = r.Clone(ctx)
+		r.URL.RawQuery = parked.Encode()
 		query = pushed
 	}
 
 	req := oauth.ParseAuthz(query)
+	req.RequestObjectProblem = objectProblem
 
-	c, lookupErr := s.lookupClient(ctx, req.ClientID)
+	s.admitMetadataClient(r, req.ClientID)
+	// In any state, so ValidateAuthz can tell the person the client is
+	// disabled; it refuses one before anything else is read.
+	c, lookupErr := s.lookupClientAnyState(ctx, req.ClientID)
 	if authzErr := oauth.ValidateAuthz(req, c, lookupErr); authzErr != nil {
-		s.writeAuthzError(w, r, req, authzErr)
+		s.writeAuthzError(w, r, req, c, authzErr)
+		return
+	}
+
+	// RFC 9101 §10.5: "the server MUST reject the authorization request from the client
+	// that does not conform to this specification", or the signature is something an
+	// attacker chooses not to send. Redirected, the redirect_uri being valid by now.
+	if c != nil && c.RequireSignedRequest && !wasSigned {
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
+			Description: "this client must sign its authorization requests", Disposition: oauth.DispositionRedirect})
+		return
+	}
+
+	// `claims` is compiled into the ordinary parameters here, and the pages after
+	// this hand on the compiled request, so what is consented to is what is granted.
+	// A pushed request was compiled when it was pushed. wantSubject is who this
+	// request says it is for.
+	wantSubject, cerr := oauth.CompileClaims(query, c)
+	if cerr != nil {
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request", Description: cerr.Error(),
+			Disposition: oauth.DispositionRedirect})
+		return
+	}
+	if query.Get("claims") != "" {
+		req = oauth.ParseAuthz(query)
+		if !wasPushed {
+			r = r.Clone(ctx)
+			r.URL.RawQuery = query.Encode()
+		}
+	}
+	if req.IDTokenHint != "" {
+		subject, audience, herr := tokens.VerifyIDTokenHint(s.cfg.Keys, s.cfg.Issuer, req.IDTokenHint)
+		if herr != nil || audience != c.ClientID || (wantSubject != "" && wantSubject != subject) {
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
+				Description: "id_token_hint is not an ID token this server issued to this client for this person",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
+		wantSubject = subject
+	}
+
+	// Redirected like the shape check: the redirect_uri is validated by now.
+	if c != nil {
+		if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
+			aerr := &oauth.AuthzError{Code: "invalid_target", Description: err.Error(),
+				Disposition: oauth.DispositionRedirect}
+			if !refusedTarget(err) {
+				s.log.ErrorContext(ctx, "checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+				aerr.Code, aerr.Description = "temporarily_unavailable", "please try again shortly"
+			}
+			s.writeAuthzError(w, r, req, c, aerr)
+			return
+		}
+	}
+
+	// A client held to `state` (9.13): redirected, the redirect_uri being valid, so
+	// the relying party hears of it rather than a person seeing a dead end.
+	if c != nil && c.RequireState && req.State == "" {
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_request",
+			Description: "this client must send state", Disposition: oauth.DispositionRedirect})
 		return
 	}
 
@@ -104,7 +212,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if c != nil && req.RawAuthorizationDetails != "" {
 		details, aerr := s.parseAuthorizationDetails(ctx, c, req.RawAuthorizationDetails)
 		if aerr != nil {
-			s.writeAuthzError(w, r, req, aerr)
+			s.writeAuthzError(w, r, req, c, aerr)
 			return
 		}
 		req.AuthorizationDetails = details
@@ -113,32 +221,62 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// A client marked as requiring PAR must not be able to start an ordinary
 	// authorization. Without this the feature is advisory: such a client has
 	// gained an option, not the integrity property.
-	if c != nil && query.Get("request_uri") == "" {
-		mustPush, perr := s.clientRequiresPAR(ctx, c.ClientID)
-		if perr == nil && mustPush {
-			s.log.Info("plain authorization request refused for a PAR-only client",
-				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
-			s.renderAuthzFailure(w, r,
-				"This client must start authorization by pushing the request first.")
+	//
+	// Read with the client rather than by a second query, which skipped the
+	// requirement whenever that query failed. And decided by whether the request
+	// was redeemed from a push: the redeemed parameters have replaced the query
+	// by now, so asking the query for request_uri refused every request from
+	// such a client, the pushed ones included. A request object sent by value is parked
+	// the same way and is not a push: RFC 9126 keeps the parameters off the browser
+	// altogether, and that one came through it.
+	if c != nil && c.RequirePAR && (!wasPushed || byValue) {
+		s.log.InfoContext(ctx, "plain authorization request refused for a PAR-only client",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		s.renderAuthzFailure(w, r,
+			"This client must start authorization by pushing the request first.")
+		return
+	}
+
+	// prompt=create (https://openid.net/specs/openid-connect-prompt-create-1_0.html
+	// §4.1): the client wants the person shown "the account creation UX rather
+	// than the login flow". Unconditional, like login, whether or not somebody
+	// is signed in: they may be making a second account.
+	if oauth.HasPrompt(req.Prompt, oauth.PromptCreate) {
+		s.startCreateAccount(w, r, c)
+		return
+	}
+
+	// prompt=select_account: OIDC Core §3.1.2.1, the OP "SHOULD prompt the
+	// End-User to select a user account". The accounts this browser holds in
+	// the client's organisation, to choose from (accounts.go); choosing one
+	// resumes here with select_account consumed. With none, a sign-in is the
+	// choice, below. It used to force a fresh sign-in whatever was held.
+	if oauth.HasPrompt(req.Prompt, oauth.PromptSelectAccount) {
+		held, herr := s.heldAccounts(ctx, r, c.OrgID)
+		if herr != nil {
+			s.log.ErrorContext(ctx, "reading the accounts this browser holds", "err", herr)
+		}
+		if len(held) > 0 {
+			s.renderAccounts(w, r, r.URL.RawQuery, held, "")
 			return
 		}
 	}
 
-	sid := ""
-	live := false
+	var session store.BrowserSession
 	if cookie := sessionCookie(r); cookie != "" {
 		var err error
 		// The cookie is a bearer secret; the sid it maps to is the public
 		// identifier. Never treat the cookie value as the sid.
-		sid, live, err = store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			s.log.Error("checking session", "err", err)
-			s.writeAuthzError(w, r, req,
+		session, err = store.ResolveBrowserSession(ctx, s.db, store.HashToken(cookie), s.instanceID)
+		if err != nil {
+			s.log.ErrorContext(ctx, "checking session", "err", err)
+			s.writeAuthzError(w, r, req, c,
 				&oauth.AuthzError{Code: "server_error", Description: "could not verify session",
 					Disposition: oauth.DispositionRedirect})
 			return
 		}
 	}
+	sid, live := session.SID, session.Live
 
 	// A live session is NOT automatically sufficient. This is where a step-up
 	// requirement becomes real: acr_values, max_age and prompt=login are each a
@@ -147,19 +285,40 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Re-evaluated per authorization request, deliberately. Treating acr as a
 	// property frozen at login is a genuine bypass -- a password-only session
 	// would satisfy every future multi-factor demand for as long as it lives.
-	if live {
-		var authTime time.Time
-		var amr []string
-		if err := s.db.QueryRow(ctx,
-			`SELECT auth_time, amr FROM core.sessions WHERE sid = $1`, sid).Scan(&authTime, &amr); err != nil {
-			s.log.Error("loading session context for step-up", "err", err)
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+	// What the sign-in form says when a step-up sends a person to it.
+	loginMsg := ""
+
+	// A session of somebody other than the person the request names is no session
+	// for this request: not refused, since the right person may be there to sign in,
+	// and never answered with a code for the wrong one.
+	somebodyElse := false
+	if live && wantSubject != "" {
+		// The request names them as this client knows them.
+		named, err := subjectFor(ctx, s.db, c, session.UserID)
+		if err != nil {
+			s.log.ErrorContext(ctx, "reading how this client knows them", "err", err)
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
 				Description: "could not verify session", Disposition: oauth.DispositionRedirect})
 			return
 		}
-		if reason, detail := oauth.SessionSufficient(amr, authTime, time.Now(),
-			req.ACRValues, req.MaxAge, req.Prompt); reason != oauth.StepUpNone {
-			s.log.Info("step-up required", "sid", sid, "reason", reason,
+		if named != wantSubject {
+			live, somebodyElse = false, true
+			loginMsg = "This application is asking for somebody else. Sign in as them to go on."
+		}
+	}
+	if live {
+		reason, detail := oauth.SessionSufficient(session.AMR, session.AuthTime, time.Now(),
+			req.ACRValues, req.MaxAge, req.Prompt)
+		// The client's own floor, whatever the request asks for: acr_values is
+		// the relying party's to send, and a user can remove it from the URL.
+		if reason == oauth.StepUpNone && !meetsClientFloor(c, session.AMR) {
+			reason, detail = oauth.StepUpNeedStronger, "this application requires multi-factor authentication"
+			if oauth.RequiredRung("", c.MinimumACR) >= 3 {
+				detail = "this application requires a sign-in with a passkey or security key"
+			}
+		}
+		if reason != oauth.StepUpNone {
+			s.log.InfoContext(ctx, "step-up required", "sid", sid, "reason", reason,
 				"correlation_id", correlationID(ctx))
 			// The session stays live. Step-up asks for another factor; it does
 			// not throw away an authentication that was legitimately performed.
@@ -168,7 +327,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			// prompt=none plus an unmet requirement is unsatisfiable by
 			// definition: the client forbade interaction and we need some.
 			if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-				s.writeAuthzError(w, r, req, &oauth.AuthzError{
+				s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 					Code:        stepUpErrorCode(reason),
 					Description: detail,
 					Disposition: oauth.DispositionRedirect})
@@ -188,22 +347,46 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			// Only StepUpNeedStronger. A max_age or prompt=login step-up IS
 			// satisfiable by signing in again, so those must still show the form.
 			if reason == oauth.StepUpNeedStronger {
-				var subject string
-				if err := s.db.QueryRow(ctx,
-					`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).
-					Scan(&subject); err != nil {
-					s.log.Error("loading the session subject for a step-up check", "err", err)
-				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, subject); ferr != nil {
+				if need := oauth.RequiredRung(req.ACRValues, c.MinimumACR); need >= 3 {
+					// Only a passkey or a security key reaches these rungs, and at
+					// "4" only one bound to its device: without one, every sign-in
+					// lands back here, so the requirement is refused instead. With
+					// one, the form says which sign-in it wants.
+					held, kerr := store.HasWebAuthnKey(ctx, s.db, session.UserID, need == 4)
+					switch {
+					case kerr != nil:
+						s.log.ErrorContext(ctx, "checking for a key at a step-up", "err", kerr)
+					case !held:
+						s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
+							Code: "unmet_authentication_requirements",
+							Description: "the requested authentication context needs a passkey or " +
+								"security key, and this account has none that reaches it",
+							Disposition: oauth.DispositionRedirect})
+						return
+					}
+					loginMsg = "This application asks you to sign in with a passkey or security key."
+				} else if enrolled, ferr := store.HasSecondFactor(ctx, s.db, session.UserID); ferr != nil {
 					// Failing open here shows the form, which is the previous
 					// behaviour: a database error must not turn into a refusal.
-					s.log.Error("checking second factor for a step-up", "err", ferr)
+					s.log.ErrorContext(ctx, "checking second factor for a step-up", "err", ferr)
 				} else if !enrolled {
-					s.log.Info("step-up is unsatisfiable: no second factor is enrolled",
+					s.log.InfoContext(ctx, "step-up is unsatisfiable: no second factor is enrolled",
 						"sid", sid, "correlation_id", correlationID(ctx))
-					s.writeAuthzError(w, r, req, &oauth.AuthzError{
+					s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
 						Code: "unmet_authentication_requirements",
 						Description: "this account has no second factor enrolled, so the " +
 							"requested authentication context cannot be reached",
+						Disposition: oauth.DispositionRedirect})
+					return
+				} else if s.stepUpNeverAsked(ctx, session.OrgID, session.UserID, r.URL.RawQuery) {
+					// The same loop by another road: a factor is enrolled, and
+					// the sign-in flow never asks a password sign-in for it.
+					s.log.InfoContext(ctx, "step-up is unsatisfiable: the sign-in flow asks for no second factor",
+						"sid", sid, "correlation_id", correlationID(ctx))
+					s.writeAuthzError(w, r, req, c, &oauth.AuthzError{
+						Code: "unmet_authentication_requirements",
+						Description: "this organisation's sign-in flow does not ask for a second " +
+							"factor, so the requested authentication context cannot be reached",
 						Disposition: oauth.DispositionRedirect})
 					return
 				}
@@ -215,25 +398,64 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// prompt=none means "do not interact". A client asking for silent
 		// authentication must get an error it can handle, not a login page.
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-			s.writeAuthzError(w, r, req,
-				&oauth.AuthzError{Code: "login_required",
-					Description: "no active session and prompt=none was requested",
-					Disposition: oauth.DispositionRedirect})
+			description := "no active session and prompt=none was requested"
+			if somebodyElse {
+				description = "the session here is not the person this request names, and prompt=none was requested"
+			}
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "login_required", Description: description,
+				Disposition: oauth.DispositionRedirect})
 			return
 		}
-		s.renderLogin(w, r, r.URL.RawQuery, "")
+		// Only with no session at all: one short of what is asked needs a factor
+		// here, which the provider cannot supply.
+		if sid == "" {
+			slug, kind, herr := s.pinnedProvider(ctx, c.OrgID)
+			if slug == "" && herr == nil {
+				slug, kind, herr = s.homeRealm(ctx, c.OrgID, query)
+			}
+			if herr != nil {
+				s.log.ErrorContext(ctx, "finding a home realm", "err", herr, "correlation_id", correlationID(ctx))
+			}
+			if slug != "" {
+				http.Redirect(w, r, providerStart(slug, kind, r.URL.RawQuery), http.StatusSeeOther)
+				return
+			}
+			// A flow a ticket is the only way into goes to the Negotiate exchange, which
+			// comes back here with the request it is given (8.22).
+			if herr == nil && s.ticketIsTheOnlyWayIn(r, c.OrgID) {
+				http.Redirect(w, r, kerberosStart(r.URL.RawQuery), http.StatusSeeOther)
+				return
+			}
+		}
+		// The application's own page, which walks the same stages over JSON. Not for
+		// that walk's own request, or it would be sent to the page it came from.
+		if c.LoginUI != "" && loginMsg == "" && headlessFrom(ctx) == nil {
+			http.Redirect(w, r, loginUIRedirect(c.LoginUI, r.URL.RawQuery), http.StatusSeeOther)
+			return
+		}
+		s.renderLogin(w, r, r.URL.RawQuery, loginMsg)
 		return
 	}
 
 	// Consent is checked AFTER authentication and step-up, and BEFORE any code is
 	// issued. Asking first would show a stranger which clients exist and what
 	// they request; issuing first would make the question decorative.
-	var userID string
-	if err := s.db.QueryRow(ctx,
-		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
-		s.log.Error("loading session user for consent", "err", err)
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
-			Description: "could not verify session", Disposition: oauth.DispositionRedirect})
+	//
+	// A session is a sign-in to one organisation, and is no sign-in at all for
+	// another's application. Nothing compared the two, so somebody who could
+	// sign in anywhere -- an organisation with open signup or federation --
+	// opened another tenant's client and was issued its tokens.
+	if session.OrgID != c.OrgID {
+		s.log.InfoContext(ctx, "a session from another organisation asked for this client",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "login_required",
+				Description: "the active session does not belong to this client's organisation",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
+		s.renderLogin(w, r, r.URL.RawQuery, "You are signed in to a different organisation. "+
+			"Sign in with your account for this application.")
 		return
 	}
 	// # Access policy
@@ -241,23 +463,42 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Evaluated AFTER authentication and step-up (so `mfa` reflects what actually
 	// happened) and BEFORE consent -- there is no point asking somebody to
 	// approve scopes for an application they are not permitted to reach.
-	mfa, amr := sessionFactors(ctx, s.db, sid)
-	if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, userID,
-		req.Scope, mfa, amr); pd != nil {
-		s.log.Info("access refused by policy", "client_id", c.ClientID,
-			"rule", pd.Rule, "correlation_id", correlationID(ctx))
-		// Rendered to the person, not redirected to the client. A policy refusal
-		// is about who they are, and the message names what to do next; bouncing
-		// it back as `access_denied` would leave them looking at an application
-		// error page that cannot explain anything.
-		s.renderAuthzFailure(w, r, pd.Message)
+	if c.HasAccessPolicy {
+		if pd := s.checkAccessPolicy(ctx, r, c.OrgID, c.ClientID, session.UserID,
+			req.Scope, oauth.IsMultiFactor(session.AMR), session.AMR); pd != nil {
+			s.log.InfoContext(ctx, "access refused by policy", "client_id", c.ClientID,
+				"rule", pd.Rule, "correlation_id", correlationID(ctx))
+			// Rendered to the person, not redirected to the client. A policy refusal
+			// is about who they are, and the message names what to do next; bouncing
+			// it back as `access_denied` would leave them looking at an application
+			// error page that cannot explain anything.
+			s.renderAuthzFailure(w, r, pd.Message)
+			return
+		}
+	}
+	if c.HasClientAccessHook && s.clientAccessRefused(ctx, c.OrgID, c.ClientID, session.UserID) {
+		s.renderAuthzFailure(w, r, clientAccessRefusal)
 		return
 	}
+	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
+		open, oerr := store.CredentialOpenTo(ctx, s.db, wanted)
+		if oerr != nil {
+			s.log.ErrorContext(ctx, "reading whether a credential is open to a person", "err", oerr,
+				"correlation_id", correlationID(ctx))
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
+				Description: "unavailable", Disposition: oauth.DispositionRedirect})
+			return
+		}
+		if !open {
+			s.writeAuthzError(w, r, req, c, credentialNotOpen())
+			return
+		}
+	}
 
-	decision, ask, err := s.needsConsent(r, c, userID, req)
+	decision, ask, err := s.needsConsent(r, c, session.UserID, req)
 	if err != nil {
-		s.log.Error("checking consent", "err", err)
-		s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "server_error",
+		s.log.ErrorContext(ctx, "checking consent", "err", err)
+		s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "server_error",
 			Description: "could not check consent", Disposition: oauth.DispositionRedirect})
 		return
 	}
@@ -265,7 +506,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		// prompt=none forbade interaction, and consent is interaction. The client
 		// gets an error it can act on rather than a screen it cannot show.
 		if oauth.HasPrompt(req.Prompt, oauth.PromptNone) {
-			s.writeAuthzError(w, r, req, &oauth.AuthzError{Code: "consent_required",
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "consent_required",
 				Description: consentRequiredReason(req),
 				Disposition: oauth.DispositionRedirect})
 			return
@@ -274,8 +515,31 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.issueCodeAndRedirect(w, r, req, c, sid)
+	s.issueCodeAndRedirect(w, r, req, c, session)
 }
+
+// startCreateAccount answers prompt=create. Where this client's organisation
+// takes self-sign-up, the sign-up form, carrying the request to the sign-in
+// that completes it: §4.1 counts the flow successful only once an id_token is
+// returned. Elsewhere the sign-in form, saying why; the same section leaves
+// whether an OP makes a new identity or signs in an existing one out of scope.
+// create is consumed either way, or that sign-in would resume to here again.
+func (s *Server) startCreateAccount(w http.ResponseWriter, r *http.Request, c *clients.Client) {
+	authz := s.answerPrompts(r.Context(), r.URL.RawQuery, oauth.PromptCreate)
+	rule, err := s.signupRule(r.Context())
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "reading the sign-up rule for prompt=create", "err", err)
+	}
+	if err == nil && rule != nil && rule.OrgID == c.OrgID {
+		http.Redirect(w, r, "/signup?authz="+url.QueryEscape(authz), http.StatusSeeOther)
+		return
+	}
+	s.renderLogin(w, r, authz, s.tr(r).Text("signup.notoffered"))
+}
+
+// clientAccessRefusal is what a person is told when the client_access provider says no.
+// Not its reason, which was written outside this deployment.
+const clientAccessRefusal = "You do not have access to this application."
 
 // consentRequiredReason says WHICH unapproved thing blocked a prompt=none request.
 //
@@ -295,23 +559,24 @@ func consentRequiredReason(req oauth.AuthzRequest) string {
 
 // issueCodeAndRedirect mints an authorization code for a live session.
 func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
-	req oauth.AuthzRequest, c *clients.Client, sid string) {
+	req oauth.AuthzRequest, c *clients.Client, session store.BrowserSession) {
 
 	ctx := r.Context()
 
-	var orgID, userID string
-	err := s.db.QueryRow(ctx,
-		`SELECT org_id::text, user_id::text FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&orgID, &userID)
-	if err != nil {
-		s.log.Error("loading session", "err", err)
-		http.Error(w, "session lookup failed", http.StatusInternalServerError)
+	// Every code is minted here, whichever page led to it (the authorization
+	// endpoint, the consent form), so the organisation is checked here as well
+	// as where the request is first read.
+	if session.OrgID != c.OrgID {
+		s.log.WarnContext(ctx, "refused a code for a session from another organisation",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		s.renderAuthzFailure(w, r, "You are signed in to a different organisation. "+
+			"Sign in with your account for this application.")
 		return
 	}
 
 	code, hash, err := store.NewCode()
 	if err != nil {
-		s.log.Error("generating code", "err", err)
+		s.log.ErrorContext(ctx, "generating code", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -331,6 +596,32 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		Nonce:               req.Nonce,
 		Scopes:              splitScopes(req.Scope),
 		ExpiresAt:           time.Now().Add(codeTTL),
+		// The rung this request asked for and the session reaches, above the
+		// session's own, for the ID token to report.
+		ACR:         oauth.SatisfiedACR(session.AMR, req.ACRValues),
+		GrantAction: req.GrantManagementAction,
+		GrantID:     req.GrantID,
+		// RFC 9449 §10, and §10.1 for a proof on the push, which lands here as
+		// dpop_jkt. Read, kept and checked at the token endpoint, and never set
+		// here until November 2026, so no code was ever bound to a key.
+		DPoPJKT: req.DPoPJKT,
+	}
+	// §5.4: a grant named has to be this client's for this person, which is the first
+	// point a person is known, and before anything is spent on a request that fails.
+	if req.GrantID != "" {
+		held, herr := store.ClientGrantHeld(ctx, tx, req.GrantID, c.ClientID, session.UserID)
+		if herr != nil {
+			s.log.ErrorContext(ctx, "reading a grant", "err", herr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !held {
+			_ = tx.Rollback(ctx)
+			s.writeAuthzError(w, r, req, c, &oauth.AuthzError{Code: "invalid_grant_id",
+				Description: "that grant_id is not one this client holds for this person",
+				Disposition: oauth.DispositionRedirect})
+			return
+		}
 	}
 	// RFC 9396 §7 requires the token response to return the details "as granted
 	// by the resource owner", so they are carried on the code rather than
@@ -338,19 +629,54 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	// client that could resend them is a client that could change them.
 	details, derr := store.MarshalDetails(req.AuthorizationDetails)
 	if derr != nil {
-		s.log.Error("encoding authorization_details", "err", derr)
+		s.log.ErrorContext(ctx, "encoding authorization_details", "err", derr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := store.IssueCode(ctx, tx, orgID, c.ClientID, sid, userID, grant, hash,
+	// A pushed request gives one code. Spent here and in this transaction, so of two
+	// racing for it one has none, and an issuance that fails leaves it good.
+	if handle := r.URL.Query().Get("request_uri"); handle != "" {
+		spent, serr := store.SpendPushedRequest(ctx, tx, pushedHash(handle))
+		if serr != nil {
+			s.log.ErrorContext(ctx, "spending a pushed request", "err", serr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !spent {
+			_ = tx.Rollback(ctx)
+			s.renderAuthzFailure(w, r, errPushedRequestSpent.Error())
+			return
+		}
+	}
+	// Asked again, because an offer can have been spent or lapsed while the consent
+	// screen stood, and spent here for the same reason as the pushed request.
+	if wanted := credentialAskOf(req, c, session.UserID); len(wanted.Configurations) > 0 {
+		spent, serr := store.SpendCredentialOffer(ctx, tx, wanted)
+		if serr != nil {
+			s.log.ErrorContext(ctx, "spending a credential offer", "err", serr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !spent {
+			_ = tx.Rollback(ctx)
+			s.writeAuthzError(w, r, req, c, credentialNotOpen())
+			return
+		}
+	}
+	if err := store.IssueCode(ctx, tx, session.OrgID, c.ClientID, session.SID, session.UserID, grant, hash,
 		req.Resources, details); err != nil {
-		s.log.Error("issuing code", "err", err)
+		s.log.ErrorContext(ctx, "issuing code", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.noteChallengeReuse(ctx, tx, session.OrgID, c.ClientID, session.UserID, req.CodeChallenge); err != nil {
+		s.log.ErrorContext(ctx, "noting a PKCE challenge", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	// Record that this relying party saw the session, so logout can enumerate it.
-	if err := store.TouchSessionClient(ctx, tx, sid, c.ClientID); err != nil {
-		s.log.Error("recording session client", "err", err)
+	if err := store.TouchSessionClient(ctx, tx, session.SID, c.ClientID); err != nil {
+		s.log.ErrorContext(ctx, "recording session client", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -359,7 +685,9 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	out := responseParams{Code: code, State: req.State, Issuer: s.cfg.Issuer}
+	// RFC 9207's iss is the issuer as this client knows it, so a client pinned
+	// to an alias is told the alias, as its tokens are.
+	out := responseParams{Code: code, State: req.State, Issuer: s.issuerFor(c)}
 
 	// Hybrid: an id_token beside the code, bound to it by c_hash.
 	//
@@ -367,9 +695,9 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 	// issued. Doing it inside the transaction would mean hashing a code that a
 	// rollback could still take away.
 	if oauth.NormaliseResponseType(req.ResponseType) == "code id_token" {
-		idt, ierr := s.mintHybridIDToken(ctx, c, sid, code, req.Nonce, s.issuerFor(c))
+		idt, ierr := s.mintHybridIDToken(ctx, c, session.SID, code, req.Nonce, s.issuerFor(c))
 		if ierr != nil {
-			s.log.Error("minting the hybrid id_token", "err", ierr, "client", c.ClientID)
+			s.log.ErrorContext(ctx, "minting the hybrid id_token", "err", ierr, "client", c.ClientID)
 			// The code is already issued and valid. Failing the whole response
 			// here would strand it; the client asked for an id_token though, and
 			// silently omitting one it will look for is worse than an error it
@@ -380,10 +708,35 @@ func (s *Server) issueCodeAndRedirect(w http.ResponseWriter, r *http.Request,
 		out.IDToken = idt
 	}
 
-	s.deliverAuthzResponse(w, r, req.RedirectURI, req.ResponseMode, out)
+	s.deliverAuthzResponse(w, r, req, c, out)
 }
 
-// mintHybridIDToken issues the front-channel id_token for a hybrid response.
+// withRoles adds a person's roles in the application to a token's claims, when the
+// client names a claim for them. A mapper that took the same name keeps it, as it would
+// against anything else: it was set by an operator, on purpose, for this client.
+func withRoles(ctx context.Context, q store.Querier, c *clients.Client, userID, orgID string,
+	claims map[string]any) (map[string]any, error) {
+	if c.RolesClaim == "" || userID == "" {
+		return claims, nil
+	}
+	if _, taken := claims[c.RolesClaim]; taken {
+		return claims, nil
+	}
+	roles, err := store.ApplicationRoles(ctx, q, orgID, userID, c.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the roles in %s: %w", c.ClientID, err)
+	}
+	if len(roles) == 0 {
+		return claims, nil
+	}
+	if claims == nil {
+		claims = map[string]any{}
+	}
+	claims[c.RolesClaim] = roles
+	return claims, nil
+}
+
+// mintHybridIDTokenissues the front-channel id_token for a hybrid response.
 //
 // It carries c_hash and NOT at_hash: no access token exists at this point, and
 // none will ever cross the front channel. Profile claims are left out for the
@@ -418,9 +771,13 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 		`SELECT user_id::text FROM core.sessions WHERE sid = $1`, sid).Scan(&userID); err != nil {
 		return "", err
 	}
-	return tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
+	subject, err := subjectFor(ctx, s.db, c, userID)
+	if err != nil {
+		return "", err
+	}
+	idt, err := tokens.NewSigner(key).SignIDToken(tokens.IDTokenClaims{
 		Issuer:          issuer,
-		Subject:         userID,
+		Subject:         subject,
 		Audience:        c.ClientID,
 		Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
 		IssuedAt:        now.Unix(),
@@ -432,14 +789,90 @@ func (s *Server) mintHybridIDToken(ctx context.Context, c *clients.Client,
 		AuthorizedParty: c.ClientID,
 		CodeHash:        chash,
 	})
+	if err != nil {
+		return "", err
+	}
+	return sealIDToken(c, idt)
+}
+
+// sealIDToken encrypts a signed ID token to the client, when it asked for that. OIDC
+// Core §2: "If the ID Token is encrypted, it MUST be signed then encrypted". A failure
+// is the caller's to refuse on: an RP told to expect it encrypted "SHOULD reject" one
+// that is not (§3.1.3.7), and it would be sent through the clear to be rejected.
+func sealIDToken(c *clients.Client, signed string) (string, error) {
+	if c.IDTokenEncryption.Alg == "" {
+		return signed, nil
+	}
+	return tokens.EncryptTo([]byte(signed), true, c.EncryptionKeys, c.IDTokenEncryption)
+}
+
+// tokenStatus records the token endpoint's status, a Write without a
+// WriteHeader being the implicit 200.
+type tokenStatus struct {
+	http.ResponseWriter
+	code    int
+	written bool
+}
+
+func (t *tokenStatus) WriteHeader(code int) {
+	if !t.written {
+		t.code, t.written = code, true
+	}
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *tokenStatus) Write(b []byte) (int, error) {
+	t.written = true
+	return t.ResponseWriter.Write(b)
+}
+
+// Unwrap keeps the writer underneath reachable, as every wrapper must.
+func (t *tokenStatus) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+// grantLabel is a grant_type as the tokens-issued counter labels it. A value
+// outside the counter's set is contained there as "other".
+func grantLabel(grant string) string {
+	switch grant {
+	case oauth.GrantTypeDeviceCode:
+		return "device_code"
+	case oauth.GrantTypeCIBA:
+		return "ciba"
+	case oauth.GrantTypeTokenExchange:
+		return "token_exchange"
+	case oauth.GrantTypeJWTBearer:
+		return "jwt_bearer"
+	case oauth.GrantTypePreAuthorizedCode:
+		return "preauthorized_code"
+	case oauth.GrantTypeUMATicket:
+		return "uma_ticket"
+	}
+	return grant // authorization_code, refresh_token, client_credentials, password
 }
 
 // handleToken implements /oauth2/token for the authorization_code grant.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	// Tokens issued, by grant, counted where every grant answers. The counter
+	// was declared and exported and incremented nowhere, so it read zero on a
+	// server issuing thousands a second. The closure reads r as reassigned
+	// below, whose form has been parsed by the time a 200 has been written.
+	if s.metrics != nil {
+		rec := &tokenStatus{ResponseWriter: w, code: http.StatusOK}
+		w = rec
+		defer func() {
+			if rec.code == http.StatusOK {
+				s.metrics.Tokens.Inc(grantLabel(r.PostFormValue("grant_type")))
+			}
+		}()
+	}
+
 	// A proof at the token endpoint accompanies no access token yet, so `ath` is
 	// absent and only the key matters. Its thumbprint becomes the binding.
-	if jkt, err := s.verifyDPoPForRequest(r, ""); err != nil {
-		s.log.Info("DPoP proof refused at the token endpoint", "err", err,
+	if jkt, err := s.verifyDPoPForRequest(r, ""); errors.Is(err, errDPoPNonce) {
+		s.offerDPoPNonce(w)
+		writeError(w, http.StatusBadRequest, "use_dpop_nonce", "this server requires a nonce in the DPoP proof")
+		return
+	} else if err != nil {
+		s.log.InfoContext(r.Context(), "DPoP proof refused at the token endpoint", "err", err,
 			"correlation_id", correlationID(r.Context()))
 		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
 		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", err.Error())
@@ -494,7 +927,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, lookupErr := s.lookupClient(ctx, req.ClientID)
+	// The client and, in the same round trip, the failure counters its authentication
+	// below consults (E.23).
+	ctx, c, lookupErr := s.lookupClientToAuthenticate(ctx, r, req.ClientID)
 	if lookupErr != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 			Description: "unknown client", Status: http.StatusUnauthorized})
@@ -506,7 +941,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
-			s.log.Info("client authentication failed", "client_id", c.ClientID, "err", err,
+			s.log.InfoContext(ctx, "client authentication failed", "client_id", c.ClientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			// An attestation failure gets §7.4's specific code, and a challenge
 			// failure additionally gets a fresh challenge to retry with. Collapsing
@@ -523,7 +958,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.refuseUnboundTokenRequest(w, ctx, c) {
+	if s.refuseUnboundTokenRequest(w, ctx, c) || s.refuseOutOfProfile(w, r, c) {
 		return
 	}
 
@@ -546,12 +981,27 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// audiences the client may exchange FOR, which a grant-type list cannot
 	// express.
 	if req.GrantType != oauth.GrantTypeTokenExchange && !c.AllowsGrantType(req.GrantType) {
-		s.log.Info("client is not registered for the grant it requested",
+		s.log.InfoContext(ctx, "client is not registered for the grant it requested",
 			"client_id", c.ClientID, "grant_type", req.GrantType,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
 			Description: "this client is not registered for the " + req.GrantType +
 				" grant", Status: http.StatusBadRequest})
+		return
+	}
+
+	// The client's organisation's token budget (6.10), charged once the client
+	// is known to be its: a stranger naming somebody's client id spends
+	// nothing of theirs.
+	if spent, err := s.tokenBudgetSpent(ctx, w, c); err != nil || spent {
+		if err != nil {
+			writeTokenError(w, &oauth.TokenError{Code: "temporarily_unavailable",
+				Description: "please try again shortly", Status: http.StatusServiceUnavailable})
+			return
+		}
+		writeTokenError(w, &oauth.TokenError{Code: "temporarily_unavailable",
+			Description: "this organisation's token budget for the minute is spent",
+			Status:      http.StatusTooManyRequests})
 		return
 	}
 
@@ -570,6 +1020,10 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// liveness are the ones that already work.
 		if firstForm(r, "requested_token_type") == txntoken.TokenType {
 			s.handleTxnToken(w, r, c)
+			return
+		}
+		if firstForm(r, "requested_token_type") == oauth.TokenTypeIDJAG {
+			s.handleIDJAGExchange(w, r, c)
 			return
 		}
 		s.handleTokenExchange(w, r, c)
@@ -592,6 +1046,34 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The operator's token provider, asked BEFORE the transaction opens. It is
+	// an HTTP call of up to its timeout, and asking it inside the transaction
+	// held a pool connection and the code's row lock that long on every
+	// redemption, which a slow provider turned into pool exhaustion. The code
+	// is read without being consumed and the same local checks are run on it,
+	// so the provider still sees only a redemption this engine would approve.
+	// A code's columns never change; the transaction below confirms it is the
+	// same record it consumes, and asks again inside if it is not.
+	//
+	// Read only where there is a provider to ask. Without one nothing is asked here,
+	// and the read was a round trip on every redemption for nothing (E.04): a code
+	// that validates is its client's, client_id being the clients' key, so it is in
+	// the client's organisation, and the transaction's own check below asks a
+	// provider of any other.
+	var early *store.ConsumedCode
+	var hook store.TokenHookResult
+	var hookErr error
+	if c.HasTokenHook {
+		if peeked, perr := store.PeekCode(ctx, s.db, store.HashToken(req.Code)); perr == nil {
+			if _, verr := oauth.ValidateCodeRedemption(req, c, &peeked.GrantRecord,
+				dpopThumbprintFrom(ctx), time.Now()); verr == nil {
+				early = peeked
+				hook, hookErr = store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log,
+					peeked.OrgID, tokenHookRequest(peeked, c.ClientID, req.GrantType))
+			}
+		}
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -608,7 +1090,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// code's tokens alive.
 		n, rerr := store.RevokeFamilyForCode(ctx, tx, hash)
 		if rerr != nil {
-			s.log.Error("revoking after code reuse", "err", rerr)
+			s.log.ErrorContext(ctx, "revoking after code reuse", "err", rerr)
 		} else if aerr := audit.Write(ctx, tx, audit.Event{
 			Type:          audit.EventCodeReused,
 			ClientID:      req.ClientID,
@@ -618,14 +1100,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			// The revocation still commits below if it can. Losing the audit row
 			// for a theft signal is bad; failing to revoke the stolen tokens
 			// because of it would be worse.
-			s.log.Error("auditing code reuse", "err", aerr)
+			s.log.ErrorContext(ctx, "auditing code reuse", "err", aerr)
 			if err := tx.Commit(ctx); err != nil {
-				s.log.Error("committing revocation after code reuse", "err", err)
+				s.log.ErrorContext(ctx, "committing revocation after code reuse", "err", err)
 			}
 		} else if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing revocation after code reuse", "err", err)
+			s.log.ErrorContext(ctx, "committing revocation after code reuse", "err", err)
 		}
-		s.log.Warn("authorization code reuse detected", "client_id", req.ClientID,
+		s.log.WarnContext(ctx, "authorization code reuse detected", "client_id", req.ClientID,
 			"families_revoked", n, "correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "authorization code has already been used", Status: http.StatusBadRequest})
@@ -645,7 +1127,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// The code is already consumed by this point, which is correct: a failed
 		// redemption must not leave a reusable code behind.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing code consumption after failed validation", "err", err)
+			s.log.ErrorContext(ctx, "committing code consumption after failed validation", "err", err)
 		}
 		writeTokenError(w, verr)
 		return
@@ -659,62 +1141,87 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	// deciding whether to withdraw an issuance already approved. It can turn an
 	// allow into a deny and can never turn a deny into an allow, because on a
 	// refused redemption it is not reached at all.
-	// `tx`, NOT s.db. The transaction is already open at this point, so taking a
-	// second connection from the pool to read one row is a deadlock: under
-	// concurrent redemptions every goroutine holds a transaction and waits for a
-	// connection that only another goroutine's completion can free. It hung the
-	// suite for eight minutes before this was found, which is what a pool
-	// exhaustion looks like from the outside -- nothing crashes, everything
-	// stops.
 	//
-	// Reading inside the transaction is also the correct snapshot: the provider
-	// registration is read as of the same instant as the code being redeemed.
-	if hook, herr := store.ConsultTokenProvider(ctx, tx,
-		s.providerClient, s.log, consumed.OrgID, store.TokenHookRequest{
-			Subject:  consumed.UserID,
-			ClientID: c.ClientID,
-			Scopes:   consumed.Scopes,
-			Grant:    req.GrantType,
-			OrgID:    consumed.OrgID,
-		}); herr != nil {
-		s.log.Error("consulting the token provider", "err", herr)
+	// Asked above, before the transaction, on the same record. Asked again here
+	// only if what was consumed differs from what was read, which a code's
+	// immutability rules out, but which would otherwise issue a token the
+	// provider was never asked about. Inside the transaction, the read uses `tx`
+	// and not s.db: a second connection taken while holding one deadlocks the
+	// pool under concurrent redemptions (it hung the suite for eight minutes once).
+	if (early == nil || !sameRedemption(early, consumed)) && (consumed.OrgID != c.OrgID || c.HasTokenHook) {
+		hook, hookErr = store.ConsultTokenProvider(ctx, tx, s.root, s.outboundClient, s.log,
+			consumed.OrgID, tokenHookRequest(consumed, c.ClientID, req.GrantType))
+	}
+	if herr := hookErr; herr != nil {
+		s.log.ErrorContext(ctx, "consulting the token provider", "err", herr)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	} else if hook.Vetoed {
-		// The provider's reason goes to the log and the audit trail, never to
-		// the client: it is written by somebody outside this deployment and must
-		// not become part of an OAuth error a stranger reads.
-		s.log.Warn("token issuance vetoed by the operator's provider",
-			"client_id", c.ClientID, "reason", hook.Reason,
-			"correlation_id", correlationID(ctx))
-		s.auditDetached(ctx, audit.Event{
-			Type: "token.vetoed", OrgID: consumed.OrgID, SubjectID: consumed.UserID,
-			ClientID: c.ClientID, CorrelationID: correlationID(ctx),
-			Detail: map[string]any{"reason": hook.Reason},
-		})
+		// Committed before the veto is recorded on a connection of its own.
+		// Recording it first held two, which with a one-connection pool waited
+		// forever. The code is spent either way: a vetoed code is not retried.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing code consumption after a provider veto", "err", err)
+			s.log.ErrorContext(ctx, "committing code consumption after a provider veto", "err", err)
 		}
-		writeTokenError(w, &oauth.TokenError{
-			Code:        "access_denied",
-			Description: "this authorization was refused",
-			Status:      http.StatusForbidden,
-		})
+		s.refuseVetoedIssuance(ctx, w, tokenHookRequest(consumed, c.ClientID, req.GrantType), hook.Reason)
 		return
+	}
+	// What the provider contributed goes into the access token, which it did
+	// not before 2.03: the claims were filtered against the allow-list and
+	// then dropped.
+	ctx = withHookClaims(ctx, hook.Claims)
+
+	// Grant Management §5.6.1: a grant comes to exist as its tokens are claimed.
+	grantID := ""
+	if consumed.GrantAction != "" {
+		var gerr error
+		grantID, gerr = store.SettleClientGrant(ctx, tx, consumed)
+		if errors.Is(gerr, store.ErrClientGrantUnknown) {
+			// Revoked between the request and here. The code is spent either way.
+			if err := tx.Commit(ctx); err != nil {
+				s.log.ErrorContext(ctx, "committing code consumption for a grant that has gone", "err", err)
+			}
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "that grant is no longer held", Status: http.StatusBadRequest})
+			return
+		}
+		if gerr != nil {
+			s.log.ErrorContext(ctx, "settling a grant", "err", gerr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		ctx = withClientGrant(ctx, grantID)
 	}
 
 	resp, err := s.mintTokens(ctx, tx, c, consumed)
 	if err != nil {
-		s.log.Error("minting tokens", "err", err)
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		s.log.ErrorContext(ctx, "minting tokens", "err", err)
+		writeMintError(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	resp.GrantID = grantID
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// tokenHookRequest is what the operator's token provider is told about a
+// redemption, built one way whether it is asked before or inside the
+// transaction.
+func tokenHookRequest(c *store.ConsumedCode, clientID, grant string) store.TokenHookRequest {
+	return store.TokenHookRequest{
+		Subject: c.UserID, ClientID: clientID, Scopes: c.Scopes, Grant: grant, OrgID: c.OrgID,
+	}
+}
+
+// sameRedemption reports whether the code read before the transaction is the
+// one consumed inside it, in everything the token provider was told.
+func sameRedemption(read, consumed *store.ConsumedCode) bool {
+	return read.UserID == consumed.UserID && read.OrgID == consumed.OrgID &&
+		read.ClientID == consumed.ClientID && slices.Equal(read.Scopes, consumed.Scopes)
 }
 
 type tokenResponse struct {
@@ -724,6 +1231,8 @@ type tokenResponse struct {
 	IDToken      string `json:"id_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
+	// GrantID is Grant Management's §5.5, for a request that named an action.
+	GrantID string `json:"grant_id,omitempty"`
 	// RFC 9396 §7: "the AS MUST also return the authorization_details as granted
 	// by the resource owner and assigned to the respective access token."
 	//
@@ -731,6 +1240,10 @@ type tokenResponse struct {
 	// array: a client that never asked should not have to distinguish "you got
 	// nothing" from "this server does not do that".
 	AuthorizationDetails []rar.Detail `json:"authorization_details,omitempty"`
+
+	// jti is the access token's, for a grant that records which token it
+	// minted. Unexported, so it never reaches the response body.
+	jti string
 }
 
 // mintSet issues the access token, ID token, and -- when offline_access was
@@ -765,12 +1278,27 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		certThumb = certThumbprintFrom(ctx)
 	}
 
+	// The audience, checked as it is minted: whatever accepted the resource
+	// earlier, the organisation may have removed it since, or the client may
+	// no longer be designated for the Admin API.
+	if err := s.checkResources(ctx, tx, c, orgID, resources); err != nil {
+		return nil, nil, err
+	}
+
 	alg := keys.Algorithm(c.IDTokenAlg)
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("no active key for the client's algorithm %s: %w", alg, err)
 	}
 	signer := tokens.NewSigner(key)
+	accessSigner := signer
+	if a := keys.Algorithm(c.AccessTokenAlg()); a != alg {
+		accessKey, err := s.cfg.Keys.Active(a)
+		if err != nil {
+			return nil, nil, fmt.Errorf("no active key for the client's access tokens, %s: %w", a, err)
+		}
+		accessSigner = tokens.NewSigner(accessKey)
+	}
 
 	now := time.Now()
 	jti, err := newSID()
@@ -796,6 +1324,12 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	if len(resources) > 0 {
 		audience = resources
 	}
+	// Details of a credential are what the token is for, on every token of the
+	// grant, so that a refresh stays good for issuance and nothing else.
+	credentials := len(rar.CredentialConfigurations(details)) > 0
+	if issuanceAudienceFrom(ctx) || credentials {
+		audience = []string{s.credentialAudience()}
+	}
 
 	// The actor behind this session, if an administrator started it.
 	//
@@ -803,24 +1337,47 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// well as the ID token, and regardless of scope: an API call made during
 	// support access is exactly the case where a resource server needs to know,
 	// and a token minted without `openid` would otherwise carry no trace of it.
+	//
+	// And how this person signed in, for a resource server deciding whether that
+	// is enough, as the ID token says it to the client. A token with no session
+	// says nothing rather than something assumed.
 	var act *tokens.Actor
+	var authTime time.Time
+	var acr string
+	var amr []string
+	var accessAuthTime int64
 	if sid != "" {
-		var impersonator *string
-		if err := tx.QueryRow(ctx,
-			`SELECT impersonator_id::text FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&impersonator); err != nil {
-			return nil, nil, fmt.Errorf("loading session actor: %w", err)
+		// Carried from the statement that touched the session, on a refresh (E.04);
+		// asked here otherwise.
+		f, carried := sessionFactsFrom(ctx, sid)
+		if !carried {
+			if err := tx.QueryRow(ctx, store.SessionTokenFactsStatement, sid).
+				Scan(&f.Impersonator, &f.AuthTime, &f.ACR, &f.AMR); err != nil {
+				return nil, nil, fmt.Errorf("loading the session behind a token: %w", err)
+			}
 		}
+		impersonator := f.Impersonator
+		authTime, acr, amr = f.AuthTime, f.ACR, f.AMR
 		if impersonator != nil && *impersonator != "" {
 			act = &tokens.Actor{Subject: *impersonator}
 		}
+		// The rung the authorization request asked for and was given, above
+		// the session's own "1" or "2".
+		if granted := grantedACRFrom(ctx); granted != "" {
+			acr = granted
+		}
+		accessAuthTime = authTime.Unix()
 	}
 
 	// The refresh family is established BEFORE the access token is signed, so the
 	// token can name the grant it belongs to. It used to be created further down,
 	// after signing, which is why access tokens carried no grant identity and
 	// revoking a refresh token could not reach them.
-	if familyID == "" && containsScope(scopes, "offline_access") {
+	//
+	// Under a managed grant there is always one, refresh token or none, because a
+	// lineage is what revoking the grant reaches an access token through.
+	managed := clientGrantFrom(ctx)
+	if familyID == "" && (containsScope(scopes, "offline_access") || managed != "") {
 		// Details go on the FAMILY, not the token: they belong to the
 		// authorization, and every rotation in the lineage inherits the same
 		// grant. Storing them per-token would let two live tokens from one
@@ -834,13 +1391,25 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		if err != nil {
 			return nil, nil, err
 		}
+		if managed != "" {
+			if err := store.AttachFamilyToGrant(ctx, tx, familyID, managed); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 
 	// §9: the RS is the party that has to ENFORCE these, and it never sees the
 	// token response §7 sends to the client. Filtered per §9.1 so one resource
 	// server does not learn what was granted for another.
+	//
+	// Not those of a credential, whose locations name the Credential Issuer and
+	// whose audience is its endpoint: the endpoint reads them from this claim.
 	var detailClaim json.RawMessage
-	if forAudience := rar.FilterByAudience(details, audience); len(forAudience) > 0 {
+	forAudience := rar.FilterByAudience(details, audience)
+	if credentials {
+		forAudience = details
+	}
+	if len(forAudience) > 0 {
 		encoded, derr := json.Marshal(forAudience)
 		if derr != nil {
 			return nil, nil, fmt.Errorf("encoding authorization_details for the access token: %w", derr)
@@ -857,7 +1426,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	// so releasing something there is a wider decision, and the mapper has to
 	// say so explicitly.
 	var accessExtra map[string]any
-	if s.root != nil && userID != "" {
+	if s.root != nil && userID != "" && c.HasClaimMappers {
 		mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
 			store.ClaimInAccessToken, joinScopes(scopes), s.root)
 		if merr != nil {
@@ -865,24 +1434,29 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		}
 		accessExtra = mapped
 	}
+	if accessExtra, err = withRoles(ctx, tx, c, userID, orgID, accessExtra); err != nil {
+		return nil, nil, err
+	}
 
-	at, err := signer.SignJSON(tokens.AccessTokenClaims{
+	at, err := issueAccessToken(ctx, tx, c, accessSigner, tokens.AccessTokenClaims{
 		Issuer:    issuer,
 		Subject:   userID,
 		Audience:  audience,
-		Expiry:    now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:    now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt:  now.Unix(),
 		JTI:       jti,
 		ClientID:  c.ClientID,
 		Scope:     joinScopes(scopes),
 		SessionID: sid,
+		ACR:       acr,
+		AuthTime:  accessAuthTime,
 		Act:       act,
 		Cnf:       bindingFor(jkt, certThumb),
 
 		AuthorizationDetails: detailClaim,
 		GrantID:              familyID,
 		Extra:                accessExtra,
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -897,25 +1471,29 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		// §5). Not cosmetic: a client told "Bearer" sends no proof, and every
 		// request it makes is then refused.
 		TokenType: bearerOrDPoP(jkt),
-		ExpiresIn: int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn: int(c.AccessTokenTTL().Seconds()),
 		Scope:     joinScopes(scopes),
+		jti:       jti,
 	}
 
 	// An ID token is an authentication statement, so it is only minted where
 	// openid was granted -- a pure refresh of an API token should not re-assert
 	// who the user is.
 	if containsScope(scopes, "openid") {
-		var authTime time.Time
-		var acr string
-		var amr []string
-		if err := tx.QueryRow(ctx,
-			`SELECT auth_time, acr, amr FROM core.sessions WHERE sid = $1`, sid).
-			Scan(&authTime, &acr, &amr); err != nil {
-			return nil, nil, fmt.Errorf("loading session context: %w", err)
+		if sid == "" {
+			return nil, nil, fmt.Errorf("loading session context: %w", pgx.ErrNoRows)
+		}
+		subject, err := subjectFor(ctx, tx, c, userID)
+		if err != nil {
+			return nil, nil, err
+		}
+		actor, err := actorFor(ctx, tx, c, act)
+		if err != nil {
+			return nil, nil, err
 		}
 		claims := tokens.IDTokenClaims{
 			Issuer:          issuer,
-			Subject:         userID,
+			Subject:         subject,
 			Audience:        c.ClientID,
 			Expiry:          now.Add(tokens.DefaultIDTokenTTL).Unix(),
 			IssuedAt:        now.Unix(),
@@ -926,7 +1504,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			SessionID:       sid,
 			AuthorizedParty: c.ClientID,
 			AccessTokenHash: atHash,
-			Actor:           act,
+			Actor:           actor,
 		}
 		if err := s.addProfileClaims(ctx, tx, &claims, userID, scopes); err != nil {
 			return nil, nil, err
@@ -940,7 +1518,7 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 		// anything else — a mapper can only ever add. That is enforced at three
 		// layers on purpose (schema, resolution, serialisation), and this is the
 		// call site that makes the feature reachable at all.
-		if s.root != nil && userID != "" {
+		if s.root != nil && userID != "" && c.HasClaimMappers {
 			mapped, merr := store.MappedClaims(ctx, tx, userID, orgID, c.ClientID,
 				store.ClaimInIDToken, joinScopes(scopes), s.root)
 			if merr != nil {
@@ -953,14 +1531,19 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 			claims.Extra = mapped
 		}
 
+		if claims.Extra, err = withRoles(ctx, tx, c, userID, orgID, claims.Extra); err != nil {
+			return nil, nil, err
+		}
 		idt, err := signer.SignIDToken(claims)
 		if err != nil {
 			return nil, nil, err
 		}
-		resp.IDToken = idt
+		if resp.IDToken, err = sealIDToken(c, idt); err != nil {
+			return nil, nil, err
+		}
 	}
 
-	if !containsScope(scopes, "offline_access") {
+	if !containsScope(scopes, "offline_access") || refreshKeptFrom(ctx) {
 		return resp, nil, nil
 	}
 
@@ -970,7 +1553,22 @@ func (s *Server) mintSet(ctx context.Context, tx pgx.Tx, c *clients.Client,
 	}
 	rtHash := store.HashToken(rt)
 	ttl := time.Duration(c.RefreshTokenTTLSeconds()) * time.Second
-	if err := store.IssueRefreshToken(ctx, tx, familyID, rtHash, scopes, resources, ttl); err != nil {
+	if rep, rotating := replacingFrom(ctx); rotating {
+		// A rotation: the token replaced is linked to this one in the statement that
+		// writes it (E.04).
+		var sealed []byte
+		if rep.sealRetry {
+			var serr error
+			if sealed, serr = store.SealSuccessor(rep.oldToken, rt); serr != nil {
+				// A retry is a kindness. Without it the rotation is still sound.
+				s.log.ErrorContext(ctx, "sealing a successor", "err", serr)
+			}
+		}
+		if err := store.IssueRefreshTokenReplacing(ctx, tx, familyID, rtHash, scopes, resources, ttl,
+			rep.oldHash, sealed); err != nil {
+			return nil, nil, err
+		}
+	} else if err := store.IssueRefreshToken(ctx, tx, familyID, rtHash, scopes, resources, ttl); err != nil {
 		return nil, nil, err
 	}
 	resp.RefreshToken = rt
@@ -985,12 +1583,12 @@ func (s *Server) mintTokens(ctx context.Context, tx pgx.Tx, c *clients.Client, g
 	if derr != nil {
 		return nil, derr
 	}
-	resp, _, err := s.mintSet(ctx, tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce,
+	resp, _, err := s.mintSet(withGrantedACR(ctx, g.ACR), tx, c, g.OrgID, g.UserID, g.SessionID, g.Nonce,
 		g.Scopes, g.Resources, granted, "")
 	if err != nil {
 		return resp, err
 	}
-	resp.AuthorizationDetails = granted
+	resp.AuthorizationDetails = rar.WithCredentialIdentifiers(granted)
 	return resp, nil
 }
 
@@ -1025,7 +1623,7 @@ func (s *Server) mintFromGrant(ctx context.Context, tx pgx.Tx, c *clients.Client
 	if err != nil {
 		return resp, rtHash, err
 	}
-	resp.AuthorizationDetails = granted
+	resp.AuthorizationDetails = rar.WithCredentialIdentifiers(granted)
 	return resp, rtHash, nil
 }
 
@@ -1069,12 +1667,13 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 		return nil
 	}
 
-	var email, username string
+	var email, username, name, given, family string
 	var verified bool
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL
+		SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL,
+		       COALESCE(display_name,''), COALESCE(given_name,''), COALESCE(surname,'')
 		FROM core.users WHERE id = $1 AND status = 'active'`, userID).
-		Scan(&email, &username, &verified); err != nil {
+		Scan(&email, &username, &verified, &name, &given, &family); err != nil {
 		return fmt.Errorf("loading identity claims for %s: %w", userID, err)
 	}
 
@@ -1087,9 +1686,11 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 	}
 	if wantProfile {
 		claims.Username = username
-		// No `name`: there is no display name stored anywhere, so there is
-		// nothing honest to put in it. It has been removed from claims_supported
-		// rather than emitted empty.
+		// The names an account holds, each only when it holds one. They were
+		// never released: this said no display name was stored anywhere, which
+		// stopped being true when migration 0105 added them, so relying parties
+		// greeted everybody by their username.
+		claims.Name, claims.GivenName, claims.FamilyName = name, given, family
 	}
 	if wantGroups {
 		// TWO gates, not one: the scope must be granted AND the client must be
@@ -1104,7 +1705,8 @@ func (s *Server) addProfileClaims(ctx context.Context, tx pgx.Tx,
 		// removed from at lunchtime.
 		// The audience IS the client id for an ID token, which is what the
 		// release policy is keyed on.
-		groups, err := store.GroupsForUser(ctx, s.db, userID, claims.Audience)
+		// In the minting transaction, never the pool: see store.GroupsForUser.
+		groups, err := store.GroupsForUser(ctx, tx, userID, claims.Audience)
 		if err != nil {
 			return fmt.Errorf("loading group membership for %s: %w", userID, err)
 		}
@@ -1167,11 +1769,29 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 			Status:      http.StatusBadRequest})
 		return
 	}
+	// RFC 8707, as every other grant: the resources asked for are the audience, each
+	// registered, or the Admin API's alone for a client the deployment designated
+	// (6.01). Unread here until 0.27, so a service asking for the billing API got a
+	// token audienced to itself and valid wherever that was accepted.
+	audience := []string{c.ClientID}
+	if len(req.Resources) > 0 {
+		if err := s.checkResources(r.Context(), s.db, c, c.OrgID, req.Resources); err != nil {
+			writeMintError(w, err)
+			return
+		}
+		audience = req.Resources
+	}
+	// The subject is the client itself.
+	hookCtx, ok := s.consultTokenHook(r.Context(), w, c, store.TokenHookRequest{
+		Subject: c.ClientID, ClientID: c.ClientID, Scopes: scopes, Grant: req.GrantType, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
 
-	alg := keys.Algorithm(c.IDTokenAlg)
+	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
-		s.log.Error("no active key for client_credentials", "alg", alg, "err", err)
+		s.log.ErrorContext(r.Context(), "no active key for client_credentials", "alg", alg, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -1208,11 +1828,11 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	// consequence; this path simply never called it.
 	ccJKT := dpopThumbprintFrom(r.Context())
 
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
-		Issuer:   s.cfg.Issuer,
+	at, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
+		Issuer:   s.issuerFor(c),
 		Subject:  c.ClientID,
-		Audience: []string{c.ClientID},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Audience: audience,
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		Cnf:      bindingFor(ccJKT, certThumb),
@@ -1220,9 +1840,9 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 		Scope:    joinScopes(scopes),
 		// No SessionID: nothing to tie this to, and inventing one would make
 		// logout appear to cover a token it cannot.
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
-		s.log.Error("signing client_credentials token", "err", err)
+		s.log.ErrorContext(r.Context(), "signing client_credentials token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -1230,7 +1850,7 @@ func (s *Server) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken: at,
 		TokenType:   bearerOrDPoP(ccJKT),
-		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn:   int(c.AccessTokenTTL().Seconds()),
 		Scope:       joinScopes(scopes),
 	})
 }
@@ -1250,6 +1870,28 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	oldHash := store.HashToken(req.RefreshToken)
+
+	// The operator's token provider, about a refresh this engine would grant,
+	// read without spending the token and asked before the transaction holds a
+	// connection. A veto refused the authorization code and was then ignored
+	// by every refresh after it (2.03); now it is refused here, and the token
+	// is not rotated, so a provider that relents later is not met by a spent one.
+	if peek, perr := store.LookupRefreshToken(ctx, s.db, oldHash); perr == nil &&
+		peek.Active && peek.ClientID == c.ClientID {
+		scopes := peek.Scopes
+		if req.Scope != "" {
+			scopes = splitScopes(req.Scope)
+		}
+		hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+			Subject: peek.UserID, ClientID: c.ClientID, Scopes: scopes,
+			Grant: "refresh_token", OrgID: peek.OrgID})
+		if !ok {
+			return
+		}
+		ctx = hookCtx
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -1257,18 +1899,56 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	oldHash := store.HashToken(req.RefreshToken)
-	grant, rerr := store.RotateRefreshToken(ctx, tx, oldHash)
+	// FAPI 2.0 §5.3.2.1: "shall not use refresh token rotation except in
+	// extraordinary circumstances". The token stays good and the answer carries no
+	// new one, so an answer lost on the way back costs the client nothing.
+	var grant *store.RefreshGrant
+	var rerr error
+	kept := c.FAPI2()
+	if kept {
+		ctx = withRefreshKept(ctx)
+		grant, rerr = store.ReadRefreshGrant(ctx, tx, oldHash)
+	} else {
+		grant, rerr = store.RotateRefreshToken(ctx, tx, oldHash)
+	}
+
+	// A client that opted in gets one retry at the same answer, for an answer lost
+	// on the way back. Everything below still holds: this replaces the rotation and
+	// nothing else.
+	var retried []byte
+	if errors.Is(rerr, store.ErrRefreshReused) && c.RefreshReuseGrace > 0 {
+		if g, sealed, gerr := store.RefreshRetry(ctx, tx, oldHash,
+			time.Duration(c.RefreshReuseGrace)*time.Second); gerr == nil {
+			grant, rerr, retried = g, nil, sealed
+		} else if !errors.Is(gerr, store.ErrRefreshReused) {
+			s.log.ErrorContext(ctx, "retrying a refresh", "err", gerr)
+		}
+	}
 
 	if errors.Is(rerr, store.ErrRefreshReused) {
-		n, revErr := store.RevokeFamilyByToken(ctx, tx, oldHash, "reuse_detected")
-		if revErr != nil {
-			s.log.Error("revoking family after refresh reuse", "err", revErr)
-		} else if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing revocation after refresh reuse", "err", err)
+		holderOrg, holder, herr := store.RefreshTokenHolder(ctx, tx, oldHash)
+		if herr != nil {
+			s.log.ErrorContext(ctx, "reading the holder of a reused refresh token", "err", herr)
 		}
-		s.log.Warn("refresh token reuse detected -- family revoked",
+		n, revErr := store.RevokeFamilyByToken(ctx, tx, oldHash, "reuse_detected")
+		committed := false
+		if revErr != nil {
+			s.log.ErrorContext(ctx, "revoking family after refresh reuse", "err", revErr)
+		} else if err := tx.Commit(ctx); err != nil {
+			s.log.ErrorContext(ctx, "committing revocation after refresh reuse", "err", err)
+		} else {
+			committed = true
+		}
+		s.log.WarnContext(ctx, "refresh token reuse detected -- family revoked",
 			"client_id", c.ClientID, "families_revoked", n)
+		// The theft signal, recorded and published. Only the log said so before
+		// 2.52. After the revocation commits, so that the revocation never
+		// depends on the record of it.
+		if committed {
+			s.auditDetached(ctx, audit.Event{Type: audit.EventRefreshReused, OrgID: holderOrg,
+				SubjectID: holder, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"families_revoked": n}})
+		}
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "refresh token has already been used", Status: http.StatusBadRequest})
 		return
@@ -1285,6 +1965,41 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "refresh token was not issued to this client", Status: http.StatusBadRequest})
 		return
+	}
+
+	// An application refreshing is a use of the session it holds the token
+	// under, as a browser presenting the cookie is: somebody working in the
+	// application is not idle. In this transaction, so a refresh refused below
+	// moves nothing.
+	//
+	// And what the tokens say of the session read in the same statement (E.04), for the
+	// mint to use rather than ask again. A session that is not there touches nothing and
+	// carries nothing; the mint asks, and refuses as it did.
+	if grant.SessionID != "" {
+		f, err := store.TouchSessionReading(ctx, tx, grant.SessionID)
+		switch {
+		case err == nil:
+			ctx = withSessionFacts(ctx, grant.SessionID, f)
+		case !errors.Is(err, pgx.ErrNoRows):
+			s.log.ErrorContext(ctx, "recording a refresh as a use of its session", "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+	}
+
+	// The client's floor (clientacr.go), against the session the lineage was
+	// authorized from, so raising it reaches the refresh tokens already issued.
+	// Refused, not revoked: the token is not spent, and signing in again with a
+	// second factor starts a lineage that meets it. A session that cannot be
+	// read meets no floor (sessionFactors).
+	if oauth.RequiredRung("", c.MinimumACR) >= 2 {
+		if _, amr := sessionFactors(ctx, tx, grant.SessionID); !meetsClientFloor(c, amr) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "this application requires a stronger sign-in than the one this " +
+					"refresh token came from; sign in again",
+				Status: http.StatusBadRequest})
+			return
+		}
 	}
 
 	// RFC 9449 §5, the sentence that is easy to skip: "The binding MUST be
@@ -1315,7 +2030,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.DPoPJKT)) != 1 {
 			// Logged, because this is what a replayed refresh token looks like:
 			// a valid proof of the wrong key.
-			s.log.Warn("refresh token presented with a DPoP key it is not bound to",
+			s.log.WarnContext(ctx, "refresh token presented with a DPoP key it is not bound to",
 				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 				Description: "the DPoP proof is for a different key than the one " +
@@ -1340,7 +2055,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(presented), []byte(grant.CertThumbprint)) != 1 {
-			s.log.Warn("refresh token presented with a certificate it is not bound to",
+			s.log.WarnContext(ctx, "refresh token presented with a certificate it is not bound to",
 				"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the client certificate on this connection is not the " +
@@ -1383,14 +2098,77 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 		scopes = requested
 	}
 
-	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
-	if err != nil {
-		s.log.Error("minting from refresh", "err", err)
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+	// The access policy, again, at every refresh. A person removed from the
+	// group a rule demands, or a client a new deny rule names, used to keep
+	// receiving tokens for as long as the lineage lived -- the policy was asked
+	// once, at the authorization endpoint, and never after. Decided as
+	// policy.Request.Refresh describes: who the person is and what their session
+	// proved, not where the application's server is calling from. Not revoked on
+	// refusal: the next refresh asks again, so restoring the membership restores
+	// the grant.
+	//
+	// A lineage from another organisation's session is refused outright. The
+	// authorization endpoint once issued codes across organisations, and a
+	// family it left behind would otherwise be asked about by the session's
+	// organisation's policy, not this client's.
+	if grant.OrgID != c.OrgID {
+		_ = tx.Rollback(ctx)
+		s.log.WarnContext(ctx, "refused a refresh for a grant from another organisation",
+			"client_id", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this grant does not belong to this client's organisation",
+			Status:      http.StatusBadRequest})
 		return
 	}
-	if err := store.LinkSuccessor(ctx, tx, oldHash, newHash); err != nil {
-		s.log.Error("linking successor", "err", err)
+	if c.HasAccessPolicy {
+		mfa, amr := sessionFactors(ctx, tx, grant.SessionID)
+		if pd := s.checkAccessPolicyIn(ctx, tx, nil, grant.OrgID, c.ClientID, grant.UserID,
+			strings.Join(scopes, " "), mfa, amr); pd != nil {
+			// Released before the refusal is recorded on a connection of its own;
+			// nothing here is committed on a refusal anyway.
+			_ = tx.Rollback(ctx)
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: grant.OrgID, SubjectID: grant.UserID,
+				ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "refresh"},
+			})
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the access policy no longer allows this grant: " + pd.Message,
+				Status:      http.StatusBadRequest})
+			return
+		}
+	}
+
+	// A plain rotation links the token it replaces in the statement that writes the
+	// successor (E.04). Not a retry, which answers with the successor already written,
+	// nor a kept token, which nothing replaces.
+	if retried == nil && !kept {
+		ctx = withReplacing(ctx, replacing{oldHash: oldHash, oldToken: req.RefreshToken,
+			sealRetry: c.RefreshReuseGrace > 0})
+	}
+	resp, newHash, err := s.mintFromGrant(ctx, tx, c, grant, scopes)
+	if err != nil {
+		s.log.ErrorContext(ctx, "minting from refresh", "err", err)
+		writeMintError(w, err)
+		return
+	}
+	if retried != nil {
+		// The token this answer should have carried, and not a second line of
+		// descent: a retry leaves one live token, as a rotation does.
+		successor, oerr := store.OpenSuccessor(req.RefreshToken, retried)
+		if oerr == nil {
+			oerr = store.DiscardRefreshToken(ctx, tx, newHash)
+		}
+		if oerr == nil {
+			oerr = audit.Write(ctx, tx, audit.Event{Type: audit.EventRefreshRetried, OrgID: grant.OrgID,
+				SubjectID: grant.UserID, ClientID: c.ClientID, CorrelationID: correlationID(ctx)})
+		}
+		if oerr != nil {
+			s.log.ErrorContext(ctx, "answering a retried refresh", "err", oerr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		resp.RefreshToken = successor
 	}
 	if err := tx.Commit(ctx); err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -1401,6 +2179,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request,
 
 // handleLoginPost verifies credentials and creates a session.
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withFlowAnswerMemo(r.Context()))
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "malformed form", http.StatusBadRequest)
@@ -1410,6 +2189,28 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	identifier := r.PostForm.Get("username")
 	password := r.PostForm.Get("password")
 
+	// The single sign-on button (8.20): before any credential is looked up, since
+	// none was offered. An address no provider signs in is told so.
+	if r.PostForm.Get("sso") != "" {
+		if !s.routeByAddress(w, r, s.loginOrg(ctx, authzQuery), identifier, authzQuery) {
+			s.renderLogin(w, r, authzQuery, "Single sign-on is not set up for that address.")
+		}
+		return
+	}
+
+	// Cancel: the person tells the application they are not signing in, which is
+	// access_denied, "the resource owner ... denied the request" (specs/rfc6749.txt
+	// :1523-1525). The only way out was closing the page, and the application waited
+	// on a response that never came. The account picker's Cancel, and its words.
+	if r.PostForm.Get("cancel") != "" {
+		if authzQuery == "" {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		s.errorToClient(w, r, authzQuery, "access_denied", "the sign-in was cancelled")
+		return
+	}
+
 	// The challenge is checked BEFORE the credential lookup, so a solved
 	// challenge is a precondition for spending an Argon2 evaluation rather than
 	// a second opinion afterwards.
@@ -1418,10 +2219,10 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// hold the address's counter still by submitting a blank challenge forever,
 	// and adaptive mode would never escalate.
 	if s.captcha.Required(ctx, r.RemoteAddr) {
-		if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+		if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 			s.captcha.RecordFailure(ctx, r.RemoteAddr)
 			s.recordSignInFailure(ctx, r)
-			s.log.Info("captcha refused", "err", cerr,
+			s.log.InfoContext(ctx, "captcha refused", "err", cerr,
 				"correlation_id", correlationID(ctx))
 			s.renderLogin(w, r, authzQuery,
 				"That challenge was not completed. Please try again.")
@@ -1429,23 +2230,66 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	userID, orgID, stored, ok, err := s.lookupCredential(ctx, identifier)
+	// Whose sign-in page this is: the parked request's client, or the only
+	// organisation. Empty on a bare page of a deployment with several.
+	pageOrg := s.loginOrg(ctx, authzQuery)
+	cred, ok, ambiguous, err := s.lookupCredential(ctx, identifier, pageOrg)
 	if err != nil {
-		s.log.Error("looking up credential", "err", err)
+		s.log.ErrorContext(ctx, "looking up credential", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return
+	}
+	userID, orgID, stored := cred.userID, cred.orgID, cred.hash
+
+	// The organisation's sign-in budget (6.10), before any password is
+	// hashed: the page's organisation, or the account's on a bare page. An
+	// address nobody has, on a bare page, names none and spends nothing.
+	if budgetOrg := pageOrg; budgetOrg != "" || orgID != "" {
+		if budgetOrg == "" {
+			budgetOrg = orgID
+		}
+		if spent, berr := s.orgBudgetSpent(ctx, w, budgetOrg, store.BudgetSignIns); berr != nil || spent {
+			if berr != nil {
+				s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+				return
+			}
+			s.renderLoginStatus(w, r, authzQuery,
+				"Too many sign-ins here right now. Please try again in a minute.", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	// One generic message for every failure -- unknown user, wrong password,
 	// deactivated account. Distinguishing them is a user-enumeration oracle.
-	const generic = "Incorrect username or password."
+	generic := "Incorrect username or password."
+	if pageOrg == "" {
+		// A bare page on a deployment with several organisations says so on
+		// every failure, not only an ambiguous one: saying it only then would
+		// tell anybody typing an address that it is held in more than one.
+		generic += " If you belong to more than one organisation, start from the " +
+			"application you want to sign in to."
+	}
+
+	if ambiguous {
+		// Same cost and the same answer as a wrong password.
+		_, _ = s.hasher.Verify(ctx, dummyHash, password)
+		s.auditDetached(ctx, audit.Event{
+			Type:          audit.EventLoginFailed,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "identifier_in_several_organisations"},
+		})
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
+		s.renderLogin(w, r, authzQuery, generic)
+		return
+	}
 
 	if !ok {
 		// No local credential. Before treating this as "no such user", check
 		// whether it is a user we imported whose password still lives at the
 		// provider being migrated away from. Those two cases look identical at
 		// this form and must be handled completely differently.
-		if done := s.tryDelegated(w, r, identifier, password, authzQuery); done {
+		if done := s.tryDelegated(w, r, pageOrg, identifier, password, authzQuery); done {
 			return
 		}
 
@@ -1471,9 +2315,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// Checked BEFORE spending an Argon2 evaluation. Verifying first would make
 	// the throttle an amplifier: every rejected attempt would still cost the
 	// server 19MB and a CPU burst, which is what the limiter exists to prevent.
-	throttle, terr := store.CheckLoginThrottle(ctx, s.db, userID)
+	throttle, terr := store.ReserveLoginAttempt(ctx, s.db, userID)
 	if terr != nil {
-		s.log.Error("checking login throttle", "err", terr)
+		// Refused, for the reason allowSignInAttempt gives: nothing was going to
+		// work against a database that cannot answer this, and going on would be
+		// a guess nobody counted.
+		s.log.ErrorContext(ctx, "spending a guess at an account", "err", terr)
+		s.renderLogin(w, r, authzQuery, generic)
+		return
 	}
 	if throttle.Throttled {
 		// The generic message is kept: revealing that an account is throttled
@@ -1494,9 +2343,6 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if verr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
 		s.recordSignInFailure(ctx, r)
-		if err := store.RecordLoginFailure(ctx, s.db, userID); err != nil {
-			s.log.Error("recording login failure", "err", err)
-		}
 		s.auditDetached(ctx, audit.Event{
 			Type:          audit.EventLoginFailed,
 			OrgID:         orgID,
@@ -1515,7 +2361,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// office NAT should not inherit a challenge from somebody who mistyped.
 	s.captcha.Clear(ctx, r.RemoteAddr)
 	if err := store.ClearLoginThrottle(ctx, s.db, userID); err != nil {
-		s.log.Error("clearing login throttle", "err", err)
+		s.log.ErrorContext(ctx, "clearing login throttle", "err", err)
 	}
 
 	// Lazy rehash, before either branch: a successful password check upgrades a
@@ -1524,9 +2370,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		if fresh, herr := s.hasher.Hash(ctx, password); herr == nil {
 			if _, err := s.db.Exec(ctx, `
 				UPDATE core.password_credentials
-				SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now()
-				WHERE user_id = $1`, userID, fresh); err != nil {
-				s.log.Error("rehashing password", "err", err)
+				SET hash = $2, algorithm = $3, is_current = true, updated_at = now()
+				WHERE user_id = $1`, userID, fresh, passwords.AlgorithmOf(fresh)); err != nil {
+				s.log.ErrorContext(ctx, "rehashing password", "err", err)
 			}
 			// A user imported by password hash has now finished migrating: the
 			// foreign hash is gone and their credential is ours. Recording that
@@ -1541,7 +2387,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				UPDATE core.users
 				SET migration_state = 'complete', migrated_at = now()
 				WHERE id = $1 AND migration_state = 'pending'`, userID); err != nil {
-				s.log.Error("marking a hash-imported user migrated", "err", err)
+				s.log.ErrorContext(ctx, "marking a hash-imported user migrated", "err", err)
 			}
 		}
 	}
@@ -1569,7 +2415,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			// unreachable -- otherwise an outage becomes a retry on every
 			// sign-in by every user, and their bad hour becomes ours.
 			if err := store.RecordBreachCheck(ctx, s.db, userID); err != nil {
-				s.log.Error("recording a breach check", "err", err)
+				s.log.ErrorContext(ctx, "recording a breach check", "err", err)
 			}
 			if berr == nil && bad {
 				// A KEY, not a sentence. The reason is written now and read on a
@@ -1578,7 +2424,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				// speaking when the flag was set. See renderChangeReason.
 				if ferr := store.RequirePasswordChange(ctx, s.db, userID,
 					"reason.breached"); ferr != nil {
-					s.log.Error("flagging a breached password", "err", ferr)
+					s.log.ErrorContext(ctx, "flagging a breached password", "err", ferr)
 				}
 				s.auditDetached(ctx, audit.Event{
 					Type: "password.breached", OrgID: orgID, SubjectID: userID,
@@ -1597,6 +2443,17 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// that has not written a flow file gets exactly this behaviour.
 	demanded, enrolled := s.FlowDemandsMFA(ctx, s.db, orgID, userID, authzQuery,
 		[]string{oauth.AMRPassword})
+	// A remembered device, where no client requires more: the walk passes the
+	// mfa stage for the same reason (rememberdevice.go), so it is not begun.
+	if demanded && s.deviceSkipsMFA(ctx, r, orgID, userID, authzQuery) {
+		demanded = false
+	}
+	// Nothing enrolled, and the flow enrols a factor: the walk does that, and
+	// refuses there if its mfa stage comes first. Refusing here would turn
+	// away exactly the people an enrol_mfa stage was written for.
+	if demanded && !enrolled && s.flowEnrols(ctx, orgID, userID, authzQuery) {
+		demanded = false
+	}
 	if demanded && !enrolled {
 		// The flow requires a second factor of everybody and this account has
 		// none. Refused rather than waved through: silently skipping would mean
@@ -1612,9 +2469,14 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 				"Please contact your administrator.")
 		return
 	}
+	failedOpen := false
 	if demanded {
-		s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword})
-		return
+		if !s.beginMFAChallenge(w, r, userID, orgID, authzQuery, []string{oauth.AMRPassword}) {
+			return
+		}
+		// Duo is unreachable, the deployment fails open, and this person has
+		// nothing else to present: the sign-in carries on, on a password alone.
+		failedOpen = true
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -1624,6 +2486,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if failedOpen {
+		s.recordDuoFailOpen(ctx, tx, orgID, userID)
+		// So the walk completeSignIn starts does not reach the mfa stage, find
+		// a password-only amr, and ask Duo again.
+		r = withMFAWaivedByFailOpen(r)
+	}
 	s.completeSignIn(w, r, tx, userID, orgID, []string{oauth.AMRPassword}, authzQuery)
 }
 
@@ -1671,6 +2539,41 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 
 	ctx := r.Context()
 
+	// Only an active account is signed in, decided here for every way in
+	// rather than by each lookup remembering. A provider's sign-in found its
+	// account by the link alone and came here for a deactivated one, which
+	// wrote a session and a login.succeeded that the per-request check then
+	// treated as nobody (ADR-007). A self-sign-up waiting for approval (5.19)
+	// has proved its own credential, so it is told why. An account of a
+	// suspended organisation is refused the same way (6.09), recorded as such.
+	// And an account of another instance (6.12), which no way in should have
+	// found here; this is where one that did is stopped.
+	var status, locale string
+	if err := tx.QueryRow(ctx, `
+		SELECT CASE WHEN NOT `+store.InInstance("u.org_id", "$2")+` THEN 'other_instance'
+		            WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END,
+		       COALESCE(u.locale, '')
+		  FROM core.users u WHERE u.id = $1::uuid`,
+		userID, s.instanceID).Scan(&status, &locale); err != nil {
+		s.log.ErrorContext(ctx, "reading the account's status at sign-in", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if status != "active" {
+		_ = tx.Rollback(ctx)
+		s.clearPending(w)
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx), Detail: map[string]any{"reason": "account_" + status},
+		})
+		msg := "You cannot sign in at the moment. Please contact your administrator."
+		if status == "pending" {
+			msg = s.tr(r).Text("login.pending")
+		}
+		s.renderLogin(w, r, authzQuery, msg)
+		return
+	}
+
 	// Prompts, before the session exists.
 	//
 	// The check lives HERE rather than at each of the eight places that sign
@@ -1709,6 +2612,10 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 		// path that could spend it funnels back through here and would be denied
 		// again, so this is not closing a hole -- it is not leaving a live
 		// credential in a browser we have just refused.
+		//
+		// The walk released the transaction on a denial; said again here, where
+		// the refusal is rendered, so the order cannot drift.
+		_ = tx.Rollback(ctx)
 		s.clearPending(w)
 		s.renderLogin(w, r, authzQuery,
 			"You cannot sign in at the moment. Please contact your administrator.")
@@ -1716,13 +2623,28 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	case decisionDone:
 		// The flow finished deliberately without issuing a session.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing a flow that issued no session", "err", err)
+			s.log.ErrorContext(ctx, "committing a flow that issued no session", "err", err)
 		}
 		s.clearPending(w)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "done"})
 		return
 	case decisionSession:
 		// Fall through.
+	}
+
+	// The walk's own marks stop here, the one place a session comes into
+	// existence.
+	amr = flow.Unmarked(amr)
+
+	// The operator's provider, about a sign-in every step has passed, here for every
+	// way in as the status check above is. It can only take this back.
+	if hook := s.askHook(ctx, tx, orgID, provider.HookAuthenticate, store.AuthenticateHookRequest{
+		Subject: userID, OrgID: orgID, AMR: amr, ClientIP: clientIP(r)}); hook.Vetoed {
+		_ = tx.Rollback(ctx)
+		s.clearPending(w)
+		s.recordHookRefusal(ctx, provider.HookAuthenticate, orgID, userID, "", hook.Reason)
+		s.renderLogin(w, r, authzQuery, "You cannot sign in at the moment. Please contact your administrator.")
+		return
 	}
 
 	// ASVS 5.0.0 V7.2.4: "generates a new session token on user authentication,
@@ -1744,18 +2666,27 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	// session-revoked notices, so relying parties holding tokens from the old
 	// session learn it ended rather than discovering it at expiry.
 	//
-	// The session presented by THIS browser, and only that one. A user signed in
+	// The sessions presented by THIS browser, and only those. A user signed in
 	// on a phone and a laptop who re-authenticates on the laptop has not asked to
 	// be signed out of the phone.
-	if old := sessionCookie(r); old != "" {
+	//
+	// And only this person's: another account this browser holds is not this
+	// sign-in's to end, and is kept beside it (accounts.go, 5.17). Ending every
+	// session the browser presented is what made a second account a sign-out of
+	// the first. A parked session of this person's goes too, or it would stay
+	// live with no cookie left to end it.
+	for _, old := range append([]string{sessionCookie(r)}, parkedTokens(r)...) {
+		if old == "" {
+			continue
+		}
 		var oldSID string
 		if err := tx.QueryRow(ctx, `
 			SELECT sid FROM core.sessions
-			WHERE cookie_hash = $1 AND revoked_at IS NULL`,
-			store.HashToken(old)).Scan(&oldSID); err == nil && oldSID != "" {
+			WHERE cookie_hash = $1 AND revoked_at IS NULL AND user_id = $2::uuid`,
+			store.HashToken(old), userID).Scan(&oldSID); err == nil && oldSID != "" {
 			if _, terr := store.TerminateSessions(ctx, tx, oldSID, "",
 				store.ReasonReauthenticated); terr != nil {
-				s.log.Error("terminating the superseded session", "err", terr,
+				s.log.ErrorContext(ctx, "terminating the superseded session", "err", terr,
 					"correlation_id", correlationID(ctx))
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -1794,30 +2725,61 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "session_limit"},
 		}); aerr != nil {
-			s.log.Error("auditing a session-limit refusal", "err", aerr)
+			s.log.ErrorContext(ctx, "auditing a session-limit refusal", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			s.log.Error("committing the session-limit refusal", "err", cerr)
+			s.log.ErrorContext(ctx, "committing the session-limit refusal", "err", cerr)
 		}
 		s.renderLogin(w, r, "", "You are already signed in on the maximum number "+
 			"of devices for this organisation. Sign out somewhere else and try again.")
 		return
 	}
 	if lerr != nil {
-		s.log.Error("enforcing the session limit", "err", lerr)
+		s.log.ErrorContext(ctx, "enforcing the session limit", "err", lerr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if len(evicted) > 0 {
-		s.log.Info("sessions evicted to make room", "user_id", userID,
+		s.log.InfoContext(ctx, "sessions evicted to make room", "user_id", userID,
 			"count", len(evicted), "correlation_id", correlationID(ctx))
 	}
 
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after)
-		VALUES ($1, $2, $3, $4, $5, $6, now(), now() + $7::interval)`,
-		sid, store.HashToken(cookieToken), orgID, userID, acr, amr, sessionTTL.String()); err != nil {
-		s.log.Error("creating session", "err", err)
+	// The organisation's lifetime, and its idle limit, from sign-in (0180): the
+	// session ends at the sooner of the two unless it is used.
+	// A device none of this person's recent sessions came from is told to
+	// them (newdevice.go), read before this session is written and queued
+	// with it, so a sign-in that does not hold tells nobody.
+	if device, isNew := s.newDeviceSignIn(ctx, r, tx, userID, orgID); isNew {
+		if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+			Notice: store.NoticeNewDevice, Device: device}); err != nil {
+			s.log.ErrorContext(ctx, "queueing the new-device notice", "err", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// What this sign-in showed, kept with it: a decision made later has only a relying
+	// party's request to go on, with no browser behind it (11.07). Read before this
+	// session's own location is recorded, or it would be its own history.
+	device := s.posture.Evaluate(r)
+	riskNow := s.riskScore(ctx, tx, userID, clientIP(r))
+
+	// persistent records "stay signed in", where it was asked and is offered,
+	// for whichever of this browser's cookies holds the session later (0185).
+	userAgent, ipHash := s.sessionDevice(r)
+	if tag, err := tx.Exec(ctx, `
+		INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after,
+		                           absolute_not_after, last_seen_at, user_agent, ip_hash, persistent,
+		                           risk, device_managed, device_compliant)
+		SELECT $1, $2, o.id, $4, $5, $6, now(),
+		       now() + make_interval(secs => least(o.session_lifetime_s, coalesce(o.session_idle_s, o.session_lifetime_s))),
+		       now() + make_interval(secs => o.session_lifetime_s), now(), $7, $8, $9 AND o.persistent_sessions,
+		       $10, $11, $12
+		  FROM core.organizations o WHERE o.id = $3::uuid`,
+		sid, store.HashToken(cookieToken), orgID, userID, acr, amr,
+		userAgent, ipHash, rememberAsked(r), riskNow, device.Managed,
+		device.Managed && device.Compliant); err != nil || tag.RowsAffected() != 1 {
+		s.log.ErrorContext(ctx, "creating session", "err", err, "rows", tag.RowsAffected())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -1831,7 +2793,7 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	}); err != nil {
 		// Rule 4 of the package doc: no record, no session. A sign-in nobody can
 		// prove happened is exactly what an investigation cannot work with.
-		s.log.Error("auditing login", "err", err)
+		s.log.ErrorContext(ctx, "auditing login", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -1842,7 +2804,22 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	}
 
 	s.clearPending(w)
-	s.setSessionCookie(w, cookieToken)
+	// A browser-session cookie, unless this sign-in asked to stay signed in
+	// on this device and the organisation offers that (5.11). Read only then,
+	// so an ordinary sign-in pays nothing for it.
+	maxAge := 0
+	if rememberAsked(r) {
+		maxAge = s.persistentCookieAge(ctx, sid)
+		s.forgetRemember(w, r)
+	}
+	// Whoever else this browser was signed in as stays signed in, parked
+	// beside this one (accounts.go), unless it was this person.
+	s.parkOthers(ctx, w, r, userID)
+	s.setSessionCookie(w, cookieToken, maxAge)
+	// The language this person chose, in whatever browser they chose it.
+	if locale != "" && s.pageSet().Bundle().Has(locale) {
+		setLanguageCookie(w, locale)
+	}
 
 	// Where this sign-in came from, for the next travel check.
 	//
@@ -1853,12 +2830,13 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 	loc := s.geo.Resolve(clientIP(r))
 	loc.At = time.Now()
 	if lerr := store.RecordAuthLocation(ctx, s.db, userID, orgID, loc); lerr != nil {
-		s.log.Error("recording the sign-in location", "err", lerr)
+		s.log.ErrorContext(ctx, "recording the sign-in location", "err", lerr)
 	}
 
 	// Back to whatever was parked, if anything was.
 	if authzQuery != "" {
-		http.Redirect(w, r, resumeAfterSignIn(authzQuery), http.StatusSeeOther)
+		answered := s.answerPrompts(ctx, authzQuery, oauth.PromptLogin, oauth.PromptSelectAccount)
+		http.Redirect(w, r, resumeAfterSignIn(answered), http.StatusSeeOther)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "signed in"})
@@ -1868,23 +2846,72 @@ func (s *Server) completeSignIn(w http.ResponseWriter, r *http.Request, tx pgx.T
 // timing of "no such user" indistinguishable from "wrong password".
 const dummyHash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHR2YWx1ZQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG"
 
-func (s *Server) lookupCredential(ctx context.Context, identifier string) (userID, orgID, hash string, ok bool, err error) {
+// credential is one account a sign-in name could mean.
+type credential struct {
+	userID, orgID, hash string
+	// status is active or pending: a self-sign-up waiting for approval is
+	// found, so that its own correct password is answered by why it cannot
+	// sign in yet (completeSignIn) rather than by "wrong password".
+	status string
+}
+
+// lookupCredentials finds the accounts an identifier names: in orgID when it is
+// given, and in every organisation when it is empty. At most a few -- a caller
+// needs to tell one from several, not to enumerate.
+//
+// Sign-in names are unique per organisation (users_org_email_key), not across
+// them. This used to ask across all of them with QueryRow, so the same address
+// in two tenants signed in to whichever row the planner returned, or refused the
+// right person when it met the other's hash.
+func (s *Server) lookupCredentials(ctx context.Context, identifier, orgID string) ([]credential, error) {
 	// The status check is in the query: a deactivated user must not be able to
 	// sign in, and doing it here means there is no window where a caller forgets.
-	err = s.db.QueryRow(ctx, `
-		SELECT u.id::text, u.org_id::text, pc.hash
+	// A pending one is found, and refused by completeSignIn once its password
+	// is right, with the reason (5.19); recovery passes over it. So is one of a
+	// suspended organisation (6.09), its status read as org_suspended.
+	// "Every organisation" is this instance's (6.12): a name held in another
+	// is neither found nor counted against the one held here.
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id::text, u.org_id::text, pc.hash,
+		       CASE WHEN `+store.OrgInService("u.org_id")+` THEN u.status ELSE 'org_suspended' END
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
-		WHERE u.status = 'active'
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
-		identifier).Scan(&userID, &orgID, &hash)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", "", false, nil
-	}
+		WHERE u.status IN ('active', 'pending')
+		  AND ($2 = '' OR u.org_id = $4::uuid)
+		  AND `+store.InInstance("u.org_id", "$3")+`
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
+		ORDER BY u.org_id
+		LIMIT 5`, identifier, orgID, s.instanceID, store.ExactUUIDOrNil(orgID))
 	if err != nil {
-		return "", "", "", false, err
+		return nil, err
 	}
-	return userID, orgID, hash, true, nil
+	defer rows.Close()
+	var out []credential
+	for rows.Next() {
+		var c credential
+		if err := rows.Scan(&c.userID, &c.orgID, &c.hash, &c.status); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// lookupCredential finds the one account an identifier names. ambiguous is true
+// when no organisation was given and the name is held in more than one: a page
+// that cannot say whose it is cannot say which of them is meant, and choosing
+// would sign somebody in to an account in the wrong tenant.
+func (s *Server) lookupCredential(ctx context.Context, identifier, orgID string) (c credential, ok, ambiguous bool, err error) {
+	found, err := s.lookupCredentials(ctx, identifier, orgID)
+	switch {
+	case err != nil:
+		return credential{}, false, false, err
+	case len(found) == 1:
+		return found[0], true, false, nil
+	case len(found) > 1:
+		return credential{}, false, true, nil
+	}
+	return credential{}, false, false, nil
 }
 
 func (s *Server) verifyClientSecret(ctx context.Context, c *clients.Client, presented string) (bool, error) {
@@ -1911,30 +2938,94 @@ func (s *Server) verifyClientSecret(ctx context.Context, c *clients.Client, pres
 	return true, nil
 }
 
+// lookupClient loads a client for a request it makes or that is made in its
+// name, and refuses a disabled one: this is the one place every endpoint a
+// client calls loads it, so a disabled client stops working on the next
+// request at all of them (ADR-007). Until October 2026 it returned the row and
+// left the check to each caller; three made it, so a disabled client still
+// refreshed its tokens, started device flows and revoked and introspected.
+// The answer is the unknown client's, so nobody unauthenticated learns that
+// the client exists; the log says which.
 func (s *Server) lookupClient(ctx context.Context, clientID string) (*clients.Client, error) {
+	c, err := s.lookupClientAnyState(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	return s.usableClient(ctx, c)
+}
+
+// servedClient makes of a client read some other way the refusals lookupClient makes:
+// another instance's is unknown here, and a disabled one or a suspended organisation's
+// is refused.
+func (s *Server) servedClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
+	c, err := s.ourClient(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return s.usableClient(ctx, c)
+}
+
+// usableClient refuses a disabled client, and a client of a suspended organisation.
+func (s *Server) usableClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
+	clientID := c.ClientID
+	if !c.Enabled {
+		s.log.InfoContext(ctx, "a disabled client was refused", "client_id", clientID,
+			"correlation_id", correlationID(ctx))
+		return nil, clients.ErrDisabled
+	}
+	// And a client of a suspended organisation, the same way (6.09).
+	if c.OrgSuspended {
+		s.log.InfoContext(ctx, "a client of a suspended organisation was refused", "client_id", clientID,
+			"org_id", c.OrgID, "correlation_id", correlationID(ctx))
+		return nil, clients.ErrOrgSuspended
+	}
+	return c, nil
+}
+
+// lookupClientAnyState loads a client whether or not it is enabled, for the
+// few callers that say why it is refused or only show it; nothing that grants,
+// answers or acts for a client uses it, and
+// TestEveryClientLookupThatAdmitsADisabledClientIsDeclared holds the list.
+func (s *Server) lookupClientAnyState(ctx context.Context, clientID string) (*clients.Client, error) {
 	if clientID == "" {
 		return nil, clients.ErrNotFound
 	}
-	return clients.Lookup(ctx, s.db, clientID)
+	c, err := clients.Lookup(ctx, s.db, clientID)
+	if err != nil {
+		return nil, err
+	}
+	return s.ourClient(ctx, c)
+}
+
+// ourClient refuses another instance's client: it is not one this issuer has (6.12). It
+// was registered with the other issuer, and its relying parties verify that issuer's
+// tokens. Answered as unknown, so nobody learns it exists there.
+func (s *Server) ourClient(ctx context.Context, c *clients.Client) (*clients.Client, error) {
+	if !s.serves(c.InstanceID) {
+		s.log.InfoContext(ctx, "a client of another instance was refused", "client_id", c.ClientID,
+			"correlation_id", correlationID(ctx))
+		return nil, clients.ErrNotFound
+	}
+	return c, nil
 }
 
 // writeAuthzError delivers an authorization error by whichever route its
 // disposition permits. A direct error renders here; only a redirect-disposition
-// error is sent to the client.
+// error is sent to the client, and a client is what vouches for the redirect URI.
+//
+// It goes the way a code would have. OIDC Core §3.3.2.6 asks that of the hybrid flow,
+// "unless a different Response Mode was specified", and JARM §2.1 of every response
+// "even in case of an error response". `state` is echoed exactly as received, and `iss`
+// is included (RFC 9207) so a client can tell which provider answered.
 func (s *Server) writeAuthzError(w http.ResponseWriter, r *http.Request,
-	req oauth.AuthzRequest, e *oauth.AuthzError) {
+	req oauth.AuthzRequest, c *clients.Client, e *oauth.AuthzError) {
 
-	if e.Disposition == oauth.DispositionRedirect {
-		target, err := oauth.ErrorRedirect(req.RedirectURI, s.cfg.Issuer, req.State, e)
-		if err == nil {
-			http.Redirect(w, r, target, http.StatusSeeOther)
-			return
-		}
-		s.log.Error("building error redirect", "err", err)
+	if e.Disposition == oauth.DispositionRedirect && c != nil {
+		s.deliverAuthzResponse(w, r, req, c, responseParams{Error: e.Code, ErrorDescription: e.Description,
+			State: req.State, Issuer: s.issuerFor(c)})
+		return
 	}
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "err", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "err", map[string]any{
 		"Code":        e.Code,
 		"Description": e.Description,
 	})
@@ -1951,7 +3042,7 @@ func writeTokenError(w http.ResponseWriter, e *oauth.TokenError) {
 	}
 	writeJSON(w, status, map[string]string{
 		"error":             e.Code,
-		"error_description": e.Description,
+		"error_description": oauth.ErrorText(e.Description),
 	})
 }
 
@@ -1997,6 +3088,13 @@ func splitFields(s string) []string {
 }
 
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	s.endSession(w, r, "")
+}
+
+// endSession signs a person out and takes them on. registered is a landing the
+// caller has held to a registration of its own, as WS-Federation holds a wreply to its
+// reply URLs; without one, the request's post_logout_redirect_uri is held to a client's.
+func (s *Server) endSession(w http.ResponseWriter, r *http.Request, registered string) {
 	ctx := r.Context()
 
 	// Confirmed, hinted, or nothing to do -- otherwise ask first.
@@ -2035,27 +3133,38 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	// Read BEFORE terminating: ending the session cascades session_clients away,
 	// and with it the record of which relying parties to notify.
 	frontChannel := s.frontChannelTargets(ctx, chainSID, s.cfg.Issuer)
+	// And the WS-Federation applications' clean-up, on the same page and for the same
+	// reason: ending the session takes their record with it.
+	frontChannel = append(frontChannel, s.wsFedCleanup(ctx, chainSID)...)
 
-	if err := s.terminateOwnSession(ctx, sessionCookie(r)); err != nil {
-		s.log.Error("ending session", "err", err)
-		// The cookie is still cleared: it is defence in depth for THIS browser,
-		// and withholding it would leave the user with neither outcome. But we
-		// do not redirect and do not claim success.
-		s.clearSessionCookie(w)
-		writeError(w, http.StatusInternalServerError, "server_error",
-			"sign-out could not be completed; your session may still be active")
-		return
+	// The account in use, then every other this browser holds (accounts.go):
+	// signing out of a shared computer leaves nobody signed in on it.
+	for _, cookie := range append([]string{sessionCookie(r)}, parkedTokens(r)...) {
+		if err := s.terminateOwnSession(ctx, cookie); err != nil {
+			s.log.ErrorContext(ctx, "ending session", "err", err)
+			// The cookies are still cleared: they are defence in depth for THIS
+			// browser, and withholding them would leave the user with neither
+			// outcome. But we do not redirect and do not claim success.
+			s.clearSessionCookie(w)
+			s.clearParked(w, r)
+			s.signOutFailed(w, r)
+			return
+		}
 	}
 
 	// Clear the cookie even if there was no live session: the user asked to be
 	// signed out, and leaving a stale cookie behind is confusing.
 	s.clearSessionCookie(w)
+	s.clearParked(w, r)
+	s.forgetUpstream(w)
 
 	// post_logout_redirect_uri must be REGISTERED before we redirect to it.
 	// An unvalidated post-logout redirect is an open redirector reached from a
 	// link that looks like a sign-out, which is a good phishing pretext.
 	target := q.Get("post_logout_redirect_uri")
-	if target != "" {
+	if registered != "" {
+		target = registered
+	} else if target != "" {
 		// Scoped to the CLIENT, not global. The previous query asked only whether
 		// SOME client had registered this URI, so any client's registered
 		// post-logout URI worked for every other client -- a redirect reachable
@@ -2065,18 +3174,26 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		// the caller follows the spec and sends one.
 		clientID := q.Get("client_id")
 		if clientID == "" {
-			clientID = s.clientFromIDTokenHint(q.Get("id_token_hint"))
+			clientID = s.clientFromIDTokenHint(r.Context(), q.Get("id_token_hint"))
 		}
+		// And a client of this instance (6.12), as a client_id names here.
 		var ok bool
 		if err := s.db.QueryRow(ctx, `
-			SELECT true FROM core.client_post_logout_redirect_uris
-			WHERE redirect_uri = $1 AND client_id = $2`,
-			target, clientID).Scan(&ok); err != nil || !ok {
-			writeError(w, http.StatusBadRequest, "invalid_request",
-				"post_logout_redirect_uri is not registered")
-			return
-		}
-		if st := q.Get("state"); st != "" {
+			SELECT true FROM core.client_post_logout_redirect_uris p
+			  JOIN core.clients c ON c.client_id = p.client_id
+			WHERE p.redirect_uri = $1 AND p.client_id = $2
+			  AND `+store.InInstance("c.org_id", "$3"),
+			target, clientID, s.instanceID).Scan(&ok); err != nil || !ok {
+			// No redirect, and the rest of the sign-out all the same:
+			// specs/oidc-rp-initiated-logout.txt:408-410 says only that the OP "MUST
+			// not perform post-logout redirection to an RP". This answered 400 here,
+			// after the session had ended and before the front channel, SAML and the
+			// upstream provider were told, so a mistyped URI left the person signed in
+			// to everything those reach.
+			s.log.InfoContext(ctx, "post_logout_redirect_uri is not registered; signing out without returning",
+				"client", clientID)
+			target = ""
+		} else if st := q.Get("state"); st != "" {
 			if u, err := url.Parse(target); err == nil {
 				vals := u.Query()
 				vals.Set("state", st)
@@ -2084,8 +3201,15 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 				target = u.String()
 			}
 		}
+	}
+	if target != "" {
 		// The post-logout target is now VALIDATED, so it is safe to hand to the
-		// SAML chain as the place to land once propagation finishes.
+		// SAML chain as the place to land once propagation finishes. The provider
+		// the person came through, when it asks to be told, is the last stop before
+		// it, since nothing here can resume once the browser has left.
+		if upstream := s.upstreamLogout(ctx, r, chainSID, target); upstream != "" {
+			target = upstream
+		}
 		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, target); chain != "" {
 			// SAML first: its chain needs the browser, and the front channel would
 			// otherwise navigate away mid-chain.
@@ -2100,7 +3224,19 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No post-logout redirect: propagate, then report.
+	// No post-logout redirect: propagate, then report, or leave for the provider.
+	if upstream := s.upstreamLogout(ctx, r, chainSID, ""); upstream != "" {
+		if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, upstream); chain != "" {
+			http.Redirect(w, r, chain, http.StatusSeeOther)
+			return
+		}
+		if len(frontChannel) > 0 {
+			s.renderFrontChannelLogout(w, r, frontChannel, upstream)
+			return
+		}
+		http.Redirect(w, r, upstream, http.StatusSeeOther)
+		return
+	}
 	if chain := s.beginSAMLLogoutChain(ctx, chainSID, chainUser, chainOrg, ""); chain != "" {
 		http.Redirect(w, r, chain, http.StatusSeeOther)
 		return
@@ -2109,7 +3245,7 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 		s.renderFrontChannelLogout(w, r, frontChannel, "/login")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+	s.signedOut(w, r, nil, nil)
 }
 
 // terminateOwnSession revokes the session behind the presented cookie.
@@ -2123,7 +3259,7 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	if cookie == "" {
 		return nil
 	}
-	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 	if err != nil {
 		return fmt.Errorf("resolving session cookie: %w", err)
 	}
@@ -2137,7 +3273,13 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout); err != nil {
+	var orgID, userID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text, user_id::text FROM core.sessions WHERE sid = $1`,
+		sid).Scan(&orgID, &userID); err != nil {
+		return fmt.Errorf("reading the session: %w", err)
+	}
+	term, err := store.TerminateSessions(ctx, tx, sid, "", store.ReasonLogout)
+	if err != nil {
 		return fmt.Errorf("terminating session: %w", err)
 	}
 	// The commit is what makes the revocation AND the queued back-channel logout
@@ -2146,6 +3288,15 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing logout: %w", err)
 	}
+	// Recorded after the sign-out is durable, never as a condition of it: an
+	// audit write that failed must not leave somebody signed in. Nothing
+	// recorded a sign-out before 2.52.
+	detail := map[string]any{"sid": sid}
+	if term != nil {
+		detail["sessions_ended"], detail["notices_queued"] = term.Sessions, term.Notices
+	}
+	s.auditDetached(ctx, audit.Event{Type: audit.EventLogout, OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx), Detail: detail})
 	return nil
 }
 
@@ -2155,13 +3306,13 @@ func (s *Server) terminateOwnSession(ctx context.Context, cookie string) error {
 // anything: the post-logout URI is still checked against that client's registered
 // set. A hint that fails to verify yields "" and the redirect is refused, which is
 // the safe direction.
-func (s *Server) clientFromIDTokenHint(hint string) string {
+func (s *Server) clientFromIDTokenHint(ctx context.Context, hint string) string {
 	if hint == "" {
 		return ""
 	}
 	claims, err := tokens.VerifyIDTokenAudience(s.cfg.Keys, s.cfg.Issuer, hint)
 	if err != nil {
-		s.log.Info("id_token_hint did not verify", "err", err)
+		s.log.InfoContext(ctx, "id_token_hint did not verify", "err", err)
 		return ""
 	}
 	return claims
@@ -2187,14 +3338,14 @@ func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
 	// what the specification accepts in place of asking the person. Verified,
 	// not merely present: an unverified hint is a string the attacker chose.
 	if hint := r.URL.Query().Get("id_token_hint"); hint != "" {
-		if s.clientFromIDTokenHint(hint) != "" {
+		if s.clientFromIDTokenHint(r.Context(), hint) != "" {
 			return true
 		}
 	}
 
 	// No session to end means nothing to confirm, and rendering a page that
 	// says "sign out?" to somebody who is not signed in is worse than useless.
-	if sessionCookie(r) == "" {
+	if sessionCookie(r) == "" && len(parkedTokens(r)) == 0 {
 		return true
 	}
 
@@ -2210,7 +3361,7 @@ func (s *Server) logoutConfirmed(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) renderLogoutConfirmation(w http.ResponseWriter, r *http.Request) {
 	tok, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token for the sign-out confirmation", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing a CSRF token for the sign-out confirmation", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -2237,30 +3388,57 @@ func stepUpErrorCode(r oauth.StepUpReason) string {
 	return "login_required"
 }
 
+// verifyByProvider asks a `hook` source's provider, answering as delegator.Verify does,
+// so an outage there is handled as an outage anywhere else: not a wrong password, and
+// not charged to the person.
+func (s *Server) verifyByProvider(ctx context.Context, orgID, identifier, password string) error {
+	verified, err := store.ConsultPasswordProvider(ctx, s.db, s.cfg.Root, s.outboundClient, orgID, identifier, password)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: %w", delegated.ErrUnavailable, err)
+	case !verified:
+		return delegated.ErrRejected
+	}
+	return nil
+}
+
 func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
-	identifier, password, authzQuery string) bool {
+	pageOrg, identifier, password, authzQuery string) bool {
 
 	ctx := r.Context()
 	if s.cfg.Root == nil {
 		return false
 	}
-	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, identifier, s.cfg.Root)
+	pending, ok, err := store.LookupMigrationCandidate(ctx, s.db, pageOrg, s.instanceID, identifier, s.cfg.Root)
 	if err != nil {
-		s.log.Error("looking up migration candidate", "err", err)
+		s.log.ErrorContext(ctx, "looking up migration candidate", "err", err)
 		return false
 	}
 	if !ok {
 		return false
 	}
 
-	verr := s.delegator.Verify(ctx, pending.Source, identifier, password)
+	// A realm is asked about the person as it knows them. Somebody who typed their
+	// address has a name in the realm, not an address, and being asked about the one
+	// they typed would call their right password wrong.
+	asked := identifier
+	if pending.Source.Kind == "kerberos" && pending.Username != "" {
+		asked = pending.Username
+	}
+
+	var verr error
+	if pending.Source.Kind == "hook" {
+		verr = s.verifyByProvider(ctx, pending.OrgID, identifier, password)
+	} else {
+		verr = s.delegator.Verify(ctx, pending.Source, asked, password)
+	}
 	switch {
 	case errors.Is(verr, delegated.ErrUnavailable):
 		// The OLD provider is broken, not the user. Reported as a temporary
 		// failure and NOT counted against the account -- otherwise someone
 		// else's outage locks out every user still to be migrated.
 		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, verr.Error())
-		s.log.Error("migration source unavailable", "source", pending.Source.DisplayName,
+		s.log.ErrorContext(ctx, "migration source unavailable", "source", pending.Source.DisplayName,
 			"err", verr, "correlation_id", correlationID(ctx))
 		s.renderLogin(w, r, authzQuery,
 			"Sign-in is temporarily unavailable. Please try again shortly.")
@@ -2268,12 +3446,38 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 
 	case verr != nil:
 		store.RecordDelegationFailure(ctx, s.db, pending.Source.ID, "rejected")
+		// Charged like any wrong password, to the address, the account and the
+		// captcha. It was charged to none of them, so guessing an account that
+		// had not migrated yet was unlimited, and every guess was forwarded to
+		// the old provider in this server's name.
+		s.captcha.RecordFailure(ctx, r.RemoteAddr)
+		s.recordSignInFailure(ctx, r)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.UserID,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "delegated_rejected", "source": pending.Source.DisplayName},
 		})
 		s.renderLogin(w, r, authzQuery, "Incorrect username or password.")
+		return true
+	}
+
+	// A realm is not being migrated from. It stays the authority, so no hash is
+	// taken: one kept here would go on working after the realm had changed the
+	// password or disabled the account, which is the whole of what asking it gets.
+	if pending.Source.Kind == "kerberos" {
+		tx, err := s.db.Begin(ctx)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return true
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := store.RecordDelegationSuccess(ctx, tx, pending.Source.ID); err != nil {
+			_ = tx.Rollback(ctx)
+			s.log.ErrorContext(ctx, "counting a sign-in through a realm", "err", err)
+			s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+			return true
+		}
+		s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID, []string{oauth.AMRPassword}, authzQuery)
 		return true
 	}
 
@@ -2296,7 +3500,7 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 
 	hash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
-		s.log.Error("hashing a migrated password", "err", err)
+		s.log.ErrorContext(ctx, "hashing a migrated password", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
@@ -2311,12 +3515,13 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 	if migratedBreach != "" {
 		if ferr := store.RequirePasswordChange(ctx, tx, pending.UserID,
 			migratedBreach); ferr != nil {
-			s.log.Error("flagging a migrated breached password", "err", ferr)
+			s.log.ErrorContext(ctx, "flagging a migrated breached password", "err", ferr)
 		}
 	}
 	if err := store.CompleteMigration(ctx, tx, pending.UserID, pending.OrgID,
 		pending.Source.ID, hash); err != nil {
-		s.log.Error("completing migration", "err", err)
+		_ = tx.Rollback(ctx)
+		s.log.ErrorContext(ctx, "completing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
@@ -2325,12 +3530,13 @@ func (s *Server) tryDelegated(w http.ResponseWriter, r *http.Request,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"source": pending.Source.DisplayName},
 	}); err != nil {
-		s.log.Error("auditing migration", "err", err)
+		_ = tx.Rollback(ctx)
+		s.log.ErrorContext(ctx, "auditing migration", "err", err)
 		s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
 		return true
 	}
 
-	s.log.Info("user migrated on first sign-in", "source", pending.Source.DisplayName,
+	s.log.InfoContext(ctx, "user migrated on first sign-in", "source", pending.Source.DisplayName,
 		"correlation_id", correlationID(ctx))
 	s.completeSignIn(w, r, tx, pending.UserID, pending.OrgID,
 		[]string{oauth.AMRPassword}, authzQuery)
@@ -2355,9 +3561,24 @@ func (s *Server) issuerFor(c *clients.Client) string {
 }
 
 // acceptedIssuers is what our own resource endpoints will honour: this
-// deployment's issuer plus any registered legacy aliases.
-func (s *Server) acceptedIssuers() []string {
-	return append([]string{s.cfg.Issuer}, s.cfg.IssuerAliases...)
+// deployment's issuer plus the legacy aliases registered and not retired.
+//
+// Read per request. It was read once at startup, so an alias registered with
+// `instance add-alias` was refused until a restart and one past its
+// retirement went on being honoured until one -- accepting tokens under an
+// issuer this deployment had stopped claiming. A failed read accepts the
+// deployment's own issuer only.
+func (s *Server) acceptedIssuers(ctx context.Context) []string {
+	out := []string{s.cfg.Issuer}
+	if s.db == nil || s.instanceID == "" {
+		return out
+	}
+	aliases, err := store.LiveIssuerAliases(ctx, s.db, s.instanceID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading issuer aliases; accepting this deployment's own issuer only", "err", err)
+		return out
+	}
+	return append(out, aliases...)
 }
 
 // decodeDetailClaim reads the RFC 9396 §9.1 claim back off a verified token.
@@ -2391,61 +3612,15 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	ctx := r.Context()
 	ex := oauth.ParseExchange(r.PostForm)
 
-	// Verified first. Everything downstream reasons about what this token
-	// actually says, not what the request claims about it.
-	subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.SubjectToken)
-	if err != nil {
-		s.log.Info("token exchange: subject token rejected", "err", err,
-			"caller", c.ClientID, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the subject token is not valid", Status: http.StatusBadRequest})
-		return
+	var subject *tokens.AccessTokenClaims
+	var foreign *assertionStatement
+	var ok bool
+	if s.subjectTokenIsForeign(ctx, ex) {
+		subject, foreign, ok = s.foreignSubject(ctx, w, c, ex)
+	} else {
+		subject, ok = s.ownSubject(w, r, c, ex)
 	}
-
-	// A bound subject token may only be exchanged by whoever holds its key.
-	// Without this the token endpoint is the one door where possession alone
-	// suffices, and an attacker only needs the weakest door.
-	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
-		s.log.Info("token exchange: subject token binding not proved", "err", berr,
-			"caller", c.ClientID, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
-			Description: berr.Error(), Status: http.StatusBadRequest})
-		return
-	}
-
-	// A revoked or signed-out token must not be exchangeable. Otherwise
-	// exchange becomes a way to launder a dead credential into a live one --
-	// the token the user revoked yesterday still produces working tokens today.
-	if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the authorization behind the subject token has been revoked",
-			Status:      http.StatusBadRequest})
-		return
-	}
-	if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "the subject token has been revoked", Status: http.StatusBadRequest})
-		return
-	}
-	if subject.SessionID != "" {
-		live, serr := store.SessionLive(ctx, s.db, subject.SessionID)
-		if serr != nil || !live {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the session behind the subject token has ended",
-				Status:      http.StatusBadRequest})
-			return
-		}
-	}
-
-	if c.ExchangeRequiresAudienceMatch &&
-		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
-		s.log.Info("token exchange: caller is neither the holder nor in the subject token's audience",
-			"caller", c.ClientID, "token_client", subject.ClientID,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: "this client may only exchange subject tokens it holds or " +
-				"is named in the audience of",
-			Status: http.StatusBadRequest})
+	if !ok {
 		return
 	}
 
@@ -2460,33 +3635,23 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// audit trail that the credential no longer supports.
 	actorSubject := ""
 	if ex.ActorToken != "" {
-		actor, aerr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), ex.ActorToken)
+		actor, aerr := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.ActorToken)
 		if aerr != nil {
-			s.log.Info("token exchange: actor token rejected", "err", aerr,
+			s.log.InfoContext(ctx, "token exchange: actor token rejected", "err", aerr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 				Description: "the actor token is not valid", Status: http.StatusBadRequest})
 			return
 		}
-		if gone, gerr := store.GrantRevoked(ctx, s.db, actor.GrantID); gerr != nil || gone {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the authorization behind the actor token has been revoked",
+		if s.issuanceOnly(actor) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+				Description: "the actor token is good for issuing a credential and nothing else",
 				Status:      http.StatusBadRequest})
 			return
 		}
-		if revoked, rerr := store.JTIRevoked(ctx, s.db, actor.JTI); rerr != nil || revoked {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the actor token has been revoked", Status: http.StatusBadRequest})
+		if terr := s.exchangeRefusal(ctx, actor, "actor", "invalid_request"); terr != nil {
+			writeTokenError(w, terr)
 			return
-		}
-		if actor.SessionID != "" {
-			live, serr := store.SessionLive(ctx, s.db, actor.SessionID)
-			if serr != nil || !live {
-				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-					Description: "the session behind the actor token has ended",
-					Status:      http.StatusBadRequest})
-				return
-			}
 		}
 		actorSubject = actor.Subject
 	}
@@ -2502,7 +3667,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// unevaluable constraint rather than a satisfied one.
 	if err := oauth.CheckMayAct(subject.MayAct, c.ClientID, actorSubject,
 		s.cfg.Issuer); err != nil {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
 			Description: err.Error(), Status: http.StatusBadRequest})
 		return
 	}
@@ -2513,10 +3678,28 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		writeTokenError(w, terr)
 		return
 	}
+	// As the jwt-bearer grant says: somebody else authenticated this person.
+	if foreign != nil && containsScope(granted, "openid") {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
+			Description: "openid is not available from a token issued elsewhere: the " +
+				"authentication was performed by its issuer, not here",
+			Status: http.StatusBadRequest})
+		return
+	}
 
-	key, err := s.cfg.Keys.Active(keys.Algorithm(c.IDTokenAlg))
+	// The exchanged token is for the subject, issued to this client, so it is
+	// this client's question to put to the access policy, with the factors of
+	// the session the subject token came from. And the subject must be in this
+	// client's organisation: a token audienced here from another tenant's
+	// client was otherwise exchangeable into one issued under this tenant.
+	if s.grantRefusedByPolicy(w, r, c, subject.Subject, subject.SessionID,
+		strings.Join(granted, " "), "token_exchange") {
+		return
+	}
+
+	key, err := s.cfg.Keys.Active(keys.Algorithm(c.AccessTokenAlg()))
 	if err != nil {
-		s.log.Error("token exchange: no active key", "err", err)
+		s.log.ErrorContext(ctx, "token exchange: no active key", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -2538,6 +3721,12 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if actorSubject != "" {
 		actorName = actorSubject
 	}
+	if subject.Act.Depth() >= tokens.MaxActorDepth {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: fmt.Sprintf("the subject token has been delegated %d times, the most allowed", tokens.MaxActorDepth),
+			Status:      http.StatusBadRequest})
+		return
+	}
 	act := &tokens.Actor{Subject: actorName, Act: subject.Act}
 
 	// The subject token's rich permissions come WITH it.
@@ -2555,7 +3744,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	// same rule §6 applies at the token endpoint.
 	subjectDetails, derr := decodeDetailClaim(subject.AuthorizationDetails)
 	if derr != nil {
-		s.log.Error("token exchange: decoding the subject token's details", "err", derr)
+		s.log.ErrorContext(ctx, "token exchange: decoding the subject token's details", "err", derr)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -2579,7 +3768,7 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 	if forAudience := rar.FilterByAudience(exchangedDetails, audience); len(forAudience) > 0 {
 		encoded, merr := json.Marshal(forAudience)
 		if merr != nil {
-			s.log.Error("token exchange: encoding authorization_details", "err", merr)
+			s.log.ErrorContext(ctx, "token exchange: encoding authorization_details", "err", merr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
@@ -2588,12 +3777,43 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 
 	exchangeJKT := dpopThumbprintFrom(ctx)
 
+	// About the person the token is still for, issued to the calling client.
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+		Subject: subject.Subject, ClientID: c.ClientID, Scopes: granted,
+		Grant: oauth.GrantTypeTokenExchange, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
+
+	// The calling client's lifetime, and never past the subject token's own
+	// expiry: exchange delegates what the subject token carries, it does not
+	// extend it. Five minutes for everybody hid the question; a per-client
+	// hour would otherwise turn a token about to expire into one good for an
+	// hour more.
 	now := time.Now()
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	expiry := now.Add(c.AccessTokenTTL()).Unix()
+	if subject.Expiry > 0 && subject.Expiry < expiry {
+		expiry = subject.Expiry
+	}
+	// A token from elsewhere buys one token here, in the transaction that issues it.
+	var issuing store.SubjectDB = s.db
+	var spent pgx.Tx
+	if foreign != nil {
+		if spent, err = s.db.Begin(hookCtx); err != nil {
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		defer func() { _ = spent.Rollback(hookCtx) }()
+		if !s.spendAssertion(hookCtx, w, spent, c, foreign, "invalid_request") {
+			return
+		}
+		issuing = spent
+	}
+	at, err := issueAccessToken(hookCtx, issuing, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.issuerFor(c),
 		Subject:  subject.Subject, // still the USER; exchange delegates, it does not impersonate
 		Audience: audience,
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   expiry,
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		ClientID: c.ClientID,
@@ -2617,19 +3837,27 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		Cnf: bindingFor(exchangeJKT, ""),
 
 		AuthorizationDetails: exchangedDetailClaim,
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
-		s.log.Error("token exchange: signing", "err", err)
+		s.log.ErrorContext(ctx, "token exchange: signing", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
+	}
+	detail := map[string]any{"acting_for": subject.ClientID, "audience": audience, "scope": granted}
+	if foreign != nil {
+		// Committed before it is written, so a failure spends nothing.
+		if err := spent.Commit(hookCtx); err != nil {
+			s.log.ErrorContext(ctx, "token exchange: committing the spent token", "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		detail["subject_issuer"] = foreign.claims.Issuer
 	}
 
 	s.auditDetached(ctx, audit.Event{
 		Type: "oauth.token_exchanged", SubjectID: subject.Subject, ClientID: c.ClientID,
 		CorrelationID: correlationID(ctx),
-		Detail: map[string]any{
-			"acting_for": subject.ClientID, "audience": audience, "scope": granted,
-		},
+		Detail:        detail,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -2640,9 +3868,115 @@ func (s *Server) handleTokenExchange(w http.ResponseWriter, r *http.Request, c *
 		// makes with the token is refused.
 		"issued_token_type": oauth.TokenTypeAccess,
 		"token_type":        bearerOrDPoP(exchangeJKT),
-		"expires_in":        int(tokens.DefaultAccessTokenTTL.Seconds()),
+		"expires_in":        int(expiry - now.Unix()),
 		"scope":             joinScopes(granted),
 	})
+}
+
+// ownSubject reads a subject token this deployment issued, and refuses one that does
+// not still stand. RFC 8693 §2.2.2 is a MUST on the code: "if either the subject_token or
+// actor_token are invalid for any reason, or are unacceptable based on policy", the
+// error is invalid_request.
+func (s *Server) ownSubject(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	ex oauth.ExchangeRequest) (*tokens.AccessTokenClaims, bool) {
+
+	ctx := r.Context()
+	// Verified first. Everything downstream reasons about what this token
+	// actually says, not what the request claims about it.
+	subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), ex.SubjectToken)
+	if err != nil {
+		s.log.InfoContext(ctx, "token exchange: subject token rejected", "err", err,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "the subject token is not valid", Status: http.StatusBadRequest})
+		return nil, false
+	}
+	if s.issuanceOnly(subject) {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "the subject token is good for issuing a credential and nothing else",
+			Status:      http.StatusBadRequest})
+		return nil, false
+	}
+
+	// A bound subject token may only be exchanged by whoever holds its key.
+	// Without this the token endpoint is the one door where possession alone
+	// suffices, and an attacker only needs the weakest door.
+	if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
+		s.log.InfoContext(ctx, "token exchange: subject token binding not proved", "err", berr,
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+			Description: berr.Error(), Status: http.StatusBadRequest})
+		return nil, false
+	}
+
+	// A revoked or signed-out token must not be exchangeable. Otherwise
+	// exchange becomes a way to launder a dead credential into a live one --
+	// the token the user revoked yesterday still produces working tokens today.
+	if terr := s.exchangeRefusal(ctx, subject, "subject", "invalid_request"); terr != nil {
+		writeTokenError(w, terr)
+		return nil, false
+	}
+
+	if c.ExchangeRequiresAudienceMatch &&
+		subject.ClientID != c.ClientID && !audienceIncludes(subject.Audience, c.ClientID) {
+		s.log.InfoContext(ctx, "token exchange: caller is neither the holder nor in the subject token's audience",
+			"caller", c.ClientID, "token_client", subject.ClientID,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "this client may only exchange subject tokens it holds or " +
+				"is named in the audience of",
+			Status: http.StatusBadRequest})
+		return nil, false
+	}
+	return subject, true
+}
+
+// subjectTokenIsForeign reports a JWT naming an issuer that is not this deployment. The
+// issuer is read unverified, to choose the path and nothing else, and an access token by
+// that name is not one: what a token that is opaque to us means is its issuer's to say.
+func (s *Server) subjectTokenIsForeign(ctx context.Context, ex oauth.ExchangeRequest) bool {
+	if ex.SubjectTokenType != oauth.TokenTypeJWT {
+		return false
+	}
+	issuer, err := oauth.PeekAssertionIssuer(ex.SubjectToken)
+	return err == nil && !slices.Contains(s.acceptedIssuers(ctx), issuer)
+}
+
+// foreignSubject reads a subject token from a registered issuer (8.32), as the jwt-bearer
+// grant reads an assertion: the same pairing of client and issuer, the same claims, the same
+// one sentence for every refusal. What it speaks for is the local account it is linked to,
+// and its ceiling is the calling client's registered scope: a `scope` it carries means
+// whatever that issuer meant by it, and there is no session behind it to end.
+func (s *Server) foreignSubject(ctx context.Context, w http.ResponseWriter, c *clients.Client,
+	ex oauth.ExchangeRequest) (*tokens.AccessTokenClaims, *assertionStatement, bool) {
+
+	// Whether this client may exchange at all, before anybody's keys are fetched for it.
+	if _, _, terr := oauth.ValidateExchange(ex, c.Type == "confidential", c.MayExchange, c.ExchangeAudiences,
+		c.ClientID, c.Scopes); terr != nil {
+		writeTokenError(w, terr)
+		return nil, nil, false
+	}
+	statement, ok := s.readAssertion(ctx, w, c, ex.SubjectToken, "invalid_request")
+	if !ok {
+		return nil, nil, false
+	}
+	if s.assertionConsentRefused(ctx, w, c, statement, "invalid_request") {
+		return nil, nil, false
+	}
+	// Who it says may act, and who has acted, hold wherever it was issued.
+	var carried struct {
+		Act    *tokens.Actor  `json:"act"`
+		MayAct map[string]any `json:"may_act"`
+	}
+	if err := json.Unmarshal(statement.payload, &carried); err != nil {
+		s.log.InfoContext(ctx, "token exchange: unreadable act or may_act", "provider", statement.provider.Slug,
+			"err", err, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request", Description: assertionRefused,
+			Status: http.StatusBadRequest})
+		return nil, nil, false
+	}
+	return &tokens.AccessTokenClaims{Subject: statement.userID, Expiry: statement.claims.Expiry,
+		Scope: joinScopes(c.Scopes), Act: carried.Act, MayAct: carried.MayAct}, statement, true
 }
 
 // resumeAfterSignIn decides where a freshly signed-in browser goes.
@@ -2736,6 +4070,16 @@ func parkLogin(dest string) string {
 	return "/login?authz=" + url.QueryEscape(url.Values{"return": {dest}}.Encode())
 }
 
+// samlStepUpQuery is what a SAML request's demand for a second factor looks like to
+// the sign-in flow, which reads it as an authorization request's: the flow has one
+// condition for this, and SAML has no parked query of its own to answer it from.
+const samlStepUpQuery = "acr_values=2"
+
+// parkLoginForMFA parks like parkLogin and says a second factor is wanted.
+func parkLoginForMFA(dest string) string {
+	return "/login?authz=" + url.QueryEscape(url.Values{"return": {dest}, "acr_values": {"2"}}.Encode())
+}
+
 // parkedReturn extracts a local return path, refusing anything that could leave
 // this origin.
 //
@@ -2783,7 +4127,7 @@ func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userI
 	if cookie == "" {
 		return "", "", ""
 	}
-	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
+	sid, _, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie), s.instanceID)
 	if err != nil || sid == "" {
 		return "", "", ""
 	}
@@ -2796,8 +4140,13 @@ func (s *Server) sessionIdentity(ctx context.Context, cookie string) (sid, userI
 // captchaResponse reads whichever field the configured widget submits.
 //
 // The three providers use three different names for the same value, and a
-// deployment that switches provider should not have to change anything here.
-func captchaResponse(r *http.Request) string {
+// deployment that switches provider should not have to change anything here. A
+// Siteverify widget names its own, and that one is read alone: a form field the
+// service never set is nothing it was asked about.
+func (s *Server) captchaResponse(r *http.Request) string {
+	if field := s.captcha.Widget().ResponseField; field != "" {
+		return r.PostForm.Get(field)
+	}
 	for _, f := range []string{
 		"cf-turnstile-response",
 		"h-captcha-response",

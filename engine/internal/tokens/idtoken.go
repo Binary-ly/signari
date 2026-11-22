@@ -3,13 +3,21 @@ package tokens
 
 import (
 	"crypto"
-	"crypto/sha256"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
+	_ "crypto/sha256" // for crypto.SHA256 in AtHash
+	_ "crypto/sha512" // for crypto.SHA384 and crypto.SHA512 in AtHash
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"reflect"
+	"strings"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/cryptosigner"
 
 	"signari.dev/engine/internal/keys"
 )
@@ -107,6 +115,8 @@ type IDTokenClaims struct {
 	Email         string `json:"email,omitempty"`
 	EmailVerified *bool  `json:"email_verified,omitempty"`
 	Name          string `json:"name,omitempty"`
+	GivenName     string `json:"given_name,omitempty"`
+	FamilyName    string `json:"family_name,omitempty"`
 	Username      string `json:"preferred_username,omitempty"`
 	// Groups is authorization data, not identity: downstream software gates on
 	// it. omitempty matters -- an empty array and an absent claim mean different
@@ -165,6 +175,25 @@ func (c IDTokenClaims) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// accessTokenFields is every claim name AccessTokenClaims defines, whether a
+// given token carries it or not. An operator-defined claim may take none of
+// them: a bearer token omits `cnf`, and a mapped or provider-contributed `cnf`
+// would make it look bound to whoever reads it; an extra `gid` would tie it to
+// somebody else's grant. All of them are protocol claims, unlike the ID token's
+// optional profile claims, which a mapper may legitimately supply.
+var accessTokenFields = jsonFieldNames(reflect.TypeOf(AccessTokenClaims{}))
+
+func jsonFieldNames(t reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // Signer mints tokens with a specific key.
 type Signer struct {
 	key keys.Key
@@ -182,12 +211,24 @@ func (s *Signer) joseAlg() (jose.SignatureAlgorithm, error) {
 	switch s.key.Algorithm() {
 	case keys.RS256:
 		return jose.RS256, nil
+	case keys.RS384:
+		return jose.RS384, nil
+	case keys.RS512:
+		return jose.RS512, nil
 	case keys.ES256:
 		return jose.ES256, nil
+	case keys.ES384:
+		return jose.ES384, nil
+	case keys.ES512:
+		return jose.ES512, nil
 	case keys.EdDSA:
 		return jose.EdDSA, nil
 	case keys.PS256:
 		return jose.PS256, nil
+	case keys.PS384:
+		return jose.PS384, nil
+	case keys.PS512:
+		return jose.PS512, nil
 	default:
 		return "", fmt.Errorf("unsupported signing algorithm %q", s.key.Algorithm())
 	}
@@ -238,7 +279,7 @@ func (s *Signer) sign(payload []byte, typ string) (string, error) {
 		WithType(jose.ContentType(typ)).
 		WithHeader(jose.HeaderKey("kid"), s.key.KID())
 
-	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: s.key.Signer()}, opts)
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: joseKey(s.key.Signer())}, opts)
 	if err != nil {
 		return "", fmt.Errorf("building signer: %w", err)
 	}
@@ -247,6 +288,32 @@ func (s *Signer) sign(payload []byte, typ string) (string, error) {
 		return "", fmt.Errorf("signing: %w", err)
 	}
 	return obj.CompactSerialize()
+}
+
+// joseKey is what the JOSE library signs with. It takes the three private key
+// types it knows, or an OpaqueSigner, and refuses any other crypto.Signer as an
+// unsupported key type, which is what a key held in a module is (keys/backend.go).
+// That one is adapted; the others go as they always have.
+func joseKey(signer crypto.Signer) any {
+	switch signer.(type) {
+	case *ecdsa.PrivateKey, *rsa.PrivateKey, ed25519.PrivateKey:
+		return signer
+	}
+	return cryptosigner.Opaque(hashLongSalt{signer})
+}
+
+// hashLongSalt signs PS256 with a salt as long as the hash, as the library does
+// for a key it holds itself (go-jose v4.1.4 asymmetric.go:294). Its adapter asks
+// any other signer for rsa.PSSSaltLengthAuto (cryptosigner.go, SignPayload),
+// which a PKCS#11 module cannot be given and crypto11 refuses (rsa.go, signPSS),
+// and which would make a module's PS256 signature unlike this server's own.
+type hashLongSalt struct{ crypto.Signer }
+
+func (s hashLongSalt) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if pss, ok := opts.(*rsa.PSSOptions); ok && pss.SaltLength == rsa.PSSSaltLengthAuto {
+		opts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: pss.Hash}
+	}
+	return s.Signer.Sign(rand, digest, opts)
 }
 
 // CHash computes the c_hash claim: the same construction as at_hash, over the
@@ -262,7 +329,7 @@ func CHash(alg keys.Algorithm, code string) (string, error) {
 
 // AtHash computes the at_hash claim: the base64url of the left-most half of the
 // hash of the ASCII access token, using the hash paired with the signing
-// algorithm (SHA-256 for ES256, RS256 and PS256).
+// algorithm (SHA-256 for ES256, RS256 and PS256, SHA-384 and SHA-512 for theirs).
 //
 // Getting the "left-most half" wrong is the classic at_hash bug: it is half the
 // HASH, not half the token, and it is the raw bytes that are halved, not the
@@ -283,6 +350,10 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 	switch alg {
 	case keys.RS256, keys.ES256, keys.PS256:
 		h = crypto.SHA256
+	case keys.RS384, keys.ES384, keys.PS384:
+		h = crypto.SHA384
+	case keys.RS512, keys.ES512, keys.PS512:
+		h = crypto.SHA512
 	case keys.EdDSA:
 		// Ed25519 has no paired hash in the JOSE registry, so at_hash is omitted
 		// rather than guessed.
@@ -290,10 +361,9 @@ func AtHash(alg keys.Algorithm, accessToken string) (string, error) {
 	default:
 		return "", fmt.Errorf("no at_hash defined for %s", alg)
 	}
-	if h != crypto.SHA256 {
-		return "", fmt.Errorf("unsupported hash")
-	}
-	sum := sha256.Sum256([]byte(accessToken))
+	d := h.New()
+	d.Write([]byte(accessToken))
+	sum := d.Sum(nil)
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2]), nil
 }
 
@@ -313,8 +383,12 @@ type Confirmation struct {
 }
 
 type AccessTokenClaims struct {
-	Issuer   string   `json:"iss"`
-	Subject  string   `json:"sub"`
+	Issuer  string `json:"iss"`
+	Subject string `json:"sub"`
+	// Pairwise is what Subject said on the wire when it stood for a person to one
+	// sector. The engine verifies a token and reads Subject back to the person, so
+	// everything inside it sees one id, and what it hands back says Presented.
+	Pairwise string   `json:"-"`
 	Audience []string `json:"aud"`
 	Expiry   int64    `json:"exp"`
 	IssuedAt int64    `json:"iat"`
@@ -323,6 +397,11 @@ type AccessTokenClaims struct {
 	ClientID  string `json:"client_id"`
 	Scope     string `json:"scope,omitempty"`
 	SessionID string `json:"sid,omitempty"`
+
+	// ACR and AuthTime say how and when the person signed in, so a resource server
+	// can ask for more itself. Absent on a token with no session behind it.
+	ACR      string `json:"acr,omitempty"`
+	AuthTime int64  `json:"auth_time,omitempty"`
 
 	// Act is the RFC 8693 §4.1 actor claim: WHO is acting on the subject's
 	// behalf. It nests, so a chain of delegation stays visible rather than
@@ -411,6 +490,15 @@ type AccessTokenClaims struct {
 	Extra map[string]any `json:"-"`
 }
 
+// Presented is the subject as the token's client knows it, for anything said back
+// to the outside about a token: Subject once the engine has read it back.
+func (c AccessTokenClaims) Presented() string {
+	if c.Pairwise != "" {
+		return c.Pairwise
+	}
+	return c.Subject
+}
+
 // MarshalJSON emits the fixed claims, then any operator-defined ones that do
 // not collide. See IDTokenClaims.MarshalJSON; the rule and the reasoning are
 // identical, and both exist so the guarantee lives in the bytes that get signed
@@ -429,7 +517,7 @@ func (c AccessTokenClaims) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for k, v := range c.Extra {
-		if _, taken := out[k]; taken {
+		if _, taken := out[k]; taken || accessTokenFields[k] {
 			continue
 		}
 		out[k] = v
@@ -443,6 +531,20 @@ func (c AccessTokenClaims) MarshalJSON() ([]byte, error) {
 type Actor struct {
 	Subject string `json:"sub"`
 	Act     *Actor `json:"act,omitempty"`
+}
+
+// MaxActorDepth is how many parties a delegation chain may name. Each exchange adds
+// one, and two clients exchanging a token back and forth would otherwise grow it until
+// it no longer fits in a header, signing more every time.
+const MaxActorDepth = 8
+
+// Depth is how many parties the chain names; none is 0.
+func (a *Actor) Depth() int {
+	n := 0
+	for ; a != nil; a = a.Act {
+		n++
+	}
+	return n
 }
 
 // Lifetime bounds. Short access tokens are how revocation stays bounded without

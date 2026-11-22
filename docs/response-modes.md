@@ -7,7 +7,25 @@ For applications being migrated in that cannot be changed first.
 | `response_mode=query` | The default for `code`. Unchanged |
 | `response_mode=fragment` | The default when an `id_token` is returned |
 | `response_mode=form_post` | An auto-submitting form, for keeping the response out of URLs |
+| `response_mode=jwt`, `query.jwt`, `fragment.jwt`, `form_post.jwt` | The same three with the response signed: see [JARM](jarm.md) |
 | `response_type=code id_token` | Off per client, enabled deliberately |
+
+A refusal travels the way the response would have: in the fragment for a hybrid request
+unless another mode was asked for, and through the form for `form_post`. It used to go
+in the query whatever was asked, where a client listening at a fragment saw nothing.
+That includes the refusal of a type this server never issues: a client that asked for
+`code token` is answered `unsupported_response_type` in the fragment, which is where it
+is listening (OIDC Core §3.3.2.6).
+
+A fragment is encoded once. Until November 2026 it was encoded twice, so a script
+reading `location.hash` found `iss` still percent-encoded and, checking it as RFC 9207
+says, refused every hybrid response as a mix-up. This repository's own tests decoded
+twice and agreed with it; the OpenID Foundation's Hybrid plan, decoding once as a
+browser does, is what found it.
+
+A registered redirect URI may not have a fragment of its own. RFC 6749 §3.1.2 says the
+endpoint URI "MUST NOT include a fragment component"; dynamic registration refused one
+and every other way of registering a client accepted it, until November 2026.
 
 ## What is refused, permanently
 
@@ -69,17 +87,26 @@ An HTML page that posts itself to the redirect URI.
 
 The auto-submit script runs under a **per-response CSP nonce**, not
 `'unsafe-inline'` — the page carries a code and a signed assertion, and
-`'unsafe-inline'` would let anything injected into it run too. `form-action` is
-narrowed to the redirect URI's own origin.
+`'unsafe-inline'` would let anything injected into it run too. There is no
+`form-action`: browsers apply it to every redirect a form starts, so naming the
+redirect URI's origin would stop a callback from redirecting anywhere else of the
+application's own, as a gateway in front of an application does, with the code
+already delivered.
 
 There is a real `<noscript>` button rather than an apology, so a browser with
 script disabled still completes the sign-in one click later.
 
 ## Discovery
 
-`response_modes_supported` lists all three. `response_types_supported` stays
-`["code"]`: hybrid is per-client and off by default, and advertising it globally
-would invite every client to try something nearly all of them are refused for.
+`response_modes_supported` lists all three. `response_types_supported` is
+`["code", "code id_token"]`: OpenID Connect Discovery 1.0 §3 defines it as "the
+OAuth 2.0 response_type values that this OP supports", and this one supports the
+hybrid type for a client permitted it. Leaving it out did not keep other clients
+from asking, they are refused at the authorization endpoint either way; it kept
+the migrating applications the type exists for from asking, since a relying-party
+library that checks discovery first concludes it is unavailable. No type that
+returns an access token in the front channel is listed, and a test fails if one
+is, or if anything listed is refused.
 
 ---
 
@@ -110,9 +137,9 @@ behaviour change; the behaviour was already correct.
   A hybrid implementation that merely *declines* to put a token in the fragment
   is one refactor away from doing it; this one has nowhere to put it.
 - **form_post CSP is a per-response nonce**, not `'unsafe-inline'`, with
-  `form-action` narrowed to the redirect origin and `default-src 'none'` — so even
-  with a code and a signed assertion on the page, there is no injection point and
-  no exfiltration channel (CSS background loads fall back to `default-src 'none'`).
+  `default-src 'none'` — so even with a code and a signed assertion on the page,
+  nothing but the page's own script runs and nothing else loads (CSS background
+  loads fall back to `default-src 'none'`). The fields are escaped.
 - **`query` + id_token is refused** (OIDC MUST); unknown modes are refused rather
   than silently treated as query.
 
@@ -126,6 +153,12 @@ default, and a client without it that asks for `code id_token` gets a clear
 `signari client set-hybrid` is configuring deliberately, not discovering. A server
 whose hybrid support is general would advertise the hybrid types; this one is
 code-first by design, and advertising them would invite their use.
+
+*Revised 19 October 2026:* discovery now lists `code id_token`. The posture
+above kept the type from the migrating applications that need it, whose
+libraries read discovery before asking, while every client not permitted it is
+refused at the authorization endpoint whether or not it is listed. See
+[Discovery](#discovery).
 
 ### Verdict
 

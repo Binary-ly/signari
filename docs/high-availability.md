@@ -20,7 +20,12 @@ token minted by one verifies at the other.
 
 The janitor coordinates with a transaction-scoped advisory lock — one instance
 sweeps, the others record `Skipped`, and a node that dies mid-pass releases the
-lock by rolling back rather than leaving the janitor wedged.
+lock by rolling back rather than leaving the janitor wedged. A pass is many short
+transactions rather than one long one: up to 500 sessions or 1,000 rows of a table
+to a batch, each committed on its own and taking the lock again, each kind of row
+getting a batch before any gets a second. A sweep that fails stops only itself. At
+45 seconds a pass stops starting batches and logs what it left, and the next
+carries on, so a backlog after an outage is worked through and nobody waits on it.
 
 **Rate limiting did not.** It was a token bucket in process memory.
 
@@ -96,7 +101,11 @@ A generous in-process guard still runs first on the sign-in path. Its job is
 protecting the database from a flood, not bounding guesses — the shared limits
 cost a round trip each, and an unbounded flood of them is its own denial of
 service. It is set high enough that a real deployment never sees it and an
-attacker reaches the keyed limits instead.
+attacker reaches the keyed limits instead: half again what the machine can hash,
+measured when the engine starts with the cost new hashes are made with, and never less
+than 100 a second. It was a fixed 100, which four cores' worth of sign-ins already
+exceeded. How many hash at once is the hasher's own bound, so sign-ins beyond what the
+machine can hash wait for a slot.
 
 The same reasoning keeps JWKS on a local bucket: high volume, nothing expensive
 behind it, and no security decision resting on the count.
@@ -136,24 +145,20 @@ it.
 A database error reads as **zero**, not as "challenge everybody": the sign-in is
 about to fail for the same reason, and adding a puzzle to it helps nobody.
 
-## Policy propagation, measured
+## Policy propagation
 
-Each instance caches the policy and reloads on a 30-second timer, so two
-instances can briefly enforce different versions.
+Every instance asks the database which access policy is in force on every
+decision. That is one indexed row: the document's digest, and the document itself
+only when the digest has changed. So a new rule applies on the next request, on
+every instance, and no two instances enforce different versions.
 
-Measured rather than assumed. A deny rule was applied on one instance's
-database, then both were polled:
-
-```
-t+05s  A=400  B=400   ← both refusing, with the operator's own message
-```
-
-Worst case is the 30-second window; in practice both had reloaded on the first
-poll. That bound is small enough that a `LISTEN`/`NOTIFY` channel — and the
-long-lived connection it needs — is not worth its complexity for a
-configuration change. It would be worth it for an emergency revocation, and
-revocation does not go through this path: sessions and tokens are read from the
-database on use.
+This page used to describe a 30-second reload timer, measured at five seconds in
+practice and judged small enough. The judgement was wrong for this case. A rule
+can say `deny: true`, and this engine never serves a security-negative decision
+from a snapshot. A deny rule written to shut a client out must work on the
+next request, not after up to half a minute on whichever instance the attacker's
+request happens to reach. Parsing is still memoised, so the cost is the digest
+query, not a parse.
 
 ## Outbox delivery: correct, and holding a connection for four minutes
 
@@ -168,8 +173,12 @@ held a database connection for up to **250 seconds**, and the pool is shared
 with everything else the engine does.
 
 Now three phases — claim, deliver, record — with no transaction open across the
-network, and delivery bounded at 8 concurrent POSTs so one hanging receiver no
-longer delays every notice queued behind it.
+network, and delivery bounded at 32 concurrent POSTs so one hanging receiver no
+longer delays every notice queued behind it. Event deliveries work the same way:
+they kept the old shape longest, one transaction across 32 calls in a row. Each
+kind of delivery has a goroutine of its own, so a receiver that is down holds up
+nothing but its own kind, and each drains until its queue is empty rather than
+taking one batch every two seconds.
 
 Keeping the two instances apart after the locks are released is the other half:
 claiming pushes `next_attempt_at` forward by a lease. Without that, committing in
@@ -254,12 +263,43 @@ looking. Startup still refuses an empty list: a listener coming up with nothing
 configured is almost certainly a misconfiguration, and saying so immediately is
 more useful than serving a port that answers no one.
 
+## A read replica, for the audit trail
+
+`SIGNARI_READ_DSN` points the Admin API's `GET /admin/audit-events` at a replica, and
+`signari export audit -dsn` takes one too. Reading the trail is the long read an operator
+makes, and it is append-only, so a replica that lags is only missing the newest events.
+If the replica does not answer, the primary does, and the log says so.
+
+It is that and nothing else, on purpose:
+
+- **Nothing that decides anything.** A session, a token or a client is read from the
+  primary, because a revocation a replica has not heard of yet is an authentication that
+  should have been refused.
+- **No list that carries an `ETag`.** A list answered from behind the primary would carry
+  a version the primary has moved past, and `If-Match` exists so that an apply cannot
+  overwrite a change it never saw.
+
+## More instances on one machine
+
+Client credentials against one database, 16 workers shared between one load generator per
+instance, median of two runs, everything on one 8-core laptop under other load:
+
+```
+instances   tokens/s    errors
+1           2,864       0
+2           2,657       0
+4           2,969       0
+```
+
+Flat, because the machine is what ran out: the engines, PostgreSQL and the load generators
+were sharing eight cores. So this says that a second and a fourth instance cost nothing in
+coordination, which is what they should cost, as nothing is shared between them but the
+database. It does not say how far they scale, which needs hosts of their own.
+
 ## What this still does not do
 
-Issuer aliases are still read once at startup. They exist for migration — a
-legacy issuer accepted while relying parties are moved across — and changing the
-set is part of a migration plan rather than an operational action, so a restart
-is a reasonable place to pick it up. Recorded here so it is a decision rather
-than an oversight. The three gaps listed when this page was written — policy cache
-coherence, CAPTCHA counters, outbox partitioning — are measured, fixed, or shown
-to have been a misreading, above.
+Issuer aliases were read once at startup, which made a retired alias go on being
+accepted until every instance restarted. They are now read per request, like
+every other decision about what to accept. The three gaps listed when this page
+was written — policy cache coherence, CAPTCHA counters, outbox partitioning — are
+measured, fixed, or shown to have been a misreading, above.

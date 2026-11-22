@@ -17,12 +17,24 @@ command or an environment variable exists in code and not on its page.
 | [doctor.md](doctor.md) | The pre-flight check: what is wrong with this deployment |
 | [config-as-code.md](config-as-code.md) | `signari plan` / `apply` — clients, groups and providers from a file |
 | [schema-pinning.md](schema-pinning.md) | Pinning a release binary to the schema it was built for |
+| [upgrading.md](upgrading.md) | Upgrading, rolling back, and which migrations the previous release may run against |
+| [troubleshooting.md](troubleshooting.md) | What a refusal means, quoted as the server writes it, and what to do about it |
+| [quickstart-go.md](quickstart-go.md) | A Go application signing people in, standard library only, every check it must make itself |
+| [quickstart-express.md](quickstart-express.md) | An Express application signing people in with openid-client, the ID token's signature checked too |
+| [quickstart-nextjs.md](quickstart-nextjs.md) | A Next.js application (App Router) signing people in with openid-client in two route handlers |
+| [quickstart-django.md](quickstart-django.md) | A Django application signing people in with Authlib, no database needed |
+| [quickstart-spring.md](quickstart-spring.md) | A Spring Boot application signing people in, with the PKCE and ES256 settings Spring does not assume |
+| [quickstart-laravel.md](quickstart-laravel.md) | A Laravel application signing people in, its library kept to Laravel's session and checked for state first |
+| [schema-versions.md](schema-versions.md) | What each schema version changed, newest first, generated from the migrations |
+| [connection-pooling.md](connection-pooling.md) | The two pools a node opens, and running behind PgBouncer |
 | [high-availability.md](high-availability.md) | Running more than one instance |
 | [deployment-artefacts.md](deployment-artefacts.md) | The Helm chart, and what is deliberately not built |
 | [runbook-backup-restore.md](runbook-backup-restore.md) | Backup and restore, and why the root key changes everything |
 | [runbook-public-conformance.md](runbook-public-conformance.md) | Exposing a deployment to the OIDF conformance suite |
 | [performance.md](performance.md) | What one instance does under load |
+| [tracing.md](tracing.md) | OpenTelemetry spans to a collector, and what no span carries |
 | [security-scanning.md](security-scanning.md) | `govulncheck`, `gosec`, and the findings left visible on purpose |
+| [fuzzing.md](fuzzing.md) | The fuzz target of every parser that reads a stranger's input, and how they are run continuously |
 | [dependencies.md](dependencies.md) | Third-party inventory (ASVS V15.1.2) |
 
 ## The sign-in experience
@@ -30,12 +42,14 @@ command or an environment variable exists in code and not on its page.
 | | |
 |---|---|
 | [flows.md](flows.md) | The sequence somebody is asked for, as a file you can test in CI |
+| [external-factors.md](external-factors.md) | A sign-in stage answered by a service you run, believed because it signed the answer |
 | [prompts.md](prompts.md) | Terms acceptance, extra fields, notices |
 | [signup.md](signup.md) | Invitations and self-service sign-up |
 | [password-policy.md](password-policy.md) | One gate, called by every path that sets a password |
 | [captcha.md](captcha.md) | Off by default, adaptive when on |
 | [theming.md](theming.md) | Every page is an HTML file you can replace |
 | [brands.md](brands.md) | Product name, logo, colours — with WCAG contrast enforced |
+| [mail.md](mail.md) | Both parts of every message, no buttons, and an organisation's own sender |
 | [i18n.md](i18n.md) | Adding a language is adding one file |
 | [app-portal.md](app-portal.md) | `/apps` — what a user can reach, and why not the rest |
 
@@ -55,19 +69,32 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [client-authentication.md](client-authentication.md) | How a confidential client proves who it is |
 | [mutual-tls.md](mutual-tls.md) | RFC 8705 — certificate-bound tokens |
+| [encrypted-client-hello.md](encrypted-client-hello.md) | RFC 9849 — the name a browser asks for, encrypted |
 | [attestation-based-client-auth.md](attestation-based-client-auth.md) | Client attestation, current draft |
 | [par.md](par.md) | RFC 9126 — Pushed Authorization Requests |
+| [jar.md](jar.md) | Signed authorization requests (RFC 9101), by value or pushed, and requiring them |
+| [jarm.md](jarm.md) | Signed authorization responses, and holding a client to them |
+| [response-encryption.md](response-encryption.md) | Signed userinfo, and encrypting ID tokens, userinfo and authorization responses to a client's key |
 | [dpop.md](dpop.md) | RFC 9449 — sender-constrained tokens |
+| [resource-indicators.md](resource-indicators.md) | RFC 8707 — which APIs a token may be audienced to |
+| [opaque-access-tokens.md](opaque-access-tokens.md) | Access tokens that say nothing to whoever holds them, introspected per client |
+| [pairwise-subjects.md](pairwise-subjects.md) | A subject that means nothing outside the application it was given to, so applications cannot compare notes |
+| [fapi2.md](fapi2.md) | Holding a client to the FAPI 2.0 Security Profile, and what that changes |
 | [device-flow.md](device-flow.md) | RFC 8628 — televisions, CLIs, headless boxes |
 | [ciba.md](ciba.md) | Backchannel authentication |
 | [dynamic-registration.md](dynamic-registration.md) | RFC 7591/7592 |
 | [response-modes.md](response-modes.md) | `form_post` and hybrid, for migrations |
+| [headless-sign-in.md](headless-sign-in.md) | A sign-in page of the application's own, walked over JSON |
 | [rich-authorization-requests.md](rich-authorization-requests.md) | RFC 9396 — when a scope string is not enough |
 | [jwt-bearer.md](jwt-bearer.md) | RFC 7523 §2.1 — GitHub Actions, Kubernetes |
 | [transaction-tokens.md](transaction-tokens.md) | Per-transaction tokens inside a call chain |
 | [mcp-authorization.md](mcp-authorization.md) | Acting as an authorization server for MCP |
 | [key-rotation.md](key-rotation.md) | next → active → passive → retired |
+| [signing-keys-in-a-module.md](signing-keys-in-a-module.md) | Signing keys made and kept in an HSM, through PKCS#11 |
 | [logout.md](logout.md) | Three mechanisms, because none reaches everything |
+| [accounts.md](accounts.md) | Several accounts in one browser, and `prompt=select_account` |
+| [oidc-parameters.md](oidc-parameters.md) | `login_hint`, `id_token_hint`, `display` and the `claims` parameter |
+| [new-device-sign-in.md](new-device-sign-in.md) | Telling a person their account was signed in to from somewhere new |
 | [logout-conformance.md](logout-conformance.md) | Proving a relying party actually honours it |
 | [cors.md](cors.md) | Which endpoints, and the one that must never have it |
 | [emerging-standards.md](emerging-standards.md) | Every non-settled specification implemented, with its draft status |
@@ -77,7 +104,10 @@ command or an environment variable exists in code and not on its page.
 | | |
 |---|---|
 | [oid4vci.md](oid4vci.md) | The authorization server's half of credential issuance |
-| [openid-federation.md](openid-federation.md) | The Entity Configuration and metadata policy |
+| [openid-federation.md](openid-federation.md) | The Entity Configuration, metadata policy, and being a Trust Anchor or Intermediate |
+| [client-metadata-documents.md](client-metadata-documents.md) | Letting an application that is its own URL sign people in, such as an MCP client, with no registration step |
+| [grant-management.md](grant-management.md) | A client holding on to what a person authorized under an identifier: adding to it, replacing it, reading it back and revoking it |
+| [id-jag.md](id-jag.md) | Cross-app access: one application reaching another for somebody who signed in here, with no second consent screen |
 | [trust-marks.md](trust-marks.md) | Signed conformance statements |
 | [uma.md](uma.md) | User-Managed Access 2.0 |
 
@@ -87,6 +117,7 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [saml.md](saml.md) | Signari as a SAML identity provider |
 | [saml-source.md](saml-source.md) | Consuming somebody else's assertions |
+| [saml-metadata.md](saml-metadata.md) | Registering a partner from its metadata, signature checked, and reading it again |
 | [ws-federation.md](ws-federation.md) | SharePoint and pre-SAML .NET |
 | [ldap.md](ldap.md) | Applications that authenticate by binding |
 | [ldap-source.md](ldap-source.md) | Reading an existing directory |
@@ -103,8 +134,10 @@ command or an environment variable exists in code and not on its page.
 | [provisioning.md](provisioning.md) | SCIM, Google Workspace and Entra as targets |
 | [directory-sync.md](directory-sync.md) | Google, Entra and LDAP as sources |
 | [social-login.md](social-login.md) | Federated sign-in providers |
+| [wallet-sign-in.md](wallet-sign-in.md) | Signing in with a credential from a digital identity wallet (OpenID4VP) |
 | [groups.md](groups.md) | Membership, and which clients may see it |
 | [erasure.md](erasure.md) | Crypto-shredding a subject |
+| [data-export.md](data-export.md) | Everything kept about a person, for them or for a request on their behalf |
 
 ## Access control
 
@@ -139,12 +172,14 @@ command or an environment variable exists in code and not on its page.
 | [audit-chain-fork.md](audit-chain-fork.md) | How the hash chain forked under concurrency, and the fix |
 | [logging-inventory.md](logging-inventory.md) | What is logged where (ASVS V16.1.1) |
 | [egress-inventory.md](egress-inventory.md) | Every outbound connection (ASVS V13.1.1) |
+| [security-inventories.md](security-inventories.md) | The cryptography, the ways to authenticate, the session rules, the limits and the data, each in one place |
 
 ## Compliance evidence
 
 | | |
 |---|---|
 | [security-review-asvs.md](security-review-asvs.md) | OWASP ASVS 5.0, requirement by requirement |
+| [security-review-cwe-top25.md](security-review-cwe-top25.md) | MITRE's 2025 CWE Top 25, each held where, by file and line |
 | [security-review-rfc9700.md](security-review-rfc9700.md) | RFC 9700 (BCP 240) |
 | [security-review-fapi2.md](security-review-fapi2.md) | FAPI 2.0 Security Profile |
 | [security-review-nist-800-63b.md](security-review-nist-800-63b.md) | NIST SP 800-63B revision 4 |
@@ -156,12 +191,20 @@ command or an environment variable exists in code and not on its page.
 |---|---|
 | [console-configuration.md](console-configuration.md) | What each screen answers, and why they are read-only |
 | [admin-api.md](admin-api.md) | The write surface, its endpoints, and conditional writes |
+| [sdk.md](sdk.md) | The Go and TypeScript clients generated from [admin-openapi.json](admin-openapi.json) |
+| [admin-api-reference.md](admin-api-reference.md) | Every Admin API operation, its scope, and the fields it takes and answers, generated from the same document |
 | [extensibility.md](extensibility.md) | Extending a decision with your own service |
 | [admin-tokens.md](admin-tokens.md) | Credentials for the Admin API |
+| [approvals.md](approvals.md) | A second person for an erasure or an org-owner grant |
 
 ## Migrating in
 
 | | |
 |---|---|
+| [password-migration.md](password-migration.md) | Verifying migrating people against the old directory or provider at their first sign-in |
 | [migrate-from-keycloak.md](migrate-from-keycloak.md) | Importing a realm |
 | [migrate-from-authentik.md](migrate-from-authentik.md) | Importing an installation |
+| [migrate-from-zitadel.md](migrate-from-zitadel.md) | Importing an organisation |
+| [migrate-from-auth0.md](migrate-from-auth0.md) | Importing a tenant's people |
+| [migrate-from-okta.md](migrate-from-okta.md) | Importing an org's people |
+| [migrate-from-entra.md](migrate-from-entra.md) | Importing a tenant's people |

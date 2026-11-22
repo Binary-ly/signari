@@ -3,11 +3,16 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
+	"signari.dev/engine/internal/abca"
+	"signari.dev/engine/internal/clientauth"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
 	"signari.dev/engine/internal/oauth"
@@ -65,6 +70,104 @@ func bearerOrDPoP(jkt string) string {
 	return "DPoP"
 }
 
+// proofForBoundToken is a protected resource's whole check of a DPoP-bound
+// access token: a proof is present, valid for this request and this token,
+// fresh, and made with the very key the token names in cnf.jkt.
+//
+// One function for every resource, because the last step is the one a
+// resource leaves out. The credential endpoint checked that a valid proof
+// came with the token and never that the proof's key was the token's, so a
+// stolen bound token minted credentials with the thief's own proof.
+//
+// fapi2 says the token's client is held to FAPI 2.0, whose §5.4.1 has "resource
+// servers when ... processing JWTs" use PS256, ES256 or EdDSA (specs/fapi2.txt:2023-
+// 2027). The token endpoint held a proof to that and a resource did not, so a token
+// it issued was honoured here behind an RS256 proof (13.01, the FAPI 2.0 plan).
+func (s *Server) proofForBoundToken(r *http.Request, accessToken, tokenJKT string, fapi2 bool) error {
+	jkt, err := s.verifyDPoPForRequest(r, accessToken)
+	if err != nil {
+		return err
+	}
+	if jkt == "" {
+		return fmt.Errorf("a DPoP proof is required for this token")
+	}
+	if fapi2 && !slices.Contains(clients.FAPI2Algorithms, dpop.Algorithm(r.Header.Get("DPoP"))) {
+		return fmt.Errorf("the token's client is held to FAPI 2.0, which accepts proofs signed with %s",
+			strings.Join(clients.FAPI2Algorithms, ", "))
+	}
+	return dpop.BoundTo(&dpop.Confirmation{JKT: tokenJKT}, &dpop.Proof{JKT: jkt})
+}
+
+// certificateForBoundToken is a protected resource's check of a
+// certificate-bound access token, RFC 8705 §3 (specs/rfc8705.txt:433-438):
+//
+//	"The protected resource MUST obtain, from its TLS implementation layer,
+//	the client certificate used for mutual TLS and MUST verify that the
+//	certificate matches the certificate associated with the access token."
+//
+// The token endpoint bound tokens to the connection's certificate and no
+// resource ever read `cnf.x5t#S256`, so a certificate-bound token worked for
+// whoever held it, with or without the certificate.
+func certificateForBoundToken(r *http.Request, tokenThumbprint string) error {
+	presented := clientauth.ThumbprintFromState(r.TLS)
+	if presented == "" {
+		return errors.New("the access token is bound to a client certificate; present " +
+			"it over mutual TLS")
+	}
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(tokenThumbprint)) != 1 {
+		return errors.New("the certificate on this connection is not the one the access " +
+			"token is bound to")
+	}
+	return nil
+}
+
+// boundTokenRefused is every protected resource's possession check: the DPoP
+// proof for a token carrying `cnf.jkt`, the connection's certificate for one
+// carrying `cnf.x5t#S256`, and nothing for a bearer token. It writes the
+// RFC 6750 / RFC 9449 refusal and reports true when possession is not shown.
+//
+// The scheme rule (dpop.CheckPresentation) is the caller's, before this:
+// it decides how the token was presented, which comes first. fapi2 is the
+// token's store.TokenStanding.HeldToProfile.
+func (s *Server) boundTokenRefused(w http.ResponseWriter, r *http.Request, raw string,
+	cnf *tokens.Confirmation, where string, fapi2 bool) bool {
+
+	switch {
+	case cnf == nil:
+		return false
+	case cnf.JKT != "":
+		if derr := s.proofForBoundToken(r, raw, cnf.JKT, fapi2); derr != nil {
+			s.log.InfoContext(r.Context(), "DPoP enforcement refused a request", "at", where, "reason", derr,
+				"correlation_id", correlationID(r.Context()))
+			if errors.Is(derr, errDPoPNonce) {
+				// §9: as at the token endpoint, with the status a resource uses.
+				s.offerDPoPNonce(w)
+				w.Header().Set("WWW-Authenticate", dpopChallenge("use_dpop_nonce",
+					"this resource requires a nonce in the DPoP proof"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return true
+			}
+			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
+				"the access token is sender-constrained and the DPoP proof did not match"))
+			w.WriteHeader(http.StatusUnauthorized)
+			return true
+		}
+	case cnf.X5TS256 != "":
+		if cerr := certificateForBoundToken(r, cnf.X5TS256); cerr != nil {
+			s.log.InfoContext(r.Context(), "certificate binding refused a request", "at", where, "reason", cerr,
+				"correlation_id", correlationID(r.Context()))
+			// §3: "rejected with an error, per [RFC6750], using an HTTP 401
+			// status code and the "invalid_token" error code."
+			w.Header().Set("WWW-Authenticate", `Bearer realm="signari", error="invalid_token", `+
+				`error_description="the access token is bound to a client certificate this `+
+				`connection did not present"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return true
+		}
+	}
+	return false
+}
+
 // verifyDPoPForRequest checks a proof and its replay record.
 //
 // Returns the thumbprint on success. An absent header is not an error here: the
@@ -87,9 +190,16 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 	// choose what their proof authorises by lying about where they sent it.
 	uri := s.cfg.Issuer + r.URL.Path
 
-	proof, err := dpop.Verify(header, r.Method, uri, accessToken, time.Now())
+	now := time.Now()
+	proof, err := dpop.Verify(header, r.Method, uri, accessToken, now)
 	if err != nil {
 		return "", err
+	}
+
+	// Before the replay record, so the retry a client is asked for can reuse
+	// nothing and is refused nothing.
+	if s.dpopNonces && !combinedAttestation(r) && !s.dpopNonceRecent(proof.Nonce, now) {
+		return "", errDPoPNonce
 	}
 
 	// Replay. The proof is fresh, signed and correctly bound -- and still
@@ -97,7 +207,7 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 	fresh, err := store.MarkDPoPProofSeen(r.Context(), s.db, proof.JKT, proof.JTI,
 		dpop.ReplayWindow)
 	if err != nil {
-		s.log.Error("recording a DPoP proof", "err", err)
+		s.log.ErrorContext(r.Context(), "recording a DPoP proof", "err", err)
 		// Fail CLOSED. If replay detection is unavailable, the proof cannot be
 		// shown to be fresh, and accepting it would silently drop the protection
 		// exactly when the database is unhappy.
@@ -112,7 +222,54 @@ func (s *Server) verifyDPoPForRequest(r *http.Request, accessToken string) (stri
 var (
 	errDPoPReplay      = errors.New("this DPoP proof has already been used")
 	errDPoPUnavailable = errors.New("DPoP replay detection is unavailable")
+	errDPoPNonce       = errors.New("this DPoP proof carries no recent nonce from this server")
 )
+
+// Server-provided nonces (RFC 9449 §8, specs/rfc9449.txt:1089-1099). A proof bounded
+// only by its own iat can be prepared ahead of time by whoever briefly has the key; one
+// carrying a value this server issued recently cannot.
+//
+// Derived rather than stored: every node derives the same one, so a client may land on
+// any of them, and the token path gains no write. The server keeps "a window of recent
+// nonces" (:1142) by accepting the last window's too, so a client that fetched one just
+// before the turn is not refused for it. Off unless asked for, since §8 makes it a MAY
+// and a client that cannot retry on use_dpop_nonce would stop working.
+
+// dpopNonceWindow is how long one nonce is current.
+const dpopNonceWindow = 5 * time.Minute
+
+// SetDPoPNonces makes every DPoP proof carry a nonce from this server. It needs the
+// root key, which is what makes one unpredictable.
+func (s *Server) SetDPoPNonces(on bool) { s.dpopNonces = on && s.root != nil }
+
+func (s *Server) dpopNonceAt(t time.Time) string {
+	window := t.Unix() / int64(dpopNonceWindow/time.Second)
+	sum := s.root.AddressHash(fmt.Sprintf("dpop-nonce:%s:%d", s.cfg.Issuer, window))
+	return base64.RawURLEncoding.EncodeToString(sum)
+}
+
+func (s *Server) dpopNonceRecent(got string, now time.Time) bool {
+	for _, want := range []string{s.dpopNonceAt(now), s.dpopNonceAt(now.Add(-dpopNonceWindow))} {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// combinedAttestation is a request whose one proof is also its attestation PoP, with
+// no separate PoP header. Its nonce is the attestation challenge, which the attestation
+// path issued and checks, and it cannot hold a second value.
+func combinedAttestation(r *http.Request) bool {
+	return r.Header.Get(abca.HeaderAttestation) != "" && r.Header.Get(abca.HeaderPoP) == ""
+}
+
+// offerDPoPNonce gives the client the value to retry with. Uncacheable, as §8.2 asks of
+// any response carrying one (:1197).
+func (s *Server) offerDPoPNonce(w http.ResponseWriter) {
+	w.Header().Set("DPoP-Nonce", s.dpopNonceAt(time.Now()))
+	w.Header().Set("Cache-Control", "no-store")
+}
 
 // bindingFor chooses the one confirmation a token may carry.
 //
@@ -169,6 +326,21 @@ func certThumbprintFrom(ctx context.Context) string {
 // Returns nil when the subject token is not bound -- an ordinary bearer token is
 // exchanged on the strength of client authentication, as before.
 func (s *Server) requireSubjectTokenBinding(r *http.Request, subject *tokens.AccessTokenClaims) error {
+	if subject.Cnf != nil && subject.Cnf.X5TS256 != "" {
+		// The same rule for the other binding. handleToken put this
+		// connection's certificate on the context; a subject token bound to
+		// a certificate is exchanged only over a connection presenting it.
+		presented := certThumbprintFrom(r.Context())
+		if presented == "" {
+			return errors.New("the subject token is bound to a client certificate; " +
+				"present it over mutual TLS")
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(subject.Cnf.X5TS256)) != 1 {
+			return errors.New("the certificate on this connection is not the one the " +
+				"subject token is bound to")
+		}
+		return nil
+	}
 	if subject.Cnf == nil || subject.Cnf.JKT == "" {
 		return nil
 	}
@@ -216,7 +388,7 @@ func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Co
 	if c == nil || !c.DPoPBoundAccessTokens || dpopThumbprintFrom(ctx) != "" {
 		return false
 	}
-	s.log.Info("token request without DPoP from a client registered as DPoP-bound",
+	s.log.InfoContext(ctx, "token request without DPoP from a client registered as DPoP-bound",
 		"client_id", c.ClientID, "correlation_id", correlationID(ctx))
 	w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
 	writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
@@ -226,7 +398,98 @@ func (s *Server) refuseUnboundTokenRequest(w http.ResponseWriter, ctx context.Co
 	return true
 }
 
+type refreshKeptKey struct{}
+
+// withRefreshKept says a grant is keeping the refresh token it came with, so the mint
+// issues none. On the context, as the thumbprint above is, for the one grant that sets it.
+func withRefreshKept(ctx context.Context) context.Context {
+	return context.WithValue(ctx, refreshKeptKey{}, true)
+}
+
+func refreshKeptFrom(ctx context.Context) bool {
+	kept, _ := ctx.Value(refreshKeptKey{}).(bool)
+	return kept
+}
+
+type replacingKey struct{}
+
+// replacing is a rotation's token being replaced: its hash, which the successor's own
+// statement links to it, and, for a client with a retry grace, the token itself, which
+// seals the successor for a retry to be given (E.04).
+type replacing struct {
+	oldHash   []byte
+	oldToken  string
+	sealRetry bool
+}
+
+func withReplacing(ctx context.Context, r replacing) context.Context {
+	return context.WithValue(ctx, replacingKey{}, r)
+}
+
+func replacingFrom(ctx context.Context) (replacing, bool) {
+	r, ok := ctx.Value(replacingKey{}).(replacing)
+	return r, ok
+}
+
+type sessionFactsKey struct{}
+
+// carriedSessionFacts is a session's token facts already read in this request, by the
+// statement that touched it, so the mint does not ask again (E.04).
+type carriedSessionFacts struct {
+	sid   string
+	facts store.SessionTokenFacts
+}
+
+func withSessionFacts(ctx context.Context, sid string, f store.SessionTokenFacts) context.Context {
+	return context.WithValue(ctx, sessionFactsKey{}, carriedSessionFacts{sid, f})
+}
+
+// sessionFactsFrom is what withSessionFacts carried for sid, and only for sid.
+func sessionFactsFrom(ctx context.Context, sid string) (store.SessionTokenFacts, bool) {
+	c, ok := ctx.Value(sessionFactsKey{}).(carriedSessionFacts)
+	if !ok || c.sid != sid || sid == "" {
+		return store.SessionTokenFacts{}, false
+	}
+	return c.facts, true
+}
+
+// refuseOutOfProfile holds a client marked for a security profile to it at the token
+// endpoint, before any grant. A client's settings can leave the profile by a command that
+// has never heard of one, and a client out of it is refused rather than served as if
+// nothing had happened, because the mark is somebody's promise about it.
+func (s *Server) refuseOutOfProfile(w http.ResponseWriter, r *http.Request, c *clients.Client) bool {
+	if c == nil || !c.FAPI2() {
+		return false
+	}
+	ctx := r.Context()
+	if problems := c.ProfileProblems(); len(problems) > 0 {
+		s.log.ErrorContext(ctx, "a client out of its security profile was refused", "client_id", c.ClientID,
+			"problems", problems, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "this client does not meet its security profile", Status: http.StatusBadRequest})
+		return true
+	}
+	// FAPI 2.0 §5.3.2.1: "shall only issue sender-constrained access tokens". A client
+	// set for mutual TLS binding is otherwise given a bearer token when it arrives
+	// without a certificate, which is a cutover for any other client.
+	jkt := dpopThumbprintFrom(ctx)
+	if jkt == "" && certThumbprintFrom(ctx) == "" {
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_request",
+			Description: "a client held to FAPI 2.0 is issued only sender-constrained tokens, and this " +
+				"request proves no key", Status: http.StatusBadRequest})
+		return true
+	}
+	if jkt != "" && !slices.Contains(clients.FAPI2Algorithms, dpop.Algorithm(r.Header.Get("DPoP"))) {
+		w.Header().Set("WWW-Authenticate", `DPoP error="invalid_dpop_proof"`)
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
+			Description: "a client held to FAPI 2.0 signs its proofs with " +
+				strings.Join(clients.FAPI2Algorithms, ", "), Status: http.StatusBadRequest})
+		return true
+	}
+	return false
+}
+
 func dpopChallenge(errCode, description string) string {
 	return `DPoP realm="signari", error="` + errCode + `", error_description="` +
-		description + `", algs="` + dpop.SupportedAlgs() + `"`
+		oauth.ErrorText(description) + `", algs="` + dpop.SupportedAlgs() + `"`
 }

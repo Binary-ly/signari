@@ -41,7 +41,9 @@ func RecordAuthLocation(ctx context.Context, db *pgxpool.Pool, userID, orgID str
 // Skips the unknown rows deliberately: comparing against "we did not know where
 // they were last time" answers nothing, and the last position we actually have
 // is the only useful comparison.
-func PreviousAuthLocation(ctx context.Context, db *pgxpool.Pool, userID string) (risk.Location, error) {
+func PreviousAuthLocation(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (risk.Location, error) {
 	var loc risk.Location
 	var country, region *string
 	var lat, lon *float64
@@ -70,4 +72,18 @@ func PreviousAuthLocation(ctx context.Context, db *pgxpool.Pool, userID string) 
 		loc.Region = *region
 	}
 	return loc, nil
+}
+
+// CountrySeen reports whether userID has signed in from country before, and
+// whether there is any located history to ask. A person with no history has
+// no "new" country: the first sign-in is not a risk signal (4.10).
+func CountrySeen(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, country string) (seen, history bool, err error) {
+	err = db.QueryRow(ctx, `
+		SELECT coalesce(bool_or(country = $2), false), count(*) > 0
+		  FROM core.auth_locations
+		 WHERE user_id = $1::uuid AND source = 'geoip' AND country IS NOT NULL`,
+		userID, country).Scan(&seen, &history)
+	return seen, history, err
 }

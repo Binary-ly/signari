@@ -12,8 +12,47 @@ signari registration token  -org <uuid> -name "ci pipeline" -uses 3
 ```
 POST   /oauth2/register                 register
 GET    /oauth2/register/{client_id}     read it back
+PUT    /oauth2/register/{client_id}     replace its name, redirects and scope
 DELETE /oauth2/register/{client_id}     remove it
 ```
+
+`PUT` takes the `client_id`, `redirect_uris`, `client_name` and `scope`. It is held to
+what registering was: the same redirect rules, and scopes intersected with the policy
+as it stands now, so a policy tightened since narrows the client. A secret cannot be
+chosen, and the registration access token stays as it is. Nothing else a client
+registered with changes.
+
+## The name in other languages
+
+A client may name itself in several languages, RFC 7591 section 2.2's
+`"client_name#ja": "クライアント名"`, alongside the untagged `client_name`:
+
+```json
+{"redirect_uris": ["https://rp.example/cb"], "client_name": "My Client",
+ "client_name#ja-Jpan-JP": "クライアント名", "client_name#de": "Mein Client"}
+```
+
+Each tag is a BCP 47 language tag, compared without regard to case, so `#de` and
+`#DE` are one name and sending both is refused (`invalid_client_metadata`), as is a
+tag that is not one or a member that is not a string. At most 32 languages. Each name
+is cleaned as `client_name` is, and to sixty characters. The registration, the read
+and the update answer with the members as they were sent. An update replaces them, so
+a name it leaves out is gone.
+
+The consent screen, and every page that names an application (the device and
+back-channel approvals, the UMA claims page, the application portal, the connected
+applications page), shows the name in a language the person asked for. That is the
+application's `ui_locales` first, then the language they chose here, then their
+browser's. The language must be the same: a reader asking for `pt` gets `pt-BR`, never
+another language because it is the closest there is. With no such name the untagged
+one is shown as it is, which is what the section says a value with no tag must be. A
+language does not need these pages to be translated into it.
+
+Only the name. The other fields the section lists, `logo_uri`, `tos_uri`,
+`policy_uri` and `client_uri`, are not shown anywhere here, so they are ignored with or
+without a tag, as RFC 7591 section 2 has unknown metadata ignored. An operator names a
+client the same way with `signari client name`, the Admin API's `localized_names`, or
+`localized_names:` in a configuration file.
 
 ## Off by default, and why
 
@@ -23,7 +62,10 @@ provider:
 - **Unbounded rows**, created by anyone who can reach it.
 - **A phishing surface.** The registrant chooses `client_name`, and that name
   goes on a consent screen. "Microsoft 365 wants access to your account" is
-  convincing, and it came from whoever registered.
+  convincing, and it came from whoever registered. Control characters and the
+  marks that reverse the text around them (U+202A to U+202E, U+2066 to U+2069) are
+  taken out of it, so it cannot rearrange the screen it is shown on, and the screen
+  shows the `client_id` beside it. Neither makes the name trustworthy.
 - **Enumeration.** Register, read back what was accepted, learn what the
   deployment supports.
 
@@ -42,9 +84,9 @@ elsewhere — the client tries, fails, and blames its own configuration.
 |---|---|
 | ceiling per organisation | 100 by default, configurable |
 | scopes | intersected with an allow-list, default `openid profile email` |
-| client type | public unless `allow_confidential` |
-| initial access tokens | optional use count, optional expiry, revocable |
-| rate limit | shared with the device endpoint |
+| client type | public unless `-allow-confidential` |
+| initial access tokens | optional use count, optional expiry, revocable with `registration revoke` |
+| rate limit | 20 attempts per address per hour, counted before anything else, then a shared allowance of three a second that only a caller allowed to register can spend. The shared allowance used to be spent before that check, so anybody could exhaust it with garbage |
 
 **Refuse, never evict.** At the ceiling, registration is refused — deleting
 somebody's working client to make room for a stranger's is worse than refusing
@@ -56,7 +98,12 @@ response. Asking for `openid profile email admin` returns `openid profile email`
 
 Registered clients are **public by default**. A secret handed to a caller who
 appeared thirty seconds ago and cannot be identified is a formality, not a
-credential.
+credential. Where registrants are identified, by an initial access token you
+issued them, `registration enable -allow-confidential` gives a registrant that
+asks for a `token_endpoint_auth_method` other than `none` a client secret in the
+response. The whole policy is written each time `registration enable` runs, so
+leaving the flag off turns it off again. Nothing could set it before, so every
+registered client was public whatever the policy said.
 
 ## Redirect URIs are held to the same standard
 
@@ -70,6 +117,19 @@ com.example.app:/cb        accepted — RFC 8252 private-use scheme
 http://127.0.0.1:9000/cb   accepted — RFC 8252 loopback
 https://ok.test/cb         accepted
 ```
+
+## Pairwise subjects
+
+A registrant can ask with `subject_type: pairwise` for subjects that mean nothing
+to any other client. Its sector is the one host of its redirect URIs. Where
+there are several hosts, or a loopback address, it must name a
+`sector_identifier_uri`. That document is fetched once, through the outbound
+checks, and has to list every redirect URI. An update cannot move the redirect
+URIs out of the sector the client already has.
+[Pairwise subjects](pairwise-subjects.md#clients-that-register-themselves) has
+the rules. Every response says the client's `subject_type`. Before, the field
+was dropped, so a client that asked for pairwise was handed the id that every
+other client sees.
 
 ## Management, and the check that matters
 

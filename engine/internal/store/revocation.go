@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,9 +15,12 @@ import (
 //
 // Idempotent: revoking twice is not an error. RFC 7009 requires that a client
 // revoking an already-revoked token still gets a success, and a client that
-// retries after a timeout must not be punished for it.
-func RevokeJTI(ctx context.Context, tx pgx.Tx, jti, clientID string, expiresAt time.Time) error {
-	_, err := tx.Exec(ctx, `
+// retries after a timeout must not be punished for it. One statement, so it needs no
+// transaction of its own, and joins the caller's when there is one.
+func RevokeJTI(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, jti, clientID string, expiresAt time.Time) error {
+	_, err := q.Exec(ctx, `
 		INSERT INTO core.revoked_jtis (jti, client_id, expires_at)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (jti) DO NOTHING`, jti, clientID, expiresAt)
@@ -26,38 +30,13 @@ func RevokeJTI(ctx context.Context, tx pgx.Tx, jti, clientID string, expiresAt t
 	return nil
 }
 
-// JTIRevoked reports whether an access token has been revoked.
-//
-// On a database error this returns TRUE. That is deliberate and it is the whole
-// point of the function: the caller is asking "may I honour this credential",
-// and the safe answer when we cannot tell is no. Returning false on error would
-// turn a database blip into a window where revoked tokens are accepted -- a
-// fail-open on exactly the check that exists to fail closed.
-func JTIRevoked(ctx context.Context, db *pgxpool.Pool, jti string) (bool, error) {
-	if jti == "" {
-		// A token with no jti cannot be individually revoked. Treat it as
-		// revoked rather than guess: every token we mint has one, so an absent
-		// jti means the token did not come from us in the shape we expect.
-		return true, fmt.Errorf("access token has no jti")
-	}
-	var exists bool
-	err := db.QueryRow(ctx,
-		`SELECT true FROM core.revoked_jtis WHERE jti = $1`, jti).Scan(&exists)
-	switch {
-	case err == pgx.ErrNoRows:
-		return false, nil
-	case err != nil:
-		return true, fmt.Errorf("checking revocation: %w", err)
-	default:
-		return exists, nil
-	}
-}
-
 // PurgeExpiredRevocations drops denylist rows for tokens that have expired on
 // their own. Keeping them would make the table grow forever while proving
 // nothing: an expired token is rejected on its expiry regardless.
-func PurgeExpiredRevocations(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.revoked_jtis WHERE expires_at < now()`)
+func PurgeExpiredRevocations(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.revoked_jtis WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.revoked_jtis WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -95,10 +74,32 @@ type RefreshTokenState struct {
 	Found     bool
 	Active    bool
 	ClientID  string
+	OrgID     string
 	UserID    string
 	SID       string
+	FamilyID  string
 	Scopes    []string
 	ExpiresAt time.Time
+}
+
+// TokenSessionLive reports whether a token minted under session sid may still
+// be used: the session is live, or the grant the token was minted from is an
+// offline grant within its own lifetime, of somebody still active (5.10).
+//
+// Every check of a token's session asks this rather than SessionLive, or an
+// offline grant would mint tokens that its own userinfo, introspection and
+// token exchange refuse the moment the person signs out -- the access
+// offline_access is for. TestEveryTokenSessionCheckHonoursOfflineGrants holds
+// them to it.
+func TokenSessionLive(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, sid, grantID string) (bool, error) {
+	var live bool
+	err := q.QueryRow(ctx, `SELECT `+tokenSessionLive("$1", "$2"), sid, grantID).Scan(&live)
+	if err != nil {
+		return false, fmt.Errorf("checking a token's session: %w", err)
+	}
+	return live, nil
 }
 
 // LookupRefreshToken reads a refresh token's state for introspection.
@@ -114,12 +115,12 @@ func LookupRefreshToken(ctx context.Context, db *pgxpool.Pool, tokenHash []byte)
 	var sid *string
 
 	err := db.QueryRow(ctx, `
-		SELECT f.client_id, f.user_id::text, f.sid, t.scopes, t.expires_at,
+		SELECT f.client_id, f.org_id::text, f.user_id::text, f.sid, f.id::text, t.scopes, t.expires_at,
 		       t.consumed_at, f.revoked_at
 		FROM core.refresh_tokens t
 		JOIN core.refresh_token_families f ON f.id = t.family_id
 		WHERE t.token_hash = $1`, tokenHash).
-		Scan(&st.ClientID, &st.UserID, &sid, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
+		Scan(&st.ClientID, &st.OrgID, &st.UserID, &sid, &st.FamilyID, &st.Scopes, &st.ExpiresAt, &consumed, &familyRevoked)
 	if err == pgx.ErrNoRows {
 		return st, nil
 	}
@@ -141,6 +142,10 @@ func LookupRefreshToken(ctx context.Context, db *pgxpool.Pool, tokenHash []byte)
 // access tokens issued from that session. Without it, "active" would mean only
 // "correctly signed and not yet expired", which is the weak answer that makes
 // introspection worth little.
+//
+// A session of a person who is no longer active is not live, whether or not
+// whatever deactivated them ended it: this is IsSessionLive's question, and
+// forward auth asking a narrower one let a proxy cookie outlive the account.
 func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error) {
 	if sid == "" {
 		// Client-credentials tokens have no session. Absence of a session is not
@@ -148,10 +153,7 @@ func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error
 		// function only answers about tokens that claim one.
 		return false, nil
 	}
-	var live bool
-	err := db.QueryRow(ctx, `
-		SELECT revoked_at IS NULL AND not_after > now()
-		FROM core.sessions WHERE sid = $1`, sid).Scan(&live)
+	live, err := IsSessionLive(ctx, db, sid)
 	switch {
 	case err == pgx.ErrNoRows:
 		return false, nil
@@ -162,37 +164,19 @@ func SessionLive(ctx context.Context, db *pgxpool.Pool, sid string) (bool, error
 	}
 }
 
-// GrantRevoked reports whether the refresh token family an access token was
-// minted from has been revoked.
-//
-// RFC 7009 §2.1's cascade: revoking a refresh token SHOULD invalidate "all
-// access tokens based on the same authorization grant". Revocation is otherwise
-// recorded per-jti, and nothing links a minted access token back to its grant,
-// so the cascade had nowhere to land -- the access tokens simply ran to
-// expiry.
-//
-// Fails CLOSED on a database error, like JTIRevoked beside it: a checkpoint that
-// cannot determine whether a grant is live must not answer that it is.
-func GrantRevoked(ctx context.Context, db *pgxpool.Pool, grantID string) (bool, error) {
-	if grantID == "" {
-		// No grant to check. Tokens from an authorization with no refresh token
-		// carry no gid, and there is no refresh token whose revocation could
-		// cascade to them.
-		return false, nil
+// RefreshTokenHolder returns the organisation and person a refresh token's
+// family belongs to, or "" for both when this server issued no such token. What
+// the audit record of a reuse needs to say whose tokens were revoked.
+func RefreshTokenHolder(ctx context.Context, tx pgx.Tx, tokenHash []byte) (orgID, userID string, err error) {
+	err = tx.QueryRow(ctx, `
+		SELECT f.org_id::text, f.user_id::text
+		FROM core.refresh_tokens t
+		JOIN core.refresh_token_families f ON f.id = t.family_id
+		WHERE t.token_hash = $1`, tokenHash).Scan(&orgID, &userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
 	}
-	var revoked bool
-	err := db.QueryRow(ctx,
-		`SELECT revoked_at IS NOT NULL FROM core.refresh_token_families WHERE id = $1::uuid`,
-		grantID).Scan(&revoked)
-	switch {
-	case err == pgx.ErrNoRows:
-		// The family is gone. Treat as revoked: a token naming a grant this
-		// server cannot find is not one to honour.
-		return true, nil
-	case err != nil:
-		return true, fmt.Errorf("checking grant revocation: %w", err)
-	}
-	return revoked, nil
+	return orgID, userID, err
 }
 
 // RefreshTokenOwner returns the client a refresh token was issued to, or "" if

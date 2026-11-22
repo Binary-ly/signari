@@ -1,14 +1,20 @@
 package mail
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -17,10 +23,15 @@ import (
 type Message struct {
 	To      string
 	Subject string
-	// Text only. HTML mail from an identity provider is a phishing lesson: it
-	// trains users that a message about their account can contain a styled button
-	// they should click, which is the exact shape of the attack.
+	// Body is the text of the message, and all of it. The HTML part is made from
+	// these words by a fixed layout and adds none, so nothing a caller or an
+	// operator writes can become a styled button: see render.
 	Body string
+	// From and FromName are the organisation's sender. Empty, the deployment's.
+	From     string
+	FromName string
+	// Look is the deployment's brand on the HTML part. Empty, a plain page.
+	Look Look
 }
 
 // Sender delivers a message. An interface so the dev driver, the SMTP driver and
@@ -51,7 +62,7 @@ func (l *LogSender) From() string { return l.from }
 
 func (l *LogSender) Send(_ context.Context, m Message) error {
 	l.log.Warn("EMAIL NOT SENT -- no SMTP configured; message logged instead",
-		"to", m.To, "subject", m.Subject, "body", m.Body)
+		"to", m.To, "from", cmp.Or(m.From, l.from), "subject", m.Subject, "body", m.Body)
 	return nil
 }
 
@@ -64,6 +75,8 @@ type SMTPSender struct {
 	FromAddr string
 	FromName string
 	Timeout  time.Duration
+	// RootCAs is who may sign the relay's certificate. Nil, the system's.
+	RootCAs *x509.CertPool
 }
 
 func (s *SMTPSender) From() string { return s.FromAddr }
@@ -102,7 +115,7 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("mail: %s does not offer STARTTLS; refusing to send credentials "+
 			"or account links over an unencrypted connection", addr)
 	}
-	if err := c.StartTLS(&tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12}); err != nil {
+	if err := c.StartTLS(&tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12, RootCAs: s.RootCAs}); err != nil {
 		return fmt.Errorf("mail: STARTTLS with %s: %w", addr, err)
 	}
 
@@ -111,7 +124,9 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 			return fmt.Errorf("mail: authenticating to %s: %w", addr, err)
 		}
 	}
-	if err := c.Mail(s.FromAddr); err != nil {
+	// The organisation's address on the envelope too: it is the domain receivers
+	// check SPF against, and DMARC wants the two to agree.
+	if err := c.Mail(cmp.Or(m.From, s.FromAddr)); err != nil {
 		return fmt.Errorf("mail: MAIL FROM: %w", err)
 	}
 	if err := c.Rcpt(m.To); err != nil {
@@ -121,7 +136,11 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("mail: DATA: %w", err)
 	}
-	if _, err := w.Write([]byte(s.build(m))); err != nil {
+	msg, err := s.build(m)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(msg)); err != nil {
 		return fmt.Errorf("mail: writing message: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -136,23 +155,60 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 // encoded. A newline in a subject or recipient is header injection -- an
 // attacker-chosen display name could otherwise append Bcc: and turn every
 // password reset into a copy sent to them.
-func (s *SMTPSender) build(m Message) string {
-	from := s.FromAddr
-	if s.FromName != "" {
-		from = (&mail.Address{Name: s.FromName, Address: s.FromAddr}).String()
+//
+// Text first and HTML last, which RFC 2046's multipart/alternative reads as
+// plainest to richest, and quoted-printable for both, so a long line of a
+// message can never pass the 998 octets SMTP allows.
+func (s *SMTPSender) build(m Message) (string, error) {
+	addr, name := s.FromAddr, s.FromName
+	if m.From != "" {
+		addr, name = m.From, m.FromName
 	}
+	from := addr
+	if name != "" {
+		from = (&mail.Address{Name: stripNewlines(name), Address: addr}).String()
+	}
+	page, err := render(m)
+	if err != nil {
+		return "", fmt.Errorf("mail: rendering the message: %w", err)
+	}
+	var body bytes.Buffer
+	parts := multipart.NewWriter(&body)
+	for _, part := range []struct{ contentType, content string }{
+		{"text/plain; charset=utf-8", m.Body},
+		{"text/html; charset=utf-8", page},
+	} {
+		w, err := parts.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {part.contentType},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		if err != nil {
+			return "", fmt.Errorf("mail: writing a part: %w", err)
+		}
+		q := quotedprintable.NewWriter(w)
+		if _, err := q.Write([]byte(part.content)); err != nil {
+			return "", fmt.Errorf("mail: writing a part: %w", err)
+		}
+		if err := q.Close(); err != nil {
+			return "", fmt.Errorf("mail: writing a part: %w", err)
+		}
+	}
+	if err := parts.Close(); err != nil {
+		return "", fmt.Errorf("mail: closing the message: %w", err)
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", sanitiseHeader(from))
 	fmt.Fprintf(&b, "To: %s\r\n", sanitiseHeader(m.To))
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", stripNewlines(m.Subject)))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%q\r\n", parts.Boundary())
 	// Transactional mail must never be auto-replied to or filed as bulk.
 	b.WriteString("Auto-Submitted: auto-generated\r\n")
 	b.WriteString("X-Auto-Response-Suppress: All\r\n")
 	b.WriteString("\r\n")
-	b.WriteString(strings.ReplaceAll(m.Body, "\n", "\r\n"))
-	return b.String()
+	b.Write(body.Bytes())
+	return b.String(), nil
 }
 
 func stripNewlines(s string) string {

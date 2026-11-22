@@ -10,10 +10,72 @@ SIGNARI_SMS_FROM=+15550000000        # or a messaging service SID, MG...
 SIGNARI_SMS_GATEWAY=webhook
 SIGNARI_SMS_WEBHOOK_URL=https://sms.internal/send
 SIGNARI_SMS_WEBHOOK_AUTH="Bearer ..."
+
+# or a verification service that makes, sends and checks the code itself
+SIGNARI_SMS_GATEWAY=verify-webhook
+SIGNARI_SMS_VERIFY_URL=https://verify.internal/v1
+SIGNARI_SMS_VERIFY_AUTH="Bearer ..."
 ```
 
-Users enrol at `/account/mfa/sms`.
+Users enrol at `/account/mfa/sms`, and see and remove the number at
+`/account/security` with their other sign-in methods; removing it there or from
+the enrolment page is the same removal, told to the holder and taking the
+recovery codes with it when it was the last second factor.
 
+## A delegated verification service
+
+With `verify-webhook` the engine never holds a code: the service makes it,
+sends it and says whether the one typed is right. That keeps codes out of this
+database and its logs, and puts delivery where a provider's fraud and routing
+controls are. The engine speaks one contract, version 1, to a service the
+operator runs in front of whichever provider's verification API they use:
+
+```
+POST {"version":1,"action":"start","to":"+447700900123"}
+     2xx, optionally {"id":"..."}   a code was sent
+POST {"version":1,"action":"check","to":"+447700900123","id":"...","code":"123456"}
+     2xx {"approved":true}          the code is right; the service spends it
+     2xx {"approved":false}         it is not
+```
+
+A check carries `to`, `id` or both, as known. An organisation that keeps only
+hashes of numbers (below) sends the `id` alone, so a service that gives none
+cannot serve it.
+
+Anything else is an error, and a check that errors is refused, not charged, so
+an outage of the service signs nobody in and disables nobody's factor. Only a
+code of 4 to 10 digits is sent to it, so an authenticator or recovery code
+tried first spends none of its checks. The engine's own rules still apply on
+top: the countries, the daily allowances, the five-minute lifetime, five
+attempts per code and the consecutive-failure ceiling. The service sends only
+codes, so account notices go by email alone, which `signari doctor` says. The
+URL must be https, as a check carries a live code.
+
+
+## Keeping only a hash of the number
+
+```sh
+signari instance sms-numbers -org <id> -sms-numbers hashed
+```
+
+By default a person's number is stored, so a code can be texted without being
+asked for and account notices reach the phone. A copy of the database then
+holds every person's number, which is where a SIM swap begins. An organisation
+can keep instead only a keyed hash of each number, made under the person's own
+subject key. That key is sealed under the root key, which is not in the
+database, so a copy of the database cannot test guesses. The same number in two
+accounts hashes differently, a root-key rotation leaves the hash as it was, and
+erasing the person destroys it.
+
+What changes for the person: the code page asks for their number, and the code
+goes to the number typed when its hash matches. The page says the same whether
+it matched or not, because whoever is on that page has the password. Each try
+spends the code page's own budget, so the number cannot be walked. No account
+notice is texted to a number that is not kept. A number already stored is
+replaced by its hash at the person's next sign-in, which is still texted to the
+stored number. Moving back to `stored` applies to numbers enrolled from then
+on: a hash cannot be read back, so it keeps working when typed until the person
+enrols again.
 
 ## Why it is offered at all
 
@@ -112,6 +174,16 @@ Enrolling and trusting in one step means a typo puts a stranger's phone between
 somebody and their own account — and they find out at the worst possible moment,
 already locked out.
 
+**Moving to another number works the same way.** The new number is held as
+pending, and the number that already works stays the factor and keeps
+receiving sign-in codes until a code sent to the new one comes back. Then the
+old number is texted to say codes will no longer come to it. The send step used
+to overwrite the working number and mark the factor unverified at once. So one
+request from any signed-in session switched SMS off for the account and aimed
+it at a number of that session's choosing, without a code being entered. An
+enrolment code and a sign-in code are kept apart, and neither is accepted in
+place of the other.
+
 ## Numbers are E.164 or refused
 
 ```
@@ -133,16 +205,18 @@ password exactly which number to attack at the mobile operator.
 | | |
 |---|---|
 | code lifetime | **5 minutes** — shorter than email's ten; a text arrives in seconds and sits on a lock screen |
-| resend interval | 60s — every message costs money, and a resend button with no floor spends somebody else's budget |
+| resend interval | 60s within one sign-in — every message costs money, and a resend button with no floor spends somebody else's budget. Another sign-in is texted a code of its own at once, within the daily allowances per number and per organisation |
+| taken for | the sign-in, or the password reset, it was sent for, and no other: as for [email codes](email-otp.md#one-live-code-never-a-queue-of-them). An LDAP bind, a RADIUS request and the desktop sign-in take none; a bind took one until November 2026 |
 | attempts per code | 5 |
+| wrong codes in a row, across codes | 100, then the factor is switched off and the holder told, as an authenticator app is. No code is sent or accepted until a number is proved again. A right code resets the count |
 | one live code | "send another" replaces, never accumulates |
 
 A misconfigured gateway is **fatal at startup**, not a silent fallback to no
 SMS:
 
 ```
-signari: configuring the SMS gateway: SIGNARI_SMS_GATEWAY must be twilio or
-webhook (got "twilo")
+signari: configuring the SMS gateway: SIGNARI_SMS_GATEWAY must be twilio,
+webhook or verify-webhook (got "twilo")
 ```
 
 A deployment that named a gateway stated an intention. Quietly ignoring a typo

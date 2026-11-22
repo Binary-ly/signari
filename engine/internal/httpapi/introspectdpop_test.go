@@ -105,7 +105,9 @@ func (f *tokenFixture) introspect(t *testing.T, token, clientID, secret string) 
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/introspect",
 		strings.NewReader(url.Values{"token": {token}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, secret)
+	// Form-encoded before Basic, as RFC 6749 §2.3.1 has a client do: a client
+	// id that is a URI carries a colon.
+	req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret))
 	rec := httptest.NewRecorder()
 	f.srv.Routes().ServeHTTP(rec, req)
 	var got map[string]any

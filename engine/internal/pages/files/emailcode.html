@@ -1,0 +1,13 @@
+{{define "title"}}{{T "emailcode.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "emailcode.title"}}</h1>
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+<p>{{T "emailcode.sent"}}</p>
+<form method="POST" action="/login/email/verify">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="c">{{T "emailcode.code"}}</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+<button type="submit">{{T "login.submit"}}</button>
+</form>
+<p class="alt"><a href="/login">{{T "emailcode.back"}}</a></p>
+{{end}}

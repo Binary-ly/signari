@@ -1,0 +1,373 @@
+package httpapi
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oidc"
+)
+
+// statements remembers what a pool was asked, so a test can say which went over.
+type statements struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (s *statements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, strings.Join(strings.Fields(d.SQL), " "))
+	return ctx
+}
+
+func (s *statements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// A batch's statements count as statements. pgx tells only a tracer that has these
+// about a batch, and without them every ceiling below was blind to whatever a path
+// sent in one: introspection read 0 statements from E.23 on, and userinfo 0 once its
+// two reads went into the standing's batch.
+func (s *statements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (s *statements) TraceBatchQuery(_ context.Context, _ *pgx.Conn, d pgx.TraceBatchQueryData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, strings.Join(strings.Fields(d.SQL), " "))
+}
+
+func (s *statements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (s *statements) take() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	got := s.seen
+	s.seen = nil
+	return got
+}
+
+// traced puts a recording pool under a server.
+func traced(t *testing.T, srv *Server) *statements {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("SIGNARI_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := &statements{}
+	cfg.ConnConfig.Tracer = spent
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	srv.db = pool
+	return spent
+}
+
+// A session-bound token with a refresh token behind it, the most a check can have
+// to ask about, and a secret to introspect it with.
+func costlyToken(t *testing.T, f *tokenFixture) (access, secret string) {
+	t.Helper()
+	secret = revocableClient(t, f)
+	const verifier = "verifier-cost-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid", "profile", "email", "offline_access"})
+	status, body := f.post(t, url.Values{"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "client_secret": {secret}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier}})
+	if status != http.StatusOK {
+		t.Fatalf("redeeming: %d %v", status, body)
+	}
+	access, _ = body["access_token"].(string)
+	return access, secret
+}
+
+func underLimit(t *testing.T, what string, got []string, limit int) {
+	t.Helper()
+	if len(got) <= limit {
+		t.Logf("%s took %d statements", what, len(got))
+		return
+	}
+	t.Errorf("%s took %d statements, wanting at most %d:", what, len(got), limit)
+	for _, s := range got {
+		t.Logf("  %.110s", s)
+	}
+}
+
+// transactions counts those a pool was asked to begin.
+func transactions(got []string) int {
+	n := 0
+	for _, s := range got {
+		if strings.EqualFold(s, "begin") {
+			n++
+		}
+	}
+	return n
+}
+
+// A password sign-in, form to session: each transaction is a commit somebody waits
+// for, and each statement work the database does. 26 statements, batched ones counted;
+// the ceiling was 25 while the counter could not see a batch (the sign-in page's settings,
+// ten statements in one round trip since E.36), so the two are not comparable. Round
+// trips are TestAPasswordSignInsWalkAsksItsFactsInOneRoundTrip's.
+func TestAPasswordSignInTakesFewTransactions(t *testing.T) {
+	f := newSignInFixture(t)
+	clearSignInBucket(t, f.pool)
+	spent := traced(t, f.srv)
+	if got := f.attempt(t, f.email, signInTestPassword); !got.signedIn() {
+		t.Fatalf("signing in: %+v", got)
+	}
+	seen := spent.take()
+	underLimit(t, "the form and a password sign-in", seen, 26)
+	if transactions(seen) > 1 {
+		t.Errorf("a sign-in opened %d transactions", transactions(seen))
+	}
+}
+
+// The token endpoint's three common grants, with a root key and an instance as a
+// deployment has them, and begin and commit counted. A mapper or a provider adds
+// what it needs; a deployment with neither pays for neither.
+func TestTheTokenEndpointAsksTheDatabaseLittle(t *testing.T) {
+	f := newTokenFixture(t)
+	secret := revocableClient(t, f)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = grant_types || ARRAY['client_credentials', 'refresh_token'],
+		scopes = scopes || ARRAY['api.read'] WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	const verifier = "verifier-cost-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid", "offline_access"})
+	spent := traced(t, f.srv)
+
+	status, body := f.post(t, url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID},
+		"client_secret": {secret}, "scope": {"api.read"}})
+	if status != http.StatusOK {
+		t.Fatalf("client credentials: %d %v", status, body)
+	}
+	underLimit(t, "client credentials", spent.take(), 3)
+
+	status, body = f.post(t, url.Values{"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "client_secret": {secret}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier}})
+	if status != http.StatusOK {
+		t.Fatalf("redeeming a code: %d %v", status, body)
+	}
+	underLimit(t, "redeeming a code", spent.take(), 10)
+
+	refresh, _ := body["refresh_token"].(string)
+	status, body = f.post(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+		"client_id": {f.clientID}, "client_secret": {secret}})
+	if status != http.StatusOK {
+		t.Fatalf("refreshing: %d %v", status, body)
+	}
+	underLimit(t, "refreshing", spent.take(), 11)
+}
+
+// The same three grants in round trips, a batch counting once: what each waits on, which
+// is what E.04 asked of them (client credentials 5 round trips, a code about 16, a
+// refresh about 15, when it was written) and statement counts cannot show, since a batch
+// sends several statements in one trip. Client credentials is the client with its
+// failure counters in one batch, then the organisation's token budget, charged only once
+// the client has proved itself. The ceilings are what each took when this was written,
+// begin and commit counted: 2, 8 and 8, E.04's targets. A code was 9 until it stopped
+// reading its row before the transaction that consumes it, which only a token provider
+// needs. A refresh was 10 until the session's touch read what the tokens say of it, and
+// the successor's insert linked the token it replaces, each in one statement.
+func TestTheTokenEndpointsGrantsTakeFewRoundTrips(t *testing.T) {
+	f := newTokenFixture(t)
+	secret := revocableClient(t, f)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE core.clients SET grant_types = grant_types || ARRAY['client_credentials', 'refresh_token'],
+		scopes = scopes || ARRAY['api.read'] WHERE client_id = $1`, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	const verifier = "verifier-cost-trips-aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	code := f.issueCodeWithDetailsAndScopes(t, verifier, nil, []string{"openid", "offline_access"})
+	trips := countRoundTripsOf(t, f.srv)
+	within := func(what string, limit int64) {
+		t.Helper()
+		if got := trips.n.Load(); got > limit {
+			t.Errorf("%s took %d round trips, want at most %d:%s", what, got, limit, trips)
+		} else {
+			t.Logf("%s took %d round trips", what, got)
+		}
+		trips.reset()
+	}
+
+	status, body := f.post(t, url.Values{"grant_type": {"client_credentials"}, "client_id": {f.clientID},
+		"client_secret": {secret}, "scope": {"api.read"}})
+	if status != http.StatusOK {
+		t.Fatalf("client credentials: %d %v", status, body)
+	}
+	within("client credentials", 2)
+
+	status, body = f.post(t, url.Values{"grant_type": {"authorization_code"}, "code": {code},
+		"client_id": {f.clientID}, "client_secret": {secret}, "redirect_uri": {"https://rp.test/cb"},
+		"code_verifier": {verifier}})
+	if status != http.StatusOK {
+		t.Fatalf("redeeming a code: %d %v", status, body)
+	}
+	within("redeeming a code", 8)
+
+	refresh, _ := body["refresh_token"].(string)
+	status, body = f.post(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+		"client_id": {f.clientID}, "client_secret": {secret}})
+	if status != http.StatusOK {
+		t.Fatalf("refreshing: %d %v", status, body)
+	}
+	within("refreshing", 8)
+}
+
+// A browser with a session coming back to /authorize, which is most of what the
+// endpoint serves once people are signed in: every application they open. Begin
+// and commit counted, in a deployment with a root key, an instance, no provider
+// and no policy, and for an application the person has agreed to.
+func TestAResumedAuthorizationAsksTheDatabaseLittle(t *testing.T) {
+	f := newSignInFixture(t)
+	ctx := context.Background()
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(ctx, `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(ctx, `INSERT INTO core.consents (user_id, client_id, scopes)
+		VALUES ($1::uuid, $2, ARRAY['openid'])`, f.userID, f.clientID); err != nil {
+		t.Fatal(err)
+	}
+	cookie := f.signInAndReturnCookie(t)
+	spent := traced(t, f.srv)
+
+	req := httptest.NewRequest(http.MethodGet, oidc.PathAuthorize+"?"+f.plainAuthz(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if redirected(t, rec).Get("code") == "" {
+		t.Fatalf("no code: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	underLimit(t, "a resumed authorization", spent.take(), 8)
+}
+
+// A SAML sign-in for somebody with a session, the second of two, since the first
+// makes the key's certificate. Begin and commit counted, with a provider that
+// releases no groups and no attributes.
+func TestASAMLResponseAsksTheDatabaseLittle(t *testing.T) {
+	rf := newRealmFixture(t)
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf.f.srv.root = root
+	if err := rf.f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, rf.f.orgID).Scan(&rf.f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	spent := traced(t, rf.f.srv)
+	if _, doc := rf.samlSSO(t, rf.own); doc == "" {
+		t.Fatal("no response")
+	}
+	spent.take()
+	if _, doc := rf.samlSSO(t, rf.own); doc == "" {
+		t.Fatal("no second response")
+	}
+	underLimit(t, "a SAML response", spent.take(), 8)
+}
+
+// These two are what a resource server calls on every request it serves, so a
+// statement here is one for each of those.
+func TestIntrospectionAndUserinfoAskTheDatabaseLittle(t *testing.T) {
+	f := newTokenFixture(t)
+	access, secret := costlyToken(t, f)
+	// As a real deployment has them: a root key, which is what opens claim mappers
+	// to being asked about, and an instance, which is what issuer aliases are of.
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	spent := traced(t, f.srv)
+
+	if got := f.introspect(t, access, f.clientID, secret); got["active"] != true {
+		t.Fatalf("introspection answered %v", got)
+	}
+	underLimit(t, "introspection", spent.take(), 3)
+
+	req := httptest.NewRequest(http.MethodGet, oidc.PathUserinfo, nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("userinfo answered %d: %s", rec.Code, rec.Body.String())
+	}
+	underLimit(t, "userinfo", spent.take(), 3)
+}
+
+// A userinfo waits on one round trip: what has become of the token and the person it
+// names, asked in one batch (E.06). Asked one after the other it was two, and the batch
+// took userinfo from 5,789 to 7,340 a second in turns against its parent. A provider that
+// caches both waits on none; reading the standing on every request is ADR-007's price.
+func TestUserinfoTakesOneRoundTrip(t *testing.T) {
+	f := newTokenFixture(t)
+	access, _ := costlyToken(t, f)
+	// As a deployment has them, a root key and an instance, as the test above sets.
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.root = root
+	if err := f.pool.QueryRow(context.Background(), `SELECT instance_id::text FROM core.organizations
+		WHERE id = $1::uuid`, f.orgID).Scan(&f.srv.instanceID); err != nil {
+		t.Fatal(err)
+	}
+	trips := countRoundTripsOf(t, f.srv)
+	req := httptest.NewRequest(http.MethodGet, oidc.PathUserinfo, nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("userinfo answered %d: %s", rec.Code, rec.Body.String())
+	}
+	if n := trips.n.Load(); n != 1 {
+		t.Errorf("userinfo took %d round trips, want 1:%s", n, trips)
+	}
+	trips.mu.Lock()
+	seen := strings.Join(trips.what, "\n")
+	trips.mu.Unlock()
+	if !strings.Contains(seen, "in the batch: SELECT COALESCE(u.email, '')") {
+		t.Errorf("the person was not asked in the standing's batch:%s", trips)
+	}
+}

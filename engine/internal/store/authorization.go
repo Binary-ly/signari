@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/oauth"
 )
 
 // Relations, the model, and the facts an authorization decision is made from.
@@ -42,14 +45,17 @@ func GrantRelation(ctx context.Context, e Execer, orgID string, r Relation,
 	return err
 }
 
-// RevokeRelation removes one.
-func RevokeRelation(ctx context.Context, e Execer, orgID string, r Relation) error {
-	_, err := e.Exec(ctx, `
+// RevokeRelation removes one, and reports whether it was there.
+func RevokeRelation(ctx context.Context, e Execer, orgID string, r Relation) (bool, error) {
+	tag, err := e.Exec(ctx, `
 		DELETE FROM core.relations
 		 WHERE org_id = $1::uuid AND subject_type = $2 AND subject_id = $3
 		   AND relation = $4 AND object_type = $5 AND object_id = $6`,
 		orgID, r.SubjectType, r.SubjectID, r.Relation, r.ObjectType, r.ObjectID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // HoldsAny reports whether the subject holds any of these relations on the
@@ -101,6 +107,257 @@ func HoldsAny(ctx context.Context, q Querier, orgID, subjectType, subjectID stri
 		return held, nil
 	}
 	return "", rows.Err()
+}
+
+// Tuple is one relation a subject holds on an object.
+type Tuple struct {
+	SubjectType, SubjectID, Relation, ObjectType, ObjectID string
+}
+
+// TuplesAmong reads every live relation among these subjects and objects, each a
+// (type, id) pair, for a batch of questions to answer from one statement. A batch
+// names one subject once per question, and the join finds each of their relations
+// once per mention, so the lists are made distinct here rather than by DISTINCT
+// afterwards: a hundred questions cost twelve times what ten did (E.17).
+func TuplesAmong(ctx context.Context, q Querier, orgID string, subjects, objects [][2]string,
+	relations []string) (map[Tuple]bool, error) {
+
+	out := map[Tuple]bool{}
+	if len(subjects) == 0 || len(objects) == 0 || len(relations) == 0 {
+		return out, nil
+	}
+	split := func(pairs [][2]string) (types, ids []string) {
+		seen := make(map[[2]string]bool, len(pairs))
+		for _, p := range pairs {
+			if !seen[p] {
+				seen[p] = true
+				types, ids = append(types, p[0]), append(ids, p[1])
+			}
+		}
+		return types, ids
+	}
+	subjectTypes, subjectIDs := split(subjects)
+	objectTypes, objectIDs := split(objects)
+	relations = slices.Compact(slices.Sorted(slices.Values(relations)))
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT r.subject_type, r.subject_id, r.relation, r.object_type, r.object_id
+		  FROM core.relations r
+		  JOIN unnest($2::text[], $3::text[]) AS s(styp, sid)
+		    ON r.subject_type = s.styp AND r.subject_id = s.sid
+		  JOIN unnest($4::text[], $5::text[]) AS o(otyp, oid)
+		    ON r.object_type = o.otyp AND r.object_id = o.oid
+		 WHERE r.org_id = $1::uuid
+		   AND r.relation = ANY ($6::text[])
+		   AND (r.expires_at IS NULL OR r.expires_at > now())
+		UNION
+		-- Whoever these subjects are, a set on one of the objects may have them, and
+		-- only a walk can say. Read here so that a batch with none pays nothing.
+		SELECT r.subject_type, r.subject_id, r.relation, r.object_type, r.object_id
+		  FROM core.relations r
+		  JOIN unnest($4::text[], $5::text[]) AS o(otyp, oid)
+		    ON r.object_type = o.otyp AND r.object_id = o.oid
+		 WHERE r.org_id = $1::uuid AND r.subject_id LIKE '%#%'
+		   AND r.relation = ANY ($6::text[])
+		   AND (r.expires_at IS NULL OR r.expires_at > now())`,
+		orgID, subjectTypes, subjectIDs, objectTypes, objectIDs, relations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t Tuple
+		if err := rows.Scan(&t.SubjectType, &t.SubjectID, &t.Relation, &t.ObjectType, &t.ObjectID); err != nil {
+			return nil, err
+		}
+		out[t] = true
+	}
+	return out, rows.Err()
+}
+
+// Explanation is how the relation half of a decision comes out, and why. What
+// a session or a provider would add is not in it: nobody here has one.
+type Explanation struct {
+	// Relations are the ones that grant the action.
+	Relations []string
+	// Held is the one the subject holds, empty when they hold none, and Via is
+	// whose grant it is: the subject as asked about, their id, or a group.
+	Held, Via string
+	// Groups are the groups of theirs that were considered.
+	Groups []string
+	// Path is how a relation held through something else was reached, from the
+	// object, and empty for one held directly.
+	Path []string
+	// Refused says what took back a relation the subject holds: an `except` they
+	// are in, or an `also` they are not.
+	Refused string
+}
+
+// Explain walks a question the way a decision does: the subject as asked about,
+// then the person that resolves to, then their groups. defined is false when the
+// model has no such action.
+func Explain(ctx context.Context, q Querier, orgID string, model *authzen.Model,
+	subjectType, subjectID, action, objectType, objectID string) (e Explanation, defined bool, err error) {
+
+	if e.Relations, defined = model.RelationsFor(objectType, action); !defined {
+		return e, false, nil
+	}
+	subjects := [][2]string{{subjectType, subjectID}}
+	userID, err := ResolveSubject(ctx, q, orgID, subjectID)
+	if err != nil {
+		return e, true, err
+	}
+	if userID != "" {
+		facts, err := SubjectFacts(ctx, q, orgID, userID, "")
+		if err != nil {
+			return e, true, err
+		}
+		e.Groups = facts.Groups
+		if userID != subjectID {
+			subjects = append(subjects, [2]string{subjectType, userID})
+		}
+	}
+	for _, g := range e.Groups {
+		subjects = append(subjects, [2]string{"group", g})
+	}
+	tuples, err := TuplesAmong(ctx, q, orgID, subjects, [][2]string{{objectType, objectID}}, e.Relations)
+	if err != nil {
+		return e, true, err
+	}
+	for _, s := range subjects {
+		for _, relation := range e.Relations {
+			if tuples[Tuple{SubjectType: s[0], SubjectID: s[1], Relation: relation,
+				ObjectType: objectType, ObjectID: objectID}] {
+				e.Held, e.Via = relation, authzen.Ref(s[0], s[1])
+			}
+		}
+	}
+	if e.Held == "" {
+		if e.Held, e.Path, err = WalkRelations(ctx, q, orgID, model, subjects, e.Relations, objectType, objectID); err != nil {
+			return e, true, err
+		}
+		if len(e.Path) > 0 {
+			e.Via = e.Path[len(e.Path)-1]
+		}
+	}
+	if e.Held != "" {
+		e.Refused, err = NarrowingRefusal(ctx, q, orgID, model, subjects, action, objectType, objectID)
+	}
+	return e, true, err
+}
+
+// NarrowingRefusal reads an action's `also` and `except` for subjects who hold a
+// relation granting it, and says why that is not enough, or nothing when it is.
+func NarrowingRefusal(ctx context.Context, q Querier, orgID string, model *authzen.Model, subjects [][2]string,
+	action, objectType, objectID string) (string, error) {
+
+	if except := model.ExceptFor(objectType, action); len(except) > 0 {
+		held, _, err := WalkRelations(ctx, q, orgID, model, subjects, except, objectType, objectID)
+		if err != nil {
+			return "", err
+		}
+		if held != "" {
+			return "the subject also holds " + held + ", which this action excepts", nil
+		}
+	}
+	if also := model.AlsoFor(objectType, action); len(also) > 0 {
+		held, _, err := WalkRelations(ctx, q, orgID, model, subjects, also, objectType, objectID)
+		if err != nil {
+			return "", err
+		}
+		if held == "" {
+			return "this action also needs one of " + strings.Join(also, ", "), nil
+		}
+	}
+	return "", nil
+}
+
+// RelationRow is one live relation, as `signari authz list` shows it.
+type RelationRow struct {
+	Subject, Relation, Object string
+	ExpiresAt                 *time.Time
+}
+
+// ListRelations reads the live relations a subject holds, or held on an object,
+// or both; an empty type names no filter. The second answer says more were left
+// out at limit.
+func ListRelations(ctx context.Context, q Querier, orgID, subjectType, subjectID, objectType, objectID string,
+	limit int) ([]RelationRow, bool, error) {
+	rows, err := q.Query(ctx, `
+		SELECT subject_type, subject_id, relation, object_type, object_id, expires_at
+		  FROM core.relations
+		 WHERE org_id = $1::uuid
+		   AND (expires_at IS NULL OR expires_at > now())
+		   AND ($2 = '' OR (subject_type = $2 AND subject_id = $3))
+		   AND ($4 = '' OR (object_type = $4 AND object_id = $5))
+		 ORDER BY object_type, object_id, relation, subject_type, subject_id
+		 LIMIT $6`, orgID, subjectType, subjectID, objectType, objectID, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := []RelationRow{}
+	for rows.Next() {
+		var st, sid, relation, ot, oid string
+		var expires *time.Time
+		if err := rows.Scan(&st, &sid, &relation, &ot, &oid, &expires); err != nil {
+			return nil, false, err
+		}
+		out = append(out, RelationRow{Subject: authzen.Ref(st, sid), Relation: relation,
+			Object: authzen.Ref(ot, oid), ExpiresAt: expires})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
+}
+
+// RelationFilter narrows a page of relations; an empty member names no filter.
+type RelationFilter struct {
+	SubjectType, SubjectID string
+	Relation               string
+	ObjectType, ObjectID   string
+}
+
+// PageRelations reads the live relations after an id, in order of id, and answers
+// the id to carry on from, or 0 at the end.
+func PageRelations(ctx context.Context, q Querier, orgID string, f RelationFilter, after int64, limit int) (
+	[]RelationRow, int64, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, subject_type, subject_id, relation, object_type, object_id, expires_at
+		  FROM core.relations
+		 WHERE org_id = $1::uuid AND id > $2
+		   AND (expires_at IS NULL OR expires_at > now())
+		   AND ($3 = '' OR (subject_type = $3 AND subject_id = $4))
+		   AND ($5 = '' OR (object_type = $5 AND object_id = $6))
+		   AND ($7 = '' OR relation = $7)
+		 ORDER BY id
+		 LIMIT $8`, orgID, after, f.SubjectType, f.SubjectID, f.ObjectType, f.ObjectID, f.Relation, limit+1)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]RelationRow, 0, limit)
+	var last, next int64
+	for rows.Next() {
+		var id int64
+		var st, sid, relation, ot, oid string
+		var expires *time.Time
+		if err := rows.Scan(&id, &st, &sid, &relation, &ot, &oid, &expires); err != nil {
+			return nil, 0, err
+		}
+		if len(out) == limit {
+			next = last
+			break
+		}
+		last = id
+		out = append(out, RelationRow{Subject: authzen.Ref(st, sid), Relation: relation,
+			Object: authzen.Ref(ot, oid), ExpiresAt: expires})
+	}
+	rows.Close()
+	return out, next, rows.Err()
 }
 
 // ObjectsWith returns the objects of a type on which the subject holds any of
@@ -188,10 +445,12 @@ func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []stri
 			SELECT subject_id AS sid FROM direct WHERE subject_type = 'user'
 			UNION
 			-- Group grants expand to their members: the question is about
-			-- people, and answering "group:finance" is true and useless.
+			-- people, and answering "group:finance" is true and useless. Members
+			-- of the groups inside it hold it too (11.09).
 			SELECT m.user_id::text FROM direct d
 			  JOIN core.groups g ON g.name = d.subject_id AND g.org_id = $1::uuid
-			  JOIN core.group_members m ON m.group_id = g.id
+			  CROSS JOIN LATERAL core.groups_below(g.id) b
+			  JOIN core.group_members m ON m.group_id = b.group_id
 			 WHERE d.subject_type = 'group'
 		) all_subjects
 		 WHERE ($6 = '' OR sid > $6)
@@ -219,9 +478,12 @@ func SubjectsWith(ctx context.Context, q Querier, orgID string, relations []stri
 }
 
 // SaveModel stores and compiles an organisation's authorization model.
-func SaveModel(ctx context.Context, e Execer, orgID, source string,
+func SaveModel(ctx context.Context, e outpostDB, orgID, source string,
 	m *authzen.Model, by string) error {
 
+	if err := checkConditionAttributes(ctx, e, orgID, m.AttributeNames()); err != nil {
+		return err
+	}
 	compiled, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -303,36 +565,25 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	// can lie about is a comment.
 	f.Now = time.Now()
 
+	// Groups and account state, from our directory. A deactivated user whose
+	// relations were never cleaned up still holds them; this is what stops the
+	// tuples outliving the account.
 	rows, err := q.Query(ctx, `
-		SELECT COALESCE(array_agg(g.name) FILTER (WHERE g.name IS NOT NULL), '{}')
-		  FROM core.group_members m
-		  JOIN core.groups g ON g.id = m.group_id
-		 WHERE m.user_id = $1::uuid AND g.org_id = $2::uuid`, userID, orgID)
+		SELECT u.status = 'active', u.email_verified_at IS NOT NULL,
+		       COALESCE((SELECT array_agg(g.name)
+		                   FROM core.groups_of(u.id) m
+		                   JOIN core.groups g ON g.id = m.group_id
+		                  WHERE g.org_id = u.org_id), '{}'),
+		       COALESCE((SELECT jsonb_object_agg(s.name, a.value)
+		                   FROM core.user_attributes a
+		                   JOIN core.user_attribute_schema s ON s.id = a.attribute_id
+		                  WHERE a.user_id = u.id AND NOT s.personal), '{}')
+		  FROM core.users u WHERE u.id = $1::uuid AND u.org_id = $2::uuid`, userID, orgID)
 	if err != nil {
 		return f, err
 	}
 	if rows.Next() {
-		if err := rows.Scan(&f.Groups); err != nil {
-			rows.Close()
-			return f, err
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return f, err
-	}
-
-	// Account state, from our directory. A deactivated user whose relations were
-	// never cleaned up still holds them; this is what stops the tuples outliving
-	// the account.
-	rows, err = q.Query(ctx, `
-		SELECT status = 'active', email_verified_at IS NOT NULL
-		  FROM core.users WHERE id = $1::uuid AND org_id = $2::uuid`, userID, orgID)
-	if err != nil {
-		return f, err
-	}
-	if rows.Next() {
-		if err := rows.Scan(&f.Active, &f.EmailVerified); err != nil {
+		if err := rows.Scan(&f.Active, &f.EmailVerified, &f.Groups, &f.Attributes); err != nil {
 			rows.Close()
 			return f, err
 		}
@@ -349,8 +600,10 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 		return f, nil
 	}
 
+	// amr only: whether the session is multi-factor is derived from the methods
+	// actually used, never read back from a stored acr (oauth.ACRFromAMR).
 	rows, err = q.Query(ctx, `
-		SELECT amr, COALESCE(acr,'0')
+		SELECT amr, risk, device_managed, device_compliant
 		  FROM core.sessions
 		 WHERE sid = $1 AND org_id = $2::uuid AND user_id = $3::uuid
 		   AND revoked_at IS NULL AND not_after > now()`, sid, orgID, userID)
@@ -360,23 +613,76 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 	defer rows.Close()
 	if rows.Next() {
 		var amr []string
-		var acr string
-		if err := rows.Scan(&amr, &acr); err != nil {
+		if err := rows.Scan(&amr, &f.Risk, &f.DeviceManaged, &f.DeviceCompliant); err != nil {
 			return f, err
 		}
 		f.FromSession = true
-		for _, m := range amr {
-			// RFC 8176 method names. `pwd` alone is not a second factor.
-			switch m {
-			case "otp", "hwk", "swk", "mfa", "sms", "face", "fpt", "user", "pin":
-				f.MFA = true
-			}
-		}
-		if acr == "urn:signari:mfa" || acr == "2" {
-			f.MFA = true
-		}
+		// The same predicate as every other MFA decision. This used to list
+		// "user" and "pin" among the methods that alone made a session
+		// multi-factor, so a passkey with no user verification -- one factor --
+		// satisfied an `mfa` requirement in the PDP while failing it everywhere
+		// else, and it also trusted the stored acr.
+		f.MFA = oauth.IsMultiFactor(amr)
 	}
 	return f, rows.Err()
+}
+
+// ApplicationObject is the object type a role in an application is a relation on.
+const ApplicationObject = "application"
+
+// ApplicationRoles lists the roles a person holds in an application, sorted: the
+// relations on application:<client>, held directly or through a group, and live.
+// Read for each token and each decision, as groups are: a role taken away is gone
+// from the next one.
+func ApplicationRoles(ctx context.Context, q Querier, orgID, userID, clientID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT r.relation
+		  FROM core.relations r
+		  JOIN core.users u ON u.id = $2::uuid AND u.org_id = r.org_id
+		 WHERE r.org_id = $1::uuid AND r.object_type = $4 AND r.object_id = $3
+		   AND (r.expires_at IS NULL OR r.expires_at > now())
+		   AND ((r.subject_type = 'user' AND lower(r.subject_id) IN (u.id::text, u.email_fold, u.username_fold))
+		     OR (r.subject_type = 'group' AND r.subject_id IN (
+		           SELECT g.name FROM core.groups_of(u.id) m JOIN core.groups g ON g.id = m.group_id
+		            WHERE g.org_id = u.org_id)))
+		 ORDER BY r.relation`, orgID, userID, clientID, ApplicationObject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		out = append(out, role)
+	}
+	return out, rows.Err()
+}
+
+// PlainAttributes reads a person's attributes that are not personal, for a
+// decision. Read each time and never cached, as every other fact about who
+// somebody is: a cost centre that changed has changed by the next request.
+func PlainAttributes(ctx context.Context, q Querier, userID string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.name, a.value
+		  FROM core.user_attributes a
+		  JOIN core.user_attribute_schema s ON s.id = a.attribute_id
+		 WHERE a.user_id = $1::uuid AND NOT s.personal`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, err
+		}
+		out[name] = value
+	}
+	return out, rows.Err()
 }
 
 // ResolveSubject maps an AuthZEN subject to one of our users.
@@ -389,11 +695,17 @@ func SubjectFacts(ctx context.Context, q Querier, orgID, userID, sid string) (
 func ResolveSubject(ctx context.Context, q Querier, orgID, subjectID string) (
 	userID string, err error) {
 
+	// An id only when it can be one: a cast of anything else is an error, and
+	// the column's text is what no index under row security can read.
+	var id *string
+	if canonical, ok := CanonicalUUID(subjectID); ok {
+		id = &canonical
+	}
 	rows, err := q.Query(ctx, `
 		SELECT id::text FROM core.users
 		 WHERE org_id = $1::uuid
-		   AND (id::text = $2 OR lower(email) = lower($2))
-		 LIMIT 1`, orgID, subjectID)
+		   AND (id = $3::uuid OR email_fold = lower($2))
+		 LIMIT 1`, orgID, subjectID, id)
 	if err != nil {
 		return "", err
 	}

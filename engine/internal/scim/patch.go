@@ -52,6 +52,9 @@ type UserPatch struct {
 	UserName    *string
 	DisplayName *string
 	Email       *string
+	// Enterprise are the extension's attributes that were mentioned, by the
+	// user attribute that holds each, nil to clear it.
+	Enterprise map[string]*string
 	// Unsupported lists paths that were understood as paths but are not acted
 	// on, so a caller can report them rather than pretend.
 	Unsupported []string
@@ -113,6 +116,11 @@ func ApplyUserPatch(req PatchRequest) (*UserPatch, error) {
 // applyAssign handles replace and add, which differ only for multi-valued
 // attributes this engine does not store.
 func applyAssign(out *UserPatch, op PatchOp) error {
+	// Before the path is normalised, which takes the URN that says this is the
+	// extension's `department` and not an attribute of the core schema.
+	if attr, ok := enterprisePath(op.Path); ok {
+		return out.assignEnterprise(attr, op.Value)
+	}
 	path := normalisePath(op.Path)
 
 	// No path: the value is an object of attributes to merge. Entra's usual
@@ -124,6 +132,12 @@ func applyAssign(out *UserPatch, op PatchOp) error {
 			return fmt.Errorf("a pathless operation needs an object value: %w", err)
 		}
 		for k, v := range attrs {
+			if attr, ok := enterprisePath(k); ok {
+				if err := out.assignEnterprise(attr, v); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := assignOne(out, normalisePath(k), v); err != nil {
 				return err
 			}
@@ -232,6 +246,10 @@ func selectsStoredEmail(f *Filter) bool {
 }
 
 func applyRemove(out *UserPatch, op PatchOp) error {
+	if attr, ok := enterprisePath(op.Path); ok {
+		out.removeEnterprise(attr)
+		return nil
+	}
 	path := normalisePath(op.Path)
 	if path == "" {
 		return fmt.Errorf("remove without a path is not valid")
@@ -322,26 +340,4 @@ func parseEmailValue(raw json.RawMessage) (string, error) {
 		return strings.TrimSpace(many[0].Value), nil
 	}
 	return "", fmt.Errorf("%s is not an email value", string(raw))
-}
-
-func ParseUserNameFilter(filter string) (string, error) {
-	filter = strings.TrimSpace(filter)
-	if filter == "" {
-		return "", nil
-	}
-	lower := strings.ToLower(filter)
-	if !strings.HasPrefix(lower, "username eq ") {
-		return "", fmt.Errorf("only `userName eq \"...\"` is supported as a filter, "+
-			"got %q. Returning everything for an unrecognised filter would let a "+
-			"caller match the wrong person", filter)
-	}
-	v := strings.TrimSpace(filter[len("username eq "):])
-	if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"') {
-		v = v[1 : len(v)-1]
-	}
-	if v == "" {
-		return "", fmt.Errorf("the filter has no value")
-	}
-	// Unescape the one escape SCIM filters use.
-	return strings.ReplaceAll(v, `\"`, `"`), nil
 }

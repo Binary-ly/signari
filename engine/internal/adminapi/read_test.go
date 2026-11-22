@@ -2,10 +2,12 @@ package adminapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -35,26 +37,63 @@ func TestAClientCanBeReadAndThenConditionallyWrittenFromTheResponseAlone(t *test
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
 
-	read := httptest.NewRecorder()
-	s.Routes().ServeHTTP(read, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
-	if read.Code != http.StatusOK {
-		t.Fatalf("GET gave %d: %s", read.Code, read.Body.String())
-	}
-	tag := read.Header().Get("ETag")
-	if tag == "" {
-		t.Fatal("a read carried no ETag, so a caller cannot make its write conditional " +
-			"without an unrelated extra request")
-	}
+	// Again if somebody moved the version in between: `go test ./...` runs other packages
+	// against this database, and that 412 would be correct. A read whose ETag is never
+	// accepted fails every time.
+	var write *httptest.ResponseRecorder
+	for attempt := 0; attempt < 5; attempt++ {
+		read := httptest.NewRecorder()
+		s.Routes().ServeHTTP(read, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
+		if read.Code != http.StatusOK {
+			t.Fatalf("GET gave %d: %s", read.Code, read.Body.String())
+		}
+		tag := read.Header().Get("ETag")
+		if tag == "" {
+			t.Fatal("a read carried no ETag, so a caller cannot make its write conditional " +
+				"without an unrelated extra request")
+		}
 
-	write := httptest.NewRecorder()
-	s.Routes().ServeHTTP(write, adminReq(t, http.MethodPatch, "/admin/clients/"+clientID,
-		`{"enabled":false}`, tag))
+		write = httptest.NewRecorder()
+		s.Routes().ServeHTTP(write, adminReq(t, http.MethodPatch, "/admin/clients/"+clientID,
+			`{"enabled":false}`, tag))
+		if write.Code != http.StatusPreconditionFailed {
+			break
+		}
+	}
 	if write.Code != http.StatusOK {
 		t.Fatalf("the ETag from the read was not accepted as If-Match: %d %s",
 			write.Code, write.Body.String())
 	}
 	if clientEnabled(t, s, clientID) {
 		t.Error("the conditional write reported success without applying")
+	}
+}
+
+// A client read gives its redirect URIs, sorted (2.17). It gave none, so a
+// caller holding a desired list had nothing to compare it with, and the
+// Terraform provider reported a change to them as applied while sending nothing.
+func TestAClientReadGivesItsRedirectURIs(t *testing.T) {
+	s, _ := newTestServer(t)
+	clientID := newPreconditionClient(t, s)
+	for _, u := range []string{"https://b.example/cb", "https://a.example/cb"} {
+		if _, err := s.db.Exec(context.Background(), `INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, clientID, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, adminReq(t, http.MethodGet, "/admin/clients/"+clientID, "", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET gave %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		ClientID     string   `json:"client_id"`
+		RedirectURIs []string `json:"redirect_uris"`
+	}
+	decodeBody(t, rec, &got)
+	if got.ClientID != clientID || fmt.Sprint(got.RedirectURIs) != "[https://a.example/cb https://b.example/cb]" {
+		t.Errorf("GET gave %s, want the client with both redirect URIs in order", rec.Body.String())
 	}
 }
 
@@ -67,6 +106,15 @@ func TestAClientCanBeReadAndThenConditionallyWrittenFromTheResponseAlone(t *test
 func TestAClientReadNeverReturnsCredentialMaterial(t *testing.T) {
 	s, _ := newTestServer(t)
 	clientID := newPreconditionClient(t, s)
+	// Verifiers worth searching for: the fixture's one-letter hash could not
+	// be told apart from any other text.
+	planted := fmt.Sprintf("planted-verifier-%d", time.Now().UnixNano())
+	registration := sha256.Sum256([]byte(planted))
+	if _, err := s.db.Exec(context.Background(), `UPDATE core.clients
+		SET client_secret_hash = $2, registration_token_hash = $3
+		WHERE client_id = $1`, clientID, planted, registration[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, path := range []string{"/admin/clients/" + clientID, "/admin/clients"} {
 		rec := httptest.NewRecorder()
@@ -74,32 +122,109 @@ func TestAClientReadNeverReturnsCredentialMaterial(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s gave %d", path, rec.Code)
 		}
-		body := strings.ToLower(rec.Body.String())
-		for _, forbidden := range []string{"secret", "hash", "password"} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("%s returned a body containing %q: %s", path, forbidden, rec.Body.String())
+		// No verifier, as text or as the hex a bytea column reads back as.
+		body := rec.Body.String()
+		for _, v := range []string{planted, fmt.Sprintf("%x", registration)} {
+			if strings.Contains(body, v) {
+				t.Errorf("%s returned a stored verifier: %s", path, body)
 			}
 		}
+		// And no field for one, at any depth. The words may appear in a value
+		// that names a method (client_secret_post) and holds nothing; since the
+		// whole configuration is returned (6.03), a body that merely never says
+		// "secret" is no longer the property.
+		var decoded any
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(v any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case map[string]any:
+				for k, e := range x {
+					for _, forbidden := range []string{"secret", "hash", "password"} {
+						if strings.Contains(strings.ToLower(k), forbidden) {
+							t.Errorf("%s returned a field %q", path, k)
+						}
+					}
+					walk(e)
+				}
+			case []any:
+				for _, e := range x {
+					walk(e)
+				}
+			}
+		}
+		walk(decoded)
 	}
 }
 
 // The same, for users: no password hash, no TOTP secret, no recovery codes.
+//
+// A planted password and the hash stored for it must appear nowhere, and no
+// field may be named for a credential unless it is a flag about one: since the
+// read shows what PATCH sets (6.08), it says require_password_change, so a
+// body that never says "password" is no longer the property.
 func TestAUserReadNeverReturnsCredentialMaterial(t *testing.T) {
 	s, _ := newTestServer(t)
-	userID := newDriftUser(t, s)
+	ctx := context.Background()
+	planted := fmt.Sprintf("planted-%d-pw", time.Now().UnixNano())
+	email := fmt.Sprintf("cred-read-%d@example.test", time.Now().UnixNano())
+	rec := call(t, s, http.MethodPost, "/admin/users", testToken, map[string]any{"org_id": anyOrgID(t, s),
+		"email": email, "password": planted})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("creating the user: %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	t.Cleanup(func() { _, _ = s.db.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`, created.ID) })
+	var stored string
+	if err := s.db.QueryRow(ctx, `SELECT hash FROM core.password_credentials WHERE user_id = $1::uuid`,
+		created.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	flags := map[string]bool{"require_password_change": true}
 
-	for _, path := range []string{"/admin/users/" + userID, "/admin/users"} {
+	for _, path := range []string{"/admin/users/" + created.ID, "/admin/users/" + newDriftUserWithTOTP(t, s),
+		"/admin/users?email=" + url.QueryEscape(email)} {
 		rec := httptest.NewRecorder()
 		s.Routes().ServeHTTP(rec, adminReq(t, http.MethodGet, path, "", ""))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s gave %d: %s", path, rec.Code, rec.Body.String())
 		}
-		body := strings.ToLower(rec.Body.String())
-		for _, forbidden := range []string{"hash", "secret", "recovery_code", "password"} {
-			if strings.Contains(body, forbidden) {
-				t.Errorf("%s leaked %q: %s", path, forbidden, rec.Body.String())
+		for _, v := range []string{planted, stored} {
+			if strings.Contains(rec.Body.String(), v) {
+				t.Errorf("%s returned a password or its stored hash: %s", path, rec.Body.String())
 			}
 		}
+		var decoded any
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		var walk func(v any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case map[string]any:
+				for k, e := range x {
+					for _, forbidden := range []string{"hash", "secret", "recovery_code", "password", "totp"} {
+						if !strings.Contains(strings.ToLower(k), forbidden) {
+							continue
+						}
+						if _, isFlag := e.(bool); !flags[k] || !isFlag {
+							t.Errorf("%s returned a field %q: %v", path, k, e)
+						}
+					}
+					walk(e)
+				}
+			case []any:
+				for _, e := range x {
+					walk(e)
+				}
+			}
+		}
+		walk(decoded)
 	}
 }
 

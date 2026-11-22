@@ -34,10 +34,11 @@ The **metadata** of each event: id, time, event type, org, subject, actor,
 client, correlation id, retention class, the non-sensitive `detail`, and the
 chain `entry_hash` so a receiver can tie a line back to the verifiable trail.
 
-The **encrypted `detail_enc`** — the wrapped plaintext — is never sent. A SIEM is
-a copy an erasure request cannot reach, and shipping the plaintext there would
-defeat crypto-shredding. The `entry_hash` lets a receiver correlate without ever
-holding the shred-able content.
+Nothing personal is sent, because nothing personal is in a row: events name
+people by subject id only, which a test checks over a person's whole life through
+the admin API. A SIEM is a copy an erasure request cannot reach, so this matters.
+An earlier version of this page described an encrypted `detail_enc` held back
+from the stream. That column was never written and has been dropped.
 
 ## Delivery guarantees
 
@@ -49,6 +50,11 @@ holding the shred-able content.
   investigation needs.
 - **Ordered.** Events are read `id ASC`, so a collector sees them in the order
   they happened.
+- **Once across nodes.** Every engine node runs the forwarder, and a pass holds a
+  transaction-scoped advisory lock from reading the cursor until it has advanced
+  it, so one node sends a batch and the others find the lock taken. Until October
+  2026 each node read the same cursor and sent the same batch, so a deployment of
+  N nodes sent every event N times. The lag is `signari_audit_stream_lag_events`.
 - **Fail-safe.** A sink error leaves the cursor where it was; the batch retries on
   the next tick rather than being lost. The lag is visible (the copy falls behind)
   rather than silent (events vanish).

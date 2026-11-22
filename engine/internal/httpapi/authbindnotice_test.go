@@ -123,37 +123,52 @@ func TestAFailedNoticeIsAuditedRatherThanSwallowed(t *testing.T) {
 	}
 }
 
-// The registration handler must actually call it, after the commit.
+// Every registration must actually call it, after the commit.
 //
 // The unit tests above prove the notice is correct; they cannot prove it is
 // reached. This session has already found one defect that was exactly a correct
 // function nothing invoked with the right data, so the call site is asserted
-// too — narrowly, and it fails on the edit that would remove it.
+// too — narrowly, and it fails on the edit that would remove it. Both ways to
+// register, the account page and an emailed link, go through one finish, which
+// is where the notice is sent.
 func TestTheRegistrationHandlerSendsTheNotice(t *testing.T) {
-	src, err := os.ReadFile("passkey.go")
-	if err != nil {
-		t.Fatal(err)
+	function := func(file, name string) string {
+		t.Helper()
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(src)
+		i := strings.Index(body, "func (s *Server) "+name+"(")
+		if i < 0 {
+			t.Fatalf("%s is no longer in %s; update this test alongside it", name, file)
+		}
+		end := strings.Index(body[i:], "\nfunc ")
+		if end < 0 {
+			end = len(body) - i
+		}
+		return body[i : i+end]
 	}
-	body := string(src)
 
-	i := strings.Index(body, "func (s *Server) handlePasskeyRegisterFinish")
-	if i < 0 {
-		t.Skip("the registration handler was renamed; update this test alongside it")
+	for _, h := range []struct{ file, name string }{
+		{"passkey.go", "handlePasskeyRegisterFinish"},
+		{"passkeylink.go", "handlePasskeyLinkFinish"},
+	} {
+		if !strings.Contains(function(h.file, h.name), "s.finishPasskeyRegistration(") {
+			t.Errorf("%s stores a passkey without the shared finish, which is what "+
+				"notifies the subscriber", h.name)
+		}
 	}
-	end := strings.Index(body[i:], "\nfunc ")
-	if end < 0 {
-		end = len(body) - i
-	}
-	handler := body[i : i+end]
 
-	call := strings.Index(handler, "notifyAuthenticatorBound(")
+	finish := function("passkey.go", "finishPasskeyRegistration")
+	call := strings.Index(finish, "notifyAuthenticatorBound(")
 	if call < 0 {
-		t.Fatal("the registration handler does not notify the subscriber; " +
+		t.Fatal("the registration does not notify the subscriber; " +
 			"NIST SP 800-63B-4 makes that a SHALL when an authenticator is bound")
 	}
-	commit := strings.Index(handler, "tx.Commit(ctx)")
-	if commit >= 0 && call < commit {
-		t.Error("the notice is sent BEFORE the commit, so a registration that " +
+	commit := strings.Index(finish, "tx.Commit(ctx)")
+	if commit < 0 || call < commit {
+		t.Error("the notice is not sent after the commit, so a registration that " +
 			"then rolls back still tells the user it happened — which teaches " +
 			"recipients that these messages are noise")
 	}

@@ -43,7 +43,7 @@ func applyFixture(t *testing.T) (context.Context, *pgxpool.Pool, string) {
 
 	var org string
 	if err := pool.QueryRow(ctx,
-		`SELECT id::text FROM core.organizations LIMIT 1`).Scan(&org); err != nil {
+		`SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&org); err != nil {
 		t.Skipf("no organisation to apply against: %v", err)
 	}
 	return ctx, pool, org

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"signari.dev/engine/internal/clients"
 )
@@ -34,6 +35,10 @@ type AuthzRequest struct {
 	// registered types. Carried on the request rather than re-parsed downstream,
 	// so exactly one place decides what was asked for.
 	AuthorizationDetails []rar.Detail
+	// IssuerState is OID4VCI §5.1.3's `issuer_state`, handed back from an offer, and
+	// proves nothing about who sent it: it could have been injected, so it only
+	// counts for the person the offer named.
+	IssuerState string
 
 	// DPoPJKT is RFC 9449 §10's `dpop_jkt`: the JWK Thumbprint of the key the
 	// issued code may be redeemed with.
@@ -47,16 +52,24 @@ type AuthzRequest struct {
 	// correctly-proofed key, which is the behaviour that existed before.
 	DPoPJKT string
 
-	// RequestObject and RequestURI are RFC 9101 `request` / `request_uri`, kept
-	// only so they can be REFUSED.
+	// IDTokenHint is an ID token this server issued, naming who the client expects
+	// to be signed in.
+	IDTokenHint string
+
+	// GrantManagementAction and GrantID are Grant Management's §5.2 parameters.
+	GrantManagementAction, GrantID string
+
+	// RequestObject is RFC 9101's `request`, which the handler verifies and takes off
+	// the query before this is parsed, and RequestURI its `request_uri`, which is taken
+	// only as a pushed request's handle, so neither is here for a request that is in
+	// order. They are read so that one that is not can be REFUSED.
 	//
-	// Discovery advertises `request_parameter_supported: false`, and until this
-	// existed the parameters were simply not read -- which is not the same thing
-	// as saying no. A client that puts state, nonce, scope or redirect_uri inside
-	// a request object and has it ignored gets an authorization that proceeded on
-	// the unprotected query parameters instead, with no indication that the
-	// integrity protection it asked for was never applied. That is a silent
-	// downgrade of the one guarantee a request object exists to provide.
+	// These parameters were once simply not read -- which is not the same thing as
+	// saying no. A client that puts state, nonce, scope or redirect_uri inside a
+	// request object and has it ignored gets an authorization that proceeded on the
+	// unprotected query parameters instead, with no indication that the integrity
+	// protection it asked for was never applied. That is a silent downgrade of the
+	// one guarantee a request object exists to provide.
 	//
 	// Found by the conformance suite
 	// (oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported),
@@ -64,6 +77,8 @@ type AuthzRequest struct {
 	// symptoms of the object being dropped, several steps from the cause.
 	RequestObject string
 	RequestURI    string
+	// RequestObjectProblem says why the handler could not take RequestObject.
+	RequestObjectProblem string
 }
 
 // ParseAuthz reads the query parameters. It does no validation: parsing and
@@ -83,6 +98,7 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		ResponseMode:        q.Get("response_mode"),
 		Prompt:              q.Get("prompt"),
 		ACRValues:           q.Get("acr_values"),
+		IDTokenHint:         q.Get("id_token_hint"),
 		// A POINTER, so "absent" and "max_age=0" stay distinguishable. They mean
 		// opposite things: absent is "reuse whatever you have", zero is
 		// "authenticate right now".
@@ -93,9 +109,43 @@ func ParseAuthz(q url.Values) AuthzRequest {
 		// unparsed text so nothing downstream has to fetch it from the query
 		// again and risk reading a different value than the one validated.
 		RawAuthorizationDetails: q.Get(rar.Param),
+		IssuerState:             q.Get("issuer_state"),
 		RequestObject:           q.Get("request"),
 		RequestURI:              q.Get("request_uri"),
+		GrantManagementAction:   q.Get("grant_management_action"),
+		GrantID:                 q.Get("grant_id"),
 	}
+}
+
+// The actions Grant Management's §5.2 defines.
+const (
+	GrantActionCreate  = "create"
+	GrantActionMerge   = "merge"
+	GrantActionReplace = "replace"
+)
+
+// grantManagementError is §5.1 and §5.4 of Grant Management, as far as a request can be
+// judged before anybody is signed in: whose grant it names is asked at the code.
+func grantManagementError(req AuthzRequest, c *clients.Client) string {
+	if req.GrantManagementAction == "" && req.GrantID == "" {
+		return ""
+	}
+	switch {
+	// §5.1: "Grant management is restricted to confidential only clients".
+	case c.Type != "confidential":
+		return "grant management is for confidential clients"
+	case req.GrantManagementAction == "":
+		return "grant_id needs a grant_management_action"
+	case req.GrantManagementAction == GrantActionCreate && req.GrantID != "":
+		return "grant_id cannot be given with the create action"
+	case req.GrantManagementAction == GrantActionCreate:
+		return ""
+	case req.GrantManagementAction != GrantActionMerge && req.GrantManagementAction != GrantActionReplace:
+		return "that grant_management_action is not supported"
+	case req.GrantID == "":
+		return "that action needs a grant_id"
+	}
+	return ""
 }
 
 // Disposition says how an authorization error must reach the user agent.
@@ -161,6 +211,17 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	if !c.Enabled {
 		return direct("unauthorized_client", "client is disabled")
 	}
+	// OpenID Federation §12.1.3: failing to establish trust means the redirect URI is
+	// "invalid", so this is shown and not sent. A chain that resolved is looked at before
+	// here, so what reaches this one is a client nothing vouches for any more. A client
+	// from a metadata document the same: what it last said has run out and it could not
+	// be asked again, and §5.1 has that abort the request.
+	if c.FederationExpiry != nil && time.Now().After(*c.FederationExpiry) {
+		return direct("invalid_client", "this client's registration has expired")
+	}
+	if c.OrgSuspended {
+		return direct("unauthorized_client", "this organisation is suspended")
+	}
 
 	// 4. Exact match against the registered set. No default-if-only-one-registered
 	// shortcut: that convenience has produced redirect bypasses elsewhere, and it
@@ -173,6 +234,32 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 
 	// --- From here the redirect target is trusted. ---
+
+	// 4a. Request objects, refused rather than ignored. A client whose request object is
+	// silently dropped proceeds on the query parameters believing the signed copy was
+	// authoritative, so every value it protected -- state, nonce, redirect_uri, scope --
+	// is quietly taken from the unprotected side instead.
+	//
+	// Before the parameters are read, as a client signing sends them nowhere else, so
+	// `response_type is required` would be all it ever heard. And after the client and
+	// redirect_uri are known, so the error can go back over the redirect rather than
+	// being rendered at our own origin. Still here means the handler could not take it.
+	// RFC 9101 §6.2 names the code, and the redirect_uri is the query's, so it says
+	// nothing of the object, but it is one this client registered.
+	if req.RequestObject != "" {
+		problem := req.RequestObjectProblem
+		if problem == "" {
+			problem = "this request object was not read"
+		}
+		return redirectErr("invalid_request_object", problem)
+	}
+	if req.RequestURI != "" {
+		return redirectErr("request_uri_not_supported",
+			"this server does not fetch remote request objects; send the parameters directly")
+	}
+	if problem := grantManagementError(req, c); problem != "" {
+		return redirectErr("invalid_request", problem)
+	}
 
 	// 5. Code flow, and hybrid `code id_token` where a client is explicitly
 	// permitted it.
@@ -206,37 +293,15 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 		}
 	default:
 		return redirectErr("unsupported_response_type",
-			fmt.Sprintf("response_type %q is not supported. \"code\" always; "+
-				"\"code id_token\" where a client is permitted it. Anything containing "+
-				"\"token\" is refused: an access token must never cross the front channel",
-				req.ResponseType))
+			"that response_type is not supported: code always, and code id_token where a client "+
+				"is permitted it. Anything containing token is refused, since an access token "+
+				"must never cross the front channel")
 	}
 	if !c.AllowsResponseType(req.ResponseType) {
 		return redirectErr("unauthorized_client", "client may not use this response_type")
 	}
 	if !c.AllowsGrantType("authorization_code") {
 		return redirectErr("unauthorized_client", "client may not use the authorization_code grant")
-	}
-
-	// 5a. Request objects, refused rather than ignored.
-	//
-	// Discovery says `request_parameter_supported: false` and
-	// `request_uri_parameter_supported: false`. OIDC Core 6.1/6.2 gives the
-	// matching error codes for exactly this case, and sending one is the whole
-	// point: a client whose request object is silently dropped proceeds on the
-	// query parameters believing the signed copy was authoritative, so every
-	// value it protected -- state, nonce, redirect_uri, scope -- is quietly
-	// taken from the unprotected side instead.
-	//
-	// Refused AFTER the client and redirect_uri are known, so the error can go
-	// back over the redirect rather than being rendered at our own origin.
-	if req.RequestObject != "" {
-		return redirectErr("request_not_supported",
-			"this server does not accept a request object; send the parameters directly")
-	}
-	if req.RequestURI != "" {
-		return redirectErr("request_uri_not_supported",
-			"this server does not fetch remote request objects; send the parameters directly")
 	}
 
 	// 6. PKCE. Required for every client, public and confidential alike, per
@@ -254,11 +319,7 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 				"code_challenge_method is required and must be S256")
 		}
 		if method != "S256" {
-			return redirectErr("invalid_request",
-				fmt.Sprintf("code_challenge_method %q is not supported; use S256", method))
-		}
-		if !c.AllowsPKCEMethod(method) {
-			return redirectErr("invalid_request", "client may not use this code_challenge_method")
+			return redirectErr("invalid_request", "that code_challenge_method is not supported; use S256")
 		}
 		if !validChallenge(req.CodeChallenge) {
 			return redirectErr("invalid_request",
@@ -287,11 +348,14 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	}
 
 	// 7. Scope.
+	//
+	// Authorization details alone are a request: RFC 9396 asks for permissions
+	// without a scope, and OID4VCI §5.1.1's example sends nothing else.
 	scopes := strings.Fields(req.Scope)
-	if len(scopes) == 0 {
+	if len(scopes) == 0 && req.RawAuthorizationDetails == "" {
 		return redirectErr("invalid_scope", "at least the openid scope is required")
 	}
-	if !containsStr(scopes, "openid") {
+	if len(scopes) > 0 && !containsStr(scopes, "openid") {
 		return redirectErr("invalid_scope", "the openid scope is required")
 	}
 	if bad := c.UnknownScopes(scopes); len(bad) > 0 {
@@ -301,12 +365,14 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 
 	// 7b. RFC 8707 resource indicators.
 	//
-	// Validated because the requested resources BECOME the access token's
-	// audience. Unchecked, a client could name any audience it liked -- including
-	// another service's identifier -- and mint a token that service would accept.
-	// The parameter exists to NARROW a token, and it must not be usable to widen
-	// one.
-	if err := validateResources(req.Resources); err != nil {
+	// The requested resources BECOME the access token's audience, so a client
+	// that could name any audience could mint a token another service accepts.
+	// Only the shape is checked here; whether each is a resource server the
+	// client's organisation registered is the caller's question
+	// (httpapi.unregisteredResource), since it needs the database. This comment
+	// once said the shape check alone prevented the widening, and every client
+	// could name any https URI.
+	if err := ValidateResources(req.Resources); err != nil {
 		return redirectErr("invalid_target", err.Error())
 	}
 
@@ -326,6 +392,8 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 	//     hybrid flow puts a signed, non-single-use assertion in the front
 	//     channel, and form_post is what keeps it out of URLs -- see
 	//     responsemode.go for the nonce-guarded auto-submitting form.
+	//   - The `.jwt` modes and `jwt` are those again with the response signed
+	//     (JARM), and a client with a signing algorithm set takes nothing else.
 	//   - Anything else is refused rather than accepted-and-ignored, because a
 	//     client that asked for form_post and silently got query loses exactly
 	//     the protection it asked for.
@@ -343,39 +411,52 @@ func ValidateAuthz(req AuthzRequest, c *clients.Client, lookupErr error) *AuthzE
 				"response_mode \"query\" cannot carry an id_token; use \"fragment\" "+
 					"or \"form_post\"")
 		}
-	case "fragment", "form_post":
+	case "fragment", "form_post", "fragment.jwt", "form_post.jwt", "jwt":
+	case "query.jwt":
+		if hybrid {
+			// JARM §2.3.1: "MUST NOT be used in conjunction with response types that
+			// contain "token" or "id_token" unless the response JWT is encrypted".
+			return redirectErr("invalid_request",
+				"response_mode \"query.jwt\" cannot carry an id_token; use \"jwt\", "+
+					"\"fragment.jwt\" or \"form_post.jwt\"")
+		}
 	default:
 		return redirectErr("invalid_request",
-			fmt.Sprintf("response_mode %q is not supported; use query, fragment or form_post",
-				req.ResponseMode))
+			"that response_mode is not supported; use query, fragment, form_post, "+
+				"query.jwt, fragment.jwt, form_post.jwt or jwt")
+	}
+	if _, signed := req.ResponseEncoding(); c.HeldToSignedResponses() && !signed {
+		// Otherwise a request the browser has changed gets the client an unsigned
+		// response, which is the one thing it set this to avoid.
+		return redirectErr("invalid_request",
+			"this client's authorization responses are signed; ask for one with "+
+				"response_mode \"jwt\", \"query.jwt\", \"fragment.jwt\" or \"form_post.jwt\"")
 	}
 
 	return nil
 }
 
-// ErrorRedirect builds the URL an authorization error is sent to.
-//
-// `state` is echoed exactly as received, and `iss` is always included (RFC 9207)
-// so a client can tell which provider answered -- the mix-up attack defence.
-func ErrorRedirect(redirectURI, issuer, state string, e *AuthzError) (string, error) {
-	if e.Disposition != DispositionRedirect {
-		return "", fmt.Errorf("refusing to redirect a %s error: it has no verified redirect target", e.Code)
+// ResponseEncoding is how the response to this request travels, query, fragment or
+// form_post, and whether as a JWT. The default differs by response type, as OIDC says,
+// and JARM §2.3.4's `jwt` is that default, signed. A mode nobody knows is the default
+// too, since that is how its refusal has to reach the client.
+func (req AuthzRequest) ResponseEncoding() (encoding string, signed bool) {
+	switch req.ResponseMode {
+	case "query", "fragment", "form_post":
+		return req.ResponseMode, false
+	case "query.jwt", "fragment.jwt", "form_post.jwt":
+		return strings.TrimSuffix(req.ResponseMode, ".jwt"), true
 	}
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		return "", err
+	encoding = "query"
+	// Not only what this server issues. OIDC Core §3.3.2.6 puts every error of the
+	// Hybrid Flow in the fragment, so `code token`, which is refused here, has to be
+	// refused there: that is where a client that asked for it is listening.
+	for _, part := range strings.Fields(req.ResponseType) {
+		if part == "id_token" || part == "token" {
+			encoding = "fragment"
+		}
 	}
-	q := u.Query()
-	q.Set("error", e.Code)
-	if e.Description != "" {
-		q.Set("error_description", e.Description)
-	}
-	if state != "" {
-		q.Set("state", state)
-	}
-	q.Set("iss", issuer)
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return encoding, req.ResponseMode == "jwt"
 }
 
 // validChallenge checks the RFC 7636 shape: 43-128 characters drawn from the
@@ -421,13 +502,13 @@ func parseMaxAge(s string) *int {
 	return &n
 }
 
-// validateResources checks RFC 8707 §2 resource indicators.
+// ValidateResources checks RFC 8707 §2 resource indicators.
 //
 // Each must be an absolute URI with no fragment. The spec says so, and the
 // reason matters here: the value ends up as an `aud` claim that a resource
 // server compares against its own identifier, and a relative or fragment-bearing
 // value cannot be compared reliably by anyone.
-func validateResources(resources []string) error {
+func ValidateResources(resources []string) error {
 	if len(resources) == 0 {
 		return nil
 	}
@@ -437,18 +518,27 @@ func validateResources(resources []string) error {
 		return fmt.Errorf("at most 8 resource indicators may be requested")
 	}
 	for _, r := range resources {
-		u, err := url.Parse(r)
-		if err != nil || !u.IsAbs() {
-			return fmt.Errorf("resource %q must be an absolute URI", r)
+		if err := CheckResource(r); err != nil {
+			return err
 		}
-		if u.Fragment != "" || strings.Contains(r, "#") {
-			return fmt.Errorf("resource %q must not contain a fragment", r)
-		}
-		if u.Scheme != "https" && u.Scheme != "http" {
-			// Not a spec requirement, but an audience nobody can reach is one
-			// nobody can verify, and it is nearly always a typo.
-			return fmt.Errorf("resource %q must be an http or https URI", r)
-		}
+	}
+	return nil
+}
+
+// CheckResource is the shape one resource indicator must have, requested or
+// registered.
+func CheckResource(r string) error {
+	u, err := url.Parse(r)
+	if err != nil || !u.IsAbs() {
+		return fmt.Errorf("resource %q must be an absolute URI", r)
+	}
+	if u.Fragment != "" || strings.Contains(r, "#") {
+		return fmt.Errorf("resource %q must not contain a fragment", r)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		// Not a spec requirement, but an audience nobody can reach is one
+		// nobody can verify, and it is nearly always a typo.
+		return fmt.Errorf("resource %q must be an http or https URI", r)
 	}
 	return nil
 }

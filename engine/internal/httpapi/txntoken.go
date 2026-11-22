@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
@@ -27,6 +30,37 @@ import (
 // See internal/txntoken for what the format is and why it matters.
 
 // handleTxnToken issues or replaces a Transaction Token.
+// txnSubjectRefused writes a refusal and reports true when a transaction token
+// may not name subject to the workload c: a person through the same
+// organisation and access-policy check as every non-interactive grant
+// (grantRefusedByPolicy), a client by requiring it to be in c's organisation.
+func (s *Server) txnSubjectRefused(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	subject, sid, scope string) bool {
+
+	ctx := r.Context()
+	_, err := store.OrgOfUser(ctx, s.db, subject)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.log.ErrorContext(ctx, "txn-token: resolving the subject", "err", err)
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return true
+	}
+	if err == nil {
+		return s.grantRefusedByPolicy(w, r, c, subject, sid, scope, "txn_token")
+	}
+	// A machine subject, from a client-credentials token: the client it names
+	// must belong where the workload does.
+	if sc, err := s.lookupClient(ctx, subject); err != nil || sc == nil || sc.OrgID != c.OrgID {
+		s.log.InfoContext(ctx, "txn-token: subject outside the workload's organisation",
+			"caller", c.ClientID, "correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+			Description: "this token would name a subject outside this workload's organisation",
+			Status:      http.StatusBadRequest})
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
 
@@ -85,13 +119,14 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 
 	now := time.Now()
 	var out txntoken.Claims
+	var subjectSession string
 
 	switch req.SubjectTokenType {
 	case txntoken.TokenType:
 		// A REPLACEMENT: the next hop in a chain.
-		prev, err := s.verifyTxnToken(req.SubjectToken)
+		prev, err := s.verifyTxnToken(ctx, req.SubjectToken)
 		if err != nil {
-			s.log.Info("txn-token replacement: subject token rejected", "err", err,
+			s.log.InfoContext(ctx, "txn-token replacement: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the presented transaction token is not valid",
@@ -127,7 +162,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 			case errors.Is(err, txntoken.ErrWiden):
 				code = "invalid_scope"
 			case errors.Is(err, txntoken.ErrChainTooLong):
-				s.log.Warn("txn-token: call chain limit reached",
+				s.log.WarnContext(ctx, "txn-token: call chain limit reached",
 					"caller", c.ClientID, "txn", prev.Transaction,
 					"correlation_id", correlationID(ctx))
 			}
@@ -140,19 +175,24 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// AN INITIAL REQUEST, from an access token at the edge. The type has
 		// already been checked against section 11.2 above, so this branch is
 		// reached only for types we accept.
-		subject, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(),
-			req.SubjectToken)
+		subject, err := s.verifyPresented(ctx, s.acceptedIssuers(ctx), req.SubjectToken)
 		if err != nil {
-			s.log.Info("txn-token: subject token rejected", "err", err,
+			s.log.InfoContext(ctx, "txn-token: subject token rejected", "err", err,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "the subject token is not valid", Status: http.StatusBadRequest})
 			return
 		}
+		if s.issuanceOnly(subject) {
+			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
+				Description: "the subject token is good for issuing a credential and nothing else",
+				Status:      http.StatusBadRequest})
+			return
+		}
 		// Same rule as the exchange endpoint: a sender-constrained subject token
 		// is only exchangeable by the party that can prove the key.
 		if berr := s.requireSubjectTokenBinding(r, subject); berr != nil {
-			s.log.Info("txn-token: subject token binding not proved", "err", berr,
+			s.log.InfoContext(ctx, "txn-token: subject token binding not proved", "err", berr,
 				"caller", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_dpop_proof",
 				Description: berr.Error(), Status: http.StatusBadRequest})
@@ -163,26 +203,9 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		// Txn-Token. Otherwise exchange laundered a dead credential into one
 		// that every internal service will honour for the next five minutes --
 		// and the internal services have no way to check.
-		if gone, gerr := store.GrantRevoked(ctx, s.db, subject.GrantID); gerr != nil || gone {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the authorization behind the subject token has been revoked",
-				Status:      http.StatusBadRequest})
+		if terr := s.exchangeRefusal(ctx, subject, "subject", "invalid_grant"); terr != nil {
+			writeTokenError(w, terr)
 			return
-		}
-		if revoked, rerr := store.JTIRevoked(ctx, s.db, subject.JTI); rerr != nil || revoked {
-			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-				Description: "the subject token has been revoked",
-				Status:      http.StatusBadRequest})
-			return
-		}
-		if subject.SessionID != "" {
-			live, serr := store.SessionLive(ctx, s.db, subject.SessionID)
-			if serr != nil || !live {
-				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-					Description: "the session behind the subject token has ended",
-					Status:      http.StatusBadRequest})
-				return
-			}
 		}
 
 		// Scope is bounded by what the SUBJECT TOKEN actually carries, read
@@ -227,6 +250,33 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		if subject.Expiry > 0 && out.Expiry > subject.Expiry {
 			out.Expiry = subject.Expiry
 		}
+		subjectSession = subject.SessionID
+	}
+
+	// A Txn-Token names its subject by the one id the deployment's own workloads
+	// share, and replacement carries it on. A client set to pairwise is set up
+	// never to see that id, so it does not get one naming a person.
+	if _, person := store.CanonicalUUID(out.Subject); person && c.SubjectType == "pairwise" {
+		writeTokenError(w, &oauth.TokenError{Code: "unauthorized_client",
+			Description: "a client with pairwise subjects cannot be given a Txn-Token naming a person",
+			Status:      http.StatusBadRequest})
+		return
+	}
+
+	// The token names its subject to this workload, so the questions every
+	// other grant asks are asked here: is the subject in this workload's
+	// organisation, and, for a person, does the access policy let them reach
+	// this client. Neither was asked, on the first hop or on a replacement.
+	if s.txnSubjectRefused(w, r, c, out.Subject, subjectSession, out.Scope) {
+		return
+	}
+	// And the operator's token provider, as every grant asks it. Its veto
+	// applies; its claims do not, since a Txn-Token's members are fixed by its
+	// draft and are not an access token's.
+	if _, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+		Subject: out.Subject, ClientID: c.ClientID, Scopes: req.Scope,
+		Grant: oauth.GrantTypeTokenExchange, OrgID: c.OrgID}); !ok {
+		return
 	}
 
 	key, err := s.cfg.Keys.Active(keys.ES256)
@@ -239,7 +289,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 		}
 	}
 	if err != nil {
-		s.log.Error("txn-token: no active key", "err", err)
+		s.log.ErrorContext(ctx, "txn-token: no active key", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -251,7 +301,7 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 	// this confusion.
 	signed, err := tokens.NewSigner(key).SignJSON(out, txntoken.Typ)
 	if err != nil {
-		s.log.Error("txn-token: signing", "err", err)
+		s.log.ErrorContext(ctx, "txn-token: signing", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -272,12 +322,12 @@ func (s *Server) handleTxnToken(w http.ResponseWriter, r *http.Request, c *clien
 }
 
 // verifyTxnToken checks a presented Txn-Token and returns its claims.
-func (s *Server) verifyTxnToken(raw string) (txntoken.Claims, error) {
+func (s *Server) verifyTxnToken(ctx context.Context, raw string) (txntoken.Claims, error) {
 	var c txntoken.Claims
 	// Verified with the typ REQUIRED to be txntoken+jwt. Accepting an access
 	// token here would let one be replayed as a transaction token, which is the
 	// confusion the distinct typ exists to prevent.
-	if err := tokens.VerifyTypedJSON(s.cfg.Keys, s.acceptedIssuers(), raw,
+	if err := tokens.VerifyTypedJSON(s.cfg.Keys, s.acceptedIssuers(ctx), raw,
 		txntoken.Typ, &c); err != nil {
 		return c, err
 	}

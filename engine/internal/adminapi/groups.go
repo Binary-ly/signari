@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/store"
 )
 
 // Groups: the unit an operator actually administers.
@@ -41,28 +42,41 @@ type groupSummary struct {
 	// and cannot be SET. Read and write are deliberately asymmetric here.
 	MayImpersonate bool   `json:"may_impersonate"`
 	CreatedAt      string `json:"created_at"`
+	PosixGID       int    `json:"posix_gid"`
+	// MemberOf is the ids of the groups this one is directly inside (11.09), so
+	// everybody in it is in those and every group above them.
+	MemberOf []string `json:"member_of"`
 }
 
 const groupColumns = `id::text, org_id::text, name, display_name,
 	coalesce(description, ''), may_impersonate,
-	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')`
+	to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), posix_gid,
+	ARRAY(SELECT n.parent_id::text FROM core.group_parents n WHERE n.group_id = core.groups.id
+	       ORDER BY n.group_id, n.parent_id)`
 
 func scanGroup(row pgx.Row, g *groupSummary) error {
 	return row.Scan(&g.ID, &g.OrgID, &g.Name, &g.DisplayName, &g.Description,
-		&g.MayImpersonate, &g.CreatedAt)
+		&g.MayImpersonate, &g.CreatedAt, &g.PosixGID, &g.MemberOf)
 }
 
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
 
+	var l listing
+	if cursor != "" {
+		l.add("id > $?::uuid", cursor)
+	}
+	l.inOrg(orgFilter(ctx))
+	if only := groupFilter(ctx); only != nil {
+		l.add("id::text = ANY($?::text[])", only)
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT `+groupColumns+`
-		  FROM core.groups
-		 WHERE ($1 = '' OR id::text > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		 ORDER BY id
-		 LIMIT $3`, cursor, orgFilter(ctx), limit+1)
+		  FROM core.groups`+l.page("core.groups.id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing groups", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -154,7 +168,10 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// The boundary, before the insert: a token scoped to one organisation
 		// must not create a group in another.
-		if err := requireOrg(ctx, req.OrgID); err != nil {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+			return err
+		}
+		if err := requireUnrestricted(ctx, "group"); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(ctx, `
@@ -173,8 +190,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
 		return
-	case errors.Is(err, errCrossOrg):
-		writeCrossOrg(w, err)
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "groups_org_name"):
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -193,6 +209,8 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 type patchGroupRequest struct {
 	DisplayName *string `json:"display_name"`
 	Description *string `json:"description"`
+	// PosixGID is a number kept from a directory this one replaces.
+	PosixGID *int `json:"posix_gid"`
 }
 
 func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
@@ -208,12 +226,16 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	if req.DisplayName == nil && req.Description == nil {
+	if req.DisplayName == nil && req.Description == nil && req.PosixGID == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change",
 			"detail": "no supported field present. may_impersonate is deliberately not " +
 				"settable here; it is a CLI operation",
 		})
+		return
+	}
+	if req.PosixGID != nil && !store.PosixIDAssignable(*req.PosixGID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_posix_id", "detail": store.PosixIDRule})
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)
@@ -237,13 +259,14 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 			UPDATE core.groups
 			   SET display_name = coalesce($2, display_name),
 			       description  = coalesce($3, description),
+			       posix_gid    = coalesce($4, posix_gid),
 			       updated_at   = now()
-			 WHERE id = $1::uuid`, groupID, req.DisplayName, req.Description); err != nil {
+			 WHERE id = $1::uuid`, groupID, req.DisplayName, req.Description, req.PosixGID); err != nil {
 			return err
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.group_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
-			Detail: map[string]any{"group_id": groupID},
+			Detail: map[string]any{"group_id": groupID, "posix_gid_set": req.PosixGID != nil},
 		})
 	})
 	s.finishGroupWrite(w, r, groupID, version, err, http.StatusOK,
@@ -318,6 +341,11 @@ func (s *Server) finishGroupWrite(w http.ResponseWriter, r *http.Request, groupI
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group_not_found"})
 		return
+	case err != nil && strings.Contains(err.Error(), "groups_posix_gid"):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "already_exists", "detail": "another group in this organisation has that POSIX number",
+		})
+		return
 	case err != nil:
 		s.log.Error("writing a group", "group_id", groupID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -339,6 +367,9 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
 
 	var orgID string
 	if err := s.db.QueryRow(ctx,
@@ -355,14 +386,16 @@ func (s *Server) listGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var l listing
+	l.add("m.group_id = $?::uuid", groupID)
+	if cursor != "" {
+		l.add("m.user_id > $?::uuid", cursor)
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id::text, u.org_id::text, coalesce(u.email, ''), coalesce(u.username, ''),
-		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
+		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
 		  FROM core.group_members m
-		  JOIN core.users u ON u.id = m.user_id
-		 WHERE m.group_id = $1::uuid AND ($2 = '' OR u.id::text > $2)
-		 ORDER BY u.id
-		 LIMIT $3`, groupID, cursor, limit+1)
+		  JOIN core.users u ON u.id = m.user_id`+l.page("m.user_id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing group members", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})

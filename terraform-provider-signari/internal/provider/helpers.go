@@ -10,17 +10,28 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// listToStrings converts a Terraform list to a Go slice.
+// setToStrings converts a Terraform set to a Go slice.
 //
-// A null or unknown list yields nil rather than an error: "not set" and "an
-// empty list" are the same thing to the API, and making the caller distinguish
+// A null or unknown set yields nil rather than an error: "not set" and "an
+// empty set" are the same thing to the API, and making the caller distinguish
 // them would push a Terraform detail into the request body.
-func listToStrings(ctx context.Context, l types.List, diags *diag.Diagnostics) []string {
+func setToStrings(ctx context.Context, l types.Set, diags *diag.Diagnostics) []string {
 	if l.IsNull() || l.IsUnknown() {
 		return nil
 	}
 	var out []string
 	diags.Append(l.ElementsAs(ctx, &out, false)...)
+	return out
+}
+
+// mapToStrings is a map attribute's values: nil when the configuration says nothing,
+// so nothing is sent, and a map, empty when it says {}, so an empty one is.
+func mapToStrings(ctx context.Context, m types.Map, diags *diag.Diagnostics) map[string]string {
+	if m.IsNull() || m.IsUnknown() {
+		return nil
+	}
+	out := map[string]string{}
+	diags.Append(m.ElementsAs(ctx, &out, false)...)
 	return out
 }
 

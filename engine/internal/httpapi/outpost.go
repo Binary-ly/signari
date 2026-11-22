@@ -7,14 +7,17 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
+	"signari.dev/engine/internal/outpost"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 // asOutpostIdentity is the wire form of what the directory publishes.
@@ -31,9 +34,13 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 		// `person`; without it here the outpost would fall back to guessing one
 		// from the display name for every account, including the ones where we
 		// know the real answer.
-		Surname: i.Surname, GivenName: i.GivenName,
+		Surname: i.Surname, GivenName: i.GivenName, UIDNumber: i.UIDNumber,
+		Position: i.Position,
 	}
 }
+
+// outpostListLimit is the most people one list answers.
+const outpostListLimit = 1000
 
 // What an outpost is allowed to ask.
 //
@@ -50,7 +57,13 @@ func asOutpostIdentity(i *ldapd.Identity) outpostIdentity {
 //     from somewhere new is then visible rather than inferred.
 //
 // It is deliberately not enough to change anything, mint a session, or read the
-// directory in bulk beyond what a bound LDAP client could already read.
+// directory beyond what the person who bound through the outpost may read. That
+// last part is decided here, not by the outpost: a lookup or a list carries the
+// bind proof issued when that person's password was verified, and is answered
+// for them -- their own entry, or the directory when they are, as they stand
+// now, in the search group recorded on the outpost's registration. Until
+// migration 0142 the outpost enforced its group and the token alone listed the
+// whole organisation.
 
 // outpostCallsPerMinute bounds one outpost.
 //
@@ -83,6 +96,20 @@ type outpostIdentity struct {
 	// optional on the wire.
 	Surname   string `json:"sn,omitempty"`
 	GivenName string `json:"given_name,omitempty"`
+	// UIDNumber is the person's POSIX number, for an outpost's directory.
+	UIDNumber int `json:"uid_number,omitempty"`
+	// BindProof is set on an LDAP outpost's authenticate answer only.
+	BindProof string `json:"bind_proof,omitempty"`
+	// Position is set on a list answer, for the next page to carry on from.
+	Position string `json:"position,omitempty"`
+}
+
+// outpostCaller is the registration an outpost token resolved to.
+type outpostCaller struct {
+	ID, OrgID, Kind, Name string
+	// SearchGroup is whose members behind this outpost may read the whole
+	// directory. Empty: nobody's but their own.
+	SearchGroup string
 }
 
 // outpostAuth resolves the bearer token to an enabled outpost.
@@ -90,36 +117,68 @@ type outpostIdentity struct {
 // Returns the org and the protocol the token was issued for. The protocol is
 // checked by each handler rather than here, so the refusal names the mismatch.
 func (s *Server) outpostAuth(w http.ResponseWriter, r *http.Request) (orgID, kind, name string, ok bool) {
+	c, ok := s.outpostCall(w, r)
+	if !ok {
+		return "", "", "", false
+	}
+	return c.OrgID, c.Kind, c.Name, true
+}
+
+// outpostCall is outpostAuth with the whole registration, for the handlers
+// that answer by it.
+func (s *Server) outpostCall(w http.ResponseWriter, r *http.Request) (*outpostCaller, bool) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if len(h) <= len(prefix) || h[:len(prefix)] != prefix {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "outpost token required")
-		return "", "", "", false
+		return nil, false
 	}
 	sum := sha256.Sum256([]byte(h[len(prefix):]))
 
-	var id string
+	// This instance's outposts (6.12): another's is answered here as a token
+	// that is not valid.
+	var c outpostCaller
+	var enabled bool
 	err := s.db.QueryRow(r.Context(), `
-		SELECT id::text, org_id::text, kind, name
-		  FROM core.outposts WHERE token_hash = $1 AND enabled`, sum[:]).
-		Scan(&id, &orgID, &kind, &name)
+		SELECT id::text, org_id::text, kind, name, COALESCE(search_group, ''), enabled
+		  FROM core.outposts WHERE token_hash = $1
+		   AND `+store.OrgInService("org_id")+`
+		   AND `+store.InInstance("org_id", "$2"), sum[:], s.instanceID).
+		Scan(&c.ID, &c.OrgID, &c.Kind, &c.Name, &c.SearchGroup, &enabled)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.log.Error("looking up an outpost token", "err", err)
+			s.log.ErrorContext(r.Context(), "looking up an outpost token", "err", err)
 		}
+		// The challenge is what tells this 401 from a refused password, which an
+		// outpost must not repeat to everybody behind it as their mistake.
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "that outpost token is not valid")
-		return "", "", "", false
+		return nil, false
 	}
+	if !enabled {
+		// Whoever holds the token is told why, since nobody else gets this far: an
+		// operator reading "not valid" goes looking for a typo.
+		writeError(w, http.StatusForbidden, "outpost_disabled", "this outpost has been taken out of service")
+		return nil, false
+	}
+	id, kind := c.ID, c.Kind
 
 	limit := outpostCallsPerMinute
 	if kind == "pdp" {
 		limit = pdpCallsPerMinute
 	}
-	if res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id,
-		limit, time.Minute); rerr == nil && !res.Allowed {
+	// A database error refuses, as every other limiter here does. It used to
+	// let the call through, so a fault in the limiter unthrottled every outpost.
+	res, rerr := store.AllowRate(r.Context(), s.db, "outpost:"+id, limit, time.Minute)
+	if rerr != nil {
+		s.log.ErrorContext(r.Context(), "checking the outpost rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
+		return nil, false
+	}
+	if !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
 			"this outpost is asking faster than the core will answer")
-		return "", "", "", false
+		return nil, false
 	}
 
 	// Recorded on every call, not on a heartbeat. An outpost that stops asking
@@ -135,108 +194,253 @@ func (s *Server) outpostAuth(w http.ResponseWriter, r *http.Request) (orgID, kin
 	// Bounded at five seconds so a detached goroutine cannot accumulate.
 	//
 	// #nosec G118 -- deliberate detachment, bounded above.
-	go func(ip string) {
+	go func(ip, version string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if _, err := s.db.Exec(ctx, `
-			UPDATE core.outposts SET last_seen_at = now(), last_seen_ip = $2
-			 WHERE id = $1::uuid`, id, ip); err != nil {
-			s.log.Debug("recording outpost activity", "err", err)
+			UPDATE core.outposts SET last_seen_at = now(), last_seen_ip = $2,
+			       last_seen_version = COALESCE(NULLIF($3, ''), last_seen_version)
+			 WHERE id = $1::uuid`, id, ip, version); err != nil {
+			s.log.DebugContext(ctx, "recording outpost activity", "err", err)
 		}
-	}(clientIP(r))
+	}(clientIP(r), outpostVersion(r))
 
-	return orgID, kind, name, true
+	return &c, true
 }
 
-// handleOutpostHello lets an outpost check its token before opening a listener.
+// outpostVersion is the version a call says it was made by, or "" for one that
+// does not say or says something no release is called: it goes on a page an
+// operator reads, from wherever the token has got to.
+func outpostVersion(r *http.Request) string {
+	v := r.Header.Get(outpost.VersionHeader)
+	if len(v) > 64 {
+		return ""
+	}
+	for _, c := range v {
+		if c <= ' ' || c > '~' {
+			return ""
+		}
+	}
+	return v
+}
+
+// handleOutpostHello lets an outpost check its token before opening a listener,
+// and says it is alive once a minute after that.
+//
+// It also tells the outpost its search group, which the core enforces whatever
+// the outpost does, so the outpost decides with the same value rather than one
+// from its own environment that could say something else.
 func (s *Server) handleOutpostHello(w http.ResponseWriter, r *http.Request) {
-	_, kind, name, ok := s.outpostAuth(w, r)
+	c, ok := s.outpostCall(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "kind": kind})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": c.Name, "kind": c.Kind, "search_group": c.SearchGroup, "core_version": s.release,
+	})
+}
+
+const typOutpostBind = "outpost-bind+jwt"
+
+// outpostBindTTL bounds how long one bind answers lookups and lists.
+//
+// Not a strong control, and not meant as one: the person it names is read
+// again, status and groups, on every use, so a long life does not let a
+// deactivated account or a removed member keep reading. What the proof
+// prevents is the token alone reading anything, and it does that at any
+// lifetime. Long enough for a pooled connection that binds once in the
+// morning; when it lapses the outpost's searches fail and the client binds
+// again.
+const outpostBindTTL = 8 * time.Hour
+
+// outpostBindClaims record that a person's password was verified through one
+// outpost. Signed rather than stored: there is nothing to revoke that is not
+// already read fresh, and an outpost serving an office would otherwise write a
+// row per bind.
+type outpostBindClaims struct {
+	Issuer  string `json:"iss"`
+	Outpost string `json:"out"`
+	OrgID   string `json:"org"`
+	// Subject is the username the bind resolved to, read again on each use.
+	Subject string `json:"sub"`
+	Expiry  int64  `json:"exp"`
+}
+
+func (s *Server) outpostBindProof(c *outpostCaller, username string) (string, error) {
+	key, err := s.anySigningKey()
+	if err != nil {
+		return "", err
+	}
+	return tokens.NewSigner(key).SignJSON(outpostBindClaims{
+		Issuer: s.cfg.Issuer, Outpost: c.ID, OrgID: c.OrgID, Subject: username,
+		Expiry: time.Now().Add(outpostBindTTL).Unix(),
+	}, typOutpostBind)
+}
+
+// outpostAsker is the person a lookup or list is answered for: the one whose
+// bind through THIS outpost the proof records, as they stand now. No proof, a
+// proof from another outpost or organisation, an expired one, or a person no
+// longer active, and there is nobody asking.
+func (s *Server) outpostAsker(r *http.Request, c *outpostCaller, auth *LDAPAuthenticator,
+	proof string) *ldapd.Identity {
+
+	if proof == "" {
+		return nil
+	}
+	payload, err := tokens.VerifyTyped(s.cfg.Keys, s.cfg.Issuer, proof, typOutpostBind)
+	if err != nil {
+		return nil
+	}
+	var cl outpostBindClaims
+	if err := json.Unmarshal(payload, &cl); err != nil ||
+		cl.Outpost != c.ID || cl.OrgID != c.OrgID || time.Now().After(time.Unix(cl.Expiry, 0)) {
+		return nil
+	}
+	id, err := auth.Lookup(r.Context(), cl.Subject)
+	if err != nil || id == nil || !id.Active {
+		return nil
+	}
+	return id
+}
+
+// mayReadDirectory reports whether the asker may read entries other than their
+// own: only as a member, now, of the group recorded on this outpost.
+func (c *outpostCaller) mayReadDirectory(asker *ldapd.Identity) bool {
+	return c.SearchGroup != "" && slices.Contains(asker.Groups, c.SearchGroup)
+}
+
+func refuseOutpostAsker(w http.ResponseWriter) {
+	writeError(w, http.StatusUnauthorized, "bind_required",
+		"this request carries no valid proof of a bind through this outpost; bind again")
 }
 
 // handleOutpostAuthenticate verifies a password on an outpost's behalf.
 func (s *Server) handleOutpostAuthenticate(w http.ResponseWriter, r *http.Request) {
-	orgID, kind, name, ok := s.outpostAuth(w, r)
+	c, ok := s.outpostCall(w, r)
 	if !ok {
 		return
 	}
+	orgID, kind, name := c.OrgID, c.Kind, c.Name
 	if kind != "ldap" && kind != "radius" {
 		writeError(w, http.StatusForbidden, "wrong_kind",
 			"this token was issued for a "+kind+" outpost, which does not verify passwords")
 		return
 	}
 
-	var body struct{ Username, Password string }
+	var body struct {
+		Username, Password string
+		// ClientIP is where the bind reached the outpost from, which the socket
+		// here cannot say: it is the outpost's.
+		ClientIP string `json:"client_ip"`
+	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
 	}
 
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
-	ident, err := auth.Authenticate(r.Context(), body.Username, body.Password)
+	// Without it nobody behind an outpost had a per-address budget, and all of them
+	// shared what this outpost may ask. It is the outpost's word, and the token is
+	// what makes that good enough: whoever holds one and lies goes back to what
+	// everybody had, the per-account budget and the limit on the outpost.
+	ctx := r.Context()
+	if a, err := netip.ParseAddr(body.ClientIP); err == nil {
+		ctx = ldapd.WithPeerAddr(ctx, a.String())
+	}
+	// Recorded as the protocol the credential arrived on, at this outpost, once:
+	// the authenticator writes every outcome, so this handler writes none.
+	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), orgID, s.log).
+		WithMFAGate(s.BindDemandsMFA).WithCodes(s.BindCodeOK).withVia(kind).withOutpost(name)
+	ident, err := auth.Authenticate(ctx, body.Username, body.Password)
+	if errors.Is(err, ldapd.ErrBusy) {
+		// Not a judgement of the password, so not answered as one.
+		writeError(w, http.StatusTooManyRequests, "slow_down", "too many recent authentication failures")
+		return
+	}
 	if err != nil {
 		// One answer for every reason. An outpost sits somewhere less trusted by
 		// definition, and a response that distinguished "no such user" from
 		// "wrong password" would make it a user-enumeration endpoint there.
-		s.auditDetached(r.Context(), audit.Event{
-			Type: audit.EventLoginFailed, OrgID: orgID,
-			CorrelationID: correlationID(r.Context()),
-			Detail:        map[string]any{"via": "outpost", "outpost": name},
-		})
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication refused")
 		return
 	}
-	writeJSON(w, http.StatusOK, asOutpostIdentity(ident))
+	resp := asOutpostIdentity(ident)
+	// Only an LDAP outpost searches, so only it is handed what searching takes.
+	if kind == "ldap" {
+		proof, perr := s.outpostBindProof(c, ident.Username)
+		if perr != nil {
+			s.log.ErrorContext(ctx, "signing an outpost bind proof", "err", perr)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		resp.BindProof = proof
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleOutpostLookup answers an LDAP search without verifying a credential.
+// handleOutpostLookup answers an LDAP search without verifying a credential,
+// for the person whose bind the request proves: their own entry, or anyone's
+// when they are in this outpost's search group. Somebody else's entry is the
+// same 404 as an account that does not exist.
 func (s *Server) handleOutpostLookup(w http.ResponseWriter, r *http.Request) {
-	orgID, kind, _, ok := s.outpostAuth(w, r)
+	c, ok := s.outpostCall(w, r)
 	if !ok {
 		return
 	}
-	if kind != "ldap" {
+	if c.Kind != "ldap" {
 		writeError(w, http.StatusForbidden, "wrong_kind",
 			"only an LDAP outpost searches the directory")
 		return
 	}
-	var body struct{ Username string }
+	var body struct {
+		Username  string
+		BindProof string `json:"bind_proof"`
+	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
 		return
 	}
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
+	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), c.OrgID, s.log)
+	asker := s.outpostAsker(r, c, auth, body.BindProof)
+	if asker == nil {
+		refuseOutpostAsker(w)
+		return
+	}
 	ident, err := auth.Lookup(r.Context(), body.Username)
-	if err != nil {
+	if err != nil || ident == nil ||
+		(ident.Username != asker.Username && !c.mayReadDirectory(asker)) {
 		writeError(w, http.StatusNotFound, "not_found", "no such user")
 		return
 	}
 	writeJSON(w, http.StatusOK, asOutpostIdentity(ident))
 }
 
-// handleOutpostList answers a subtree search.
+// handleOutpostList answers a subtree search: the directory for a member of
+// this outpost's search group, the asker's own entry for anyone else.
 func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
-	orgID, kind, _, ok := s.outpostAuth(w, r)
+	c, ok := s.outpostCall(w, r)
 	if !ok {
 		return
 	}
-	if kind != "ldap" {
+	if c.Kind != "ldap" {
 		writeError(w, http.StatusForbidden, "wrong_kind",
 			"only an LDAP outpost searches the directory")
 		return
 	}
-	var body struct{ Limit int }
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
+	auth, asker, q, ok := s.outpostDirectoryQuery(w, r, c)
+	if !ok {
 		return
 	}
-	auth := NewLDAPAuthenticator(s.db, passwords.NewHasher(passwords.MemoryBudgetMiB), orgID, s.log)
-	found, err := auth.List(r.Context(), body.Limit)
+	if !c.mayReadDirectory(asker) {
+		writeJSON(w, http.StatusOK, map[string]any{"users": []outpostIdentity{asOutpostIdentity(asker)}})
+		return
+	}
+	found, err := auth.List(r.Context(), q)
+	if errors.Is(err, ldapd.ErrBadPosition) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "not a position in the directory")
+		return
+	}
 	if err != nil {
-		s.log.Error("listing the directory for an outpost", "err", err)
+		s.log.ErrorContext(r.Context(), "listing the directory for an outpost", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -245,4 +449,65 @@ func (s *Server) handleOutpostList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, asOutpostIdentity(u))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+}
+
+// handleOutpostGroups is handleOutpostList for the group entries (7.02): the
+// directory's groups for those who may read the directory, and none for anyone
+// else, whose own groups are on their own entry.
+func (s *Server) handleOutpostGroups(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.outpostCall(w, r)
+	if !ok {
+		return
+	}
+	if c.Kind != "ldap" {
+		writeError(w, http.StatusForbidden, "wrong_kind",
+			"only an LDAP outpost searches the directory")
+		return
+	}
+	auth, asker, q, ok := s.outpostDirectoryQuery(w, r, c)
+	if !ok {
+		return
+	}
+	if !c.mayReadDirectory(asker) {
+		writeJSON(w, http.StatusOK, map[string]any{"groups": []*ldapd.Group{}})
+		return
+	}
+	found, err := auth.Groups(r.Context(), q)
+	if errors.Is(err, ldapd.ErrBadPosition) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "not a position in the directory")
+		return
+	}
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "listing the groups for an outpost", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": found})
+}
+
+// outpostDirectoryQuery reads what an outpost asks of the directory, and who is
+// asking: the person whose bind proof it carries.
+func (s *Server) outpostDirectoryQuery(w http.ResponseWriter, r *http.Request, c *outpostCaller) (
+	*LDAPAuthenticator, *ldapd.Identity, ldapd.Query, bool) {
+
+	var body struct {
+		ldapd.Query
+		BindProof string `json:"bind_proof"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "unreadable body")
+		return nil, nil, body.Query, false
+	}
+	// An outpost pages at most this many at a time; asking for more was asking
+	// the database for the whole directory in one answer.
+	if body.Limit > outpostListLimit {
+		body.Limit = outpostListLimit
+	}
+	auth := NewLDAPAuthenticator(s.db, passwords.Shared(), c.OrgID, s.log)
+	asker := s.outpostAsker(r, c, auth, body.BindProof)
+	if asker == nil {
+		refuseOutpostAsker(w)
+		return nil, nil, body.Query, false
+	}
+	return auth, asker, body.Query, true
 }

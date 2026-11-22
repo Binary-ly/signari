@@ -1,0 +1,752 @@
+package store
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/federation"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oid4vp"
+)
+
+// An OpenID4VP verifier (12.12) is an identity provider of kind oid4vp: the row in
+// core.identity_providers that sign-ins are linked to, its settings in core.vp_verifiers,
+// and the issuers it believes in core.vp_trusted_issuers.
+
+// VPVerifier is one verifier, ready to ask a wallet and to check what comes back.
+type VPVerifier struct {
+	ProviderID, OrgID, Slug, DisplayName string
+	Policy                               federation.Policy
+	Prefix                               oid4vp.Prefix
+	WalletURL                            string
+	// ResponseMode is direct_post, or direct_post.jwt for an answer encrypted to a
+	// key of the request's own.
+	ResponseMode string
+	VCTValues    []string
+	// Subject identifies the person, within the issuer. Email and Name are nil
+	// when the verifier does not ask for them.
+	Subject, Email, Name oid4vp.Path
+	// Key and Chain sign a request under an x509 prefix; nil under redirect_uri.
+	Key     crypto.Signer
+	Chain   []*x509.Certificate
+	Issuers map[string]*jose.JSONWebKeySet
+	// IssuersFromMetadata are believed with the keys their JWT VC Issuer Metadata
+	// publishes, read for each presentation, rather than keys held here.
+	IssuersFromMetadata map[string]bool
+	// IssuerRoots are believed by the certificate chain their credentials carry,
+	// each with the roots that chain has to lead to.
+	IssuerRoots map[string]*x509.CertPool
+	// CrossDevice offers the wallet on another device, by a code to scan, which
+	// signs nobody in until a code emailed to the account is typed here.
+	CrossDevice bool
+	// DCAPI asks through the browser's Digital Credentials API too, its answer
+	// coming back to the page that asked, bound to this origin.
+	DCAPI bool
+	// Format is the credential format asked for: dc+sd-jwt, or mso_mdoc for an ISO
+	// mdoc of DocType, believed by the IACA certificates in IACARoots.
+	Format, DocType string
+	IACARoots       *x509.CertPool
+}
+
+// CredentialQueryID names the one credential a verifier asks for, in the query and in
+// the vp_token that answers it.
+const CredentialQueryID = "credential"
+
+// Ask is what the verifier asks a wallet for: every claim it reads, so each is in the
+// credential or the credential is refused.
+func (v *VPVerifier) Ask() oid4vp.Ask {
+	claims := []oid4vp.Path{v.Subject}
+	for _, p := range []oid4vp.Path{v.Email, v.Name} {
+		if p != nil && p.String() != v.Subject.String() {
+			claims = append(claims, p)
+		}
+	}
+	if v.Format == oid4vp.FormatMdoc {
+		return oid4vp.Ask{ID: CredentialQueryID, Format: oid4vp.FormatMdoc, DocType: v.DocType, Claims: claims}
+	}
+	return oid4vp.Ask{ID: CredentialQueryID, VCTValues: v.VCTValues, Claims: claims}
+}
+
+const sealContextVPKey = "vp_verifier_key"
+
+// ErrVPVerifierUnknown is a slug that is not an enabled verifier.
+var ErrVPVerifierUnknown = errors.New("no such wallet sign-in")
+
+// LoadVPVerifier reads an enabled verifier by its slug.
+func LoadVPVerifier(ctx context.Context, db *pgxpool.Pool, root *keys.RootKey, slug string) (*VPVerifier, error) {
+	v := &VPVerifier{}
+	var prefix, subject, email, name, chain, iacaRoots string
+	var sealed []byte
+	err := db.QueryRow(ctx, `
+		SELECT p.id::text, p.org_id::text, p.slug, p.display_name,
+		       p.allow_signup, p.allow_linking, p.require_verified_email, p.trust_email_verification,
+		       x.client_id_prefix, x.wallet_url, x.vct_values, x.subject_claim, x.email_claim,
+		       x.name_claim, x.signing_key, COALESCE(x.certificate_chain, ''), x.response_mode, x.cross_device,
+		       x.dc_api, x.format, COALESCE(x.doctype, ''), COALESCE(x.iaca_roots, '')
+		FROM core.identity_providers p
+		JOIN core.vp_verifiers x ON x.provider_id = p.id
+		WHERE p.slug = $1 AND p.kind = 'oid4vp' AND p.enabled`, slug).Scan(
+		&v.ProviderID, &v.OrgID, &v.Slug, &v.DisplayName,
+		&v.Policy.AllowSignup, &v.Policy.AllowLinking, &v.Policy.RequireVerifiedEmail,
+		&v.Policy.TrustsEmailVerification,
+		&prefix, &v.WalletURL, &v.VCTValues, &subject, &email, &name, &sealed, &chain, &v.ResponseMode,
+		&v.CrossDevice, &v.DCAPI, &v.Format, &v.DocType, &iacaRoots)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrVPVerifierUnknown
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading the wallet sign-in: %w", err)
+	}
+	if v.Prefix, err = oid4vp.ParsePrefix(prefix); err != nil {
+		return nil, err
+	}
+	if iacaRoots != "" {
+		if v.IACARoots, err = oid4vp.RootPool(iacaRoots); err != nil {
+			return nil, fmt.Errorf("the IACA certificates held: %w", err)
+		}
+	}
+	if v.Subject, err = oid4vp.ParsePath(subject); err != nil {
+		return nil, err
+	}
+	for _, c := range []struct {
+		raw string
+		to  *oid4vp.Path
+	}{{email, &v.Email}, {name, &v.Name}} {
+		if c.raw != "" {
+			if *c.to, err = oid4vp.ParsePath(c.raw); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(sealed) > 0 {
+		if root == nil {
+			return nil, errors.New("opening the wallet sign-in's request key needs the root key")
+		}
+		plain, err := root.Open(sealed, sealContextVPKey)
+		if err != nil {
+			return nil, fmt.Errorf("unsealing the wallet sign-in's request key: %w", err)
+		}
+		if v.Key, _, err = federation.ParseClientKey(plain, []byte(chain)); err != nil {
+			return nil, err
+		}
+		if v.Chain, err = oid4vp.ParseChain(chain); err != nil {
+			return nil, err
+		}
+	}
+
+	rows, err := db.Query(ctx, `SELECT issuer, jwks, keys_from, coalesce(roots, '') FROM core.vp_trusted_issuers
+		WHERE provider_id = $1::uuid`, v.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	v.Issuers = map[string]*jose.JSONWebKeySet{}
+	v.IssuersFromMetadata = map[string]bool{}
+	v.IssuerRoots = map[string]*x509.CertPool{}
+	for rows.Next() {
+		var issuer, keysFrom, roots string
+		var raw []byte
+		if err := rows.Scan(&issuer, &raw, &keysFrom, &roots); err != nil {
+			return nil, err
+		}
+		switch keysFrom {
+		case VPKeysFromMetadata:
+			v.IssuersFromMetadata[issuer] = true
+			continue
+		case VPKeysFromX5C:
+			pool, err := oid4vp.RootPool(roots)
+			if err != nil {
+				return nil, fmt.Errorf("the roots held for %s: %w", issuer, err)
+			}
+			v.IssuerRoots[issuer] = pool
+			continue
+		}
+		set, err := ParseIssuerKeys(raw)
+		if err != nil {
+			return nil, fmt.Errorf("the keys held for %s: %w", issuer, err)
+		}
+		v.Issuers[issuer] = set
+	}
+	return v, rows.Err()
+}
+
+// VPSpec is what an oid4vp provider is made with, beside IdentityProviderSpec's name,
+// slug and policy.
+type VPSpec struct {
+	Prefix, WalletURL string
+	// ResponseMode is direct_post, the default, or direct_post.jwt.
+	ResponseMode string
+	VCTValues    []string
+	// Claim paths, as oid4vp.ParsePath reads them.
+	SubjectClaim, EmailClaim, NameClaim string
+	// KeyPEM signs requests under an x509 prefix, and ChainPEM is its certificate
+	// chain, leaf first.
+	KeyPEM, ChainPEM string
+	// CrossDevice offers the wallet on another device too (VPVerifier.CrossDevice).
+	CrossDevice bool
+	// DCAPI asks through the browser's Digital Credentials API too (VPVerifier.DCAPI).
+	DCAPI bool
+	// Format is dc+sd-jwt, the default, or mso_mdoc for an ISO mdoc, which names its
+	// DocType instead of VCTValues and is believed by the IACA certificates in
+	// IACARootsPEM rather than by trusted issuers.
+	Format, DocType, IACARootsPEM string
+}
+
+// crossDeviceNeedsSigning is why a wallet on another device needs a signed request: the
+// wallet there has nothing but the request to show who is asking, which is the one thing
+// a person can check before answering a code somebody may have relayed to them
+// (specs/cross-device-security.txt, 6.1.14), and an unsigned request carries its whole
+// query in a URL too long for a code to scan.
+const crossDeviceNeedsSigning = "a wallet on another device needs a signed request (x509_san_dns or x509_hash): " +
+	"an unsigned one shows the wallet nobody it can check, and is too long for a code to scan"
+
+func (s *IdentityProviderSpec) validateVP() error {
+	v := s.VP
+	if v == nil {
+		return s.invalid("a wallet sign-in needs its credential types, the claim that identifies a " +
+			"person and how it is known to wallets; `signari idp add -kind oid4vp` takes them")
+	}
+	switch {
+	case s.ClientID != "" || s.ClientSecret != "" || s.Issuer != "":
+		return s.invalid("a wallet sign-in has no client id, secret or issuer of its own: it is the verifier")
+	case s.TrustEmailVerification && v.EmailClaim == "":
+		return s.invalid("an address is believed only from a credential, and this one is asked for none")
+	}
+	prefix, err := oid4vp.ParsePrefix(v.Prefix)
+	if err != nil {
+		return s.invalid("%v", err)
+	}
+	if v.WalletURL == "" {
+		v.WalletURL = "openid4vp://"
+	}
+	switch v.ResponseMode {
+	case "":
+		v.ResponseMode = oid4vp.ModeDirectPost
+	case oid4vp.ModeDirectPost, oid4vp.ModeDirectPostJWT:
+	default:
+		return s.invalid("the response mode %q: want direct_post or direct_post.jwt", v.ResponseMode)
+	}
+	if u, err := url.Parse(v.WalletURL); err != nil || u.Scheme == "" || u.Scheme == "http" {
+		return s.invalid("the wallet URL %q: want openid4vp:// or a wallet's https link", v.WalletURL)
+	}
+	for _, p := range []struct{ what, raw string }{{"subject", v.SubjectClaim}, {"email", v.EmailClaim},
+		{"name", v.NameClaim}} {
+		if p.raw == "" && p.what != "subject" {
+			continue
+		}
+		if _, err := oid4vp.ParsePath(p.raw); err != nil {
+			return s.invalid("the %s claim: %v", p.what, err)
+		}
+	}
+	switch v.Format {
+	case "", oid4vp.Format:
+		v.Format = oid4vp.Format
+		if v.DocType != "" || v.IACARootsPEM != "" {
+			return s.invalid("a document type and IACA certificates are an mdoc's; this asks for an SD-JWT VC")
+		}
+	case oid4vp.FormatMdoc:
+		if v.IACARootsPEM == "" {
+			return s.invalid("an mdoc is believed by its issuing authority's IACA certificate, and none was given " +
+				"(ISO/IEC 18013-5 9.3.3)")
+		}
+		if _, err := oid4vp.RootPool(v.IACARootsPEM); err != nil {
+			return s.invalid("the IACA certificates: %v", err)
+		}
+	default:
+		return s.invalid("the credential format %q: want %s or %s", v.Format, oid4vp.Format, oid4vp.FormatMdoc)
+	}
+	if err := askOf(v).Validate(); err != nil {
+		return s.invalid("%v", err)
+	}
+	if v.CrossDevice && !prefix.Signed() {
+		return s.invalid(crossDeviceNeedsSigning)
+	}
+	switch {
+	case prefix.Signed() && (v.KeyPEM == "" || v.ChainPEM == ""):
+		return s.invalid("%s signs every request, so it needs the signing key and its certificate chain", prefix)
+	case !prefix.Signed() && (v.KeyPEM != "" || v.ChainPEM != ""):
+		return s.invalid("redirect_uri cannot sign a request (OID4VP 1.0 §5.9.3), so a key would be unused")
+	case prefix.Signed():
+		if _, _, err := federation.ParseClientKey([]byte(v.KeyPEM), []byte(v.ChainPEM)); err != nil {
+			return s.invalid("the request key: %v", err)
+		}
+		if _, err := oid4vp.ParseChain(v.ChainPEM); err != nil {
+			return s.invalid("the certificate chain: %v", err)
+		}
+	}
+	return nil
+}
+
+// askOf is the ask a spec would make, so an impossible one is refused when it is
+// stored and not at somebody's first sign-in.
+func askOf(s *VPSpec) oid4vp.Ask {
+	c := &VPVerifier{VCTValues: s.VCTValues, Format: s.Format, DocType: s.DocType}
+	c.Subject, _ = oid4vp.ParsePath(s.SubjectClaim)
+	if s.EmailClaim != "" {
+		c.Email, _ = oid4vp.ParsePath(s.EmailClaim)
+	}
+	if s.NameClaim != "" {
+		c.Name, _ = oid4vp.ParsePath(s.NameClaim)
+	}
+	return c.Ask()
+}
+
+func addVPVerifier(ctx context.Context, q outpostDB, root *keys.RootKey, orgID string, s IdentityProviderSpec) (string, error) {
+	var sealed []byte
+	if s.VP.KeyPEM != "" {
+		if root == nil {
+			return "", errors.New("sealing the request key needs the root key")
+		}
+		var err error
+		if sealed, err = root.Seal([]byte(s.VP.KeyPEM), sealContextVPKey); err != nil {
+			return "", fmt.Errorf("sealing the request key: %w", err)
+		}
+	}
+	var id string
+	if err := q.QueryRow(ctx, `
+		INSERT INTO core.identity_providers
+			(org_id, slug, display_name, kind, client_id, scopes, allow_signup, allow_linking,
+			 trust_email_verification)
+		VALUES ($1::uuid, $2, $3, 'oid4vp', '', '{}', $4, $5, $6)
+		RETURNING id::text`, orgID, s.Slug, s.Name, s.AllowSignup, s.AllowLinking,
+		s.TrustEmailVerification).Scan(&id); err != nil {
+		return "", err
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO core.vp_verifiers
+			(provider_id, org_id, client_id_prefix, wallet_url, vct_values, subject_claim, email_claim,
+			 name_claim, signing_key, certificate_chain, response_mode, cross_device, dc_api,
+			 format, doctype, iaca_roots)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11, $12, $13,
+		        $14, NULLIF($15, ''), NULLIF($16, ''))`,
+		id, orgID, s.VP.Prefix, s.VP.WalletURL, nonNil(s.VP.VCTValues), canonicalPath(s.VP.SubjectClaim),
+		canonicalPath(s.VP.EmailClaim), canonicalPath(s.VP.NameClaim), sealed, s.VP.ChainPEM, s.VP.ResponseMode,
+		s.VP.CrossDevice, s.VP.DCAPI, s.VP.Format, s.VP.DocType, s.VP.IACARootsPEM)
+	return id, err
+}
+
+// canonicalPath stores a path as the JSON array it means, so a bare name and the array
+// holding it are one value.
+func canonicalPath(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	p, err := oid4vp.ParsePath(raw)
+	if err != nil {
+		return raw
+	}
+	return p.String()
+}
+
+// ParseIssuerKeys reads the keys an issuer's credentials are checked with: a JWKS of
+// public signing keys and nothing else. A private key is refused, since whoever holds
+// this file could sign as the issuer, and a MAC key the same, for the same reason.
+func ParseIssuerKeys(raw []byte) (*jose.JSONWebKeySet, error) {
+	var set jose.JSONWebKeySet
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return nil, fmt.Errorf("not a JWKS: %w", err)
+	}
+	if len(set.Keys) == 0 {
+		return nil, errors.New("the JWKS holds no key")
+	}
+	for _, k := range set.Keys {
+		switch k.Key.(type) {
+		case *ecdsa.PublicKey, *rsa.PublicKey, ed25519.PublicKey:
+		default:
+			return nil, fmt.Errorf("key %q is not a public signing key", k.KeyID)
+		}
+		if k.Use != "" && k.Use != "sig" {
+			return nil, fmt.Errorf("key %q is for %q, not signing", k.KeyID, k.Use)
+		}
+	}
+	return &set, nil
+}
+
+// ErrVPIssuerUnknown is an issuer a wallet sign-in does not believe.
+var ErrVPIssuerUnknown = errors.New("this wallet sign-in does not believe that issuer")
+
+// Where a believed issuer's keys come from: held here, its JWT VC Issuer Metadata, or
+// the certificate chain its credentials carry, validated to roots held here.
+const (
+	VPKeysPinned       = "pinned"
+	VPKeysFromMetadata = "metadata"
+	VPKeysFromX5C      = "x5c"
+)
+
+// SetVPTrustedIssuer believes issuer, with these keys, for the wallet sign-in slug, or
+// replaces the keys held for it. orgID is the organisation it must be in, or "" for
+// the command line, which names a slug alone.
+func SetVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte) error {
+	issuer = strings.TrimSpace(issuer)
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
+	}
+	set, err := ParseIssuerKeys(jwks)
+	if err != nil {
+		return idpInvalid{"the issuer's keys: " + err.Error()}
+	}
+	canonical, err := json.Marshal(set)
+	if err != nil {
+		return err
+	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, canonical, VPKeysPinned, "")
+}
+
+// SetVPTrustedIssuerByMetadata believes issuer for the wallet sign-in slug with the keys
+// its JWT VC Issuer Metadata publishes, read for each presentation, and drops any keys
+// held for it. The issuer has to be an https URL with no query or fragment, the only
+// kind that has metadata (specs/sdjwtvc.txt:1136-1138).
+func SetVPTrustedIssuerByMetadata(ctx context.Context, q outpostDB, orgID, slug, issuer string) error {
+	issuer = strings.TrimSpace(issuer)
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
+	}
+	if _, err := oid4vp.IssuerMetadataURL(issuer); err != nil {
+		return idpInvalid{err.Error()}
+	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromMetadata, "")
+}
+
+// SetVPTrustedIssuerByX5C believes issuer for the wallet sign-in slug with the key of the
+// certificate chain its credentials carry in x5c, which has to lead to one of roots, PEM
+// certificate authorities, and whose leaf has to name issuer (specs/sdjwtvc.txt:1091-1098).
+// It drops any keys held for it. The issuer has to be an absolute URI, the only kind a
+// certificate's subject alternative name can carry.
+func SetVPTrustedIssuerByX5C(ctx context.Context, q outpostDB, orgID, slug, issuer, roots string) error {
+	issuer = strings.TrimSpace(issuer)
+	if err := checkVPIssuerName(issuer); err != nil {
+		return err
+	}
+	if err := oid4vp.CanBeNamedByCertificate(issuer); err != nil {
+		return idpInvalid{err.Error()}
+	}
+	parsed, err := oid4vp.ParseRoots(roots)
+	if err != nil {
+		return idpInvalid{"the issuer's roots: " + err.Error()}
+	}
+	// Kept as the certificates alone, so what is held is exactly what is checked with.
+	var canonical strings.Builder
+	for _, c := range parsed {
+		_ = pem.Encode(&canonical, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+	}
+	return putVPTrustedIssuer(ctx, q, orgID, slug, issuer, nil, VPKeysFromX5C, canonical.String())
+}
+
+// SetVPIACARoots replaces the IACA certificates an mdoc wallet sign-in believes, PEM, as an
+// issuing authority's re-key needs (ISO/IEC 18013-5 9.3.3 leaves how they are obtained
+// to the reader). Only for a sign-in that asks for an mdoc.
+func SetVPIACARoots(ctx context.Context, q outpostDB, orgID, slug, roots string) error {
+	parsed, err := oid4vp.ParseRoots(roots)
+	if err != nil {
+		return idpInvalid{"the IACA certificates: " + err.Error()}
+	}
+	var canonical strings.Builder
+	for _, c := range parsed {
+		_ = pem.Encode(&canonical, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+	}
+	var format string
+	err = q.QueryRow(ctx, `
+		UPDATE core.vp_verifiers x SET iaca_roots = CASE WHEN x.format = 'mso_mdoc' THEN $3 ELSE x.iaca_roots END,
+		       updated_at = now()
+		FROM core.identity_providers p
+		WHERE p.id = x.provider_id AND p.slug = $1 AND ($2 = '' OR p.org_id::text = $2)
+		RETURNING x.format`, slug, orgID, canonical.String()).Scan(&format)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrProviderUnknown
+	}
+	if err != nil {
+		return err
+	}
+	if format != oid4vp.FormatMdoc {
+		return idpInvalid{"IACA certificates are an mdoc's; this wallet sign-in asks for an SD-JWT VC, " +
+			"whose issuers are believed with `signari idp vp-issuer`"}
+	}
+	return nil
+}
+
+func checkVPIssuerName(issuer string) error {
+	if issuer == "" || strings.Contains(issuer, vpSubjectSeparator) {
+		return idpInvalid{fmt.Sprintf("the issuer %q: want the exact iss its credentials carry, which has no %q",
+			issuer, vpSubjectSeparator)}
+	}
+	return nil
+}
+
+// putVPTrustedIssuer writes one issuer's row; roots is "" for any but an x5c issuer, and
+// held as NULL, so each way of believing an issuer keeps only what it is checked with.
+func putVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string, jwks []byte, keysFrom,
+	roots string) error {
+	tag, err := q.Exec(ctx, `
+		INSERT INTO core.vp_trusted_issuers (provider_id, org_id, issuer, jwks, keys_from, roots)
+		SELECT x.provider_id, x.org_id, $2, $3::jsonb, $5, nullif($6, '')
+		FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
+		WHERE p.slug = $1 AND ($4 = '' OR p.org_id::text = $4) AND x.format = 'dc+sd-jwt'
+		ON CONFLICT (provider_id, issuer) DO UPDATE
+			SET jwks = EXCLUDED.jwks, keys_from = EXCLUDED.keys_from, roots = EXCLUDED.roots`,
+		slug, issuer, jwks, orgID, keysFrom, roots)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// An mdoc sign-in believes IACA certificates, not issuers: say so rather than
+		// that it does not exist.
+		var mdoc bool
+		if q.QueryRow(ctx, `SELECT true FROM core.vp_verifiers x JOIN core.identity_providers p ON p.id = x.provider_id
+			WHERE p.slug = $1 AND ($2 = '' OR p.org_id::text = $2) AND x.format = 'mso_mdoc'`, slug, orgID).Scan(&mdoc) == nil {
+			return idpInvalid{"this wallet sign-in asks for an mdoc, which is believed by IACA certificates " +
+				"(`signari idp vp-iaca`), not by issuers"}
+		}
+		return ErrProviderUnknown
+	}
+	return nil
+}
+
+// RemoveVPTrustedIssuer stops believing issuer for the wallet sign-in slug.
+func RemoveVPTrustedIssuer(ctx context.Context, q outpostDB, orgID, slug, issuer string) error {
+	tag, err := q.Exec(ctx, `
+		DELETE FROM core.vp_trusted_issuers t USING core.identity_providers p
+		WHERE p.id = t.provider_id AND p.slug = $1 AND t.issuer = $2 AND ($3 = '' OR p.org_id::text = $3)`,
+		slug, issuer, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVPIssuerUnknown
+	}
+	return nil
+}
+
+// vpSubjectSeparator joins an issuer and the claim that identifies a person within it
+// into the subject a sign-in is linked by. A URL cannot hold a bare "|" (RFC 3986), so
+// the subject splits one way only.
+const vpSubjectSeparator = "|"
+
+// VPSubject is the subject a presentation signs in: the issuer and the claim together,
+// since a claim is unique only within the issuer that made it (OID4VP 1.0 §14.4).
+func VPSubject(issuer, claim string) string { return issuer + vpSubjectSeparator + claim }
+
+// ErrVPRequestGone is a request that has expired, been answered or never existed.
+var ErrVPRequestGone = errors.New("this wallet request has expired or has been answered")
+
+// VPRequest is an unanswered request: its nonce, under direct_post.jwt the key its answer
+// is encrypted to, and whether its wallet may be on another device.
+type VPRequest struct {
+	Nonce       string
+	ResponseKey []byte
+	CrossDevice bool
+	// DCAPI is a request handed to the browser's Digital Credentials API, answered
+	// only through the page that asked.
+	DCAPI bool
+}
+
+// PendingVPRequest is the unanswered request state names, its response key opened with
+// the root key.
+func PendingVPRequest(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string) (VPRequest, error) {
+	h := sha256.Sum256([]byte(state))
+	var req VPRequest
+	var sealed []byte
+	err := q.QueryRow(ctx, `
+		SELECT nonce, vp_response_key, vp_cross_device, vp_dc_api FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now()
+		  AND vp_presented IS NULL AND vp_cross_presented IS NULL`,
+		h[:], providerID).Scan(&req.Nonce, &sealed, &req.CrossDevice, &req.DCAPI)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VPRequest{}, ErrVPRequestGone
+	}
+	if err != nil || len(sealed) == 0 {
+		return req, err
+	}
+	if root == nil {
+		return VPRequest{}, errors.New("opening a response key needs the root key")
+	}
+	req.ResponseKey, err = root.Open(sealed, sealContextVPResponseKey)
+	return req, err
+}
+
+const sealContextVPResponseKey = "vp_response_key"
+
+// SetVPResponseKey keeps the key a request's answer is encrypted to with the pending
+// sign-in, sealed under the root key, so it goes when the sign-in does.
+func SetVPResponseKey(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string, pkcs8 []byte) error {
+	if root == nil {
+		return errors.New("sealing a response key needs the root key")
+	}
+	sealed, err := root.Seal(pkcs8, sealContextVPResponseKey)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256([]byte(state))
+	tag, err := q.Exec(ctx, `UPDATE core.federated_logins SET vp_response_key = $3
+		WHERE state_hash = $1 AND provider_id = $2::uuid`, h[:], providerID, sealed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVPRequestGone
+	}
+	return nil
+}
+
+const vpPresentationContext = "signari oid4vp presentation"
+
+// PresentVP records what a wallet's presentation proved, against the request it
+// answers, and answers the response code the browser has to bring back for it. What
+// was proved is sealed under a key only that code gives, and the code is not stored,
+// so the row is no use to anybody who reads it. A request is answered once.
+func PresentVP(ctx context.Context, q outpostDB, providerID, state string, proved []byte) (string, error) {
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	code := base64.RawURLEncoding.EncodeToString(random)
+	sealed, err := sealUnder([]byte(code), vpPresentationContext, proved, []byte(providerID))
+	if err != nil {
+		return "", err
+	}
+	stateHash := sha256.Sum256([]byte(state))
+	codeHash := sha256.Sum256([]byte(code))
+	// Never for a cross-device request: its response code would finish it in whichever
+	// browser the wallet sent back, without the account's emailed code.
+	tag, err := q.Exec(ctx, `
+		UPDATE core.federated_logins SET vp_presented = $3, vp_response_code_hash = $4
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_presented IS NULL
+		  AND NOT vp_cross_device AND NOT vp_dc_api`,
+		stateHash[:], providerID, sealed, codeHash[:])
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrVPRequestGone
+	}
+	return code, nil
+}
+
+// OpenVPPresentation is what a pending sign-in's presentation proved, given the
+// response code the browser brought.
+func OpenVPPresentation(p *PendingLogin, responseCode string) ([]byte, error) {
+	if len(p.VPPresented) == 0 {
+		return nil, errors.New("the wallet has not answered this request")
+	}
+	h := sha256.Sum256([]byte(responseCode))
+	if subtle.ConstantTimeCompare(h[:], p.VPResponseCodeHash) != 1 {
+		return nil, errors.New("that is not the code the wallet was given")
+	}
+	return openUnder([]byte(responseCode), vpPresentationContext, p.VPPresented, []byte(p.ProviderID))
+}
+
+// A cross-device wallet sign-in (12.12): the wallet answers from another device, so no
+// browser comes back with a response code, and the verifier cannot tell that answer from
+// one an attacker relayed to somebody else's phone (specs/oid4vp.txt:2032-2037). The
+// answer waits here, sealed under the root key, for the browser that began the sign-in;
+// that browser is then sent a code to the linked account's own address
+// (specs/cross-device-security.txt, 6.1.16), and only the code finishes it.
+
+const sealContextVPCross = "vp_cross_presented"
+
+// PresentVPCrossDevice records what a cross-device request's presentation proved. A
+// request is answered once.
+func PresentVPCrossDevice(ctx context.Context, q outpostDB, root *keys.RootKey, providerID, state string,
+	proved []byte) error {
+	if root == nil {
+		return errors.New("sealing a cross-device answer needs the root key")
+	}
+	sealed, err := root.Seal(proved, sealContextVPCross)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256([]byte(state))
+	tag, err := q.Exec(ctx, `
+		UPDATE core.federated_logins SET vp_cross_presented = $3
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device
+		  AND NOT vp_dc_api AND vp_cross_presented IS NULL AND vp_presented IS NULL`, h[:], providerID, sealed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrVPRequestGone
+	}
+	return nil
+}
+
+// ErrVPNotAnswered is a cross-device request the wallet has not answered yet.
+var ErrVPNotAnswered = errors.New("the wallet has not answered yet")
+
+// VPCrossDeviceAnswer is what a cross-device request's answer proved and the attempt
+// its confirming code was sent for ("" before one was), for the browser holding binding
+// alone. Nothing is consumed: the browser asks again until it can finish.
+func VPCrossDeviceAnswer(ctx context.Context, q rowQuerier, root *keys.RootKey, providerID, state, binding string) (
+	proved []byte, attempt string, err error) {
+	h := sha256.Sum256([]byte(state))
+	var held, sealed []byte
+	err = q.QueryRow(ctx, `
+		SELECT binding_hash, vp_cross_presented, COALESCE(vp_confirm_attempt::text, '')
+		FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device`,
+		h[:], providerID).Scan(&held, &sealed, &attempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrFederatedLoginGone
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	want := sha256.Sum256([]byte(binding))
+	if !constantTimeEqual(held, want[:]) {
+		return nil, "", ErrFederatedLoginOtherBrowser
+	}
+	if len(sealed) == 0 {
+		return nil, "", ErrVPNotAnswered
+	}
+	if root == nil {
+		return nil, "", errors.New("opening a cross-device answer needs the root key")
+	}
+	proved, err = root.Open(sealed, sealContextVPCross)
+	return proved, attempt, err
+}
+
+// StartVPConfirmation queues a code to userID's address to confirm the answered
+// cross-device sign-in state names, once, and reports whether it did: false is a code
+// already sent for this sign-in, which is then the browser's to type. The pending row is
+// locked first, so two browsers' requests at once send one code, and a code already sent
+// is never replaced by one bound to nobody.
+func StartVPConfirmation(ctx context.Context, tx pgx.Tx, userID, orgID, providerID, state string) (bool, error) {
+	h := sha256.Sum256([]byte(state))
+	var sent bool
+	err := tx.QueryRow(ctx, `
+		SELECT vp_confirm_attempt IS NOT NULL FROM core.federated_logins
+		WHERE state_hash = $1 AND provider_id = $2::uuid AND expires_at > now() AND vp_cross_device
+		  AND vp_cross_presented IS NOT NULL
+		FOR UPDATE`, h[:], providerID).Scan(&sent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrFederatedLoginGone
+	}
+	if err != nil || sent {
+		return false, err
+	}
+	attempt, err := startEmailCode(ctx, tx, userID, orgID, NoticeWalletConfirm)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core.federated_logins SET vp_confirm_attempt = $3::uuid
+		WHERE state_hash = $1 AND provider_id = $2::uuid`, h[:], providerID, attempt); err != nil {
+		return false, err
+	}
+	return true, nil
+}

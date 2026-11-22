@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"signari.dev/engine/internal/i18n"
+	"signari.dev/engine/internal/passwords"
 )
 
 // The page set, its layout, and what an override is allowed to do to it.
@@ -722,7 +723,7 @@ func TestEveryPageIsServedBySomething(t *testing.T) {
 	// Bounded to one line and to a short distance, rather than "anything but a
 	// closing paren": an argument may itself be a call -- s.langFor(r) -- and a
 	// pattern that stopped at the first ')' reported those pages as dead.
-	render := regexp.MustCompile(`(?:renderPage|renderBare|writeBranded|Execute|ExecuteIn)\(` +
+	render := regexp.MustCompile(`(?:renderPage|renderPageStatus|renderBare|writeBranded|writePage|Execute|ExecuteIn)\(` +
 		`[^\n]{0,80}?"([a-z]+)"`)
 
 	// Only the server counts, and internal/httpapi is the whole of it.
@@ -811,6 +812,41 @@ func TestEveryMessageKeyIsUsedAndEveryUsedKeyExists(t *testing.T) {
 		if !bundle.HasKey(key) {
 			t.Errorf("Go asks for the message %q, which is not in "+
 				"internal/i18n/locales/en.json", key)
+		}
+	}
+	// The store names the message for a refused attribute value, and the password
+	// policy for a refused password, and a page says it later: a key missing there
+	// would put the key itself on the page.
+	refusal := regexp.MustCompile(`refuse(?:Attribute)?\("([a-z][a-z0-9]*(?:\.[a-z0-9_]+)+)"`)
+	refusals := keysUsedInGo(t, refusal)
+	if len(refusals) < 12 {
+		t.Errorf("only %d refusal keys were found; this check is not reading the store and the password policy", len(refusals))
+	}
+	for _, key := range passwords.PatternKeys {
+		refusals = append(refusals, key)
+	}
+	// A refusal at an upstream sign-in takes a key, and so does sign-up's: until
+	// November 2026 each took an English sentence, and every reader was shown it. A
+	// sentence handed to federationRefusal is not a key, and fails here.
+	upstream := keysUsedInGo(t, regexp.MustCompile(`federationRefusal\(w, r, "([^"]*)"\)`))
+	if len(upstream) < 40 {
+		t.Errorf("only %d federationRefusal calls with a literal were found; this check is reading too little", len(upstream))
+	}
+	refusals = append(refusals, upstream...)
+	refusals = append(refusals, keysUsedInGo(t, regexp.MustCompile(
+		`"((?:federr|error\.signup|enrol|sms\.number|emailchange)\.[a-z_]+)"`))...)
+	// The enrolment pages' render closures take a key too.
+	enrolment := keysUsedInGo(t, regexp.MustCompile(`render\("[a-z]+", [^\n]*, "([^"]+)"\)`))
+	if len(enrolment) < 20 {
+		t.Errorf("only %d enrolment render calls with a message were found; this check is reading too little", len(enrolment))
+	}
+	refusals = append(refusals, enrolment...)
+	for _, key := range refusals {
+		used[key] = true
+		if !bundle.HasKey(key) {
+			t.Errorf("a refusal is said with the message %q, which is not in "+
+				"internal/i18n/locales/en.json, so the page would show the key, or the "+
+				"English handed in its place", key)
 		}
 	}
 
@@ -936,11 +972,12 @@ func TestNoPageHasEnglishWrittenIntoIt(t *testing.T) {
 // dynamicKeyPrefixes finds key prefixes the server concatenates at runtime.
 //
 // Matches `"scope." + something`, which is how a family of keys gets asked for
-// without any one of them appearing as a literal.
+// without any one of them appearing as a literal, and `"factor.kind." + kind`,
+// a family inside a namespace, which counts only its own keys.
 func dynamicKeyPrefixes(t *testing.T) []string {
 	t.Helper()
 
-	concat := regexp.MustCompile(`"([a-z][a-z0-9]*\.)"\s*\+`)
+	concat := regexp.MustCompile(`"([a-z][a-z0-9]*(?:\.[a-z0-9_]+)*\.)"\s*\+`)
 	var out []string
 	for _, key := range keysUsedInGo(t, concat) {
 		out = append(out, key)
@@ -954,8 +991,10 @@ func keysUsedInGo(t *testing.T, call *regexp.Regexp) []string {
 
 	var out []string
 	// adminapi as well as httpapi: the Admin API sets a password-change reason,
-	// and that reason is a message key rendered on a page this package owns.
-	for _, pkg := range []string{"httpapi", "adminapi"} {
+	// and that reason is a message key rendered on a page this package owns. store
+	// and passwords too: a refused attribute value or password carries the key a
+	// page says it with.
+	for _, pkg := range []string{"httpapi", "adminapi", "store", "passwords", "sms", "federation"} {
 		dir := filepath.Join("..", pkg)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

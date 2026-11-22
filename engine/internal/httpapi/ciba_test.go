@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // CIBA Core 1.0, end to end and adversarially.
@@ -80,8 +81,14 @@ func newCIBAFixture(t *testing.T) *cibaFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every deployment has a root key (serve refuses to start without one), and
+	// ping and push seal what they park under it.
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv, err := New(oidc.Config{
-		Issuer: "https://ciba-test.example", Keys: set, AllowInsecureIssuer: true,
+		Issuer: "https://ciba-test.example", Keys: set, AllowInsecureIssuer: true, Root: root,
 	}, pool, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +111,7 @@ func newCIBAFixture(t *testing.T) *cibaFixture {
 		Scan(&f.orgID, &f.userID, &f.email); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, email, user_handle)
 		VALUES ($1::uuid, 'other'||substr(gen_random_uuid()::text,1,8)||'@example.test',
@@ -447,8 +455,8 @@ func TestABindingMessageCannotRestructureTheApprovalScreen(t *testing.T) {
 		{"a line break", "Transfer £40\nApproved by your bank"},
 		{"a carriage return", "Pay £5\rPay £5000"},
 		{"a control character", "Pay \x00 now"},
-		{"a right-to-left override", "Pay ‮0004£"},
-		{"an isolate", "Pay ⁦something else⁩"},
+		{"a right-to-left override", "Pay \U0000202E0004£"},
+		{"an isolate", "Pay \U00002066something else\U00002069"},
 		{"far too long", strings.Repeat("a", 200)},
 	} {
 		t.Run(bad.name, func(t *testing.T) {

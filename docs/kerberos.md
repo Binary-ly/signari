@@ -12,10 +12,18 @@ SIGNARI_KERBEROS_REALM=EXAMPLE.COM
 SIGNARI_KERBEROS_SPN=HTTP/auth.example.com
 ```
 
-`/login/kerberos` is registered **only when a keytab loads**. A route answering
-`401 WWW-Authenticate: Negotiate` with no keytab behind it makes every
-domain-joined browser show a native credential dialog for a service that cannot
-check the answer.
+A browser signs in with its ticket at `/login/kerberos`, with `authz=` carrying the
+authorization request it should come back to. The sign-in page links it, "Sign in with
+your domain account", wherever the host it was asked on has a keytab for the page's
+organisation and the organisation's [sign-in flow](flows.md) admits a ticket; an
+organisation whose flow admits a ticket and nothing else is sent there straight from the
+authorization request, with no page at all. Until November 2026 nothing linked it, so a
+ticket signed somebody in only through a link the operator gave people themselves.
+
+`/login/kerberos` answers **only for a host with a keytab behind it**, and is a
+`404` otherwise. A route answering `401 WWW-Authenticate: Negotiate` with no keytab
+behind it makes every domain-joined browser show a native credential dialog for a
+service that cannot check the answer.
 
 The keytab is read at startup, and a bad one refuses to start:
 
@@ -27,6 +35,35 @@ produce exactly this error
 Run `signari kerberos check -keytab /etc/signari/http.keytab` to see what is
 wrong with it
 ```
+
+A realm named this way is the deployment's, and signs people in to its first
+organisation. That suits a deployment with one organisation.
+
+## A realm for each organisation
+
+Several organisations, each with a domain of its own, register a realm each:
+
+```sh
+signari kerberos add-realm -org <uuid> -realm CORP.EXAMPLE.COM \
+  -host sso.corp.example.com -spn HTTP/sso.corp.example.com \
+  -keytab /tmp/corp.keytab
+```
+
+A browser gets a ticket for the host it is talking to, so the host says which realm's
+key opens the ticket, and whose organisation the person is in. The name is the one
+the browser sends, without a port, and one host answers for one realm.
+
+The keytab is the key to every ticket of that service, so it is sealed under the root
+key, rotated with it, and never comes back out: the file can be deleted once this has
+run. A keytab holding no key for the service principal in the realm is refused, since
+it would open no ticket and look like a working one until somebody tried. It is read
+on each request, so `signari kerberos remove-realm` stops both ways in on commit.
+
+A host with no realm of its own falls back to the environment's, and a host with
+neither is a `404`.
+
+`-strip-realm` matches `alice@EXAMPLE.COM` by the name `alice`, against a person's
+username or address, for a realm whose names are not addresses.
 
 ## `signari kerberos check` is worth more than the feature
 
@@ -76,6 +113,7 @@ principal is, and every refusal below would be a bypass if it were permissive:
 | Principal | |
 |---|---|
 | `alice@EXAMPLE.COM` | → `alice@example.com` (or `alice` with `SIGNARI_KERBEROS_STRIP_REALM=1`) |
+| `alice@PARTNER.EXAMPLE`, with `-trust-realms PARTNER.EXAMPLE` | → `alice@partner.example`, and never `alice`: stripping both would hand this realm's alice to the other |
 | `alice@PARTNER.EXAMPLE` | **refused.** A ticket from another realm is not a user of this one, even where a trust exists |
 | `alice/admin@EXAMPLE.COM` | **refused.** An administrative principal is not the person who shares its first component |
 | `HTTP/host@EXAMPLE.COM` | **refused.** A service principal is not a person |
@@ -90,20 +128,75 @@ ticket makes every principal in the realm a user the moment they visit.
 Accounts come from the directory sync — a deliberate act by an administrator. An
 unmatched principal is refused and told to ask for one.
 
+A realm can decide otherwise, by name:
+
+```sh
+signari kerberos add-realm -org "$ORG" -realm CORP.EXAMPLE.COM -host sso.corp.example.com \
+  -spn HTTP/sso.corp.example.com -keytab service.keytab \
+  -trust-realms PARTNER.EXAMPLE -create-accounts
+```
+
+`-trust-realms` admits the people of another realm. A trust between KDCs says a
+ticket is genuine, not that its holder is welcome, so nothing but this list admits
+one. It checks who the ticket says the person is, and leaves which realms it came
+through to your KDCs.
+
+`-create-accounts` makes an account for a good ticket with none, active, with no
+password, which is the choice this section argues against and yours to make: every
+principal the realm and its trusted realms know can now arrive. The
+[`user_create` hook](extensibility.md) is asked first, with `source: kerberos`. A
+name held by an account that is deactivated, locked or waiting for approval is
+refused, not taken over, and `kerberos.user_created` is recorded.
+
+The two can be set on a realm from `signari kerberos add-realm` and the Admin API,
+and a realm registered before they existed has neither.
+
+Forwarding a ticket to the engine (GSS delegation) is not offered. A forwarded
+credential is a person's ticket-granting ticket, and nothing here would use one.
+
 ## The three ways a realm is used
 
 | | |
 |---|---|
 | **SPNEGO** | A domain-joined browser signs in with no interaction |
-| **Password backend** | A password is verified against the KDC |
+| **Password backend** | A password typed at the sign-in form is verified against the KDC, at every sign-in |
 | **Directory sync** | Accounts are created from the realm's principals |
 
 ### Password backend
+
+For somebody on a machine that is not domain-joined, typing the password they already
+have. It is a source a password is delegated to, as a directory being migrated from is:
+
+```sh
+signari migration-source add -org <uuid> -kind kerberos -name "Corp" -realm EXAMPLE.COM
+signari migration-source test -org <uuid> -username alice
+signari migration-source enable -org <uuid>
+```
+
+It applies to a person with no password here who is marked pending, which is what
+`signari kerberos sync` makes. It differs from a migration in one way: **no hash is
+kept.** The realm stays the authority, and a person is asked about at every sign-in,
+because a hash kept here would go on working after the realm had changed the password
+or disabled the account. Wrong passwords are charged as any others are, to the address
+and the captcha, and a KDC that does not answer is an outage, charged to nobody.
 
 There is no hash to compare — a realm does not publish password material, and
 the only way to check a password is to ask the KDC for a ticket with it. That
 also makes every check live: a password changed or an account disabled five
 seconds ago is refused, which a cached hash cannot do.
+
+**A ticket from the KDC is not enough on its own.** Whoever answers an AS request
+chooses the key its reply is encrypted with, so a KDC an attacker stands up on the
+network says yes to any password. So the verifier goes on to ask for a ticket to this
+service and opens it with the service's key: the organisation's own, when
+`kerberos add-realm` gave it that realm, and otherwise `SIGNARI_KERBEROS_SPN` and
+`SIGNARI_KERBEROS_KEYTAB`. Only the realm's KDC holds that key. A krb5 configuration
+naming every realm's KDCs is still one file, `SIGNARI_KERBEROS_CONF`. The realm is
+asked about a person by their username when they have one, whatever they typed, since
+it has a principal for them and not an address. The keytab and the principal are required, a ticket that
+will not open or names somebody else is refused, and that is reported as the source
+failing and not as a wrong password, since a person typing their password into a form
+is not who to blame for a KDC on the wrong end of the wire.
 
 Four things are refused **before** the KDC is asked, and each would be a bypass
 otherwise:
@@ -116,8 +209,9 @@ otherwise:
   password, because the alternative sends an office to reset passwords they
   typed correctly
 
-Needs `/etc/krb5.conf` naming the KDCs, read fresh on each verification so a
-realm whose KDCs move is fixed by editing a file rather than by a restart.
+Needs `/etc/krb5.conf`, or the file `SIGNARI_KERBEROS_CONF` names, naming the KDCs,
+read fresh on each verification so a realm whose KDCs move is fixed by editing a file
+rather than by a restart.
 
 ### Directory sync
 
@@ -133,10 +227,19 @@ Service and administrative principals are filtered out — `host/web01`,
 `HTTP/auth`, `alice/admin`, `krbtgt`, `kadmin` — because an account created from
 one is an account nobody can explain.
 
-Accounts are created **without a local password**: they authenticate against the
-realm, and inventing a local password would be a second way in that nobody
-chose. Nothing is ever deleted: what happens to a leaver is a policy decision,
-not something a listing should make. It is a dry run unless `-apply`.
+Accounts are created **without a local password** and marked pending: they sign in
+with a ticket (SPNEGO), or with the realm password through the `kerberos` migration
+source above, and inventing a local password would be a second way in that nobody
+chose. Nothing is ever deleted: what happens to a leaver is a policy decision, not
+something a listing should make. It is a dry run unless `-apply`.
+
+A person already here is counted and left as they are, unless `-adopt-existing` is
+given. With it, somebody with no password here and no finished migration is marked
+pending as well, so the realm password signs them in too, as a ticket by SPNEGO
+already does for the same principal name: the case of people a directory sync brought
+in from the realm's own directory. Somebody with a local password is never adopted,
+since they are checked here and never sent to the realm, and neither is anybody whose
+migration is complete.
 
 **This runs `kadmin`.** The Kerberos administration protocol is RPC over GSSAPI
 with no Go implementation, and writing one to list principals would be a large

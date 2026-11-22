@@ -34,12 +34,15 @@ class ConditionalWriteTest extends TestCase
 
     public function test_a_client_change_carries_an_if_match_header(): void
     {
+        // The engine has moved on to 999 since the page was rendered at 417. A
+        // console that read the version just before writing would send 999 and
+        // win over whatever moved it.
         Http::fake([
-            'http://engine.test/admin/config-version' => Http::response(['config_version' => 417]),
+            'http://engine.test/admin/config-version' => Http::response(['config_version' => 999]),
             'http://engine.test/admin/clients/*' => Http::response(['config_version' => 418]),
         ]);
 
-        $this->api()->setClientEnabled('wiki', false);
+        $this->api()->asOf(417)->setClientEnabled('wiki', false);
 
         Http::assertSent(function (Request $r) {
             if (! str_contains($r->url(), '/admin/clients/')) {
@@ -52,19 +55,62 @@ class ConditionalWriteTest extends TestCase
             // write for a caller who asked for a conditional one.
             return $r->header('If-Match') === ['"417"'];
         });
+        Http::assertNotSent(fn (Request $r) => str_ends_with($r->url(), '/admin/config-version'));
     }
 
     public function test_a_user_change_carries_an_if_match_header(): void
     {
         Http::fake([
-            'http://engine.test/admin/config-version' => Http::response(['config_version' => 100]),
+            'http://engine.test/admin/config-version' => Http::response(['config_version' => 999]),
             'http://engine.test/admin/users/*' => Http::response(['config_version' => 101]),
         ]);
 
-        $this->api()->setUserActive('u1', false);
+        $this->api()->asOf(100)->setUserActive('u1', false);
 
         Http::assertSent(fn (Request $r) => ! str_contains($r->url(), '/admin/users/')
             || $r->header('If-Match') === ['"100"']);
+    }
+
+    /**
+     * Every write is held to the page, creates and rotation included: until
+     * October 2026 those three went unconditional.
+     */
+    public function test_every_write_carries_the_rendered_version(): void
+    {
+        Http::fake([
+            'http://engine.test/admin/users' => Http::response(['id' => 'u2'], 201),
+            'http://engine.test/admin/clients' => Http::response(['client_id' => 'c2'], 201),
+            'http://engine.test/*' => Http::response(['config_version' => 418]),
+        ]);
+
+        $api = $this->api()->asOf(417);
+        $api->createUser('org', 'new@example.test', null);
+        $api->createClient('org', 'c2', 'C2', ['https://rp.example.test/cb']);
+        $api->rotateClientSecret('wiki');
+        $api->setUserPassword('u1', 'a-long-enough-password');
+        $api->removeUserFactor('u1', 'totp');
+        $api->sendPasskeyLink('u1');
+        $api->setClientEnabled('wiki', true);
+
+        $writes = Http::recorded(fn (Request $r) => $r->method() !== 'GET');
+        $this->assertCount(7, $writes);
+        foreach ($writes as [$r]) {
+            $this->assertSame(['"417"'], $r->header('If-Match'), $r->method().' '.$r->url().' went unconditional');
+        }
+    }
+
+    /** A write with no version to hold it to is not made at all. */
+    public function test_a_write_with_no_carried_version_is_not_sent(): void
+    {
+        Http::fake();
+
+        try {
+            $this->api()->setUserActive('u1', false);
+            $this->fail('a write with no carried version was made');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('Nothing was written', $e->getMessage());
+        }
+        Http::assertNothingSent();
     }
 
     /**
@@ -86,7 +132,7 @@ class ConditionalWriteTest extends TestCase
         ]);
 
         try {
-            $this->api()->setClientEnabled('wiki', false);
+            $this->api()->asOf(417)->setClientEnabled('wiki', false);
             $this->fail('a 412 did not raise');
         } catch (RuntimeException $e) {
             $this->assertStringContainsString('Somebody else changed the configuration', $e->getMessage());
@@ -103,13 +149,12 @@ class ConditionalWriteTest extends TestCase
      * The scope of the guarantee is stated, not implied.
      *
      * A precondition people believe is stronger than it is would be worse than
-     * none: reading the version immediately before the write catches two
-     * administrators saving at the same moment, and does NOT catch a change made
-     * while somebody had a form open.
+     * none: it catches a change made while a form was open, and it cannot say
+     * which change, because the version is one counter for the instance.
      */
     public function test_the_precondition_scope_is_recorded(): void
     {
-        $this->assertStringContainsString('does NOT catch', EngineAdminApi::PRECONDITION_SCOPE);
-        $this->assertStringContainsString('form open', EngineAdminApi::PRECONDITION_SCOPE);
+        $this->assertStringContainsString('while a form was open', EngineAdminApi::PRECONDITION_SCOPE);
+        $this->assertStringContainsString('does NOT say which change', EngineAdminApi::PRECONDITION_SCOPE);
     }
 }

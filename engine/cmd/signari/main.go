@@ -8,14 +8,12 @@ package main
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"signari.dev/engine/internal/clientip"
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/config"
 	"signari.dev/engine/internal/kerberos"
@@ -38,13 +37,11 @@ import (
 	"signari.dev/engine/internal/prompts"
 	"signari.dev/engine/internal/provision"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -56,6 +53,7 @@ import (
 	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/duo"
+	"signari.dev/engine/internal/ech"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/flow"
@@ -64,8 +62,10 @@ import (
 	"signari.dev/engine/internal/janitor"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/ldapd"
+	"signari.dev/engine/internal/logging"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/metrics"
+	"signari.dev/engine/internal/mfa"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
@@ -73,19 +73,24 @@ import (
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/posture"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/proxycheck"
+	"signari.dev/engine/internal/proxyproto"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
+	"signari.dev/engine/internal/tracing"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "signari: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
@@ -97,11 +102,11 @@ func main() {
 // with no hint that the dispatch is what is wrong.
 var twoWordCommands = map[string]bool{
 	"migrate": true, "instance": true, "user": true, "client": true, "duo": true,
-	"janitor": true, "keys": true, "import": true, "proxy": true,
-	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true,
+	"janitor": true, "keys": true, "import": true, "proxy": true, "client-metadata": true,
+	"saml": true, "idp": true, "scim": true, "scim-source": true, "brand": true, "message": true,
 	"group": true, "policy": true, "admin-token": true, "radius": true,
 	"invite": true, "signup": true, "outpost": true, "provision": true,
-	"provider": true,
+	"provider": true, "migration-source": true, "restore": true, "external-factor": true,
 	"erase":    true,
 	"prompt":   true,
 	"attester": true,
@@ -118,111 +123,417 @@ var twoWordCommands = map[string]bool{
 	"credential": true,
 	"rar":        true,
 	"webauthn":   true,
+	"resource":   true,
+	"passwords":  true,
+	"role":       true,
+	"ech":        true,
 }
 
 func usage() error {
-	fmt.Fprint(os.Stderr, `usage: signari <command> [flags]
+	fmt.Fprint(os.Stderr, usageText)
+	return usageError{fmt.Errorf("no command given")}
+}
 
-commands:
-  migrate bootstrap   apply 0001 (roles, schemas, grants) -- needs a superuser DSN
-  migrate up          apply 0002+ (tables, policies, views) as signari_engine
-  migrate all         bootstrap then up, in one invocation (for containers)
-  migrate status      show applied version, pending migrations, live fingerprint
-  migrate fingerprint print ONLY the schema fingerprint, for pinning a build
-  verify              run the startup schema gate and exit
-  instance create     create an instance and its first signing keys
-  user create         create a user with a password
-  client create       register an OAuth client
-  client set-keys     switch a client to private_key_jwt with its public JWKS
-  client set-tls      authenticate a client by TLS certificate (RFC 8705)
-  client set-assertion-issuers  which issuers' assertions a client may exchange
-  janitor once        run one maintenance pass (serve runs this continuously)
-  import keycloak     import users and clients from a Keycloak realm export
-  import authentik    import users and groups from an authentik dumpdata export
-  keys list           show signing keys, their state and when each may advance
-  keys rotate         advance the rotation one safe step (run it again later)
-  keys retire         remove passive keys nothing can still be verifying against
-  proxy check         prove a forward-auth deployment actually protects the app
-  saml add-sp         register a SAML service provider
-  saml list           show registered SAML service providers
-  idp add             register an external sign-in provider (Google, GitHub, ...)
-  idp list            show external sign-in providers
-  idp assertions      allow or refuse RFC 7523 assertions from a provider
-  idp add-issuer      register a key-publishing issuer for the jwt-bearer grant
-  scim add            register a SCIM provisioning target
-  scim list           show provisioning targets
-  scim sync           converge targets on this directory (preview unless -apply)
-  scim verify         read each target back and report anyone still active
-  group create        create a group
-  group member        add or remove a member (-remove)
-  group release       let a client see group membership
-  group list          show groups and their sizes
-  policy test         check a policy file (no database needed -- for CI)
-  policy apply        install a policy file
-  policy show         print the policy in force
-  flow test           check a sign-in flow file (no database needed -- for CI)
-  flow paths          list every journey a flow admits, and what produces each
-  flow apply          install a sign-in flow file
-  flow show           print the built-in flows, as a file to start from
-  dir add             register a Google Workspace or Entra ID directory source
-  dir sync            reconcile users from a directory (preview unless -apply)
-  export audit        write the audit trail as CSV, with its chain verified
-  erase subject       destroy a subject key, making their data unreadable forever
-  registration enable turn on dynamic client registration (RFC 7591)
-  registration token  mint an initial access token for registration
-  ssf add-stream      register a Shared Signals receiver for CAEP events
-  ssf list            show Shared Signals receivers
-  radius add-client   register a network device permitted to send Access-Requests
-  radius list         show registered RADIUS clients
-  admin-token create  mint a scoped, revocable admin API token
-  admin-token list    show admin tokens, their scopes and when each was last used
-  admin-token revoke  revoke one immediately, with no restart
-  theme eject         write the built-in HTML pages out so they can be edited
-  theme check         validate a theme directory; non-zero if anything is refused
-  theme list          which page is built-in and which is overridden
-  uma settings        offer, or stop offering, resource-owner intervention on refused UMA requests
-  uma requests        UMA requests waiting for a resource owner to decide
-  uma approve         grant a relation and let a submitted UMA request through
-  uma deny            close a submitted UMA request without granting anything
+// usageText is what `signari` and `signari help` print, and where `signari
+// help <command>` finds the command's one-line description.
+const usageText = `usage: signari <command> [flags]
+
+schema:
+  migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
+  migrate up           apply 0002+ (tables, policies, views) as signari_engine
+  migrate all          bootstrap then up, in one invocation (for containers)
+  bootstrap            a first run: instance, keys, organisation and a link for its first person
+  migrate status       applied version, pending migrations, live fingerprint, ledger
+  migrate fingerprint  print only the schema fingerprint, for pinning a build
+  verify               run the startup schema gate and exit
+
+running it:
+  serve                serve the OIDC endpoints, and with -admin-addr the Admin API
+  doctor               inspect this deployment and report what is wrong with it
+  version              the release, commit, toolchain, schema and its pin
+  janitor once         run one maintenance pass (serve runs this continuously)
+  plan                 diff a configuration file against the deployment; exits 3 on drift
+  apply                make the deployment match a configuration file
+  help                 every command, the commands of a group, or one command and its flags
+  completion           a completion script for bash or zsh
+  api                  send one request to the Admin API: signari api GET /admin/me
+  passwords calibrate  time Argon2id on this host against a target duration
+  ech new              an Encrypted Client Hello key for the listener, and its DNS record
+
+instances and organisations:
+  instance create             create an instance and its first signing keys
+  instance add-alias          claim a legacy issuer while relying parties move across
+  instance retire-alias       stop accepting an alias, now or at a time
+  instance aliases            the instance's aliases and how many clients each pins
+  instance webauthn           set the passkey Relying Party ID and name
+  instance related-origins    further origins a passkey under the RP ID may be used from
+  instance org-status         suspend an organisation, or reactivate it
+  instance org-delete         delete a suspended organisation, in two steps
+  instance org-budgets        show or set an organisation's token and sign-in budgets
+  instance session-lifetime   how long sessions last, idle and offline
+  instance session-limit      how many sessions one person may hold at once
+  instance remember-device    offer "remember this device" after a second factor
+  instance new-device-notice  whether a sign-in from a new device is mailed to the person
+  instance reauth-window      how recent a sign-in must be to change the account
+  instance password-binds     whether a password-only bind may sign in somebody needing MFA
+  instance login-throttle     the sign-in delay: free attempts and the longest wait
+  instance mail-sender        the address an organisation's mail comes from, and its DNS checked
+  instance sms-numbers        keep each SMS number, or only a keyed hash of it
+  instance totp-policy        the algorithm, digits and period new authenticators use
+
+people:
+  user create          create a user with a password
+  user approve         let a self-sign-up waiting for approval sign in
+  user unlock          clear the wrong guesses charged to a person
+  user locale          the language a person's notices and pages are written in
+  user remove-factor   remove a sign-in method from a person
+  user passkey-link    email a person a link that registers one passkey
+  user assign-otp      give a person a hardware token from its seed file
+  erase subject        destroy a subject key, making their data unreadable forever
+  export subject       write everything kept about one person as JSON
+  restore finalize     end what a restored backup brought back, before serving it
+  invite create        make an invitation link, or mail it
+  invite list          the organisation's invitations and their state
+  invite revoke        close an open invitation at once
+  signup enable        open self-sign-up, by email domain
+  signup disable       close self-sign-up
+  signup show          the organisation's self-sign-up rule
+  group create         create a group
+  group list           show groups and their sizes
+  group member         add or remove a member (-remove)
+  group nest           put a group inside another, so its members are in that one too (-remove)
+  group release        let a client see group membership
+  group impersonation  grant or revoke a group's ability to act as another user
+  role grant           give a person or an application an administrative role in one organisation
+  role list            who holds which role in an organisation
+  role revoke          take a role away; the holder's next request is refused
+  admin-token create   mint a scoped, revocable admin API token
+  admin-token list     show admin tokens, their scopes and when each was last used
+  admin-token revoke   revoke one immediately, with no restart
+  webauthn policy      which authenticators an organisation accepts, and what to ask of them
+  webauthn show        the organisation's passkey policy
+  duo set              configure the organisation's Duo application
+  duo show             the organisation's Duo application
+  duo enroll           give a person the Duo username they sign in with there
+
+clients:
+  client create                    register an OAuth client
+  client set-keys                  switch a client to private_key_jwt with its public JWKS
+  client set-encryption            encrypt an ID token, userinfo or a response to the client's key
+  client set-tls                   authenticate a client by TLS certificate (RFC 8705)
+  client set-dpop                  require a DPoP proof on every token request
+  client set-pkce                  whether its authorization requests must carry PKCE
+  client set-par                   refuse an authorization request not pushed first
+  client set-signed-requests       refuse an authorization request that is not signed
+  client set-state                 refuse an authorization request with no state
+  client set-logout                post-logout redirects and front- and back-channel logout
+  client set-lifetimes             token lifetimes, and how long consent lasts
+  client name                      the client's name in another language (-locale), or not (-remove)
+  client set-alg                   what signs the client's ID and access tokens and responses
+  client set-issuer-alias          mint the client's tokens under a legacy issuer
+  client set-admin-api             let the client obtain tokens for the Admin API
+  client set-first-party           skip the consent screen for a client that is yours
+  client set-roles-claim           the claim a client's tokens carry a person's roles in it under
+  client set-login-ui              the page of its own a client signs people in on, over JSON
+  client set-token-format          a client's access tokens as JWTs, or opaque handles to introspect
+  client set-subject-type          name people to a client by their id, or by one only its sector knows
+  client set-profile               hold a client to the FAPI 2.0 Security Profile
+  client set-acr                   the assurance every sign-in to the client must reach
+  client set-grants                set which grant types a client may use
+  client set-exchange              grant RFC 8693 token exchange, for itself and audiences
+  client set-exchange-containment  exchange only tokens the client holds or is the audience of
+  client id-jag-allow              let a client have an ID-JAG for another authorization server
+  client id-jag-audiences          the authorization servers a client may have one for
+  client id-jag-forget             stop issuing them for one
+  client set-hybrid                permit hybrid response types
+  client set-claims-redirects      where UMA claims gathering may return a requesting party
+  client set-ciba                  the CIBA delivery mode: poll, ping or push
+  client set-assertion-issuers     which issuers' assertions a client may exchange
+  registration enable              turn on dynamic client registration (RFC 7591)
+  registration token               mint an initial access token for registration
+  registration revoke              stop a registration token before it is spent
+  rar register                     register an RFC 9396 authorization details type
+  rar allow                        let a client request a registered type
+  rar list                         show registered types and which clients may use them
+  resource add                     a resource the organisation's tokens may be audienced to
+  resource list                    the organisation's RFC 8707 resources
+  resource remove                  stop issuing tokens for a resource
+
+verifiable credentials:
+  credential define        define a credential this issuer can mint (SD-JWT VC)
+  credential list          show the credential configurations this issuer publishes
+  credential requests      what wallets have asked for and is waiting on a decision
+  credential decide        approve or deny a waiting request
+  credential offer         mint an OID4VCI Credential Offer a wallet can redeem
+  credential trust-root    trust a CA for x5c key proofs
+  credential untrust-root  stop trusting a CA for x5c key proofs
+  credential roots         the CAs x5c key proofs may verify to
+  credential encryption-key  make a new key for wallets to encrypt to
+  credential issued        what has been issued and can be revoked
+  credential revoke        take back one credential, or all a person holds
+  attester add           trust a Client Attester's public keys
+  attester list            the trusted Client Attesters
+  external-factor add      register a service an external_factor stage may ask
+  external-factor list     the registered services
+  external-factor remove   forget one, refused while the sign-in flow names it
+
+keys and audit:
+  keys list         show signing keys, their state and when each may advance
+  keys rotate       advance the rotation one safe step (run it again later)
+  keys retire       remove passive keys nothing can still be verifying against
+  keys rewrap-root  re-seal every stored secret under a new root key
+  audit verify      say whether the audit chain verifies, or an archive file does
+  audit checkpoint  anchor the audit chain, signed by whoever runs it
+  audit archive     move entries before a date into a file that verifies alone
+  export audit      write the audit trail as CSV, with its chain verified
+  export org        write an organisation's configuration as the file plan and apply read
+
+federation in:
+  idp add                   register an external sign-in provider (Google, GitHub, ...)
+  idp list                  show external sign-in providers
+  idp check                 probe a provider's discovery document and keys
+  idp refresh-saml          read a SAML upstream's metadata again
+  idp saml-key              make, retire or list this deployment's keys toward a SAML upstream
+  idp saml-use              say whether a SAML upstream gets signed requests and must encrypt
+  idp disable               take an upstream provider out of service
+  idp enable                put an upstream provider back in service
+  idp assertions            allow or refuse RFC 7523 assertions from a provider
+  idp add-issuer            register a key-publishing issuer for the jwt-bearer grant
+  idp vp-issuer             say whose credentials a wallet sign-in believes, with their keys
+  idp vp-cross-device       let a wallet sign-in's wallet be on another device, confirmed by email
+  idp vp-dc-api             let a wallet sign-in ask through the browser's Digital Credentials API
+  idp vp-iaca               replace the IACA certificates an mdoc wallet sign-in believes
+  idp link                  make an upstream subject act as a person
+  idp unlink                detach an upstream subject from its person
+  idp links                 a provider's subjects and the people they act as
+  idp trust-mfa             which upstream amr and acr values count as multi-factor
+  idp store-tokens          keep what a provider hands over, for applications to call it
+  idp domains               the address domains a provider signs in
+  idp logout                sign out at the provider too, at its end_session_endpoint
+  idp forward               what a sign-in here passes on to the provider
+  idp group-map             say a provider's group grants a local one
+  idp group-claim           which claim a provider's groups arrive in
+  idp auth                  how this engine proves itself at a provider's token endpoint
+  idp verified-email        whether to believe a provider's email_verified, and require it
+  idp attribute-map         route a provider's claim into a local attribute
+  idp apple-secret          mint the client secret Apple requires
+  saml add-sp               register a SAML service provider
+  saml refresh-sp           read a service provider's metadata again
+  saml list                 show registered SAML service providers
+  saml signing              what a service provider is sent signed, and how long it lasts
+  saml nameid               take a service provider's NameID from an attribute
+  saml idp-initiated        let a sign-in to a service provider start from the portal
+  saml soap-logout          tell a service provider of a logout with no browser
+  saml wsfed-token          which SAML a WS-Federation application's token is in
+  saml org-endpoint         have a service provider answer at its organisation's endpoints
+  saml attribute-release    which local attribute a SAML attribute carries
+  saml group-release        which groups a service provider is told of
+  scim-source add           register an inbound SCIM source and mint its token
+  scim-source list          the inbound SCIM sources
+  scim-source disable       refuse an inbound source's token
+  scim-source enable        accept an inbound source's token again
+  dir add                   register an LDAP, Entra ID or Google Workspace directory
+  dir list                  each directory source and what its last sync did
+  dir set                   a source's state, missing-people rule and deactivation ceiling
+  dir group-map             which local group a directory group grants
+  dir sync                  reconcile users from a directory (preview unless -apply)
+  dir test                  read a directory as a sync would and say where it stopped
+  kerberos check            will this keytab work (no database needed)
+  kerberos principals       the principals a realm holds
+  kerberos sync             import a realm's principals as people
+  kerberos add-realm        give an organisation a realm and its keytab, by host
+  kerberos list-realms      show an organisation's realms
+  kerberos remove-realm     forget a realm and its keytab
+  import keycloak           import users, groups and clients from a Keycloak realm export
+  import authentik          import users, groups and providers from an authentik dumpdata export
+  import zitadel            import an organisation's users and roles from a Zitadel export
+  import auth0              import people from an Auth0 bulk user export (JSON)
+  import okta               import people from what Okta's users API lists
+  import entra              import people from Entra ID's user download (CSV) or Graph's JSON
+  import shadow             an account for each /etc/shadow entry with a password
+  import pskc               give the tokens in a vendor's PSKC file to their holders
+  migration-source add      where pending people's passwords are verified at first sign-in
+  migration-source enable   start sending pending passwords to the source
+  migration-source disable  stop sending pending passwords to the source
+  migration-source show     the source, and how the cutover is going
+  migration-source remove   delete the migration source
+  migration-source test     ask the source about one account, naming the step that failed
+
+federation out:
+  scim add                register a SCIM provisioning target
+  scim list               show provisioning targets
+  scim sync               converge targets on this directory (preview unless -apply)
+  scim verify             read each target back and report anyone still active
+  scim authorize          sign in at a target that takes the authorization code grant
+  scim enable             put a target back in service
+  scim disable            take a target out of service, keeping its links
+  scim scope              limit a target to the members of these groups
+  scim provision-group    create a group at a target and own it there
+  scim deprovision-group  delete a group this deployment made at a target
+  provision add           register a native provisioning target
+  ssf add-stream          register a Shared Signals receiver for CAEP events
+  ssf list                show Shared Signals receivers
+  ssf set-status          enable, pause or disable a receiver's stream
+  ssf add-source          accept Shared Signals from a transmitter
+  ssf poll-source         pull a transmitter's events (RFC 8936) rather than wait for them
+  ssf received            what transmitters sent, most recent first
+  events subscribe        subscribe a URL to an organisation's events
+  events list             the organisation's event subscriptions
+  events remove           delete a subscription
+  events rotate           print a new signing secret for a subscription
+  events enable           switch a subscription back on
+  events test             send a subscription a test delivery
+
+authorization and federation:
+  authz set-model      store an authorization model once its own tests pass
+  authz show-model     print the authorization model in force
+  authz test           check a model file and run its tests, with no database
+  authz grant          grant a relation, for good or for -expires-in
+  authz revoke         revoke a relation
+  authz delegate       let another organisation hand out relations on this one's objects
+  authz delegations    the delegations an organisation is either side of
+  authz undelegate     take a delegation away, and what was handed out under it
+  authz check          answer an authorization question, with the reason
+  authz list           the relations a subject holds, or that are held on an object
+  authz expand         who may do something to an object
+  uma settings         offer, or stop offering, resource-owner intervention on refused UMA requests
+  uma requests         UMA requests waiting for a resource owner to decide
+  uma approve          grant a relation and let a submitted UMA request through
+  uma deny             close a submitted UMA request without granting anything
+  federation enable    join an OpenID Federation: generate an Entity Statement key
+                       and publish /.well-known/openid-federation
+  federation show      print the Entity Configuration this instance publishes
+  federation add-subordinate     speak for an entity, with the keys it gave you
+  federation subordinates        who this instance speaks for
+  federation remove-subordinate  stop speaking for one
+  federation add-anchor          take a Trust Anchor's word for relying parties
+  federation anchors             whose word this instance takes
+  federation remove-anchor       stop, and delete the clients it admitted
+  client-metadata allow   let client_id URLs under a prefix sign people in
+  client-metadata rules   whose client_id URLs this instance fetches
+  client-metadata forget  stop, and delete the clients a rule admitted
   trust-mark issue    issue an OpenID Federation Trust Mark to an entity
-  trust-mark revoke   withdraw a Trust Mark this entity issued
-  trust-mark list     Trust Marks this entity issues and holds
-  trust-mark accept   publish a Trust Mark somebody granted this entity
-  trust-mark drop     stop publishing a Trust Mark
-  trust-mark delegate authorise another entity to issue a Trust Mark type we own
-  trust-mark issuers  set trust_mark_issuers (Trust Anchor only)
-  trust-mark owners   set trust_mark_owners (Trust Anchor only)
-  federation enable   join an OpenID Federation: generate an Entity Statement key
-                      and publish /.well-known/openid-federation
-  federation show     print the Entity Configuration this instance publishes
-  client set-grants   set which grant types a client may use
-  credential offer    mint an OID4VCI Credential Offer a wallet can redeem
-  credential define   define a credential this issuer can mint (SD-JWT VC)
-  credential list     show the credential configurations this issuer publishes
-  rar register        register an RFC 9396 authorization details type
-  rar allow           let a client request a registered type
-  rar list            show registered types and which clients may use them
-  doctor              inspect this deployment and report what is wrong with it
-  serve               serve the OIDC endpoints
+  trust-mark revoke    withdraw a Trust Mark this entity issued
+  trust-mark list      Trust Marks this entity issues and holds
+  trust-mark accept    publish a Trust Mark somebody granted this entity
+  trust-mark drop      stop publishing a Trust Mark
+  trust-mark delegate  authorise another entity to issue a Trust Mark type we own
+  trust-mark issuers   set trust_mark_issuers (Trust Anchor only)
+  trust-mark owners    set trust_mark_owners (Trust Anchor only)
+
+extension providers:
+  provider add     register a provider for a hook, failing open or closed
+  provider list    what is registered, and whether anything consults each hook
+  provider claims  which claims a token hook may add
+  provider rotate  print a new signing secret for a provider
+  provider test    call a provider with a request naming nobody, and say what came back
+  provider remove  remove a provider; decisions are made locally again
+
+outposts and remote access:
+  outpost create         register an LDAP, RADIUS, proxy or desktop outpost
+  outpost list           the organisation's outposts and when each last called
+  outpost run            run an LDAP or RADIUS outpost, which holds no database credentials
+  outpost disable        refuse an outpost's token
+  outpost enable         accept an outpost's token again
+  outpost rotate         give an outpost a new token, and stop the old one
+  outpost remove         delete an outpost and its token
+  outpost search-group   whose members may search the directory through an LDAP outpost
+  radius add-client      register a network device permitted to send Access-Requests
+  radius list            show registered RADIUS clients
+  radius disable-client  refuse a RADIUS device
+  radius enable-client   accept a RADIUS device again
+  radius authorize       place a group's members on a VLAN or give them a Filter-Id
+  proxy check            prove a forward-auth deployment actually protects the app
+  proxy add-host         protect an application with forward auth
+  proxy release          the groups a protected application hears of, and a signed identity
+  proxy rules            what happens on one path of a protected application
+  proxy cookie           where a protected application's proxy cookie lives
+  proxy list             the protected hosts
+  proxy disable-host     stop protecting a host, keeping it
+  proxy enable-host      protect a host again
+  proxy remove-host      remove a protected host
+  rac add                register a remote-access connection (RDP, VNC or SSH)
+  rac list               the remote-access connections
+  rac disable            take a connection out of service
+  rac enable             put a connection back in service
+  rac set-parameters     replace a connection's guacd parameters
+  rac limits             how many may hold a connection, and for how long
+
+policy, prompts and branding:
+  policy test     check a policy file (no database needed -- for CI)
+  policy graph    draw a policy file's decisions
+  policy apply    install a policy file
+  policy show     print the policy in force
+  flow test       check a sign-in flow file (no database needed -- for CI)
+  flow paths      list every journey a flow admits, and what produces each
+  flow apply      install a sign-in flow file
+  flow show       print the built-in flows, as a file to start from
+  prompt set      define or reword an interstitial prompt
+  prompt list     the organisation's prompts and how many answered each
+  prompt enable   ask a prompt again
+  prompt disable  stop asking a prompt, keeping its answers
+  brand set       an instance's or an organisation's name, logo, support link and colours
+  brand show      the brand set on an instance or an organisation
+  brand remove    take a brand off an instance or an organisation
+  brand check     would this palette be readable (no database needed)
+  message set     reword one message for an organisation, in one language
+  message list    the messages an organisation has reworded
+  message remove  return one message to the catalogue's wording
+  theme eject     write the built-in HTML pages out so they can be edited
+  theme check     validate a theme directory; non-zero if anything is refused
+  theme list      which page is built-in and which is overridden
+  i18n list       the languages the sign-in pages can be rendered in
+  i18n status     every message a loaded language is missing
+  i18n keys       every message key the pages use
+
+testing:
+  logout-test     prove back-channel logout ends a relying party's session
 
 env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
+  SIGNARI_ROOT_KEY_FILE   or a file holding it, readable by this user alone
 
-flags:
-  -dsn string   PostgreSQL connection string (or set SIGNARI_DSN)
-  -to int       stop at this version instead of the latest
-`)
-	return fmt.Errorf("no command given")
-}
+help:
+  signari help <command>    what one command does and the flags it takes
+  signari completion bash   a completion script (or zsh)
+  every command takes -dsn (or SIGNARI_DSN) and -timeout; docs/cli.md describes them all
+`
 
-func run(args []string) error {
+func run(args []string) (err error) {
 	if len(args) == 0 {
 		return usage()
+	}
+	// Before any command runs, because import, sync and serve all reach
+	// destinations an operator named, and a malformed list must stop the
+	// process rather than leave the private network closed or wide open.
+	if err := safedial.AllowPrivate(os.Getenv("SIGNARI_OUTBOUND_ALLOW_PRIVATE")); err != nil {
+		return err
+	}
+	// The same moment for the same reason: a bundle that was set and cannot be
+	// read would otherwise leave every internal destination failing with an
+	// unknown-authority error that names nothing.
+	if err := safedial.TrustBundle(os.Getenv("SIGNARI_CA_BUNDLE")); err != nil {
+		return err
 	}
 
 	fs := flag.NewFlagSet("signari", flag.ContinueOnError)
 	dsn := fs.String("dsn", os.Getenv("SIGNARI_DSN"), "PostgreSQL connection string")
 	to := fs.Int("to", 0, "stop at this version (0 = latest)")
+	lockTimeout := fs.Duration("lock-timeout", 10*time.Second,
+		"how long a migration statement may wait for a lock before it fails, so a migration "+
+			"queued behind a long transaction does not hold every query on that table (0 = no bound)")
+	statementTimeout := fs.Duration("statement-timeout", 0,
+		"how long a migration statement may run (0 = no bound: an index on a large table takes what it takes)")
+	timeout := fs.Duration("timeout", 0,
+		"how long the command may run before it is cancelled (0 = no limit); unset, 60s for a "+
+			"command that edits configuration and no limit for one whose work grows with the data")
+	outputFormat := fs.String("o", "text", "what a listing prints: text, or json for a script")
+	adminURL := fs.String("admin-url", "",
+		"the Admin API's address (or SIGNARI_ADMIN_URL for `signari api`): the command makes its change "+
+			"through the API, as the token in SIGNARI_ADMIN_TOKEN or -token-file, rather than the database")
+	tokenFile := fs.String("token-file", "", "a file holding the admin token to present, instead of SIGNARI_ADMIN_TOKEN")
+	apiData := fs.String("data", "", "`signari api`: the request body, as JSON, @file, or - for standard input")
+	ifMatch := fs.String("if-match", "", "`signari api`: the configuration version the change must be made against")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`")
@@ -242,7 +553,8 @@ func run(args []string) error {
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
-	redirect := fs.String("redirect", "", "registered redirect_uri (exact match)")
+	redirect := fs.String("redirect", "", "registered redirect_uri (exact match); `scim authorize`: where the "+
+		"target sends you back, a free loopback port when not given")
 	public := fs.Bool("public", false, "register a public client (PKCE, no secret)")
 	// Defaults to true, matching the column default, because PKCE is required for
 	// every client by RFC 9700 and OAuth 2.1. The flag exists because the OIDC
@@ -252,48 +564,87 @@ func run(args []string) error {
 	// to set the column was an UPDATE by hand.
 	requirePKCE := fs.Bool("require-pkce", true,
 		"refuse an authorization request from this client that carries no PKCE challenge")
-	file := fs.String("file", "", "path to a realm export (import)")
+	file := fs.String("file", "", "path to a realm export (import), or an audit archive (audit verify)")
+	installID := fs.String("install-id", "", "`import authentik`: the installation ID authentik derived "+
+		"persistent NameIDs and passkey user handles from")
+	importVia := fs.String("via", "", "`import auth0`, `import okta`, `import entra`: the slug of the provider "+
+		"registered here that is that service itself; every person is linked to it by their identifier there")
+	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
 	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
-	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm (default: all in use)")
+	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm, publishing its first key if it has none "+
+		"(default: all in use); `client set-alg`: what signs the client's tokens, one the instance holds a key for")
+	rsaBits := fs.Int("rsa-bits", 0, "`keys rotate -alg`: the size of the RSA key published, 2048, 3072 or 4096 "+
+		"(default: the size of the key it replaces)")
+	clientAccessAlg := fs.String("access-alg", "", "`client set-alg`: what signs the client's access tokens alone; "+
+		"empty goes back to what signs its ID tokens")
+	clientResponseAlg := fs.String("response-alg", "", "`client set-alg`: what signs the client's authorization "+
+		"responses, holding it to asking for them signed; empty lets go of both")
+	clientUserinfoAlg := fs.String("userinfo-alg", "", "`client set-alg`: what signs the client's userinfo "+
+		"responses; empty goes back to JSON")
+	clientIntrospectionAlg := fs.String("introspection-alg", "", "`client set-alg`: what signs an introspection "+
+		"answer the client asks for as a JWT; empty goes back to RS256")
+	tokenFormat := fs.String("token-format", "jwt", "`client set-token-format`: jwt, or opaque for a handle a "+
+		"resource server introspects")
+	securityProfile := fs.String("security-profile", "none", "`client set-profile`: none, fapi2 to hold the "+
+		"client to the FAPI 2.0 Security Profile, or fapi2-message-signing for that and signed requests and responses")
+	subjectType := fs.String("subject-type", "public", "`client set-subject-type`: public, or pairwise for a "+
+		"subject that means nothing outside the client's sector")
+	sector := fs.String("sector", "", "`client set-subject-type`: the host name of the clients that share a "+
+		"pairwise subject (default: the one it has, or the host of its redirect URIs when they have only one)")
 	promoteNow := fs.Bool("now", false, "promote without waiting for the publication dwell -- key compromise only")
 	allowAssertions := fs.Bool("allow-assertions", false, "`idp assertions`: let this provider's JWTs be exchanged for tokens (RFC 7523)")
 	jwksURL := fs.String("jwks-url", "", "`idp add-issuer`: URL publishing the issuer's signing keys")
 	assertionIssuers := fs.String("issuers", "",
 		"`client set-assertion-issuers`: comma-separated provider slugs, or empty to permit none")
-	eraseSubject := fs.String("subject-id", "", "`erase subject`: the subject uuid to erase")
+	eraseSubject := fs.String("subject-id", "", "`erase subject`, `export subject`: the subject's uuid")
 	eraseConfirm := fs.String("confirm", "",
-		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone")
+		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
+			"`restore finalize`: repeat the database's name; it signs everybody out. "+
+			"`instance org-delete`: the code its first run printed")
 	eraseDeactivate := fs.Bool("deactivate", false,
 		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
 	origin := fs.String("origin", "", "the application's own address, to test the bypass (proxy check)")
 	probePath := fs.String("path", "", "extra path to probe, repeatable as a comma-separated list (proxy check)")
 	insecure := fs.Bool("insecure", false, "skip certificate verification (internal CA or self-signed only)")
-	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID")
+	entityID := fs.String("entity-id", "", "the service provider's SAML EntityID, or a federation subordinate's Entity Identifier")
+	metadataSource := fs.String("metadata", "", "a SAML partner's metadata: a file, or an https URL")
+	metadataSigner := fs.String("metadata-signer", "", "path to the certificate that metadata must be signed with (PEM)")
+	metadataUnsigned := fs.Bool("metadata-unsigned", false,
+		"take metadata with no signature check, on the strength of where it came from")
+	metadataEncrypt := fs.Bool("metadata-encrypt", false,
+		"`saml add-sp`: encrypt assertions to the key the provider's metadata offers")
 	acsURL := fs.String("acs", "", "AssertionConsumerService URL, matched exactly (https only)")
+	artifactACS := fs.String("artifact-acs", "", "AssertionConsumerService URLs that take the response by artifact, separated by commas")
+	ecpACS := fs.String("ecp-acs", "", "PAOS AssertionConsumerService URLs, for ECP sign-ins, separated by commas")
+	artifactResolution := fs.String("artifact-resolution", "",
+		"where the provider resolves the artifacts it sends requests by: index=https URL, separated by commas")
 	nameIDFormat := fs.String("nameid-format", "persistent", "persistent (pairwise), emailAddress or transient")
 	sloURL := fs.String("slo", "", "the provider's SingleLogoutService URL (https)")
 	spCert := fs.String("sp-cert", "", "path to the provider's signing certificate (PEM), required for single logout")
 	wantSignedReq := fs.Bool("want-signed-requests", false,
 		"require this provider to sign its AuthnRequests (needs -sp-cert)")
 	sloBinding := fs.String("slo-binding", "HTTP-Redirect",
-		"binding for the single logout endpoint: HTTP-Redirect or HTTP-POST")
+		"binding for the single logout endpoint: HTTP-Redirect, HTTP-POST or HTTP-Artifact")
 	duoClientID := fs.String("duo-client-id", "", "Duo integration key (20 characters)")
 	ssfCritical := fs.String("critical-subject-members", "",
 		"comma-separated subject member names this transmitter marks Critical (SSF 1.0 section 3.6)")
+	factorAMR := fs.String("amr", "", "comma-separated amr values an external factor may claim (external-factor add)")
 	attesterJWKS := fs.String("attester-jwks", "", "path to a JWKS file holding the client attester's PUBLIC keys")
 	duoSecret := fs.String("duo-secret", "", "Duo secret key (40 characters)")
 	duoAPIHost := fs.String("duo-api-host", "", "api-XXXXXXXX.duosecurity.com")
 	duoFailOpen := fs.Bool("duo-fail-open", false,
 		"sign users in WITHOUT a second factor when Duo is unreachable")
 	duoUsername := fs.String("duo-username", "", "the username this person has in Duo")
+	testUsername := fs.String("username", "", "`migration-source test`: the account the source is asked "+
+		"about; its password is read from standard input")
 	srcSSOURL := fs.String("sso-url", "", "upstream SAML SSO URL (idp add -kind saml)")
 	srcUnsolicited := fs.Bool("allow-unsolicited", false,
 		"accept IdP-initiated sign-in, which cannot be tied to a request this browser made")
 	srcForceAuthn := fs.Bool("force-authn", false,
 		"ask the upstream to re-authenticate rather than reuse its session")
-	srcSkew := fs.Int("skew", 30, "clock tolerance in seconds, clamped to 300")
+	srcSkew := fs.Int("skew", 30, "clock tolerance in seconds, at most 300")
 	ldapURL := fs.String("ldap-url", "", "ldap:// or ldaps:// URL of the directory")
 	ldapBindDN := fs.String("ldap-bind-dn", "", "DN to bind as when reading")
 	ldapPassword := fs.String("ldap-password", "", "password for the bind DN")
@@ -301,31 +652,53 @@ func run(args []string) error {
 	ldapFlavour := fs.String("ldap-flavour", "openldap", "openldap, ad or freeipa")
 	ldapStartTLS := fs.Bool("ldap-start-tls", true, "upgrade a plaintext connection with StartTLS")
 	ldapCA := fs.String("ldap-ca", "", "PEM file of roots that verify the directory server")
-	dirDomain := fs.String("domain", "", "Google Workspace domain")
+	fetchGroups := fs.Bool("fetch-groups", false,
+		"fetch each person's group memberships, so mapped groups are reconciled (dir add, dir set)")
+	groupAttribute := fs.String("group-attribute", "",
+		"the LDAP attribute listing a person's groups; empty reads memberOf (dir add, dir set)")
+	attributeMap := fs.String("attribute-map", "",
+		"LDAP attributes to read: remote=local,... a local name is a declared attribute, email or name; empty clears it (dir set)")
+	syncInterval := fs.Int("sync-interval", 0, "seconds between scheduled syncs, 300 to 604800; 0 stops them (dir set)")
+	dirDomain := fs.String("domain", "", "Google Workspace domain; `import shadow`: the domain each account's address is made with")
 	dirImpersonate := fs.String("impersonate", "", "administrator the service account acts as")
 	dirTenant := fs.String("tenant", "", "Entra tenant id (read from the credential file)")
 	dirFilter := fs.String("filter", "", "user filter: Google query or Entra OData")
 	outFile := fs.String("out", "", "write to this file instead of stdout")
+	echPublicName := fs.String("public-name", "",
+		"`ech new`: the DNS name sent in the clear in place of the one asked for; the server needs a certificate for it")
+	echConfigID := fs.Int("config-id", -1, "`ech new`: 0 to 255, the id clients name this key by; random when not given")
+	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
 	regMax := fs.Int("max-clients", 100, "ceiling on dynamically registered clients")
+	regConfidential := fs.Bool("allow-confidential", false,
+		"let a dynamic registrant asking for a token_endpoint_auth_method other than none be given "+
+			"a client secret (registration enable); off, every registered client is public")
 	regUses := fs.Int("uses", 0, "how many clients this token may create (0 = unlimited)")
 	ssfEndpoint := fs.String("endpoint", "", "https URL to push Security Event Tokens to")
 	ssfToken := fs.String("receiver-token", "", "bearer token the Shared Signals receiver issued us (optional)")
-	ssfEvents := fs.String("events", "", "comma-separated event types the receiver asked for")
+	ssfEvents := fs.String("events", "",
+		"comma-separated event types: those an SSF receiver asked for, or those an events subscription receives")
 	ssfPoll := fs.Bool("poll", false, "create a poll stream (RFC 8936): the receiver pulls from /ssf/poll instead of us pushing")
 	providerURL := fs.String("provider-url", "", "https endpoint of the extension service to call")
 	providerHook := fs.String("hook", "", "which decision it extends ("+providerHookList()+")")
 	providerMode := fs.String("mode", "", "what happens when it cannot be reached: fail_closed or fail_open. REQUIRED -- there is no default")
 	providerTimeout := fs.Duration("provider-timeout", 2*time.Second, "how long to wait for it (max 5s)")
+	providerPosition := fs.Int("position", 0, "when a provider is asked among its hook's, lowest first")
 	radiusNet := fs.String("network", "", "CIDR the RADIUS device sends from, e.g. 10.0.0.0/24")
 	radiusSecret := fs.String("secret", "", "shared secret configured on the RADIUS device")
 	tokenScopes := fs.String("scopes", "",
-		"comma-separated admin token scopes, e.g. users:write,clients:write")
+		"comma-separated admin token scopes, e.g. users:write,clients:write, or what a resource's metadata offers (resource add)")
+	roleName := fs.String("role", "", "an administrative role: org-owner, user-manager, app-manager or auditor")
+	tokensPerMinute := fs.Int("tokens-per-minute", 0,
+		"`instance org-budgets`: tokens the organisation's clients may be issued a minute (0 restores the default)")
+	signInsPerMinute := fs.Int("sign-ins-per-minute", 0,
+		"`instance org-budgets`: sign-ins the organisation's pages may take a minute (0 restores the default)")
+	bindingID := fs.String("binding", "", "a role binding's uuid, from `signari role list`")
 	tokenExpires := fs.Duration("expires-in", 0,
-		"how long an admin token stays valid, e.g. 2160h for 90 days (0 = never)")
-	tokenID := fs.String("token-id", "", "admin token uuid to revoke")
+		"how long an admin token or a granted relation stays valid, e.g. 2160h for 90 days (0 = never)")
+	tokenID := fs.String("token-id", "", "admin token uuid to revoke, or a registration token's (registration revoke)")
 	tlsSubjectDN := fs.String("tls-subject-dn", "", "certificate subject DN that must match (RFC 4514)")
 	tlsSANDNS := fs.String("tls-san-dns", "", "certificate dNSName that must match")
 	tlsSANURI := fs.String("tls-san-uri", "", "certificate URI SAN that must match")
@@ -334,6 +707,50 @@ func run(args []string) error {
 	tlsBound := fs.Bool("tls-bound-tokens", false, "issue certificate-bound access tokens (RFC 8705)")
 	dpopBound := fs.Bool("dpop-bound", false, "RFC 9449 §5.2: refuse token requests from this client that carry no DPoP proof")
 	exchangeAudMatch := fs.Bool("exchange-audience-match", false, "RFC 8693: only exchange subject tokens this client holds or is named in the audience of")
+	mayExchange := fs.Bool("may-exchange", true, "`client set-exchange`: grant token exchange (false withdraws it)")
+	accessTTL := fs.Duration("access-ttl", 0,
+		"`client set-lifetimes`: access-token lifetime, 1m to 1h; it is also how long a revoked token keeps working")
+	refreshTTL := fs.Duration("refresh-ttl", 0, "`client set-lifetimes`: refresh-token lifetime, 5m to 8760h")
+	refreshGrace := fs.Duration("refresh-grace", 0,
+		"`client set-lifetimes`: how long after a rotation the old refresh token may be retried once, 0s to 30s")
+	consentTTL := fs.String("consent-ttl", "",
+		"`client set-lifetimes`: how long a person's consent lasts before they are asked again, 1h to 87600h, "+
+			"or never")
+	issuerAlias := fs.String("alias", "",
+		"`instance add-alias` / `retire-alias`: a legacy issuer URL this instance also claims; "+
+			"`client set-issuer-alias`: the alias to mint the client's tokens under (empty clears)")
+	aliasRetire := fs.String("retire-after", "",
+		"`instance add-alias`: when the alias stops being accepted, YYYY-MM-DD or RFC 3339 "+
+			"(`retire-alias`: default now)")
+	requireState := fs.Bool("require-state", true,
+		"`client set-state`: refuse an authorization request with no state (false lifts it)")
+	requirePAR := fs.Bool("require-par", true,
+		"`client set-par`: refuse any authorization the client did not push first (false lifts it)")
+	requireSigned := fs.Bool("require-signed", true,
+		"`client set-signed-requests`: refuse an authorization that is not a signed request object (false lifts it)")
+	firstParty := fs.Bool("first-party", true,
+		"`client set-first-party`: skip the consent screen for this client (false restores it)")
+	adminAPI := fs.Bool("admin-api", true,
+		"`client set-admin-api`: let this client obtain tokens for the Admin API, which act with their holder's roles (false withdraws it)")
+	minimumACR := fs.String("minimum-acr", "",
+		"`client set-acr`: the weakest authentication the client accepts: 1 (a single factor), 2 "+
+			"(multi-factor), 3 (multi-factor with a passkey or security key) or 4 (with a key bound to its device)")
+	postLogoutRedirects := fs.String("post-logout-redirects", "",
+		"`client set-logout`: comma-separated URIs a relying party may name as post_logout_redirect_uri (empty clears)")
+	frontchannelURI := fs.String("frontchannel-uri", "",
+		"`client set-logout`: https URI loaded in a frame at sign-out, OpenID front-channel logout (empty clears)")
+	frontchannelSID := fs.Bool("frontchannel-sid", true,
+		"`client set-logout`: add iss and sid to the front-channel logout URI (the stored default)")
+	backchannelURI := fs.String("backchannel-uri", "",
+		"`client set-logout`: https URI a logout token is posted to at sign-out, OpenID back-channel "+
+			"logout (empty clears; left alone when not given)")
+	backchannelSID := fs.Bool("backchannel-sid", true,
+		"`client set-logout`: put the session's sid in the logout token (left alone when not given)")
+	idJAGAudience := fs.String("audience", "", "the issuer identifier of another authorization server (client id-jag-allow, forget)")
+	idJAGRemoteClient := fs.String("remote-client-id", "", "what that server calls this client (client id-jag-allow)")
+	idJAGResources := fs.String("resources", "", "resources a grant may name there, comma separated (client id-jag-allow)")
+	exchangeAudiences := fs.String("exchange-audiences", "",
+		"`client set-exchange`: comma-separated audiences this client may exchange tokens for, besides itself")
 	promptFile := fs.String("prompt-file", "", "YAML defining a sign-in prompt")
 	configFile := fs.String("f", "", "declarative configuration file")
 	prune := fs.Bool("prune", false,
@@ -344,6 +761,11 @@ func run(args []string) error {
 	krbAdmin := fs.String("admin-principal", "",
 		"administrative principal kadmin authenticates as, e.g. signari/admin@EXAMPLE.COM")
 	krbSPN := fs.String("spn", "", "service principal, e.g. HTTP/auth.example.com")
+	krbStripRealm := fs.Bool("strip-realm", false, "`kerberos add-realm`: match people by the name before the @")
+	krbTrust := fs.String("trust-realms", "", "`kerberos add-realm`: comma-separated other realms whose people may sign in")
+	krbCreate := fs.Bool("create-accounts", false, "`kerberos add-realm`: make an account for a good ticket with none")
+	krbAdopt := fs.Bool("adopt-existing", false,
+		"`kerberos sync`: mark people already here with no password and no finished migration pending too")
 	credsFile := fs.String("credentials", "",
 		"path to the Google service account JSON or Entra client credentials")
 	targetDomain := fs.String("target-domain", "",
@@ -352,22 +774,48 @@ func run(args []string) error {
 	appleKeyID := fs.String("apple-key-id", "", "id of the .p8 key")
 	appleKeyFile := fs.String("apple-key", "", "path to the .p8 private key")
 	rpURL := fs.String("rp-url", "", "the relying party's backchannel_logout_uri")
-	subject := fs.String("subject", "", "sub to name in the logout token")
+	subject := fs.String("subject", "", "a sub: the one to name in the logout token, or the upstream subject `idp link` attaches to a person")
 	sidFlag := fs.String("sid", "", "sid to name in the logout token")
 	reviewBy := fs.String("review-by", "",
 		"YYYY-MM-DD when the hybrid exemption should be revisited")
 	outpostCore := fs.String("core", "", "URL of the Signari engine this outpost asks")
 	outpostToken := fs.String("outpost-token", "", "outpost token from `signari outpost create`")
 	outpostKind := fs.String("kind-outpost", "", "ldap, radius or proxy")
-	subURL := fs.String("url", "", "https endpoint events are POSTed to")
+	outpostSearchGroup := fs.String("search-group", "",
+		"`outpost create` / `outpost search-group`: group whose members may search the whole "+
+			"directory through this LDAP outpost (empty: each person sees only their own entry)")
+	// Plaintext asked for by name, as -admin-insecure is: an LDAP outpost
+	// without -tls-cert refuses to start rather than take passwords in clear.
+	outpostLDAPInsecure := fs.Bool("ldap-insecure", os.Getenv("SIGNARI_OUTPOST_LDAP_INSECURE") == "1",
+		"`outpost run`: serve LDAP without TLS (only behind a TLS terminator on loopback)")
+	outpostRADIUSClients := fs.String("radius-clients", "",
+		"`outpost run`: a file of `name network secret` lines, the devices a RADIUS outpost answers")
+	subURL := fs.String("url", "", "https endpoint events are POSTed to, or a provider's end_session_endpoint")
+	samlVersion := fs.String("saml-version", "", "`saml wsfed-token`: 2.0, or 1.1 for a relying party that reads nothing newer")
+	resourceURI := fs.String("resource", "", "an RFC 8707 resource indicator: the absolute URI a resource server is known by")
 	srcIssuer := fs.String("source-issuer", "", "the transmitter's issuer")
 	srcJWKS := fs.String("source-jwks", "", "the transmitter's JWKS URI (https)")
 	srcAudience := fs.String("source-audience", "", "what the transmitter puts in aud for us")
 	modelFile := fs.String("model-file", "", "authorization model, YAML")
+	fedJWKSFile := fs.String("jwks-file", "", "the keys a subordinate or anchor gave you, as a JWK Set (federation add-subordinate, add-anchor)")
+	keysFromMetadata := fs.Bool("keys-from-metadata", false, "believe the issuer with the keys its JWT VC Issuer Metadata publishes, read for each presentation (idp vp-issuer)")
+	fedTrustMarks := fs.String("trust-marks", "", "`federation add-anchor`: Trust Mark types a relying party must hold, comma separated")
+	metadataPrefix := fs.String("url-prefix", "", "an https URL ending in /, which a client_id is under (client-metadata allow, forget)")
+	fedPolicyFile := fs.String("metadata-policy-file", "", "what this entity requires of a subordinate's metadata (federation add-subordinate)")
+	fedMaxPath := fs.Int("max-path-length", 0, "how many Intermediates may stand below a subordinate (federation add-subordinate)")
+	fedIntermediate := fs.Bool("intermediate", false, "the subordinate has subordinates of its own (federation add-subordinate)")
 	authorityHints := fs.String("authority-hints", "",
 		"comma-separated Entity Identifiers of this entity's Immediate Superiors "+
 			"(federation enable). Leave empty only for a Trust Anchor with no superiors")
 	orgName := fs.String("organization-name", "", "organisation name published in the Entity Configuration")
+	trustAnchorHints := fs.String("trust-anchor-hints", "",
+		"comma-separated Entity Identifiers of the Trust Anchors this entity trusts, published as "+
+			"trust_anchor_hints (federation enable); kept when not given, empty clears")
+	federationContacts := fs.String("federation-contacts", "",
+		"comma-separated contacts published in the federation_entity metadata (federation enable); "+
+			"kept when not given, empty clears")
+	entityLifetime := fs.Duration("entity-lifetime", 24*time.Hour,
+		"how long the Entity Configuration is valid, 5m to 168h (federation enable); kept when not given")
 	// Every trust-mark flag carries the prefix. Names like -sub and -type would
 	// collide with flags this binary already registers, and Go's flag package
 	// panics on a duplicate registration -- which breaks EVERY command, not just
@@ -406,12 +854,24 @@ func run(args []string) error {
 	relSubject := fs.String("principal", "", "type:id, e.g. user:alice@example.com")
 	relRelation := fs.String("relation", "", "e.g. editor")
 	relObject := fs.String("object", "", "type:id, e.g. document:42")
+	relRelations := fs.String("relations", "", "comma-separated, what a delegation hands out (authz delegate)")
+	granteeOrg := fs.String("grantee-org", "", "the organisation a delegation lets hand them out (authz delegate)")
+	delegationID := fs.String("delegation", "", "the id `authz delegations` prints (authz undelegate)")
 	relAction := fs.String("action", "", "e.g. write")
 	subEvents := fs.String("event-types", "", "comma-separated event types, or empty for all")
-	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins")
+	inviteGroups := fs.String("groups", "", "comma-separated groups the new account joins, or a protected host may hear of")
+	proxyCookieScope := fs.String("cookie", "", "`proxy cookie`: own, deployment, or the parent domain to set it for")
+	signedIdentity := fs.String("signed-identity", "", "on or off: give a protected host a signed statement of who it is")
 	inviteTTL := fs.Duration("expires", 7*24*time.Hour, "how long the invitation lasts")
+	inviteID := fs.String("invitation", "", "`invite revoke`: the invitation's id, from `invite list`")
+	inviteSend := fs.Bool("send", false, "`invite create`: mail the link to -email instead of printing it")
 	signupDomains := fs.String("domains", "",
 		"comma-separated email domains permitted to self-sign-up")
+	signupVerify := fs.Bool("verify-email", true,
+		"`signup enable`: a new account proves its address with a code before its first sign-in; "+
+			"-verify-email=false lets it in on an address nobody has proved")
+	signupApproval := fs.Bool("require-approval", false,
+		"`signup enable`: a new account waits, pending, for an administrator to approve it")
 	brandName := fs.String("brand-name", "", "product name shown on sign-in pages")
 	brandLogo := fs.String("brand-logo", "", "https URL of the logo shown above the sign-in form")
 	brandSupport := fs.String("brand-support", "", "https URL offered when someone cannot get in")
@@ -434,33 +894,102 @@ func run(args []string) error {
 	kind := fs.String("kind", "oidc", strings.Join(kindNamesForHelp(), ", "))
 	extClientID := fs.String("client-id-ext", "", "client id issued by the external provider")
 	extSecret := fs.String("client-secret", "", "client secret issued by the external provider")
+	idpAuthMethod := fs.String("method", "", "how to sign in to the provider's token endpoint: client_secret_post, "+
+		"client_secret_basic, private_key_jwt or tls_client_auth")
+	idpClientKeyFile := fs.String("client-key-file", "", "PEM private key for private_key_jwt or tls_client_auth, "+
+		"or the key a wallet sign-in signs its requests with")
+	idpClientCertFile := fs.String("client-cert-file", "", "PEM certificate of that key; for a wallet sign-in its whole "+
+		"chain, leaf first")
+	vpPrefix := fs.String("client-id-prefix", "", "`idp add -kind oid4vp`: how wallets know this verifier, "+
+		"x509_san_dns, x509_hash or redirect_uri")
+	vpWallet := fs.String("wallet-url", "openid4vp://", "`idp add -kind oid4vp`: where the browser is sent with the "+
+		"request, openid4vp:// or a wallet's https link")
+	vpSubject := fs.String("subject-claim", "", "`idp add -kind oid4vp`: the credential claim that identifies a "+
+		"person within its issuer, a name or a JSON path such as [\"address\",\"country\"]")
+	vpEmail := fs.String("email-claim", "", "`idp add -kind oid4vp`: the claim holding the address, if any")
+	vpName := fs.String("name-claim", "", "`idp add -kind oid4vp`: the claim holding the name, if any")
+	vpResponseMode := fs.String("response-mode", "direct_post", "`idp add -kind oid4vp`: direct_post, or "+
+		"direct_post.jwt for the answer encrypted to a key of each request's own")
+	vpCrossDevice := fs.Bool("cross-device", false, "`idp add -kind oid4vp`: let the wallet be on another device "+
+		"too, by a code to scan, finished only by a code emailed to the linked account (a signed prefix only)")
+	vpDCAPI := fs.Bool("dc-api", false, "`idp add -kind oid4vp`: ask through the browser's Digital Credentials "+
+		"API too, the answer bound to this origin")
+	vpDocType := fs.String("doctype", "", "`idp add -kind oid4vp -credential-format mso_mdoc`: the mdoc document "+
+		"type asked for, org.iso.18013.5.1.mDL for a driving licence")
 	allowSignup := fs.Bool("allow-signup", true, "let this provider create new accounts")
 	allowLinking := fs.Bool("allow-linking", true, "let users add this provider to an existing account")
+	oauth2Authorize := fs.String("authorize-url", "", "`idp add -kind oauth2`: the provider's authorization endpoint")
+	oauth2Token := fs.String("token-url", "", "`idp add -kind oauth2`: the provider's token endpoint")
+	oauth2Userinfo := fs.String("userinfo-url", "", "`idp add -kind oauth2`: where its access token says who somebody is")
+	oauth2Scopes := fs.String("idp-scopes", "", "`idp add -kind oauth2`: comma-separated scopes the provider is asked for")
+	oauth2Subject := fs.String("userinfo-subject", "", "`idp add -kind oauth2`: the path to a person's stable id, "+
+		"default sub")
+	oauth2Email := fs.String("userinfo-email", "", "`idp add -kind oauth2`: the path to their address, default email")
+	oauth2Verified := fs.String("userinfo-email-verified", "", "`idp add -kind oauth2`: the path to a JSON true saying "+
+		"the address is confirmed, needed to trust one")
+	oauth2Name := fs.String("userinfo-name", "", "`idp add -kind oauth2`: the path to their name, default name")
+	samlKeyPurpose := fs.String("purpose", "", "idp saml-key: what the new key is for: signing or encryption")
+	samlKeyRetire := fs.String("retire", "", "idp saml-key: the id of the key to retire")
+	samlSignRequests := fs.Bool("sign-requests", false, "idp saml-use: sign the requests sent to this upstream")
+	samlRequireEncryption := fs.Bool("require-encryption", false, "idp saml-use: refuse an assertion from this upstream that is not encrypted")
 	trustEmail := fs.Bool("trust-email-verification", false, "generic OIDC only: believe this provider's email_verified claim")
+	requireVerified := fs.Bool("require-verified-email", true,
+		"`idp verified-email`: a new account through the provider needs an address it verified and is believed about")
 	baseURL := fs.String("base-url", "", "SCIM base URL of the target application")
-	scimToken := fs.String("token", "", "bearer token the SCIM target issued")
+	scimToken := fs.String("token", "", "bearer token the SCIM target issued, or with -oauth-token-url the client secret")
+	oauthTokenURL := fs.String("oauth-token-url", "", "where the SCIM target issues tokens by the client credentials grant")
+	oauthClientID := fs.String("oauth-client-id", "", "the client id for -oauth-token-url")
+	oauthScope := fs.String("oauth-scope", "", "the scope to ask -oauth-token-url for")
+	oauthClientAuth := fs.String("oauth-client-auth", "",
+		"how the client authenticates at -oauth-token-url: client_secret_basic (the default) or client_secret_post")
+	oauthAuthorizeURL := fs.String("oauth-authorize-url", "",
+		"where somebody signs in at the SCIM target, for the authorization code grant with -oauth-token-url's client")
+	compatibility := fs.String("compatibility", "",
+		"comma-separated, what the SCIM target needs: no-patch, no-filter, typed-members")
 	onDeactivate := fs.String("on-deactivate", "deactivate", "deactivate, delete or nothing")
+	recreateMissing := fs.Bool("recreate-missing", false,
+		"give somebody a new account at the target when the one linked to them is gone from it")
 	dryRun2 := fs.Bool("scim-dry-run", false, "register the target in dry-run mode: record, never send")
 	groupName := fs.String("group", "", "group name")
 	memberEmail := fs.String("email-member", "", "member's email or username")
-	removeMember := fs.Bool("remove", false, "remove the member instead of adding")
+	removeMember := fs.Bool("remove", false, "remove the member instead of adding (group member), "+
+		"or take the group out instead of putting it in (group nest)")
+	parentGroup := fs.String("in", "", "the group -group is put inside (group nest)")
 	racProtocol := fs.String("protocol", "rdp", "rdp, vnc or ssh")
-	racHost := fs.String("host", "", "hostname or address of the machine")
+	racHost := fs.String("host", "", "hostname: of the machine (rac), or of the protected "+
+		"application, with its port if not 443 (proxy add-host and friends)")
 	racPort := fs.Int("port", 0, "port (defaults to the protocol's)")
-	racUser := fs.String("login", "", "username on the remote machine")
-	racPassword := fs.String("login-password", "", "password on the remote machine")
+	racUser := fs.String("login", "", "username on the remote machine; left out, the viewer asks for it")
+	racPasswordFile := fs.String("password-file", "",
+		"a file holding the password on the remote machine; left out, the viewer asks for it (rac add)")
+	racKeyFile := fs.String("private-key-file", "", "a file holding a PEM private key, for an ssh connection (rac add)")
+	racPassphraseFile := fs.String("passphrase-file", "", "a file holding that key's passphrase (rac add)")
 	racRecording := fs.String("recording-path", "", "where guacd writes session recordings")
+	idpForward := fs.String("forward", "",
+		"comma-separated: prompt, login_hint, acr_values; none tells the provider nothing (idp forward)")
+	samlRelayState := fs.String("relay-state", "",
+		"what goes with a response nobody asked for, usually the page to land on (saml idp-initiated)")
 	declaredBy := fs.String("by", "", "who is declaring an audit checkpoint")
-	reason := fs.String("reason", "", "why an audit checkpoint is being declared")
+	reason := fs.String("reason", "",
+		"why an audit checkpoint is being declared, or why a stream's status changed (ssf set-status)")
 	policyFile := fs.String("policy-file", "", "path to a policy file")
 	flowFile := fs.String("flow-file", "", "path to a sign-in flow file")
 	flowName := fs.String("flow", "", "which flow in the file (default: every one)")
 	jwksPath := fs.String("jwks", "", "file containing the client's PUBLIC JWKS")
+	keepAuth := fs.Bool("keep-auth", false, "`client set-keys`: keep how the client authenticates, the keys being "+
+		"for what it signs and what is encrypted to it")
+	encryptFor := fs.String("for", "", "`client set-encryption`: what is encrypted, id_token, userinfo, authorization "+
+		"or introspection")
+	contentEnc := fs.String("enc", "", "`client set-encryption`: the content encryption (default "+
+		tokens.DefaultContentEncryption+")")
 	onlyGroups := fs.String("only", "", "comma-separated groups to release (default: all)")
 	apply := fs.Bool("apply", false, "actually make changes (scim sync defaults to a preview)")
 	grantTypes := fs.String("grant-types", "",
 		"comma-separated grant types this client may use, replacing what it has: "+
 			strings.Join(knownGrantTypes, ", "))
+	credFormat := fs.String("credential-format", "", "dc+sd-jwt, the default, or jwt_vc_json, a W3C credential "+
+		"disclosed whole (credential define); dc+sd-jwt or mso_mdoc, an ISO mdoc, for what a wallet sign-in asks for "+
+		"(idp add -kind oid4vp)")
 	credVCT := fs.String("vct", "", "SD-JWT VC type identifier, a collision-resistant name (credential define)")
 	credAlways := fs.String("always", "",
 		"comma-separated claims every verifier sees, whatever the holder chooses")
@@ -474,7 +1003,8 @@ func run(args []string) error {
 			"locations, actions, datatypes, identifier, privileges")
 	rarRequired := fs.String("required", "",
 		"comma-separated subset of -fields that must be present")
-	rarDesc := fs.String("describe", "", "what this type authorises, for operators")
+	rarDesc := fs.String("describe", "",
+		"a description for operators: what a type authorises (rar register), or who an attester is (attester add)")
 	credConfigs := fs.String("credential-configuration", "",
 		"comma-separated credential_configuration_id values, as they appear in the "+
 			"Credential Issuer's metadata (credential offer)")
@@ -485,22 +1015,86 @@ func run(args []string) error {
 		"require a Transaction Code, delivered to the holder by another channel. "+
 			"Defends against somebody photographing the QR code over their shoulder")
 	credTxLength := fs.Int("tx-code-length", 6, "digits in the generated transaction code")
+	credByReference := fs.Bool("by-reference", false,
+		"`credential offer`: keep the offer here and print a short address to it, for a QR code")
+	credAuthorizationCode := fs.Bool("authorization-code", false,
+		"`credential offer`: have the holder sign in to take the offer up, rather than handing the wallet a code")
 	credTTL := fs.Duration("offer-expires", 5*time.Minute,
 		"how long the pre-authorized code lasts. Short by design: section 3.5 says "+
 			"it MUST be short lived, and it is redeemed within seconds of being scanned")
+	credRootCert := fs.String("root-cert", "",
+		"PEM file of a CA an OID4VCI key proof's x5c chain may verify to (credential trust-root), "+
+			"of the CAs a believed issuer's credentials carry their x5c chain to (idp vp-issuer), "+
+			"or of the IACA certificates an mdoc's document signer leads to (idp add -credential-format mso_mdoc, "+
+			"idp vp-iaca)")
+	idpMFAAMR := fs.String("upstream-amr", "",
+		"comma-separated amr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	idpMFAACR := fs.String("upstream-acr", "",
+		"comma-separated acr values in a provider's ID token that count as multi-factor (idp trust-mfa)")
+	idpStoreTokens := fs.Bool("store-tokens", true, "`idp store-tokens`: keep what the provider hands over; "+
+		"false removes everything kept")
+	migrationTokenEndpoint := fs.String("token-endpoint", "",
+		"the old provider's https token endpoint, whose password grant verifies a migrating user "+
+			"(migration-source add -kind oidc_password)")
+	migrationScope := fs.String("migration-scope", "openid",
+		"the scope asked for in the old provider's password grant (migration-source add)")
+	bindDNTemplate := fs.String("bind-dn-template", "",
+		"the DN a migrating user binds as, with {username} once, e.g. uid={username},ou=people,dc=example,dc=com "+
+			"(migration-source add -kind ldap)")
+	streamStatus := fs.String("status", "",
+		"a Shared Signals stream's status: enabled, paused or disabled (ssf set-status); "+
+			"an organisation's: active or suspended (instance org-status)")
+	racParams := fs.String("rac-params", "",
+		"comma-separated name=value guacd parameters for a remote-access connection, e.g. "+
+			"security=nla,ignore-cert=true; empty clears them (rac set-parameters)")
+	racMaxConnections := fs.Int("max-connections", 0, "how many may hold it at once, 0 for no limit (rac limits)")
+	racMaxDuration := fs.Duration("max-duration", 0, "how long one session may last, 0 for no limit (rac limits)")
+	credRequireAttestation := fs.Bool("require-key-attestation", false,
+		"issue this credential only to a key a trusted attester vouches for (credential define)")
+	credDeferred := fs.Bool("deferred", false, "hold each request for this credential for a decision (credential define)")
+	credWalletInitiated := fs.Bool("wallet-initiated", false,
+		"let anybody signed in ask for this credential from a wallet, with no offer naming them (credential define)")
+	credRevocable := fs.Bool("revocable", false,
+		"give each credential a place in a status list, so that it can be revoked (credential define)")
+	credIssued := fs.String("credential", "", "the id `credential issued` shows (credential revoke)")
+	credRequest := fs.String("request", "", "the id `credential requests` shows (credential decide)")
+	credDecision := fs.String("decision", "", "approve or deny (credential decide)")
 	localeTag := fs.String("locale", "",
 		"BCP 47 language tag for this person's security notices, e.g. de or pt-BR. "+
-			"Empty clears it, which returns them to the deployment default")
+			"Empty clears it, which returns them to the deployment default. "+
+			"For a message, the language it is reworded in; for client name, the language of the name")
+	messageKey := fs.String("message-key", "", "the message to reword; `signari i18n keys` prints every key (message set|remove)")
+	messageText := fs.String("message-text", "", "what it says instead, as plain text (message set)")
 	attestation := fs.String("attestation", "none",
 		"WebAuthn attestation conveyance: none, indirect, direct or enterprise. "+
 			"Anything but none is required before -aaguids means anything")
 	aaguids := fs.String("aaguids", "",
 		"comma-separated authenticator model identifiers (AAGUIDs, as uuids) this "+
 			"organisation accepts. Empty accepts every authenticator")
+	refuseCloned := fs.Bool("refuse-cloned", true,
+		"`webauthn policy`: refuse a passkey whose signature counter did not advance, the sign "+
+			"of a copied authenticator (false records it and signs the person in)")
+	userVerification := fs.String("user-verification", "required",
+		"`webauthn policy`: at a passkey sign-in, required (a PIN or biometric; the sign-in is "+
+			"multi-factor) or preferred (a key without one signs in, single-factor)")
+	residentKey := fs.String("resident-key", "required",
+		"`webauthn policy`: at registration, required (usernameless sign-in), preferred or discouraged")
+	attachment := fs.String("attachment", "",
+		"`webauthn policy`: the kind of authenticator the browser offers at registration: "+
+			"platform, cross-platform, or empty for any")
+	webauthnAlgs := fs.String("algorithms", "",
+		"`webauthn policy`: the signature algorithms offered at registration, in preference "+
+			"order, from ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA "+
+			"(empty offers all of them, in that order)")
+	ceremonyTimeout := fs.Duration("ceremony-timeout", 5*time.Minute,
+		"`webauthn policy`: how long the browser waits for the authenticator and the challenge "+
+			"is held, 30s to 5m")
+	webauthnHints := fs.String("hints", "",
+		"`webauthn policy`: comma-separated hints for the browser: security-key, client-device, hybrid")
 	upstreamClaim := fs.String("claim", "",
 		"claim name as the upstream provider spells it, e.g. department")
 	localAttribute := fs.String("attribute", "",
-		"name of the local user attribute the claim lands in (see `signari user attribute declare`)")
+		"name of the local user attribute the claim lands in (declared with the Admin API's PUT /admin/organizations/{orgID}/attributes)")
 	mapOverwrite := fs.Bool("overwrite", false,
 		"let a sign-in replace a value already stored. Off by default: it makes the "+
 			"upstream provider the system of record for that attribute")
@@ -513,11 +1107,18 @@ func run(args []string) error {
 		"RADIUS Filter-Id: the name of a filter list already configured on the device")
 	radiusPriority := fs.Int("priority", 0,
 		"which row wins when somebody is in several authorised groups; highest first")
+	radiusSessionTimeout := fs.Int("session-timeout", 0, "RADIUS Session-Timeout, in seconds; 0 sets none")
+	radiusClass := fs.String("radius-class", "", "RADIUS Class, which the device echoes in accounting")
+	radiusVendor := fs.String("vendor-attributes", "", "vendor-specific RADIUS attributes, comma-separated "+
+		"`vendor:type=value`, by the numbers the device documents")
 	providerClaims := fs.String("claims", "",
 		"comma-separated claim names this token hook may add. A hook can add nothing "+
 			"that is not listed here, whatever it returns")
 	tokenClients := fs.String("clients", "",
 		"comma-separated client ids this admin token may act on; empty means every client in its organisation")
+	tokenAttributes := fs.String("attributes", "",
+		"comma-separated user attributes this admin token may read, set or release; empty means every attribute "+
+			"in its organisation")
 	cibaDelivery := fs.String("delivery", "poll",
 		"CIBA token delivery mode: poll, ping or push. ping and push have this issuer "+
 			"POST to a URL the client supplies, which is why they are set here and not "+
@@ -531,6 +1132,69 @@ func run(args []string) error {
 	sessionBehaviour := fs.String("when-exceeded", "deny",
 		"what happens at the limit: deny the new sign-in, or evict_oldest to end the "+
 			"least recently authenticated session and let the new one through")
+	passwordBinds := fs.String("binds", "",
+		"allow, or refuse_when_mfa: whether LDAP binds, RADIUS PAP and outposts, which carry "+
+			"only a password, may sign in somebody the sign-in flow would ask for a second factor")
+	calibrateTarget := fs.Duration("target", 250*time.Millisecond,
+		"`passwords calibrate`: how long one password hash should take on this host")
+	totpAlgorithm := fs.String("totp-algorithm", "SHA1",
+		"`instance totp-policy`: the hash new authenticator apps are enrolled with; `user assign-otp`: "+
+			"the token's. SHA1, SHA256 or SHA512")
+	totpDigits := fs.Int("totp-digits", 6, "`instance totp-policy` / `user assign-otp`: digits per code, 6 or 8")
+	totpPeriod := fs.Duration("totp-period", 30*time.Second,
+		"`instance totp-policy` / `user assign-otp`: how long a time-based code lasts, 30s or 60s")
+	pskcKeyFile := fs.String("key-file", "", "the key a vendor sent for a PSKC file, in hex (import pskc)")
+	pskcAssignments := fs.String("assignments", "", "a CSV of serial,person,code[,next-code] (import pskc)")
+	seedFile := fs.String("seed-file", "",
+		"`user assign-otp`: a file holding the token's seed, as base32 or hex (from the vendor's seed "+
+			"list); read from a file so it never appears in a process list or shell history")
+	hotp := fs.Bool("hotp", false, "`user assign-otp`: the token is counter-based (HOTP), not time-based")
+	yubicoOTP := fs.Bool("yubico", false,
+		"`user assign-otp`: the token is a YubiKey's Yubico OTP slot; -seed-file holds its private ID and AES key "+
+			"in hex, and -code is an OTP it types now")
+	otpCode := fs.String("code", "", "`user assign-otp`: the code the token shows now, proving the seed is its own")
+	otpNextCode := fs.String("next-code", "",
+		"`user assign-otp -hotp`: the code after -code, so a wrong seed cannot match one code by chance")
+	factorKind := fs.String("factor", "",
+		"`user remove-factor`: totp, email_otp, sms_otp, duo, webauthn or recovery")
+	factorID := fs.String("factor-id", "",
+		"`user remove-factor`: which passkey (its id from GET /admin/users/{id}/factors), "+
+			"when the person holds several")
+	linkExpires := fs.Duration("link-expires", 0,
+		"`user passkey-link`: how long the emailed link works, 1m to 168h (default 24h)")
+	smsNumbers := fs.String("sms-numbers", "",
+		"`instance sms-numbers`: stored, or hashed to keep only a keyed hash of each SMS number, "+
+			"which the person retypes to be sent a code")
+	freeAttempts := fs.Int("free-attempts", 0,
+		"`instance login-throttle`: wrong passwords for one account before the sign-in delay begins, 1 to 20")
+	maxLoginDelay := fs.Duration("max-delay", 0,
+		"`instance login-throttle`: the longest the sign-in delay grows to, 1m to 24h")
+	mailFrom := fs.String("mail-from", "", "`instance mail-sender`: the address this organisation's mail comes from")
+	mailFromName := fs.String("mail-from-name", "", "`instance mail-sender`: the name shown beside that address")
+	dkimSelector := fs.String("dkim-selector", "",
+		"`instance mail-sender`: the DKIM selector your mail provider signs with, so the key can be checked")
+	clearMailSender := fs.Bool("clear", false,
+		"`instance mail-sender`: take the organisation's mail back to the deployment's sender")
+	rememberDays := fs.Int("days", -1,
+		"`instance remember-device`: days a device a person chooses to remember after a second "+
+			"factor is not asked for one again, 1 to 90; 0 turns it off")
+	reauthWindow := fs.Duration("window", 0,
+		"`instance reauth-window`: how recently a session must have been signed in to change "+
+			"the account from /account, 1m to 24h (default 10m)")
+	sessionLifetime := fs.Duration("lifetime", 0,
+		"`instance session-lifetime`: how long a session lasts from sign-in, 5m to 720h (default 12h); "+
+			"omit to keep the current one")
+	sessionIdle := fs.Duration("idle", -1,
+		"`instance session-lifetime`: how long a session lasts unused, 5m to the lifetime, or 0 for "+
+			"no limit; omit to keep the current one")
+	offlineLifetime := fs.Duration("offline", -1,
+		"`instance session-lifetime`: how long a grant of offline_access lasts from when it is given, 1h to "+
+			"8760h (default 720h), or 0 to end it with its session; omit to keep the current one")
+	persistentSessions := fs.String("persistent", "",
+		"`instance session-lifetime`: on or off, whether the sign-in page offers \"stay signed in on this "+
+			"device\", a session cookie that outlasts the browser; omit to keep the current setting")
+	newDeviceNotice := fs.String("notice", "",
+		"`instance new-device-notice`: on or off, whether a sign-in from a new device is mailed to the person")
 	setEnabled := fs.Bool("enabled", true, "whether the object is in service")
 	onMissing := fs.String("on-missing", "",
 		"what a directory sync does with somebody the directory no longer returns: "+
@@ -542,23 +1206,65 @@ func run(args []string) error {
 	signResponses := fs.Bool("sign-responses", false, "sign the SAML response envelope")
 	assertionLifetime := fs.Int("assertion-lifetime", 0,
 		"seconds a SAML assertion stays valid, 30 to 3600; 0 leaves it unchanged")
+	signatureAlg := fs.String("signature-alg", "",
+		"what a SAML provider is signed with: rsa-sha256 (the active RS256 key) or "+
+			"ecdsa-sha256 (the active ES256 key); empty leaves it unchanged")
 	samlAttrName := fs.String("attribute-name", "",
 		"the SAML attribute name group membership is released under (saml group-release)")
 	rpID := fs.String("rp-id", "",
 		"WebAuthn Relying Party ID: a bare domain, no scheme, port or path. Passkeys "+
 			"are unavailable until this is set, and it can never be widened afterwards")
+	relatedOrigins := fs.String("related-origins", "",
+		"`instance related-origins`: comma-separated web origins (https://host[:port]) a passkey "+
+			"under the RP ID may also be used from; empty clears them")
 
 	cmd := args[0]
 	rest := args[1:]
+	switch cmd {
+	case "help":
+		return commandHelp(os.Stdout, fs, rest)
+	case "-h", "-help", "--help":
+		return commandHelp(os.Stdout, fs, rest)
+	case "completion":
+		return printCompletion(os.Stdout, rest)
+	case "api":
+		return apiCommand(fs, rest, apiData, ifMatch, adminURL, tokenFile, timeout)
+	}
 	if twoWordCommands[cmd] {
-		if len(rest) == 0 {
-			return usage()
+		switch {
+		case len(rest) > 0 && (rest[0] == "-h" || rest[0] == "-help" || rest[0] == "--help"):
+			return commandHelp(os.Stdout, fs, []string{cmd})
+		case len(rest) == 0 || strings.HasPrefix(rest[0], "-"):
+			_ = commandHelp(os.Stderr, fs, []string{cmd})
+			return usageError{fmt.Errorf("no command given: signari %s takes one of the commands above", cmd)}
 		}
 		cmd, rest = cmd+" "+rest[0], rest[1:]
 	}
-	if err := fs.Parse(rest); err != nil {
+	// The command's own flags, over the values defined above (commandflags.go).
+	cfs, err := commandFlagSet(fs, cmd)
+	if err != nil {
 		return err
 	}
+	if err := cfs.Parse(rest); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printCommandHelp(os.Stdout, cmd, cfs)
+			return nil
+		}
+		return usageError{fmt.Errorf("%w; `signari help %s` lists the flags it takes", err, cmd)}
+	}
+	// Parsing stops at the first word that is not a flag, so whatever followed
+	// it would be ignored without a word: `user create -email a junk -org b`
+	// creating a user in no organisation.
+	if cfs.NArg() > 0 {
+		return usageError{fmt.Errorf("signari %s takes flags only, and %q is not one", cmd, cfs.Arg(0))}
+	}
+	fs = cfs
+	timeoutGiven := false
+	fs.Visit(func(f *flag.Flag) { timeoutGiven = timeoutGiven || f.Name == "timeout" })
+	if *timeout < 0 {
+		return fmt.Errorf("-timeout must not be negative; 0 means no limit")
+	}
+	runFor := commandTimeout(cmd, *timeout, timeoutGiven)
 	// `policy test` needs no database either: checking a file before it is
 	// deployed is something you do in CI, where there is no database to reach.
 	// Both run without a database: checking a file before it is deployed, and
@@ -566,8 +1272,12 @@ func run(args []string) error {
 	switch cmd {
 	case "policy test":
 		return policyTest(*policyFile)
+	case "ech new":
+		return echNew(os.Stdout, *echPublicName, *outFile, *echConfigID)
 	case "policy graph":
 		return policyGraph(*policyFile, *outFile)
+	case "authz test":
+		return authzTest(*modelFile)
 	// The flow commands read a file and nothing else, for the same reason: a
 	// flow that would not load must fail in CI, not on the next restart.
 	case "flow test":
@@ -576,6 +1286,14 @@ func run(args []string) error {
 		return flowPaths(*flowFile, *flowName)
 	case "flow show":
 		return flowShow()
+	// Measures this host, so it runs where the engine will, and needs no
+	// database.
+	case "passwords calibrate":
+		return passwordsCalibrate(os.Stdout, *calibrateTarget)
+	// What this binary is, answerable on a machine with no database: a
+	// release script checks the pin with it before tagging.
+	case "version":
+		return printVersion(os.Stdout, *outputFormat)
 	// The theme commands read files and nothing else. Dispatched here, before a
 	// DSN is required, because validating a theme is something you do in CI --
 	// where there is no database to reach and no reason to need one.
@@ -599,7 +1317,8 @@ func run(args []string) error {
 	// credentials. Dispatched before the DSN is required, because requiring one
 	// would defeat the feature entirely.
 	if cmd == "outpost run" {
-		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN)
+		return outpostRun(*outpostCore, *outpostToken, *outpostKind, *addr, *ldapBaseDN,
+			*tlsCert, *tlsKey, *outpostLDAPInsecure, *outpostRADIUSClients)
 	}
 
 	// `kerberos check` needs no database. It answers "will this keytab work",
@@ -611,9 +1330,17 @@ func run(args []string) error {
 	// `kerberos principals` needs no database either: it asks the realm what it
 	// holds, which is a question worth answering before deciding to sync it.
 	if cmd == "kerberos principals" {
-		pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+		pctx, pcancel := commandContext(runFor)
 		defer pcancel()
 		return kerberosPrincipals(pctx, *krbRealm, *krbAdmin, *keytabPath)
+	}
+
+	// An audit archive is checked from the file alone, on whatever machine
+	// holds it, which is the point of writing one (3.18).
+	if cmd == "audit verify" {
+		if *file != "" {
+			return auditVerifyFile(*file)
+		}
 	}
 
 	// `brand check` needs no database: it answers "would this palette be
@@ -629,41 +1356,122 @@ func run(args []string) error {
 	// therefore the only place the answer is meaningful. Needing the database
 	// would confine it to the one host where the result matters least.
 	if cmd == "proxy check" {
-		return proxyCheck(*appURL, *issuer, *origin, *probePath, *insecure)
+		pctx, pcancel := commandContext(runFor)
+		defer pcancel()
+		return proxyCheck(pctx, *appURL, *issuer, *origin, *probePath, *insecure)
+	}
+
+	// The endpoint mode (endpoint.go): given -admin-url, these make their change
+	// through the Admin API and need no database. Only the flag switches it, so
+	// a SIGNARI_ADMIN_URL set for `signari api` sends nothing else there.
+	switch cmd {
+	case "user create":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointUserCreate(ctx, c, *orgID, *email, *password)
+			})
+		}
+	case "group create":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointGroupCreate(ctx, c, *orgID, *groupName, *name)
+			})
+		}
+	case "admin-token create":
+		if *adminURL != "" {
+			expiresGiven := false
+			fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointTokenCreate(ctx, c, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
+					*tokenClients, *inviteGroups, *tokenAttributes)
+			})
+		}
+	case "admin-token list":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, endpointTokenList)
+		}
+	case "admin-token revoke":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointTokenRevoke(ctx, c, *tokenID)
+			})
+		}
+	case "role list":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointRoleList(ctx, c, *orgID)
+			})
+		}
+	case "role revoke":
+		if *adminURL != "" {
+			return withAPI(*adminURL, *tokenFile, runFor, func(ctx context.Context, c *apiClient) error {
+				return endpointRoleRevoke(ctx, c, *orgID, *bindingID)
+			})
+		}
 	}
 
 	if *dsn == "" {
 		return fmt.Errorf("no -dsn given and SIGNARI_DSN is unset")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := commandContext(runFor)
 	defer cancel()
 
-	conn, err := pgx.Connect(ctx, *dsn)
+	conn, err := connectDB(ctx, *dsn)
 	if err != nil {
 		return fmt.Errorf("connecting: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
+	// Every write this session makes is an administrator's edit, so it moves
+	// core.config_version in its own transaction (migration 0139's trigger
+	// reads this). Session-level, on this connection only: `serve` opens its
+	// own pool, whose request-path writes are not edits and must not bump.
+	if cmd != "serve" {
+		if _, err := conn.Exec(ctx, `SELECT set_config('signari.cli_write', 'on', false)`); err != nil {
+			return fmt.Errorf("marking this session as the operator CLI: %w", err)
+		}
+		// And every command that changed something leaves an audit record:
+		// one naming the command and the flags it was given, written once it
+		// has succeeded, unless it wrote its own (migration 0140). About 115
+		// commands wrote and audited nothing, and a list of the ones that must
+		// is a list the next command is missing from.
+		defer func() {
+			if err != nil {
+				return
+			}
+			var given []string
+			fs.Visit(func(f *flag.Flag) { given = append(given, f.Name) })
+			// Not under the command's deadline: a command that committed a
+			// moment before it expired is still recorded.
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer rcancel()
+			if _, rerr := store.RecordCLICommand(rctx, conn, cmd, given, *orgID, cliOperator()); rerr != nil {
+				err = fmt.Errorf("the command succeeded and its audit record could not be written: %w", rerr)
+			}
+		}()
+	}
+
 	switch cmd {
 	case "migrate bootstrap":
-		return up(ctx, conn, migrate.TierBootstrap, *to)
+		return up(ctx, conn, migrate.TierBootstrap, *to, migrationOptions(*lockTimeout, *statementTimeout))
 	case "migrate up":
-		return up(ctx, conn, migrate.TierCore, *to)
+		return up(ctx, conn, migrate.TierCore, *to, migrationOptions(*lockTimeout, *statementTimeout))
 	case "migrate all":
 		// One command so the container image needs no shell to chain two.
 		// The runtime image is distroless -- there is no /bin/sh to fall back on,
 		// and adding one to a security product to save a CLI verb is a bad trade.
-		if err := up(ctx, conn, migrate.TierBootstrap, *to); err != nil {
+		opts := migrationOptions(*lockTimeout, *statementTimeout)
+		if err := up(ctx, conn, migrate.TierBootstrap, *to, opts); err != nil {
 			return err
 		}
-		return up(ctx, conn, migrate.TierCore, *to)
+		return up(ctx, conn, migrate.TierCore, *to, opts)
 	case "migrate status":
-		return status(ctx, conn)
+		return status(ctx, conn, *outputFormat)
 	case "migrate fingerprint":
 		return printFingerprint(ctx, conn)
 	case "doctor":
-		return doctorCmd(ctx, conn, *issuer)
+		return doctorCmd(ctx, conn, *issuer, *doctorJSON)
 	case "verify":
 		if err := migrate.Verify(ctx, conn); err != nil {
 			return err
@@ -673,17 +1481,83 @@ func run(args []string) error {
 	case "instance create":
 		return instanceCreate(ctx, conn, *issuer, *name)
 	case "user create":
-		return userCreate(ctx, conn, *email, *password)
+		return userCreate(ctx, conn, *orgID, *email, *password)
 	case "user locale":
-		return userLocale(ctx, conn, *email, *localeTag)
+		return userLocale(ctx, conn, *orgID, *email, *localeTag)
+	case "user remove-factor":
+		return userRemoveFactor(ctx, conn, *orgID, *email, *factorKind, *factorID)
+	case "user unlock":
+		return userUnlock(ctx, conn, *orgID, *email)
+	case "user approve":
+		return userApprove(ctx, conn, *orgID, *email)
+	case "user passkey-link":
+		return userPasskeyLink(ctx, conn, *orgID, *email, *linkExpires)
+	case "instance login-throttle":
+		return instanceLoginThrottle(ctx, conn, *orgID, *freeAttempts, *maxLoginDelay)
+	case "instance mail-sender":
+		return instanceMailSender(ctx, conn, *orgID, *mailFrom, *mailFromName, *dkimSelector, *clearMailSender)
+	case "instance sms-numbers":
+		return instanceSMSNumbers(ctx, conn, *orgID, *smsNumbers)
+	case "instance totp-policy":
+		return instanceTOTPPolicy(ctx, conn, *orgID, mfa.Params{Algorithm: mfa.Algorithm(*totpAlgorithm),
+			Digits: *totpDigits, Period: *totpPeriod})
+	case "user assign-otp":
+		if *yubicoOTP {
+			if *hotp || *otpNextCode != "" {
+				return fmt.Errorf("-yubico is proved by one OTP: not with -hotp or -next-code")
+			}
+			return userAssignYubico(ctx, conn, *orgID, *email, *seedFile, *otpCode)
+		}
+		return userAssignOTP(ctx, conn, *orgID, *email, *seedFile, *hotp, mfa.Params{
+			Algorithm: mfa.Algorithm(*totpAlgorithm), Digits: *totpDigits, Period: *totpPeriod},
+			*otpCode, *otpNextCode)
 	case "client set-ciba":
 		return clientSetCIBA(ctx, conn, *clientID, *cibaDelivery, *cibaNotifyURL)
 	case "group impersonation":
 		return groupImpersonation(ctx, conn, *orgID, *groupName, *grantPower)
+	case "instance add-alias":
+		return instanceAddAlias(ctx, conn, *issuerAlias, *aliasRetire)
+	case "instance retire-alias":
+		return instanceRetireAlias(ctx, conn, *issuerAlias, *aliasRetire)
+	case "instance aliases":
+		return instanceAliases(ctx, conn, *outputFormat)
 	case "instance session-limit":
 		return instanceSessionLimit(ctx, conn, *orgID, *sessionMax, *sessionBehaviour)
+	case "instance password-binds":
+		return instancePasswordBinds(ctx, conn, *orgID, *passwordBinds)
+	case "instance reauth-window":
+		return instanceReauthWindow(ctx, conn, *orgID, *reauthWindow)
+	case "instance session-lifetime":
+		return instanceSessionLifetime(ctx, conn, *orgID, *sessionLifetime, *sessionIdle, *offlineLifetime,
+			*persistentSessions)
+	case "instance remember-device":
+		return instanceRememberDevice(ctx, conn, *orgID, *rememberDays)
+	case "instance new-device-notice":
+		return instanceNewDeviceNotice(ctx, conn, *orgID, *newDeviceNotice)
+	case "instance org-status":
+		return instanceOrgStatus(ctx, conn, *orgID, *streamStatus)
+	case "instance org-delete":
+		return instanceOrgDelete(ctx, conn, *orgID, *eraseConfirm)
+	case "instance org-budgets":
+		tokensGiven, signInsGiven := false, false
+		fs.Visit(func(f *flag.Flag) {
+			tokensGiven = tokensGiven || f.Name == "tokens-per-minute"
+			signInsGiven = signInsGiven || f.Name == "sign-ins-per-minute"
+		})
+		return instanceOrgBudgets(ctx, conn, *orgID, *tokensPerMinute, *signInsPerMinute, tokensGiven, signInsGiven)
 	case "webauthn policy":
-		return webauthnPolicySet(ctx, conn, *orgID, *attestation, *aaguids)
+		algs, err := webauthnAlgorithms(*webauthnAlgs)
+		if err != nil {
+			return err
+		}
+		if *ceremonyTimeout%time.Second != 0 {
+			return fmt.Errorf("-ceremony-timeout is held in whole seconds, not %s", *ceremonyTimeout)
+		}
+		return webauthnPolicySet(ctx, conn, *orgID, store.WebAuthnPolicy{
+			Conveyance: *attestation, AllowedAAGUIDs: strings.Split(*aaguids, ","), RefuseCloned: *refuseCloned,
+			UserVerification: *userVerification, ResidentKey: *residentKey, Attachment: *attachment,
+			Algorithms: algs, TimeoutSeconds: int(*ceremonyTimeout / time.Second),
+			Hints: splitList(*webauthnHints)})
 	case "webauthn show":
 		return webauthnPolicyShow(ctx, conn)
 	case "client set-tls":
@@ -691,126 +1565,450 @@ func run(args []string) error {
 			*tlsSANIP, *tlsSANEmail, *spCert, *tlsBound)
 	case "erase subject":
 		return eraseSubjectCmd(ctx, conn, *eraseSubject, *eraseConfirm, *eraseDeactivate)
+	case "restore finalize":
+		return restoreFinalize(ctx, conn, *eraseConfirm)
 	case "client set-assertion-issuers":
 		return clientSetAssertionIssuers(ctx, conn, *clientID, *assertionIssuers)
 	case "client set-exchange-containment":
 		return clientSetExchangeContainment(ctx, conn, *clientID, *exchangeAudMatch)
+	case "client id-jag-allow":
+		return clientIDJAGAllow(ctx, conn, *clientID, *idJAGAudience, *idJAGRemoteClient, *idJAGResources, *tokenScopes, *alg)
+	case "client id-jag-audiences":
+		return clientIDJAGAudiences(ctx, conn, *clientID, *outputFormat)
+	case "client id-jag-forget":
+		return clientIDJAGForget(ctx, conn, *clientID, *idJAGAudience)
+	case "client set-exchange":
+		return clientSetExchange(ctx, conn, *clientID, *mayExchange, *exchangeAudiences)
+	case "client set-logout":
+		// The back channel only when asked: dynamic registration sets it too,
+		// and a run about the front channel must not clear it.
+		var backchannel *string
+		var backchannelSession *bool
+		// Not a switch: the dispatch's `case` labels are read as command names.
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "backchannel-uri" {
+				backchannel = backchannelURI
+			}
+			if f.Name == "backchannel-sid" {
+				backchannelSession = backchannelSID
+			}
+		})
+		return clientSetLogout(ctx, conn, *clientID, *postLogoutRedirects, *frontchannelURI, *frontchannelSID,
+			backchannel, backchannelSession)
+	case "client set-lifetimes":
+		var grace *time.Duration
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "refresh-grace" {
+				grace = refreshGrace
+			}
+		})
+		return clientSetLifetimes(ctx, conn, *clientID, *accessTTL, *refreshTTL, grace, *consentTTL)
+	case "client name":
+		return clientLocalizedName(ctx, conn, *clientID, *localeTag, *name, *removeMember)
+	case "client set-alg":
+		var accessAlg, responseAlg, userinfoAlg, introspectionAlg *string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "access-alg" {
+				accessAlg = clientAccessAlg
+			}
+			if f.Name == "response-alg" {
+				responseAlg = clientResponseAlg
+			}
+			if f.Name == "userinfo-alg" {
+				userinfoAlg = clientUserinfoAlg
+			}
+			if f.Name == "introspection-alg" {
+				introspectionAlg = clientIntrospectionAlg
+			}
+		})
+		return clientSetAlg(ctx, conn, *clientID, *alg, accessAlg, responseAlg, userinfoAlg, introspectionAlg)
+	case "client set-issuer-alias":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{IssuerAlias: issuerAlias},
+			map[bool]string{true: "tokens are minted under this instance's own issuer",
+				false: "tokens are minted under " + *issuerAlias}[*issuerAlias == ""])
+	case "client set-par":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequirePAR: requirePAR},
+			map[bool]string{true: "authorization must be pushed first (RFC 9126)",
+				false: "authorization may start without pushing"}[*requirePAR])
+	case "client set-signed-requests":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequireSignedRequest: requireSigned},
+			map[bool]string{true: "authorization must be a signed request object (RFC 9101)",
+				false: "authorization may be unsigned"}[*requireSigned])
+	case "client set-state":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RequireState: requireState},
+			map[bool]string{true: "an authorization request must carry state",
+				false: "state is the client's own choice"}[*requireState])
+	case "client set-admin-api":
+		return clientSetAdminAPI(ctx, conn, *clientID, *adminAPI)
+	case "client set-token-format":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{AccessTokenFormat: tokenFormat},
+			"its access tokens are "+*tokenFormat+" from the next one issued")
+	case "client set-profile":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{SecurityProfile: securityProfile},
+			"held to the "+*securityProfile+" security profile")
+	case "client set-subject-type":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{SubjectType: subjectType, Sector: sector},
+			"its tokens name people as "+*subjectType+" subjects from the next one issued, and it will not "+
+				"recognise anybody it knew by the old ones")
+	case "client set-roles-claim":
+		said := "its tokens carry no roles"
+		if *upstreamClaim != "" {
+			said = "its tokens carry a person's roles in " + *upstreamClaim
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{RolesClaim: upstreamClaim}, said)
+	case "client set-login-ui":
+		said := "a sign-in for it uses this server's page"
+		if *subURL != "" {
+			said = "a sign-in for it goes to " + *subURL + ", and may be walked over JSON"
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{LoginUI: subURL}, said)
+	case "client set-first-party":
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{FirstParty: firstParty},
+			map[bool]string{true: "first-party: the consent screen is skipped",
+				false: "the consent screen is shown"}[*firstParty])
+	case "client set-acr":
+		if *minimumACR == "" {
+			return fmt.Errorf("give -minimum-acr 1, 2, 3 or 4")
+		}
+		return clientSetSwitch(ctx, conn, *clientID, store.ClientSettings{MinimumACR: minimumACR},
+			map[string]string{
+				"1": "a single factor is accepted unless the client asks for more",
+				"2": "multi-factor is required, at sign-in, at every approval and at every refresh; " +
+					"a session with a single factor is asked for another",
+				"3": "a passkey or security key is required, at sign-in, at every approval and at every " +
+					"refresh: multi-factor that includes one, which a relaying page cannot obtain",
+				"4": "a security key bound to its device is required, at sign-in, at every approval and " +
+					"at every refresh; a synced passkey does not reach it",
+			}[*minimumACR])
 	case "client set-dpop":
 		return clientSetDPoP(ctx, conn, *clientID, *dpopBound)
+	case "client set-pkce":
+		return clientSetPKCE(ctx, conn, *clientID, *requirePKCE)
 	case "client set-hybrid":
 		return clientSetHybrid(ctx, conn, *clientID, *reviewBy)
 	case "client set-keys":
-		return clientSetKeys(ctx, conn, *clientID, *jwksPath)
+		return clientSetKeys(ctx, conn, *clientID, *jwksPath, *keepAuth)
+	case "client set-encryption":
+		var algGiven, encGiven bool
+		fs.Visit(func(f *flag.Flag) {
+			algGiven = algGiven || f.Name == "alg"
+			encGiven = encGiven || f.Name == "enc"
+		})
+		return clientSetEncryption(ctx, conn, *clientID, *encryptFor, *alg, *contentEnc, algGiven, encGiven)
 	case "client set-grants":
 		return clientSetGrants(ctx, conn, *clientID, *grantTypes)
 	case "client create":
-		return clientCreate(ctx, conn, *clientID, *name, *redirect, *public,
+		return clientCreate(ctx, conn, *orgID, *clientID, *name, *redirect, *public,
 			*launchURL, *logoURL, *portalHidden, *requirePKCE)
+	case "bootstrap":
+		return bootstrap(ctx, conn, *issuer, *name, *slug, *email)
 	case "serve":
 		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
-		return importAuthentik(ctx, conn, *file, *orgID, !*apply)
+		return importAuthentik(ctx, conn, *file, *orgID, *installID, !*apply)
 	case "import keycloak":
 		return importKeycloak(ctx, conn, *file, *orgID, *dryRun)
+	case "import zitadel":
+		return importZitadel(ctx, conn, *file, *orgID, *dryRun)
+	case "import auth0":
+		return importHostedService(ctx, conn, "auth0", *file, *orgID, *importVia, *dryRun)
+	case "import okta":
+		return importHostedService(ctx, conn, "okta", *file, *orgID, *importVia, *dryRun)
+	case "import entra":
+		return importHostedService(ctx, conn, "entra", *file, *orgID, *importVia, *dryRun)
+	case "import shadow":
+		return importShadow(ctx, conn, *file, *orgID, *dirDomain, !*apply)
+	case "import pskc":
+		return importPSKC(ctx, conn, *orgID, *file, *pskcKeyFile, *pskcAssignments, !*apply)
 	case "dir add":
 		return dirAdd(ctx, conn, *orgID, *kind, *slug, *name, *file, *dirDomain,
 			*dirImpersonate, *dirTenant, *dirFilter, *ldapURL, *ldapBindDN,
-			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS)
+			*ldapPassword, *ldapBaseDN, *ldapFlavour, *ldapCA, *ldapStartTLS, *fetchGroups, *groupAttribute)
 	case "dir sync":
-		return dirSync(ctx, conn, *slug, *apply)
+		return dirSync(ctx, conn, *orgID, *slug, *apply)
+	case "dir test":
+		return dirTest(ctx, conn, *orgID, *slug)
 	case "dir group-map":
-		return dirGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
+		return dirGroupMap(ctx, conn, *orgID, *slug, *remoteGroup, *groupName, *removeMember)
 	case "dir set":
-		return dirSet(ctx, conn, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun)
+		return dirSet(ctx, conn, *orgID, *slug, *onMissing, *maxDeactivate, fs, *setEnabled, *dryRun,
+			*fetchGroups, *groupAttribute, *attributeMap, *syncInterval)
+	case "dir list":
+		return dirList(ctx, conn, *orgID, *outputFormat)
 	case "rac add":
+		credentials, err := racCredentials(*racUser, *racPasswordFile, *racKeyFile, *racPassphraseFile)
+		if err != nil {
+			return err
+		}
 		return racAdd(ctx, conn, *orgID, *slug, *name, *racProtocol, *racHost,
-			*racPort, *racUser, *racPassword, *groupName, *racRecording)
+			*racPort, credentials, *groupName, *racRecording)
 	case "rac list":
-		return racList(ctx, conn)
+		return racList(ctx, conn, *outputFormat)
+	case "rac disable":
+		return racSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "rac enable":
+		return racSetEnabled(ctx, conn, *orgID, *slug, true)
+	case "rac set-parameters":
+		return racSetParameters(ctx, conn, *orgID, *slug, *racParams)
+	case "rac limits":
+		var limit *int
+		var longest *time.Duration
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "max-connections" {
+				limit = racMaxConnections
+			}
+			if f.Name == "max-duration" {
+				longest = racMaxDuration
+			}
+		})
+		return racLimits(ctx, conn, *orgID, *slug, limit, longest)
 	case "audit checkpoint":
 		return auditCheckpoint(ctx, conn, *orgID, *declaredBy, *reason)
+	case "audit verify":
+		return auditVerify(ctx, conn, *auditHead)
+	case "audit archive":
+		return auditArchive(ctx, conn, *toDay, *outFile, *declaredBy)
 	case "export audit":
 		return exportAudit(ctx, conn, *orgID, *fromDay, *toDay, *outFile)
+	case "export subject":
+		return exportSubjectCmd(ctx, conn, *eraseSubject, *outFile)
+	case "export org":
+		return exportOrgCmd(ctx, conn, *orgID, *outFile)
 	case "registration enable":
-		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes)
+		return registrationEnable(ctx, conn, *orgID, *regOpen, *regMax, *tokenScopes, *regConfidential)
 	case "registration token":
 		return registrationToken(ctx, conn, *orgID, *name, *regUses, *tokenExpires)
+	case "registration revoke":
+		return registrationRevoke(ctx, conn, *orgID, *name, *tokenID)
 	case "ssf add-source":
 		return ssfAddSource(ctx, conn, *orgID, *name, *srcIssuer, *srcJWKS,
 			*srcAudience, *ssfEvents, *ssfCritical)
+	case "ssf poll-source":
+		return ssfPollSource(ctx, conn, *orgID, *srcIssuer, *subURL, *clientID, *removeMember)
 	case "ssf received":
-		return ssfReceived(ctx, conn, *orgID)
+		return ssfReceived(ctx, conn, *orgID, *outputFormat)
 	case "ssf add-stream":
 		return ssfAddStream(ctx, conn, *orgID, *clientID, *ssfEndpoint, *ssfToken, *ssfEvents, *ssfPoll)
 	case "ssf list":
-		return ssfListStreams(ctx, conn)
+		return ssfListStreams(ctx, conn, *outputFormat)
+	case "migration-source add":
+		return migrationSourceAdd(ctx, conn, *orgID, *kind, *name, *migrationTokenEndpoint, *ldapURL,
+			*extClientID, *extSecret, *migrationScope, *bindDNTemplate, *ldapStartTLS, *ldapCA, *krbRealm)
+	case "migration-source enable":
+		return migrationSourceSetEnabled(ctx, conn, *orgID, true)
+	case "migration-source disable":
+		return migrationSourceSetEnabled(ctx, conn, *orgID, false)
+	case "migration-source show":
+		return migrationSourceShow(ctx, conn, *orgID)
+	case "migration-source test":
+		return migrationSourceTest(ctx, conn, *orgID, *testUsername)
+	case "migration-source remove":
+		return migrationSourceRemove(ctx, conn, *orgID)
+	case "ssf set-status":
+		return ssfSetStatus(ctx, conn, *orgID, *clientID, *streamStatus, *reason)
 	case "provider add":
-		return providerAdd(ctx, conn, *orgID, *providerHook, *providerURL,
-			*providerMode, *providerTimeout)
+		return providerAdd(ctx, conn, *orgID, *providerHook, *name, *providerURL,
+			*providerMode, *providerTimeout, *providerPosition)
 	case "provider list":
-		return providerList(ctx, conn, *orgID)
+		return providerList(ctx, conn, *orgID, *outputFormat)
 	case "provider remove":
-		return providerRemove(ctx, conn, *orgID, *providerHook)
+		return providerRemove(ctx, conn, *orgID, *providerHook, *name)
+	case "provider rotate":
+		return providerRotate(ctx, conn, *orgID, *providerHook, *name)
+	case "provider test":
+		return providerTest(ctx, conn, *orgID, *providerHook, *name)
 	case "provider claims":
-		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *providerClaims)
+		return providerClaimsSet(ctx, conn, *orgID, *providerHook, *name, *providerClaims)
 	case "radius add-client":
 		return radiusAddClient(ctx, conn, *orgID, *name, *radiusNet, *radiusSecret)
 	case "radius disable-client":
-		return radiusSetClientEnabled(ctx, conn, *name, false)
+		return radiusSetClientEnabled(ctx, conn, *orgID, *name, false)
 	case "radius enable-client":
-		return radiusSetClientEnabled(ctx, conn, *name, true)
+		return radiusSetClientEnabled(ctx, conn, *orgID, *name, true)
 	case "radius list":
-		return radiusListClients(ctx, conn)
+		return radiusListClients(ctx, conn, *outputFormat)
 	case "radius authorize":
-		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN,
-			*radiusFilterID, *radiusPriority, *removeMember)
+		return radiusAuthorize(ctx, conn, *orgID, *groupName, *radiusVLAN, *radiusFilterID, *radiusPriority,
+			*radiusSessionTimeout, *radiusClass, *radiusVendor, *removeMember)
+	case "proxy add-host":
+		return proxyAddHost(ctx, conn, *orgID, *racHost)
+	case "proxy list":
+		return proxyListHosts(ctx, conn, *outputFormat)
+	case "proxy disable-host":
+		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, false)
+	case "proxy enable-host":
+		return proxySetHostEnabled(ctx, conn, *orgID, *racHost, true)
+	case "proxy remove-host":
+		return proxyRemoveHost(ctx, conn, *orgID, *racHost)
+	case "proxy rules":
+		return proxyRules(ctx, conn, *orgID, *racHost, *file)
+	case "proxy cookie":
+		return proxyCookie(ctx, conn, *orgID, *racHost, *proxyCookieScope)
+	case "proxy release":
+		groupsGiven := false
+		fs.Visit(func(f *flag.Flag) { groupsGiven = groupsGiven || f.Name == "groups" })
+		return proxyRelease(ctx, conn, *orgID, *racHost, *inviteGroups, *signedIdentity, groupsGiven)
 	case "admin-token create":
-		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires,
-			*tokenClients, *inviteGroups)
+		// Whether -expires-in was given, since unset is ninety days and an
+		// explicit 0 is never (6.04); the flag is shared with registration
+		// tokens, whose default it is not.
+		expiresGiven := false
+		fs.Visit(func(f *flag.Flag) { expiresGiven = expiresGiven || f.Name == "expires-in" })
+		return adminTokenCreate(ctx, conn, *name, *orgID, *tokenScopes, *tokenExpires, expiresGiven,
+			*tokenClients, *inviteGroups, *tokenAttributes)
 	case "admin-token list":
-		return adminTokenList(ctx, conn)
+		return adminTokenList(ctx, conn, *outputFormat)
 	case "admin-token revoke":
 		return adminTokenRevoke(ctx, conn, *tokenID)
+	case "role grant":
+		return roleGrant(ctx, conn, *orgID, *email, *clientID, *roleName, *groupName)
+	case "role list":
+		return roleList(ctx, conn, *orgID, *outputFormat)
+	case "role revoke":
+		return roleRevoke(ctx, conn, *orgID, *bindingID)
 	case "keys list":
-		return keysList(ctx, conn)
+		return keysList(ctx, conn, *outputFormat)
 	case "keys rotate":
-		return keysRotate(ctx, conn, *alg, *promoteNow)
+		return keysRotate(ctx, conn, *alg, *rsaBits, *promoteNow)
 	case "keys retire":
 		return keysRetire(ctx, conn, *dryRun)
 	case "keys rewrap-root":
 		return keysRewrapRoot(ctx, conn, *dryRun)
 	case "saml add-sp":
+		if *metadataSource != "" {
+			return samlAddSPFromMetadata(ctx, conn, *orgID, *entityID, *name, namedOnly(fs, "nameid-format", *nameIDFormat),
+				*acsURL, *sloURL, *spCert, *spEncCert, *spKeyTransport, *wantSignedReq, metadataFlags{
+					source: *metadataSource, signerPath: *metadataSigner, unsigned: *metadataUnsigned, encrypt: *metadataEncrypt})
+		}
+		resolution, err := parseArtifactResolution(*artifactResolution)
+		if err != nil {
+			return err
+		}
 		return samlAddSP(ctx, conn, *orgID, *entityID, *name, *acsURL, *nameIDFormat, *sloURL,
-			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport)
+			*spCert, *wantSignedReq, *sloBinding, *spEncCert, *spKeyTransport, splitList(*artifactACS),
+			splitList(*ecpACS), resolution)
+	case "saml refresh-sp":
+		return samlRefreshSP(ctx, conn, *orgID, *entityID, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+			unsigned: *metadataUnsigned}, *dryRun)
+	case "idp refresh-saml":
+		return idpRefreshSAML(ctx, conn, *slug, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+			unsigned: *metadataUnsigned}, *dryRun)
+	case "idp saml-key":
+		return idpSAMLKey(ctx, conn, *slug, *samlKeyPurpose, *samlKeyRetire)
+	case "idp saml-use":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var signing, encryption *bool
+		if given["sign-requests"] {
+			signing = samlSignRequests
+		}
+		if given["require-encryption"] {
+			encryption = samlRequireEncryption
+		}
+		return idpSAMLUse(ctx, conn, *slug, signing, encryption)
 	case "logout-test":
 		return logoutTest(ctx, conn, *rpURL, *clientID, *issuer, *subject, *sidFlag)
 	case "federation enable":
-		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var anchors, contacts *string
+		var lifetime *time.Duration
+		if given["trust-anchor-hints"] {
+			anchors = trustAnchorHints
+		}
+		if given["federation-contacts"] {
+			contacts = federationContacts
+		}
+		if given["entity-lifetime"] {
+			lifetime = entityLifetime
+		}
+		return federationEnable(ctx, conn, *authorityHints, *orgName, *homepageURI, anchors, contacts, lifetime)
 	case "rar register":
 		return rarRegister(ctx, conn, *orgID, *rarType, *rarFields, *rarRequired, *rarDesc)
 	case "rar allow":
 		return rarAllow(ctx, conn, *clientID, *rarType)
 	case "rar list":
-		return rarList(ctx, conn)
+		return rarList(ctx, conn, *outputFormat)
 	case "credential define":
-		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credVCT,
-			*credAlways, *credSelective, *credLifetime, *brandName)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var requireAttestation, deferred, walletInitiated, revocable *bool
+		if given["require-key-attestation"] {
+			requireAttestation = credRequireAttestation
+		}
+		if given["deferred"] {
+			deferred = credDeferred
+		}
+		if given["wallet-initiated"] {
+			walletInitiated = credWalletInitiated
+		}
+		if given["revocable"] {
+			revocable = credRevocable
+		}
+		return credentialDefine(ctx, conn, *orgID, *credConfigs, *credFormat, *credVCT,
+			*credAlways, *credSelective, *credLifetime, *brandName, requireAttestation, deferred, walletInitiated, revocable)
+	case "credential issued":
+		return credentialIssued(ctx, conn, *orgID, *email, *outputFormat)
+	case "credential revoke":
+		return credentialRevoke(ctx, conn, *orgID, *credIssued, *email)
 	case "credential list":
-		return credentialList(ctx, conn)
+		return credentialList(ctx, conn, *outputFormat)
+	case "credential requests":
+		return credentialRequests(ctx, conn, *orgID, *outputFormat)
+	case "credential decide":
+		return credentialDecide(ctx, conn, *orgID, *credRequest, *credDecision)
+	case "credential trust-root":
+		return credentialTrustRoot(ctx, conn, *orgID, *name, *credRootCert)
+	case "credential roots":
+		return credentialRoots(ctx, conn, *outputFormat)
+	case "credential untrust-root":
+		return credentialUntrustRoot(ctx, conn, *orgID, *name)
+	case "credential encryption-key":
+		return credentialEncryptionKey(ctx, conn)
+	case "resource add":
+		return resourceAdd(ctx, conn, *orgID, *resourceURI, *name, *tokenScopes)
+	case "resource list":
+		return resourceList(ctx, conn, *orgID, *outputFormat)
+	case "resource remove":
+		return resourceRemove(ctx, conn, *orgID, *resourceURI)
 	case "credential offer":
 		return credentialOffer(ctx, conn, *orgID, *email, *clientID, *credConfigs,
-			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL)
+			*credIssuer, *issuer, *credTxCode, *credTxLength, *credTTL, *credByReference, *credAuthorizationCode)
 	case "federation show":
 		return federationShow(ctx, conn)
+	case "federation add-subordinate":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var maxPath *int
+		if given["max-path-length"] {
+			maxPath = fedMaxPath
+		}
+		return federationAddSubordinate(ctx, conn, *entityID, *fedJWKSFile, *fedPolicyFile, maxPath, *fedIntermediate)
+	case "federation add-anchor":
+		return federationAddAnchor(ctx, conn, *entityID, *orgID, *fedJWKSFile, *fedTrustMarks)
+	case "federation anchors":
+		return federationAnchors(ctx, conn, *outputFormat)
+	case "federation remove-anchor":
+		return federationRemoveAnchor(ctx, conn, *entityID)
+	case "client-metadata allow":
+		return clientMetadataAllow(ctx, conn, *metadataPrefix, *orgID, *tokenScopes)
+	case "client-metadata rules":
+		return clientMetadataRules(ctx, conn, *outputFormat)
+	case "client-metadata forget":
+		return clientMetadataForget(ctx, conn, *metadataPrefix)
+	case "federation subordinates":
+		return federationSubordinates(ctx, conn, *outputFormat)
+	case "federation remove-subordinate":
+		return federationRemoveSubordinate(ctx, conn, *entityID)
 	case "trust-mark issue":
 		return trustMarkIssue(ctx, conn, *tmType, *tmSubject, *tmLogo, *tmRef,
 			*tmDelegation, *tmLifetime)
 	case "trust-mark revoke":
 		return trustMarkRevoke(ctx, conn, *tmType, *tmSubject, *tmReason)
 	case "trust-mark list":
-		return trustMarkList(ctx, conn)
+		return trustMarkList(ctx, conn, *outputFormat)
 	case "trust-mark accept":
 		return trustMarkAccept(ctx, conn, *tmFile)
 	case "trust-mark drop":
@@ -824,9 +2022,9 @@ func run(args []string) error {
 	case "uma settings":
 		return umaSettings(ctx, conn, *orgID, *umaIntervention, *umaPoll)
 	case "uma requests":
-		return umaRequests(ctx, conn, *orgID)
+		return umaRequests(ctx, conn, *orgID, *outputFormat)
 	case "uma approve":
-		return umaApprove(ctx, conn, *umaRequestID, *relRelation)
+		return umaApprove(ctx, conn, *umaRequestID, *relRelation, *tokenExpires)
 	case "uma deny":
 		return umaDeny(ctx, conn, *umaRequestID)
 	case "client set-claims-redirects":
@@ -836,69 +2034,220 @@ func run(args []string) error {
 	case "authz show-model":
 		return authzModelShow(ctx, conn, *orgID)
 	case "authz grant":
-		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+		return authzGrant(ctx, conn, *orgID, *relSubject, *relRelation, *relObject, *tokenExpires)
 	case "authz revoke":
 		return authzRevoke(ctx, conn, *orgID, *relSubject, *relRelation, *relObject)
+	case "authz delegate":
+		return authzDelegate(ctx, conn, *orgID, *granteeOrg, *relObject, *relRelations)
+	case "authz delegations":
+		return authzDelegations(ctx, conn, *orgID)
+	case "authz undelegate":
+		return authzUndelegate(ctx, conn, *orgID, *delegationID)
 	case "authz check":
 		return authzCheck(ctx, conn, *orgID, *relSubject, *relAction, *relObject)
+	case "authz list":
+		return authzList(ctx, conn, *orgID, *relSubject, *relObject, *outputFormat)
+	case "authz expand":
+		return authzExpand(ctx, conn, *orgID, *relAction, *relObject, *outputFormat)
 	case "events subscribe":
-		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, *subEvents)
+		// -events is the name docs/events.md has always given, and it was the
+		// SSF flag here: a subscription made as documented ignored its list and
+		// received every event in the organisation. -event-types, the flag
+		// this read, still works; the two disagreeing is refused.
+		types := *subEvents
+		if *ssfEvents != "" {
+			if types != "" && types != *ssfEvents {
+				return fmt.Errorf("-events and -event-types name different lists; give one")
+			}
+			types = *ssfEvents
+		}
+		return eventsSubscribe(ctx, conn, *orgID, *name, *subURL, types)
 	case "events list":
-		return eventsList(ctx, conn, *orgID)
+		return eventsList(ctx, conn, *orgID, *outputFormat)
+	case "events remove":
+		return eventsChange(ctx, conn, *orgID, *name, "remove")
+	case "events rotate":
+		return eventsChange(ctx, conn, *orgID, *name, "rotate")
+	case "events enable":
+		return eventsChange(ctx, conn, *orgID, *name, "enable")
+	case "events test":
+		return eventsChange(ctx, conn, *orgID, *name, "test")
 	case "outpost create":
-		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind)
+		return outpostCreate(ctx, conn, *orgID, *name, *outpostKind, *outpostSearchGroup)
+	case "outpost search-group":
+		return outpostSetSearchGroup(ctx, conn, *orgID, *name, *outpostSearchGroup)
 	case "outpost list":
-		return outpostList(ctx, conn, *orgID)
+		return outpostList(ctx, conn, *orgID, *outputFormat)
+	case "outpost disable":
+		return outpostSetEnabled(ctx, conn, *orgID, *name, false)
+	case "outpost enable":
+		return outpostSetEnabled(ctx, conn, *orgID, *name, true)
+	case "outpost rotate":
+		return outpostRotate(ctx, conn, *orgID, *name)
+	case "outpost remove":
+		return outpostRemove(ctx, conn, *orgID, *name)
 	case "invite create":
-		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer)
+		return inviteCreate(ctx, conn, *orgID, *email, *inviteGroups, *inviteTTL, *issuer, *inviteSend)
 	case "invite list":
-		return inviteList(ctx, conn, *orgID)
+		return inviteList(ctx, conn, *orgID, *outputFormat)
+	case "invite revoke":
+		return inviteRevoke(ctx, conn, *orgID, *inviteID)
 	case "signup enable":
-		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups)
+		return signupEnable(ctx, conn, *orgID, *signupDomains, *inviteGroups, *signupVerify, *signupApproval)
 	case "signup disable":
 		return signupDisable(ctx, conn, *orgID)
 	case "signup show":
 		return signupShow(ctx, conn, *orgID)
 	case "kerberos sync":
-		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply)
+		return kerberosSync(ctx, conn, *orgID, *krbRealm, *krbAdmin, *keytabPath, *apply, *krbAdopt)
+	case "kerberos add-realm":
+		var trusted []string
+		if *krbTrust != "" {
+			trusted = strings.Split(*krbTrust, ",")
+		}
+		return kerberosAddRealm(ctx, conn, *orgID, *krbRealm, *racHost, *krbSPN, *keytabPath, *krbStripRealm, trusted, *krbCreate)
+	case "kerberos list-realms":
+		return kerberosListRealms(ctx, conn, *orgID, *outputFormat)
+	case "kerberos remove-realm":
+		return kerberosRemoveRealm(ctx, conn, *orgID, *krbRealm)
 	case "prompt set":
 		return promptSet(ctx, conn, *orgID, *slug, *promptFile)
 	case "prompt list":
-		return promptList(ctx, conn, *orgID)
+		return promptList(ctx, conn, *orgID, *outputFormat)
+	case "prompt disable":
+		return promptSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "prompt enable":
+		return promptSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "plan":
 		return configPlan(ctx, conn, *orgID, *configFile, *prune, false)
 	case "apply":
 		return configPlan(ctx, conn, *orgID, *configFile, *prune, true)
 	case "brand set":
-		return brandSet(ctx, conn, *issuer, *brandName, *brandLogo, *brandSupport,
+		return brandSet(ctx, conn, *issuer, *orgID, *brandName, *brandLogo, *brandSupport,
 			*brandPrimary, *brandOnPrimary, *brandBackground, *brandText)
 	case "brand show":
-		return brandShow(ctx, conn, *issuer)
+		return brandShow(ctx, conn, *issuer, *orgID)
+	case "brand remove":
+		return brandRemove(ctx, conn, *issuer, *orgID)
+	case "message set":
+		return messageSet(ctx, conn, *orgID, *localeTag, *messageKey, *messageText)
+	case "message list":
+		return messageList(ctx, conn, *orgID)
+	case "message remove":
+		return messageRemove(ctx, conn, *orgID, *localeTag, *messageKey)
 	case "saml attribute-release":
-		return samlAttributeRelease(ctx, conn, *entityID, *upstreamClaim, *localAttribute, *removeMember)
+		return samlAttributeRelease(ctx, conn, *orgID, *entityID, *upstreamClaim, *localAttribute, *removeMember)
 	case "saml signing":
-		return samlSigning(ctx, conn, *entityID, *signAssertions, *signResponses, *assertionLifetime)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var assertions, responses *bool
+		if given["sign-assertions"] {
+			assertions = signAssertions
+		}
+		if given["sign-responses"] {
+			responses = signResponses
+		}
+		return samlSigning(ctx, conn, *orgID, *entityID, assertions, responses, *assertionLifetime, *signatureAlg)
+	case "saml nameid":
+		return samlNameID(ctx, conn, *orgID, *entityID, *localAttribute)
+	case "saml soap-logout":
+		return samlSOAPLogout(ctx, conn, *orgID, *entityID, *subURL)
+	case "saml wsfed-token":
+		return samlWSFedToken(ctx, conn, *orgID, *entityID, *samlVersion)
+	case "saml org-endpoint":
+		return samlOrgEndpoint(ctx, conn, *orgID, *entityID, *removeMember)
+	case "saml idp-initiated":
+		var relayState *string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "relay-state" {
+				relayState = samlRelayState
+			}
+		})
+		return samlIdPInitiated(ctx, conn, *orgID, *entityID, !*removeMember, relayState)
 	case "saml group-release":
-		return samlGroupRelease(ctx, conn, *entityID, *samlAttrName, *onlyGroups, *removeMember)
+		return samlGroupRelease(ctx, conn, *orgID, *entityID, *samlAttrName, *onlyGroups, *removeMember)
 	case "idp verified-email":
-		return idpVerifiedEmail(ctx, conn, *slug, *trustEmail)
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		var emailTrust, emailRequired *bool
+		if given["trust-email-verification"] {
+			emailTrust = trustEmail
+		}
+		if given["require-verified-email"] {
+			emailRequired = requireVerified
+		}
+		return idpVerifiedEmail(ctx, conn, *slug, emailTrust, emailRequired)
+	case "idp domains":
+		return idpDomainsSet(ctx, conn, *slug, *signupDomains)
+	case "idp logout":
+		return idpLogoutSet(ctx, conn, *slug, *subURL)
+	case "idp forward":
+		return idpForwardSet(ctx, conn, *slug, *idpForward)
+	case "idp group-map":
+		return idpGroupMap(ctx, conn, *slug, *remoteGroup, *groupName, *removeMember)
+	case "idp group-claim":
+		return idpGroupClaimSet(ctx, conn, *slug, *upstreamClaim)
+	case "idp auth":
+		return idpTokenAuthSet(ctx, conn, *slug, *idpAuthMethod, *idpClientKeyFile, *idpClientCertFile)
+	case "idp trust-mfa":
+		return idpTrustMFA(ctx, conn, *slug, *idpMFAAMR, *idpMFAACR)
+	case "idp store-tokens":
+		return idpStoreTokensSet(ctx, conn, *slug, *idpStoreTokens)
+	case "idp disable":
+		return idpSetEnabled(ctx, conn, *slug, false)
+	case "idp enable":
+		return idpSetEnabled(ctx, conn, *slug, true)
+	case "idp vp-issuer":
+		return idpVPIssuer(ctx, conn, *slug, *issuer, *fedJWKSFile, *keysFromMetadata, *credRootCert, *removeMember)
+	case "idp vp-cross-device":
+		return idpVPCrossDevice(ctx, conn, *slug, !*removeMember)
+	case "idp vp-dc-api":
+		return idpVPDCAPI(ctx, conn, *slug, !*removeMember)
+	case "idp vp-iaca":
+		return idpVPIACA(ctx, conn, *slug, *credRootCert)
+	case "idp link":
+		return idpLink(ctx, conn, *slug, *subject, *email)
+	case "idp unlink":
+		return idpUnlink(ctx, conn, *slug, *subject)
+	case "idp links":
+		return idpLinks(ctx, conn, *slug, *outputFormat)
 	case "instance webauthn":
 		return instanceWebAuthn(ctx, conn, *issuer, *rpID, *name)
+	case "instance related-origins":
+		return instanceRelatedOrigins(ctx, conn, *issuer, splitList(*relatedOrigins))
 	case "scim enable":
-		return scimSetEnabled(ctx, conn, *slug, true)
+		return scimSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim disable":
-		return scimSetEnabled(ctx, conn, *slug, false)
+		return scimSetEnabled(ctx, conn, *orgID, *slug, false)
 	case "saml list":
-		return samlListSPs(ctx, conn)
+		return samlListSPs(ctx, conn, *outputFormat)
 	case "idp add":
+		if *kind == "oid4vp" {
+			return idpAddVP(ctx, conn, *orgID, *slug, *name, *allowSignup, *allowLinking, *trustEmail,
+				store.VPSpec{Prefix: *vpPrefix, WalletURL: *vpWallet, ResponseMode: *vpResponseMode,
+					VCTValues: splitList(*credVCT), SubjectClaim: *vpSubject, EmailClaim: *vpEmail, NameClaim: *vpName,
+					CrossDevice: *vpCrossDevice, DCAPI: *vpDCAPI, Format: *credFormat, DocType: *vpDocType},
+				*idpClientKeyFile, *idpClientCertFile, *credRootCert)
+		}
+		nameID := *nameIDFormat
+		if *metadataSource != "" {
+			nameID = namedOnly(fs, "nameid-format", nameID)
+		}
 		return idpAdd(ctx, conn, *orgID, *slug, *name, *kind, *extClientID, *extSecret,
 			*issuer, *allowSignup, *allowLinking, *trustEmail,
-			*entityID, *srcSSOURL, *spCert, *nameIDFormat,
-			*srcUnsolicited, *srcForceAuthn, *srcSkew)
+			*entityID, *srcSSOURL, *spCert, nameID,
+			*srcUnsolicited, *srcForceAuthn, *srcSkew, metadataFlags{source: *metadataSource, signerPath: *metadataSigner,
+				unsigned: *metadataUnsigned}, store.IdentityProviderSpec{
+				AuthorizeURL: *oauth2Authorize, TokenURL: *oauth2Token, UserinfoURL: *oauth2Userinfo,
+				Scopes: strings.FieldsFunc(*oauth2Scopes, func(r rune) bool { return r == ',' || r == ' ' }),
+				Userinfo: federation.UserinfoClaims{Subject: *oauth2Subject, Email: *oauth2Email,
+					EmailVerified: *oauth2Verified, Name: *oauth2Name}})
 	case "idp apple-secret":
 		return idpAppleSecret(ctx, conn, *slug, *appleTeam, *appleKeyID, *appleKeyFile)
 	case "idp list":
-		return idpList(ctx, conn)
+		return idpList(ctx, conn, *outputFormat)
+	case "idp check":
+		return idpCheck(ctx, conn, *slug)
 	case "idp assertions":
 		return idpAssertions(ctx, conn, *slug, *allowAssertions)
 	case "idp add-issuer":
@@ -907,10 +2256,13 @@ func run(args []string) error {
 		return idpAttributeMap(ctx, conn, *slug, *upstreamClaim, *localAttribute,
 			*mapOverwrite, *mapMaxLength, *removeMember)
 	case "scim add":
-		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2)
+		return scimAdd(ctx, conn, *orgID, *slug, *name, *baseURL, *scimToken, *onDeactivate, *dryRun2, *recreateMissing,
+			*oauthTokenURL, *oauthClientID, *oauthScope, *oauthClientAuth, *oauthAuthorizeURL, *compatibility)
+	case "scim authorize":
+		return scimAuthorize(ctx, conn, *orgID, *slug, *redirect, os.Stdin, os.Stdout)
 	case "provision add":
 		return provisionAdd(ctx, conn, *orgID, *slug, *name, *outpostKind,
-			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2)
+			*credsFile, *dirImpersonate, *targetDomain, *onDeactivate, *dryRun2, *recreateMissing)
 	case "duo set":
 		return duoSet(ctx, conn, *orgID, *duoClientID, *duoSecret, *duoAPIHost, *duoFailOpen)
 	case "duo enroll":
@@ -918,33 +2270,45 @@ func run(args []string) error {
 	case "duo show":
 		return duoShow(ctx, conn)
 	case "attester add":
-		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS)
+		return attesterAdd(ctx, conn, *orgID, *name, *attesterJWKS, *rarDesc)
 	case "attester list":
-		return attesterList(ctx, conn)
+		return attesterList(ctx, conn, *outputFormat)
+	case "external-factor add":
+		return externalFactorAdd(ctx, conn, *orgID, *name, *subURL, *issuer, *jwksPath, *factorAMR)
+	case "external-factor list":
+		return externalFactorList(ctx, conn, *orgID, *outputFormat)
+	case "external-factor remove":
+		return externalFactorRemove(ctx, conn, *orgID, *name)
 	case "scim-source add":
 		return scimSourceAdd(ctx, conn, *orgID, *slug, *name, *onDeactivate)
 	case "scim-source list":
-		return scimSourceList(ctx, conn)
+		return scimSourceList(ctx, conn, *outputFormat)
+	case "scim-source disable":
+		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, false)
+	case "scim-source enable":
+		return scimSourceSetEnabled(ctx, conn, *orgID, *slug, true)
 	case "scim list":
-		return scimList(ctx, conn)
+		return scimList(ctx, conn, *outputFormat)
 	case "scim sync":
-		return scimSync(ctx, conn, *slug, *apply)
+		return scimSync(ctx, conn, *orgID, *slug, *apply)
 	case "scim verify":
-		return scimVerify(ctx, conn, *slug)
+		return scimVerify(ctx, conn, *orgID, *slug)
 	case "scim scope":
-		return scimScope(ctx, conn, *slug, *groupName)
+		return scimScope(ctx, conn, *orgID, *slug, *groupName)
 	case "scim provision-group":
-		return scimProvisionGroup(ctx, conn, *slug, *groupName)
+		return scimProvisionGroup(ctx, conn, *orgID, *slug, *groupName)
 	case "scim deprovision-group":
-		return scimDeprovisionGroup(ctx, conn, *slug, *groupName)
+		return scimDeprovisionGroup(ctx, conn, *orgID, *slug, *groupName)
 	case "group create":
 		return groupCreate(ctx, conn, *orgID, *groupName, *name)
 	case "group member":
 		return groupMember(ctx, conn, *orgID, *groupName, *memberEmail, *removeMember)
+	case "group nest":
+		return groupNest(ctx, conn, *orgID, *groupName, *parentGroup, *removeMember)
 	case "group release":
 		return groupRelease(ctx, conn, *orgID, *clientID, *onlyGroups)
 	case "group list":
-		return groupList(ctx, conn)
+		return groupList(ctx, conn, *outputFormat)
 	case "policy apply":
 		return policyApply(ctx, conn, *orgID, *policyFile)
 	case "flow apply":
@@ -963,14 +2327,22 @@ func run(args []string) error {
 // runs the engine read-only, or simply seeing what a pass would do. It takes the
 // same advisory lock, so running it against a live cluster is safe.
 func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	pool, err := openPool(ctx, conn, "")
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
 	defer pool.Close()
 
+	keep, err := retentionFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetRetention(keep)
 	st, err := janitor.RunOnce(ctx, pool, log)
 	if err != nil {
 		return err
@@ -982,6 +2354,11 @@ func janitorOnce(ctx context.Context, conn *pgx.Conn) error {
 
 	fmt.Printf("janitor: swept %d expired session(s), purged %d code(s)\n",
 		st.SessionsSwept, st.CodesPurged)
+	for _, table := range store.RetentionTables {
+		if n := st.Retained[table]; n > 0 {
+			fmt.Printf("janitor: deleted %d row(s) from %s that nothing reads any more\n", n, table)
+		}
+	}
 	if len(st.Parked) == 0 {
 		return nil
 	}
@@ -1001,11 +2378,12 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 	if err != nil {
 		return "", nil, nil, err
 	}
-	var issuer string
-	if err = conn.QueryRow(ctx,
-		`SELECT id::text, issuer FROM core.instances ORDER BY created_at LIMIT 1`).
-		Scan(&instanceID, &issuer); err != nil {
-		return "", nil, nil, fmt.Errorf("no instance found -- run `signari instance create -issuer …` first: %w", err)
+	// The instance SIGNARI_ISSUER names, or the only one, as `serve` chooses.
+	// This took the oldest whatever was named, so with two instances `keys
+	// rotate` rotated another issuer's keys (0.33).
+	instanceID, _, err = selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return "", nil, nil, err
 	}
 	set, err = keys.LoadSet(ctx, conn, instanceID, root)
 	if err != nil {
@@ -1014,7 +2392,11 @@ func loadInstanceKeys(ctx context.Context, conn *pgx.Conn) (instanceID string, s
 	return instanceID, set, root, nil
 }
 
-func keysList(ctx context.Context, conn *pgx.Conn) error {
+func keysList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
@@ -1028,7 +2410,9 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
-	fmt.Printf("%-24s %-8s %-8s %-22s %s\n", "KID", "ALG", "STATE", "PUBLISHED", "NOTE")
+	if out.text() {
+		fmt.Printf("%-24s %-8s %-8s %-13s %-22s %s\n", "KID", "ALG", "STATE", "HELD IN", "PUBLISHED", "NOTE")
+	}
 	for _, k := range set.Keys() {
 		note := ""
 		switch k.State() {
@@ -1047,11 +2431,15 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 				note = fmt.Sprintf("retirable in %s", wait.Round(time.Minute))
 			}
 		}
-		fmt.Printf("%-24s %-8s %-8s %-22s %s\n",
-			k.KID(), k.Algorithm(), k.State(),
-			k.PublishedAt().UTC().Format(time.RFC3339), note)
+		out.add(map[string]any{"kid": k.KID(), "alg": k.Algorithm(), "state": k.State(),
+			"held_in": keys.HeldIn(k), "published_at": k.PublishedAt().UTC(), "note": note})
+		if out.text() {
+			fmt.Printf("%-24s %-8s %-8s %-13s %-22s %s\n",
+				k.KID(), k.Algorithm(), k.State(), keys.HeldIn(k),
+				k.PublishedAt().UTC().Format(time.RFC3339), note)
+		}
 	}
-	return nil
+	return out.flush()
 }
 
 // keysRotate advances the rotation by exactly one safe step, per algorithm.
@@ -1070,20 +2458,10 @@ func keysList(ctx context.Context, conn *pgx.Conn) error {
 // everything the new key signs, and plenty of them refresh only at boot. Signing
 // with a key nobody has fetched is how a routine rotation becomes an outage --
 // so the wait is enforced rather than documented.
-func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow bool) error {
-	instanceID, set, root, err := loadInstanceKeys(ctx, conn)
+func keysRotate(ctx context.Context, conn *pgx.Conn, only string, rsaBits int, promoteNow bool) error {
+	instanceID, _, root, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
-	}
-
-	// Algorithms currently in use. Rotation replaces what exists; it is not the
-	// place to introduce a new algorithm.
-	algs := set.Algorithms()
-	if only != "" {
-		algs = []keys.Algorithm{keys.Algorithm(only)}
-	}
-	if len(algs) == 0 {
-		return fmt.Errorf("no active signing keys to rotate")
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -1092,70 +2470,35 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	for _, a := range algs {
-		var next keys.Key
-		for _, k := range set.Keys() {
-			if k.Algorithm() == a && k.State() == keys.StateNext {
-				next = k
-				break
-			}
-		}
-
-		if next == nil {
-			generated, err := keys.Generate(keys.NewKID(), a)
-			if err != nil {
-				return fmt.Errorf("generating %s key: %w", a, err)
-			}
-			if err := keys.Save(ctx, tx, instanceID, generated, root); err != nil {
-				return err
-			}
-			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
-				a, generated.KID(), keys.MinPublishBeforeActive)
-			continue
-		}
-
-		if ok, wait := set.CanPromote(next); !ok {
-			if !promoteNow {
-				fmt.Printf("%s: %s is published but not promotable for another %s. Nothing changed.\n",
-					a, next.KID(), wait.Round(time.Minute))
-				continue
-			}
-			// Deliberately loud. This is correct for a compromised key, where
-			// continuing to sign with it is worse than some relying parties
-			// failing verification until their JWKS cache expires -- and wrong
-			// for anything else.
-			fmt.Fprintf(os.Stderr,
-				"WARNING: promoting %s %s after only %s of publication. Relying parties whose "+
-					"JWKS cache predates this key will REJECT its signatures until they refresh.\n",
-				a, next.KID(), (keys.MinPublishBeforeActive - wait).Round(time.Minute))
-		}
-
-		// Demote the outgoing key rather than deleting it: tokens it signed are
-		// still live, and passive keys stay in the JWKS precisely so those keep
-		// verifying. Deleting here would invalidate every unexpired token.
-		if current, err := set.Active(a); err == nil {
-			demoted, err := keys.WithState(current, keys.StatePassive)
-			if err != nil {
-				return err
-			}
-			if err := keys.Save(ctx, tx, instanceID, demoted, root); err != nil {
-				return err
-			}
-			fmt.Printf("%s: demoted %s to passive (still published, so existing tokens verify).\n",
-				a, current.KID())
-		}
-
-		promoted, err := keys.WithState(next, keys.StateActive)
-		if err != nil {
-			return err
-		}
-		if err := keys.Save(ctx, tx, instanceID, promoted, root); err != nil {
-			return err
-		}
-		fmt.Printf("%s: promoted %s to active. It signs from the next restart or config reload.\n",
-			a, promoted.KID())
+	// The step the Admin API shares.
+	steps, err := keys.Rotate(ctx, tx, instanceID, root, keys.Algorithm(only), rsaBits, promoteNow, "cli")
+	if err != nil {
+		return err
 	}
-
+	for _, s := range steps {
+		switch {
+		case s.Published != "":
+			fmt.Printf("%s: published %s as `next`. Run `signari keys rotate` again after %s to promote it.\n",
+				s.Algorithm, s.Published, keys.MinPublishBeforeActive)
+		case s.Promoted == "":
+			fmt.Printf("%s: the next key is published but not promotable for another %s. Nothing changed.\n",
+				s.Algorithm, s.Wait.Round(time.Minute))
+		default:
+			if s.Forced {
+				// Deliberately loud. Right for a compromised key, where signing
+				// with it is worse than some relying parties failing verification
+				// until their JWKS cache expires, and wrong for anything else.
+				fmt.Fprintf(os.Stderr, "WARNING: promoted %s %s before its publication wait was over. Relying "+
+					"parties whose JWKS cache predates this key will REJECT its signatures until they refresh.\n",
+					s.Algorithm, s.Promoted)
+			}
+			if s.Demoted != "" {
+				fmt.Printf("%s: demoted %s to passive (still published, so existing tokens verify).\n",
+					s.Algorithm, s.Demoted)
+			}
+			fmt.Printf("%s: promoted %s to active. It signs from the next key refresh.\n", s.Algorithm, s.Promoted)
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -1195,21 +2538,56 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, promoteNow boo
 // finds every row wrapped under a ref it does not have, and refuses to start --
 // which is the designed outcome, not a bug: `LoadSet` compares `key_ref` against
 // the configured key and says so, rather than failing later inside a signature.
+//
+// # Online, with the deployment running (3.13)
+//
+// When the nodes already seal with the new key and accept the old one
+// (SIGNARI_ROOT_KEY=new, SIGNARI_ACCEPTED_ROOT_KEY=old; keys/keyring.go), this
+// moves what is left under the accepted key to the root key, with nothing
+// stopped. It refuses while any running node says it seals with another key,
+// since that node would go on sealing rows under the key being retired.
 func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
-	old, err := rootKey()
+	current, err := rootKey()
 	if err != nil {
 		return err
 	}
-	nextB64 := os.Getenv("SIGNARI_NEW_ROOT_KEY")
-	if nextB64 == "" {
-		return fmt.Errorf(
-			"SIGNARI_NEW_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
-				"  head -c 32 /dev/urandom | base64\n" +
-				"and set SIGNARI_NEW_ROOT_KEY_REF to a name distinct from the current one")
-	}
-	next, err := keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_NEW_ROOT_KEY_REF"), nextB64)
-	if err != nil {
-		return fmt.Errorf("the new root key: %w", err)
+	stopped := os.Getenv("SIGNARI_NEW_ROOT_KEY") != "" || os.Getenv("SIGNARI_NEW_ROOT_KEY_FILE") != ""
+	var old, next *keys.RootKey
+	switch {
+	case stopped && current.Accepted() != nil:
+		return fmt.Errorf("SIGNARI_NEW_ROOT_KEY and SIGNARI_ACCEPTED_ROOT_KEY are both set. The " +
+			"first rotates a stopped deployment to a new key; the second finishes an online " +
+			"rotation the nodes are already part of (docs/key-rotation.md). Set one")
+	case stopped:
+		old = current
+		next, err = keys.LoadRootKey(os.Getenv,
+			"SIGNARI_NEW_ROOT_KEY", "SIGNARI_NEW_ROOT_KEY_FILE", "SIGNARI_NEW_ROOT_KEY_REF")
+		if err != nil {
+			return fmt.Errorf("the new root key: %w\nand set SIGNARI_NEW_ROOT_KEY_REF to a name "+
+				"distinct from the current one", err)
+		}
+		if running, err := keys.NodesNotSealingWith(ctx, conn, next); err == nil && len(running) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: these nodes are running and will open nothing once this "+
+				"commits, until each is restarted on the new key:\n  %s\n", strings.Join(running, "\n  "))
+		}
+	case current.Accepted() != nil:
+		old, next = current.Accepted(), current
+		lagging, err := keys.NodesNotSealingWith(ctx, conn, next)
+		if err != nil {
+			return err
+		}
+		if len(lagging) > 0 {
+			return fmt.Errorf("not rotating: these connections are from nodes that do not seal with "+
+				"the root key %q, and would go on sealing rows under %q after it:\n  %s\n"+
+				"Restart each with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY "+
+				"to the old one first. A node of a release before this cannot say which key it "+
+				"seals with; upgrade it", next.Ref(), old.Ref(), strings.Join(lagging, "\n  "))
+		}
+	default:
+		return fmt.Errorf("nothing to rotate to. With the deployment running: restart every node " +
+			"with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY to the old one, " +
+			"then run this with the same. Stopped: set SIGNARI_NEW_ROOT_KEY to the new key. " +
+			"docs/key-rotation.md has both")
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -1249,6 +2627,9 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	covered := keys.RootSealedColumns()
 	fmt.Printf("\n  covers %d sealed column(s): %s\n",
 		len(covered), strings.Join(covered, ", "))
+	fields := keys.RootSealedFields()
+	fmt.Printf("  and %d sealed value(s) inside JSON: %s\n",
+		len(fields), strings.Join(fields, ", "))
 
 	if dryRun {
 		fmt.Printf("\nDRY RUN: %d secrets would be re-wrapped from %q to %q. Nothing written.\n",
@@ -1260,6 +2641,12 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return fmt.Errorf("committing the rotation: %w", err)
 	}
 	fmt.Printf("\n%d secrets re-wrapped from %q to %q.\n", total, old.Ref(), next.Ref())
+	if !stopped {
+		fmt.Println("\nNothing is sealed under the old key now. Remove SIGNARI_ACCEPTED_ROOT_KEY from")
+		fmt.Println("every node at its next restart. Keep a copy of the old key until a restore")
+		fmt.Println("test has passed: a backup taken before this run still needs it.")
+		return nil
+	}
 	fmt.Println("\nSet SIGNARI_ROOT_KEY to the new value on EVERY node before any of them")
 	fmt.Println("restarts. A node holding the old key will refuse to start rather than")
 	fmt.Println("serve with keys it cannot open. Keep the old key until every node has")
@@ -1268,7 +2655,7 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 }
 
 func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
-	instanceID, set, _, err := loadInstanceKeys(ctx, conn)
+	instanceID, set, root, err := loadInstanceKeys(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1279,42 +2666,34 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	}
 	fmt.Printf("Passive keys must stay published for %s (%s).\n", dwell, why)
 
-	var eligible []keys.Key
-	var waiting int
-	for _, k := range set.Keys() {
-		if k.State() != keys.StatePassive {
-			continue
-		}
-		ok, wait := set.CanRetire(k, dwell)
+	// Which passive keys may go, by the rule the Admin API shares.
+	var eligible int
+	passive := keys.PassiveKeys(set, dwell)
+	for _, r := range passive {
+		k := r.Key
 		switch {
-		case ok:
-			eligible = append(eligible, k)
-		case k.DemotedAt().IsZero():
-			// Refused rather than retired. See CanRetire: a missing stamp must
-			// not read as "demoted at the zero time", which would retire it now.
+		case r.Undated:
 			fmt.Printf("%s (%s): passive but has no demotion time recorded; not retiring it.\n",
 				k.KID(), k.Algorithm())
-			waiting++
-		default:
-			fmt.Printf("%s (%s): retirable in %s.\n",
-				k.KID(), k.Algorithm(), wait.Round(time.Minute))
-			waiting++
-		}
-	}
-
-	if len(eligible) == 0 {
-		if waiting == 0 {
-			fmt.Println("No passive keys. Nothing to retire.")
-		}
-		return nil
-	}
-
-	if dryRun {
-		for _, k := range eligible {
+		case r.Wait > 0:
+			fmt.Printf("%s (%s): retirable in %s.\n", k.KID(), k.Algorithm(), r.Wait.Round(time.Minute))
+		case dryRun:
+			eligible++
 			fmt.Printf("%s (%s): would be retired (demoted %s).\n",
 				k.KID(), k.Algorithm(), k.DemotedAt().UTC().Format(time.RFC3339))
+		default:
+			eligible++
 		}
-		fmt.Printf("Dry run: %d key(s) would leave the JWKS. Nothing changed.\n", len(eligible))
+	}
+	if len(passive) == 0 {
+		fmt.Println("No passive keys. Nothing to retire.")
+		return nil
+	}
+	if eligible == 0 {
+		return nil
+	}
+	if dryRun {
+		fmt.Printf("Dry run: %d key(s) would leave the JWKS. Nothing changed.\n", eligible)
 		return nil
 	}
 
@@ -1323,13 +2702,12 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	for _, k := range eligible {
-		if err := keys.Retire(ctx, tx, instanceID, k.KID(), dwell); err != nil {
-			return err
-		}
-		fmt.Printf("%s (%s): retired. It leaves the JWKS at the next restart or config reload.\n",
-			k.KID(), k.Algorithm())
+	retired, err := keys.RetireDue(ctx, tx, instanceID, root, "cli")
+	if err != nil {
+		return err
+	}
+	for _, k := range retired {
+		fmt.Printf("%s (%s): retired. It leaves the JWKS at the next key refresh.\n", k.KID(), k.Algorithm())
 	}
 	return tx.Commit(ctx)
 }
@@ -1337,14 +2715,11 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 // rootKey reads the wrapping key for private key material. It is deliberately
 // required rather than defaulted: a generated-on-boot root key would silently
 // make every restart invalidate every stored signing key.
+//
+// With the key it also accepts during an online rotation (3.13), when one is
+// configured.
 func rootKey() (*keys.RootKey, error) {
-	b64 := os.Getenv("SIGNARI_ROOT_KEY")
-	if b64 == "" {
-		return nil, fmt.Errorf(
-			"SIGNARI_ROOT_KEY is unset (32 random bytes, base64) -- generate one with:\n" +
-				"  head -c 32 /dev/urandom | base64")
-	}
-	return keys.NewRootKeyFromBase64(os.Getenv("SIGNARI_ROOT_KEY_REF"), b64)
+	return keys.LoadRootKeyring(os.Getenv)
 }
 
 func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) error {
@@ -1393,12 +2768,33 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	ctx, stopSignals := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
+	// Spans to a collector, when one is named (3.09). Before the servers are
+	// built, because the middleware is only installed while tracing is on, and
+	// stopped last, so the spans of the final requests are sent.
+	stopTracing, err := tracing.Setup(os.Getenv, version, safedial.Roots(), log)
+	if err != nil {
+		return err
+	}
+	defer stopTracing()
 
 	// The startup gate. A drifted or half-migrated database must fail here, at
 	// boot, with a clear message -- not at 3am inside a query.
 	if err := migrate.Verify(ctx, conn); err != nil {
 		return err
+	}
+	// And under GODEBUG=fips140=only, nothing configured that the module would
+	// refuse by panicking a request (3.11).
+	if err := fipsPreflight(ctx, conn, os.Getenv, fips140.Enforced()); err != nil {
+		return err
+	}
+	// The password hash's cost and pepper, as set or not at all: hashing at
+	// the floor because a value was mistyped is a weaker store nobody chose.
+	if err := passwords.SharedConfigError(); err != nil {
+		return fmt.Errorf("not serving: %w", err)
 	}
 
 	root, err := rootKey()
@@ -1418,38 +2814,58 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err != nil {
 		return err
 	}
-
-	set, err := keys.LoadSet(ctx, conn, instanceID, root)
+	// And any others named to be served beside it, each its own issuer behind
+	// its own host, with its own keys (6.12). The first is the primary: it
+	// answers a host no issuer names, and signs what belongs to no instance.
+	extra, err := additionalInstances(ctx, conn, os.Getenv("SIGNARI_ADDITIONAL_ISSUERS"), issuer)
 	if err != nil {
-		return fmt.Errorf("loading signing keys: %w", err)
+		return err
 	}
-
-	// Re-read them while serving. Without this the set was fixed at startup,
-	// which meant a rotation reached no relying party until every instance was
-	// restarted -- and the publish-then-promote design that makes rotation safe
-	// never actually published anything.
-	go func() {
-		t := time.NewTicker(keys.KeyRefreshInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if err := keys.Refresh(ctx, conn, instanceID, root, set); err != nil {
-					// Logged, and the current set kept: the keys already loaded
-					// are the ones known to work.
-					log.Error("refreshing signing keys", "err", err)
-				}
-			}
+	served := append([]servedInstance{{id: instanceID, issuer: issuer}}, extra...)
+	for i := range served {
+		if served[i].keys, err = keys.LoadSet(ctx, conn, served[i].id, root); err != nil {
+			return fmt.Errorf("loading signing keys for %s: %w", served[i].issuer, err)
 		}
-	}()
+	}
+	set := served[0].keys
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+	// Both pools say which root key this node seals with, so a rotation can
+	// see every running node (3.13).
+	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
 		return fmt.Errorf("creating connection pool: %w", err)
 	}
 	defer pool.Close()
+	// The background workers draw on a pool of their own, so neither a burst
+	// of requests nor a long sweep can starve the other.
+	workerPool, err := openWorkerPool(ctx, conn, root.PoolTag())
+	if err != nil {
+		return fmt.Errorf("creating the workers' connection pool: %w", err)
+	}
+	defer workerPool.Close()
+
+	// Re-read them while serving. Without this the set was fixed at startup,
+	// which meant a rotation reached no relying party until every instance was
+	// restarted -- and the publish-then-promote design that makes rotation safe
+	// never actually published anything. Through the pool, which replaces a
+	// connection a failover killed; the startup connection never came back.
+	// One for each instance served, as each has its own keys.
+	//
+	// Unattended rotation, when a period is given (3.16). Off by default: a
+	// deployment that has never rotated should choose to start, not find new
+	// keys in its JWKS after an upgrade.
+	rotateEvery, err := keyRotationPeriod(os.Getenv("SIGNARI_KEY_ROTATION_PERIOD"))
+	if err != nil {
+		return err
+	}
+	for i := range served {
+		keyRefresher := &keys.Refresher{DB: workerPool, InstanceID: served[i].id, Root: root,
+			Live: served[i].keys, Interval: keys.KeyRefreshInterval, Log: log}
+		served[i].refresher = keyRefresher
+		go keyRefresher.Run(ctx)
+		go (&keys.Rotator{DB: workerPool, InstanceID: served[i].id, Root: root, Every: rotateEvery,
+			Interval: time.Hour, Log: log}).Run(ctx)
+	}
 
 	// Mail is optional to START but never optional to HAVE: without SMTP the log
 	// driver keeps account recovery working locally and warns on every send, which
@@ -1463,25 +2879,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			"This must never be set outside local testing.")
 	}
 
-	// Legacy issuers this deployment also claims, so tokens minted for clients
-	// mid-migration are still accepted by our own userinfo and introspection.
-	var aliases []string
-	if rows, err := pool.Query(ctx,
-		`SELECT issuer FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid
-		   AND (retire_after IS NULL OR retire_after > now())`, instanceID); err == nil {
-		for rows.Next() {
-			var a string
-			if rows.Scan(&a) == nil {
-				aliases = append(aliases, a)
-			}
-		}
-		rows.Close()
-		if len(aliases) > 0 {
-			log.Info("accepting legacy issuer aliases for migrated clients", "aliases", aliases)
-		}
-	} else {
-		log.Error("loading issuer aliases", "err", err)
-	}
+	// Legacy issuer aliases are read per request by the server (acceptedIssuers),
+	// not here: read once at startup, a newly registered alias was refused until
+	// a restart and a retired one honoured until one.
 
 	// The SMS gateway. A configuration error is FATAL rather than a fallback to
 	// no SMS: a deployment that named a gateway has stated an intention, and
@@ -1494,41 +2894,128 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if texter != nil {
 		log.Info("SMS second factor available", "gateway", texter.Describe())
 	}
+	smsVerifier, err := sms.NewVerifierFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("configuring the SMS verification service: %w", err)
+	}
+	if smsVerifier != nil {
+		log.Info("SMS second factor available; codes are made, sent and checked by the "+
+			"verification service, and account notices go by email only", "service", smsVerifier.Describe())
+	}
+	smsPolicy, err := sms.PolicyFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("configuring SMS limits: %w", err)
+	}
+	if (texter != nil || smsVerifier != nil) && !smsPolicy.Restricted() {
+		// Not fatal: the daily ceilings still cap the bill. Said once at start,
+		// because a gateway open to every country is how SMS pumping begins.
+		log.Warn("SMS is enabled with no SIGNARI_SMS_ALLOWED_PREFIXES, so a number in any " +
+			"country, including high-cost ranges, can be enrolled and sent codes")
+	}
 
-	srv, err := httpapi.New(oidc.Config{
-		Issuer:              issuer,
-		IssuerAliases:       aliases,
-		ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
-		Keys:                set,
-		Root:                root,
-		AllowInsecureIssuer: insecureIssuer,
-	}, pool, log, mailer, texter)
+	// Consecutive wrong codes before a second factor is switched off. Fatal when
+	// malformed or out of range, like the SMS gateway above: a deployment that
+	// asked for a stricter limit and silently got the default has a weaker
+	// control than it believes.
+	failureLimit := 0
+	if v := os.Getenv("SIGNARI_MFA_FAILURE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT is not a number: %q", v)
+		}
+		failureLimit = n
+	}
+	failureLimit, err = store.FactorFailureLimit(failureLimit)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_MFA_FAILURE_LIMIT: %w", err)
+	}
+
+	// The client address behind a reverse proxy. Fatal when inconsistent, for
+	// the same reason as the limit above: a deployment that named its proxies
+	// wrongly and started anyway would share one rate-limit bucket among every
+	// client while believing it did not.
+	proxied, err := proxyProtocolListeners()
 	if err != nil {
 		return err
 	}
-	// The authorities that may issue client certificates, for RFC 8705. Supplied
-	// here because this is where TLS is configured; nil is a valid answer and
-	// means tls_client_auth is refused.
-	srv.SetClientCAs(clientCAPool())
-	srv.SetInstance(instanceID)
-	// Needed to unseal personal user attributes for operator-defined claims.
-	srv.SetRootKey(root)
-
-	// OpenID Federation keys, loaded only if this instance has any.
-	//
-	// A deployment that is not in a federation has none, and that is the
-	// ordinary case: SetFederationKeys(nil) leaves the configuration endpoint
-	// unregistered rather than serving an Entity Configuration nobody asked for.
-	if fedSet, ferr := keys.LoadSetFor(ctx, conn, instanceID, keys.PurposeFederation, root); ferr == nil &&
-		len(fedSet.JWKS().Keys) > 0 {
-		srv.SetFederationKeys(fedSet)
-		log.Info("openid federation enabled", "keys", len(fedSet.JWKS().Keys))
+	if len(proxied) > 0 && strings.TrimSpace(os.Getenv("SIGNARI_TRUSTED_PROXIES")) == "" {
+		return fmt.Errorf("SIGNARI_PROXY_PROTOCOL needs SIGNARI_TRUSTED_PROXIES: a PROXY header " +
+			"is read only from a balancer you named, never from whoever connects")
+	}
+	ips, err := clientip.ParseFor(os.Getenv("SIGNARI_CLIENT_IP_SOURCE"),
+		os.Getenv("SIGNARI_TRUSTED_PROXIES"), len(proxied) > 0)
+	if err != nil {
+		return err
 	}
 	pst, perr := postureFromEnv()
 	if perr != nil {
 		return perr
 	}
-	srv.SetPosture(pst)
+	accessLog := false
+	switch v := os.Getenv("SIGNARI_ACCESS_LOG"); v {
+	case "", "0":
+	case "1":
+		accessLog = true
+	default:
+		return fmt.Errorf("SIGNARI_ACCESS_LOG=%q: want 1 or 0", v)
+	}
+
+	// One server for each instance, configured alike but for its issuer, its
+	// keys and its id (6.12); HostRouter below chooses between them.
+	servers := make([]*httpapi.Server, 0, len(served))
+	byInstance := map[string]*httpapi.Server{}
+	for _, inst := range served {
+		srv, err := httpapi.New(oidc.Config{
+			Issuer:              inst.issuer,
+			ProxyCookieDomain:   os.Getenv("SIGNARI_PROXY_COOKIE_DOMAIN"),
+			Keys:                inst.keys,
+			Root:                root,
+			AllowInsecureIssuer: insecureIssuer,
+		}, pool, log, mailer, texter)
+		if err != nil {
+			return err
+		}
+		// The authorities that may issue client certificates, for RFC 8705.
+		// Supplied here because this is where TLS is configured; nil is a valid
+		// answer and means tls_client_auth is refused.
+		srv.SetClientCAs(clientCAPool())
+		srv.SetRelease(version)
+		// Which instance's clients, sessions and accounts it serves: every
+		// lookup without a token asks.
+		srv.SetInstance(inst.id)
+		// Needed to unseal personal user attributes for operator-defined claims.
+		srv.SetRootKey(root)
+		srv.SetDPoPNonces(os.Getenv("SIGNARI_DPOP_NONCE") == "1")
+		decisionLog, err := httpapi.ParseDecisionLogRate(os.Getenv("SIGNARI_AUTHZ_DECISION_LOG"))
+		if err != nil {
+			return err
+		}
+		srv.SetDecisionLogRate(decisionLog)
+		srv.SetFactorFailureLimit(failureLimit)
+		srv.SetSMSPolicy(smsPolicy)
+		srv.SetSMSVerifier(smsVerifier)
+		srv.SetClientIPResolver(ips)
+		// An instance that can no longer refresh its signing keys keeps signing
+		// with the last ones it saw. After MaxMissedRefreshes in a row it
+		// leaves the load balancer rather than go on doing that unnoticed.
+		srv.AddReadinessCheck("signing_keys", inst.refresher.Healthy)
+
+		// OpenID Federation keys, loaded only if this instance has any.
+		//
+		// A deployment that is not in a federation has none, and that is the
+		// ordinary case: SetFederationKeys(nil) leaves the configuration endpoint
+		// unregistered rather than serving an Entity Configuration nobody asked for.
+		if fedSet, ferr := keys.LoadSetFor(ctx, conn, inst.id, keys.PurposeFederation, root); ferr == nil &&
+			len(fedSet.JWKS().Keys) > 0 {
+			srv.SetFederationKeys(fedSet)
+			log.Info("openid federation enabled", "issuer", inst.issuer, "keys", len(fedSet.JWKS().Keys))
+		}
+		srv.SetPosture(pst)
+		srv.SetAccessLog(accessLog)
+		servers = append(servers, srv)
+		byInstance[inst.id] = srv
+	}
+	srv := servers[0]
 
 	// The outbox worker is a SINGLETON: running it on every node would deliver
 	// each logout notice once per node. It claims rows FOR UPDATE SKIP LOCKED so
@@ -1541,22 +3028,49 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// without it being publishable.
 	audit.SetPublisher(store.AuditPublisher)
 
-	go outbox.New(pool, set, issuer, root, log).Run(workerCtx, 2*time.Second)
+	worker := outbox.New(workerPool, set, issuer, root, log)
+	// Each message signed as its client's instance, and one for an instance
+	// this process does not serve left for a process that does (6.12).
+	for _, inst := range served {
+		worker.AddInstance(inst.id, inst.keys, inst.issuer)
+	}
+	// Notices to account holders the Admin API and the CLI queued, told through
+	// the channels, and with the links, of the server of the holder's instance.
+	worker.SetAccountNotifier(accountNotifier(workerPool, byInstance))
+	go worker.Run(workerCtx, 2*time.Second)
 
 	// The janitor is likewise a singleton, but it enforces that itself with an
 	// advisory lock rather than by convention -- so it is safe to start on every
 	// node, and there is no separate unit an operator can forget to deploy. The
 	// jobs it runs are the ones whose absence is invisible until it matters:
 	// relying parties never told a session ended, and a table that only grows.
-	go janitor.Run(workerCtx, pool, log, janitor.DefaultInterval)
+	keep, err := retentionFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetRetention(keep)
+	// The janitor also signs the audit chain's head (3.20): the chain alone is
+	// unkeyed, and anyone who can write it can recompute it.
+	headInterval, err := audit.HeadInterval(os.Getenv)
+	if err != nil {
+		return err
+	}
+	janitor.SetHeadSigner(auditHeadSigner(set, issuer, headInterval))
+	go janitor.Run(workerCtx, workerPool, log, janitor.DefaultInterval)
+	go (&directory.Scheduler{DB: workerPool, Root: root, Interval: time.Minute, Log: log}).Run(workerCtx)
+	for _, srv := range servers {
+		go srv.RunSSFPolls(workerCtx)
+	}
 
 	// Audit streaming to a logically separate system (ASVS V16.4.3), off unless a
 	// destination is configured. Forwarding authentication events off the box is a
 	// data-residency decision, so it happens only when an operator names where.
+	auditStreaming := false
 	if sink, serr := auditsink.NewFromEnv(os.Getenv, log); serr != nil {
 		return fmt.Errorf("audit streaming: %w", serr)
 	} else if sink != nil {
-		go auditsink.NewPump(pool, sink, log).Run(workerCtx, 10*time.Second)
+		auditStreaming = true
+		go auditsink.NewPump(workerPool, sink, log).Run(workerCtx, 10*time.Second)
 	}
 
 	// Authenticator model resolution (AAGUID -> "YubiKey 5 NFC"), off unless a
@@ -1569,6 +3083,28 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		go models.Run(workerCtx, fidomds.DefaultRefresh)
 	}
 
+	// The metrics engine, built here rather than beside its listener below so
+	// the admin API, which starts first, can be counted too. Built only when it
+	// will be served: instrumenting a process nobody can scrape is work done for
+	// nothing, and the nil case keeps the middleware out of both routers.
+	metricsAddr := os.Getenv("SIGNARI_METRICS_ADDR")
+	var met *metrics.Engine
+	if metricsAddr != "" {
+		met = metrics.NewEngine()
+		var hooks []string
+		for _, h := range provider.AllHooks() {
+			hooks = append(hooks, string(h))
+		}
+		met.DeclareProviderHooks(hooks)
+		provider.SetObserver(func(h provider.Hook, outcome string) {
+			met.Providers.Inc(string(h), outcome)
+		})
+		for _, table := range store.RetentionTables {
+			metrics.RegisterRetentionTable(table)
+		}
+		janitor.SetRetentionObserver(func(table string, n int) { met.Retained.Add(float64(n), table) })
+	}
+
 	// The admin API listens on its OWN address, and is off unless one is given.
 	// It is the write surface for the entire identity provider; exposing it on
 	// the same public listener as the protocol endpoints would put it one
@@ -1579,10 +3115,32 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		if err != nil {
 			return fmt.Errorf("admin API: %w", err)
 		}
+		adminSrv.SetMetrics(met)
+		adminSrv.SetRelease(version)
+		if readDSN := os.Getenv("SIGNARI_READ_DSN"); readDSN != "" {
+			rcfg, rerr := pgxpool.ParseConfig(readDSN)
+			if rerr != nil {
+				return fmt.Errorf("SIGNARI_READ_DSN: %w", rerr)
+			}
+			rcfg.ConnConfig.Tracer = tracing.DB{}
+			replica, rerr := pgxpool.NewWithConfig(ctx, rcfg)
+			if rerr != nil {
+				return fmt.Errorf("SIGNARI_READ_DSN: %w", rerr)
+			}
+			defer replica.Close()
+			adminSrv.SetReadReplica(replica)
+		}
 		// Personal user attributes are sealed under the subject's key, so the
 		// attribute routes need the key that unwraps subject keys. Without it
 		// they are not registered at all.
 		adminSrv.SetRootKey(root)
+		// This deployment's own access tokens for the Admin API's audience,
+		// from a designated application, act with their holder's roles (6.01),
+		// verified against the key set of the instance that signed them, the
+		// one its protocol endpoints use (6.12).
+		for _, inst := range served {
+			adminSrv.AcceptAccessTokens(inst.id, inst.keys, inst.issuer)
+		}
 
 		// Refused at startup, not warned about at runtime.
 		//
@@ -1596,6 +3154,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				"and -tls-key, or -admin-insecure if it is bound to loopback behind a " +
 				"terminator you control")
 		}
+		adminTLS, err := adminClientAuth(os.Getenv("SIGNARI_ADMIN_CLIENT_CA"), tlsCert)
+		if err != nil {
+			return err
+		}
 
 		go func() {
 			scheme := "https"
@@ -1603,10 +3165,17 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 				scheme = "http"
 			}
 			log.Info("admin API listening", "addr", adminAddr, "scheme", scheme)
+			// The same read and write bounds as the public listener: a slow
+			// body here holds a goroutine just the same, and no admin call
+			// takes longer than a minute to answer.
 			ah := &http.Server{
 				Addr:              adminAddr,
 				Handler:           adminSrv.Routes(),
-				ReadHeaderTimeout: 10 * time.Second,
+				TLSConfig:         adminTLS,
+				ReadHeaderTimeout: httpapi.PublicReadHeaderTimeout,
+				ReadTimeout:       httpapi.PublicReadTimeout,
+				WriteTimeout:      httpapi.PublicWriteTimeout,
+				IdleTimeout:       httpapi.PublicIdleTimeout,
 			}
 			// Shut down with the rest of the process rather than being killed
 			// with it. An admin write is a transaction that bumps the config
@@ -1666,7 +3235,7 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			return fmt.Errorf("SIGNARI_LDAP_ADDR is set but SIGNARI_LDAP_BASE_DN is not; " +
 				"the base DN is what every bind DN must sit under and there is no safe default")
 		}
-		ldapHasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		ldapHasher := passwords.Shared()
 		// SIGNARI_LDAP_WRITE_GROUP names who may Add, Modify, Delete and Modify
 		// DN. Empty means nobody, and the directory stays read-only exactly as it
 		// was -- see internal/ldapd/write.go for why that is two decisions rather
@@ -1679,7 +3248,13 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			// directory to anyone who can reach the port.
 			AllowAnonymousSearch: os.Getenv("SIGNARI_LDAP_ANONYMOUS_SEARCH") == "1",
 			WriteGroup:           ldapWriteGroup,
-		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log), log)
+			// Who may search beyond their own entry. Empty means nobody.
+			SearchGroup:  os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"),
+			POSIX:        os.Getenv("SIGNARI_LDAP_POSIX") == "1",
+			HomeTemplate: envOr("SIGNARI_LDAP_POSIX_HOME", "/home/{username}"),
+			LoginShell:   envOr("SIGNARI_LDAP_POSIX_SHELL", "/bin/bash"),
+		}, httpapi.NewLDAPAuthenticator(pool, ldapHasher, ldapOrgID, log).
+			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK), log)
 
 		if ldapWriteGroup != "" {
 			ldapSrv = ldapSrv.WithWriter(httpapi.NewLDAPWriter(pool, ldapHasher,
@@ -1694,14 +3269,27 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 					"directory entries, and may set any password")
 		}
 
+		// Plaintext asked for by name, as the admin listener and the LDAP outpost
+		// ask for it, and refused otherwise. Every simple bind carries a password,
+		// and a warning was the whole of the protection: a deployment whose TLS
+		// is terminated in front of the engine starts it with no certificate,
+		// which is the case the warning was written for, and the line went to a
+		// log nobody reads while passwords crossed the network in clear.
+		ldapInsecure := os.Getenv("SIGNARI_LDAP_INSECURE") == "1"
+		if tlsCert == "" && !ldapInsecure {
+			return fmt.Errorf("the LDAP listener will not take passwords in clear: pass " +
+				"-tls-cert and -tls-key, or set SIGNARI_LDAP_INSECURE=1 if it is bound to " +
+				"loopback behind a TLS terminator you control")
+		}
 		ln, err := net.Listen("tcp", ldapAddr)
 		if err != nil {
 			return fmt.Errorf("LDAP listener: %w", err)
 		}
+		// Below TLS, where a balancer puts it: the header precedes the handshake.
+		ln = withProxyProtocol(ln, proxied["ldap"], ips)
 		if tlsCert == "" {
-			log.Warn("LDAP is listening WITHOUT TLS: every bind sends a password in the " +
-				"clear. Supply -tls-cert and -tls-key, or restrict this listener to a " +
-				"trusted network.")
+			log.Warn("LDAP is listening WITHOUT TLS, as SIGNARI_LDAP_INSECURE asks: every " +
+				"bind sends a password in the clear to whatever reaches this address")
 		} else {
 			cert, cerr := tls.LoadX509KeyPair(tlsCert, tlsKey)
 			if cerr != nil {
@@ -1764,11 +3352,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		if eerr != nil {
 			return fmt.Errorf("configuring EAP-TLS: %w", eerr)
 		}
+		tunnelCfg, terr := eapTunnelsFromEnv()
+		if terr != nil {
+			return fmt.Errorf("configuring EAP-TTLS and PEAP: %w", terr)
+		}
 
 		radiusAuth := httpapi.NewRADIUSAuthenticator(pool,
-			passwords.NewHasher(passwords.MemoryBudgetMiB), radiusOrgID, log)
-		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg},
-			radiusAuth, log)
+			passwords.Shared(), radiusOrgID, log).
+			WithMFAGate(srv.BindDemandsMFA).WithCodes(srv.BindCodeOK)
+		radiusSrv, rerr2 := radius.New(radius.Config{Clients: clients, EAPTLS: eapCfg, EAPTunnels: tunnelCfg,
+			Workers: 2 * passwords.Shared().Concurrency()}, radiusAuth, log)
 		if rerr2 != nil {
 			return fmt.Errorf("%w -- register one with `signari radius add-client`", rerr2)
 		}
@@ -1825,12 +3418,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// A separate address also means the usual advice ("bind it to the internal
 	// network") is something an operator can actually follow, rather than being
 	// told to put a path exception in a proxy.
-	metricsAddr := os.Getenv("SIGNARI_METRICS_ADDR")
-	if metricsAddr != "" {
-		// Built only when it will be served. Instrumenting a process nobody can
-		// scrape is work done for nothing, and the nil case is what keeps the
-		// middleware out of Routes() entirely.
-		met := metrics.NewEngine()
+	if met != nil {
+		// Sign-ins and authentication failures are counted off the audit
+		// trail, which every sign-in path already writes to.
+		audit.SetObserver(func(e audit.Event) { met.ObserveAudit(e) })
 
 		// Pool saturation, read at scrape time rather than sampled.
 		//
@@ -1853,15 +3444,39 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		met.Registry.NewGauge("signari_db_pool_connections_max",
 			"The pool's ceiling, so headroom can be computed without knowing the config.",
 			func() float64 { return float64(pool.Stat().MaxConns()) })
+		// The password hasher's saturation: in flight against its slot count.
+		// One process-wide hasher, so these describe every sign-in path at once.
+		met.Registry.NewGauge("signari_password_hashes_in_flight",
+			"Password hashes running or waiting for a slot.",
+			func() float64 { return float64(passwords.Shared().InFlight()) })
+		met.Registry.NewGauge("signari_password_hash_slots",
+			"How many password hashes may run at once.",
+			func() float64 { return float64(passwords.Shared().Concurrency()) })
+		// The worst of the instances served: any one at five fails readiness.
+		met.Registry.NewGauge("signari_key_refresh_failures",
+			"Signing-key refreshes that have failed in a row; readiness fails at five.",
+			func() float64 {
+				var worst int64
+				for _, inst := range served {
+					worst = max(worst, inst.refresher.Missed())
+				}
+				return float64(worst)
+			})
+		registerOperationalGauges(met.Registry, workerPool, set, auditStreaming)
 
-		srv.SetMetrics(met)
+		for _, s := range servers {
+			s.SetMetrics(met)
+		}
 		go func() {
 			mm := http.NewServeMux()
 			mm.Handle("GET /metrics", met.Handler())
 			mh := &http.Server{
 				Addr:              metricsAddr,
 				Handler:           mm,
-				ReadHeaderTimeout: 10 * time.Second,
+				ReadHeaderTimeout: httpapi.PublicReadHeaderTimeout,
+				ReadTimeout:       httpapi.PublicReadTimeout,
+				WriteTimeout:      httpapi.PublicWriteTimeout,
+				IdleTimeout:       httpapi.PublicIdleTimeout,
 			}
 			go func() {
 				<-ctx.Done()
@@ -1876,13 +3491,23 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}()
 	}
 
-	h := &http.Server{
-		Addr:    addr,
-		Handler: srv.Routes(),
-		// A slow-header attack costs an attacker nothing and holds a connection
-		// open indefinitely without this.
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+	// Read, write, header and idle timeouts: see httpapi.NewPublicServer.
+	// Each request to the server of the instance whose issuer names its host
+	// (6.12); with one instance, that one's routes as they always were.
+	handlers := make([]http.Handler, len(servers))
+	for i, s := range servers {
+		handlers[i] = s.Routes()
+	}
+	routes, err := httpapi.HostRouter(servers, handlers)
+	if err != nil {
+		return err
+	}
+	for _, inst := range served[1:] {
+		log.Info("also serving", "issuer", inst.issuer, "algs", inst.keys.Algorithms())
+	}
+	h := httpapi.NewPublicServer(addr, routes)
+	if os.Getenv("SIGNARI_H2C") == "1" {
+		httpapi.AllowH2C(h)
 	}
 
 	// Ordered shutdown. The sequence is the whole point, and getting it wrong is
@@ -1904,7 +3529,9 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down", "drain", shutdownDrain(), "timeout", shutdownTimeout())
-		srv.BeginDraining()
+		for _, s := range servers {
+			s.BeginDraining()
+		}
 
 		// Never drain for longer than the whole budget. A deployment that sets
 		// the drain above the timeout means to wait a long time, not to spend
@@ -1924,13 +3551,33 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 		}
 	}()
 
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("HTTP listener: %w", err)
+	}
+	ln = withProxyProtocol(ln, proxied["http"], ips)
+
+	// Encrypted Client Hello keys, newest first (internal/ech). Read before either
+	// branch: keys named for a listener with no certificate are a mistake to stop
+	// on, not a setting to drop, since the operator believes the name is hidden.
+	var echPaths []string
+	for _, p := range strings.Split(os.Getenv("SIGNARI_TLS_ECH_KEYS"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			echPaths = append(echPaths, p)
+		}
+	}
+	if len(echPaths) > 0 && (tlsCert == "" || tlsKey == "") {
+		return fmt.Errorf("SIGNARI_TLS_ECH_KEYS is set and the listener has no -tls-cert: " +
+			"Encrypted Client Hello is part of TLS, so there would be nothing to encrypt it in")
+	}
+
 	if tlsCert == "" || tlsKey == "" {
 		log.Info("serving over plaintext HTTP", "addr", addr, "issuer", issuer,
 			"algs", set.Algorithms())
 		log.Warn("no TLS configured: browsers will refuse to store the __Host- session " +
 			"cookie over plaintext on any host except localhost, so sign-in will silently " +
 			"fail to persist. Supply -tls-cert and -tls-key outside local testing.")
-		if err := h.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := h.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
@@ -1964,12 +3611,57 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 		},
 	}
+	// Encrypted Client Hello (ASVS V12.1.5): the name a client asks for travels
+	// encrypted, with the public name of the key's configuration in the clear in
+	// its place. TLS 1.3 only, then: ECH is a TLS 1.3 mechanism (RFC 9849,
+	// specs/rfc9849.txt:643-645), and crypto/tls refuses keys on a listener that
+	// would take less.
+	if len(echPaths) > 0 {
+		keys, configs, err := ech.Load(echPaths)
+		if err != nil {
+			return err
+		}
+		h.TLSConfig.MinVersion = tls.VersionTLS13
+		h.TLSConfig.EncryptedClientHelloKeys = keys
+		published, err := ech.MarshalConfigList(keys[0].Config)
+		if err != nil {
+			return err
+		}
+		log.Info("Encrypted Client Hello on; the listener takes TLS 1.3 only",
+			"keys", len(keys), "config_id", configs[0].ID, "public_name", configs[0].PublicName,
+			"ech_config_list", base64.StdEncoding.EncodeToString(published))
+	}
 	log.Info("serving over HTTPS", "addr", addr, "issuer", issuer, "algs", set.Algorithms())
-	if err := h.ListenAndServeTLS(tlsCert, tlsKey); err != nil &&
+	if err := h.ServeTLS(ln, tlsCert, tlsKey); err != nil &&
 		!errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// proxyProtocolListeners reads SIGNARI_PROXY_PROTOCOL: the listeners whose
+// trusted peers must open every connection with a PROXY v2 header.
+func proxyProtocolListeners() (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, v := range strings.Split(os.Getenv("SIGNARI_PROXY_PROTOCOL"), ",") {
+		switch v = strings.ToLower(strings.TrimSpace(v)); v {
+		case "":
+		case "http", "ldap":
+			out[v] = true
+		default:
+			return nil, fmt.Errorf("SIGNARI_PROXY_PROTOCOL: %q is not a listener; name http, ldap or both", v)
+		}
+	}
+	return out, nil
+}
+
+// withProxyProtocol puts a PROXY v2 reader in front of ln when that listener
+// is behind a TCP balancer. See internal/proxyproto.
+func withProxyProtocol(ln net.Listener, on bool, ips *clientip.Resolver) net.Listener {
+	if !on {
+		return ln
+	}
+	return &proxyproto.Listener{Listener: ln, Trusted: ips.Trusts}
 }
 
 // shutdownDrain is how long to keep serving after being told to stop.
@@ -2013,8 +3705,16 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {
-	applied, err := migrate.Up(ctx, conn, tier, to)
+// migrationOptions bounds what a migration may wait for, and says when it is
+// waiting for another `migrate` to finish.
+func migrationOptions(lock, statement time.Duration) migrate.Options {
+	return migrate.Options{LockTimeout: lock, StatementTimeout: statement, Waiting: func() {
+		fmt.Println("another migrate is running against this database; waiting for it to finish")
+	}}
+}
+
+func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int, opts migrate.Options) error {
+	applied, err := migrate.Up(ctx, conn, tier, to, opts)
 	// Report what did land even when a later migration fails -- knowing where it
 	// stopped is the difference between a five-minute fix and a restore.
 	for _, m := range applied {
@@ -2025,6 +3725,15 @@ func up(ctx context.Context, conn *pgx.Conn, tier migrate.Tier, to int) error {
 	}
 	if len(applied) == 0 {
 		fmt.Println("nothing to apply")
+		// A rollback runs the previous release's migrate job against the
+		// database the newer one left; say what that means rather than
+		// leaving `serve` to be the first to.
+		all, lerr := migrate.Load()
+		current, aerr := migrate.Applied(ctx, conn)
+		if lerr == nil && aerr == nil && current > all[len(all)-1].Version {
+			fmt.Printf("the database is at %d, ahead of this binary (%d); `signari verify` says "+
+				"whether this binary may serve it\n", current, all[len(all)-1].Version)
+		}
 	}
 	return nil
 }
@@ -2051,7 +3760,11 @@ func printFingerprint(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-func status(ctx context.Context, conn *pgx.Conn) error {
+func status(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	all, err := migrate.Load()
 	if err != nil {
 		return err
@@ -2060,23 +3773,75 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
+	var pending []migrate.Migration
+	for _, m := range all {
+		if m.Version > current {
+			pending = append(pending, m)
+		}
+	}
+	tierOf := func(m migrate.Migration) string {
+		if m.Tier() == migrate.TierBootstrap {
+			return "bootstrap (superuser)"
+		}
+		return "core"
+	}
+	report := map[string]any{"database_version": current, "binary_expects": all[len(all)-1].Version}
 
-	fmt.Printf("database version : %d\n", current)
-	fmt.Printf("binary expects   : %d\n", all[len(all)-1].Version)
+	if out.text() {
+		fmt.Printf("database version : %d\n", current)
+		fmt.Printf("binary expects   : %d\n", all[len(all)-1].Version)
+	}
 
 	if current > 0 {
 		fp, err := migrate.Fingerprint(ctx, conn)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("live fingerprint : %s\n", fp)
+		report["fingerprint"] = fp
+		c, err := migrate.CompareLedger(ctx, conn)
+		if err != nil {
+			return err
+		}
+		earliest, err := migrate.EarliestCompatible(ctx, conn)
+		if err != nil {
+			return err
+		}
+		report["oldest_binary"] = earliest
+		switch {
+		case c.Drifted():
+			report["ledger"] = map[string]any{"state": "differs", "version": c.Version, "recorded": c.Recorded}
+		case c.Comparable:
+			report["ledger"] = map[string]any{"state": "matches", "version": c.Version}
+		default:
+			report["ledger"] = map[string]any{"state": "not compared", "reason": c.Reason}
+		}
+		if out.text() {
+			fmt.Printf("live fingerprint : %s\n", fp)
+			switch {
+			case c.Drifted():
+				fmt.Printf("ledger           : DIFFERS -- migration %d recorded %s; the schema has been changed by hand since\n",
+					c.Version, c.Recorded)
+			case c.Comparable:
+				fmt.Printf("ledger           : matches what migration %d recorded\n", c.Version)
+			default:
+				fmt.Printf("ledger           : not compared -- %s\n", c.Reason)
+			}
+			if earliest < current {
+				fmt.Printf("oldest binary    : %d -- the migrations since are compatible with it, "+
+					"so it may serve this database\n", earliest)
+			} else {
+				fmt.Printf("oldest binary    : %d -- no earlier binary may serve this database\n", earliest)
+			}
+		}
 	}
 
-	var pending []migrate.Migration
-	for _, m := range all {
-		if m.Version > current {
-			pending = append(pending, m)
+	if !out.text() {
+		list := make([]map[string]any, 0, len(pending))
+		for _, m := range pending {
+			list = append(list, map[string]any{"version": m.Version, "name": m.Name, "tier": tierOf(m)})
 		}
+		report["pending"] = list
+		return out.value(report)
 	}
 	if len(pending) == 0 {
 		fmt.Println("pending          : none")
@@ -2084,17 +3849,64 @@ func status(ctx context.Context, conn *pgx.Conn) error {
 	}
 	fmt.Println("pending          :")
 	for _, m := range pending {
-		tier := "core"
-		if m.Tier() == migrate.TierBootstrap {
-			tier = "bootstrap (superuser)"
-		}
-		fmt.Printf("  %04d_%-24s %s\n", m.Version, m.Name, tier)
+		fmt.Printf("  %04d_%-24s %s\n", m.Version, m.Name, tierOf(m))
 	}
 	return nil
 }
 
 // firstOrg returns the only organisation, creating a default one if the instance
 // has none. Development convenience; the admin API owns this in production.
+// errSlugTaken explains a refused identity provider slug. Unique across the
+// deployment, not per organisation (0129): the slug is the sign-in URL, and the
+// URL names no organisation.
+func errSlugTaken(slug string) error {
+	return fmt.Errorf("the slug %q is already taken by an identity provider in this deployment. "+
+		"Slugs are unique across organisations because they are the sign-in URL "+
+		"(/login/with/%s), which names no organisation; choose another, such as %q",
+		slug, slug, slug+"-"+"yourorg")
+}
+
+// resolveOrg is the organisation a command acts in: the one -org names, or,
+// when it names none, the only one there is. With several it refuses rather
+// than choose. `user create` and `client create` used to take the oldest
+// organisation whatever -org said, so a person or an application meant for a
+// second tenant was created in the first, where the tenant it was meant for
+// could not see it and the one that could see it never asked for it.
+func resolveOrg(ctx context.Context, conn *pgx.Conn, given string) (string, error) {
+	if given != "" {
+		id, ok := store.CanonicalUUID(given)
+		if !ok {
+			return "", fmt.Errorf("-org %q is not an organisation id (a uuid)", given)
+		}
+		var exists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.organizations WHERE id = $1::uuid)`,
+			id).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return "", fmt.Errorf("no organisation %s", id)
+		}
+		return id, nil
+	}
+	var n int
+	var first []string
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*), COALESCE((SELECT array_agg(slug) FROM (SELECT slug FROM core.organizations
+		                           ORDER BY created_at LIMIT 5) s), '{}')
+		  FROM core.organizations`).Scan(&n, &first); err != nil {
+		return "", err
+	}
+	if n > 1 {
+		named := strings.Join(first, ", ")
+		if n > len(first) {
+			named += fmt.Sprintf(" and %d more", n-len(first))
+		}
+		return "", fmt.Errorf("this database holds %d organisations (%s); give -org, "+
+			"since creating in the wrong one is not visible from the right one", n, named)
+	}
+	return firstOrg(ctx, conn)
+}
+
 func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	var orgID string
 	err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at LIMIT 1`).Scan(&orgID)
@@ -2114,11 +3926,11 @@ func firstOrg(ctx context.Context, conn *pgx.Conn) (string, error) {
 	return orgID, nil
 }
 
-func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) error {
+func userCreate(ctx context.Context, conn *pgx.Conn, givenOrg, email, password string) error {
 	if email == "" || password == "" {
 		return fmt.Errorf("-email and -password are both required")
 	}
-	orgID, err := firstOrg(ctx, conn)
+	orgID, err := resolveOrg(ctx, conn, givenOrg)
 	if err != nil {
 		return err
 	}
@@ -2131,7 +3943,10 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 		return err
 	}
 
-	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	if err := passwords.SharedConfigError(); err != nil {
+		return err
+	}
+	hasher := passwords.Shared()
 	// The same gate the web paths use. The CLI creates the FIRST user of a
 	// deployment -- the account with the most access and the longest life -- so
 	// it is the last place a weaker rule belongs.
@@ -2151,14 +3966,14 @@ func userCreate(ctx context.Context, conn *pgx.Conn, email, password string) err
 	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
-		VALUES ($1, $2, $3, 'argon2id')`, userID, orgID, hash); err != nil {
+		VALUES ($1, $2, $3, $4)`, userID, orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 		return fmt.Errorf("storing credential: %w", err)
 	}
 	fmt.Printf("user %s\n  email %s\n", userID, email)
 	return nil
 }
 
-func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect string,
+func clientCreate(ctx context.Context, conn *pgx.Conn, givenOrg, clientID, name, redirect string,
 	public bool, launchURL, logoURL string, portalHidden, requirePKCE bool) error {
 
 	if err := clients.ValidateClientID(clientID); err != nil && clientID != "" {
@@ -2166,6 +3981,14 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	}
 	if clientID == "" || redirect == "" {
 		return fmt.Errorf("-client-id and -redirect are both required")
+	}
+	// The rule the Admin API and `client set-pkce` already apply, and the CHECK
+	// in 0137 now backs. This command alone let a public client be created
+	// without PKCE.
+	if public && !requirePKCE {
+		return fmt.Errorf("a public client must require PKCE: it holds no secret, so the " +
+			"challenge is the only proof the code reached the application that asked for " +
+			"it. Drop -require-pkce=false, or register a confidential client")
 	}
 	// Checked before it reaches the database. A redirect URI carrying a
 	// response parameter is a trap for whichever relying party reads the first
@@ -2197,7 +4020,7 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 	if name == "" {
 		name = clientID
 	}
-	orgID, err := firstOrg(ctx, conn)
+	orgID, err := resolveOrg(ctx, conn, givenOrg)
 	if err != nil {
 		return err
 	}
@@ -2210,7 +4033,7 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 			return err
 		}
 		secret = base64.RawURLEncoding.EncodeToString(b)
-		hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+		hasher := passwords.Shared()
 		// Ours are 256 bits of random data, so entropy is the property that
 		// protects them -- not the cost of the hash. See internal/clients.
 		if fast, ok := clients.HashSecret(secret); ok {
@@ -2226,10 +4049,11 @@ func clientCreate(ctx context.Context, conn *pgx.Conn, clientID, name, redirect 
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, scopes,
 		                          initiate_login_uri, logo_uri, portal_hidden,
-		                          require_pkce)
+		                          require_pkce, token_endpoint_auth_method)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''),
 		        ARRAY['openid','profile','email','offline_access'],
-		        NULLIF($6,''), NULLIF($7,''), $8, $9)`,
+		        NULLIF($6,''), NULLIF($7,''), $8, $9,
+		        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)`,
 		clientID, orgID, name, kind, secretHash,
 		launchURL, logoURL, portalHidden, requirePKCE); err != nil {
 		return fmt.Errorf("creating client: %w", err)
@@ -2292,14 +4116,22 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 		return err
 	}
 
-	tx, err := conn.Begin(ctx)
+	// OTP seeds and personal attributes are sealed under each person's key;
+	// without the root key they are left behind, and named.
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := beginImport(ctx, conn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := importer.Import(ctx, tx, orgID, realm,
-		passwords.NewHasher(passwords.MemoryBudgetMiB), dryRun)
+	// A dry run is the import itself, rolled back, so what it reports is what
+	// the import would do.
+	res, err := importer.ImportWith(ctx, tx, orgID, realm,
+		importer.Options{Hasher: passwords.Shared(), Root: root})
 	if err != nil {
 		return err
 	}
@@ -2310,23 +4142,31 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 		return err
 	}
 
-	fmt.Printf("realm %q\n  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
-		realm.Realm, res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped),
-		res.ClientsCreated, len(res.ClientsSkipped))
-
-	// Skipped entries are PRINTED, never merely counted. A number tells an
-	// operator something went wrong; the list tells them who cannot sign in.
-	for _, s := range res.UsersSkipped {
-		fmt.Printf("  skipped user:   %s\n", s)
-	}
-	for _, s := range res.ClientsSkipped {
-		fmt.Printf("  skipped client: %s\n", s)
-	}
+	fmt.Printf("realm %q\n", realm.Realm)
+	printImportReport(res, "Keycloak's own")
 	if !dryRun && res.UsersCreated+res.UsersUpdated > 0 {
 		fmt.Printf("\nImported users are marked migration_state=pending and keep their Keycloak\n" +
 			"password hash. Each one is upgraded to Argon2id on their first sign-in.\n")
 	}
 	return nil
+}
+
+// beginImport opens the one transaction an import runs in. A prepared statement
+// settles on one plan after a few uses, which here is while the table is at its
+// smallest, and nothing replaces that plan before the commit. On a new deployment
+// that table has no statistics and the plan reads the whole organisation for each
+// person, so each doubling of an import took near four times as long (0.70).
+// Planned every time, a statement sees the table as it has grown.
+func beginImport(ctx context.Context, conn *pgx.Conn) (pgx.Tx, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_custom_plan`); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
 }
 
 // selectInstance resolves which instance this process serves.
@@ -2361,6 +4201,11 @@ func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issue
 		}
 		found = append(found, i)
 	}
+	// A read that failed after one row would look like a deployment with one
+	// instance, and the command would act on it whichever was meant (0.31).
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
 
 	switch len(found) {
 	case 0:
@@ -2391,7 +4236,7 @@ func selectInstance(ctx context.Context, conn *pgx.Conn, want string) (id, issue
 // content to an anonymous request, so it can sit in CI or a deployment script
 // and FAIL the deploy. A report nobody reads changes nothing; a failing exit
 // code stops the release.
-func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
+func proxyCheck(ctx context.Context, app, issuer, origin, extraPaths string, insecure bool) error {
 	if app == "" {
 		return fmt.Errorf("give -app, the protected application URL as the browser " +
 			"reaches it, e.g. -app https://n8n.example.com")
@@ -2406,9 +4251,6 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
 	rep, err := proxycheck.Run(ctx, proxycheck.Options{
 		BaseURL: app, Issuer: issuer, Origin: origin, Paths: paths, Insecure: insecure,
 	})
@@ -2422,6 +4264,7 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 		proxycheck.Exposed:   " OPEN ",
 		proxycheck.Absent:    "  --  ",
 		proxycheck.Unknown:   "  ??  ",
+		proxycheck.Stranded:  "STUCK ",
 	}
 	for _, r := range rep.Results {
 		fmt.Printf("  [%s] %-34s %s\n", label[r.Status], r.Probe, r.Detail)
@@ -2448,6 +4291,13 @@ func proxyCheck(app, issuer, origin, extraPaths string, insecure bool) error {
 		fmt.Printf("\n  %s\n\n", summarise(open))
 		return fmt.Errorf("%d of %d probes reached the application unauthenticated",
 			len(open), len(rep.Results))
+	}
+	// Nothing open, and nobody can sign in either: a separate sentence, since
+	// the fix is the proxy's verify address, or how it routes /.signari/, rather
+	// than a hole in it.
+	if stuck := rep.Stranded(); len(stuck) > 0 {
+		fmt.Printf("\n  Nothing is exposed, but a browser never reaches the sign-in page.\n\n")
+		return fmt.Errorf("browsers are stopped or sent round before they reach the sign-in page")
 	}
 	fmt.Printf("\n  No probe reached the application unauthenticated.\n" +
 		"  That is evidence, not a guarantee: it covers the paths and methods\n" +
@@ -2505,6 +4355,34 @@ func wrap(s string, width int, indent string) string {
 	return out.String()
 }
 
+// registerSP writes a checked registration.
+func registerSP(ctx context.Context, conn *pgx.Conn, orgID string, spec store.SAMLProviderSpec) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, err := store.AddSAMLProvider(ctx, tx, orgID, spec)
+	if err != nil {
+		if errors.Is(err, store.ErrSAMLEntityTaken) {
+			return fmt.Errorf("this organisation already has a service provider with entity id %q", spec.EntityID)
+		}
+		return err
+	}
+	onOrg, err := store.SAMLOnOrgEndpoint(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if onOrg {
+		fmt.Println("Another organisation holds this entity id at the deployment's endpoints, so this")
+		fmt.Println("one answers at its own: give the provider the metadata from /saml/org/<slug>/metadata.")
+	}
+	return nil
+}
+
 // samlAddSP registers a service provider.
 //
 // The validation here is the same as the authorization endpoint applies to a
@@ -2514,7 +4392,7 @@ func wrap(s string, width int, indent string) string {
 // someone else's integration as an unexplained refusal.
 func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, nameIDFormat,
 	slo, certPath string, wantSignedRequests bool, sloBinding, encCertPath,
-	keyTransport string) error {
+	keyTransport string, artifactACS, ecpACS []string, resolution []saml.IndexedEndpoint) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this service provider belongs to")
@@ -2523,162 +4401,32 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 	case acs == "":
 		return fmt.Errorf("give -acs, the AssertionConsumerService URL assertions are POSTed to")
 	}
-	if !strings.HasPrefix(acs, "https://") {
-		return fmt.Errorf("the ACS URL must be https: %q would carry a signed assertion "+
-			"for a real user across the network in the clear", acs)
-	}
-	if strings.Contains(acs, "*") {
-		return fmt.Errorf("%q contains a wildcard. ACS URLs are matched exactly, because "+
-			"anything looser lets a request steer where the assertion is delivered", acs)
-	}
-	if name == "" {
-		name = entityID
-	}
-	switch keyTransport {
-	case "", saml.KeyTransportMGF1P:
-		keyTransport = saml.KeyTransportMGF1P
-	case saml.KeyTransportSHA256:
-		// Not the default, deliberately. Every service provider implements
-		// mgf1p; xmlenc11 rsa-oaep is widely but not universally supported, and
-		// choosing it for one that cannot read it produces assertions that
-		// decrypt nowhere.
-		if encCertPath == "" {
-			return fmt.Errorf("-sp-key-transport only affects encrypted assertions, " +
-				"and no -sp-encryption-cert was given, so nothing would be encrypted")
-		}
-	default:
-		return fmt.Errorf("unknown key transport %q: use rsa-oaep-mgf1p or "+
-			"rsa-oaep-sha256", keyTransport)
-	}
-	switch nameIDFormat {
-	case "", "persistent":
-		nameIDFormat = "persistent"
-	case "emailAddress", "transient":
-	default:
-		return fmt.Errorf("unknown NameID format %q: use persistent, emailAddress or transient",
-			nameIDFormat)
-	}
-
-	// Single logout needs BOTH a place to send to and a certificate to verify
-	// with. A provider configured with a logout URL and no certificate is the
-	// dangerous half-configuration: it looks set up, and the endpoint refuses
-	// every request because there is nothing to check the signature against.
-	var certPEM string
+	spec := store.SAMLProviderSpec{EntityID: entityID, Name: name, ACSURL: acs, NameIDFormat: nameIDFormat,
+		SLOURL: slo, SLOBinding: sloBinding, KeyTransport: keyTransport, WantSignedRequests: wantSignedRequests,
+		ArtifactACSURLs: artifactACS, ECPACSURLs: ecpACS, ArtifactResolution: resolution}
+	// The SIGNING certificate, which verifies its requests, and the ENCRYPTION
+	// one, a different key, which assertions are encrypted to; the store
+	// checks both (store.SAMLProviderSpec.Validate).
 	if certPath != "" {
 		b, err := os.ReadFile(certPath)
 		if err != nil {
 			return fmt.Errorf("reading the service provider certificate: %w", err)
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM. Export the provider's SIGNING certificate, "+
-				"not its private key or metadata", certPath)
-		}
-		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
-		}
-		certPEM = string(b)
+		spec.SigningCertPEM = string(b)
 	}
-	if slo != "" && certPEM == "" {
-		return fmt.Errorf("a logout URL was given with no -sp-cert. A LogoutRequest is " +
-			"acted on only when signed, so without the provider's certificate every " +
-			"logout would be refused -- which looks configured and is not")
-	}
-	if slo != "" && !strings.HasPrefix(slo, "https://") {
-		return fmt.Errorf("the logout URL must be https: %q", slo)
-	}
-	// The ENCRYPTION certificate, which is a different key from the signing one.
-	// A provider signs with one and decrypts with another; treating them as
-	// interchangeable means either encrypting to a key the provider cannot
-	// decrypt with, or encrypting to a key held somewhere it should not be.
-	var encCertPEM string
 	if encCertPath != "" {
 		b, err := os.ReadFile(encCertPath)
 		if err != nil {
 			return fmt.Errorf("reading the service provider encryption certificate: %w", err)
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM. Export the provider's ENCRYPTION certificate "+
-				"-- in its SAML metadata it is the KeyDescriptor with use=\"encryption\"",
-				encCertPath)
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", encCertPath, err)
-		}
-		pub, ok := cert.PublicKey.(*rsa.PublicKey)
-		if !ok {
-			return fmt.Errorf("%s holds a %T key; assertion encryption here needs RSA",
-				encCertPath, cert.PublicKey)
-		}
-		if pub.N.BitLen() < 2048 {
-			return fmt.Errorf("%s is a %d-bit RSA key; 2048 is the minimum",
-				encCertPath, pub.N.BitLen())
-		}
-		// Caught at registration rather than at first login. The same file given
-		// for both is the mistake this separation exists to prevent, and it is
-		// silent otherwise: assertions encrypt fine and the provider cannot read
-		// a single one.
-		if certPEM != "" && strings.TrimSpace(string(b)) == strings.TrimSpace(certPEM) {
-			return fmt.Errorf("the signing and encryption certificates are the same file. " +
-				"Service providers use separate keys for the two")
-		}
-		encCertPEM = string(b)
+		spec.EncryptionCertPEM = string(b)
 	}
-
-	// The binding is stored because it decides how the LogoutResponse is sent
-	// back. Getting it wrong means the provider receives a form POST where it
-	// expects query parameters, or the reverse -- it parses nothing and reports a
-	// logout failure for a session that was in fact ended.
-	switch sloBinding {
-	case "HTTP-Redirect", "HTTP-POST":
-	default:
-		return fmt.Errorf("unknown -slo-binding %q: use HTTP-Redirect or HTTP-POST", sloBinding)
-	}
-	// The same fail-closed rule as the logout URL, for the same reason. Requiring
-	// signed AuthnRequests with no certificate to verify them against means every
-	// login is refused: configured-looking and completely broken.
-	if wantSignedRequests && certPEM == "" {
-		return fmt.Errorf("-want-signed-requests was given with no -sp-cert. There would " +
-			"be nothing to verify a signature against, so every AuthnRequest from this " +
-			"provider would be refused and nobody could sign in through it")
-	}
-
-	tx, err := conn.Begin(ctx)
-	if err != nil {
+	if err := spec.Validate(); err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	var id string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO core.saml_providers (org_id, entity_id, display_name, name_id_format,
-		                                 sp_signing_cert, want_authn_requests_signed,
-		                                 sp_encryption_cert, sp_key_transport)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''), $6, NULLIF($7,''), $8)
-		RETURNING id::text`, orgID, entityID, name, nameIDFormat, certPEM,
-		wantSignedRequests, encCertPEM, keyTransport).Scan(&id)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a service provider with entity id %q is already registered "+
-				"in that organisation", entityID)
-		}
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
-		VALUES ($1::uuid, $2, 'HTTP-POST', true)`, id, acs); err != nil {
-		return err
-	}
-	if slo != "" {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.saml_slo_urls (provider_id, url, binding)
-			VALUES ($1::uuid, $2, $3)`, id, slo, sloBinding); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
+	name, nameIDFormat, sloBinding = spec.Name, spec.NameIDFormat, spec.SLOBinding
+	encCertPEM := spec.EncryptionCertPEM
+	if err := registerSP(ctx, conn, orgID, spec); err != nil {
 		return err
 	}
 
@@ -2707,9 +4455,13 @@ func samlAddSP(ctx context.Context, conn *pgx.Conn, orgID, entityID, name, acs, 
 }
 
 // samlListSPs shows what is registered.
-func samlListSPs(ctx context.Context, conn *pgx.Conn) error {
+func samlListSPs(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.wsfed_saml_version,
 		       COALESCE(string_agg(a.url, ', ' ORDER BY a.url), '(none)')
 		FROM core.saml_providers p
 		LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
@@ -2720,21 +4472,30 @@ func samlListSPs(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-38s %-12s %-8s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "ACS")
+	if out.text() {
+		fmt.Printf("%-38s %-12s %-8s %-7s %-6s %s\n", "ENTITY ID", "NAMEID", "ENABLED", "PORTAL", "WSFED", "ACS")
+	}
 	var n int
 	for rows.Next() {
-		var entity, name, format, acs string
-		var enabled bool
-		if err := rows.Scan(&entity, &name, &format, &enabled, &acs); err != nil {
+		var entity, name, nameID, wsfed, acs string
+		var enabled, idpInitiated bool
+		if err := rows.Scan(&entity, &name, &nameID, &enabled, &idpInitiated, &wsfed, &acs); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-38s %-12s %-8t %s\n", truncateMiddle(entity, 38), format, enabled, acs)
+		out.add(map[string]any{"entity_id": entity, "name": name, "name_id_format": nameID, "enabled": enabled,
+			"idp_initiated": idpInitiated, "wsfed_saml_version": wsfed, "acs": acs})
+		if out.text() {
+			fmt.Printf("%-38s %-12s %-8t %-7t %-6s %s\n", truncateMiddle(entity, 38), nameID, enabled, idpInitiated, wsfed, acs)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari saml add-sp`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 func truncateMiddle(s string, n int) string {
@@ -2749,7 +4510,8 @@ func truncateMiddle(s string, n int) string {
 func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, clientID, secret,
 	issuer string, allowSignup, allowLinking, trustEmail bool,
 	samlEntityID, samlSSOURL, samlCertPath, samlNameID string,
-	samlUnsolicited, samlForceAuthn bool, samlSkew int) error {
+	samlUnsolicited, samlForceAuthn bool, samlSkew int, meta metadataFlags,
+	oauth2 store.IdentityProviderSpec) error {
 
 	switch {
 	case orgID == "":
@@ -2757,7 +4519,7 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	case slug == "":
 		return fmt.Errorf("give -slug, the short name used in the URL /login/with/<slug>")
 	case clientID == "" && kind != "saml":
-		return fmt.Errorf("give -client-id, issued by the provider")
+		return fmt.Errorf("give -client-id-ext, issued by the provider")
 	}
 
 	// A SAML upstream has no client ID, no scopes and no discovery document. It
@@ -2766,63 +4528,58 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 	if kind == "saml" {
 		return idpAddSAML(ctx, conn, orgID, slug, name, samlEntityID, samlSSOURL,
 			samlCertPath, samlNameID, allowSignup, allowLinking, trustEmail,
-			samlUnsolicited, samlForceAuthn, samlSkew)
+			samlUnsolicited, samlForceAuthn, samlSkew, meta)
+	}
+	if meta.source != "" {
+		return fmt.Errorf("-metadata is for a SAML upstream, -kind saml")
 	}
 
+	if kind == "oidc" && issuer == "" {
+		return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
+			"and signing keys can be discovered")
+	}
+	if trustEmail && kind != "oidc" && kind != "oauth2" {
+		return fmt.Errorf("-trust-email-verification is for a generic provider: a %s provider's "+
+			"email_verified is believed or not as that provider is known to behave", kind)
+	}
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: kind, ClientID: clientID,
+		ClientSecret: secret, Issuer: issuer, AllowSignup: allowSignup, AllowLinking: allowLinking,
+		TrustEmailVerification: trustEmail, AuthorizeURL: oauth2.AuthorizeURL, TokenURL: oauth2.TokenURL,
+		UserinfoURL: oauth2.UserinfoURL, Scopes: oauth2.Scopes, Userinfo: oauth2.Userinfo}
+	if err := spec.Validate(); err != nil {
+		return err
+	}
 	preset, err := federation.PresetFor(federation.Kind(kind))
 	if err != nil {
 		return err
 	}
 	// A generic provider is discovered NOW, so a wrong issuer fails in front of
-	// the person who typed it rather than at somebody's first sign-in.
-	var authorizeURL, tokenURL, userinfoURL, jwksURL string
+	// the person who typed it rather than at somebody's first sign-in. The
+	// engine reaches these endpoints through safedial at sign-in, so discovery
+	// does too: an internal issuer fails here, with the setting that allows it,
+	// instead of at the first sign-in.
+	if _, err := spec.Resolve(ctx, safedial.Client(15*time.Second)); err != nil {
+		return err
+	}
 	if kind == "oidc" {
-		if issuer == "" {
-			return fmt.Errorf("a generic OIDC provider needs -issuer, so its endpoints " +
-				"and signing keys can be discovered")
-		}
-		d, derr := federation.Discover(ctx, &http.Client{Timeout: 15 * time.Second}, issuer)
-		if derr != nil {
-			return fmt.Errorf("discovering %s: %w", issuer, derr)
-		}
-		authorizeURL, tokenURL, userinfoURL, jwksURL = d.AuthorizeURL, d.TokenURL, d.UserinfoURL, d.JWKSURL
 		fmt.Printf("discovered %s\n  authorize : %s\n  token     : %s\n  jwks      : %s\n\n",
-			issuer, authorizeURL, tokenURL, jwksURL)
-	}
-	if name == "" {
-		name = slug
+			issuer, spec.AuthorizeURL, spec.TokenURL, spec.JWKSURL)
 	}
 
-	root, err := rootKey()
-	if err != nil {
-		return err
-	}
-	var sealed []byte
+	var root *keys.RootKey
 	if secret != "" {
-		if sealed, err = root.Seal([]byte(secret), "idp_client_secret"); err != nil {
-			return fmt.Errorf("sealing the client secret: %w", err)
+		if root, err = rootKey(); err != nil {
+			return err
 		}
 	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, client_secret, issuer,
-			 authorize_url, token_url, userinfo_url, jwks_url,
-			 scopes, allow_signup, allow_linking, trust_email_verification)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, NULLIF($7,''),
-		        NULLIF($8,''), NULLIF($9,''), NULLIF($10,''), NULLIF($11,''),
-		        $12, $13, $14, $15)`,
-		orgID, slug, name, kind, clientID, sealed, issuer,
-		authorizeURL, tokenURL, userinfoURL, jwksURL,
-		preset.Scopes, allowSignup, allowLinking, trustEmail && kind == "oidc"); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a provider with slug %q is already registered in that "+
-				"organisation", slug)
+	if _, err := store.AddIdentityProvider(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
+			return errSlugTaken(slug)
 		}
 		return err
 	}
 
-	fmt.Printf("registered %s (%s)\n", name, kind)
+	fmt.Printf("registered %s (%s)\n", spec.Name, kind)
 	fmt.Printf("  sign-in URL  : /login/with/%s\n", slug)
 	fmt.Printf("  callback URL : <issuer>/login/callback/%s\n", slug)
 	fmt.Print("     register that callback with the provider, exactly as written\n")
@@ -2854,7 +4611,51 @@ func idpAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind, client
 }
 
 // idpList shows configured providers.
-func idpList(ctx context.Context, conn *pgx.Conn) error {
+// idpCheck asks a provider what a sign-in would rely on. It exits non-zero when
+// something is wrong, so a deployment can check one.
+func idpCheck(ctx context.Context, conn *pgx.Conn, slug string) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	pool, err := openPool(ctx, conn, root.PoolTag())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	p, err := store.LoadIdentityProvider(ctx, pool, root, slug)
+	if errors.Is(err, store.ErrProviderUnknown) {
+		return fmt.Errorf("%w; `signari idp list` shows the registered ones", err)
+	}
+	if err != nil {
+		return err
+	}
+	r := p.Check(ctx, safedial.Client(15*time.Second))
+	if !r.OK {
+		return fmt.Errorf("%s failed: %s", r.Step, r.Detail)
+	}
+	if r.Detail != "" {
+		fmt.Printf("  %s\n", r.Detail)
+		return nil
+	}
+	fmt.Printf("  discovery and %d signing keys read.\n", r.Keys)
+	if r.EndSession != "" {
+		fmt.Printf("  it publishes %s for `signari idp logout`.\n", r.EndSession)
+	}
+	fmt.Println()
+	fmt.Println("  That proves the provider is where it is said to be. Only a sign-in shows the")
+	fmt.Println("  client id and secret are right.")
+	return nil
+}
+
+func idpList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, kind, allow_signup, allow_linking, enabled,
 		       allow_jwt_bearer,
@@ -2865,8 +4666,10 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-12s %-8s %-8s %-8s %-10s %s\n",
-		"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "ASSERTIONS", "LINKED ACCOUNTS")
+	if out.text() {
+		fmt.Printf("%-14s %-12s %-8s %-8s %-8s %-10s %s\n",
+			"SLUG", "KIND", "SIGNUP", "LINKING", "ENABLED", "ASSERTIONS", "LINKED ACCOUNTS")
+	}
 	var n int
 	for rows.Next() {
 		var slug, name, kind string
@@ -2877,13 +4680,20 @@ func idpList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
-		fmt.Printf("%-14s %-12s %-8t %-8t %-8t %-10t %d\n",
-			slug, kind, signup, linking, enabled, assertions, linked)
+		out.add(map[string]any{"slug": slug, "name": name, "kind": kind, "allow_signup": signup,
+			"allow_linking": linking, "enabled": enabled, "allow_assertions": assertions, "linked": linked})
+		if out.text() {
+			fmt.Printf("%-14s %-12s %-8t %-8t %-8t %-10t %d\n",
+				slug, kind, signup, linking, enabled, assertions, linked)
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari idp add`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // eraseSubjectCmd crypto-shreds a subject.
@@ -2924,9 +4734,8 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 	rep, err := store.EraseSubject(ctx, tx, subjectID, deactivate)
 	switch {
 	case errors.Is(err, store.ErrSubjectUnknown):
-		return fmt.Errorf("no subject key exists for %s. Nothing was erased -- and "+
-			"nothing of theirs was ever encrypted with a subject key, so there is "+
-			"nothing here to destroy", subjectID)
+		return fmt.Errorf("%s has neither a subject key nor an account. Nothing was erased; "+
+			"check the identifier", subjectID)
 	case errors.Is(err, store.ErrAlreadyErased):
 		// Not an error worth failing on in principle, but worth saying: an
 		// operator repeating an erasure wants to know it already happened rather
@@ -2935,9 +4744,8 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 			"nothing changed", subjectID)
 	case errors.Is(err, store.ErrSubjectStillActive):
 		return fmt.Errorf("%s (%s) is still active.\n\n"+
-			"An erased subject can never hold a key again, so an active account "+
-			"whose key is destroyed does not work with less data -- it fails, "+
-			"permanently, in ways that look like bugs.\n\n"+
+			"Erasing a person removes their account, signing them out everywhere. "+
+			"An active one is not ended by omission.\n\n"+
 			"Either deactivate it first, or say so here:\n"+
 			"  signari erase subject -subject-id %s -confirm %s -deactivate",
 			subjectID, describeAccount(rep), subjectID, subjectID)
@@ -2955,15 +4763,19 @@ func eraseSubjectCmd(ctx context.Context, conn *pgx.Conn, subjectID, confirm str
 		}
 		return ""
 	}())
-	fmt.Printf("  their data-encryption key is destroyed; everything sealed with it\n" +
-		"  is permanently unreadable, including from backups\n")
+	if rep.KeyHeld {
+		fmt.Printf("  their data-encryption key is destroyed; everything sealed with it\n" +
+			"  is permanently unreadable, including from backups\n")
+	} else {
+		fmt.Printf("  they never held a data-encryption key; none can be made for them now\n")
+	}
 	if rep.TOTPCredentials > 0 {
 		fmt.Printf("  %d TOTP credential(s) are now unreadable\n", rep.TOTPCredentials)
 	}
-	if rep.Deactivated {
-		fmt.Printf("  the account was deactivated in the same transaction\n")
-	}
-	if !rep.AccountFound {
+	if rep.AccountDeleted {
+		fmt.Printf("  the account and everything keyed by it are removed, in the same transaction;\n"+
+			"  %d session(s) ended, %d application(s) told\n", rep.SessionsEnded, rep.NoticesQueued)
+	} else {
 		fmt.Printf("  no account exists for this subject; the key outlived it, which is\n" +
 			"  why erasure is keyed on the subject rather than on the account\n")
 	}
@@ -3000,64 +4812,27 @@ func clientSetAssertionIssuers(ctx context.Context, conn *pgx.Conn, clientID, li
 		return fmt.Errorf("-client-id is required")
 	}
 
-	// Non-nil, and that is load-bearing rather than style. A nil slice is
-	// encoded as SQL NULL, and the column is NOT NULL -- so clearing the list,
-	// which is the one operation an operator reaches for in a hurry, failed with
-	// a constraint violation. The unit tests never saw it because they set the
-	// column through SQL directly; only running the command did.
-	slugs := []string{}
-	for _, sl := range strings.Split(list, ",") {
-		if sl = strings.TrimSpace(sl); sl != "" {
-			slugs = append(slugs, sl)
-		}
-	}
-
-	// The client's organisation, so the slugs can be checked against providers
-	// that actually exist in it. A typo here produces a client that is refused at
-	// runtime with a message that deliberately explains nothing -- the grant's
-	// refusals are uniform so they cannot be used to enumerate issuers -- so the
-	// mistake has to be caught here or not at all.
-	var orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no client %q", clientID)
-		}
-		return err
-	}
-
-	for _, sl := range slugs {
-		var enabled, allowed bool
-		err := conn.QueryRow(ctx, `
-			SELECT enabled, allow_jwt_bearer FROM core.identity_providers
-			WHERE org_id = $1::uuid AND slug = $2`, orgID, sl).Scan(&enabled, &allowed)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("no identity provider %q in this client's organisation; "+
-				"`signari idp list` shows the registered ones", sl)
-		}
-		if err != nil {
-			return err
-		}
-		// Reported, not refused. The operator may legitimately be pairing ahead
-		// of enabling, and refusing would force them to do it in an order the
-		// tool chose.
-		if !allowed {
-			fmt.Printf("NOTE: %s does not accept assertions yet. Allow it with:\n"+
-				"  signari idp assertions -slug %s -allow-assertions\n", sl, sl)
-		}
-		if !enabled {
-			fmt.Printf("NOTE: %s is disabled, so nothing from it will be accepted.\n", sl)
-		}
-	}
-
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET jwt_bearer_providers = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, slugs)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	// Each slug checked against the providers of the client's organisation, and
+	// the list stored empty rather than NULL when cleared, by
+	// store.SetClientAssertionIssuers, which the Admin API shares (6.03).
+	slugs := splitList(list)
+	notes, err := store.SetClientAssertionIssuers(ctx, conn, clientID, slugs)
+	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client %q", clientID)
+	}
+	if err != nil {
+		return fmt.Errorf("%w; `signari idp list` shows the registered ones", err)
+	}
+	// Reported, not refused. The operator may legitimately be pairing ahead of
+	// enabling, and refusing would force them to do it in an order the tool chose.
+	for _, n := range notes {
+		if n.NotAllow {
+			fmt.Printf("NOTE: %s does not accept assertions yet. Allow it with:\n"+
+				"  signari idp assertions -slug %s -allow-assertions\n", n.Slug, n.Slug)
+		}
+		if n.Disabled {
+			fmt.Printf("NOTE: %s is disabled, so nothing from it will be accepted.\n", n.Slug)
+		}
 	}
 
 	if len(slugs) == 0 {
@@ -3098,10 +4873,11 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	case issuer == "":
 		return fmt.Errorf("give -issuer, the exact value assertions carry in `iss`")
 	case jwks == "":
-		return fmt.Errorf("give -jwks, the URL publishing this issuer's signing keys")
+		return fmt.Errorf("give -jwks-url, the URL publishing this issuer's signing keys")
 	}
-	if name == "" {
-		name = slug
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: "assertion", Issuer: issuer, JWKSURL: jwks}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
 
 	// Fetched now, so a wrong URL fails in front of the person who typed it
@@ -3109,20 +4885,16 @@ func idpAddIssuer(ctx context.Context, conn *pgx.Conn, orgID, slug, name, issuer
 	// immediately. A trust anchor whose keys cannot be read is not a trust
 	// anchor, it is a provider that refuses everything for a reason nobody can
 	// see from the outside.
-	set, err := federation.FetchJWKS(ctx, &http.Client{Timeout: 15 * time.Second}, jwks)
+	n, err := spec.Resolve(ctx, safedial.Client(15*time.Second))
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", jwks, err)
+		return err
 	}
-	fmt.Printf("read %d key(s) from %s\n", len(set.Keys), jwks)
+	fmt.Printf("read %d key(s) from %s\n", n, jwks)
 
-	var id string
-	err = conn.QueryRow(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, issuer, jwks_url,
-			 allow_signup, allow_linking, enabled, allow_jwt_bearer)
-		VALUES ($1::uuid, $2, $3, 'assertion', '', $4, $5, false, false, true, false)
-		RETURNING id::text`, orgID, slug, name, issuer, jwks).Scan(&id)
-	if err != nil {
+	if _, err := store.AddIdentityProvider(ctx, conn, nil, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
+			return errSlugTaken(slug)
+		}
 		return fmt.Errorf("registering the issuer: %w", err)
 	}
 
@@ -3150,17 +4922,13 @@ func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool)
 	if slug == "" {
 		return fmt.Errorf("-slug is required")
 	}
+	if err := idpChange(ctx, conn, slug, store.IdentityProviderChange{AllowAssertions: &allow}); err != nil {
+		return err
+	}
 	var issuer, jwks string
 	var enabled bool
-	err := conn.QueryRow(ctx, `
-		UPDATE core.identity_providers SET allow_jwt_bearer = $2, updated_at = now()
-		WHERE slug = $1
-		RETURNING COALESCE(issuer,''), COALESCE(jwks_url,''), enabled`,
-		slug, allow).Scan(&issuer, &jwks, &enabled)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("no identity provider called %q", slug)
-	}
-	if err != nil {
+	if err := conn.QueryRow(ctx, `SELECT COALESCE(issuer,''), COALESCE(jwks_url,''), enabled
+		FROM core.identity_providers WHERE slug = $1`, slug).Scan(&issuer, &jwks, &enabled); err != nil {
 		return err
 	}
 
@@ -3211,34 +4979,14 @@ func idpAssertions(ctx context.Context, conn *pgx.Conn, slug string, allow bool)
 // instead of a flag that trusts everything.
 //
 // It ADDS to the system pool rather than replacing it, so configuring an
-// internal CA does not silently stop public targets from verifying.
-func scimHTTPClient() (*http.Client, error) {
-	bundle := os.Getenv("SIGNARI_SCIM_CA_BUNDLE")
-	if bundle == "" {
-		return &http.Client{Timeout: 30 * time.Second}, nil
-	}
-	pem, err := os.ReadFile(bundle)
-	if err != nil {
-		return nil, fmt.Errorf("reading SIGNARI_SCIM_CA_BUNDLE: %w", err)
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("%s contains no certificates", bundle)
-	}
-	return &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-		},
-	}, nil
-}
+// internal CA does not silently stop public targets from verifying. The one
+// client the Admin API's SCIM routes use too (provision.HTTPClient).
+func scimHTTPClient() (*http.Client, error) { return provision.HTTPClient() }
 
 // scimAdd registers a provisioning target.
 func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, token,
-	onDeactivate string, dryRun bool) error {
+	onDeactivate string, dryRun, recreateMissing bool,
+	oauthTokenURL, oauthClientID, oauthScope, oauthClientAuth, oauthAuthorizeURL, compatibility string) error {
 
 	switch {
 	case orgID == "":
@@ -3249,28 +4997,22 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 		return fmt.Errorf("give -base-url, the target's SCIM base URL, e.g. " +
 			"https://api.slack.com/scim/v2")
 	case token == "":
-		return fmt.Errorf("give -token, the bearer token the target issued")
+		return fmt.Errorf("give -token, the bearer token the target issued, or with -oauth-token-url the client secret")
 	}
-	if !strings.HasPrefix(baseURL, "https://") {
-		return fmt.Errorf("the base URL must be https: this token can create and delete " +
-			"accounts in that system, and it is sent on every request")
+	spec := provision.TargetSpec{Kind: "scim", Slug: slug, Name: name, BaseURL: baseURL, Token: token,
+		OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing,
+		OAuthTokenURL: oauthTokenURL, OAuthClientID: oauthClientID, OAuthScope: oauthScope,
+		OAuthClientAuth: oauthClientAuth, OAuthAuthorizeURL: oauthAuthorizeURL, Compatibility: splitList(compatibility)}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-	switch onDeactivate {
-	case "deactivate", "delete", "nothing":
-	default:
-		return fmt.Errorf("-on-deactivate must be deactivate, delete or nothing")
-	}
-	if name == "" {
-		name = slug
-	}
-
+	name = spec.Name
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	if err := store.AddSCIMTarget(ctx, conn, root, orgID, slug, name, baseURL, token,
-		onDeactivate, dryRun); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if err := provision.AddTarget(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, provision.ErrTargetExists) {
 			return fmt.Errorf("a target named %q is already registered", slug)
 		}
 		return err
@@ -3278,6 +5020,10 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 
 	fmt.Printf("registered %s\n  base URL      : %s\n  on deactivate : %s\n  dry run       : %t\n",
 		name, baseURL, onDeactivate, dryRun)
+	if spec.OAuthAuthorizeURL != "" {
+		fmt.Println("\n  It takes the authorization code grant: sign in at it with `signari scim authorize`")
+		fmt.Println("  before the first sync, which until then has no token to send.")
+	}
 	fmt.Println("\n  Nothing is sent until you run `signari scim sync`.")
 	fmt.Println("  Run `signari scim verify` afterwards: it reads the target's actual state")
 	fmt.Println("  back, which is the only way to know a deactivation really happened.")
@@ -3288,12 +5034,12 @@ func scimAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, baseURL, to
 //
 // The command that makes deprovisioning checkable. Everything else records what
 // we MEANT; this asks the target.
-func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
+func scimVerify(ctx context.Context, conn *pgx.Conn, orgID, only string) error {
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, only)
 	if err != nil {
 		return err
 	}
@@ -3372,114 +5118,42 @@ func scimVerify(ctx context.Context, conn *pgx.Conn, only string) error {
 }
 
 // scimSync converges each target on the desired state.
-func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) error {
+func scimSync(ctx context.Context, conn *pgx.Conn, orgID, only string, apply bool) error {
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	targets, err := store.LoadSCIMTargets(ctx, conn, root, only)
+	targets, err := store.LoadSCIMTargets(ctx, conn, root, orgID, only)
 	if err != nil {
 		return err
 	}
 
 	for _, t := range targets {
-		desired, err := store.SCIMDesiredState(ctx, conn, t)
-		if err != nil {
-			return err
-		}
 		hc, err := scimHTTPClient()
 		if err != nil {
 			return err
 		}
-		client, perr := provision.ForTarget(t, hc)
-		if perr != nil {
-			return perr
+		// The same pass the Admin API's sync runs (provision.Sync).
+		r, err := provision.Sync(ctx, conn, t, hc, apply)
+		for _, f := range r.Failures {
+			fmt.Printf("    %s\n", f)
 		}
-		var created, deactivated, deleted, failed int
-
-		for _, d := range desired {
-			switch {
-			case d.RemoteID == "" && d.Active:
-				if !apply {
-					created++
-					continue
-				}
-				id, err := client.CreateUser(ctx, provision.User{
-					ExternalID:  d.UserID,
-					UserName:    d.UserName,
-					DisplayName: d.DisplayName,
-					Email:       d.Email,
-					Active:      true,
-				})
-				if err != nil {
-					// A conflict means the account is already there; find it and
-					// record its id rather than creating a duplicate or giving up.
-					var se *scim.Error
-					if errors.As(err, &se) && se.Conflict {
-						if found, ferr := client.FindByUserName(ctx, d.UserName); ferr == nil && found != nil {
-							id = found.RemoteID
-						}
-					}
-					if id == "" {
-						fmt.Printf("    create %s: %v\n", d.UserName, err)
-						failed++
-						continue
-					}
-				}
-				if err := store.RecordSCIMLink(ctx, conn, t.ID, d.UserID, t.OrgID, id, true); err != nil {
-					return err
-				}
-				created++
-
-			case d.RemoteID != "" && !d.Active:
-				if t.OnDeactivate == "nothing" {
-					continue
-				}
-				if !apply {
-					deactivated++
-					continue
-				}
-				if err := store.MarkSCIMIntent(ctx, conn, t.ID, d.UserID, false); err != nil {
-					return err
-				}
-				if t.OnDeactivate == "delete" {
-					if err := client.DeleteUser(ctx, d.RemoteID); err != nil {
-						fmt.Printf("    delete %s: %v\n", d.UserName, err)
-						failed++
-						continue
-					}
-					if err := store.DropSCIMLink(ctx, conn, t.ID, d.UserID); err != nil {
-						return err
-					}
-					deleted++
-					continue
-				}
-				if err := client.SetActive(ctx, d.RemoteID, false); err != nil {
-					fmt.Printf("    deactivate %s: %v\n", d.UserName, err)
-					failed++
-					continue
-				}
-				if err := store.ConfirmSCIMSync(ctx, conn, t.ID, d.UserID); err != nil {
-					return err
-				}
-				deactivated++
+		for _, g := range r.Groups {
+			if g.Unreadable != "" {
+				fmt.Printf("  %s: group %q could not be read (%s); skipped\n", t.Slug, g.Name, g.Unreadable)
+				continue
 			}
+			fmt.Printf("  %s: group %q -- %d to add, %d to remove\n", t.Slug, g.Name, g.Add, g.Remove)
 		}
-
-		// Groups, after the users. A membership references an account, so
-		// pushing one before the account exists at the target is a request the
-		// target refuses -- and refuses per member, which reads as a flaky
-		// integration rather than an ordering mistake.
-		if gerr := syncSCIMGroups(ctx, conn, t, hc, apply); gerr != nil {
-			return gerr
+		if err != nil {
+			return err
 		}
-
 		verb := "would"
 		if apply {
 			verb = "did"
 		}
-		fmt.Printf("  %s: %s create %d, deactivate %d, delete %d, failed %d\n",
-			t.Slug, verb, created, deactivated, deleted, failed)
+		fmt.Printf("  %s: %s create %d (%d recreated), deactivate %d, delete %d, failed %d\n",
+			t.Slug, verb, r.Created, r.Recreated, r.Deactivated, r.Deleted, r.Failed)
 	}
 
 	if !apply {
@@ -3490,159 +5164,60 @@ func scimSync(ctx context.Context, conn *pgx.Conn, only string, apply bool) erro
 	return nil
 }
 
-// syncSCIMGroups reconciles group membership at one target.
-//
-// # Only groups this deployment created there
-//
-// Driven from `core.scim_group_links`, never by matching displayName. A target's
-// own administrators may already maintain a group called "Engineering", and a
-// name match would adopt it on the first run and start removing the members they
-// put there.
-//
-// # Only groups the operator asked to provision
-//
-// A group reaches a target because it is in `core.directory_group_map`... no:
-// because an operator created a link for it. Until a link exists, nothing is
-// pushed — the same default-deny as everywhere else in this work, so adding a
-// group locally never sends it anywhere by itself.
-func syncSCIMGroups(ctx context.Context, conn *pgx.Conn, t scim.Target,
-	hc *http.Client, apply bool) error {
-
-	rows, err := conn.Query(ctx, `
-		SELECT l.group_id::text, l.remote_id, g.display_name
-		FROM core.scim_group_links l
-		JOIN core.groups g ON g.id = l.group_id
-		WHERE l.target_id = $1::uuid
-		ORDER BY g.display_name`, t.ID)
+// scimList shows configured targets.
+func scimList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
 	if err != nil {
-		return fmt.Errorf("reading provisioned groups for %s: %w", t.Slug, err)
-	}
-	type linked struct{ groupID, remoteID, name string }
-	var groups []linked
-	for rows.Next() {
-		var l linked
-		if err := rows.Scan(&l.groupID, &l.remoteID, &l.name); err != nil {
-			rows.Close()
-			return err
-		}
-		groups = append(groups, l)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
-	if len(groups) == 0 {
-		return nil
-	}
-
-	client := scim.NewClient(t, hc)
-	for _, g := range groups {
-		// Who should be in it: our members who have an account at this target.
-		// A member with no account there is skipped rather than failing the
-		// group -- they are provisioned by the pass above, and the next run
-		// picks them up.
-		wantRows, qerr := conn.Query(ctx, `
-			SELECT sl.remote_id
-			FROM core.group_members gm
-			JOIN core.scim_links sl ON sl.user_id = gm.user_id AND sl.target_id = $1::uuid
-			WHERE gm.group_id = $2::uuid`, t.ID, g.groupID)
-		if qerr != nil {
-			return qerr
-		}
-		want := map[string]bool{}
-		for wantRows.Next() {
-			var rid string
-			if err := wantRows.Scan(&rid); err != nil {
-				wantRows.Close()
-				return err
-			}
-			want[rid] = true
-		}
-		wantRows.Close()
-		if err := wantRows.Err(); err != nil {
-			return err
-		}
-
-		remote, gerr := client.GetGroup(ctx, g.remoteID)
-		if gerr != nil {
-			fmt.Printf("  %s: group %q could not be read (%v); skipped\n",
-				t.Slug, g.name, gerr)
-			continue
-		}
-		have := map[string]bool{}
-		for _, m := range remote.Members {
-			have[m.Value] = true
-		}
-
-		var toAdd, toRemove []string
-		for id := range want {
-			if !have[id] {
-				toAdd = append(toAdd, id)
-			}
-		}
-		for id := range have {
-			if !want[id] {
-				toRemove = append(toRemove, id)
-			}
-		}
-		sort.Strings(toAdd)
-		sort.Strings(toRemove)
-
-		if len(toAdd) == 0 && len(toRemove) == 0 {
-			continue
-		}
-		fmt.Printf("  %s: group %q -- %d to add, %d to remove\n",
-			t.Slug, g.name, len(toAdd), len(toRemove))
-		if !apply {
-			continue
-		}
-		if err := client.AddMembers(ctx, g.remoteID, toAdd); err != nil {
-			return fmt.Errorf("adding members to %q at %s: %w", g.name, t.Slug, err)
-		}
-		if err := client.RemoveMembers(ctx, g.remoteID, toRemove); err != nil {
-			return fmt.Errorf("removing members from %q at %s: %w", g.name, t.Slug, err)
-		}
-		// Recorded only after both calls succeeded. A timestamp written on a
-		// failed reconciliation says the group is in sync when it is not, which
-		// is worse than no timestamp: it is the field somebody checks to decide
-		// whether to investigate.
-		if _, err := conn.Exec(ctx, `
-			UPDATE core.scim_group_links SET last_synced_at = now()
-			WHERE target_id = $1::uuid AND group_id = $2::uuid`, t.ID, g.groupID); err != nil {
-			return fmt.Errorf("recording the sync time for %q at %s: %w", g.name, t.Slug, err)
-		}
-	}
-	return nil
-}
-
-// scimList shows configured targets.
-func scimList(ctx context.Context, conn *pgx.Conn) error {
 	rows, err := conn.Query(ctx, `
 		SELECT t.slug, t.display_name, t.base_url, t.on_deactivate, t.dry_run, t.enabled,
 		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id),
-		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active)
+		       (SELECT count(*) FROM core.scim_links l WHERE l.target_id = t.id AND NOT l.should_be_active),
+		       t.oauth_authorize_url IS NOT NULL, t.oauth_authorized_at
 		FROM core.scim_targets t ORDER BY t.slug`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-12s %-38s %-12s %-8s %s\n", "SLUG", "BASE URL", "ON DEACTIVATE", "LINKED", "SHOULD BE GONE")
+	if out.text() {
+		fmt.Printf("%-12s %-38s %-12s %-8s %s\n", "SLUG", "BASE URL", "ON DEACTIVATE", "LINKED", "SHOULD BE GONE")
+	}
 	var n int
 	for rows.Next() {
 		var slug, name, base, onDeact string
-		var dry, enabled bool
+		var dry, enabled, authorizationCode bool
 		var linked, inactive int
-		if err := rows.Scan(&slug, &name, &base, &onDeact, &dry, &enabled, &linked, &inactive); err != nil {
+		var authorizedAt *time.Time
+		if err := rows.Scan(&slug, &name, &base, &onDeact, &dry, &enabled, &linked, &inactive,
+			&authorizationCode, &authorizedAt); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+		row := map[string]any{"slug": slug, "name": name, "base_url": base, "on_deactivate": onDeact,
+			"dry_run": dry, "enabled": enabled, "linked": linked, "should_be_gone": inactive}
+		if authorizationCode {
+			row["authorized_at"] = authorizedAt
+		}
+		out.add(row)
+		if out.text() {
+			fmt.Printf("%-12s %-38s %-12s %-8d %d\n", slug, truncateMiddle(base, 38), onDeact, linked, inactive)
+			switch {
+			case authorizationCode && authorizedAt == nil:
+				fmt.Println("             not authorized: nothing syncs until `signari scim authorize` has been run")
+			case authorizationCode:
+				fmt.Printf("             authorized %s\n", authorizedAt.UTC().Format(time.RFC3339))
+			}
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none registered -- add one with `signari scim add`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // envOr reads an environment variable with a fallback.
@@ -3656,7 +5231,7 @@ func envOr(key, fallback string) string {
 // groupCreate adds a group.
 func groupCreate(ctx context.Context, conn *pgx.Conn, orgID, name, displayName string) error {
 	if orgID == "" || name == "" {
-		return fmt.Errorf("give -org and -name")
+		return fmt.Errorf("give -org and -group")
 	}
 	if _, err := store.CreateGroup(ctx, conn, orgID, name, displayName, ""); err != nil {
 		if strings.Contains(err.Error(), "groups_name_shape") {
@@ -3679,12 +5254,12 @@ func groupCreate(ctx context.Context, conn *pgx.Conn, orgID, name, displayName s
 // groupMember adds or removes a member.
 func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string, remove bool) error {
 	if orgID == "" || name == "" || email == "" {
-		return fmt.Errorf("give -org, -name and -email")
+		return fmt.Errorf("give -org, -group and -email-member")
 	}
 	var userID string
 	if err := conn.QueryRow(ctx,
 		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
-		   AND (lower(email) = lower($2) OR lower(username) = lower($2))`,
+		   AND (email_fold = lower($2) OR username_fold = lower($2))`,
 		orgID, email).Scan(&userID); err != nil {
 		return fmt.Errorf("no user %q in that organisation", email)
 	}
@@ -3716,6 +5291,122 @@ func groupMember(ctx context.Context, conn *pgx.Conn, orgID, name, email string,
 	return nil
 }
 
+// clientLocalizedName gives a client its name in one language (10.12), RFC 7591's
+// client_name#<locale>, shown to a person who asks for that language; with remove it takes
+// that one away. Its other names are kept.
+func clientLocalizedName(ctx context.Context, conn *pgx.Conn, clientID, locale, name string, remove bool) error {
+	if clientID == "" || locale == "" || (name == "" && !remove) {
+		return fmt.Errorf("give -client-id, -locale and -name, or -remove")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text FROM core.clients WHERE client_id = $1`, clientID).Scan(&orgID); err != nil {
+		return fmt.Errorf("no client %q", clientID)
+	}
+	names, err := store.ClientNames(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	// One name a tag, compared without regard to case: the new spelling replaces any.
+	had := false
+	for tag := range names {
+		if strings.EqualFold(tag, locale) {
+			delete(names, tag)
+			had = true
+		}
+	}
+	if remove && !had {
+		fmt.Printf("%s has no name in %s; nothing to do\n", clientID, locale)
+		return nil
+	}
+	if !remove {
+		names[locale] = name
+	}
+	if err := store.SetClientNames(ctx, tx, orgID, clientID, names); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if remove {
+		fmt.Printf("%s no longer has a name in %s; a person asking for it sees the untagged name\n", clientID, locale)
+		return nil
+	}
+	fmt.Printf("%s is named %q to a person asking for %s\n", clientID, store.CleanClientName(name), locale)
+	return nil
+}
+
+// groupNest puts the group named name inside the one named in, so everybody in it is in
+// that one and every group above it (11.09), or with remove takes it out. A loop is
+// refused by the database, whoever writes it.
+func groupNest(ctx context.Context, conn *pgx.Conn, orgID, name, in string, remove bool) error {
+	if orgID == "" || name == "" || in == "" {
+		return fmt.Errorf("give -org, -group and -in")
+	}
+	groupID, err := store.GroupIDNamed(ctx, conn, orgID, name)
+	if err != nil {
+		return err
+	}
+	parentID, err := store.GroupIDNamed(ctx, conn, orgID, in)
+	if err != nil {
+		return err
+	}
+	for n, id := range map[string]string{name: groupID, in: parentID} {
+		if id == "" {
+			return fmt.Errorf("no group named %q in that organisation", n)
+		}
+	}
+	if remove {
+		removed, err := store.UnnestGroup(ctx, conn, orgID, groupID, parentID)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			fmt.Printf("%s was not inside %s; nothing to do\n", name, in)
+			return nil
+		}
+		fmt.Printf("took %s out of %s\n", name, in)
+		fmt.Printf("\n  Whoever was in %s only through %s is out of it, and of every group above it,\n", in, name)
+		fmt.Println("  from their next token. Tokens ALREADY ISSUED keep their claims until they expire.")
+		return nil
+	}
+	var wasPrivileged bool
+	if err := conn.QueryRow(ctx, `SELECT core.group_may_impersonate($1::uuid)`, groupID).Scan(&wasPrivileged); err != nil {
+		return err
+	}
+	added, err := store.NestGroup(ctx, conn, orgID, groupID, parentID, "")
+	if errors.Is(err, store.ErrNestingLoop) {
+		return fmt.Errorf("%s cannot go inside %s: %w", name, in, err)
+	}
+	if err != nil {
+		return err
+	}
+	if !added {
+		fmt.Printf("%s is already inside %s; nothing to do\n", name, in)
+		return nil
+	}
+	var members int
+	if err := conn.QueryRow(ctx, `SELECT count(DISTINCT m.user_id) FROM core.groups_below($1::uuid) b
+		JOIN core.group_members m ON m.group_id = b.group_id`, groupID).Scan(&members); err != nil {
+		return err
+	}
+	fmt.Printf("put %s inside %s: its %d member(s) are now in %s and every group above it\n",
+		name, in, members, in)
+	var privileged bool
+	if err := conn.QueryRow(ctx, `SELECT core.group_may_impersonate($1::uuid)`, groupID).Scan(&privileged); err != nil {
+		return err
+	}
+	if privileged && !wasPrivileged {
+		fmt.Printf("\n  A group above %s may impersonate, so every one of them can now act as\n", name)
+		fmt.Println("  any other person in the organisation. Take it out with -remove if that was not meant.")
+	}
+	return nil
+}
+
 // groupRelease permits a client to see group membership.
 func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only string) error {
 	if orgID == "" || clientID == "" {
@@ -3740,35 +5431,55 @@ func groupRelease(ctx context.Context, conn *pgx.Conn, orgID, clientID, only str
 	return nil
 }
 
-// groupList shows groups and their sizes.
-func groupList(ctx context.Context, conn *pgx.Conn) error {
+// groupList shows groups, their sizes, and the groups each is inside. members is
+// everybody in the group, through the groups inside it too (11.09), and
+// direct_members those put in it by name.
+func groupList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT g.name, g.display_name,
-		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id)
+		SELECT g.name, g.display_name, g.org_id::text,
+		       (SELECT count(DISTINCT m.user_id) FROM core.groups_below(g.id) b
+		          JOIN core.group_members m ON m.group_id = b.group_id),
+		       (SELECT count(*) FROM core.group_members m WHERE m.group_id = g.id),
+		       COALESCE((SELECT array_agg(p.name ORDER BY p.name) FROM core.group_parents n
+		                   JOIN core.groups p ON p.id = n.parent_id WHERE n.group_id = g.id), '{}')
 		FROM core.groups g ORDER BY g.name`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	fmt.Printf("%-24s %-28s %s\n", "NAME", "DISPLAY NAME", "MEMBERS")
+	if out.text() {
+		fmt.Printf("%-24s %-28s %-8s %s\n", "NAME", "DISPLAY NAME", "MEMBERS", "IN")
+	}
 	var n int
 	for rows.Next() {
-		var name, disp string
-		var members int
-		if err := rows.Scan(&name, &disp, &members); err != nil {
+		var name, disp, org string
+		var members, direct int
+		var in []string
+		if err := rows.Scan(&name, &disp, &org, &members, &direct, &in); err != nil {
 			return err
 		}
 		n++
-		fmt.Printf("%-24s %-28s %d\n", name, disp, members)
+		out.add(map[string]any{"name": name, "display_name": disp, "org_id": org, "members": members,
+			"direct_members": direct, "in": in})
+		if out.text() {
+			fmt.Printf("%-24s %-28s %-8d %s\n", name, disp, members, strings.Join(in, ", "))
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("(none -- create one with `signari group create`)")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // clientSetKeys configures a client for private_key_jwt.
-func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath string) error {
+func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath string, keepAuth bool) error {
 	if clientID == "" || jwksPath == "" {
 		return fmt.Errorf("give -client-id and -jwks (a file containing the client's PUBLIC JWKS)")
 	}
@@ -3777,44 +5488,77 @@ func clientSetKeys(ctx context.Context, conn *pgx.Conn, clientID, jwksPath strin
 		return fmt.Errorf("reading %s: %w", jwksPath, err)
 	}
 
-	// Parsed and checked HERE rather than at first use. A key set that turns out
-	// to be unusable at 3am, during somebody's first token request, is a much
-	// worse discovery than one refused at the moment it is registered.
-	var set jose.JSONWebKeySet
-	if err := json.Unmarshal(raw, &set); err != nil {
-		return fmt.Errorf("%s is not a JWKS document: %w", jwksPath, err)
+	// Parsed and checked by store.SetClientKeys, which the Admin API shares
+	// (6.03), rather than at first use: a key set that turns out to be unusable
+	// at somebody's first token request is a much worse discovery.
+	set := store.SetClientKeys
+	if keepAuth {
+		set = store.SetClientMessageKeys
 	}
-	if len(set.Keys) == 0 {
-		return fmt.Errorf("%s contains no keys", jwksPath)
-	}
-	for _, k := range set.Keys {
-		if !k.IsPublic() {
-			return fmt.Errorf("%s contains PRIVATE key material. Register the public "+
-				"half only -- the whole point of private_key_jwt is that we never hold "+
-				"anything that can authenticate as this client", jwksPath)
-		}
-		if !k.Valid() {
-			return fmt.Errorf("%s contains a key that is not usable", jwksPath)
-		}
-	}
-
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		SET token_endpoint_auth_method = 'private_key_jwt', jwks = $2::jsonb,
-		    client_secret_hash = NULL, updated_at = now()
-		WHERE client_id = $1`, clientID, string(raw))
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
+	n, err := set(ctx, conn, clientID, raw)
+	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client with id %q", clientID)
 	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", jwksPath, err)
+	}
+	if keepAuth {
+		fmt.Printf("%s holds %d key(s), and authenticates as it did\n", clientID, n)
+		return nil
+	}
 
-	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, len(set.Keys))
+	fmt.Printf("%s now authenticates with private_key_jwt (%d key(s))\n", clientID, n)
 	// The secret is dropped, not kept. Leaving it would let an attacker who
 	// obtained it keep authenticating -- the exact thing this change retires.
 	fmt.Println("\n  The client secret has been REMOVED. It would otherwise remain a")
 	fmt.Println("  working credential, which is what moving to keys was meant to end.")
+	return nil
+}
+
+// clientSetEncryption has something sent to a client encrypted to a key it registered.
+// -alg "" stops, and -enc alone means nothing, as JARM §3 says of its own.
+func clientSetEncryption(ctx context.Context, conn *pgx.Conn, clientID, what, alg, enc string,
+	algGiven, encGiven bool) error {
+	if clientID == "" || !algGiven {
+		return fmt.Errorf("give -client-id, -for, and -alg (%s, or empty to stop)",
+			strings.Join(tokens.EncryptionAlgorithms, ", "))
+	}
+	var settings store.ClientSettings
+	algOf, encOf := &settings.IDTokenEncryptedAlg, &settings.IDTokenEncryptedEnc
+	switch what {
+	case "id_token":
+	case "userinfo":
+		algOf, encOf = &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc
+	case "authorization":
+		algOf, encOf = &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc
+	case "introspection":
+		algOf, encOf = &settings.IntrospectionEncryptedAlg, &settings.IntrospectionEncryptedEnc
+	default:
+		return fmt.Errorf("give -for, one of id_token, userinfo, authorization or introspection")
+	}
+	*algOf = &alg
+	if encGiven {
+		*encOf = &enc
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if alg == "" {
+		fmt.Printf("%s: %s is no longer encrypted\n", clientID, what)
+		return nil
+	}
+	fmt.Printf("%s: %s is encrypted to its key with %s\n", clientID, what, alg)
 	return nil
 }
 
@@ -3960,21 +5704,9 @@ func flowApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	// Parsed BEFORE storing, which here means more than it does for a policy: a
-	// document that reaches the table has had its own test cases run AND has been
-	// proved unable to issue a session without authenticating somebody. Storing
-	// first and validating at load would put a document the engine will refuse
-	// into a table an operator already believes is deployed.
-	f, err := flow.Parse(data)
+	// Parsed before it is stored (store.ApplySignInFlow).
+	f, err := store.ApplySignInFlow(ctx, conn, orgID, data)
 	if err != nil {
-		return err
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.sign_in_flows (org_id, document)
-		VALUES ($1::uuid, $2)
-		ON CONFLICT (org_id) DO UPDATE
-			SET document = EXCLUDED.document, applied_at = now()`,
-		orgID, string(data)); err != nil {
 		return err
 	}
 	fmt.Printf("applied %s (%s)\n", path, f.Summary())
@@ -4020,19 +5752,10 @@ func policyApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error 
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	// Parsed BEFORE storing. A file that would not load must not reach the
-	// database, or the next engine start fails on something an operator already
-	// believes is deployed.
-	f, err := policy.Parse(data)
+	// Parsed before it is stored (store.ApplyAccessPolicy): a file that would
+	// not load must not reach the database.
+	f, err := store.ApplyAccessPolicy(ctx, conn, orgID, data)
 	if err != nil {
-		return err
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.access_policies (org_id, document, applied_at)
-		VALUES ($1::uuid, $2, now())
-		ON CONFLICT (org_id) DO UPDATE
-			SET document = EXCLUDED.document, applied_at = now()`,
-		orgID, string(data)); err != nil {
 		return err
 	}
 	fmt.Printf("applied %s (%s)\n", path, f.Summary())
@@ -4041,15 +5764,15 @@ func policyApply(ctx context.Context, conn *pgx.Conn, orgID, path string) error 
 
 // policyShow prints the policy currently in force.
 func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
-	var doc string
-	var applied time.Time
-	if err := conn.QueryRow(ctx,
-		`SELECT document, applied_at FROM core.access_policies WHERE org_id = $1::uuid`,
-		orgID).Scan(&doc, &applied); err != nil {
+	got, err := store.AccessPolicyOf(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if got.AppliedAt == nil {
 		fmt.Println("no policy is in force for that organisation (everything is allowed)")
 		return nil
 	}
-	fmt.Printf("# applied %s\n%s", applied.UTC().Format(time.RFC3339), doc)
+	fmt.Printf("# applied %s\n%s", got.AppliedAt.UTC().Format(time.RFC3339), got.Document)
 	return nil
 }
 
@@ -4057,13 +5780,25 @@ func policyShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 //
 // Exit status is the point: non-zero when anything critical is found, so it can
 // gate a deploy or run from cron. A report nobody reads changes nothing.
-func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
+func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string, asJSON bool) error {
 	if issuer == "" {
 		issuer = os.Getenv("SIGNARI_ISSUER")
 	}
 	rep, err := doctor.Inspect(ctx, conn, issuer)
 	if err != nil {
 		return err
+	}
+	crit := rep.Count(doctor.Critical)
+	if asJSON {
+		out, err := rep.JSON()
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		if crit > 0 {
+			return fmt.Errorf("%d critical finding(s)", crit)
+		}
+		return nil
 	}
 
 	fmt.Printf("\n  signari doctor\n\n")
@@ -4082,7 +5817,7 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
 	// time the difference mattered.
 	fmt.Printf("\n  checked: %s\n", strings.Join(rep.Checked, ", "))
 
-	crit, warn := rep.Count(doctor.Critical), rep.Count(doctor.Warning)
+	warn := rep.Count(doctor.Warning)
 	fmt.Printf("  %d critical, %d warning, %d info\n\n", crit, warn, rep.Count(doctor.Info))
 	if crit > 0 {
 		return fmt.Errorf("%d critical finding(s)", crit)
@@ -4096,8 +5831,13 @@ func doctorCmd(ctx context.Context, conn *pgx.Conn, issuer string) error {
 // pushes toward that: the table holds a SHA-256, and there is no command to
 // retrieve a token, only to replace one.
 func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes string,
-	expiresIn time.Duration, clients, groups string) error {
+	expiresIn time.Duration, expiresGiven bool, clients, groups, attributes string) error {
 
+	// Ninety days unless asked; -expires-in 0 is the deliberate way to make
+	// one that never expires. Never was the default until October 2026.
+	if !expiresGiven {
+		expiresIn = 90 * 24 * time.Hour
+	}
 	if name == "" {
 		return fmt.Errorf("give -name; it appears in the audit trail, and \"which token " +
 			"was that\" is unanswerable without one")
@@ -4132,9 +5872,13 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	if err != nil {
 		return err
 	}
+	attributeNames, err := resolveAttributeNames(ctx, conn, orgID, attributes)
+	if err != nil {
+		return err
+	}
 
-	secret, id, err := adminapi.NewToken(ctx, conn, name, orgID, list, expires,
-		clientIDs, groupIDs)
+	secret, id, err := adminapi.NewNarrowedToken(ctx, conn, name, orgID, list, expires,
+		clientIDs, groupIDs, attributeNames)
 	if err != nil {
 		return err
 	}
@@ -4152,17 +5896,24 @@ func adminTokenCreate(ctx context.Context, conn *pgx.Conn, name, orgID, scopes s
 	if len(groupIDs) > 0 {
 		fmt.Printf("  groups : %d named group(s) only\n", len(groupIDs))
 	}
+	if len(attributeNames) > 0 {
+		fmt.Printf("  attributes: %s only\n", strings.Join(attributeNames, ", "))
+	}
 	if expires != nil {
 		fmt.Printf("  expires: %s\n", expires.Format(time.RFC3339))
 	} else {
-		fmt.Println("  expires: never -- consider -expires-in")
+		fmt.Println("  expires: never, as -expires-in 0 asked; POST /admin/tokens/{id}/rotate replaces it")
 	}
 	fmt.Println("\n  This is the only time the token is shown. It is stored as a hash,\n" +
 		"  so it cannot be recovered -- if it is lost, revoke it and mint another.")
 	return nil
 }
 
-func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
+func adminTokenList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT t.id::text, t.name, COALESCE(o.slug, 'ALL'), t.scopes,
 		       t.created_at, t.expires_at, t.revoked_at, t.last_used_at
@@ -4174,7 +5925,9 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("\n  %-38s %-24s %-12s %s\n", "ID", "NAME", "ORG", "STATE")
+	if out.text() {
+		fmt.Printf("\n  %-38s %-24s %-12s %s\n", "ID", "NAME", "ORG", "STATE")
+	}
 	n := 0
 	for rows.Next() {
 		var id, name, org string
@@ -4196,6 +5949,12 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 		case expires != nil:
 			state = "expires " + expires.Format("2006-01-02")
 		}
+		out.add(map[string]any{"id": id, "name": name, "org": org, "scopes": scopes, "state": state,
+			"created_at": created.UTC(), "expires_at": utcPtr(expires), "revoked_at": utcPtr(revoked),
+			"last_used_at": utcPtr(lastUsed)})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("  %-38s %-24s %-12s %s\n", id, truncate(name, 24), truncate(org, 12), state)
 		used := "never used"
 		if lastUsed != nil {
@@ -4203,12 +5962,24 @@ func adminTokenList(ctx context.Context, conn *pgx.Conn) error {
 		}
 		fmt.Printf("  %-38s %s | %s\n", "", strings.Join(scopes, ","), used)
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("\n  No admin tokens. The API is reachable only with SIGNARI_ADMIN_TOKEN,")
 		fmt.Println("  which grants everything in every organisation and cannot be revoked")
 		fmt.Println("  without restarting every node.")
 	}
-	return rows.Err()
+	return out.flush()
+}
+
+// utcPtr is a time in UTC, or nil for none, for -o json.
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 func adminTokenRevoke(ctx context.Context, conn *pgx.Conn, id string) error {
@@ -4252,50 +6023,31 @@ func radiusAddClient(ctx context.Context, conn *pgx.Conn, orgID, name, network, 
 	if secret == "" {
 		return fmt.Errorf("give -secret, the shared secret configured on the device")
 	}
-	if err := radius.ValidSecret(secret); err != nil {
-		return err
-	}
-
-	_, ipnet, err := net.ParseCIDR(network)
-	if err != nil {
-		return fmt.Errorf("-network %q is not a CIDR: %w", network, err)
-	}
-	if ones, _ := ipnet.Mask.Size(); ones == 0 {
-		return fmt.Errorf("-network %q accepts every source address on the internet. "+
-			"RADIUS has no handshake and no certificate, so the address range is part "+
-			"of the credential -- narrow it to the devices that actually ask", network)
-	}
-
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal([]byte(secret), "radius-client-secret")
-	if err != nil {
-		return fmt.Errorf("sealing the shared secret: %w", err)
+	id, stored, err := store.AddRADIUSClient(ctx, conn, root, orgID, name, network, secret)
+	if errors.Is(err, store.ErrRADIUSNetworkTaken) {
+		return fmt.Errorf("a RADIUS client for %s is already registered in that "+
+			"organisation; two entries for one range with different secrets is a "+
+			"configuration nobody can reason about", network)
 	}
-
-	var id string
-	err = conn.QueryRow(ctx, `
-		INSERT INTO core.radius_clients (org_id, name, network, secret_enc)
-		VALUES ($1::uuid, $2, $3::cidr, $4)
-		RETURNING id::text`, orgID, name, ipnet.String(), sealed).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a RADIUS client for %s is already registered in that "+
-				"organisation; two entries for one range with different secrets is a "+
-				"configuration nobody can reason about", ipnet.String())
-		}
 		return err
 	}
 
-	fmt.Printf("registered %s\n  network : %s\n  id      : %s\n", name, ipnet.String(), id)
+	fmt.Printf("registered %s\n  network : %s\n  id      : %s\n", name, stored, id)
 	fmt.Println("\n  Start the listener with SIGNARI_RADIUS_ADDR (and SIGNARI_RADIUS_ORG_ID\n" +
 		"  if this database holds more than one organisation).")
 	return nil
 }
 
-func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
+func radiusListClients(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT c.name, host(c.network) || '/' || masklen(c.network), c.enabled, o.slug
 		FROM core.radius_clients c
@@ -4307,7 +6059,9 @@ func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 
 	n := 0
-	fmt.Printf("\n  %-28s %-20s %-10s %s\n", "NAME", "NETWORK", "STATE", "ORG")
+	if out.text() {
+		fmt.Printf("\n  %-28s %-20s %-10s %s\n", "NAME", "NETWORK", "STATE", "ORG")
+	}
 	for rows.Next() {
 		var name, network, org string
 		var enabled bool
@@ -4315,18 +6069,27 @@ func radiusListClients(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		n++
+		out.add(map[string]any{"name": name, "network": network, "enabled": enabled, "org": org})
 		state := "enabled"
 		if !enabled {
 			state = "disabled"
 		}
-		fmt.Printf("  %-28s %-20s %-10s %s\n", truncate(name, 28), network, state, org)
+		if out.text() {
+			fmt.Printf("  %-28s %-20s %-10s %s\n", truncate(name, 28), network, state, org)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !out.text() {
+		return out.flush()
 	}
 	if n == 0 {
 		fmt.Println("\n  No RADIUS clients. The listener refuses to start without at least one:")
 		fmt.Println("  a server that trusts everybody is an authentication oracle for the")
 		fmt.Println("  whole network.")
 	}
-	return rows.Err()
+	return nil
 }
 
 // loadRADIUSClients reads and unseals the configured devices for one organisation.
@@ -4349,14 +6112,16 @@ func loadRADIUSClients(ctx context.Context, pool *pgxpool.Pool, orgID string,
 		if err := rows.Scan(&name, &network, &sealed); err != nil {
 			return nil, err
 		}
-		secret, err := root.Open(sealed, "radius-client-secret")
+		secret, err := root.Open(sealed, store.SealContextRADIUSSecret)
 		if err != nil {
 			return nil, fmt.Errorf("unsealing the secret for RADIUS client %q: %w", name, err)
 		}
-		_, ipnet, err := net.ParseCIDR(network.String())
+		// Read through the same normalisation as the command that stores it, so
+		// a row stored before it -- `::ffff:0.0.0.0/96` -- is not a catch-all
+		// that outranks every real range.
+		ipnet, err := radius.ClientNetwork(network.String())
 		if err != nil {
-			return nil, fmt.Errorf("RADIUS client %q has an unusable network %q: %w",
-				name, network, err)
+			return nil, fmt.Errorf("RADIUS client %q has an unusable network: %w", name, err)
 		}
 		out = append(out, radius.Client{Net: ipnet, Secret: string(secret), Name: name})
 	}
@@ -4375,84 +6140,31 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	case orgID == "":
 		return fmt.Errorf("give -org, the organisation uuid this receiver belongs to")
 	case clientID == "":
-		return fmt.Errorf("give -client, the relying party this stream is for")
+		return fmt.Errorf("give -client-id, the relying party this stream is for")
 	}
-	// A poll stream is pulled, not pushed: it has no endpoint of ours to POST to,
-	// and the receiver authenticates to us as its OAuth client rather than with a
-	// token we would push. So the two push-only flags are refused here rather than
-	// silently ignored -- a stored endpoint nobody reads is a misconfiguration
-	// waiting to look like a delivery bug.
-	if poll {
-		if endpoint != "" {
-			return fmt.Errorf("a -poll stream has no -endpoint: the receiver pulls from " +
-				"POST /ssf/poll, authenticating as its client. Drop -endpoint")
-		}
-		if token != "" {
-			return fmt.Errorf("a -poll stream has no -receiver-token: the receiver " +
-				"authenticates to us with its client credentials when it polls. Drop " +
-				"-receiver-token")
-		}
-	} else {
-		if endpoint == "" {
-			return fmt.Errorf("give -endpoint, the https URL to push Security Event " +
-				"Tokens to (or -poll for a stream the receiver pulls from)")
-		}
-		if !strings.HasPrefix(endpoint, "https://") {
-			return fmt.Errorf("the endpoint must be https: %q would carry security events "+
-				"about real users across the network in the clear", endpoint)
-		}
+	spec := store.StreamSpec{ClientID: clientID, Endpoint: endpoint, ReceiverToken: token, Poll: poll,
+		Events: splitList(events)}
+	// Refused before the root key is asked for (store.StreamSpec.Validate).
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-
-	// The events a receiver actually asked for. An allow-list, because sending
-	// one it did not request is at best noise and at worst a disclosure.
-	list := []string{"https://schemas.openid.net/secevent/caep/event-type/session-revoked"}
-	if events != "" {
-		list = nil
-		for _, e := range strings.Split(events, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				list = append(list, e)
-			}
-		}
-	}
-	for _, e := range list {
-		if !slices.Contains(ssf.SupportedEvents(), e) {
-			return fmt.Errorf("event %q is not one this engine emits. Supported: %s",
-				e, strings.Join(ssf.SupportedEvents(), ", "))
-		}
-	}
-
-	// The bearer token the receiver issued US. Sealed with the root key: it is a
-	// third party's credential and a database backup must not hand it over.
-	var sealed []byte
+	list := spec.Events
+	var root *keys.RootKey
 	if token != "" {
-		root, err := rootKey()
-		if err != nil {
+		var err error
+		if root, err = rootKey(); err != nil {
 			return err
 		}
-		sealed, err = root.Seal([]byte(token), "ssf-stream-token")
-		if err != nil {
-			return fmt.Errorf("sealing the receiver's token: %w", err)
-		}
 	}
-
-	method := "push"
-	var endpointCol any = endpoint
-	if poll {
-		method = "poll"
-		endpointCol = nil
-	}
-
-	var id string
-	err := conn.QueryRow(ctx, `
-		INSERT INTO core.ssf_streams (org_id, client_id, delivery_method, endpoint_url,
-		                              auth_token, events_requested)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6)
-		RETURNING id::text`, orgID, clientID, method, endpointCol, sealed, list).Scan(&id)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("client %q already has a stream; one receiver per relying "+
-				"party", clientID)
-		}
+	switch _, err := store.AddStream(ctx, conn, root, orgID, spec); {
+	case errors.Is(err, store.ErrStreamExists):
+		return fmt.Errorf("client %q already has a stream; one receiver per relying "+
+			"party", clientID)
+	case errors.Is(err, store.ErrStreamClientElsewhere):
+		return fmt.Errorf("that organisation has no client %q; a stream carries events about "+
+			"the people who signed in to its client, so it is registered in the client's own "+
+			"organisation", clientID)
+	case err != nil:
 		return err
 	}
 
@@ -4468,7 +6180,7 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	fmt.Printf("registered a stream for %s\n  endpoint : %s\n  events   : %s\n",
 		clientID, endpoint, strings.Join(list, ", "))
 	if token == "" {
-		fmt.Println("\n  No -token given. Events are still signed, so the receiver can verify\n" +
+		fmt.Println("\n  No -receiver-token given. Events are still signed, so the receiver can verify\n" +
 			"  them -- but if it requires a bearer token, every push will be refused.")
 	} else {
 		fmt.Println("\n  The token is sealed with the root key and sent as `Authorization:\n" +
@@ -4477,9 +6189,13 @@ func ssfAddStream(ctx context.Context, conn *pgx.Conn, orgID, clientID, endpoint
 	return nil
 }
 
-func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
+func ssfListStreams(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
+		SELECT s.id::text, s.client_id, s.delivery_method, COALESCE(s.endpoint_url, ''),
 		       s.status, (s.auth_token IS NOT NULL), cardinality(s.events_requested)
 		FROM core.ssf_streams s ORDER BY s.client_id`)
 	if err != nil {
@@ -4488,15 +6204,22 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 
 	n := 0
-	fmt.Printf("\n  %-24s %-6s %-40s %-10s %s\n", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
+	if out.text() {
+		fmt.Printf("\n  %-36s %-24s %-6s %-40s %-10s %s\n", "STREAM", "CLIENT", "MODE", "ENDPOINT", "STATUS", "AUTH")
+	}
 	for rows.Next() {
-		var client, method, endpoint, status string
+		var id, client, method, endpoint, status string
 		var hasToken bool
 		var events int
-		if err := rows.Scan(&client, &method, &endpoint, &status, &hasToken, &events); err != nil {
+		if err := rows.Scan(&id, &client, &method, &endpoint, &status, &hasToken, &events); err != nil {
 			return err
 		}
 		n++
+		out.add(map[string]any{"stream_id": id, "client_id": client, "delivery": method, "endpoint": endpoint,
+			"status": status, "has_receiver_token": hasToken, "event_types": events})
+		if !out.text() {
+			continue
+		}
 		auth := "none"
 		if hasToken {
 			auth = "bearer"
@@ -4507,23 +6230,175 @@ func ssfListStreams(ctx context.Context, conn *pgx.Conn) error {
 			// does not apply.
 			endpoint, auth = "(pulled from /ssf/poll)", "client"
 		}
-		fmt.Printf("  %-24s %-6s %-40s %-10s %s (%d event types)\n",
-			truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
+		fmt.Printf("  %-36s %-24s %-6s %-40s %-10s %s (%d event types)\n",
+			id, truncate(client, 24), method, truncate(endpoint, 40), status, auth, events)
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("\n  No Shared Signals receivers. Register one with `signari ssf add-stream`.")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // importAuthentik migrates users and groups from an authentik deployment.
-func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
+// printImportReport prints what an import did. Skipped entries are PRINTED,
+// never merely counted: a number tells an operator something went wrong, the
+// list tells them who cannot sign in.
+func printImportReport(res *importer.Result, builtIns string) {
+	fmt.Printf("  users:   %d created, %d updated, %d skipped\n  clients: %d created, %d skipped\n",
+		res.UsersCreated, res.UsersUpdated, len(res.UsersSkipped), res.ClientsCreated, len(res.ClientsSkipped))
+	fmt.Printf("  groups:  %d created, %d memberships\n  OTP: %d, passkeys: %d, provider links: %d, "+
+		"attributes: %d, SAML providers: %d\n", res.GroupsCreated, res.Memberships, res.OTPImported,
+		res.PasskeysImported, res.LinksImported, res.AttributesImported, res.SAMLProvidersCreated)
+	fmt.Printf("  subjects kept: %d, SAML NameIDs kept: %d\n", res.SubjectsKept, res.NameIDsKept)
+	for _, s := range res.UsersSkipped {
+		fmt.Printf("  skipped user:   %s\n", s)
+	}
+	for _, s := range res.ClientsSkipped {
+		fmt.Printf("  skipped client: %s\n", s)
+	}
+	for _, s := range res.Renamed {
+		fmt.Printf("  renamed:        %s\n", s)
+	}
+	// Everything else the export held and this did not carry: the list of
+	// what to redo by hand, complete.
+	for _, s := range res.Dropped {
+		fmt.Printf("  not carried:    %s\n", s)
+	}
+	if len(res.BuiltIns) > 0 {
+		fmt.Printf("  %s, left behind: %s\n", builtIns, strings.Join(res.BuiltIns, ", "))
+	}
+	if len(res.ClientsNowRequiringPKCE) > 0 {
+		fmt.Printf("\nThese confidential clients now require PKCE, as every client here does.\n" +
+			"An application that sends no code_challenge is refused at its first sign-in;\n" +
+			"for one that cannot send it, run `signari client set-pkce -client-id <id> -require-pkce=false`:\n")
+		for _, id := range res.ClientsNowRequiringPKCE {
+			fmt.Printf("  %s\n", id)
+		}
+	}
+}
+
+// importHostedService imports the people of Auth0, Okta or Entra ID (6.26). None
+// of them gives out passwords, so a person comes across with a link, to a provider
+// the export names or to the service itself as -via; see internal/importer/hosted.go.
+func importHostedService(ctx context.Context, conn *pgx.Conn, service, path, orgID, via string, dryRun bool) error {
+	how := map[string]string{
+		"auth0": "Export the users from Auth0 as JSON: Import/Export Users in its dashboard, or its\n" +
+			"  POST /jobs/users-exports with \"format\": \"json\". A CSV export cannot hold their identities.",
+		"okta": "List the users with Okta's users API, GET /api/v1/users, and save each page into one file.",
+		"entra": "Download the users in the Microsoft Entra admin center (Users > All users > Download users),\n" +
+			"  or list them with Microsoft Graph, naming accountEnabled in $select.",
+	}[service]
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n  %s\n\nNo password comes out of it. With a "+
+			"migration source (`signari migration-source add`), people come in pending and it checks each one's "+
+			"password at their first sign-in; or register the service as a provider here (`signari idp add`) and "+
+			"name it with -via, so people sign in through it.", how)
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := beginImport(ctx, conn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	opts := importer.HostedOptions{Options: importer.Options{Root: root}, Via: via}
+	var res *importer.Result
+	switch service {
+	case "auth0":
+		exp, perr := importer.ParseAuth0(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportAuth0(ctx, tx, orgID, exp, opts)
+	case "okta":
+		exp, perr := importer.ParseOkta(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportOkta(ctx, tx, orgID, exp, opts)
+	default:
+		exp, perr := importer.ParseEntra(f)
+		if perr != nil {
+			return perr
+		}
+		res, err = importer.ImportEntra(ctx, tx, orgID, exp, opts)
+	}
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Printf("DRY RUN -- nothing was written.\n")
+	} else if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	printImportReport(res, "the service's own")
+	return nil
+}
+
+// importZitadel imports one organisation of a Zitadel export (6.20).
+func importZitadel(ctx context.Context, conn *pgx.Conn, path, orgID string, dryRun bool) error {
 	if path == "" || orgID == "" {
 		return fmt.Errorf("-file and -org are both required.\n\n" +
-			"Export from authentik with:\n" +
-			"  ak dumpdata authentik_core.User authentik_core.Group > authentik.json")
+			"Export one organisation from Zitadel with its Admin API:\n" +
+			"  POST /admin/v1/export {\"org_ids\": [\"<id>\"], \"with_passwords\": true, \"with_otp\": true}")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	exp, err := importer.ParseZitadel(f)
+	if err != nil {
+		return err
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := beginImport(ctx, conn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := importer.ImportZitadel(ctx, tx, orgID, exp, importer.Options{Root: root})
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Printf("DRY RUN -- nothing was written.\n")
+	} else if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("  password formats found\n")
+	formats := make([]string, 0, len(res.HashFormats))
+	for format := range res.HashFormats {
+		formats = append(formats, format)
+	}
+	slices.Sort(formats)
+	for _, format := range formats {
+		fmt.Printf("    %-46s %d\n", format, res.HashFormats[format])
+	}
+	printImportReport(&res.Result, "Zitadel's own")
+	return nil
+}
+
+func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID, installID string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required.\n\n"+
+			"Export from authentik with:\n"+
+			"  ak dumpdata %s > authentik.json", strings.Join(importer.AuthentikModels, " "))
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
 	if err != nil {
 		return err
 	}
@@ -4533,14 +6408,22 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	if err != nil {
 		return err
 	}
-
-	tx, err := conn.Begin(ctx)
+	// OTP seeds and personal attributes are sealed under each person's key;
+	// without the root key they are left behind, and named.
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
+	}
+	tx, err := beginImport(ctx, conn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	res, err := importer.ImportAuthentik(ctx, tx, orgID, exp, dryRun)
+	// A preview is the import itself, rolled back, so what it reports is what
+	// the import would do.
+	res, err := importer.ImportAuthentik(ctx, tx, orgID, exp,
+		importer.Options{Hasher: passwords.Shared(), Root: root, InstallID: installID})
 	if err != nil {
 		return err
 	}
@@ -4549,26 +6432,19 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	// a format nothing here can check -- and that is the number which decides
 	// whether this migration needs a password reset or not.
 	fmt.Printf("\n  password formats found\n")
-	for format, n := range res.HashFormats {
-		fmt.Printf("    %-46s %d\n", format, n)
+	formats := make([]string, 0, len(res.HashFormats))
+	for format := range res.HashFormats {
+		formats = append(formats, format)
 	}
-
-	fmt.Printf("\n  users created : %d\n  users updated : %d\n  groups        : %d\n",
-		res.UsersCreated, res.UsersUpdated, res.GroupsCreated)
-
-	if len(res.UsersSkipped) > 0 {
-		fmt.Printf("\n  skipped (%d):\n", len(res.UsersSkipped))
-		for i, s := range res.UsersSkipped {
-			if i == 20 {
-				fmt.Printf("    ... and %d more\n", len(res.UsersSkipped)-20)
-				break
-			}
-			fmt.Printf("    %s\n", s)
-		}
+	slices.Sort(formats)
+	for _, format := range formats {
+		fmt.Printf("    %-46s %d\n", format, res.HashFormats[format])
 	}
+	fmt.Println()
+	printImportReport(&res.Result, "authentik's own")
 
 	if dryRun {
-		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		fmt.Println("\n  PREVIEW -- nothing was written. Re-run with -apply.")
 		return nil
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -4580,14 +6456,65 @@ func importAuthentik(ctx context.Context, conn *pgx.Conn, path, orgID string, dr
 	return nil
 }
 
+// importShadow imports the accounts of an /etc/shadow file (4.09). A preview
+// unless -apply.
+func importShadow(ctx context.Context, conn *pgx.Conn, path, orgID, domain string, dryRun bool) error {
+	if path == "" || orgID == "" {
+		return fmt.Errorf("-file and -org are both required; -domain makes each account's address")
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to import
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	entries, err := importer.ParseShadow(f)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := importer.ImportShadow(ctx, tx, orgID, entries, domain, dryRun)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n  password formats found\n")
+	for format, n := range res.HashFormats {
+		fmt.Printf("    %-46s %d\n", format, n)
+	}
+	fmt.Printf("\n  users created : %d\n  users updated : %d\n", res.UsersCreated, res.UsersUpdated)
+	if len(res.UsersSkipped) > 0 {
+		fmt.Printf("\n  skipped (%d):\n", len(res.UsersSkipped))
+		for i, s := range res.UsersSkipped {
+			if i == 20 {
+				fmt.Printf("    ... and %d more\n", len(res.UsersSkipped)-20)
+				break
+			}
+			fmt.Printf("    %s\n", s)
+		}
+	}
+	if dryRun {
+		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
+		return nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Println("\n  Imported. Each person signs in with the password they already had: the\n" +
+		"  crypt hash is verified as it is and replaced with Argon2id at the first sign-in.")
+	return nil
+}
+
 // registrationEnable turns dynamic client registration on for an organisation.
 func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open bool,
-	maxClients int, scopes string) error {
+	maxClients int, scopes string, confidential bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation to enable registration for")
 	}
-	list := []string{"openid", "profile", "email"}
+	list := store.DefaultRegistrationScopes
 	if scopes != "" {
 		list = nil
 		for _, s := range strings.Split(scopes, ",") {
@@ -4597,22 +6524,24 @@ func registrationEnable(ctx context.Context, conn *pgx.Conn, orgID string, open 
 		}
 	}
 	if maxClients <= 0 {
-		maxClients = 100
+		maxClients = store.DefaultRegistrationCeiling
 	}
 
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.registration_policies
-			(org_id, enabled, open, max_clients, allowed_scopes)
-		VALUES ($1::uuid, true, $2, $3, $4)
-		ON CONFLICT (org_id) DO UPDATE SET
-			enabled = true, open = EXCLUDED.open, max_clients = EXCLUDED.max_clients,
-			allowed_scopes = EXCLUDED.allowed_scopes, updated_at = now()`,
-		orgID, open, maxClients, list); err != nil {
+	// The whole policy is written each time, as the other settings are, so
+	// confidential registration is off again unless the flag is repeated: the
+	// safe direction for a setting that hands out secrets (2.30).
+	if err := store.SetRegistrationPolicy(ctx, conn, orgID, store.RegistrationPolicy{Open: open,
+		MaxClients: maxClients, AllowedScopes: list, AllowConfidential: confidential}); err != nil {
 		return err
 	}
 
 	fmt.Printf("dynamic registration enabled\n  scopes  : %s\n  ceiling : %d clients\n",
 		strings.Join(list, ", "), maxClients)
+	if confidential {
+		fmt.Println("  clients : a registrant asking for a secret gets one; the others are public")
+	} else {
+		fmt.Println("  clients : public only, whatever token_endpoint_auth_method is asked for")
+	}
 	if open {
 		fmt.Println("\n  OPEN: anybody who can reach /oauth2/register may create a client.\n" +
 			"  They choose the client_name, and that name appears on a consent screen.\n" +
@@ -4631,34 +6560,19 @@ func registrationToken(ctx context.Context, conn *pgx.Conn, orgID, name string,
 	if orgID == "" || name == "" {
 		return fmt.Errorf("give -org and -name")
 	}
-	raw := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
-		return err
-	}
-	secret := "sgnreg_" + base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(secret))
-
-	var remaining *int
-	if uses > 0 {
-		remaining = &uses
-	}
 	var expires *time.Time
 	if expiresIn > 0 {
 		t := time.Now().Add(expiresIn)
 		expires = &t
 	}
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.registration_tokens (org_id, name, token_hash, remaining, expires_at)
-		VALUES ($1::uuid, $2, $3, $4, $5) RETURNING id::text`,
-		orgID, name, sum[:], remaining, expires).Scan(&id); err != nil {
+	secret, id, err := store.NewRegistrationToken(ctx, conn, orgID, name, uses, expires)
+	if err != nil {
 		return err
 	}
 
 	fmt.Printf("\n  %s\n\n  id   : %s\n  name : %s\n", secret, id, name)
-	if remaining != nil {
-		fmt.Printf("  uses : %d\n", *remaining)
+	if uses > 0 {
+		fmt.Printf("  uses : %d\n", uses)
 	} else {
 		fmt.Println("  uses : unlimited -- consider -uses to bound it")
 	}
@@ -4701,7 +6615,7 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		w = f
 	}
 
-	tx, err := conn.Begin(ctx)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
 	}
@@ -4748,6 +6662,10 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		// the fact would be worse than no export at all.
 		fmt.Fprintf(os.Stderr, "\n  WARNING: the audit chain is BROKEN at entry %d "+
 			"(after checking %d).\n", res.BrokenAt, res.Checked)
+		if res.HeadFailure != "" {
+			fmt.Fprintf(os.Stderr, "  Its hashes agree with each other but not with a signed head:\n    %s\n",
+				res.HeadFailure)
+		}
 		if res.Checkpoint != nil {
 			// Said explicitly, because the operator declared that checkpoint and
 			// may otherwise assume this is the same old break they already
@@ -4759,6 +6677,12 @@ func exportAudit(ctx context.Context, conn *pgx.Conn, orgID, from, to, out strin
 		fmt.Fprintln(os.Stderr, "  This file is still the data as stored, but its integrity cannot be\n"+
 			"  asserted. Investigate before submitting it anywhere that matters.")
 		return fmt.Errorf("the audit chain did not verify")
+	}
+	// The newest signed head, so this export can later be held against the
+	// chain as it is then (3.20): `signari audit verify -head <it>`.
+	if res.LatestHead != "" {
+		fmt.Fprintf(os.Stderr, "\n  %d signed head(s) checked. The newest, signed %s:\n  %s\n",
+			res.HeadsChecked, res.LatestHeadAt.UTC().Format(time.RFC3339), res.LatestHead)
 	}
 	return nil
 }
@@ -4823,31 +6747,19 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 		if err != nil {
 			return err
 		}
-		block, _ := pem.Decode(b)
-		if block == nil {
-			return fmt.Errorf("%s is not PEM", certPath)
+		if thumb, err = store.CertificateThumbprint(b); err != nil {
+			return fmt.Errorf("%s: %w", certPath, err)
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("%s did not parse as a certificate: %w", certPath, err)
-		}
-		sum := sha256.Sum256(cert.Raw)
-		thumb = sum[:]
 	}
 
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		SET tls_subject_dn = NULLIF($2,''), tls_san_dns = NULLIF($3,''),
-		    tls_san_uri = NULLIF($4,''), tls_san_ip = NULLIF($5,''),
-		    tls_san_email = NULLIF($6,''), tls_thumbprint = $7,
-		    tls_bound_tokens = $8, updated_at = now()
-		WHERE client_id = $1`,
-		clientID, subjectDN, sanDNS, sanURI, sanIP, sanEmail, thumb, boundTokens)
-	if err != nil {
+	// The rule, exactly one, is store.SetClientTLS's, which the Admin API
+	// shares (6.03).
+	if err := store.SetClientTLS(ctx, conn, clientID, store.ClientTLS{SubjectDN: subjectDN, SANDNS: sanDNS,
+		SANURI: sanURI, SANIP: sanIP, SANEmail: sanEmail, Thumbprint: thumb, BoundTokens: boundTokens}); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 
 	method := "tls_client_auth"
@@ -4872,11 +6784,13 @@ func clientSetTLS(ctx context.Context, conn *pgx.Conn, clientID, subjectDN, sanD
 // dirAdd registers a directory source.
 func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPath,
 	domain, impersonate, tenant, filter, ldapURL, ldapBindDN, ldapPassword,
-	ldapBaseDN, ldapFlavour, ldapCAPath string, ldapStartTLS bool) error {
+	ldapBaseDN, ldapFlavour, ldapCAPath string, ldapStartTLS, fetchGroups bool, groupAttr string) error {
 
 	switch {
 	case orgID == "" || slug == "":
 		return fmt.Errorf("give -org and -slug")
+	case groupAttr != "" && kind != "ldap":
+		return fmt.Errorf("-group-attribute is for an ldap source; Google and Entra report groups by API")
 	case kind != "google" && kind != "entra" && kind != "ldap":
 		return fmt.Errorf("-kind must be google, entra or ldap for a directory source "+
 			"(got %q; that flag is shared with `idp add`, which uses different values)", kind)
@@ -4885,92 +6799,40 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 			"JSON (entra)")
 	}
 
-	var raw []byte
+	spec := directory.SourceSpec{Kind: kind, Slug: slug, Name: name, Domain: domain, Impersonate: impersonate,
+		Tenant: tenant, Filter: filter, LDAPURL: ldapURL, LDAPBindDN: ldapBindDN, LDAPPassword: ldapPassword,
+		LDAPBaseDN: ldapBaseDN, LDAPFlavour: ldapFlavour, LDAPStartTLS: ldapStartTLS,
+		FetchGroups: fetchGroups, GroupAttribute: groupAttr}
 	if credPath != "" {
-		var rerr error
-		raw, rerr = os.ReadFile(credPath)
+		raw, rerr := os.ReadFile(credPath)
 		if rerr != nil {
 			return rerr
 		}
+		spec.Credentials = raw
 	}
-	// Parsed now rather than at first sync, so a wrong file is a message here
-	// instead of a cron job failing quietly at 3am.
-	var ldapCA string
-	switch kind {
-	case "google":
-		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
-			return perr
+	if ldapCAPath != "" {
+		pem, rerr := os.ReadFile(ldapCAPath)
+		if rerr != nil {
+			return rerr
 		}
-		if impersonate == "" {
-			return fmt.Errorf("give -impersonate: a Google service account reads " +
-				"nothing without domain-wide delegation and an administrator to act as")
-		}
-	case "entra":
-		c, perr := directory.ParseEntraCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		tenant = c.TenantID
-	case "ldap":
-		if ldapURL == "" || ldapBaseDN == "" {
-			return fmt.Errorf("give -ldap-url and -ldap-base-dn")
-		}
-		if ldapFlavour != "openldap" && ldapFlavour != "ad" && ldapFlavour != "freeipa" {
-			return fmt.Errorf("-ldap-flavour must be openldap, ad or freeipa: it decides "+
-				"which attribute is the immutable identifier, and reading the wrong one "+
-				"makes every rename look like a departure and an arrival (got %q)",
-				ldapFlavour)
-		}
-		if strings.HasPrefix(ldapURL, "ldap://") && !ldapStartTLS {
-			return fmt.Errorf("refusing a plaintext bind to %q: the bind password can "+
-				"usually read the whole directory. Use ldaps:// or leave StartTLS on",
-				ldapURL)
-		}
-		if ldapCAPath != "" {
-			pem, rerr := os.ReadFile(ldapCAPath)
-			if rerr != nil {
-				return rerr
-			}
-			// Parsed now rather than at the first sync, so a typo in the path or a
-			// file that is not a certificate is a configuration error rather than a
-			// sync that fails at 3am.
-			if p := x509.NewCertPool(); !p.AppendCertsFromPEM(pem) {
-				return fmt.Errorf("%s contains no certificates", ldapCAPath)
-			}
-			ldapCA = string(pem)
-		}
-		// The bind password is the credential, sealed like any other.
-		raw = []byte(ldapPassword)
+		spec.LDAPCAPEM = string(pem)
 	}
-
+	// Parsed now rather than at first sync (directory.SourceSpec.Validate),
+	// so a wrong file is a message here instead of a cron job failing
+	// quietly at 3am.
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	name = spec.Name
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal(raw, "directory-credentials")
+	id, err := directory.AddSource(ctx, conn, root, orgID, spec)
+	if errors.Is(err, directory.ErrSourceExists) {
+		return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
+	}
 	if err != nil {
-		return err
-	}
-	if name == "" {
-		name = slug
-	}
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.directory_sources
-			(org_id, kind, slug, display_name, credentials_enc, domain, impersonate,
-			 tenant_id, user_filter, ldap_url, ldap_bind_dn, ldap_base_dn,
-			 ldap_flavour, ldap_start_tls, ldap_ca_pem)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), NULLIF($8,''), $9,
-		        NULLIF($10,''), NULLIF($11,''), NULLIF($12,''), NULLIF($13,''), $14,
-		        NULLIF($15,''))
-		RETURNING id::text`,
-		orgID, kind, slug, name, sealed, domain, impersonate, tenant, filter,
-		ldapURL, ldapBindDN, ldapBaseDN, ldapFlavour, ldapStartTLS,
-		ldapCA).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a source with slug %q already exists in that organisation", slug)
-		}
 		return err
 	}
 
@@ -4981,192 +6843,97 @@ func dirAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, slug, name, credPa
 }
 
 // dirSync runs one reconciliation.
-func dirSync(ctx context.Context, conn *pgx.Conn, slug string, apply bool) error {
+// dirTest reads a source as a sync would and changes nothing, a disabled source
+// too, since finding out before turning it on is the point. It exits non-zero when
+// the directory cannot be read, so a deployment can check one.
+func dirTest(ctx context.Context, conn *pgx.Conn, givenOrg, slug string) error {
 	if slug == "" {
 		return fmt.Errorf("give -slug")
 	}
-
-	var id, orgID, kind, credsEnc, domain, impersonate, tenant, filter, onMissing string
-	var lURL, lBindDN, lBaseDN, lFlavour, lCA string
-	var lStartTLS bool
-	var sealed []byte
-	var dryRun bool
-	var maxPct int
-	err := conn.QueryRow(ctx, `
-		SELECT id::text, org_id::text, kind, credentials_enc, COALESCE(domain,''),
-		       COALESCE(impersonate,''), COALESCE(tenant_id,''), user_filter,
-		       on_missing, dry_run, max_deactivate_percent,
-		       COALESCE(ldap_url,''), COALESCE(ldap_bind_dn,''),
-		       COALESCE(ldap_base_dn,''), COALESCE(ldap_flavour,''), ldap_start_tls,
-		       COALESCE(ldap_ca_pem,'')
-		FROM core.directory_sources WHERE slug = $1 AND enabled`, slug).
-		Scan(&id, &orgID, &kind, &sealed, &domain, &impersonate, &tenant, &filter,
-			&onMissing, &dryRun, &maxPct,
-			&lURL, &lBindDN, &lBaseDN, &lFlavour, &lStartTLS, &lCA)
+	_, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg, "directory source")
 	if err != nil {
-		return fmt.Errorf("no enabled directory source with slug %q: %w", slug, err)
+		return err
 	}
-	_ = credsEnc
-
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	raw, err := root.Open(sealed, "directory-credentials")
+	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
-		return fmt.Errorf("unsealing the credentials: %w", err)
+		return err
 	}
+	defer pool.Close()
+	r, err := directory.TestSource(ctx, pool, root, orgID, slug)
+	if err != nil {
+		return err
+	}
+	if r.Server != "" {
+		fmt.Printf("  answered by %s\n", r.Server)
+	}
+	if !r.OK {
+		return fmt.Errorf("%s failed: %s", r.Step, r.Detail)
+	}
+	fmt.Printf("  read %d people, each with what a sync tracks them by\n", r.Found)
+	fmt.Println("\n  Nothing was changed. `signari dir sync -slug " + slug + "` previews what a sync would do.")
+	return nil
+}
 
-	pool, err := pgxpool.New(ctx, conn.Config().ConnString())
+func dirSync(ctx context.Context, conn *pgx.Conn, givenOrg, slug string, apply bool) error {
+	if slug == "" {
+		return fmt.Errorf("give -slug")
+	}
+	_, orgID, err := oneInOrg(ctx, conn, "directory_sources", "slug = $1", slug, givenOrg,
+		"directory source")
+	if err != nil {
+		return err
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	// Tagged: a sync seals a new person's subject key, so a rotation must see it.
+	pool, err := openPool(ctx, conn, root.PoolTag())
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	var remote []directory.RemoteUser
-	switch kind {
-	case "google":
-		creds, perr := directory.ParseGoogleCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		remote, err = (&directory.GoogleSource{
-			Creds: creds, Impersonate: impersonate, Domain: domain, Query: filter,
-		}).Fetch(ctx)
-	case "entra":
-		creds, perr := directory.ParseEntraCredentials(raw)
-		if perr != nil {
-			return perr
-		}
-		remote, err = (&directory.EntraSource{Creds: creds, Filter: filter}).Fetch(ctx)
-	case "ldap":
-		var pool *x509.CertPool
-		if lCA != "" {
-			pool = x509.NewCertPool()
-			if !pool.AppendCertsFromPEM([]byte(lCA)) {
-				return fmt.Errorf("the stored CA bundle for %q contains no certificates", slug)
-			}
-		}
-		remote, err = (&directory.LDAPSource{
-			CAs: pool,
-			URL: lURL, BindDN: lBindDN, Password: string(raw), BaseDN: lBaseDN,
-			Filter: filter, Flavour: directory.LDAPFlavour(lFlavour),
-			StartTLS: lStartTLS,
-		}).Fetch(ctx)
+	// The same pass the Admin API's sync runs (directory.Sync).
+	r, err := directory.Sync(ctx, pool, root, orgID, slug, apply)
+	if r.Plan != "" {
+		fmt.Printf("\n  %d users upstream, %d active here\n\n", r.Upstream, r.ActiveBefore)
+		fmt.Print(r.Plan)
 	}
-	if err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
+	if r.Attributes != "" {
+		fmt.Printf("\n  Attributes: %s\n", r.Attributes)
 	}
-
-	local, err := directory.LoadLocal(ctx, pool, id, orgID)
-	if err != nil {
-		return err
-	}
-
-	plan := directory.BuildPlan(remote, local, onMissing, maxPct)
-	fmt.Printf("\n  %d users upstream, %d active here\n\n", len(remote), plan.ActiveBefore)
-	fmt.Print(plan.Describe())
-
-	if !plan.Safe() {
+	switch {
+	case errors.Is(err, directory.ErrSourceUnknown):
+		return fmt.Errorf("no enabled directory source with slug %q", slug)
+	case errors.Is(err, directory.ErrSyncRefused):
 		// Non-zero: this is the case a cron job must notice.
 		return fmt.Errorf("sync refused")
+	case err != nil:
+		if r.Groups != "" {
+			fmt.Printf("\n  Groups: %s\n", r.Groups)
+		}
+		return err
 	}
-	if dryRun || !apply {
+	if !r.Applied {
 		fmt.Println("\n  DRY RUN -- nothing was written. Re-run with -apply.")
-		if dryRun {
+		if r.DryRunConfigured {
 			fmt.Println("  (this source is also configured dry_run=true in the database)")
 		}
 		return nil
 	}
-	if err := directory.Apply(ctx, pool, id, orgID, plan); err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
-	}
 	fmt.Println("\n  Applied.")
-
-	if err := syncDirectoryGroups(ctx, pool, id, orgID, remote, maxPct); err != nil {
-		directory.RecordFailure(ctx, pool, id, err)
-		return err
+	if r.GroupsSkipped {
+		fmt.Println("\n  Group mappings are configured but this source does not fetch")
+		fmt.Println("  group memberships, so nothing was changed. `signari dir set")
+		fmt.Println("  -fetch-groups` turns it on.")
 	}
-	return nil
-}
-
-// syncDirectoryGroups reconciles group membership after the users are in place.
-//
-// # After the users, never before
-//
-// A membership references a user row. Running this first would try to add
-// somebody to a group before they exist here, so the ordering is a requirement
-// rather than a preference.
-//
-// # It does nothing unless the source actually reported groups
-//
-// This is the guard that matters. A source with no group attribute configured
-// returns every user with an empty group list, and that is NOT "everybody is in
-// no groups" -- it is "this source has nothing to say about groups". Treating
-// the two the same would propose removing every governed membership in the
-// organisation on the first run against a source that never fetched them.
-//
-// So: no mappings, or no user reporting any group, means no plan at all.
-func syncDirectoryGroups(ctx context.Context, pool *pgxpool.Pool, sourceID, orgID string,
-	remote []directory.RemoteUser, maxPct int) error {
-
-	mappings, err := directory.LoadGroupMappings(ctx, pool, sourceID)
-	if err != nil {
-		return err
-	}
-	if len(mappings) == 0 {
-		return nil
-	}
-
-	reported := false
-	for _, u := range remote {
-		if len(u.Groups) > 0 {
-			reported = true
-			break
-		}
-	}
-	if !reported {
-		fmt.Println("\n  Group mappings are configured but this source reported no")
-		fmt.Println("  group memberships, so nothing was changed. Set the source's")
-		fmt.Println("  group attribute (usually memberOf) to enable group sync.")
-		return nil
-	}
-
-	// Keyed by LOCAL user id, which means resolving the remote id first: the
-	// plan speaks in local ids because that is what a membership row holds.
-	byRemote, err := directory.LoadLocal(ctx, pool, sourceID, orgID)
-	if err != nil {
-		return err
-	}
-	localOf := make(map[string]string, len(byRemote))
-	for _, l := range byRemote {
-		localOf[l.RemoteID] = l.UserID
-	}
-
-	remoteGroups := map[string][]string{}
-	for _, u := range remote {
-		if local, ok := localOf[u.ID]; ok {
-			remoteGroups[local] = u.Groups
-		}
-	}
-
-	current, err := directory.LoadGroupState(ctx, pool, sourceID, orgID)
-	if err != nil {
-		return err
-	}
-
-	gp := directory.BuildGroupPlan(mappings, remoteGroups, current, maxPct)
-	fmt.Printf("\n  Groups: %s\n", gp.Describe())
-	if !gp.Safe() {
-		return fmt.Errorf("group sync refused")
-	}
-	if err := directory.ApplyGroupPlan(ctx, pool, sourceID, orgID, gp); err != nil {
-		return err
-	}
-	if len(gp.Actions) > 0 {
-		fmt.Println("  Group memberships applied.")
+	if r.Groups != "" {
+		fmt.Printf("\n  Groups: %s\n", r.Groups)
 	}
 	return nil
 }
@@ -5257,9 +7024,13 @@ func postureFromEnv() (*posture.Config, error) {
 // neither is written on its own.
 func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID,
 	ssoURL, certPath, nameIDFormat string, allowSignup, allowLinking, trustEmail,
-	unsolicited, forceAuthn bool, skew int) error {
+	unsolicited, forceAuthn bool, skew int, meta metadataFlags) error {
 
 	switch {
+	case meta.source != "" && (ssoURL != "" || certPath != ""):
+		return fmt.Errorf("-metadata says where sign-ins go and which keys are believed; " +
+			"-sso-url and -sp-cert would be a second answer")
+	case meta.source != "":
 	case entityID == "":
 		return fmt.Errorf("give -entity-id: the upstream's entity ID, which is matched " +
 			"exactly against the Issuer in every assertion")
@@ -5269,20 +7040,6 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 		return fmt.Errorf("give -sp-cert: the certificate assertions are verified " +
 			"against. Without it there is nothing to check a signature with, and an " +
 			"unverified assertion is an attacker's choice of user")
-	}
-
-	// transient is deliberately absent: a NameID that differs on every sign-in
-	// would create a new orphaned account each time somebody signed in.
-	switch nameIDFormat {
-	case "", "persistent", "emailAddress", "unspecified":
-	default:
-		return fmt.Errorf("-nameid-format must be persistent, emailAddress or "+
-			"unspecified (got %q). transient is refused: it is a different value on "+
-			"every sign-in, so an account linked to it would be abandoned the moment "+
-			"it was created", nameIDFormat)
-	}
-	if nameIDFormat == "" {
-		nameIDFormat = "persistent"
 	}
 
 	// A SAML assertion carries no email_verified claim: there is no field for
@@ -5309,44 +7066,30 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 			"can sign in.\n\n")
 	}
 
-	// The SSO URL becomes a Location header sent to every user starting a
-	// sign-in, so its scheme is checked here rather than trusted later.
-	u, err := url.Parse(ssoURL)
-	switch {
-	case err != nil:
-		return fmt.Errorf("-sso-url %q is not a URL: %w", ssoURL, err)
-	case u.Scheme != "https" && u.Scheme != "http":
-		return fmt.Errorf("-sso-url must be http or https, not %q: this value is "+
-			"sent to a browser as a redirect", u.Scheme)
-	case u.Host == "":
-		return fmt.Errorf("-sso-url %q has no host", ssoURL)
-	case u.Scheme == "http" && !strings.HasPrefix(u.Host, "localhost") &&
-		!strings.HasPrefix(u.Host, "127.0.0.1"):
-		return fmt.Errorf("-sso-url is plaintext http. The AuthnRequest names this " +
-			"engine and the user being signed in, and the response comes back over " +
-			"the same browser session; use https")
+	// The NameID format, the SSO URL's scheme and the certificate are checked
+	// in store.IdentityProviderSpec.Validate, as the Admin API checks them.
+	spec := store.IdentityProviderSpec{Slug: slug, Name: name, Kind: "saml", AllowSignup: allowSignup,
+		AllowLinking: allowLinking, TrustEmailVerification: trustEmail, EntityID: entityID, SSOURL: ssoURL,
+		NameIDFormat: nameIDFormat, AllowUnsolicited: unsolicited, ForceAuthn: forceAuthn, SkewSeconds: skew}
+	if meta.source != "" {
+		entity, origin, err := meta.read(ctx, entityID, store.SAMLMetadataOrigin{})
+		if err != nil {
+			return err
+		}
+		if entity.IdP == nil {
+			return fmt.Errorf("the metadata of %q declares no SAML 2.0 identity provider", entity.EntityID)
+		}
+		spec.ApplyMetadata(entity.EntityID, entity.IdP, origin)
+		printMetadataNotes(entity.Notes)
+	} else {
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			return err
+		}
+		spec.CertPEM = string(certPEM)
 	}
-
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
+	if err := spec.Validate(); err != nil {
 		return err
-	}
-	// Parsed now, so a PEM that is not a certificate is a message here rather
-	// than a refused sign-in later.
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return fmt.Errorf("%s is not PEM", certPath)
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("%s is not a certificate: %w", certPath, err)
-	}
-	if time.Now().After(cert.NotAfter) {
-		return fmt.Errorf("that certificate expired on %s, so every assertion it "+
-			"signs would be refused", cert.NotAfter.Format("2006-01-02"))
-	}
-	if name == "" {
-		name = slug
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -5354,37 +7097,17 @@ func idpAddSAML(ctx context.Context, conn *pgx.Conn, orgID, slug, name, entityID
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	var providerID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO core.identity_providers
-			(org_id, slug, display_name, kind, client_id, scopes,
-			 allow_signup, allow_linking, trust_email_verification)
-		VALUES ($1::uuid, $2, $3, 'saml', '', '{}', $4, $5, $6)
-		RETURNING id::text`,
-		orgID, slug, name, allowSignup, allowLinking, trustEmail).Scan(&providerID); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a provider with slug %q is already registered in that "+
-				"organisation", slug)
+	if _, err := store.AddIdentityProvider(ctx, tx, nil, orgID, spec); err != nil {
+		if errors.Is(err, store.ErrIdPSlugTaken) {
+			return errSlugTaken(slug)
 		}
 		return err
 	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.saml_sources
-			(provider_id, org_id, entity_id, sso_url, cert_pem, name_id_format,
-			 force_authn, allow_unsolicited, skew_seconds)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9)`,
-		providerID, orgID, entityID, ssoURL, string(certPEM), nameIDFormat,
-		forceAuthn, unsolicited, skew); err != nil {
-		return err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	fmt.Printf("registered %s (saml source)\n", name)
+	fmt.Printf("registered %s (saml source)\n", spec.Name)
 	fmt.Printf("  sign-in URL  : /saml/source/%s/start\n", slug)
 	fmt.Printf("  ACS URL      : <issuer>/saml/source/%s/acs\n", slug)
 	fmt.Printf("  metadata     : <issuer>/saml/source/%s/metadata\n", slug)
@@ -5413,36 +7136,20 @@ func scimSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name,
 		name = slug
 	}
 	// The flag is shared with `scim add`, where it means the same thing in the
-	// other direction.
-	switch onDelete {
-	case "", "deactivate":
-		onDelete = "deactivate"
-	case "delete":
-	default:
+	// other direction. The token is generated, shown once and stored only as
+	// a hash (store.AddSCIMSource).
+	_, token, err := store.AddSCIMSource(ctx, conn, orgID, slug, name, onDelete)
+	switch {
+	case errors.Is(err, store.ErrSCIMSourceOnDelete):
 		return fmt.Errorf("-on-deactivate must be deactivate or delete (got %q)", onDelete)
-	}
-
-	// 32 bytes. This token can create and deactivate every user in the
-	// organisation, so it is generated here rather than chosen, shown once, and
-	// stored only as a hash.
-	raw := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+	case errors.Is(err, store.ErrSCIMSourceExists):
+		return fmt.Errorf("a SCIM source with slug %q already exists in that "+
+			"organisation", slug)
+	case err != nil:
 		return err
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(token))
-
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.scim_sources (org_id, slug, display_name, token_hash, on_delete)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		RETURNING id::text`,
-		orgID, slug, name, sum[:], onDelete).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a SCIM source with slug %q already exists in that "+
-				"organisation", slug)
-		}
-		return err
+	if onDelete == "" {
+		onDelete = "deactivate"
 	}
 
 	fmt.Printf("registered %s\n", name)
@@ -5460,7 +7167,11 @@ func scimSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name,
 }
 
 // scimSourceList shows the configured upstreams and when each last called.
-func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
+func scimSourceList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT s.slug, s.display_name, s.on_delete, s.enabled,
 		       COALESCE(to_char(s.last_seen_at, 'YYYY-MM-DD HH24:MI'), 'never'),
@@ -5471,8 +7182,10 @@ func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-16s %-22s %-11s %-8s %-17s %s\n",
-		"SLUG", "NAME", "ON DELETE", "ENABLED", "LAST SEEN", "USERS")
+	if out.text() {
+		fmt.Printf("%-16s %-22s %-11s %-8s %-17s %s\n",
+			"SLUG", "NAME", "ON DELETE", "ENABLED", "LAST SEEN", "USERS")
+	}
 	for rows.Next() {
 		var slug, name, onDelete, lastSeen string
 		var enabled bool
@@ -5480,10 +7193,17 @@ func scimSourceList(ctx context.Context, conn *pgx.Conn) error {
 		if err := rows.Scan(&slug, &name, &onDelete, &enabled, &lastSeen, &users); err != nil {
 			return err
 		}
-		fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
-			slug, name, onDelete, enabled, lastSeen, users)
+		out.add(map[string]any{"slug": slug, "name": name, "on_delete": onDelete, "enabled": enabled,
+			"last_seen": lastSeen, "users": users})
+		if out.text() {
+			fmt.Printf("%-16s %-22s %-11s %-8t %-17s %d\n",
+				slug, name, onDelete, enabled, lastSeen, users)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return out.flush()
 }
 
 // duoSet stores an organisation's Duo integration.
@@ -5539,14 +7259,7 @@ func duoSet(ctx context.Context, conn *pgx.Conn, orgID, clientID, secret, apiHos
 		return fmt.Errorf("sealing the Duo secret: %w", err)
 	}
 
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.duo_integrations (org_id, client_id, secret_enc, api_host, fail_open)
-		VALUES ($1::uuid, $2, $3, $4, $5)
-		ON CONFLICT (org_id) DO UPDATE SET
-			client_id = EXCLUDED.client_id, secret_enc = EXCLUDED.secret_enc,
-			api_host = EXCLUDED.api_host, fail_open = EXCLUDED.fail_open,
-			enabled = true, updated_at = now()`,
-		orgID, clientID, sealed, apiHost, failOpen); err != nil {
+	if err := store.SetDuoIntegration(ctx, conn, orgID, clientID, sealed, apiHost, failOpen); err != nil {
 		return err
 	}
 
@@ -5576,14 +7289,13 @@ func duoEnroll(ctx context.Context, conn *pgx.Conn, orgID, email, duoUsername st
 			"frequently not their email address")
 	}
 
-	var userID, foundOrg string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text, org_id::text FROM core.users WHERE lower(email) = lower($1)`,
-		email).Scan(&userID, &foundOrg); err != nil {
-		return fmt.Errorf("no user with address %q", email)
-	}
-	if orgID != "" && orgID != foundOrg {
-		return fmt.Errorf("%s belongs to a different organisation", email)
+	// One address may belong to a person in each of several organisations, so
+	// the address alone found whichever came back first, and -org then refused
+	// it as "a different organisation" while the right person existed.
+	userID, foundOrg, err := oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID,
+		"user with address")
+	if err != nil {
+		return err
 	}
 
 	var configured bool
@@ -5637,12 +7349,53 @@ func duoShow(ctx context.Context, conn *pgx.Conn) error {
 // half-applied: a listener with a server certificate and no client CAs would
 // complete handshakes with anybody holding any certificate, which is worse than
 // no EAP-TLS at all because it looks like it is working.
+// eapTunnelsFromEnv turns on EAP-TTLS with PAP inside and PEAP with EAP-GTC inside,
+// each when SIGNARI_EAP_TUNNELS names it (7.08), with the server certificate EAP-TLS
+// uses. Off unless named: they are password methods, and a supplicant that does not
+// check this certificate sends the password to whoever answers.
+func eapTunnelsFromEnv() (*radius.EAPTunnelConfig, error) {
+	named := strings.TrimSpace(os.Getenv("SIGNARI_EAP_TUNNELS"))
+	if named == "" {
+		return nil, nil
+	}
+	var cfg radius.EAPTunnelConfig
+	for _, m := range strings.Split(named, ",") {
+		switch m = strings.ToLower(strings.TrimSpace(m)); m {
+		case "ttls":
+			cfg.TTLS = true
+		case "peap":
+			cfg.PEAP = true
+		default:
+			return nil, fmt.Errorf("SIGNARI_EAP_TUNNELS names %q; the tunnels there are are ttls and peap", m)
+		}
+	}
+	certFile, keyFile := os.Getenv("SIGNARI_EAP_TLS_CERT"), os.Getenv("SIGNARI_EAP_TLS_KEY")
+	if certFile == "" || keyFile == "" {
+		return nil, fmt.Errorf("EAP-TTLS and PEAP need SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY: the " +
+			"certificate is all that proves this server to somebody about to send it their password")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading the EAP server certificate: %w", err)
+	}
+	if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil && time.Now().After(leaf.NotAfter) {
+		return nil, fmt.Errorf("the EAP server certificate expired on %s", leaf.NotAfter.Format("2006-01-02"))
+	}
+	cfg.Certificate = cert
+	return &cfg, nil
+}
+
 func eapTLSFromEnv(pool *pgxpool.Pool, orgID string) (*radius.EAPTLSConfig, error) {
 	certFile := os.Getenv("SIGNARI_EAP_TLS_CERT")
 	keyFile := os.Getenv("SIGNARI_EAP_TLS_KEY")
 	caFile := os.Getenv("SIGNARI_EAP_CLIENT_CA")
 
 	if certFile == "" && keyFile == "" && caFile == "" {
+		return nil, nil
+	}
+	// The certificate alone, for EAP-TTLS (SIGNARI_EAP_TUNNELS): no client CA, so
+	// no EAP-TLS, rather than a refusal of a configuration that means something.
+	if caFile == "" && os.Getenv("SIGNARI_EAP_TUNNELS") != "" {
 		return nil, nil
 	}
 	switch {
@@ -5734,20 +7487,21 @@ func policyGraph(path, out string) error {
 // editing the database by hand -- and the running listener would carry on
 // answering it anyway, because the client list was read once at startup. Two
 // halves of the same gap: no way to say it, and no effect if you did.
-func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, name string,
+func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, orgID, name string,
 	enabled bool) error {
 
 	if name == "" {
 		return fmt.Errorf("give -name, the device to change (see `signari radius list`)")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.radius_clients SET enabled = $2, updated_at = now()
-		WHERE name = $1`, name, enabled)
+	// A name is not unique at all, not even within an organisation (the table
+	// keys on the network), and the update used to change every device of that
+	// name in every tenant.
+	id, org, err := oneInOrg(ctx, conn, "radius_clients", "name = $1", name, orgID, "RADIUS client")
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no RADIUS client named %q", name)
+	if err := store.SetRADIUSClientEnabled(ctx, conn, org, id, enabled); err != nil {
+		return err
 	}
 
 	if enabled {
@@ -5772,11 +7526,9 @@ func radiusSetClientEnabled(ctx context.Context, conn *pgx.Conn, name string,
 // It repairs nothing. See internal/audit/checkpoint.go for why that is the
 // point rather than a limitation.
 func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason string) error {
-	if orgID == "" {
-		var err error
-		if orgID, err = firstOrg(ctx, conn); err != nil {
-			return err
-		}
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
 	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -5803,72 +7555,40 @@ func auditCheckpoint(ctx context.Context, conn *pgx.Conn, orgID, by, reason stri
 
 // racAdd registers a machine somebody may reach through the browser.
 func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
-	host string, port int, login, password, requireGroup, recording string) error {
+	host string, port int, credentials store.RACCredentials, requireGroup, recording string) error {
 
-	switch {
-	case orgID == "":
-		var err error
-		if orgID, err = firstOrg(ctx, conn); err != nil {
-			return err
-		}
+	orgID, err := resolveOrg(ctx, conn, orgID)
+	if err != nil {
+		return err
 	}
 	switch {
 	case slug == "":
 		return fmt.Errorf("give -slug, the short name used in the URL")
 	case host == "":
 		return fmt.Errorf("give -host, the machine to connect to")
-	case protocol != "rdp" && protocol != "vnc" && protocol != "ssh":
-		return fmt.Errorf("-protocol must be rdp, vnc or ssh (got %q)", protocol)
-	}
-	if port == 0 {
-		switch protocol {
-		case "rdp":
-			port = 3389
-		case "vnc":
-			port = 5900
-		case "ssh":
-			port = 22
-		}
 	}
 	if name == "" {
 		name = slug
 	}
 
-	// The credentials are sealed, never stored in the parameters column: a
-	// database read must not be a working login to somebody's estate.
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	secrets := map[string]string{}
-	if login != "" {
-		secrets["username"] = login
-	}
-	if password != "" {
-		secrets["password"] = password
-	}
-	sealed, err := store.SealRACSecrets(root, secrets)
-	if err != nil {
+	_, err = store.AddRACConnection(ctx, conn, root, orgID, store.RACSpec{Slug: slug, Name: name,
+		Protocol: protocol, Host: host, Port: port, RACCredentials: credentials,
+		RequireGroup: requireGroup, RecordingPath: recording})
+	switch {
+	case errors.Is(err, store.ErrRACProtocol):
+		return fmt.Errorf("-protocol must be rdp, vnc or ssh (got %q)", protocol)
+	case errors.Is(err, store.ErrRACExists):
+		return fmt.Errorf("a connection with slug %q already exists in that "+
+			"organisation", slug)
+	case err != nil:
 		return err
 	}
 
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.rac_connections
-			(org_id, slug, display_name, protocol, hostname, port, secrets_enc,
-			 require_group, recording_path)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, NULLIF($8,''), NULLIF($9,''))
-		RETURNING id::text`,
-		orgID, slug, name, protocol, host, port, sealed, requireGroup, recording).
-		Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("a connection with slug %q already exists in that "+
-				"organisation", slug)
-		}
-		return err
-	}
-
-	fmt.Printf("registered %s (%s to %s:%d)\n", name, protocol, host, port)
+	fmt.Printf("registered %s (%s to %s)\n", name, protocol, host)
 	fmt.Printf("  connect URL : <issuer>/rac/connect/%s\n", slug)
 	if requireGroup == "" {
 		// Said out loud. A machine nobody restricted is a machine everybody has,
@@ -5879,6 +7599,9 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 	} else {
 		fmt.Printf("  restricted to group: %s\n", requireGroup)
 	}
+	if credentials.Password == "" && credentials.PrivateKey == "" {
+		fmt.Print("\n  No password or key held: the viewer asks the person opening it.\n")
+	}
 	if recording == "" {
 		fmt.Print("\n  No -recording-path: sessions are not recorded.\n")
 	}
@@ -5887,32 +7610,46 @@ func racAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, protocol,
 }
 
 // racList shows the registered machines.
-func racList(ctx context.Context, conn *pgx.Conn) error {
+func racList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT slug, display_name, protocol, hostname, port,
 		       COALESCE(require_group, '(anyone)'),
-		       recording_path IS NOT NULL, enabled
+		       recording_path IS NOT NULL, enabled, max_connections, max_duration_seconds
 		FROM core.rac_connections ORDER BY display_name`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %s\n",
-		"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED")
+	if out.text() {
+		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9s %-8s %-8s %s\n",
+			"SLUG", "NAME", "PROTO", "TARGET", "GROUP", "RECORDED", "ENABLED", "AT-ONCE", "LONGEST")
+	}
 	for rows.Next() {
 		var slug, name, protocol, host, group string
-		var port int
+		var port, maxConnections, maxDuration int
 		var recorded, enabled bool
 		if err := rows.Scan(&slug, &name, &protocol, &host, &port, &group,
-			&recorded, &enabled); err != nil {
+			&recorded, &enabled, &maxConnections, &maxDuration); err != nil {
 			return err
 		}
-		fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %t\n",
-			slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
-			recorded, enabled)
+		out.add(map[string]any{"slug": slug, "name": name, "protocol": protocol, "host": host, "port": port,
+			"group": group, "recorded": recorded, "enabled": enabled, "max_connections": maxConnections,
+			"max_duration_seconds": maxDuration})
+		if out.text() {
+			fmt.Printf("%-14s %-22s %-6s %-28s %-14s %-9t %-8t %-8d %s\n",
+				slug, name, protocol, fmt.Sprintf("%s:%d", host, port), group,
+				recorded, enabled, maxConnections, time.Duration(maxDuration)*time.Second)
+		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return out.flush()
 }
 
 // brandCheck reports whether a palette is readable, without touching anything.
@@ -5955,11 +7692,11 @@ func verdictFor(r float64) string {
 	}
 }
 
-func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
+func brandSet(ctx context.Context, conn *pgx.Conn, issuer, orgID, name, logo, support,
 	primary, onPrimary, background, text string) error {
 
-	if issuer == "" {
-		return fmt.Errorf("give -issuer, the issuer URL of the instance to brand")
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance to brand")
 	}
 	b := &brand.Brand{ProductName: name, LogoURL: logo, SupportURL: support,
 		Primary: primary, OnPrimary: onPrimary, Background: background, Text: text}
@@ -5967,28 +7704,23 @@ func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
 		return err
 	}
 
-	var instanceID string
-	if err := conn.QueryRow(ctx,
-		`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
-		return fmt.Errorf("no instance is registered with issuer %q", issuer)
+	// The writers the Admin API shares.
+	if orgID != "" {
+		if err := store.SaveOrgBrand(ctx, conn, orgID, b); err != nil {
+			return err
+		}
+		fmt.Printf("branded organisation %s\n", orgID)
+	} else {
+		var instanceID string
+		if err := conn.QueryRow(ctx,
+			`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
+			return fmt.Errorf("no instance is registered with issuer %q", issuer)
+		}
+		if err := store.SaveBrand(ctx, conn, instanceID, b); err != nil {
+			return err
+		}
+		fmt.Printf("branded %s\n", issuer)
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.brands (instance_id, product_name, logo_url, support_url,
-		                         colour_primary, colour_on_primary,
-		                         colour_background, colour_text)
-		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''),
-		        NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''))
-		ON CONFLICT (instance_id) DO UPDATE SET
-			product_name = EXCLUDED.product_name, logo_url = EXCLUDED.logo_url,
-			support_url = EXCLUDED.support_url,
-			colour_primary = EXCLUDED.colour_primary,
-			colour_on_primary = EXCLUDED.colour_on_primary,
-			colour_background = EXCLUDED.colour_background,
-			colour_text = EXCLUDED.colour_text, updated_at = now()`,
-		instanceID, name, logo, support, primary, onPrimary, background, text); err != nil {
-		return err
-	}
-	fmt.Printf("branded %s\n", issuer)
 	if primary != "" {
 		r, _ := brand.Contrast(text, background)
 		fmt.Printf("  text contrast %.1f:1 (%s)\n", r, verdictFor(r))
@@ -5997,33 +7729,118 @@ func brandSet(ctx context.Context, conn *pgx.Conn, issuer, name, logo, support,
 	return nil
 }
 
-func brandShow(ctx context.Context, conn *pgx.Conn, issuer string) error {
-	if issuer == "" {
-		return fmt.Errorf("give -issuer, the issuer URL of the instance")
+func brandShow(ctx context.Context, conn *pgx.Conn, issuer, orgID string) error {
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance")
 	}
-	var name, logo, support, p, op, bg, tx *string
-	err := conn.QueryRow(ctx, `
-		SELECT product_name, logo_url, support_url, colour_primary,
-		       colour_on_primary, colour_background, colour_text
-		FROM core.brands b JOIN core.instances i ON i.id = b.instance_id
-		WHERE i.issuer = $1`, issuer).Scan(&name, &logo, &support, &p, &op, &bg, &tx)
-	if err != nil {
-		fmt.Printf("%s has no brand set; pages use the default appearance\n", issuer)
-		return nil
-	}
-	show := func(label string, v *string) {
-		if v != nil && *v != "" {
-			fmt.Printf("  %-14s %s\n", label, *v)
+	var b *brand.Brand
+	var err error
+	who, otherwise := issuer, "pages use the default appearance"
+	if orgID != "" {
+		who, otherwise = "organisation "+orgID, "its pages wear its instance's appearance"
+		b, err = store.OrgBrandOf(ctx, conn, orgID)
+	} else {
+		var instanceID string
+		err = conn.QueryRow(ctx, `SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID)
+		if err == nil {
+			b, err = store.BrandOf(ctx, conn, instanceID)
 		}
 	}
-	fmt.Printf("%s\n", issuer)
-	show("name", name)
-	show("logo", logo)
-	show("support", support)
-	show("primary", p)
-	show("on-primary", op)
-	show("background", bg)
-	show("text", tx)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if b == nil {
+		fmt.Printf("%s has no brand set; %s\n", who, otherwise)
+		return nil
+	}
+	show := func(label, v string) {
+		if v != "" {
+			fmt.Printf("  %-14s %s\n", label, v)
+		}
+	}
+	fmt.Printf("%s\n", who)
+	show("name", b.ProductName)
+	show("logo", b.LogoURL)
+	show("support", b.SupportURL)
+	show("primary", b.Primary)
+	show("on-primary", b.OnPrimary)
+	show("background", b.Background)
+	show("text", b.Text)
+	return nil
+}
+
+func brandRemove(ctx context.Context, conn *pgx.Conn, issuer, orgID string) error {
+	if issuer == "" && orgID == "" {
+		return fmt.Errorf("give -org for one organisation, or -issuer, the issuer URL of the instance")
+	}
+	var removed bool
+	var err error
+	who := issuer
+	if orgID != "" {
+		who = "organisation " + orgID
+		removed, err = store.RemoveOrgBrand(ctx, conn, orgID)
+	} else {
+		var instanceID string
+		if err := conn.QueryRow(ctx,
+			`SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID); err != nil {
+			return fmt.Errorf("no instance is registered with issuer %q", issuer)
+		}
+		removed, err = store.RemoveBrand(ctx, conn, instanceID)
+	}
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("%s had no brand set\n", who)
+		return nil
+	}
+	fmt.Printf("removed the brand of %s; takes effect on the next page render\n", who)
+	return nil
+}
+
+func messageSet(ctx context.Context, conn *pgx.Conn, orgID, locale, key, text string) error {
+	if orgID == "" || locale == "" || key == "" || text == "" {
+		return fmt.Errorf("give -org, -locale, -message-key and -message-text")
+	}
+	// The writer the Admin API shares.
+	if err := store.SetOrgMessage(ctx, conn, orgID, store.OrgMessage{Locale: locale, Key: key, Body: text}); err != nil {
+		return err
+	}
+	fmt.Printf("reworded %s in %s; takes effect on the next page render\n", key, locale)
+	return nil
+}
+
+func messageList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	got, err := store.OrgMessages(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Println("the organisation says what the catalogue says")
+		return nil
+	}
+	for _, m := range got {
+		fmt.Printf("%-8s %-32s %s\n", m.Locale, m.Key, m.Body)
+	}
+	return nil
+}
+
+func messageRemove(ctx context.Context, conn *pgx.Conn, orgID, locale, key string) error {
+	if orgID == "" || locale == "" || key == "" {
+		return fmt.Errorf("give -org, -locale and -message-key")
+	}
+	removed, err := store.RemoveOrgMessage(ctx, conn, orgID, locale, key)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		fmt.Printf("%s in %s was not reworded\n", key, locale)
+		return nil
+	}
+	fmt.Printf("%s in %s says what the catalogue says again\n", key, locale)
 	return nil
 }
 
@@ -6040,14 +7857,34 @@ func splitList(s string) []string {
 	return out
 }
 
-// inviteCreate mints one invitation and prints the link ONCE.
+// parseArtifactResolution reads `-artifact-resolution 1=https://sp/ars,2=...`: the
+// index an artifact names and the address resolving it. The store checks the rest.
+func parseArtifactResolution(s string) ([]saml.IndexedEndpoint, error) {
+	var out []saml.IndexedEndpoint
+	for _, part := range splitList(s) {
+		index, url, ok := strings.Cut(part, "=")
+		n, err := strconv.Atoi(strings.TrimSpace(index))
+		if !ok || err != nil {
+			return nil, fmt.Errorf("-artifact-resolution takes index=URL, as 1=https://sp.example.com/ars, not %q", part)
+		}
+		out = append(out, saml.IndexedEndpoint{Index: n, URL: strings.TrimSpace(url)})
+	}
+	return out, nil
+}
+
+// inviteCreate mints one invitation and prints the link ONCE, or, with send,
+// has the engine mail it to the bound address and prints nothing to pass on.
 func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups string,
-	ttl time.Duration, issuer string) error {
+	ttl time.Duration, issuer string, send bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the new account joins")
 	}
-	if ttl <= 0 || ttl > 90*24*time.Hour {
+	if send && strings.TrimSpace(email) == "" {
+		return fmt.Errorf("-send needs -email: an unbound link goes to whoever is handed it, " +
+			"so there is nobody to mail it to")
+	}
+	if ttl <= 0 || ttl > store.MaxInvitationTTL {
 		return fmt.Errorf("-expires must be between a moment and 90 days; an "+
 			"invitation that outlives the reason it was sent is a standing way in "+
 			"(got %s)", ttl)
@@ -6067,19 +7904,29 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 		}
 	}
 
-	token, hash, err := store.NewInvitationToken()
+	// The same writer as the Admin API's (store.NewInvitation), so the two
+	// cannot come to disagree about what an invitation is.
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.invitations
-			(org_id, token_hash, email, grant_groups, expires_at)
-		VALUES ($1::uuid, $2, NULLIF($3,''), $4, now() + $5::interval)
-		RETURNING id::text`,
-		orgID, hash, strings.ToLower(strings.TrimSpace(email)), wanted,
-		fmt.Sprintf("%d seconds", int(ttl.Seconds()))).Scan(&id); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, token, _, err := store.NewInvitation(ctx, tx, store.InvitationSpec{
+		OrgID: orgID, Email: email, Groups: wanted, TTL: ttl, Send: send,
+	})
+	if err != nil {
 		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if send {
+		fmt.Printf("invitation %s\n  mailed to %s by the engine's outbox; expires in %s\n", id,
+			strings.ToLower(strings.TrimSpace(email)), ttl)
+		if len(wanted) > 0 {
+			fmt.Printf("  joins: %s\n", strings.Join(wanted, ", "))
+		}
+		return nil
 	}
 
 	base := issuer
@@ -6094,7 +7941,7 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 	if email != "" {
 		fmt.Printf("  only %s may accept it\n", email)
 	} else {
-		fmt.Println("  anyone holding the link may accept it -- pass -email-invite to bind it")
+		fmt.Println("  anyone holding the link may accept it -- pass -email to bind it")
 	}
 	if len(wanted) > 0 {
 		fmt.Printf("  joins: %s\n", strings.Join(wanted, ", "))
@@ -6104,7 +7951,11 @@ func inviteCreate(ctx context.Context, conn *pgx.Conn, orgID, email, groups stri
 	return nil
 }
 
-func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func inviteList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -6139,17 +7990,35 @@ func inviteList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		if who == "" {
 			who = "(anyone with the link)"
 		}
-		fmt.Printf("  %-8s %-34s %s\n", state, who, strings.Join(groups, ","))
 		n++
+		out.add(map[string]any{"id": id, "state": state, "email": email, "groups": nonNilList(groups),
+			"expires_at": expires.UTC()})
+		if out.text() {
+			// The id, so an open one can be revoked by name (`invite revoke`).
+			fmt.Printf("  %s  %-8s %-34s %s\n", id, state, who, strings.Join(groups, ","))
+		}
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("  no invitations")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
-// signupEnable turns on open self-signup for an organisation.
-func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string) error {
+// nonNilList is a list for -o json, empty rather than null for none.
+func nonNilList(l []string) []string {
+	if l == nil {
+		return []string{}
+	}
+	return l
+}
+
+// signupEnable turns on open self-signup for an organisation. verify is
+// whether a new account proves its address before its first sign-in (0177);
+// approval, whether it waits for an administrator to activate it (0186).
+func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups string, verify, approval bool) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
@@ -6163,13 +8032,8 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 	if len(d) == 1 && d[0] == "*" {
 		d = []string{}
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.signup_rules (org_id, allowed_domains, default_groups)
-		VALUES ($1::uuid, $2, $3)
-		ON CONFLICT (org_id) DO UPDATE SET
-			allowed_domains = EXCLUDED.allowed_domains,
-			default_groups = EXCLUDED.default_groups,
-			updated_at = now()`, orgID, d, splitList(groups)); err != nil {
+	if err := store.SetSignupRule(ctx, conn, store.SignupRule{OrgID: orgID, AllowedDomains: d,
+		DefaultGroups: splitList(groups), RequireVerify: verify, RequireApproval: approval}); err != nil {
 		return err
 	}
 	if len(d) == 0 {
@@ -6180,18 +8044,38 @@ func signupEnable(ctx context.Context, conn *pgx.Conn, orgID, domains, groups st
 	if g := splitList(groups); len(g) > 0 {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(g, ", "))
 	}
+	printSignupVerify(verify)
+	printSignupApproval(approval)
 	return nil
+}
+
+// printSignupApproval says whether a new account waits for an administrator.
+func printSignupApproval(approval bool) {
+	if approval {
+		fmt.Println("  a new account waits, pending, until an administrator approves it with " +
+			"`signari user approve` or the Admin API")
+	}
+}
+
+// printSignupVerify says what the rule asks of a new account's address.
+func printSignupVerify(verify bool) {
+	if verify {
+		fmt.Println("  a new account proves its address with a code before its first sign-in")
+		return
+	}
+	fmt.Println("  a new account signs in on an address nobody has proved, and its tokens say " +
+		"email_verified: false; a domain in the rule is then only what people typed")
 }
 
 func signupDisable(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
-	tag, err := conn.Exec(ctx, `DELETE FROM core.signup_rules WHERE org_id = $1::uuid`, orgID)
+	was, err := store.RemoveSignupRule(ctx, conn, orgID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if !was {
 		fmt.Println("self-signup was already off")
 		return nil
 	}
@@ -6204,11 +8088,11 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		return fmt.Errorf("give -org")
 	}
 	var domains, groups []string
-	var verify bool
+	var verify, approval bool
 	err := conn.QueryRow(ctx, `
-		SELECT allowed_domains, default_groups, require_verified_email
+		SELECT allowed_domains, default_groups, require_verified_email, require_approval
 		  FROM core.signup_rules WHERE org_id = $1::uuid`, orgID).
-		Scan(&domains, &groups, &verify)
+		Scan(&domains, &groups, &verify, &approval)
 	if err != nil {
 		fmt.Println("self-signup is off; accounts are created by invitation or by an administrator")
 		return nil
@@ -6221,91 +8105,137 @@ func signupShow(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if len(groups) > 0 {
 		fmt.Printf("  new accounts join: %s\n", strings.Join(groups, ", "))
 	}
+	printSignupVerify(verify)
+	printSignupApproval(approval)
 	return nil
 }
 
+// outpostError says a refused outpost write in the command's own terms: a
+// search group on an outpost that never searches, or naming no group in the
+// organisation, which would read as granted while matching nobody.
+func outpostError(err error, name, kind, group string) error {
+	switch {
+	case errors.Is(err, store.ErrOutpostKind):
+		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy, desktop or pdp. The token is "+
+			"bound to one protocol, so a leaked token costs that protocol rather "+
+			"than all of them (got %q)", kind)
+	case errors.Is(err, store.ErrSearchGroupNotLDAP):
+		return fmt.Errorf("-search-group: %w", err)
+	case errors.Is(err, store.ErrSearchGroupUnknown):
+		return fmt.Errorf("no group named %q in that organisation; create it with "+
+			"`signari group create` first", group)
+	case errors.Is(err, store.ErrOutpostExists):
+		return fmt.Errorf("an outpost called %q already exists in that organisation", name)
+	case errors.Is(err, store.ErrOutpostUnknown):
+		return fmt.Errorf("no outpost called %q in that organisation; `signari outpost list` shows them", name)
+	}
+	return err
+}
+
 // outpostCreate issues a token for a remote protocol server.
-func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind string) error {
+func outpostCreate(ctx context.Context, conn *pgx.Conn, orgID, name, kind, searchGroup string) error {
 	switch {
 	case orgID == "":
 		return fmt.Errorf("give -org")
 	case name == "":
 		return fmt.Errorf("give -name, something that identifies where this outpost runs")
 	}
-	switch kind {
-	case "ldap", "radius", "proxy", "desktop", "pdp":
-	default:
-		return fmt.Errorf("give -kind-outpost: ldap, radius, proxy, desktop or pdp. The token is "+
-			"bound to one protocol, so a leaked token costs that protocol rather "+
-			"than all of them (got %q)", kind)
-	}
-
-	token, hash, err := store.NewInvitationToken() // same 32-byte shape
+	_, token, err := store.CreateOutpost(ctx, conn, orgID, name, kind, searchGroup)
 	if err != nil {
-		return err
-	}
-	var id string
-	if err := conn.QueryRow(ctx, `
-		INSERT INTO core.outposts (org_id, name, kind, token_hash)
-		VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
-		orgID, name, kind, hash).Scan(&id); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("an outpost called %q already exists in that organisation", name)
-		}
-		return err
+		return outpostError(err, name, kind, searchGroup)
 	}
 
 	fmt.Printf("outpost %s (%s)\n\n", name, kind)
 	fmt.Printf("  SIGNARI_OUTPOST_TOKEN=%s\n\n", token)
-	fmt.Println("Run it where the protocol is needed, with NO database credentials:")
-	fmt.Printf("  signari outpost run -core https://<this engine> \\\n")
-	fmt.Printf("    -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost %s \\\n", kind)
-	if kind == "ldap" {
-		fmt.Printf("    -addr :389 -ldap-base-dn dc=example,dc=com\n")
-	} else {
-		fmt.Printf("    -addr :1812\n")
+	switch kind {
+	case "ldap", "radius":
+		fmt.Println("Run it where the protocol is needed, with NO database credentials:")
+		fmt.Printf("  signari outpost run -core https://<this engine> \\\n")
+		fmt.Printf("    -outpost-token $SIGNARI_OUTPOST_TOKEN -kind-outpost %s \\\n", kind)
+		if kind == "ldap" {
+			fmt.Printf("    -tls-cert ldap.pem -tls-key ldap-key.pem -ldap-base-dn dc=example,dc=com\n")
+		} else {
+			fmt.Printf("    -radius-clients devices.conf\n")
+		}
+	case "desktop":
+		fmt.Println("Give it to the credential provider or PAM module; there is nothing to run.")
+	case "pdp":
+		fmt.Println("Give it to the application that asks the evaluation API; there is nothing to run.")
+	default:
+		fmt.Println("There is nothing to run: a reverse proxy asks /proxy/verify itself.")
 	}
 	fmt.Println("\nThe token is shown once. It is stored hashed.")
-	fmt.Println("It verifies passwords and nothing else: it cannot change anything,")
+	fmt.Println("It does this outpost's one job and nothing else: it cannot change anything,")
 	fmt.Println("mint a session, or be used for a different protocol.")
 	return nil
 }
 
-func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
-	if orgID == "" {
-		return fmt.Errorf("give -org")
-	}
-	rows, err := conn.Query(ctx, `
-		SELECT name, kind, enabled, last_seen_at, COALESCE(last_seen_ip,'')
-		  FROM core.outposts WHERE org_id = $1::uuid ORDER BY name`, orgID)
+func outpostList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		var name, kind, ip string
-		var enabled bool
-		var seen *time.Time
-		if err := rows.Scan(&name, &kind, &enabled, &seen, &ip); err != nil {
-			return err
-		}
+	if orgID == "" {
+		return fmt.Errorf("give -org")
+	}
+	outposts, err := store.Outposts(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, o := range outposts {
 		state := "enabled"
-		if !enabled {
+		switch {
+		case !o.Enabled:
 			state = "DISABLED"
+		case o.Stale(now):
+			state = "STALE"
 		}
 		last := "never called"
-		if seen != nil {
-			last = fmt.Sprintf("last seen %s ago from %s",
-				time.Since(*seen).Round(time.Second), ip)
+		if o.LastSeenAt != nil {
+			last = fmt.Sprintf("last seen %s ago from %s", now.Sub(*o.LastSeenAt).Round(time.Second), o.LastSeenIP)
 		}
-		fmt.Printf("  %-20s %-7s %-9s %s\n", name, kind, state, last)
-		n++
+		if o.Version != "" {
+			last += ", running " + o.Version
+		}
+		search := ""
+		if o.Kind == "ldap" {
+			search = "search: own entry only"
+			if o.SearchGroup != "" {
+				search = "search: members of " + o.SearchGroup
+			}
+		}
+		out.add(map[string]any{"name": o.Name, "kind": o.Kind, "enabled": o.Enabled, "search_group": o.SearchGroup,
+			"last_seen_at": utcPtr(o.LastSeenAt), "last_seen_ip": o.LastSeenIP, "version": o.Version,
+			"stale": o.Stale(now)})
+		if out.text() {
+			fmt.Printf("  %-20s %-7s %-9s %-36s %s\n", o.Name, o.Kind, state, search, last)
+		}
 	}
-	if n == 0 {
+	if len(outposts) == 0 && out.text() {
 		fmt.Println("  no outposts registered")
 	}
-	return rows.Err()
+	return out.flush()
+}
+
+// outpostSetSearchGroup sets or clears whose members may search the whole
+// directory through an LDAP outpost. Takes effect on the next request, since
+// the core reads it per call; the outpost reads it at start, so restart it too.
+func outpostSetSearchGroup(ctx context.Context, conn *pgx.Conn, orgID, name, group string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("give -org and -name")
+	}
+	if err := store.SetOutpostSearchGroup(ctx, conn, orgID, name, group); err != nil {
+		return outpostError(err, name, "", group)
+	}
+	if group == "" {
+		fmt.Printf("outpost %s: each person sees only their own entry\n", name)
+	} else {
+		fmt.Printf("outpost %s: members of %s may search the whole directory\n", name, group)
+	}
+	fmt.Println("The core applies this from its next request. Restart the outpost so it")
+	fmt.Println("decides with the same value.")
+	return nil
 }
 
 // outpostRun serves a protocol against a remote core.
@@ -6313,7 +8243,7 @@ func outpostList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // No database handle exists in this process. That is the entire point: the
 // machine running this can sit in a DMZ, a branch office or an airgapped
 // segment, and a compromise of it does not yield the directory.
-func outpostRun(core, token, kind, addr, baseDN string) error {
+func outpostRun(core, token, kind, addr, baseDN, tlsCert, tlsKey string, ldapInsecure bool, radiusClients string) error {
 	if kind == "" {
 		return fmt.Errorf("give -kind-outpost: ldap or radius")
 	}
@@ -6324,6 +8254,7 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 	if err != nil {
 		return err
 	}
+	client.Identify(version)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -6334,9 +8265,22 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 	if err := client.Check(ctx); err != nil {
 		return err
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if client.Kind() != kind {
+		return fmt.Errorf("this token was issued for a %s outpost, and it is bound to that protocol: "+
+			"`signari outpost create` issues one for %s", client.Kind(), kind)
+	}
+	log, err := logging.New(os.Stderr, os.Getenv)
+	if err != nil {
+		return err
+	}
 	log.Info("outpost registered with the core", "name", client.Name(), "kind", kind,
 		"core", core)
+	// Named and not refused: a core and its outposts are not upgraded in one
+	// moment, and this much difference is what a rolling upgrade looks like.
+	if theirs := client.CoreVersion(); theirs != "" && version != "" && theirs != version {
+		log.Warn("this outpost and its core are different releases", "outpost", version, "core", theirs)
+	}
+	go client.Heartbeat(ctx, store.OutpostHeartbeat, log)
 
 	switch kind {
 	case "ldap":
@@ -6345,27 +8289,78 @@ func outpostRun(core, token, kind, addr, baseDN string) error {
 				"there is no safe default")
 		}
 		if addr == ":8080" {
-			addr = ":389"
+			addr = ":636"
+			if ldapInsecure {
+				addr = ":389"
+			}
+		}
+		// The search group is the registration's, which the core enforces
+		// whatever this process believes. An environment value that says
+		// otherwise is named rather than obeyed.
+		if env := os.Getenv("SIGNARI_LDAP_SEARCH_GROUP"); env != "" && env != client.SearchGroup() {
+			log.Warn("SIGNARI_LDAP_SEARCH_GROUP is ignored on an outpost: the core enforces the "+
+				"search group recorded on its registration; set it with `signari outpost search-group`",
+				"environment", env, "registration", client.SearchGroup())
 		}
 		srv := ldapd.New(ldapd.Config{
-			BaseDN:      baseDN,
-			UserAttr:    envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
-			MaxResults:  500,
-			ReadTimeout: 30 * time.Second,
+			BaseDN:       baseDN,
+			UserAttr:     envOr("SIGNARI_LDAP_USER_ATTR", "uid"),
+			MaxResults:   500,
+			ReadTimeout:  30 * time.Second,
+			SearchGroup:  client.SearchGroup(),
+			POSIX:        os.Getenv("SIGNARI_LDAP_POSIX") == "1",
+			HomeTemplate: envOr("SIGNARI_LDAP_POSIX_HOME", "/home/{username}"),
+			LoginShell:   envOr("SIGNARI_LDAP_POSIX_SHELL", "/bin/bash"),
 		}, client, log)
-		ln, err := net.Listen("tcp", addr)
+		ln, err := outpost.ListenLDAP(addr, tlsCert, tlsKey, ldapInsecure)
 		if err != nil {
 			return err
 		}
-		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN)
+		if ldapInsecure {
+			log.Warn("LDAP outpost is listening WITHOUT TLS, as -ldap-insecure asked: "+
+				"every bind sends a password in the clear", "addr", addr)
+		}
+		log.Info("LDAP outpost listening", "addr", addr, "base_dn", baseDN, "tls", !ldapInsecure)
 		return srv.Serve(ctx, ln)
 	case "radius":
-		return fmt.Errorf("the RADIUS outpost needs its shared secrets, which are " +
-			"per network device and are not carried by the outpost token. Configure " +
-			"them locally and this will start; see docs/outposts.md")
+		return outpostRunRADIUS(ctx, client, addr, radiusClients, log)
+	case "desktop":
+		return fmt.Errorf("nothing runs a desktop outpost: its token is given to the credential provider or " +
+			"PAM module, which asks POST /outpost/desktop itself; see docs/desktop-login.md")
+	case "pdp":
+		return fmt.Errorf("nothing runs a decision outpost: its token is given to the application that asks " +
+			"the evaluation API; see docs/authorization.md")
 	default:
-		return fmt.Errorf("-kind-outpost %q cannot be run yet", kind)
+		return fmt.Errorf("nothing runs a %s outpost: a reverse proxy anywhere can already ask /proxy/verify, "+
+			"which is an HTTP endpoint; see docs/outposts.md", kind)
 	}
+}
+
+// outpostRunRADIUS answers Access-Requests for the devices in a local file, asking
+// the core about each password.
+func outpostRunRADIUS(ctx context.Context, client *outpost.Client, addr, clientsFile string, log *slog.Logger) error {
+	if clientsFile == "" {
+		return fmt.Errorf("give -radius-clients: a file of `name network secret` lines, one for each " +
+			"device. A device's secret is not carried by the outpost token; see docs/outposts.md")
+	}
+	devices, err := outpost.ReadRADIUSClients(clientsFile)
+	if err != nil {
+		return err
+	}
+	srv, err := radius.New(radius.Config{Clients: devices}, outpost.RADIUS{Client: client}, log)
+	if err != nil {
+		return err
+	}
+	if addr == ":8080" {
+		addr = ":1812"
+	}
+	conn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	log.Info("RADIUS outpost listening", "addr", addr, "devices", len(devices))
+	return srv.Serve(ctx, conn)
 }
 
 // clientSetHybrid permits response_type "code id_token" for one client.
@@ -6378,25 +8373,13 @@ func clientSetHybrid(ctx context.Context, conn *pgx.Conn, clientID, reviewBy str
 			"Hybrid exists here for applications being migrated in; an exemption " +
 			"with no date on it is a permanent one that nobody decided to make")
 	}
-	if _, err := time.Parse("2006-01-02", reviewBy); err != nil {
-		return fmt.Errorf("-review-by must be YYYY-MM-DD (got %q)", reviewBy)
-	}
 	// response_types is updated alongside the flag rather than left to disagree
-	// with it. Two switches for one decision means an operator turns on the one
-	// they found and gets refused by the one they did not.
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients
-		   SET allow_hybrid = true,
-		       hybrid_review_by = $2::date,
-		       response_types = (
-		           SELECT array_agg(DISTINCT rt)
-		             FROM unnest(response_types || ARRAY['code id_token']) AS rt)
-		 WHERE client_id = $1`, clientID, reviewBy)
-	if err != nil {
+	// with it, by store.SetClientHybrid, which the Admin API shares (6.03).
+	if err := store.SetClientHybrid(ctx, conn, clientID, true, reviewBy); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	fmt.Printf("%s may now use response_type \"code id_token\"\n", clientID)
 	fmt.Printf("  review by %s\n", reviewBy)
@@ -6546,7 +8529,7 @@ func kindNamesForHelp() []string {
 // reconciliation above them is the same one SCIM targets use, which is why
 // adding them was a day rather than a quarter.
 func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
-	credsFile, impersonate, domain, onDeactivate string, dryRun bool) error {
+	credsFile, impersonate, domain, onDeactivate string, dryRun, recreateMissing bool) error {
 
 	switch {
 	case orgID == "":
@@ -6577,42 +8560,21 @@ func provisionAdd(ctx context.Context, conn *pgx.Conn, orgID, slug, name, kind,
 	if err != nil {
 		return fmt.Errorf("reading the credentials: %w", err)
 	}
-	// Parsed now rather than at first sync, so a wrong file is a message here
-	// instead of a cron job failing quietly at 3am.
-	switch kind {
-	case "google":
-		if _, perr := directory.ParseGoogleCredentials(raw); perr != nil {
-			return perr
-		}
-	case "entra":
-		if _, perr := directory.ParseEntraCredentials(raw); perr != nil {
-			return perr
-		}
+	// Parsed now rather than at first sync (provision.TargetSpec.Validate),
+	// so a wrong file is a message here instead of a cron job failing
+	// quietly at 3am.
+	spec := provision.TargetSpec{Kind: kind, Slug: slug, Name: name, Credentials: raw, Impersonate: impersonate,
+		Domain: domain, OnDeactivate: onDeactivate, DryRun: dryRun, RecreateMissing: recreateMissing}
+	if err := spec.Validate(); err != nil {
+		return err
 	}
-
+	onDeactivate = spec.OnDeactivate
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
-	sealed, err := root.Seal(raw, "provision_credentials")
-	if err != nil {
-		return err
-	}
-	if onDeactivate == "" {
-		onDeactivate = "deactivate"
-	}
-	if name == "" {
-		name = slug
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.scim_targets
-			(org_id, slug, display_name, kind, credentials_enc, impersonate,
-			 target_domain, base_url, token, on_deactivate, dry_run)
-		VALUES ($1::uuid, $2, $3, $4, $5, NULLIF($6,''), NULLIF($7,''), '', '', $8, $9)`,
-		orgID, slug, name, kind, sealed, impersonate, domain,
-		onDeactivate, dryRun); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+	if err := provision.AddTarget(ctx, conn, root, orgID, spec); err != nil {
+		if errors.Is(err, provision.ErrTargetExists) {
 			return fmt.Errorf("a target called %q already exists", slug)
 		}
 		return err
@@ -6732,7 +8694,27 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		orgID = f.Org
 	}
 	if orgID == "" {
-		return fmt.Errorf("give -org, or set `org:` in the file")
+		// The only organisation there is, as `user create` and `client create` take
+		// it: a first run's file, applied before anybody knows the id bootstrap gave
+		// it. Unlike them, none is made when there is none, since a plan writes
+		// nothing.
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*), COALESCE(min(id::text), '') FROM core.organizations`).
+			Scan(&n, &orgID); err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("give -org, or set `org:` in the file: this database holds %d organisations", n)
+		}
+	}
+	// Secrets the file names by reference are read here, where it is applied
+	// from; the plan compares each with the one held.
+	if err := f.ResolveSecrets(localSecret(path)); err != nil {
+		return err
+	}
+	root, err := rootKeyIfGiven()
+	if err != nil {
+		return err
 	}
 
 	tx, err := conn.Begin(ctx)
@@ -6741,7 +8723,7 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	plan, err := config.BuildPlan(ctx, tx, orgID, f, prune)
+	plan, err := config.BuildPlanWith(ctx, tx, orgID, f, prune, config.Options{Root: root})
 	if err != nil {
 		return err
 	}
@@ -6765,7 +8747,8 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		if !prune {
 			fmt.Println("Anything not in the file was left alone; -prune would delete it.")
 		}
-		return nil
+		// Exit 3, so a pipeline running plan can tell drift from a failure.
+		return errDrift
 	}
 
 	if plan.Empty() {
@@ -6778,6 +8761,13 @@ func configPlan(ctx context.Context, conn *pgx.Conn, orgID, path string,
 		return err
 	}
 	fmt.Println("\napplied")
+	if len(plan.Minted) > 0 {
+		// After the commit, so a secret shown is one that exists.
+		fmt.Println("\n  Secrets and tokens minted, shown this once; give each to what it names:")
+		for _, m := range plan.Minted {
+			fmt.Printf("    %s %s: %s\n", m.Kind, m.Name, m.Secret)
+		}
+	}
 	return nil
 }
 
@@ -6813,37 +8803,32 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 		d.Slug = slug
 	}
 
-	p := prompts.Prompt{Slug: d.Slug, Title: d.Title, Body: d.Body, Fields: d.Fields}
-	// Validated before it is stored. A prompt that cannot be answered is shown
-	// on every sign-in forever, and the person who notices is every user.
-	if err := p.Validate(); err != nil {
-		return err
-	}
 	once := true
 	if d.Once != nil {
 		once = *d.Once
 	}
-
-	fields, err := json.Marshal(d.Fields)
+	// Validated before it is stored, by the writer the Admin API shares: a
+	// prompt that cannot be answered is shown on every sign-in forever, and the
+	// person who notices is every user.
+	version, asked, err := store.SavePrompt(ctx, conn, orgID, store.PromptDefinition{Slug: d.Slug,
+		Title: d.Title, Body: d.Body, Once: once, Order: d.Order, Fields: d.Fields})
 	if err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.prompts (org_id, slug, title, body, fields, once, position)
-		VALUES ($1::uuid, $2, $3, NULLIF($4,''), $5, $6, $7)
-		ON CONFLICT (org_id, slug) DO UPDATE SET
-			title = EXCLUDED.title, body = EXCLUDED.body, fields = EXCLUDED.fields,
-			once = EXCLUDED.once, position = EXCLUDED.position, updated_at = now()`,
-		orgID, d.Slug, d.Title, d.Body, fields, once, d.Order); err != nil {
-		return err
-	}
 
-	fmt.Printf("prompt %s\n", d.Slug)
+	fmt.Printf("prompt %s, version %d\n", d.Slug, version)
+	if asked > 0 && once {
+		fmt.Printf("  %d person(s) who answered an earlier version will be asked again; their\n"+
+			"  earlier answers are kept\n", asked)
+	}
 	fmt.Printf("  %s\n", d.Title)
 	for _, f := range d.Fields {
 		req := ""
 		if f.Required {
 			req = " (required)"
+		}
+		if f.Attribute != "" {
+			req += " -> attribute " + f.Attribute
 		}
 		fmt.Printf("    %-10s %s%s\n", f.Type, f.Label, req)
 	}
@@ -6857,13 +8842,20 @@ func promptSet(ctx context.Context, conn *pgx.Conn, orgID, slug, path string) er
 	return nil
 }
 
-func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func promptList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("give -org")
 	}
+	// People, not rows: answers are kept per version (5.13), so a person who
+	// answered three versions has three rows and is one person.
 	rows, err := conn.Query(ctx, `
-		SELECT p.slug, p.title, p.once, p.enabled,
-		       (SELECT count(*) FROM core.prompt_responses r WHERE r.prompt_id = p.id)
+		SELECT p.slug, p.title, p.once, p.enabled, p.version,
+		       (SELECT count(DISTINCT r.user_id) FROM core.prompt_responses r
+		         WHERE r.prompt_id = p.id AND r.prompt_version = p.version)
 		  FROM core.prompts p WHERE p.org_id = $1::uuid
 		 ORDER BY p.position, p.slug`, orgID)
 	if err != nil {
@@ -6874,10 +8866,17 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	for rows.Next() {
 		var slug, title string
 		var once, enabled bool
-		var answered int
-		if err := rows.Scan(&slug, &title, &once, &enabled, &answered); err != nil {
+		var version, answered int
+		if err := rows.Scan(&slug, &title, &once, &enabled, &version, &answered); err != nil {
 			return err
 		}
+		n++
+		out.add(map[string]any{"slug": slug, "title": title, "version": version, "enabled": enabled,
+			"once": once, "answered": answered})
+		if !out.text() {
+			continue
+		}
+		title = fmt.Sprintf("%s (v%d)", title, version)
 		state := "enabled"
 		if !enabled {
 			state = "disabled"
@@ -6888,12 +8887,14 @@ func promptList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		}
 		fmt.Printf("  %-18s %-30s %-9s %-14s %d answered\n",
 			slug, title, state, mode, answered)
-		n++
 	}
-	if n == 0 {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 && out.text() {
 		fmt.Println("  no prompts")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // kerberosPrincipals lists what the realm holds, without changing anything.
@@ -6915,8 +8916,14 @@ func kerberosPrincipals(ctx context.Context, realm, adminPrincipal, keytabPath s
 // A dry run unless -apply, like every other sync here. It never deletes: a
 // principal that has gone from the realm is a leaver, and what happens to a
 // leaver's account is a policy decision rather than something a listing decides.
+//
+// Somebody already here is left alone unless adopt: then a person with no password
+// here and a migration never begun is marked pending too, so the realm password signs
+// them in as a ticket for the same principal already does (8.11). A local password
+// is never sent to the realm, so its holder is not adopted, and a finished migration
+// stays finished.
 func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
-	adminPrincipal, keytabPath string, apply bool) error {
+	adminPrincipal, keytabPath string, apply, adopt bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -6926,21 +8933,48 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 	if err != nil {
 		return err
 	}
+	return syncRealmPeople(ctx, conn, orgID, realm, names, apply, adopt)
+}
 
+// syncRealmPeople is kerberosSync once kadmin has listed the realm's people: what it
+// creates and adopts from a list of principals, apart so a test can give it one.
+func syncRealmPeople(ctx context.Context, conn *pgx.Conn, orgID, realm string, names []string,
+	apply, adopt bool) error {
 	cfg := kerberos.Config{Realm: realm}
-	created, existing := 0, 0
+	created, existing, adopted := 0, 0, 0
 	for _, n := range names {
 		email, merr := cfg.UsernameFor(n + "@" + strings.ToUpper(realm))
 		if merr != nil {
 			fmt.Printf("  skipped %s: %v\n", n, merr)
 			continue
 		}
-		var found bool
+		var userID string
+		var adoptable bool
 		if err := conn.QueryRow(ctx, `
-			SELECT true FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
-			orgID, email).Scan(&found); err == nil && found {
+			SELECT u.id::text, u.migration_state = 'none'
+			       AND NOT EXISTS (SELECT 1 FROM core.password_credentials pc WHERE pc.user_id = u.id)
+			  FROM core.users u WHERE u.org_id = $1::uuid AND u.email_fold = lower($2)`,
+			orgID, email).Scan(&userID, &adoptable); err == nil {
 			existing++
+			if !adopt || !adoptable {
+				continue
+			}
+			adopted++
+			if !apply {
+				fmt.Printf("  would mark %s pending\n", email)
+				continue
+			}
+			if _, err := conn.Exec(ctx, `
+				UPDATE core.users SET migration_state = 'pending', updated_at = now()
+				 WHERE id = $1::uuid AND migration_state = 'none'
+				   AND NOT EXISTS (SELECT 1 FROM core.password_credentials pc WHERE pc.user_id = core.users.id)`,
+				userID); err != nil {
+				return fmt.Errorf("marking %s pending: %w", email, err)
+			}
+			fmt.Printf("  marked %s pending\n", email)
 			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("looking for %s: %w", email, err)
 		}
 		created++
 		if !apply {
@@ -6950,9 +8984,11 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 		// No password credential. The account authenticates against the realm --
 		// by SPNEGO or by the password backend -- and inventing a local password
 		// for it would be a second way in that nobody chose.
+		//
+		// Pending, which is what has a `kerberos` migration source asked about them.
 		if _, err := conn.Exec(ctx, `
-			INSERT INTO core.users (org_id, user_handle, email)
-			VALUES ($1::uuid, decode(repeat(md5(random()::text),4),'hex'), $2)
+			INSERT INTO core.users (org_id, user_handle, email, migration_state)
+			VALUES ($1::uuid, decode(repeat(md5(random()::text),4),'hex'), $2, 'pending')
 			ON CONFLICT DO NOTHING`, orgID, email); err != nil {
 			return fmt.Errorf("creating %s: %w", email, err)
 		}
@@ -6960,7 +8996,10 @@ func kerberosSync(ctx context.Context, conn *pgx.Conn, orgID, realm,
 	}
 
 	fmt.Printf("\n  %d already here, %d to create\n", existing, created)
-	if !apply && created > 0 {
+	if adopt {
+		fmt.Printf("  %d of those already here marked pending (-adopt-existing)\n", adopted)
+	}
+	if !apply && (created > 0 || adopted > 0) {
 		fmt.Println("\nNothing was changed. Re-run with -apply.")
 	}
 	fmt.Println("\nAccounts are created without a local password: they authenticate")
@@ -7019,8 +9058,71 @@ func eventsSubscribe(ctx context.Context, conn *pgx.Conn,
 	return nil
 }
 
+// eventsChange removes, rotates the secret of, re-enables or sends a test
+// delivery to the subscription a name picks out. docs/events.md promised the
+// first two and neither existed: an operator who lost a secret could only drop
+// the row by hand, and a subscription switched off after ten failures stayed off.
+func eventsChange(ctx context.Context, conn *pgx.Conn, orgID, name, action string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("-org and -name are required")
+	}
+	var root *keys.RootKey
+	if action == "rotate" {
+		var err error
+		if root, err = rootKey(); err != nil {
+			return fmt.Errorf("the signing secret is sealed with the root key: %w", err)
+		}
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var said string
+	switch action {
+	case "remove":
+		removed, err := store.RemoveSubscription(ctx, tx, orgID, name)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			return fmt.Errorf("no subscription named %q in this organisation", name)
+		}
+		said = fmt.Sprintf("removed subscription %q; nothing more is delivered to it\n", name)
+	case "rotate":
+		secret, err := store.RotateSubscriptionSecret(ctx, tx, root, orgID, name)
+		if err != nil {
+			return err
+		}
+		said = fmt.Sprintf("rotated the signing secret of %q; the old one no longer verifies.\n\n"+
+			"  signing secret (shown once, store it now):\n    %s\n", name, secret)
+	case "enable":
+		if err := store.EnableSubscription(ctx, tx, orgID, name); err != nil {
+			return err
+		}
+		said = fmt.Sprintf("enabled %q. Events recorded while it was off are not sent.\n", name)
+	case "test":
+		id, err := store.SendTestEvent(ctx, tx, orgID, name)
+		if err != nil {
+			return err
+		}
+		said = fmt.Sprintf("queued a %s delivery to %q, id %s; `signari events list` shows "+
+			"whether it arrived\n", store.TestEventType, name, id)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Print(said)
+	return nil
+}
+
 // eventsList shows subscriptions and how their deliveries are going.
-func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func eventsList(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
@@ -7049,6 +9151,11 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"name": name, "url": url, "enabled": enabled, "disabled_reason": why,
+			"event_types": types, "delivered": delivered, "outstanding": outstanding})
+		if !out.text() {
+			continue
+		}
 		state := "enabled"
 		if !enabled {
 			state = "DISABLED"
@@ -7063,16 +9170,19 @@ func eventsList(ctx context.Context, conn *pgx.Conn, orgID string) error {
 			fmt.Printf("  reason: %s\n", why)
 		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no event subscriptions")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // authzModelSet parses a model, runs its own tests, and stores it.
 func authzModelSet(ctx context.Context, conn *pgx.Conn, orgID, file string) error {
 	if orgID == "" || file == "" {
-		return fmt.Errorf("-org and -file are both required")
+		return fmt.Errorf("-org and -model-file are both required")
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -7095,6 +9205,36 @@ func authzModelSet(ctx context.Context, conn *pgx.Conn, orgID, file string) erro
 	}
 	fmt.Printf("model stored: %d type(s), %d action(s), %d test(s) passed\n",
 		types, actions, len(m.Tests))
+	return nil
+}
+
+// authzTest checks a model file with no database, in CI, by the parse that storing
+// it would run: so "it passes here" and "it will load" are the same statement.
+func authzTest(path string) error {
+	if path == "" {
+		return fmt.Errorf("give -model-file, the model to check")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	m, err := authzen.ParseModel(data)
+	if err != nil {
+		return err
+	}
+	actions := 0
+	for _, t := range m.Types {
+		actions += len(t.Permissions)
+	}
+	fmt.Printf("  %s: %d type(s), %d action(s)\n", path, len(m.Types), actions)
+	for i, tc := range m.Tests {
+		name := tc.Name
+		if name == "" {
+			name = fmt.Sprintf("test %d", i+1)
+		}
+		fmt.Printf("    ok   %s\n", name)
+	}
+	fmt.Println("\n  This file will load. Its permissions do what its tests say.")
 	return nil
 }
 
@@ -7124,7 +9264,76 @@ func splitRef(flag, ref string) (typ, id string, err error) {
 	return typ, id, nil
 }
 
-func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string) error {
+// grantExpiry turns -expires-in into the moment a grant ends; nil for good.
+func grantExpiry(expiresIn time.Duration) (*time.Time, error) {
+	if expiresIn < 0 {
+		return nil, fmt.Errorf("-expires-in must not be negative: a grant that has already ended grants nothing")
+	}
+	if expiresIn == 0 {
+		return nil, nil
+	}
+	at := time.Now().Add(expiresIn).UTC()
+	return &at, nil
+}
+
+func authzDelegate(ctx context.Context, conn *pgx.Conn, orgID, grantee, object, relations string) error {
+	if orgID == "" || grantee == "" || object == "" || relations == "" {
+		return fmt.Errorf("-org, -grantee-org, -object and -relations are all required")
+	}
+	if orgID == grantee {
+		return fmt.Errorf("an organisation already holds what it owns")
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	id, err := store.NewRelationDelegation(ctx, conn, store.RelationDelegation{OrgID: orgID, GranteeOrgID: grantee,
+		ObjectType: otyp, ObjectID: oid, Relations: splitList(relations)})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("delegation %s\n", id)
+	return nil
+}
+
+func authzDelegations(ctx context.Context, conn *pgx.Conn, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	got, err := store.RelationDelegationsOf(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Println("no delegations")
+		return nil
+	}
+	for _, d := range got {
+		fmt.Printf("%s  %s:%s  %s  owned by %s, handed out by %s\n", d.ID, d.ObjectType, d.ObjectID,
+			strings.Join(d.Relations, ","), d.OrgID, d.GranteeOrgID)
+	}
+	return nil
+}
+
+func authzUndelegate(ctx context.Context, conn *pgx.Conn, orgID, id string) error {
+	if orgID == "" || id == "" {
+		return fmt.Errorf("-org and -delegation are required")
+	}
+	d, err := store.RelationDelegationByID(ctx, conn, id)
+	if err != nil {
+		return err
+	}
+	if d == nil || d.OrgID != orgID {
+		return fmt.Errorf("the organisation that owns the objects has no such delegation")
+	}
+	if _, err := store.RemoveRelationDelegation(ctx, conn, id); err != nil {
+		return err
+	}
+	fmt.Println("removed, with everything handed out under it")
+	return nil
+}
+
+func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, object string, expiresIn time.Duration) error {
 	if orgID == "" || subject == "" || relation == "" || object == "" {
 		return fmt.Errorf("-org, -principal, -relation and -object are all required")
 	}
@@ -7136,11 +9345,19 @@ func authzGrant(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, o
 	if err != nil {
 		return err
 	}
+	expires, err := grantExpiry(expiresIn)
+	if err != nil {
+		return err
+	}
 	if err := store.GrantRelation(ctx, conn, orgID, store.Relation{
 		SubjectType: styp, SubjectID: sid, Relation: relation,
-		ObjectType: otyp, ObjectID: oid,
+		ObjectType: otyp, ObjectID: oid, ExpiresAt: expires,
 	}, ""); err != nil {
 		return err
+	}
+	if expires != nil {
+		fmt.Printf("%s is %s of %s until %s\n", subject, relation, object, expires.Format(time.RFC3339))
+		return nil
 	}
 	fmt.Printf("%s is %s of %s\n", subject, relation, object)
 	return nil
@@ -7158,11 +9375,18 @@ func authzRevoke(ctx context.Context, conn *pgx.Conn, orgID, subject, relation, 
 	if err != nil {
 		return err
 	}
-	if err := store.RevokeRelation(ctx, conn, orgID, store.Relation{
+	removed, err := store.RevokeRelation(ctx, conn, orgID, store.Relation{
 		SubjectType: styp, SubjectID: sid, Relation: relation,
 		ObjectType: otyp, ObjectID: oid,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if !removed {
+		// Said, rather than "no longer": a revoke that matched nothing is
+		// usually a misspelt reference, and the grant meant is still there.
+		fmt.Printf("%s was not %s of %s; nothing was changed\n", subject, relation, object)
+		return nil
 	}
 	fmt.Printf("%s is no longer %s of %s\n", subject, relation, object)
 	return nil
@@ -7190,57 +9414,148 @@ func authzCheck(ctx context.Context, conn *pgx.Conn, orgID, subject, action, obj
 	}
 	if m == nil {
 		return fmt.Errorf("this organisation has no authorization model, so nothing " +
-			"is permitted -- set one with `signari authz model set`")
+			"is permitted -- set one with `signari authz set-model`")
+	}
+	e, defined, err := store.Explain(ctx, conn, orgID, m, styp, sid, action, otyp, oid)
+	if err != nil {
+		return err
+	}
+	if !defined {
+		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
+	}
+	if e.Held == "" {
+		fmt.Printf("DENIED  %s may not %s %s\n  %s.%s is granted to: %s\n",
+			subject, action, object, otyp, action, strings.Join(e.Relations, ", "))
+		if len(e.Groups) > 0 {
+			fmt.Printf("  groups considered: %s\n", strings.Join(e.Groups, ", "))
+		}
+		return nil
+	}
+	if e.Refused != "" {
+		fmt.Printf("DENIED  %s may not %s %s\n  holds %s, but %s\n", subject, action, object, e.Held, e.Refused)
+		return nil
+	}
+	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s, held by %s\n", subject, action, object, e.Held, e.Via)
+	if len(e.Path) > 1 {
+		fmt.Printf("  through: %s\n", strings.Join(e.Path, " <- "))
+	}
+	if c, has := m.ConditionFor(otyp, action); has {
+		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
+			"the session and cannot be checked from here\n", c.Condition.Summary())
+	}
+	return nil
+}
+
+// authzListLimit is how many relations a listing shows before saying so.
+const authzListLimit = 1000
+
+// authzList prints the live relations of a subject, on an object, or both.
+func authzList(ctx context.Context, conn *pgx.Conn, orgID, subject, object, format string) error {
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	if subject == "" && object == "" {
+		return fmt.Errorf("give -principal, -object or both: an organisation's whole graph is not a listing")
+	}
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	var styp, sid, otyp, oid string
+	if subject != "" {
+		if styp, sid, err = splitRef("-principal", subject); err != nil {
+			return err
+		}
+	}
+	if object != "" {
+		if otyp, oid, err = splitRef("-object", object); err != nil {
+			return err
+		}
+	}
+	rows, more, err := store.ListRelations(ctx, conn, orgID, styp, sid, otyp, oid, authzListLimit)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"subject": r.Subject, "relation": r.Relation, "object": r.Object,
+			"expires_at": utcPtr(r.ExpiresAt)})
+		if out.text() {
+			until := ""
+			if r.ExpiresAt != nil {
+				until = " until " + r.ExpiresAt.UTC().Format(time.RFC3339)
+			}
+			fmt.Printf("%s is %s of %s%s\n", r.Subject, r.Relation, r.Object, until)
+		}
+	}
+	if out.text() && len(rows) == 0 {
+		fmt.Println("no relations")
+	}
+	if out.text() && more {
+		fmt.Printf("\nthe first %d; narrow it with -principal and -object\n", authzListLimit)
+	}
+	return out.flush()
+}
+
+// authzExpand says who may do something to an object: each person a decision
+// would let through on relations alone, and each subject that is not a person,
+// since those hold relations as well and no search of people finds them.
+func authzExpand(ctx context.Context, conn *pgx.Conn, orgID, action, object, format string) error {
+	if orgID == "" || action == "" || object == "" {
+		return fmt.Errorf("-org, -action and -object are all required")
+	}
+	otyp, oid, err := splitRef("-object", object)
+	if err != nil {
+		return err
+	}
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	m, err := store.LoadModel(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if m == nil {
+		return fmt.Errorf("this organisation has no authorization model, so nothing is permitted")
 	}
 	relations, defined := m.RelationsFor(otyp, action)
 	if !defined {
 		return fmt.Errorf("the model defines no action %q on %s", action, otyp)
 	}
-
-	var groups []string
-	if userID, rerr := store.ResolveSubject(ctx, conn, orgID, sid); rerr == nil && userID != "" {
-		if f, ferr := store.SubjectFacts(ctx, conn, orgID, userID, ""); ferr == nil {
-			groups = f.Groups
-		}
-	}
-	held, err := store.HoldsAny(ctx, conn, orgID, styp, sid, relations, otyp, oid, groups)
+	people, more, err := store.SubjectsWith(ctx, conn, orgID, relations, otyp, oid, authzListLimit, "")
 	if err != nil {
 		return err
 	}
-	if held == "" {
-		fmt.Printf("DENIED  %s may not %s %s\n  %s.%s is granted to: %s\n",
-			subject, action, object, otyp, action, strings.Join(relations, ", "))
-		if len(groups) > 0 {
-			fmt.Printf("  groups considered: %s\n", strings.Join(groups, ", "))
+	if out.text() {
+		fmt.Printf("%s %s is granted by: %s\n", object, action, strings.Join(relations, ", "))
+	}
+	for _, p := range people {
+		out.add(map[string]any{"subject": "user:" + p})
+		if out.text() {
+			fmt.Printf("  user:%s\n", p)
 		}
-		return nil
 	}
-	fmt.Printf("ALLOWED %s may %s %s\n  via relation: %s\n", subject, action, object, held)
-	if c, has := m.ConditionFor(otyp, action); has {
-		fmt.Printf("  NOTE: at runtime this also requires %s, which is a property of "+
-			"the session and cannot be checked from here\n", conditionSummary(c.Condition))
+	rows, _, err := store.ListRelations(ctx, conn, orgID, "", "", otyp, oid, authzListLimit)
+	if err != nil {
+		return err
 	}
-	return nil
-}
-
-func conditionSummary(c authzen.Condition) string {
-	var parts []string
-	if c.MFA {
-		parts = append(parts, "a second factor")
+	for _, r := range rows {
+		if strings.HasPrefix(r.Subject, "user:") || strings.HasPrefix(r.Subject, "group:") ||
+			!slices.Contains(relations, r.Relation) {
+			continue
+		}
+		out.add(map[string]any{"subject": r.Subject})
+		if out.text() {
+			fmt.Printf("  %s\n", r.Subject)
+		}
 	}
-	if c.DeviceManaged {
-		parts = append(parts, "a managed device")
+	if c, has := m.ConditionFor(otyp, action); has && out.text() {
+		fmt.Printf("  NOTE: each also needs %s when they ask, which only a session can show\n", c.Condition.Summary())
 	}
-	if c.DeviceCompliant {
-		parts = append(parts, "a compliant device")
+	if out.text() && more {
+		fmt.Printf("\nthe first %d\n", authzListLimit)
 	}
-	if c.MaxRisk > 0 {
-		parts = append(parts, fmt.Sprintf("risk at most %d", c.MaxRisk))
-	}
-	if len(c.AnyGroup) > 0 {
-		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
-	}
-	return strings.Join(parts, " and ")
+	return out.flush()
 }
 
 // ssfAddSource registers a transmitter we will accept events from.
@@ -7298,14 +9613,81 @@ func ssfAddSource(ctx context.Context, conn *pgx.Conn, orgID, name, issuer,
 	return nil
 }
 
+// ssfPollSource pulls a source's events from its transmitter (12.04), or with -remove
+// stops. The credential comes on standard input, so it is not in a process list.
+func ssfPollSource(ctx context.Context, conn *pgx.Conn, orgID, issuer, url, clientID string, remove bool) error {
+	switch {
+	case orgID == "" || issuer == "":
+		return fmt.Errorf("-org and -source-issuer are required")
+	case remove && (url != "" || clientID != ""):
+		return fmt.Errorf("-remove stops polling, so it takes no -url or -client-id")
+	case remove:
+		if err := store.SetSourcePoll(ctx, conn, nil, orgID, issuer, "", "", ""); err != nil {
+			return err
+		}
+		fmt.Printf("no longer polling %s\n", issuer)
+		return nil
+	case url == "":
+		return fmt.Errorf("-url is required: where the transmitter serves its queue")
+	}
+	if err := safedial.CheckURL(url); err != nil {
+		return fmt.Errorf("-url: %w", err)
+	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	secret, err := readSecretLine(os.Stdin, "Credential the transmitter issued: ")
+	if err != nil {
+		return err
+	}
+	if secret == "" {
+		return fmt.Errorf("give the credential on standard input: a transmitter's queue is about real people")
+	}
+	if err := store.SetSourcePoll(ctx, conn, root, orgID, issuer, url, clientID, secret); err != nil {
+		return err
+	}
+	fmt.Printf("polling %s every 30 seconds, starting now; `signari ssf received` shows how it goes\n", url)
+	return nil
+}
+
 // ssfReceived shows what sources have sent, and what was done about it.
-func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
 	rows, err := store.RecentReceived(ctx, conn, orgID, 50)
 	if err != nil {
 		return err
+	}
+	// Nothing received from a polled source has two causes, and only this line says which.
+	sources, err := store.Sources(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if out.text() {
+		for _, src := range sources {
+			switch {
+			case src.PollURL == "":
+			case src.LastPollError != "":
+				fmt.Printf("polling %s: %s\n", src.PollURL, src.LastPollError)
+			case src.LastPolledAt == nil:
+				fmt.Printf("polling %s: no turn yet\n", src.PollURL)
+			default:
+				fmt.Printf("polling %s: last turn %s\n", src.PollURL, src.LastPolledAt.Format("2006-01-02 15:04:05"))
+			}
+		}
+	}
+	if !out.text() {
+		for _, r := range rows {
+			out.add(map[string]any{"received_at": r.ReceivedAt.UTC(), "event_type": r.EventType,
+				"action": r.Action, "detail": r.Detail})
+		}
+		return out.flush()
 	}
 	if len(rows) == 0 {
 		fmt.Println("no events received")
@@ -7333,7 +9715,36 @@ func ssfReceived(ctx context.Context, conn *pgx.Conn, orgID string) error {
 // used in other protocols". Reusing them would tie two independent trust
 // decisions together: a relying party trusting our OIDC key to say who a user
 // is, and a federation trusting our federation key to say what this entity is.
-func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string) error {
+//
+// federationEnable makes this instance a federation entity. anchors, contacts
+// and lifetime are nil when their flag was not given, which keeps what is set:
+// they were readable and published and nothing could write them (2.30), and a
+// re-run to change the homepage must not wipe them.
+func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homepage string,
+	anchors, contacts *string, lifetime *time.Duration) error {
+	change := store.FederationChange{OrganizationName: orgName, HomepageURI: homepage, Lifetime: lifetime}
+	// §3.1.2: authority_hints "MUST NOT be the empty array"; an empty flag
+	// is refused by store.EnableFederation rather than written as [].
+	for _, h := range strings.Split(hints, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			change.AuthorityHints = append(change.AuthorityHints, h)
+		}
+	}
+	if anchors != nil {
+		l := splitList(*anchors)
+		change.TrustAnchorHints = &l
+	}
+	if contacts != nil {
+		l := splitList(*contacts)
+		change.Contacts = &l
+	}
+	// Refused before anything is loaded, so a mistyped flag says so rather
+	// than asking for the root key.
+	if err := change.Validate(); errors.Is(err, store.ErrEntityLifetime) {
+		return fmt.Errorf("-entity-lifetime: %w", err)
+	} else if err != nil {
+		return err
+	}
 	root, err := rootKey()
 	if err != nil {
 		return err
@@ -7342,90 +9753,194 @@ func federationEnable(ctx context.Context, conn *pgx.Conn, hints, orgName, homep
 	if err != nil {
 		return err
 	}
-	if err := oidfed.ValidateEntityID(issuer); err != nil {
-		return fmt.Errorf("this instance cannot be a federation entity: %w", err)
-	}
-
-	// §3.1.2: authority_hints "MUST NOT be the empty array". Absent means "Trust
-	// Anchor with no superiors", which is a real and different thing -- so an
-	// empty flag is passed through as nil rather than as [].
-	var hintList []string
-	for _, h := range strings.Split(hints, ",") {
-		if h = strings.TrimSpace(h); h != "" {
-			if err := oidfed.ValidateEntityID(h); err != nil {
-				return fmt.Errorf("authority hint %q: %w", h, err)
-			}
-			hintList = append(hintList, h)
-		}
-	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	// One key, ES256, active immediately. Rotation uses the same machinery as
-	// the protocol keys because it is the same table.
-	var existing int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM core.signing_keys
-		WHERE instance_id = $1::uuid AND purpose = 'federation' AND state = 'active'`,
-		instanceID).Scan(&existing); err != nil {
+	generated, err := store.EnableFederation(ctx, tx, root, instanceID, issuer, change)
+	if err != nil {
 		return err
-	}
-	if existing == 0 {
-		k, err := keys.Generate(keys.NewKID(), keys.ES256)
-		if err != nil {
-			return fmt.Errorf("generating the federation key: %w", err)
-		}
-		// Active immediately, not `next`.
-		//
-		// A protocol key is published as `next` first so relying parties can
-		// fetch it before it signs anything -- that staging is what makes an OIDC
-		// rotation safe. A federation entity has no such audience yet: the very
-		// first Entity Configuration is signed by this key, and a `next` key
-		// signs nothing, so staging it would publish an endpoint that answers 500.
-		//
-		// (It did, in the first version of this command. The key was saved in
-		// whatever state Generate leaves, the endpoint asked for an ACTIVE one,
-		// and the two never met.)
-		active, err := keys.WithState(k, keys.StateActive)
-		if err != nil {
-			return err
-		}
-		if err := keys.SaveFor(ctx, tx, instanceID, keys.PurposeFederation, active, root); err != nil {
-			return err
-		}
-		k = active
-		fmt.Printf("generated federation key %s (ES256)\n", k.KID())
-	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.federation_config
-			(instance_id, authority_hints, organization_name, homepage_uri)
-		VALUES ($1::uuid, $2, NULLIF($3,''), NULLIF($4,''))
-		ON CONFLICT (instance_id) DO UPDATE SET
-			authority_hints   = EXCLUDED.authority_hints,
-			organization_name = EXCLUDED.organization_name,
-			homepage_uri      = EXCLUDED.homepage_uri,
-			updated_at        = now()`,
-		instanceID, hintList, orgName, homepage); err != nil {
-		return fmt.Errorf("saving the federation configuration: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	if generated != "" {
+		fmt.Printf("generated federation key %s (ES256)\n", generated)
+	}
+	hintList := change.AuthorityHints
 
 	url, _ := oidfed.ConfigurationURL(issuer)
 	fmt.Printf("federation enabled\n  entity id : %s\n  published : %s\n", issuer, url)
 	if len(hintList) == 0 {
-		fmt.Println("  no authority_hints: this entity is published as a Trust Anchor " +
-			"with no superiors. If it has one, re-run with -authority-hints.")
+		fmt.Println("  superiors : none, so this entity is a Trust Anchor")
 	} else {
 		fmt.Printf("  superiors : %s\n", strings.Join(hintList, ", "))
 	}
 	fmt.Println("  restart `signari serve` to register the endpoint")
+	return nil
+}
+
+// federationAddSubordinate speaks for an entity (12.11). Its keys come from a file and not
+// from asking it: a Subordinate Statement is worth what the operator checked out of band.
+func federationAddSubordinate(ctx context.Context, conn *pgx.Conn, entityID, jwksFile, policyFile string,
+	maxPath *int, intermediate bool) error {
+	if entityID == "" || jwksFile == "" {
+		return fmt.Errorf("-entity-id and -jwks-file are required; take the keys from the entity itself, by a " +
+			"way that is not the address you are about to vouch for")
+	}
+	jwks, err := os.ReadFile(jwksFile)
+	if err != nil {
+		return err
+	}
+	sub := store.Subordinate{EntityID: entityID, JWKS: jwks, MaxPathLength: maxPath, Intermediate: intermediate}
+	if policyFile != "" {
+		if sub.MetadataPolicy, err = os.ReadFile(policyFile); err != nil {
+			return err
+		}
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := sub.Validate(issuer); err != nil {
+		return err
+	}
+	if err := store.SetSubordinate(ctx, conn, instanceID, sub); err != nil {
+		return err
+	}
+	fmt.Printf("%s speaks for %s from the next request\n", issuer, entityID)
+	return nil
+}
+
+// federationAddAnchor takes an anchor's word for relying parties, which land in org.
+func federationAddAnchor(ctx context.Context, conn *pgx.Conn, entityID, org, jwksFile, marks string) error {
+	if entityID == "" || org == "" || jwksFile == "" {
+		return fmt.Errorf("-entity-id, -org and -jwks-file are required; take the keys from the anchor in some " +
+			"way that is not the address you are about to trust")
+	}
+	jwks, err := os.ReadFile(jwksFile)
+	if err != nil {
+		return err
+	}
+	anchor := store.FederationAnchor{EntityID: entityID, OrgID: org, JWKS: jwks}
+	for _, mark := range strings.Split(marks, ",") {
+		if mark = strings.TrimSpace(mark); mark != "" {
+			anchor.TrustMarks = append(anchor.TrustMarks, mark)
+		}
+	}
+	if err := anchor.Validate(); err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := store.SetFederationAnchor(ctx, conn, instanceID, anchor); err != nil {
+		return err
+	}
+	fmt.Printf("relying parties %s vouches for sign in to organisation %s from the next request\n", entityID, org)
+	return nil
+}
+
+// federationAnchors lists whose word this instance takes.
+func federationAnchors(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	rows, err := store.FederationAnchors(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && out.text() {
+		fmt.Println("no trust anchors, so no relying party is admitted by a federation")
+		return nil
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"entity_id": r.EntityID, "org_id": r.OrgID, "trust_marks": r.TrustMarks})
+		if out.text() {
+			fmt.Printf("%s  organisation %s  trust marks %v\n", r.EntityID, r.OrgID, r.TrustMarks)
+		}
+	}
+	return out.flush()
+}
+
+// federationRemoveAnchor stops taking an anchor's word.
+func federationRemoveAnchor(ctx context.Context, conn *pgx.Conn, entityID string) error {
+	if entityID == "" {
+		return fmt.Errorf("-entity-id is required")
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	gone, err := store.RemoveFederationAnchor(ctx, tx, instanceID, entityID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("no longer taking %s's word; %d client(s) it admitted deleted\n", entityID, gone)
+	return nil
+}
+
+// federationSubordinates lists who this instance speaks for.
+func federationSubordinates(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	rows, err := store.Subordinates(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && out.text() {
+		fmt.Println("this instance speaks for nobody")
+		return nil
+	}
+	for _, r := range rows {
+		out.add(map[string]any{"entity_id": r.EntityID, "intermediate": r.Intermediate, "max_path_length": r.MaxPathLength,
+			"metadata_policy": len(r.MetadataPolicy) > 0})
+		if out.text() {
+			kind := "leaf"
+			if r.Intermediate {
+				kind = "intermediate"
+			}
+			fmt.Printf("%s  %s\n", r.EntityID, kind)
+		}
+	}
+	return out.flush()
+}
+
+// federationRemoveSubordinate stops speaking for an entity.
+func federationRemoveSubordinate(ctx context.Context, conn *pgx.Conn, entityID string) error {
+	if entityID == "" {
+		return fmt.Errorf("-entity-id is required")
+	}
+	instanceID, _, err := selectInstance(ctx, conn, "")
+	if err != nil {
+		return err
+	}
+	if err := store.RemoveSubordinate(ctx, conn, instanceID, entityID); err != nil {
+		return err
+	}
+	fmt.Printf("no longer speaking for %s; a statement already fetched lasts until it expires\n", entityID)
 	return nil
 }
 
@@ -7435,13 +9950,14 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-	var hints []string
+	var hints, anchors, contacts []string
 	var orgName, homepage *string
 	var lifetime int
 	if err := conn.QueryRow(ctx, `
-		SELECT authority_hints, organization_name, homepage_uri, lifetime_seconds
+		SELECT authority_hints, organization_name, homepage_uri, lifetime_seconds,
+		       trust_anchor_hints, contacts
 		FROM core.federation_config WHERE instance_id = $1::uuid`, instanceID).
-		Scan(&hints, &orgName, &homepage, &lifetime); err != nil {
+		Scan(&hints, &orgName, &homepage, &lifetime, &anchors, &contacts); err != nil {
 		return fmt.Errorf("this instance is not part of a federation -- " +
 			"run `signari federation enable`")
 	}
@@ -7461,6 +9977,12 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 	} else {
 		fmt.Printf("authority_hints %s\n", strings.Join(hints, ", "))
 	}
+	if len(anchors) > 0 {
+		fmt.Printf("trust anchors   %s\n", strings.Join(anchors, ", "))
+	}
+	if len(contacts) > 0 {
+		fmt.Printf("contacts        %s\n", strings.Join(contacts, ", "))
+	}
 	return nil
 }
 
@@ -7472,7 +9994,7 @@ func federationShow(ctx context.Context, conn *pgx.Conn) error {
 // token can do is decided HERE.
 func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID,
 	configs, credIssuer, issuer string, wantTxCode bool, txLength int,
-	ttl time.Duration) error {
+	ttl time.Duration, byReference, authorizationCode bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org, the organisation the holder belongs to")
@@ -7497,6 +10019,10 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 			"section 3.5 says a pre-authorized code MUST be short lived, and it is "+
 			"redeemed within seconds of being scanned (got %s)", ttl)
 	}
+	if wantTxCode && (txLength < 4 || txLength > 12) {
+		return fmt.Errorf("-tx-code-length must be 4 to 12 digits: shorter is guessable within the "+
+			"attempt limit, and longer is something nobody types correctly at a counter (got %d)", txLength)
+	}
 
 	// The Credential Issuer identifier the wallet will fetch metadata from.
 	//
@@ -7516,102 +10042,27 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 			"deployment is also the credential issuer", err)
 	}
 
-	// The client must exist, and must belong to this organisation. Checked now
-	// rather than at redemption, where the wallet holder would be the one to
-	// discover it — standing at a counter, with nothing to do about it.
-	var clientOrg string
-	var clientGrants []string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text, grant_types FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&clientOrg, &clientGrants); err != nil {
-		return fmt.Errorf("no client %q is registered; the offer would redeem into "+
-			"a token with no audience", clientID)
-	}
-	if clientOrg != orgID {
-		return fmt.Errorf("client %q belongs to a different organisation than the "+
-			"holder; a token minted for it would cross a tenant boundary", clientID)
-	}
-	// Checked at MINT time, not only at redemption. The person who finds out
-	// otherwise is the holder, standing wherever they scanned the QR code, with
-	// nothing they can do about it.
-	if !slices.Contains(clientGrants, oid4vci.GrantType) {
-		return fmt.Errorf("client %q is not registered for the pre-authorized code "+
-			"grant, so this offer could not be redeemed. Add it with:\n"+
-			"  signari client set-grants -client-id %s -grant-types %s",
-			clientID, clientID, oid4vci.GrantType)
-	}
-
 	var userID string
 	if err := conn.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+		WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 		orgID, strings.TrimSpace(email)).Scan(&userID); err != nil {
 		return fmt.Errorf("no user %q in that organisation", email)
 	}
 
-	code, codeHash, err := store.NewPreAuthCode()
+	// The client, its grant and the configurations are checked at mint time in
+	// store.MintCredentialOffer, as the Admin API checks them: the person who
+	// finds out otherwise is the holder, standing wherever they scanned it.
+	spec := store.OfferSpec{UserID: userID, ClientID: clientID, CredentialIssuer: ci, ConfigIDs: ids,
+		TxCode: wantTxCode, TxLength: txLength, TTL: ttl, AuthorizationCode: authorizationCode}
+	minted, err := store.MintCredentialOffer(ctx, conn, orgID, spec)
+	if errors.Is(err, store.ErrOfferClientCannotRedeem) {
+		return fmt.Errorf("%w. Give the client that grant with `signari client set-grants`", err)
+	}
 	if err != nil {
 		return err
 	}
-
-	var tx *oid4vci.TxCode
-	var txPlain string
-	var txHash []byte
-	if wantTxCode {
-		txPlain, txHash, err = store.NewTxCode(txLength)
-		if err != nil {
-			return err
-		}
-		tx = &oid4vci.TxCode{
-			InputMode: oid4vci.InputNumeric,
-			Length:    txLength,
-			Description: fmt.Sprintf("Enter the %d-digit code from the issuer",
-				txLength),
-		}
-	}
-
-	// §4.1.1: the ids "each identify one of the keys in the name/value pairs
-	// stored in the credential_configurations_supported Credential Issuer
-	// metadata". Checked here, where the configurations are reachable.
-	//
-	// Without it a typo produces a perfectly well-formed offer. The holder scans
-	// it, authenticates, redeems the pre-authorized code -- and the credential
-	// endpoint answers unsupported_credential_type, after everything they were
-	// asked to do has been done correctly. The failure is maximally late and
-	// lands on the wallet, which is the one component that did nothing wrong.
-	configured, cerr := store.CredentialConfigurations(ctx, conn, orgID)
-	if cerr != nil {
-		return fmt.Errorf("loading credential configurations: %w", cerr)
-	}
-	var unknown []string
-	for _, id := range ids {
-		if _, ok := configured[id]; !ok {
-			unknown = append(unknown, id)
-		}
-	}
-	if len(unknown) > 0 {
-		known := make([]string, 0, len(configured))
-		for id := range configured {
-			known = append(known, id)
-		}
-		sort.Strings(known)
-		if len(known) == 0 {
-			return fmt.Errorf("this organisation issues no credentials, so an offer "+
-				"naming %s could not be redeemed. Configure one first with "+
-				"`signari credential config set`", strings.Join(unknown, ", "))
-		}
-		return fmt.Errorf("no credential configuration named %s; this issuer "+
-			"advertises %s", strings.Join(unknown, ", "), strings.Join(known, ", "))
-	}
-
-	offer, err := oid4vci.BuildOffer(ci, ids, code, tx)
-	if err != nil {
-		return err
-	}
-	if err := store.NewPreAuthorizedCode(ctx, conn, orgID, userID, clientID,
-		codeHash, ids, tx, txHash, ttl); err != nil {
-		return err
-	}
+	offer, txPlain := minted.Offer, minted.TxCode
 
 	blob, err := json.Marshal(offer)
 	if err != nil {
@@ -7624,11 +10075,24 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 	fmt.Printf("  expires   : %s from now\n", ttl)
 	fmt.Printf("\n%s\n", blob)
 	// §G.7.1: the wallet is invoked with the offer by value in a query
-	// parameter. Printed rather than rendered as a QR code, because whatever
-	// puts this on a screen is the operator's own front desk software, and a
-	// terminal is not where a holder scans anything.
-	fmt.Printf("\n%s://?credential_offer=%s\n",
-		oid4vci.CredentialOfferURIScheme, url.QueryEscape(string(blob)))
+	// parameter, or by reference to where to fetch it. Printed rather than
+	// rendered as a QR code, because whatever puts this on a screen is the
+	// operator's own front desk software, and a terminal is not where a holder
+	// scans anything.
+	if byReference {
+		root, err := rootKey()
+		if err != nil {
+			return err
+		}
+		invocation, err := store.OfferByReference(ctx, conn, root, orgID, blob, ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("\n%s\n", invocation)
+	} else {
+		fmt.Printf("\n%s://?credential_offer=%s\n",
+			oid4vci.CredentialOfferURIScheme, url.QueryEscape(string(blob)))
+	}
 	if txPlain != "" {
 		// Deliberately separate from everything above. §3.5: the transaction code
 		// "MUST be sent via a different channel than the Credential Offer" —
@@ -7648,14 +10112,11 @@ func credentialOffer(ctx context.Context, conn *pgx.Conn, orgID, email, clientID
 // Listed so `client set-grants` can refuse a typo. A grant type recorded on a
 // client but never dispatched is a registration that looks like it did
 // something, and the operator finds out at the first token request.
-var knownGrantTypes = []string{
-	"authorization_code",
-	"refresh_token",
-	"client_credentials",
-	oauth.GrantTypeDeviceCode,
-	oauth.GrantTypeTokenExchange,
-	oid4vci.GrantType,
-}
+// knownGrantTypes is what the token endpoint dispatches (oauth.GrantTypes),
+// not a list of its own: one kept here lacked CIBA, the UMA ticket grant and
+// jwt-bearer, so no client could be registered for them and all three were
+// refused as unauthorized_client to everybody.
+var knownGrantTypes = oauth.GrantTypes
 
 // clientSetGrants replaces the grant types a client may use.
 //
@@ -7669,42 +10130,22 @@ func clientSetGrants(ctx context.Context, conn *pgx.Conn, clientID, grants strin
 		return fmt.Errorf("give -client-id")
 	}
 	wanted := splitList(grants)
-	if len(wanted) == 0 {
-		return fmt.Errorf("give -grant-types, comma separated. A client with no "+
-			"grant types can obtain no tokens at all; if that is what you mean, "+
-			"disable the client instead.\n  known: %s",
-			strings.Join(knownGrantTypes, ", "))
-	}
-	for _, g := range wanted {
-		if !slices.Contains(knownGrantTypes, g) {
-			return fmt.Errorf("%q is not a grant type this server dispatches. "+
-				"Recording it would look like a registration and do nothing.\n"+
-				"  known: %s", g, strings.Join(knownGrantTypes, ", "))
+	// The rules are store.SetClientGrants', which the Admin API shares (6.03).
+	if err := store.SetClientGrants(ctx, conn, clientID, wanted); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
 		}
+		return err
 	}
 	// Token exchange is authorised by its own column, because the grant type
 	// alone cannot say which audiences a client may exchange for.
 	if slices.Contains(wanted, oauth.GrantTypeTokenExchange) {
-		fmt.Printf("note: token exchange is additionally gated by may_exchange and\n" +
-			"      the client's permitted audiences; this flag does not set those.\n")
-	}
-	tag, err := conn.Exec(ctx,
-		`UPDATE core.clients SET grant_types = $2 WHERE client_id = $1`,
-		clientID, wanted)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
+		fmt.Printf("note: token exchange is authorised by its own permission and audience\n" +
+			"      list, not by this one; grant it with `signari client set-exchange`.\n")
 	}
 	fmt.Printf("client %s\n  grant types: %s\n", clientID, strings.Join(wanted, ", "))
 	return nil
 }
-
-// rarCommonFields are §2.2's common data fields, the only ones a type may
-// declare. A field outside this set could never be validated, and a registration
-// that cannot be validated is one that accepts anything.
-var rarCommonFields = []string{"locations", "actions", "datatypes", "identifier", "privileges"}
 
 // rarRegister records an RFC 9396 authorization details type.
 //
@@ -7723,34 +10164,11 @@ func rarRegister(ctx context.Context, conn *pgx.Conn, orgID, typ, fields, requir
 			"authorization_details")
 	}
 	f := splitList(fields)
-	if len(f) == 0 {
-		return fmt.Errorf("give -fields: which of %s this type uses. A type with no "+
-			"fields carries no permission and could only ever authorise nothing",
-			strings.Join(rarCommonFields, ", "))
-	}
 	req := splitList(required)
-	for _, name := range append(append([]string{}, f...), req...) {
-		if !slices.Contains(rarCommonFields, name) {
-			return fmt.Errorf("%q is not one of RFC 9396 section 2.2's common data "+
-				"fields (%s). A field outside that set cannot be validated, and this "+
-				"server refuses any field it cannot validate",
-				name, strings.Join(rarCommonFields, ", "))
-		}
-	}
-	for _, name := range req {
-		if !slices.Contains(f, name) {
-			return fmt.Errorf("-required lists %q, which is not in -fields: a type "+
-				"that requires a field it does not permit can never be satisfied", name)
-		}
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.authorization_detail_types (org_id, type, fields, required, description)
-		VALUES ($1::uuid, $2, $3, $4, NULLIF($5,''))
-		ON CONFLICT (org_id, type) DO UPDATE
-		SET fields = EXCLUDED.fields, required = EXCLUDED.required,
-		    description = EXCLUDED.description`,
-		orgID, typ, f, req, desc); err != nil {
+	// The rules -- §2.2's common fields only, every required one among them --
+	// are store.RegisterDetailType's, which the Admin API shares.
+	if err := store.RegisterDetailType(ctx, conn, orgID, store.DetailType{Type: typ, Fields: f,
+		Required: req, Description: desc}); err != nil {
 		return fmt.Errorf("registering the type: %w", err)
 	}
 
@@ -7773,27 +10191,15 @@ func rarAllow(ctx context.Context, conn *pgx.Conn, clientID, typ string) error {
 	if clientID == "" || typ == "" {
 		return fmt.Errorf("give -client-id and -type")
 	}
-	var orgID string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.authorization_detail_types
-		 WHERE type = $1 LIMIT 1`, typ).Scan(&orgID); err != nil {
-		return fmt.Errorf("no authorization details type %q is registered; run "+
-			"`signari rar register` first", typ)
-	}
-	var clientOrg string
-	if err := conn.QueryRow(ctx,
-		`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&clientOrg); err != nil {
+	// The type is looked for in the client's own organisation (0.32).
+	err := store.AllowClientDetailType(ctx, conn, clientID, typ)
+	switch {
+	case errors.Is(err, store.ErrClientNotFound):
 		return fmt.Errorf("no client %q", clientID)
-	}
-	if clientOrg != orgID {
-		return fmt.Errorf("client %q belongs to a different organisation than the "+
-			"type %q was registered in", clientID, typ)
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.client_authorization_detail_types (client_id, org_id, type)
-		VALUES ($1, $2::uuid, $3) ON CONFLICT DO NOTHING`,
-		clientID, orgID, typ); err != nil {
+	case errors.Is(err, store.ErrInvalidDetailType):
+		return fmt.Errorf("the client's organisation has no authorization details type %q; run "+
+			"`signari rar register` first", typ)
+	case err != nil:
 		return err
 	}
 	fmt.Printf("client %s may now request authorization_details of type %s\n", clientID, typ)
@@ -7801,13 +10207,19 @@ func rarAllow(ctx context.Context, conn *pgx.Conn, clientID, typ string) error {
 }
 
 // rarList shows what is registered and who may ask for it.
-func rarList(ctx context.Context, conn *pgx.Conn) error {
+func rarList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT t.type, t.fields, t.required, COALESCE(t.description,''),
 		       COALESCE(array_agg(c.client_id) FILTER (WHERE c.client_id IS NOT NULL), '{}')
 		FROM core.authorization_detail_types t
-		LEFT JOIN core.client_authorization_detail_types c ON c.type = t.type
-		GROUP BY t.type, t.fields, t.required, t.description
+		-- The organisation's own clients only: another's that allow a type of
+		-- the same name are not this type's (0.32).
+		LEFT JOIN core.client_authorization_detail_types c ON c.org_id = t.org_id AND c.type = t.type
+		GROUP BY t.org_id, t.type, t.fields, t.required, t.description
 		ORDER BY t.type`)
 	if err != nil {
 		return err
@@ -7822,6 +10234,11 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"type": typ, "description": desc, "fields": nonNilList(fields),
+			"required": nonNilList(required), "clients": nonNilList(clients)})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s\n", typ)
 		if desc != "" {
 			fmt.Printf("  %s\n", desc)
@@ -7836,26 +10253,27 @@ func rarList(ctx context.Context, conn *pgx.Conn) error {
 			fmt.Printf("  clients  : %s\n", strings.Join(clients, ", "))
 		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no authorization details types are registered")
 	}
-	return rows.Err()
+	return out.flush()
 }
-
-// credentialClaims are the claim names a credential may carry.
-//
-// A fixed list, not "any column": every value here ends up inside a credential
-// the holder can present to anybody, so what may appear is a decision rather
-// than a projection of whatever the users table happens to hold.
-var credentialClaims = []string{"sub", "email", "email_verified", "preferred_username"}
 
 // credentialDefine registers a credential this issuer can mint.
 //
 // OID4VCI §12.2: the entry becomes one key of
 // `credential_configurations_supported`, which is what a wallet reads to learn
 // what it may ask for.
-func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
-	always, selective string, lifetime time.Duration, displayName string) error {
+//
+// requireAttestation is nil when -require-key-attestation was not given, which
+// keeps an existing configuration's setting: redefining the claims must not
+// quietly drop a requirement somebody set.
+func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, format, vct,
+	always, selective string, lifetime time.Duration, displayName string,
+	requireAttestation, deferred, walletInitiated, revocable *bool) error {
 
 	if orgID == "" {
 		return fmt.Errorf("give -org")
@@ -7873,35 +10291,16 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if len(a)+len(sel) == 0 {
 		return fmt.Errorf("give -always and/or -selective: a credential carrying "+
 			"no claims asserts nothing. Available: %s",
-			strings.Join(credentialClaims, ", "))
+			strings.Join(store.CredentialClaims, ", "))
 	}
-	for _, name := range append(append([]string{}, a...), sel...) {
-		if !slices.Contains(credentialClaims, name) {
-			return fmt.Errorf("%q is not a claim this issuer can put in a "+
-				"credential. Available: %s", name, strings.Join(credentialClaims, ", "))
-		}
-	}
-	for _, name := range a {
-		if slices.Contains(sel, name) {
-			return fmt.Errorf("%q is listed as both always-visible and selective; "+
-				"revealing it would put the claim in the credential twice", name)
-		}
-	}
-
-	var interval any
-	if lifetime > 0 {
-		interval = fmt.Sprintf("%d seconds", int(lifetime.Seconds()))
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.credential_configurations
-			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6::interval, NULLIF($7,''))
-		ON CONFLICT (org_id, config_id) DO UPDATE
-		SET vct = EXCLUDED.vct, always_claims = EXCLUDED.always_claims,
-		    selective_claims = EXCLUDED.selective_claims,
-		    lifetime = EXCLUDED.lifetime, display_name = EXCLUDED.display_name`,
-		orgID, configID, vct, a, sel, interval, displayName); err != nil {
-		return fmt.Errorf("defining the credential: %w", err)
+	// The claims list, and a claim both always visible and selective, are
+	// checked in store.CredentialSpec, as the Admin API checks them.
+	required, err := store.DefineCredential(ctx, conn, orgID, store.CredentialSpec{ConfigID: configID, Format: format, VCT: vct,
+		DisplayName: displayName, Always: a, Selective: sel, Lifetime: lifetime,
+		RequireKeyAttestation: requireAttestation, Deferred: deferred, WalletInitiated: walletInitiated,
+		Revocable: revocable})
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("credential configuration %s\n", configID)
@@ -7915,13 +10314,73 @@ func credentialDefine(ctx context.Context, conn *pgx.Conn, orgID, configID, vct,
 	if lifetime > 0 {
 		fmt.Printf("  valid for : %s\n", lifetime)
 	}
+	if required {
+		fmt.Printf("  key       : attested only (key_attestations_required); register the\n")
+		fmt.Printf("              wallet provider with `signari attester add`\n")
+	}
+	if deferred != nil && *deferred {
+		fmt.Printf("  issuance  : each request waits for `signari credential decide`, for as\n")
+		fmt.Printf("              long as the wallet's token lasts\n")
+	}
+	if walletInitiated != nil && *walletInitiated {
+		fmt.Printf("  who       : anybody who signs in here may ask for it from a wallet\n")
+	}
+	if revocable != nil && *revocable {
+		fmt.Printf("  status    : each credential carries a place in a status list, and\n")
+		fmt.Printf("              `signari credential revoke` takes it back\n")
+	}
 	fmt.Printf("\nThe claims under `always` are visible to EVERY verifier the holder\n")
 	fmt.Printf("presents to. Only the `selective` ones can be withheld.\n")
 	return nil
 }
 
+// credentialRequests shows what is waiting on a decision.
+func credentialRequests(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	if orgID == "" {
+		return fmt.Errorf("-org is required")
+	}
+	waiting, err := store.PendingCredentialRequests(ctx, conn, orgID)
+	if err != nil {
+		return err
+	}
+	if len(waiting) == 0 && out.text() {
+		fmt.Println("nothing is waiting on a decision")
+		return nil
+	}
+	for _, r := range waiting {
+		out.add(map[string]any{"id": r.ID, "email": r.Email, "configuration": r.Configuration, "created_at": r.CreatedAt.UTC()})
+		if out.text() {
+			fmt.Printf("%s  %s  %s  %s\n", r.ID, r.CreatedAt.Format("2006-01-02 15:04:05"), r.Configuration, r.Email)
+		}
+	}
+	return out.flush()
+}
+
+// credentialDecide approves or denies a waiting request. A decision stands.
+func credentialDecide(ctx context.Context, conn *pgx.Conn, orgID, request, decision string) error {
+	switch {
+	case orgID == "" || request == "":
+		return fmt.Errorf("-org and -request are required; `signari credential requests` lists them")
+	case decision != "approve" && decision != "deny":
+		return fmt.Errorf("-decision is approve or deny")
+	}
+	if err := store.DecideCredentialRequest(ctx, conn, orgID, request, decision == "approve"); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s. The wallet learns it the next time it asks.\n", request, decision)
+	return nil
+}
+
 // credentialList shows what this issuer publishes.
-func credentialList(ctx context.Context, conn *pgx.Conn) error {
+func credentialList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(display_name,'')
@@ -7939,6 +10398,11 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"id": id, "format": format, "vct": vct, "always": nonNilList(a),
+			"selective": nonNilList(sel), "display_name": display})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s (%s)\n", id, format)
 		if display != "" {
 			fmt.Printf("  %s\n", display)
@@ -7947,10 +10411,200 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 		fmt.Printf("  always    : %s\n", strings.Join(a, ", "))
 		fmt.Printf("  selective : %s\n", strings.Join(sel, ", "))
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("this deployment issues no credentials")
 	}
-	return rows.Err()
+	return out.flush()
+}
+
+// credentialTrustRoot registers a CA an OID4VCI key proof's `x5c` chain may
+// verify to (0150). Without one a chain is refused, never accepted on its own
+// signature, which a self-signed certificate satisfies.
+func credentialTrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name, certPath string) error {
+	if orgID == "" || name == "" || certPath == "" {
+		return fmt.Errorf("credential trust-root needs -org, -name and -root-cert")
+	}
+	blob, err := os.ReadFile(certPath) // #nosec G304 -- the operator names the file
+	if err != nil {
+		return fmt.Errorf("reading the root certificate: %w", err)
+	}
+	// Exactly one certificate, and no key (store.ParseProofRootPEM).
+	der, err := store.ParseProofRootPEM(blob)
+	if err != nil {
+		return fmt.Errorf("%s: %w", certPath, err)
+	}
+	cert, err := store.CheckProofRoot(der, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := store.SetCredentialProofRoot(ctx, conn, orgID, name, der); err != nil {
+		return err
+	}
+	fmt.Printf("trusted %q for x5c key proofs: %s, until %s\n", name, cert.Subject,
+		cert.NotAfter.Format(time.DateOnly))
+	return nil
+}
+
+// credentialRoots lists the roots x5c key proofs may verify to.
+func credentialRoots(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	rows, err := conn.Query(ctx, `
+		SELECT org_id::text, name, certificate FROM core.credential_proof_roots
+		ORDER BY org_id, name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var org, name string
+		var der []byte
+		if err := rows.Scan(&org, &name, &der); err != nil {
+			return err
+		}
+		found = true
+		subject, until := "(does not parse)", ""
+		var notAfter *time.Time
+		if cert, perr := x509.ParseCertificate(der); perr == nil {
+			subject, until = cert.Subject.String(), cert.NotAfter.Format(time.DateOnly)
+			notAfter = utcPtr(&cert.NotAfter)
+		}
+		out.add(map[string]any{"org_id": org, "name": name, "subject": subject, "not_after": notAfter})
+		if out.text() {
+			fmt.Printf("%s  %s  %s  until %s\n", org, name, subject, until)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
+		fmt.Println("no roots: x5c key proofs are refused")
+	}
+	return out.flush()
+}
+
+// credentialUntrustRoot withdraws a root. Chains to it are refused from the
+// next credential request, since the endpoint reads the roots on each one.
+func credentialUntrustRoot(ctx context.Context, conn *pgx.Conn, orgID, name string) error {
+	if orgID == "" || name == "" {
+		return fmt.Errorf("credential untrust-root needs -org and -name")
+	}
+	if err := store.RemoveCredentialProofRoot(ctx, conn, orgID, name); errors.Is(err, store.ErrProofRootUnknown) {
+		return fmt.Errorf("no root named %q in organisation %s", name, orgID)
+	} else if err != nil {
+		return err
+	}
+	fmt.Printf("no longer trusted for x5c key proofs: %q\n", name)
+	return nil
+}
+
+// credentialIssued shows what can be revoked, an organisation's or one person's. Only a
+// `-revocable` configuration leaves a record of what it issued.
+func credentialIssued(ctx context.Context, conn *pgx.Conn, orgID, email, format string) error {
+	if orgID == "" {
+		return fmt.Errorf("credential issued needs -org")
+	}
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	userID := ""
+	if email != "" {
+		if userID, _, err = oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID, "user with address"); err != nil {
+			return err
+		}
+	}
+	const pageSize = 500
+	after, found := "", false
+	for {
+		page, err := store.IssuedCredentialsPage(ctx, conn, orgID, userID, after, pageSize)
+		if err != nil {
+			return err
+		}
+		for _, c := range page {
+			found = true
+			out.add(map[string]any{"id": c.ID, "configuration": c.Configuration, "user_id": c.UserID, "email": c.Email,
+				"issued_at": c.IssuedAt.UTC(), "expires_at": utcPtr(c.ExpiresAt), "revoked_at": utcPtr(c.RevokedAt)})
+			if out.text() {
+				state := "valid"
+				if c.RevokedAt != nil || c.UserID == "" {
+					state = "revoked"
+				}
+				holder := c.Email
+				if c.UserID == "" {
+					holder = "(person removed)"
+				}
+				fmt.Printf("%s  %s  %s  %s  issued %s\n", c.ID, state, c.Configuration, holder,
+					c.IssuedAt.UTC().Format(time.DateOnly))
+			}
+		}
+		if len(page) < pageSize {
+			break
+		}
+		after = page[len(page)-1].ID
+	}
+	if !found && out.text() {
+		fmt.Println("nothing that can be revoked: only a revocable configuration keeps a record")
+	}
+	return out.flush()
+}
+
+// credentialRevoke takes back one credential or everything a person holds. It cannot be
+// undone: a wallet that should hold one again is issued a new one, at a new place.
+func credentialRevoke(ctx context.Context, conn *pgx.Conn, orgID, credentialID, email string) error {
+	if orgID == "" || (credentialID == "") == (email == "") {
+		return fmt.Errorf("credential revoke needs -org, and either -credential or -email")
+	}
+	var revoked int64
+	var err error
+	if email != "" {
+		var userID string
+		if userID, _, err = oneInOrg(ctx, conn, "users", "email_fold = lower($1)", email, orgID, "user with address"); err != nil {
+			return err
+		}
+		revoked, err = store.RevokeCredentialsOf(ctx, conn, orgID, userID)
+	} else {
+		revoked, err = store.RevokeCredential(ctx, conn, orgID, credentialID)
+	}
+	if errors.Is(err, store.ErrIssuedCredentialUnknown) {
+		return fmt.Errorf("no credential %s in organisation %s; `signari credential issued` shows them", credentialID, orgID)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("revoked %d. The status list says so from now; a verifier holding a copy may keep it for %s\n",
+		revoked, oid4vci.StatusTokenTTL)
+	return nil
+}
+
+// credentialEncryptionKey makes the key a wallet encrypts a credential request to
+// (OpenID4VCI §10), or a new one. Until there is one the issuer offers no encryption at
+// all, since a response may be sealed only for a request that was.
+func credentialEncryptionKey(ctx context.Context, conn *pgx.Conn) error {
+	instanceID, _, root, err := loadInstanceKeys(ctx, conn)
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	key, err := keys.RotateEncryptionKey(ctx, tx, instanceID, root, "cli")
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("encryption key %s is published in the credential issuer metadata\n", key.KID())
+	return nil
 }
 
 // attesterAdd registers a trusted Client Attester,
@@ -7959,7 +10613,7 @@ func credentialList(ctx context.Context, conn *pgx.Conn) error {
 // Without at least one of these, no attestation can verify -- rule 4 requires
 // the signature to check out against "a known and trusted Client Attester", and
 // trust here means somebody deliberately registered the key.
-func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath string) error {
+func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath, description string) error {
 	if orgID == "" || name == "" || jwksPath == "" {
 		return fmt.Errorf("attester add needs --org, --name and --attester-jwks")
 	}
@@ -7968,47 +10622,26 @@ func attesterAdd(ctx context.Context, conn *pgx.Conn, orgID, name, jwksPath stri
 		return fmt.Errorf("reading the attester JWKS: %w", err)
 	}
 
-	// Parsed before storing, and checked for private keys.
-	//
-	// A JWKS that does not parse would be stored happily and then fail every
-	// authentication at run time, with an error pointing at the client rather
-	// than at this registration. And an attester "public" key file that actually
-	// contains private keys is a mistake worth catching at the moment somebody
-	// makes it: it would mean this server could mint attestations indistinguishable
-	// from the attester's own, which is the trust separation ABCA exists to create.
-	var set jose.JSONWebKeySet
-	if err := json.Unmarshal(blob, &set); err != nil {
-		return fmt.Errorf("the attester JWKS is not a JSON Web Key Set: %w", err)
-	}
-	if len(set.Keys) == 0 {
-		return fmt.Errorf("the attester JWKS contains no keys")
-	}
-	for i, k := range set.Keys {
-		if !k.IsPublic() {
-			return fmt.Errorf("key %d in the attester JWKS is a PRIVATE key; register "+
-				"only the attester's public keys, or this server could forge the "+
-				"attestations it is supposed to be verifying", i)
-		}
-		if !k.Valid() {
-			return fmt.Errorf("key %d in the attester JWKS is not usable", i)
-		}
-	}
-
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO core.client_attesters (org_id, name, jwks)
-		VALUES ($1::uuid, $2, $3)
-		ON CONFLICT (org_id, name) DO UPDATE SET jwks = EXCLUDED.jwks`,
-		orgID, name, blob); err != nil {
+	// Parsed before storing, and checked for private keys, by the writer the
+	// Admin API shares. The description is for whoever reads `attester list`
+	// later, which is where an operator decides whether an attester still
+	// belongs (2.30); re-registering without one keeps the old.
+	n, err := store.SetAttester(ctx, conn, orgID, name, blob, description)
+	if err != nil {
 		return fmt.Errorf("registering the client attester: %w", err)
 	}
-	fmt.Printf("registered client attester %q with %d key(s)\n", name, len(set.Keys))
+	fmt.Printf("registered client attester %q with %d key(s)\n", name, n)
 	return nil
 }
 
 // attesterList shows who is trusted to vouch for clients.
-func attesterList(ctx context.Context, conn *pgx.Conn) error {
+func attesterList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
-		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at
+		SELECT org_id::text, name, jsonb_array_length(jwks->'keys'), created_at, COALESCE(description, '')
 		FROM core.client_attesters ORDER BY org_id, name`)
 	if err != nil {
 		return err
@@ -8016,20 +10649,31 @@ func attesterList(ctx context.Context, conn *pgx.Conn) error {
 	defer rows.Close()
 	found := false
 	for rows.Next() {
-		var org, name string
+		var org, name, description string
 		var keys int
 		var created time.Time
-		if err := rows.Scan(&org, &name, &keys, &created); err != nil {
+		if err := rows.Scan(&org, &name, &keys, &created, &description); err != nil {
 			return err
 		}
 		found = true
+		out.add(map[string]any{"org_id": org, "name": name, "keys": keys, "created_at": created.UTC(),
+			"description": description})
+		if !out.text() {
+			continue
+		}
 		fmt.Printf("%s  %-30s %d key(s)  %s\n", org, name, keys, created.Format(time.RFC3339))
+		if description != "" {
+			fmt.Printf("    %s\n", description)
+		}
 	}
-	if !found {
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found && out.text() {
 		fmt.Println("no client attesters registered; attestation-based client " +
 			"authentication cannot verify anything until one is added")
 	}
-	return rows.Err()
+	return out.flush()
 }
 
 // warnUndriven says which flows in a file were stored and will not run.
@@ -8079,16 +10723,13 @@ func warnUndriven(f *flow.File) {
 // only the absence of a proof.
 func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, required bool) error {
 	if clientID == "" {
-		return fmt.Errorf("give -client")
+		return fmt.Errorf("give -client-id")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET dpop_bound_access_tokens = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, required)
-	if err != nil {
+	if err := store.SetClientDPoP(ctx, conn, clientID, required); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	if required {
 		fmt.Printf("%s now requires a DPoP proof on every token request\n", clientID)
@@ -8098,18 +10739,379 @@ func clientSetDPoP(ctx context.Context, conn *pgx.Conn, clientID string, require
 	return nil
 }
 
-func clientSetExchangeContainment(ctx context.Context, conn *pgx.Conn, clientID string, on bool) error {
+// clientSetExchange grants or withdraws RFC 8693 token exchange, with the
+// audiences the client may exchange for. Until it existed the permission had a
+// reader on every exchange and no writer anywhere, while discovery advertised
+// the grant, so no client could be given it.
+func clientSetExchange(ctx context.Context, conn *pgx.Conn, clientID string, may bool, audiences string) error {
 	if clientID == "" {
-		return fmt.Errorf("give -client")
+		return fmt.Errorf("give -client-id")
 	}
-	tag, err := conn.Exec(ctx, `
-		UPDATE core.clients SET exchange_requires_audience_match = $2, updated_at = now()
-		WHERE client_id = $1`, clientID, on)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.SetClientExchange(ctx, tx, clientID, may, strings.Split(audiences, ",")); err != nil {
+		switch {
+		case errors.Is(err, store.ErrClientNotFound):
+			return fmt.Errorf("no client %q", clientID)
+		case errors.Is(err, store.ErrExchangeNeedsConfidentialClient):
+			return fmt.Errorf("%s is a public client; %w, since a public client cannot prove "+
+				"it is the one the permission was granted to", clientID, err)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if !may {
+		fmt.Printf("%s may no longer exchange tokens\n", clientID)
+		return nil
+	}
+	clean, _ := store.CleanExchangeAudiences(strings.Split(audiences, ","))
+	if len(clean) == 0 {
+		fmt.Printf("%s may exchange tokens for itself only\n", clientID)
+	} else {
+		fmt.Printf("%s may exchange tokens for itself and %s\n", clientID, strings.Join(clean, ", "))
+	}
+	return nil
+}
+
+// clientSetLogout registers a client's sign-out: where it may be sent after
+// RP-initiated logout, and its front-channel logout URI. All three are set
+// together, so the command's result is exactly what it was given.
+func clientSetLogout(ctx context.Context, conn *pgx.Conn, clientID, postLogout, frontchannel string, sid bool,
+	backchannel *string, backchannelSID *bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, _, _, err := store.ClientLogoutOf(ctx, tx, clientID); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	uris := strings.Split(postLogout, ",")
+	if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
+		PostLogoutRedirectURIs: &uris, FrontchannelURI: &frontchannel, FrontchannelSessionRequired: &sid,
+		BackchannelURI: backchannel, BackchannelSessionRequired: backchannelSID,
+	}); err != nil {
+		return err
+	}
+	got, fc, fcSID, err := store.ClientLogoutOf(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if len(got) == 0 {
+		fmt.Printf("%s: no post-logout redirect; RP-initiated logout ends on this server's page\n", clientID)
+	} else {
+		fmt.Printf("%s: post-logout redirects %s\n", clientID, strings.Join(got, ", "))
+	}
+	if fc == "" {
+		fmt.Println("  no front-channel logout")
+	} else {
+		fmt.Printf("  front-channel logout %s (iss and sid added: %v)\n", fc, fcSID)
+	}
+	if backchannel != nil {
+		if *backchannel == "" {
+			fmt.Println("  no back-channel logout")
+		} else {
+			fmt.Printf("  back-channel logout %s\n", *backchannel)
+		}
+	}
+	return nil
+}
+
+// clientSetLifetimes sets how long a client's access and refresh tokens live.
+// Any may be given alone; the others keep their values. consent is a duration,
+// "never", or "" to leave it.
+func clientSetLifetimes(ctx context.Context, conn *pgx.Conn, clientID string, access, refresh time.Duration,
+	grace *time.Duration, consent string) error {
+	if clientID == "" || (access == 0 && refresh == 0 && grace == nil && consent == "") {
+		return fmt.Errorf("give -client-id and any of -access-ttl, -refresh-ttl, -refresh-grace and -consent-ttl")
+	}
+	var consentTTL *time.Duration
+	switch consent {
+	case "":
+	case "never":
+		zero := time.Duration(0)
+		consentTTL = &zero
+	default:
+		d, err := time.ParseDuration(consent)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("-consent-ttl is a duration such as 2160h, or never, not %q", consent)
+		}
+		consentTTL = &d
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	before, err := store.ClientSettingsOf(ctx, tx, clientID)
+	if errors.Is(err, store.ErrClientNotFound) {
 		return fmt.Errorf("no client %q", clientID)
+	}
+	if err != nil {
+		return err
+	}
+	var s store.ClientSettings
+	if access != 0 {
+		s.AccessTokenTTL = &access
+	}
+	if refresh != 0 {
+		s.RefreshTokenTTL = &refresh
+	}
+	s.RefreshReuseGrace = grace
+	s.ConsentLifetime = consentTTL
+	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
+		return err
+	}
+	after, err := store.ClientSettingsOf(ctx, tx, clientID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: access tokens live %s, refresh tokens %s\n", clientID, after.AccessTokenTTL, after.RefreshTokenTTL)
+	if after.RefreshReuseGrace > 0 {
+		fmt.Printf("  a refresh token may be retried once within %s of being used\n", after.RefreshReuseGrace)
+	}
+	if after.ConsentLifetime == 0 {
+		fmt.Println("  a person's consent to it does not expire")
+	} else {
+		fmt.Printf("  a person's consent to it lasts %s, then they are asked again\n", after.ConsentLifetime)
+	}
+	if after.AccessTokenTTL < before.AccessTokenTTL {
+		// The window a revocation leaves open is what tokens already issued were
+		// minted with, and this does not reach them.
+		fmt.Printf("  access tokens issued before now keep the %s they were minted with\n",
+			before.AccessTokenTTL)
+	}
+	return nil
+}
+
+// clientSetAlg sets the algorithms what the client is sent is signed with, refusing
+// one the instance holds no active key for. alg is its ID and access tokens.
+func clientSetAlg(ctx context.Context, conn *pgx.Conn, clientID, alg string,
+	accessAlg, responseAlg, userinfoAlg, introspectionAlg *string) error {
+	if clientID == "" || alg == "" && accessAlg == nil && responseAlg == nil && userinfoAlg == nil && introspectionAlg == nil {
+		return fmt.Errorf("give -client-id and -alg, -access-alg, -response-alg, -userinfo-alg or -introspection-alg (%s)",
+			strings.Join(store.ClientAlgorithms, ", "))
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	settings := store.ClientSettings{AccessTokenAlg: accessAlg, AuthorizationResponseAlg: responseAlg,
+		UserinfoSignedAlg: userinfoAlg, IntrospectionSignedAlg: introspectionAlg}
+	if alg != "" {
+		settings.IDTokenAlg = &alg
+	}
+	if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if alg != "" {
+		fmt.Printf("%s: ID tokens are signed with %s, and access tokens unless they are set apart\n", clientID, alg)
+	}
+	if accessAlg != nil && *accessAlg == "" {
+		fmt.Printf("%s: access tokens are signed as its ID tokens are\n", clientID)
+	} else if accessAlg != nil {
+		fmt.Printf("%s: access tokens are signed with %s\n", clientID, *accessAlg)
+	}
+	if responseAlg != nil && *responseAlg == "" {
+		fmt.Printf("%s: authorization responses are signed when a request asks, with RS256\n", clientID)
+	} else if responseAlg != nil {
+		fmt.Printf("%s: authorization responses are signed with %s, and a request has to ask for that\n",
+			clientID, *responseAlg)
+	}
+	if userinfoAlg != nil && *userinfoAlg == "" {
+		fmt.Printf("%s: userinfo answers in JSON\n", clientID)
+	} else if userinfoAlg != nil {
+		fmt.Printf("%s: userinfo answers in a JWT signed with %s\n", clientID, *userinfoAlg)
+	}
+	if introspectionAlg != nil && *introspectionAlg == "" {
+		fmt.Printf("%s: an introspection answer as a JWT is signed RS256\n", clientID)
+	} else if introspectionAlg != nil {
+		fmt.Printf("%s: an introspection answer as a JWT is signed with %s\n", clientID, *introspectionAlg)
+	}
+	return nil
+}
+
+// parseWhen reads a moment given as a date (midnight UTC) or RFC 3339.
+func parseWhen(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Parse("2006-01-02", s)
+}
+
+// instanceAddAlias registers a legacy issuer the instance `serve` would pick
+// also claims, so a migrating client can be pinned to it.
+func instanceAddAlias(ctx context.Context, conn *pgx.Conn, alias, retire string) error {
+	if alias == "" {
+		return fmt.Errorf("give -alias, the legacy issuer URL relying parties still compare against")
+	}
+	var retireAfter *time.Time
+	if retire != "" {
+		t, err := parseWhen(retire)
+		if err != nil {
+			return fmt.Errorf("-retire-after %q: want YYYY-MM-DD or RFC 3339", retire)
+		}
+		retireAfter = &t
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.AddIssuerAlias(ctx, tx, instanceID, alias, retireAfter); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s now also claims %s\n", issuer, alias)
+	if retireAfter == nil {
+		fmt.Println("  no retirement planned; aliases are for cutover, so set one with -retire-after")
+	} else {
+		fmt.Printf("  accepted until %s\n", retireAfter.UTC().Format(time.RFC3339))
+	}
+	fmt.Println("  pin a client to it with `signari client set-issuer-alias`")
+	return nil
+}
+
+// instanceRetireAlias stops accepting an alias, now unless told when.
+func instanceRetireAlias(ctx context.Context, conn *pgx.Conn, alias, retire string) error {
+	if alias == "" {
+		return fmt.Errorf("give -alias")
+	}
+	at := time.Now()
+	if retire != "" {
+		t, err := parseWhen(retire)
+		if err != nil {
+			return fmt.Errorf("-retire-after %q: want YYYY-MM-DD or RFC 3339", retire)
+		}
+		at = t
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RetireIssuerAlias(ctx, tx, instanceID, alias, at); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s is retired from %s\n", issuer, alias, at.UTC().Format(time.RFC3339))
+	if list, err := store.IssuerAliases(ctx, conn, instanceID); err == nil {
+		for _, a := range list {
+			if a.Issuer == alias && a.Pinned > 0 {
+				fmt.Printf("  %d client(s) pinned to it get %s from then on; relying parties still "+
+					"comparing against the alias will refuse their tokens\n", a.Pinned, issuer)
+			}
+		}
+	}
+	return nil
+}
+
+// instanceAliases lists the instance's aliases and who is pinned to each.
+func instanceAliases(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
+	instanceID, issuer, err := selectInstance(ctx, conn, os.Getenv("SIGNARI_ISSUER"))
+	if err != nil {
+		return err
+	}
+	list, err := store.IssuerAliases(ctx, conn, instanceID)
+	if err != nil {
+		return err
+	}
+	if !out.text() {
+		for _, a := range list {
+			out.add(map[string]any{"issuer": a.Issuer, "retire_after": utcPtr(a.RetireAfter), "pinned": a.Pinned})
+		}
+		return out.flush()
+	}
+	if len(list) == 0 {
+		fmt.Printf("%s claims no other issuer\n", issuer)
+		return nil
+	}
+	for _, a := range list {
+		when := "no retirement planned"
+		if a.RetireAfter != nil {
+			when = "accepted until " + a.RetireAfter.UTC().Format(time.RFC3339)
+			if !a.RetireAfter.After(time.Now()) {
+				when = "retired " + a.RetireAfter.UTC().Format(time.RFC3339)
+			}
+		}
+		fmt.Printf("%s  %s, %d client(s) pinned\n", a.Issuer, when, a.Pinned)
+	}
+	return nil
+}
+
+// clientSetSwitch writes one of a client's on/off settings and says what it
+// now means.
+func clientSetSwitch(ctx context.Context, conn *pgx.Conn, clientID string, s store.ClientSettings, now string) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.SetClientSettings(ctx, tx, clientID, s); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %s\n", clientID, now)
+	return nil
+}
+
+func clientSetExchangeContainment(ctx context.Context, conn *pgx.Conn, clientID string, on bool) error {
+	if clientID == "" {
+		return fmt.Errorf("give -client-id")
+	}
+	if err := store.SetClientExchangeContainment(ctx, conn, clientID, on); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
+		}
+		return err
 	}
 	if on {
 		fmt.Printf("%s may now only exchange subject tokens it holds or is named in the audience of\n", clientID)

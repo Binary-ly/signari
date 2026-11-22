@@ -16,6 +16,9 @@ signari ssf add-source -org <uuid> -name "Upstream IdP" \
 signari ssf received -org <uuid>
 ```
 
+The Admin API registers sources the same way at
+`/admin/organizations/{orgID}/ssf-sources`; see [admin-api.md](admin-api.md).
+
 ## The half everybody skips
 
 Every implementation that does Shared Signals **transmits**: "a session was
@@ -69,6 +72,9 @@ is about.
 
 The order:
 
+0. Choose the source by the token's `iss` **and** `aud`, read unverified. That
+   only selects whose keys to verify against; every check below is made again
+   against what it selects.
 1. Parse with the algorithm list pinned. No `none`.
 2. Refuse a token carrying its own key material (`jwk`, `jku`, `x5u`).
 3. `typ` must be `secevent+jwt` — otherwise an ID token from the same issuer is a
@@ -99,6 +105,30 @@ And the whole path, against a real database with a real transmitter signing real
 tokens over TLS: **three live sessions, one signed `session-revoked`, zero live
 sessions** — with `revocation_reason = shared_signal`, named distinctly from a
 logout because they mean very different things to whoever reads the audit trail.
+
+## Two organisations, one transmitter
+
+A shared upstream sends every customer's events under one issuer and tells
+them apart by audience, so two organisations here can each have a source for
+the same `iss`. The source is therefore chosen by the **issuer and the audience
+together**, and that pair belongs to one organisation in the whole deployment:
+`ssf add-source` refuses a second organisation's registration of it, compared
+without regard to case as the audience check is.
+
+| The token | Answer |
+|---|---|
+| `iss` and `aud` match one source | verified against that source, and the subject is resolved in its organisation only |
+| `aud` lists several audiences that reach two organisations' sources | `400 invalid_audience`, and nothing is acted on. An event addressed to two tenants names nobody in particular |
+| `aud` names a recipient here that does not accept this `iss` | `400 invalid_issuer`, RFC 8935 §2.4's "the SET Issuer is invalid for the SET Recipient" |
+| `aud` names no recipient here | `400 invalid_audience`, "the SET Audience does not correspond to the SET Recipient" |
+
+Until October 2026 the source was found by issuer alone, and whichever
+organisation's row the database returned answered for both. The other
+organisation's events were refused for their audience, so it received nothing.
+Had the two shared an audience, its events would have verified and been
+resolved in the first organisation's directory, signing out somebody else's
+people. The upgrade migration refuses to run while two organisations hold one
+pair and names them, because which of them keeps it is the operator's decision.
 
 ## Replay
 
@@ -246,9 +276,10 @@ Implemented in `internal/ssf/metadata.go`, served at `internal/httpapi/ssfmetada
 
 **What is deliberately absent, and why absence is the honest answer.** The §8
 management endpoints — `configuration_endpoint`, `status_endpoint`,
-`add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint` — and
+`add_subject_endpoint`, `remove_subject_endpoint` — and
 `authorization_schemes` are all omitted, because this engine's streams are
-administered by its operator. Advertising a configuration endpoint that 404s is
+administered by its operator. `verification_endpoint` is the exception, since it
+changes nothing about a stream ([asking whether a stream works](ssf-caep.md#asking-whether-a-stream-works)). Advertising a configuration endpoint that 404s is
 worse than advertising nothing: the receiver's next move is to call it. This is
 the rule the project adopted after OIDC discovery once advertised three endpoints
 that did not exist.
@@ -293,14 +324,52 @@ Stated here so the gaps are visible rather than discovered:
   HTTP. Streams here are created by the operator instead, which is a deliberate
   choice about who may subscribe to events rather than a missing endpoint. See
   [ssf-caep.md](ssf-caep.md).
-- **RISC events** — the risk-and-incident event family. CAEP is implemented; RISC
-  shares the SET envelope, so this is event modelling rather than new plumbing.
 - **The legacy Apple SSE CAEP profile**, which predates the final specification.
+- **RISC's other events**, such as `identifier-changed` and the recovery family.
+  They are recorded with `no handler` rather than acted on.
 
-- **Polling an upstream transmitter.** RFC 8936 poll delivery is implemented on
-  the *transmitter* side — a firewalled receiver can pull queued events from us
-  and acknowledge them (`POST /ssf/poll`). This receiver takes pushed events at
-  `POST /ssf/receive` and does not pull from anyone else's queue.
+## What an account event does
+
+A source has to list each of these in `-events` before it is believed.
+
+| Event | Here |
+|---|---|
+| `risc/event-type/account-disabled`, `account-purged` | The person's sessions end. The account stays: it is this organisation's to close, and a transmitter's word on one identity is not a verdict on all of them. |
+| `risc/event-type/account-credential-change-required`, `credential-compromise` | The sessions end and the next sign-in with a password here is held until it is changed, because the password that leaked may be this one. A federated person with no password here is signed out only. |
+| `risc/event-type/account-enabled` | Recorded. A session that ended stays ended. |
+
+## Pulling events from a transmitter
+
+Some transmitters only offer a queue, and a receiver behind a firewall cannot be
+pushed to at all. So a source can be polled, by RFC 8936, instead of or as well as
+accepting pushes:
+
+```sh
+signari ssf add-source -org <uuid> -name Upstream -source-issuer https://idp.example.com \
+  -source-jwks https://idp.example.com/jwks -source-audience https://id.example.com \
+  -events https://schemas.openid.net/secevent/caep/event-type/session-revoked
+signari ssf poll-source -org <uuid> -source-issuer https://idp.example.com \
+  -url https://idp.example.com/ssf/poll -client-id our-client < credential-file
+```
+
+Every thirty seconds, one node takes the source and asks for what is queued. The
+token is verified and acted on exactly as a pushed one is. Then:
+
+- What was acted on is acknowledged in the next request, so a node that stops
+  between the two is sent it again, and the replay guard answers that.
+- What was refused is reported in `setErrs`, so it does not come back.
+- What could not be judged stays queued. When the source's keys cannot be fetched
+  the token has told us nothing, and calling it invalid would lose it. A pushed token
+  in that state is answered 500 for the same reason.
+
+A polled token must carry the issuer of the source that was polled. One transmitter's
+credential buys no say over another's people, whichever keys verify.
+
+`signari ssf received` starts with how the last turn went, and the Admin API has the
+same in `last_polled_at` and `last_poll_error`. Pulled with a `-client-id`, the
+credential goes as HTTP Basic, which is what this engine's own `POST /ssf/poll` wants;
+with none it is a bearer token. `signari ssf poll-source -remove` stops and forgets it.
+Disabling a source stops its turns too.
 
 ## Second pass: §3 Subject Identifiers, and a wire-format defect (21 August 2026)
 

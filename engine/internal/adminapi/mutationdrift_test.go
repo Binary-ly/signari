@@ -2,14 +2,32 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/brand"
+	"signari.dev/engine/internal/directory"
+	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oid4vci"
+	"signari.dev/engine/internal/oidfed"
+	"signari.dev/engine/internal/prompts"
+	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/provision"
+	"signari.dev/engine/internal/ssf"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Every mutating route must honour preconditions AND bump the configuration
@@ -89,6 +107,80 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			// Answered 200 with nothing to clear, so a fresh user exercises it.
+			name: "DELETE /admin/users/{userID}/throttle", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/throttle"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// The fixture user is active with an address, so the link is issued.
+			name: "POST /admin/users/{userID}/passkey-link", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/passkey-link"
+			},
+			body: func(*testing.T, *Server, string) string { return `{}` },
+		},
+		{
+			name: "POST /admin/invitations", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/invitations" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"org_id":%q,"email":"drift-invite-%d@example.test"}`,
+					anyOrgID(t, s), time.Now().UnixNano())
+			},
+		},
+		{
+			// A fresh open one each time: the route revokes what it is pointed
+			// at, and a second revoke is a 404 rather than the precondition
+			// failure being checked for.
+			name: "DELETE /admin/invitations/{invitationID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/invitations/" + newDriftInvitation(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/users/{userID}/consents/{clientID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/users/" + newDriftUser(t, s) + "/consents/" + newPreconditionClient(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/batch", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/batch" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"operations":[{"method":"PATCH","path":"/admin/clients/%s","body":{"enabled":false}}]}`,
+					newPreconditionClient(t, s))
+			},
+		},
+		{
+			name: "POST /admin/tokens", method: http.MethodPost,
+			path: func(*testing.T, *Server) string { return "/admin/tokens" },
+			body: func(t *testing.T, s *Server, _ string) string {
+				name := fmt.Sprintf("drift-mint-%d", time.Now().UnixNano())
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name = $1`, name)
+				})
+				return fmt.Sprintf(`{"name":%q,"scopes":["config:read"]}`, name)
+			},
+		},
+		{
+			name: "POST /admin/tokens/{tokenID}/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/tokens/" + newDriftToken(t, s) + "/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/tokens/{tokenID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/tokens/" + newDriftToken(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "PUT /admin/organizations/{orgID}/attributes", method: http.MethodPut,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/organizations/" + anyOrgID(t, s) + "/attributes"
@@ -109,6 +201,14 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string {
 				return `{"attributes":{"` + driftAttributeName + `":"a value"}}`
 			},
+		},
+		{
+			name: "DELETE /admin/users/{userID}/attributes/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				u := newDriftUserWithValue(t, s)
+				return "/admin/users/" + u + "/attributes/" + driftAttributeName
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
 			name:   "POST /admin/organizations/{orgID}/claim-mappers",
@@ -153,6 +253,1365 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/organizations/{orgID}/webauthn-policy", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/webauthn-policy"
+			},
+			// The organisation's own policy sent back, so exercising the route
+			// changes nothing a test sharing this database relies on.
+			body: func(t *testing.T, s *Server, _ string) string {
+				p, err := store.LoadWebAuthnPolicy(context.Background(), s.db, anyOrgID(t, s))
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, _ := json.Marshal(policyJSON(p))
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/proxy-hosts", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/proxy-hosts"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return fmt.Sprintf(`{"host":"drift-%d.example.com"}`, time.Now().UnixNano())
+			},
+		},
+		{
+			// An organisation of its own: a budget on the shared one would
+			// throttle every other test's sign-ins and tokens.
+			name: "PUT /admin/organizations/{orgID}/budgets", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/budgets"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"tokens_per_minute":5000,"sign_ins_per_minute":900}`
+			},
+		},
+		{
+			// An organisation of its own, for the same reason: a setting on the
+			// shared one changes every other test's sign-ins.
+			name: "PATCH /admin/organizations/{orgID}/settings", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/settings"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remember_device_days":7}` },
+		},
+		{
+			// Its own organisation: an open sign-up on the shared one would let
+			// other tests' addresses make accounts.
+			name: "PUT /admin/organizations/{orgID}/signup", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/signup"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"allowed_domains":["drift.example"]}` },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/brand", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"product_name":"Drift"}` },
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/brand", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				if err := store.SaveBrand(context.Background(), s.db, id, &brand.Brand{ProductName: "Drift"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/brand", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftOrg(t, s) + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"product_name":"Drift"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/brand", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftOrg(t, s)
+				if err := store.SaveOrgBrand(context.Background(), s.db, id, &brand.Brand{ProductName: "Drift"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + id + "/brand"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/messages/{locale}/{key}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftOrg(t, s) + "/messages/en/login.submit"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"text":"Drift"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/messages/{locale}/{key}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftOrg(t, s)
+				if err := store.SetOrgMessage(context.Background(), s.db, id,
+					store.OrgMessage{Locale: "en", Key: "login.submit", Body: "Drift"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + id + "/messages/en/login.submit"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/relation-delegations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftOrg(t, s) + "/relation-delegations"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"grantee_org_id":%q,"object":"app:*","relations":["user"]}`, newDriftOrg(t, s))
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				return "/admin/organizations/" + d.OrgID + "/relation-delegations/" + d.ID
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				delegationSubject[d.GranteeOrgID] = newDelegationPerson(t, s, d.GranteeOrgID)
+				return "/admin/organizations/" + d.GranteeOrgID + "/relation-delegations/" + d.ID + "/relations"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return fmt.Sprintf(`{"subject":"user:%s","relation":"user","object":"app:one"}`,
+					delegationSubject[strings.Split(path, "/")[3]])
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				d := newDriftDelegation(t, s)
+				person := newDelegationPerson(t, s, d.GranteeOrgID)
+				if err := store.GrantDelegated(context.Background(), s.db, d, store.Relation{SubjectType: "user",
+					SubjectID: person, Relation: "user", ObjectType: "app", ObjectID: "one"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + d.GranteeOrgID + "/relation-delegations/" + d.ID +
+					"/relations?subject=user:" + person + "&relation=user&object=app:one"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/webauthn", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"rp_id":"drift.example"}` },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/issuer-aliases", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/issuer-aliases"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return fmt.Sprintf(`{"alias":"https://legacy-%d.test"}`, time.Now().UnixNano())
+			},
+		},
+		{
+			name: "PATCH /admin/instances/{instanceID}/issuer-aliases", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstanceWithAlias(t, s) + "/issuer-aliases"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				var alias string
+				if err := s.db.QueryRow(context.Background(), `SELECT issuer FROM core.instance_issuer_aliases
+					WHERE instance_id::text = split_part($1, '/', 4)`, path).Scan(&alias); err != nil {
+					t.Fatal(err)
+				}
+				return `{"alias":"` + alias + `"}`
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/event-subscriptions"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"name":"drift","url":"https://hooks.example.test/drift"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/event-subscriptions/{name}", method: http.MethodDelete,
+			path: newDriftSubscription,
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/rotate-secret" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/enable" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftSubscription(t, s) + "/test" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/radius-clients", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/radius-clients"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"name":"drift","network":"192.0.2.0/24","secret":"a-drift-shared-secret"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				id, _, err := store.AddRADIUSClient(context.Background(), s.db, s.root, org, "drift", "192.0.2.0/24",
+					"a-drift-shared-secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/radius-clients/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/groups/{groupID}/radius", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string { return "/admin/groups/" + newDriftGroup(t, s) + "/radius" },
+			body: func(*testing.T, *Server, string) string { return `{"vlan_id":42}` },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}/radius", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				group := newDriftGroup(t, s)
+				if err := store.SetRADIUSAuthorization(context.Background(), s.db, anyOrgID(t, s), group,
+					store.RADIUSGrant{VLAN: 42}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/groups/" + group + "/radius"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/credential-configurations/{configID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				return "/admin/organizations/" + o + "/credential-configurations/drift-staff"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"vct":"https://drift.example.test/staff","always":["email"]}`
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				return "/admin/organizations/" + o + "/credential-proof-roots/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				ca, _ := testCertPEM(t, true)
+				b, _ := json.Marshal(map[string]string{"certificate": ca})
+				return string(b)
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				o, _, _, _ := newDriftWallet(t, s)
+				ca, _ := testCertPEM(t, true)
+				der, err := store.ParseProofRootPEM([]byte(ca))
+				if err == nil {
+					err = store.SetCredentialProofRoot(context.Background(), s.db, o, "drift", der)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + o + "/credential-proof-roots/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/users/{userID}/credential-offers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, _, u := newDriftWallet(t, s)
+				return "/admin/users/" + u + "/credential-offers"
+			},
+			// The wallet client newDriftWallet registered beside the person.
+			body: func(t *testing.T, s *Server, path string) string {
+				var client string
+				if err := s.db.QueryRow(context.Background(), `SELECT c.client_id FROM core.clients c
+					JOIN core.users u ON u.org_id = c.org_id
+					WHERE u.id = $1::uuid AND $2 = ANY(c.grant_types)`, strings.Split(path, "/")[3],
+					oid4vci.GrantType).Scan(&client); err != nil {
+					t.Fatal(err)
+				}
+				return `{"client_id":"` + client + `","credential_configurations":["drift-id"]}`
+			},
+		},
+		{
+			name: "PUT /admin/users/{userID}/identity-links/{slug}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftLinkedUser(t, s, false)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"subject":"drift-subject"}` },
+		},
+		{
+			name: "DELETE /admin/users/{userID}/identity-links/{slug}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftLinkedUser(t, s, true)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/identity-providers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/identity-providers"
+			},
+			// A named provider is reached at nothing until somebody signs in.
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"kind":"github","slug":"drift-gh-` + strings.Split(path, "/")[3][:8] +
+					`","client_id":"drift","client_secret":"drift-secret"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/identity-providers/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p + "/token-auth"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"method":"client_secret_post"}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftIdP(t, s, "google")
+				return p + "/attribute-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"claim":"dept","attribute":"department"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftIdP(t, s, "google")
+				if err := store.SetIdPAttributeMap(context.Background(), s.db, org, slug, "dept", "department", false,
+					0); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/attribute-map?claim=dept&attribute=department"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, _, p := newDriftIdP(t, s, "google")
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.groups (org_id, name, display_name)
+					VALUES ($1::uuid, 'drift-mapped', 'Drift')`, org); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remote_group":"eng","group":"drift-mapped"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				ctx := context.Background()
+				org, slug, p := newDriftIdP(t, s, "google")
+				if _, err := s.db.Exec(ctx, `INSERT INTO core.groups (org_id, name, display_name)
+					VALUES ($1::uuid, 'drift-mapped', 'Drift')`, org); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SetIdPGroupMap(ctx, s.db, org, slug, "eng", "drift-mapped"); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-map?remote_group=eng&group=drift-mapped"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftVPVerifier(t, s)
+				return p + "/vp-issuers"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				return `{"issuer":"https://pid.example","jwks":` + string(issuerJWKS(t, false)) + `}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftVPVerifier(t, s)
+				if err := store.SetVPTrustedIssuer(context.Background(), s.db, org, slug, "https://pid.example",
+					issuerJWKS(t, false)); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/vp-issuers?issuer=https://pid.example"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/saml-providers", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/saml-providers"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"entity_id":"https://drift-` + strings.Split(path, "/")[3] + `.example.test",` +
+					`"acs_url":"https://drift.example.test/acs"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p
+			},
+			body: func(*testing.T, *Server, string) string { return `{"lifetime_s":600}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/metadata"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				return metadataBody(t, spMetadata(t, s, strings.TrimSuffix(path, "/metadata")))
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftSAMLUpstream(t, s)
+				return p + "/metadata"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				return metadataBody(t, idpMetadata(t, s, strings.TrimSuffix(path, "/metadata")))
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				_, _, p := newDriftSAMLUpstream(t, s)
+				return p + "/saml-keys"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"purpose":"signing"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftSAMLUpstream(t, s)
+				return p + "/saml-keys/" + driftSAMLKey(t, s, org, slug, "signing")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/kerberos-realms", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/kerberos-realms"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string { return kerberosRealmBody(t, uniqueHost()) },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return newDriftKerberosRealm(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, slug, p := newDriftSAMLUpstream(t, s)
+				driftSAMLKey(t, s, org, slug, "signing")
+				return p + "/saml-key-use"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"sign_requests":true}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/attribute-release"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"saml_attribute":"department","attribute":"department"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, p := newDriftSAMLProvider(t, s)
+				if err := store.SetSAMLAttributeRelease(context.Background(), s.db, org, p[strings.LastIndex(p, "/")+1:],
+					"department", "department"); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/attribute-release?saml_attribute=department"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				_, p := newDriftSAMLProvider(t, s)
+				return p + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"only":["drift-group"]}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org, p := newDriftSAMLProvider(t, s)
+				if err := store.SetSAMLGroupRelease(context.Background(), s.db, org, p[strings.LastIndex(p, "/")+1:],
+					"", nil); err != nil {
+					t.Fatal(err)
+				}
+				return p + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/directories", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/directories"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"kind":"ldap","slug":"drift","ldap_url":"ldaps://ldap.example.test",` +
+					`"ldap_base_dn":"dc=example,dc=test","ldap_flavour":"openldap","ldap_password":"p"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/directories/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"dry_run":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/directories/{slug}/group-map", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/group-map"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"remote_group":"cn=staff","group":"drift-group"}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/directories/{slug}/group-map", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftDirectory(t, s)
+				if err := directory.MapGroup(context.Background(), s.db, org, "drift", "cn=staff", "drift-group"); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/directories/drift/group-map?remote_group=cn%3Dstaff&group=drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A stand-in for the directory, so nothing is dialled.
+			name: "POST /admin/organizations/{orgID}/directories/{slug}/sync", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				standInDirectory(s, directory.SyncReport{}, nil)
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/sync"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
+		},
+		{
+			// A stand-in for the directory, so nothing is dialled.
+			name: "POST /admin/organizations/{orgID}/directories/{slug}/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				s.directoryTest = func(context.Context, *pgxpool.Pool, *keys.RootKey, string, string) (
+					directory.TestResult, error) {
+					return directory.TestResult{OK: true, Found: 1}, nil
+				}
+				return "/admin/organizations/" + newDriftDirectory(t, s) + "/directories/drift/test"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/scim-sources", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/scim-sources"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"slug":"drift"}` },
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/scim-sources/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.AddSCIMSource(context.Background(), s.db, org, "drift", "", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/scim-sources/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/scim-targets", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/scim-targets"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"slug":"drift","base_url":"https://scim.example.test/v2","token":"a-token"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/scim-targets/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift/groups/drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				ctx := context.Background()
+				org, fake := newDriftSCIMTarget(t, s, false)
+				target, err := provision.TargetForGroups(ctx, s.db, s.root, org, "drift")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := provision.ProvisionGroup(ctx, s.db, target, fake.Client(), "drift-group"); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/scim-targets/drift/groups/drift-group"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// An organisation with nobody in it, so nothing is sent.
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/sync", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, _ := newDriftSCIMTarget(t, s, false)
+				return "/admin/organizations/" + org + "/scim-targets/drift/sync"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"apply":true}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftCodeTarget(t, s) + "/scim-targets/billing/authorization"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"redirect_uri":"https://console.example.test/scim/callback"}`
+			},
+		},
+		{
+			// Started and signed in for, so the route redeems a code the fake issued.
+			name: "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftCodeTarget(t, s) + "/scim-targets/billing/authorization/code"
+			},
+			body: signedInAtTheTarget,
+		},
+		{
+			// A poll stream, which needs no endpoint or token.
+			name: "POST /admin/organizations/{orgID}/ssf-streams", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				clientIn(t, s, org)
+				return "/admin/organizations/" + org + "/ssf-streams"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				var client string
+				if err := s.db.QueryRow(context.Background(), `SELECT client_id FROM core.clients
+					WHERE org_id::text = split_part($1, '/', 4)`, path).Scan(&client); err != nil {
+					t.Fatal(err)
+				}
+				return `{"client_id":"` + client + `","poll":true}`
+			},
+		},
+		{
+			name: "PATCH /admin/clients/{clientID}/ssf-stream", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				client := clientIn(t, s, org)
+				if _, err := store.AddStream(context.Background(), s.db, s.root, org, store.StreamSpec{ClientID: client,
+					Poll: true}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/ssf-stream"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"status":"paused"}` },
+		},
+		{
+			// Issuer and audience are unique together across the deployment.
+			name: "PUT /admin/organizations/{orgID}/ssf-sources", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/ssf-sources"
+			},
+			body: func(_ *testing.T, _ *Server, path string) string {
+				return `{"name":"drift","issuer":"https://transmitter.example.test","jwks_uri":` +
+					`"https://transmitter.example.test/jwks","audience":"https://receiver.example.test/` +
+					strings.Split(path, "/")[3] + `","events":["` + ssf.EventSessionRevoked + `"]}`
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/credential-revocations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/credential-revocations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"user_id":"00000000-0000-4000-8000-000000000000"}`
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/credential-requests/{requestID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				user := newDriftUserIn(t, s, org)
+				var id string
+				if err := s.db.QueryRow(context.Background(), `
+					INSERT INTO core.credential_requests (org_id, user_id, configuration, token_jti, transaction_hash, holder_keys)
+					VALUES ($1::uuid, $2::uuid, 'drift', 'drift', sha256(gen_random_uuid()::text::bytea), '[]')
+					RETURNING id::text`, org, user).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/credential-requests/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return `{"decision":"deny"}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/ssf-sources/poll", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.AddSource(context.Background(), s.db, org, "drift", "https://transmitter.example.test",
+					"https://transmitter.example.test/jwks", "https://receiver.example.test/poll/"+org,
+					[]string{ssf.EventSessionRevoked}, nil); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/ssf-sources/poll"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"issuer":"https://transmitter.example.test",` +
+					`"poll_url":"https://transmitter.example.test/ssf/poll","secret":"drift-credential"}`
+			},
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/federation", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
+				})
+				return "/admin/instances/" + id + "/federation"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"authority_hints":["https://anchor.example.test"]}`
+			},
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/federation/subordinates", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/subordinates"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"entity_id":"https://leaf.example.test","jwks":{"keys":[` + driftJWK + `]}}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/federation/subordinates", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				if err := store.SetSubordinate(context.Background(), s.db, id, store.Subordinate{
+					EntityID: "https://leaf.example.test", JWKS: []byte(`{"keys":[` + driftJWK + `]}`)}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/federation/subordinates?entity_id=https://leaf.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return `` },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/federation/anchors", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/anchors"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return `{"entity_id":"https://anchor.example.test","org_id":"` + newDriftOrg(t, s) +
+					`","jwks":{"keys":[` + driftJWK + `]}}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/federation/anchors", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				if err := store.SetFederationAnchor(context.Background(), s.db, id, store.FederationAnchor{
+					EntityID: "https://anchor.example.test", OrgID: newDriftOrg(t, s), JWKS: []byte(`{"keys":[` + driftJWK + `]}`)}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/federation/anchors?entity_id=https://anchor.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return `` },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-marks", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-marks"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","subject":"https://rp.example.test","lifetime_s":3600}`
+			},
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-marks/revoke", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				issuer, _, err := store.InstanceIssuer(context.Background(), s.db, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := store.IssueSignedTrustMark(context.Background(), s.db, s.root, id, issuer,
+					oidfed.TrustMarkParams{Subject: "https://rp.example.test", Type: driftMarkType,
+						Lifetime: time.Hour}, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/trust-marks/revoke"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","subject":"https://rp.example.test"}`
+			},
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/held-trust-marks", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/held-trust-marks"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				mark, _ := driftTrustMarkFor(t, s, entityOf(t, s, path))
+				return `{"trust_mark":"` + mark + `"}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/held-trust-marks", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftFederatedInstance(t, s)
+				path := "/admin/instances/" + id + "/held-trust-marks"
+				mark, issuer := driftTrustMarkFor(t, s, entityOf(t, s, path))
+				if _, err := store.AcceptTrustMark(context.Background(), s.db, id, entityOf(t, s, path), mark,
+					time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				return path + "?type=" + url.QueryEscape(driftMarkType) + "&issuer=" + url.QueryEscape(issuer)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/trust-mark-delegations", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-mark-delegations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"type":"` + driftMarkType + `","delegate":"https://delegate.example.test","lifetime_s":3600}`
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/authorization-model", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/authorization-model"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"source": driftModel})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/relations", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/relations"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"subject":"user:alice","relation":"owner","object":"document:1"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/relations", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.GrantRelation(context.Background(), s.db, org, store.Relation{SubjectType: "user",
+					SubjectID: "alice", Relation: "owner", ObjectType: "document", ObjectID: "1"}, ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/relations?subject=user:alice&relation=owner&object=document:1"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A group the organisation does not have, so the plan creates it.
+			name: "POST /admin/organizations/{orgID}/config", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/config"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": "version: 1\ngroups:\n  - name: drift\n"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/access-policy", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/access-policy"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": "version: 1\npolicies: []\ntests:\n" +
+					"  - name: open\n    given: {client: anything}\n    expect: allow\n"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/sign-in-flow", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/sign-in-flow"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				b, err := json.Marshal(map[string]string{"document": string(flow.DefaultDocument())})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(b)
+			},
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/rac-connections", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/rac-connections"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"slug":"drift","protocol":"ssh","host":"bastion.example.test"}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/rac-connections/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.AddRACConnection(context.Background(), s.db, s.root, org, store.RACSpec{Slug: "drift",
+					Protocol: "ssh", Host: "bastion.example.test"}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/rac-connections/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/outposts", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/outposts"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"name":"drift","kind":"radius"}` },
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/outposts/{name}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.CreateOutpost(context.Background(), s.db, org, "drift", "radius", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/outposts/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/outposts/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.CreateOutpost(context.Background(), s.db, org, "drift", "radius", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/outposts/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/outposts/{name}/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.CreateOutpost(context.Background(), s.db, org, "drift", "radius", ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/outposts/drift/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/providers/{hook}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/providers/token_issue"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"url":"https://hooks.example.test/claims","mode":"fail_open"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/providers/{hook}", method: http.MethodDelete,
+			path: newDriftProvider,
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string { return newDriftProvider(t, s) + "/rotate-secret" },
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/providers/{hook}/claims", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string { return newDriftProvider(t, s) + "/claims" },
+			body: func(*testing.T, *Server, string) string { return `{"claims":["department"]}` },
+		},
+		{
+			// An instance of its own with an active key, so rotating publishes
+			// a next one.
+			name: "POST /admin/instances/{instanceID}/keys/rotate", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys/rotate"
+			},
+			body: func(*testing.T, *Server, string) string { return `{}` },
+		},
+		{
+			name: "PUT /admin/instances/{instanceID}/client-metadata-rules", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftInstance(t, s) + "/client-metadata-rules"
+			},
+			body: func(t *testing.T, s *Server, path string) string {
+				org := newDriftOrgIn(t, s, strings.Split(path, "/")[3])
+				return `{"url_prefix":"https://drift.example.test/","org_id":"` + org + `"}`
+			},
+		},
+		{
+			name: "DELETE /admin/instances/{instanceID}/client-metadata-rules", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				id := newDriftInstance(t, s)
+				rule := store.ClientMetadataRule{URLPrefix: "https://drift.example.test/", OrgID: newDriftOrgIn(t, s, id)}
+				if err := store.SetClientMetadataRule(context.Background(), s.db, id, rule); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/instances/" + id + "/client-metadata-rules?url_prefix=" + url.QueryEscape(rule.URLPrefix)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/credential-encryption-key", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/credential-encryption-key"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/instances/{instanceID}/keys/retire", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys/retire"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A Duo stand-in, since the keys are checked against Duo first.
+			name: "PUT /admin/organizations/{orgID}/duo", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				healthyDuo(t)
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/duo"
+			},
+			body: func(*testing.T, *Server, string) string { return duoKeys },
+		},
+		{
+			name: "PUT /admin/users/{userID}/duo", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				sealed, err := s.root.Seal([]byte(strings.Repeat("s", 40)), "duo_secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SetDuoIntegration(context.Background(), s.db, org, "DIABCDEFGHIJKLMNOPQR", sealed,
+					"api-1234abcd.duosecurity.com", false); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/users/" + personIn(t, s, org) + "/duo"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"duo_username":"drift"}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/uma", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/uma"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"owner_intervention":true}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, id, _ := newDriftUMARequest(t, s)
+				return "/admin/organizations/" + org + "/uma/requests/" + id + "/approve"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"relation":"viewer"}` },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				org, id, _ := newDriftUMARequest(t, s)
+				return "/admin/organizations/" + org + "/uma/requests/" + id + "/deny"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/external-factors/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/external-factors/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string {
+				return `{"url":"https://factor.example/ask","issuer":"https://factor.example","amr":["otp"],"jwks":` +
+					string(publicJWKS(t)) + `}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/external-factors/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.SetExternalFactor(context.Background(), s.db, org, store.ExternalFactor{
+					Name: "drift", URL: "https://factor.example/ask", Issuer: "https://factor.example",
+					JWKS: publicJWKS(t), AMR: []string{"otp"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/external-factors/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/attesters/{name}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/attesters/drift"
+			},
+			body: func(t *testing.T, _ *Server, _ string) string { return `{"jwks":` + string(publicJWKS(t)) + `}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/attesters/{name}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := store.SetAttester(context.Background(), s.db, org, "drift", publicJWKS(t), ""); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/attesters/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/authorization-detail-types", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/authorization-detail-types"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"type":"drift","fields":["actions"]}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/authorization-detail-types", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.RegisterDetailType(context.Background(), s.db, org, store.DetailType{Type: "drift",
+					Fields: []string{"actions"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/authorization-detail-types?type=drift"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// Its own organisation: a prompt on the shared one is asked at
+			// every other test's sign-in.
+			name: "PUT /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/prompts/drift"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"title":"Drift","fields":[{"name":"ok","type":"checkbox","label":"OK","required":true}]}`
+			},
+		},
+		{
+			name: "PATCH /admin/organizations/{orgID}/prompts/{slug}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, _, err := store.SavePrompt(context.Background(), s.db, org, store.PromptDefinition{
+					Slug: "drift", Title: "Drift", Once: true, Fields: []prompts.Field{
+						{Name: "ok", Type: prompts.Checkbox, Label: "OK", Required: true}}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/prompts/drift"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"enabled":false}` },
+		},
+		{
+			// Its own organisation: registration open on the shared one would
+			// change what the registration tests see.
+			name: "PUT /admin/organizations/{orgID}/registration", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/registration"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"max_clients":5}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/registration", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.SetRegistrationPolicy(context.Background(), s.db, org, store.RegistrationPolicy{}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/registration"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/organizations/{orgID}/registration-tokens", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/registration-tokens"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"name":"drift","uses":1}` },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				_, id, err := store.NewRegistrationToken(context.Background(), s.db, org, "drift", 1, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/registration-tokens/" + id
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/signup", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if err := store.SetSignupRule(context.Background(), s.db, store.SignupRule{OrgID: org,
+					AllowedDomains: []string{"drift.example"}}); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/signup"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// A fresh person each time: a binding is once per person and role.
+			name: "POST /admin/organizations/{orgID}/role-bindings", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings"
+			},
+			body: func(t *testing.T, s *Server, _ string) string {
+				return fmt.Sprintf(`{"role":"auditor","user_id":%q}`, newDriftUser(t, s))
+			},
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings/" + newDriftBinding(t, s, "auditor")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// Asked for by another token, so the break-glass token may approve.
+			name: "POST /admin/approvals/{approvalID}/approve", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/approvals/" + newPendingApproval(t, s) + "/approve"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "POST /admin/approvals/{approvalID}/reject", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/approvals/" + newPendingApproval(t, s) + "/reject"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name:   "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
+			method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				orgID := anyOrgID(t, s)
+				return "/admin/organizations/" + orgID + "/proxy-hosts/" + newDriftProxyHost(t, s, orgID)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// An organisation of its own each time: the source is one per
+			// organisation, and the shared one must not acquire a source
+			// that would send its pending people's passwords somewhere.
+			name: "PUT /admin/organizations/{orgID}/migration-source", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/migration-source"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"kind":"ldap","display_name":"drift","url":"ldaps://dir.example.test",` +
+					`"bind_dn_template":"uid={username},dc=example"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/migration-source", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			// The source's directory is a reserved name, so the test answers at
+			// once, at the dial step; what is checked is the record it writes.
+			name: "POST /admin/organizations/{orgID}/migration-source/test", method: http.MethodPost,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source/test"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"username":"alice","password":"drift"}` },
+		},
+		{
+			name: "PUT /admin/organizations/{orgID}/resource-servers", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false) + "/resource-servers"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"resource":"https://api.drift.example.test","name":"drift"}`
+			},
+		},
+		{
+			name: "DELETE /admin/organizations/{orgID}/resource-servers", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				org := newDriftMigrationOrg(t, s, false)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.resource_servers (org_id, resource)
+					VALUES ($1::uuid, 'https://api.drift.example.test')`, org); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/organizations/" + org + "/resource-servers?resource=https://api.drift.example.test"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "POST /admin/organizations", method: http.MethodPost,
 			path: func(*testing.T, *Server) string { return "/admin/organizations" },
 			body: func(t *testing.T, s *Server, _ string) string {
@@ -163,9 +1622,21 @@ func allMutatingRoutes() []mutatingRoute {
 				// instance_id is named rather than inferred: the handler only
 				// infers it when a deployment has exactly one instance, and a
 				// test database accumulates several.
-				return fmt.Sprintf(`{"slug":"drift-%d","display_name":"Drift","instance_id":%q}`,
-					time.Now().UnixNano(), anyInstanceID(t, s))
+				slug := fmt.Sprintf("drift-%d", time.Now().UnixNano())
+				t.Cleanup(func() {
+					_, _ = s.db.Exec(context.Background(), `DELETE FROM core.organizations WHERE slug = $1`, slug)
+				})
+				return fmt.Sprintf(`{"slug":%q,"display_name":"Drift","instance_id":%q}`, slug, anyInstanceID(t, s))
 			},
+		},
+		{
+			// An organisation of its own: suspending a shared one would refuse
+			// every other test's sign-ins in it.
+			name: "PATCH /admin/organizations/{orgID}", method: http.MethodPatch,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/organizations/" + newDriftMigrationOrg(t, s, false)
+			},
+			body: func(*testing.T, *Server, string) string { return `{"status":"suspended"}` },
 		},
 		{
 			name: "POST /admin/clients", method: http.MethodPost,
@@ -194,6 +1665,48 @@ func allMutatingRoutes() []mutatingRoute {
 			name: "POST /admin/clients/{clientID}/rotate-secret", method: http.MethodPost,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/clients/" + newPreconditionClient(t, s) + "/rotate-secret"
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/clients/{clientID}/id-jag-audiences", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/clients/" + newPreconditionClient(t, s) + "/id-jag-audiences"
+			},
+			body: func(*testing.T, *Server, string) string {
+				return `{"audience":"https://as.example.test/","remote_client_id":"drift","alg":"ES256"}`
+			},
+		},
+		{
+			name: "DELETE /admin/clients/{clientID}/id-jag-audiences", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				client := newPreconditionClient(t, s)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.id_jag_audiences (client_id, audience, org_id, remote_client_id)
+					SELECT client_id, 'https://as.example.test/', org_id, 'drift' FROM core.clients WHERE client_id = $1`, client); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/id-jag-audiences?audience=" + url.QueryEscape("https://as.example.test/")
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "PUT /admin/clients/{clientID}/group-release", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/clients/" + newPreconditionClient(t, s) + "/group-release"
+			},
+			body: func(*testing.T, *Server, string) string { return `{"only_groups":[]}` },
+		},
+		{
+			// A client already told of every group, so there is a release to stop.
+			name: "DELETE /admin/clients/{clientID}/group-release", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				client := newPreconditionClient(t, s)
+				if _, err := s.db.Exec(context.Background(), `INSERT INTO core.client_group_release
+					(client_id, org_id, only_groups) SELECT client_id, org_id, '{}' FROM core.clients
+					WHERE client_id = $1`, client); err != nil {
+					t.Fatal(err)
+				}
+				return "/admin/clients/" + client + "/group-release"
 			},
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
@@ -247,6 +1760,20 @@ func allMutatingRoutes() []mutatingRoute {
 			body: func(*testing.T, *Server, string) string { return "" },
 		},
 		{
+			name: "PUT /admin/groups/{groupID}/member-groups/{memberGroupID}", method: http.MethodPut,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/member-groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
+			name: "DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}", method: http.MethodDelete,
+			path: func(t *testing.T, s *Server) string {
+				return "/admin/groups/" + newDriftGroup(t, s) + "/member-groups/" + newDriftGroup(t, s)
+			},
+			body: func(*testing.T, *Server, string) string { return "" },
+		},
+		{
 			name: "DELETE /admin/users/{userID}/sessions", method: http.MethodDelete,
 			path: func(t *testing.T, s *Server) string {
 				return "/admin/users/" + newDriftUser(t, s) + "/sessions"
@@ -277,6 +1804,207 @@ func newDriftGroup(t *testing.T, s *Server) string {
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.group_members WHERE group_id = $1::uuid`, id)
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.groups WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftInstance is an instance of the test's own, so a brand put on it is
+// seen by no other test's pages.
+func newDriftInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	var id string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO core.instances (issuer, display_name)
+		VALUES ('https://drift-' || gen_random_uuid() || '.test', 'Drift') RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.brands WHERE instance_id = $1::uuid`, id)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instance_issuer_aliases WHERE instance_id = $1::uuid`, id)
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instances WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftSubscription is an organisation of the test's own subscribed by name
+// to every event, and the path of that subscription.
+func newDriftSubscription(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.CreateSubscription(ctx, tx, s.root, org, "drift", "https://hooks.example.test/drift", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return "/admin/organizations/" + org + "/event-subscriptions/drift"
+}
+
+// driftMarkType is the Trust Mark type the federation fixtures issue.
+const driftMarkType = "https://marks.example.test/certified"
+
+// newDriftFederatedInstance is an instance of its own enabled for federation,
+// with the federation key that gives it.
+func newDriftFederatedInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
+	})
+	issuer, _, err := store.InstanceIssuer(ctx, s.db, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.EnableFederation(ctx, tx, s.root, id, issuer, store.FederationChange{
+		AuthorityHints: []string{"https://anchor.example.test"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// driftTrustMarkFor is a Trust Mark another federated instance issued to
+// entityID, and that issuer.
+func driftTrustMarkFor(t *testing.T, s *Server, entityID string) (mark, issuer string) {
+	t.Helper()
+	ctx := context.Background()
+	other := newDriftFederatedInstance(t, s)
+	issuer, _, err := store.InstanceIssuer(ctx, s.db, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, _, err = store.IssueSignedTrustMark(ctx, s.db, s.root, other, issuer, oidfed.TrustMarkParams{
+		Subject: entityID, Type: driftMarkType, Lifetime: time.Hour}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mark, issuer
+}
+
+// entityOf is the Entity Identifier of the instance an /admin/instances path
+// names.
+func entityOf(t *testing.T, s *Server, path string) string {
+	t.Helper()
+	issuer, _, err := store.InstanceIssuer(context.Background(), s.db, strings.Split(path, "/")[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return issuer
+}
+
+// driftModel is the smallest authorization model with a test, which a model
+// must have to load.
+const driftModel = `types:
+  document:
+    relations:
+      owner: []
+    permissions:
+      read: [owner]
+tests:
+  - name: an owner may read
+    subject: user:alice
+    action: read
+    resource: document:1
+    relations: [owner]
+    allow: true
+`
+
+// newDriftProvider registers a token_issue provider for an organisation of
+// its own and returns its path.
+func newDriftProvider(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, _, err := store.SaveProvider(ctx, tx, s.root, org, provider.Provider{Name: "provider-token_issue",
+		Hook: provider.HookTokenIssue, URL: "https://hooks.example.test/claims", Mode: provider.FailOpen,
+		Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return "/admin/organizations/" + org + "/providers/token_issue"
+}
+
+// newDriftOrgIn is an organisation of that instance, which goes with it.
+func newDriftOrgIn(t *testing.T, s *Server, instanceID string) string {
+	t.Helper()
+	var org string
+	if err := s.db.QueryRow(context.Background(), `INSERT INTO core.organizations (instance_id, slug, display_name)
+		VALUES ($1::uuid, 'drift-' || gen_random_uuid(), 'Drift') RETURNING id::text`, instanceID).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, s.db, org)
+	return org
+}
+
+// newDriftKeyedInstance is newDriftInstance with one active ES256 key.
+func newDriftKeyedInstance(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	k, err := keys.Generate(keys.NewKID(), keys.ES256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := keys.WithState(k, keys.StateActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := keys.Save(ctx, tx, id, active, s.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.signing_keys WHERE instance_id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftInstanceWithAlias is newDriftInstance claiming one legacy issuer.
+func newDriftInstanceWithAlias(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	id := newDriftInstance(t, s)
+	alias := fmt.Sprintf("https://legacy-%d.test", time.Now().UnixNano())
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.AddIssuerAlias(ctx, tx, id, alias, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.instance_issuer_aliases WHERE issuer = $1`, alias)
 	})
 	return id
 }
@@ -316,6 +2044,84 @@ func newDriftUser(t *testing.T, s *Server) string {
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.users WHERE id = $1::uuid`, id)
+	})
+	return id
+}
+
+// newDriftBinding gives a fresh person in the fixture organisation a role and
+// returns the binding's id; the person's removal takes the binding with it.
+func newDriftBinding(t *testing.T, s *Server, role string) string {
+	t.Helper()
+	id, err := store.GrantRole(context.Background(), s.db, store.RoleBinding{
+		OrgID: anyOrgID(t, s), UserID: newDriftUser(t, s), Role: role})
+	if err != nil {
+		t.Fatalf("granting the fixture role: %v", err)
+	}
+	return id
+}
+
+// newPendingApproval keeps a request waiting for a second person, asked for by
+// a token that is not the break-glass one: a harmless settings change, which
+// answers 200 when an approval replays it.
+func newPendingApproval(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	org := anyOrgID(t, s)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, _, err := store.RequestApproval(ctx, tx, store.Approval{OrgID: org, Kind: store.ApprovalOwnerGrant,
+		Method: http.MethodPatch, Path: "/admin/organizations/" + org + "/settings",
+		Body: []byte(`{"new_device_notice":true}`), Summary: "a fixture", RequestedBy: "token:fixture",
+		RequestedName: "fixture"})
+	if err != nil {
+		t.Fatalf("keeping the fixture approval: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_approvals WHERE id::text = $1`, id)
+	})
+	return id
+}
+
+// newDriftToken makes a token for the rotate and revoke routes, removed by
+// name with whatever replacement a rotation made.
+func newDriftToken(t *testing.T, s *Server) string {
+	t.Helper()
+	name := fmt.Sprintf("drift-token-%d", time.Now().UnixNano())
+	expires := time.Now().Add(time.Hour)
+	_, id, err := NewToken(context.Background(), s.db, name, "", []string{ScopeConfigRead}, &expires, nil, nil)
+	if err != nil {
+		t.Fatalf("creating the fixture token: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE name = $1`, name)
+	})
+	return id
+}
+
+// newDriftInvitation makes an open invitation for the revoke route to close.
+func newDriftInvitation(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id, _, _, err := store.NewInvitation(ctx, tx, store.InvitationSpec{OrgID: anyOrgID(t, s), TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("creating the fixture invitation: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(), `DELETE FROM core.invitations WHERE id = $1::uuid`, id)
 	})
 	return id
 }
@@ -360,6 +2166,30 @@ func newDriftUserWithAttribute(t *testing.T, s *Server) string {
 	return userID
 }
 
+// newDriftUserWithValue is newDriftUserWithAttribute with a value set, so
+// there is one to clear.
+func newDriftUserWithValue(t *testing.T, s *Server) string {
+	t.Helper()
+	ctx := context.Background()
+	userID := newDriftUserWithAttribute(t, s)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAttribute(ctx, tx, userID, orgID, driftAttributeName, "a value", s.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return userID
+}
+
 // orgWithDriftAttribute returns an organisation that declares the fixture
 // attribute, so a mapper has something to point at.
 func orgWithDriftAttribute(t *testing.T, s *Server) string {
@@ -381,20 +2211,24 @@ func orgWithDriftAttribute(t *testing.T, s *Server) string {
 // the delete case would race the create case above.
 func newDriftMapper(t *testing.T, s *Server, orgID string) string {
 	t.Helper()
+	// An attribute of its own: one every-client mapper per attribute and
+	// destination is all there may be (0.39), and fixtures sharing the drift
+	// attribute would collide.
+	attr := fmt.Sprintf("drift_mapped_%d", time.Now().UnixNano())
 	var id string
 	if err := s.db.QueryRow(context.Background(), `
+		WITH a AS (INSERT INTO core.user_attribute_schema (org_id, name) VALUES ($1::uuid, $3) RETURNING id)
 		INSERT INTO core.claim_mappers
 			(org_id, client_id, attribute_id, claim_name, destination, required_scope)
-		SELECT $1::uuid, NULL, id, $2, 'id_token', ''
-		FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $3
+		SELECT $1::uuid, NULL, a.id, $2, 'id_token', '' FROM a
 		RETURNING id::text`,
-		orgID, fmt.Sprintf("drift_del_%d", time.Now().UnixNano()), driftAttributeName).
+		orgID, fmt.Sprintf("drift_del_%d", time.Now().UnixNano()), attr).
 		Scan(&id); err != nil {
 		t.Fatalf("creating the fixture mapper: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = s.db.Exec(context.Background(),
-			`DELETE FROM core.claim_mappers WHERE id = $1::uuid`, id)
+			`DELETE FROM core.user_attribute_schema WHERE org_id = $1::uuid AND name = $2`, orgID, attr)
 	})
 	return id
 }
@@ -413,6 +2247,21 @@ func newDriftScope(t *testing.T, s *Server, orgID string) string {
 			`DELETE FROM core.scopes WHERE org_id = $1::uuid AND name = $2`, orgID, name)
 	})
 	return name
+}
+
+// newDriftProxyHost registers a protected host for the delete case to remove.
+func newDriftProxyHost(t *testing.T, s *Server, orgID string) string {
+	t.Helper()
+	host := fmt.Sprintf("drift-del-%d.example.com", time.Now().UnixNano())
+	if _, err := s.db.Exec(context.Background(),
+		`INSERT INTO core.proxy_hosts (org_id, host) VALUES ($1::uuid, $2)`, orgID, host); err != nil {
+		t.Fatalf("registering the fixture host: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.Exec(context.Background(),
+			`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, host)
+	})
+	return host
 }
 
 func anyInstanceID(t *testing.T, s *Server) string {
@@ -507,20 +2356,34 @@ func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// mux.HandleFunc("METHOD /admin/...", ...) for the methods that write.
-	// Matches both registration forms. `route(...)` is the one that also records
-	// the operation for the OpenAPI document; `mux.HandleFunc` remains for the
-	// unauthenticated document endpoint itself.
+	// A route pattern for a method that writes, as the first argument of any
+	// call. It does not depend on the wrapper's name.
 	//
-	// This regex went blind once already: Routes() moved from mux.HandleFunc to
-	// route() and this guard silently matched nothing. It reported that rather
-	// than passing, because of the count check below -- which is the only reason
-	// the change did not land with every precondition assertion quietly skipped.
-	re := regexp.MustCompile(`(?:mux\.HandleFunc|route)\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
-	found := re.FindAllStringSubmatch(string(src), -1)
+	// This regex went blind twice. The first time, Routes() moved from
+	// mux.HandleFunc to route() and it matched nothing, which the count check
+	// below reported. The second time, writes on users and groups moved to
+	// privileged() and it stopped seeing ten of them. The count stayed above the
+	// floor, so nothing reported it. The router's own operation table is
+	// therefore read as well, and the two must agree.
+	re := regexp.MustCompile(`\("(POST|PATCH|PUT|DELETE) (/admin/[^"]*)"`)
+	found := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		found[m[1]+" "+m[2]] = true
+	}
 	if len(found) < 8 {
 		t.Fatalf("only %d mutating registrations parsed out of server.go; the regex "+
 			"has stopped matching and this guard is checking nothing", len(found))
+	}
+	s := routerOnly(t)
+	for _, op := range s.ops {
+		if op.method == "get" {
+			continue
+		}
+		name := strings.ToUpper(op.method) + " " + op.path
+		if !found[name] {
+			t.Errorf("%s is registered and the source scan did not see it, so the "+
+				"scan has gone blind to a registration form", name)
+		}
 	}
 
 	listed := map[string]bool{}
@@ -529,12 +2392,12 @@ func TestTheMutatingRouteListCoversEveryRegisteredRoute(t *testing.T) {
 	}
 
 	var missing []string
-	for _, m := range found {
-		name := m[1] + " " + m[2]
+	for name := range found {
 		if !listed[name] {
 			missing = append(missing, "  "+name)
 		}
 	}
+	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("%d mutating route(s) are registered but absent from "+
 			"allMutatingRoutes():\n%s\n\nEach is currently exempt from both the "+
@@ -552,21 +2415,35 @@ func TestEveryMutatingRouteHonoursPreconditions(t *testing.T) {
 			path := rt.path(t, s)
 			body := rt.body(t, s, path)
 
-			before := currentVersion(t, s)
-			stale := fmt.Sprintf(`"%d"`, before-1)
+			// The version is global, and other packages' tests move it while
+			// this runs, so one move proves nothing about this route. A
+			// refused write that commits moves it every time; up to eight
+			// tries, and a move on every one is the failure (4.19). Three
+			// were once all moved by other packages in a parallel run (0.22).
+			const tries = 8
+			moved := 0
+			var before, got int64
+			for i := 0; i < tries; i++ {
+				before = currentVersion(t, s)
+				stale := fmt.Sprintf(`"%d"`, before-1)
 
-			rec := httptest.NewRecorder()
-			s.Routes().ServeHTTP(rec, adminReq(t, rt.method, path, body, stale))
+				rec := httptest.NewRecorder()
+				s.Routes().ServeHTTP(rec, adminReq(t, rt.method, path, body, stale))
 
-			if rec.Code != http.StatusPreconditionFailed {
-				t.Fatalf("stale If-Match gave %d, want 412. This route does not thread "+
-					"the precondition through to mutateIf, so a caller asking for a "+
-					"conditional write gets an unconditional one: %s",
-					rec.Code, rec.Body.String())
+				if rec.Code != http.StatusPreconditionFailed {
+					t.Fatalf("stale If-Match gave %d, want 412. This route does not thread "+
+						"the precondition through to mutateIf, so a caller asking for a "+
+						"conditional write gets an unconditional one: %s",
+						rec.Code, rec.Body.String())
+				}
+				if got = currentVersion(t, s); got == before {
+					break
+				}
+				moved++
 			}
-			if got := currentVersion(t, s); got != before {
-				t.Errorf("a refused conditional write still moved the version: %d -> %d",
-					before, got)
+			if moved == tries {
+				t.Errorf("a refused conditional write still moved the version, %d times out of %d: "+
+					"%d -> %d", moved, tries, before, got)
 			}
 		})
 	}
@@ -596,16 +2473,21 @@ func TestEveryMutatingRouteBumpsTheConfigVersion(t *testing.T) {
 			}
 			after := currentVersion(t, s)
 			if after <= before {
-				t.Errorf("config version %d -> %d: this mutation is durable and "+
-					"INVISIBLE. Engine nodes poll this counter to decide when to "+
-					"reload, so a write that does not move it is applied in the "+
-					"database and ignored by every running node", before, after)
+				t.Errorf("config version %d -> %d: this mutation does not move the "+
+					"counter If-Match compares, so a client that read before it still "+
+					"matches and its conditional write overwrites this one unseen",
+					before, after)
 			}
 			// And the caller is told, so it can confirm propagation without polling.
-			if tag := rec.Header().Get("ETag"); tag != fmt.Sprintf(`"%d"`, after) {
-				t.Errorf("ETag = %q, want %q: a mutation that does not return its "+
-					"version forces a second round trip before the next conditional "+
-					"write", tag, fmt.Sprintf(`"%d"`, after))
+			// Another package's test can move the global version between the
+			// response and the read of after, so the tag must name a version
+			// this write could have committed: past before, not past after.
+			var tagged int64
+			tag := rec.Header().Get("ETag")
+			if _, err := fmt.Sscanf(tag, `"%d"`, &tagged); err != nil || tagged <= before || tagged > after {
+				t.Errorf("ETag = %q, want a version in (%d, %d]: a mutation that does "+
+					"not return its version forces a second round trip before the "+
+					"next conditional write", tag, before, after)
 			}
 		})
 	}

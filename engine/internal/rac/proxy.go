@@ -1,10 +1,39 @@
 package rac
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
+	"time"
 )
+
+// Recheck reports whether the person may still hold this channel, and when not,
+// why. Asked every RecheckInterval for as long as the channel is open.
+type Recheck func(ctx context.Context) (ok bool, reason string)
+
+// RecheckInterval is how often an open channel asks again.
+//
+// Thirty seconds is the bound on how long a channel outlives the thing that
+// should end it. Without the question at all it was the channel's whole life:
+// signing out, an administrator revoking the session and deactivating the
+// account each ended every other way into the deployment, and left a remote
+// desktop open in the browser that had it until somebody closed the tab.
+func RecheckInterval() time.Duration { return time.Duration(recheckInterval.Load()) }
+
+// SetRecheckInterval changes it and answers what it was, only so a test does not wait half a
+// minute. Held atomically: as a plain variable, a test shortening it while another test's
+// channel was still opening was a data race (go test -race, 19 Nov).
+func SetRecheckInterval(d time.Duration) (was time.Duration) {
+	return time.Duration(recheckInterval.Swap(int64(d)))
+}
+
+var recheckInterval = func() *atomic.Int64 {
+	var v atomic.Int64
+	v.Store(int64(30 * time.Second))
+	return &v
+}()
 
 // Copying between a browser and guacd.
 //
@@ -24,7 +53,8 @@ type Peer interface {
 	//
 	// The error should report a normal close distinguishably; see NormalClose.
 	ReadMessage(ctx context.Context) ([]byte, error)
-	// WriteMessage sends one message, which must contain whole instructions.
+	// WriteMessage sends one message, which must contain whole instructions. It
+	// is called from two goroutines, and neither message may split the other.
 	WriteMessage(ctx context.Context, data []byte) error
 }
 
@@ -32,16 +62,37 @@ type Peer interface {
 // deliberately, so it can be reported as that rather than as a failure.
 var NormalClose = errors.New("closed by the user")
 
-// Proxy copies between a browser and guacd until either stops, and returns why.
+// Proxy copies between a browser and guacd until either stops, or until
+// recheck -- when given -- says the person may no longer hold the channel, and
+// returns why.
 //
 // The reason is returned rather than logged because it is recorded against the
 // session: "the session closed" with no reason tells an operator nothing about
 // whether the user left or the host died.
-func Proxy(ctx context.Context, peer Peer, guac *Session) string {
+func Proxy(ctx context.Context, peer Peer, guac *Session, recheck Recheck) string {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	done := make(chan string, 2)
+	// One slot per sender, so none blocks after the first answer is taken.
+	done := make(chan string, 3)
+
+	if recheck != nil {
+		go func() {
+			t := time.NewTicker(RecheckInterval())
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if ok, reason := recheck(ctx); !ok {
+						done <- reason
+						return
+					}
+				}
+			}
+		}()
+	}
 
 	// The tunnel identifier, before anything else.
 	//
@@ -63,6 +114,15 @@ func Proxy(ctx context.Context, peer Peer, guac *Session) string {
 			if err != nil {
 				done <- reasonFor(err, "client disconnected")
 				return
+			}
+			if reply, internal := forThisEnd(data); internal {
+				if reply != nil {
+					if err := peer.WriteMessage(ctx, reply); err != nil {
+						done <- reasonFor(err, "client stopped reading")
+						return
+					}
+				}
+				continue
 			}
 			if _, err := guac.WriteRaw(data); err != nil {
 				done <- "guacd stopped reading"
@@ -95,6 +155,25 @@ func Proxy(ctx context.Context, peer Peer, guac *Session) string {
 	// The first side to finish ends the session; the other goroutine unblocks
 	// when its connection closes, which the caller's Close guarantees.
 	return <-done
+}
+
+// forThisEnd reports whether a browser message is for the tunnel and not for
+// guacd, which is what an empty opcode says, and what to answer it with.
+//
+// The browser's tunnel gives up on a channel it has heard nothing on for fifteen
+// seconds, and its ping is how it hears from this end when guacd has nothing to
+// say: guacamole-common.js:15414 has the endpoint send back an identical one. Sent on
+// to guacd instead, a channel stayed open only for as long as guacd kept drawing, and
+// the person typing a password into the viewer's form was disconnected part way.
+func forThisEnd(data []byte) (reply []byte, internal bool) {
+	if !bytes.HasPrefix(data, []byte("0.")) {
+		return nil, false
+	}
+	in, err := NewReader(bytes.NewReader(data)).ReadInstruction()
+	if err == nil && len(in.Args) == 2 && in.Args[0] == "ping" {
+		return data, true
+	}
+	return nil, true
 }
 
 func reasonFor(err error, fallback string) string {

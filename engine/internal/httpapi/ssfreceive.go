@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,60 +30,97 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusBadRequest)
 		return
 	}
-
-	// The issuer is read from the UNVERIFIED payload, and used only to choose
-	// which key set to verify against. That is safe -- picking the wrong source
-	// means the signature fails -- and it is the only way to know whose keys to
-	// use before checking anything.
-	issuer, ok := unverifiedIssuer(raw)
-	if !ok {
-		writeSSFError(w, http.StatusBadRequest, errInvalidRequest,
-			"the request body could not be parsed as a SET")
+	if res := s.acceptSET(ctx, raw, ""); res.status != http.StatusAccepted {
+		writeSSFError(w, res.status, res.code, res.description)
 		return
 	}
-	src, found, err := store.SourceByIssuer(ctx, s.db, issuer)
+	// 202: accepted and acted on. RFC 8935 expects 202 with an empty body.
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// setResult is what came of one token, in the terms RFC 8935 answers a transmitter in:
+// 202, a 400 with a registered code, or a 500 that was ours and may be tried again.
+type setResult struct {
+	status            int
+	code, description string
+}
+
+// acceptSET verifies a token and acts on it, however it arrived. polled names the source
+// it was pulled from, whose transmitter speaks for itself and nobody else: a token
+// signed by another source's issuer is not its to deliver, whichever keys it verifies with.
+func (s *Server) acceptSET(ctx context.Context, raw, polled string) setResult {
+	failed := setResult{status: http.StatusInternalServerError, code: errInvalidRequest}
+
+	// The issuer and audience are read from the UNVERIFIED payload, and used
+	// only to choose which source to verify against. That is safe -- picking
+	// the wrong source means verification fails -- and it is the only way to
+	// know whose keys to use before checking anything. Both, because two
+	// organisations can trust one transmitter and only the audience says which
+	// of them an event is for.
+	issuer, audiences, ok := ssf.Routing(raw)
+	if !ok {
+		return setResult{http.StatusBadRequest, errInvalidRequest, "the request body could not be parsed as a SET"}
+	}
+	src, found, err := store.SourceFor(ctx, s.db, issuer, audiences, s.instanceID)
+	if errors.Is(err, store.ErrAmbiguousSource) {
+		// Unreachable by one audience since migration 0138. A token listing
+		// several can still name two tenants' sources, and acting for either
+		// would be a guess about whose people to sign out.
+		s.log.WarnContext(ctx, "shared-signals event addressed to more than one organisation",
+			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
+		return setResult{http.StatusBadRequest, errInvalidAudience,
+			"the audience names more than one recipient here; address one"}
+	}
 	if err != nil {
-		s.log.Error("looking up a shared-signals source", "err", err)
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		s.log.ErrorContext(ctx, "looking up a shared-signals source", "err", err)
+		return failed
+	}
+	if found && polled != "" && src.ID != polled {
+		return setResult{http.StatusBadRequest, errInvalidIssuer, "this transmitter does not speak for that issuer"}
 	}
 	if !found {
-		// Deliberately the same shape as a verification failure. Distinguishing
-		// "we do not know that issuer" from "the signature is wrong" tells an
-		// unauthenticated caller which issuers we are configured for.
-		s.log.Info("shared-signals event from an unknown issuer",
-			"issuer", issuer, "correlation_id", correlationID(ctx))
-		// §2.4: invalid_issuer is "The SET Issuer is invalid for the SET
-		// Recipient", which is exactly this. 400 per §2.3.
-		writeSSFError(w, http.StatusBadRequest, errInvalidIssuer,
-			"no source is configured for that issuer")
-		return
+		// §2.4 distinguishes the two ways this happens. invalid_issuer is "The
+		// SET Issuer is invalid for the SET Recipient": the audience names a
+		// recipient here, which does not accept this issuer. invalid_audience is
+		// "The SET Audience does not correspond to the SET Recipient": it names
+		// nobody here. 400 either way, per §2.3.
+		received, aerr := store.AudienceIsReceived(ctx, s.db, audiences, s.instanceID)
+		if aerr != nil {
+			s.log.ErrorContext(ctx, "looking up a shared-signals audience", "err", aerr)
+			return failed
+		}
+		s.log.InfoContext(ctx, "shared-signals event matching no source",
+			"issuer", issuer, "audiences", audiences, "correlation_id", correlationID(ctx))
+		if !received {
+			return setResult{http.StatusBadRequest, errInvalidAudience, "the audience does not identify this recipient"}
+		}
+		return setResult{http.StatusBadRequest, errInvalidIssuer, "no source is configured for that issuer"}
 	}
 
 	event, err := ssf.Verify(ctx, s.ssfKeys, src, raw, time.Now())
 	if err != nil {
-		s.log.Warn("shared-signals event refused", "issuer", issuer, "err", err,
+		s.log.WarnContext(ctx, "shared-signals event refused", "issuer", issuer, "err", err,
 			"correlation_id", correlationID(ctx))
+		if errors.Is(err, ssf.ErrKeysUnavailable) {
+			return failed
+		}
 		// The registry distinguishes these, and a transmitter that cannot tell
 		// a wrong audience from a wrong key cannot fix its configuration.
 		code, desc := ssfErrorCode(err)
-		writeSSFError(w, http.StatusBadRequest, code, desc)
-		return
+		return setResult{http.StatusBadRequest, code, desc}
 	}
 
 	// Verified. Only now does anything get looked up or changed.
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		return failed
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	userID, err := store.ResolveSSFSubject(ctx, tx, src.OrgID, event.Subject)
 	if err != nil {
-		s.log.Error("resolving a shared-signals subject", "err", err)
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		s.log.ErrorContext(ctx, "resolving a shared-signals subject", "err", err)
+		return failed
 	}
 
 	// EVERY entry is applied, in this one transaction.
@@ -94,8 +130,7 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 	// landed. One transaction is what makes "all of it or none of it" true.
 	action, detail := s.applySignals(ctx, tx, event, userID)
 	if action == "" {
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		return failed
 	}
 
 	// Recorded BEFORE the commit, in the same transaction, so the replay guard
@@ -107,14 +142,12 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 			// A replay is not an error to the sender: at-least-once delivery
 			// means a transmitter legitimately resends, and answering 4xx would
 			// make it retry forever. Accepted, and nothing repeated.
-			s.log.Info("shared-signals event replayed", "issuer", issuer,
+			s.log.InfoContext(ctx, "shared-signals event replayed", "issuer", issuer,
 				"jti", event.JTI, "correlation_id", correlationID(ctx))
-			w.WriteHeader(http.StatusAccepted)
-			return
+			return setResult{status: http.StatusAccepted}
 		}
-		s.log.Error("recording a shared-signals event", "err", err)
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		s.log.ErrorContext(ctx, "recording a shared-signals event", "err", err)
+		return failed
 	}
 
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -124,42 +157,17 @@ func (s *Server) handleSSFReceive(w http.ResponseWriter, r *http.Request) {
 			"issuer": issuer, "event": event.Type, "action": action, "detail": detail,
 		},
 	}); err != nil {
-		s.log.Error("auditing a shared-signals event", "err", err)
+		s.log.ErrorContext(ctx, "auditing a shared-signals event", "err", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing a shared-signals event", "err", err)
-		writeSSFError(w, http.StatusInternalServerError, errInvalidRequest, "")
-		return
+		s.log.ErrorContext(ctx, "committing a shared-signals event", "err", err)
+		return failed
 	}
 
-	s.log.Info("shared-signals event applied", "issuer", issuer,
+	s.log.InfoContext(ctx, "shared-signals event applied", "issuer", issuer,
 		"event", event.Type, "action", action, "detail", detail)
-	// 202: accepted and acted on. RFC 8935 expects 202 with an empty body.
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// unverifiedIssuer reads `iss` from a compact JWS without verifying it.
-//
-// Used ONLY to choose which key set to verify against. Choosing wrongly makes
-// the signature fail, so this cannot grant anything -- but it must never be
-// used for a decision, and it is not.
-func unverifiedIssuer(raw string) (string, bool) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return "", false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", false
-	}
-	var c struct {
-		Issuer string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &c); err != nil || c.Issuer == "" {
-		return "", false
-	}
-	return c.Issuer, true
+	return setResult{status: http.StatusAccepted}
 }
 
 // SET error codes from the IANA registry, RFC 8935 §2.4.
@@ -276,13 +284,29 @@ func (s *Server) applySignals(ctx context.Context, tx pgx.Tx,
 		return "no_matching_user", event.Subject.Sub
 	}
 
-	revoked := false
+	revoked, compromised := false, false
 	var reasons []string
 	for _, typ := range event.Types {
 		switch typ {
 		case ssf.EventSessionRevoked:
 			revoked = true
 			reasons = append(reasons, "session revoked upstream")
+		case ssf.EventAccountDisabled, ssf.EventAccountPurged:
+			// Somebody the transmitter no longer lets in, for a reason of its own:
+			// hijacking, or an account that should not have existed. Sessions end.
+			// The account here is left: it is this organisation's to close, and a
+			// transmitter's word for one identity is not a verdict on all of them.
+			revoked = true
+			reasons = append(reasons, "account disabled upstream")
+		case ssf.EventAccountEnabled:
+			// Nothing comes back with it. A session that was ended stays ended,
+			// and the person signs in again.
+			reasons = append(reasons, "account enabled upstream")
+		case ssf.EventCredentialChangeRequired, ssf.EventCredentialCompromise:
+			// What was known to whoever has it may be the same password here, and
+			// ending the sessions does not stop them signing straight back in.
+			revoked, compromised = true, true
+			reasons = append(reasons, "credential compromised upstream")
 		case ssf.EventCredentialChange:
 			// Somebody else's credential change is a reason to end our sessions
 			// too: the same person's authentication elsewhere has changed, and
@@ -304,8 +328,14 @@ func (s *Server) applySignals(ctx context.Context, tx pgx.Tx,
 	}
 	n, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonSharedSignal)
 	if err != nil {
-		s.log.Error("terminating sessions from a shared signal", "err", err)
+		s.log.ErrorContext(ctx, "terminating sessions from a shared signal", "err", err)
 		return "", ""
+	}
+	if compromised {
+		if err := store.RequirePasswordChange(ctx, tx, userID, "reason.upstreamcompromise"); err != nil {
+			s.log.ErrorContext(ctx, "requiring a new password from a shared signal", "err", err)
+			return "", ""
+		}
 	}
 	return "sessions_revoked",
 		strings.Join(reasons, "; ") + "; " + itoaInt(n.Sessions) + " session(s)"

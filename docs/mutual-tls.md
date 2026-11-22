@@ -114,6 +114,30 @@ Both members are `omitempty`, so an unbound token carries no `cnf` at all rather
 than an empty object — a resource server checking for the claim must not be told
 "yes, and it is blank".
 
+## Enforced at this server's own resources
+
+RFC 8705 §3 puts the other half on the resource:
+
+> "The protected resource MUST obtain, from its TLS implementation layer, the
+> client certificate used for mutual TLS and MUST verify that the certificate
+> matches the certificate associated with the access token. If they do not
+> match, the resource access attempt MUST be rejected with an error, per
+> [RFC6750], using an HTTP 401 status code and the "invalid_token" error code."
+
+This server is a resource for three things: userinfo, the OID4VCI credential
+endpoint, and the token endpoint itself, when a token exchange or a transaction
+token request presents an access token as its subject. Each one requires a
+certificate-bound token to arrive over a connection that presents that same
+certificate. With no certificate, or a different one, userinfo and the
+credential endpoint answer `401` with `error="invalid_token"`, and the token
+endpoint refuses the subject token. DPoP-bound tokens get the same check
+against the proof, through the same function.
+
+Until October 2026 none of them read `cnf.x5t#S256`. Tokens were bound at
+issuance and the binding was never checked, so a stolen certificate-bound token
+worked for whoever held it. That is the decorated bearer token the first
+section of this page warns about.
+
 ---
 
 # Lifecycle pass: the refresh token was not certificate-bound either

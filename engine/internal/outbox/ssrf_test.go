@@ -1,12 +1,15 @@
 package outbox
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // A `backchannel_logout_uri` is chosen by the CLIENT, at registration. A webhook
@@ -74,6 +77,24 @@ func TestPrivateDeliveryCanBeAllowedExplicitly(t *testing.T) {
 		t.Fatalf("delivery was refused with the opt-out set: %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+// The opt-out opens the private network and never the metadata address. It
+// swapped in a plain transport, so a logout or CIBA notification URL -- chosen
+// by a client -- could read the instance's credentials from 169.254.169.254.
+func TestPrivateDeliveryNeverReachesTheMetadataAddress(t *testing.T) {
+	t.Setenv(AllowPrivateDelivery, "1")
+	c := outboundClient(2 * time.Second)
+	for _, u := range []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+	} {
+		_, err := c.Get(u)
+		var blocked *safedial.ErrBlocked
+		if !errors.As(err, &blocked) {
+			t.Errorf("with private delivery allowed, %s was not refused at the dialler: %v", u, err)
+		}
+	}
 }
 
 // Trusting an internal certificate authority and permitting requests into the

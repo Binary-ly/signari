@@ -20,12 +20,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 const (
@@ -39,6 +43,21 @@ const (
 
 	defaultTimeout = 20 * time.Second
 )
+
+// How a target's client authenticates at its token endpoint (Target.OAuthClientAuth).
+const (
+	ClientSecretBasic = "client_secret_basic"
+	ClientSecretPost  = "client_secret_post"
+)
+
+// CheckClientAuth refuses a client authentication method a target cannot be given.
+func CheckClientAuth(method string) error {
+	switch method {
+	case ClientSecretBasic, ClientSecretPost:
+		return nil
+	}
+	return fmt.Errorf("the client authenticates by %s or %s, not %q", ClientSecretBasic, ClientSecretPost, method)
+}
 
 // Target is a configured downstream application.
 type Target struct {
@@ -62,14 +81,39 @@ type Target struct {
 	// TargetDomain is the domain new accounts are created under.
 	TargetDomain string
 
-	// ScopeGroupID restricts provisioning to one group's members.
+	// ScopeGroupIDs restricts provisioning to these groups' members.
 	//
 	// Empty provisions every active user in the organisation, which is what
 	// every target did before this existed. Narrowing an existing target is a
 	// mass DEPROVISION at the remote system -- the next reconciliation sees
 	// accounts that should no longer exist and deactivates them -- which is
 	// exactly the shape provision.CheckSafety refuses above 25%.
-	ScopeGroupID string
+	ScopeGroupIDs []string
+
+	// RecreateMissing has a sync give somebody active here a new account when
+	// the one linked to them is gone from the target.
+	RecreateMissing bool
+
+	// OAuthTokenURL, when set, is where a bearer token is asked for by the client
+	// credentials grant, as OAuthClientID with Token as the client's secret and
+	// OAuthScope as the scope, which may be empty.
+	OAuthTokenURL, OAuthClientID, OAuthScope string
+	// OAuthClientAuth is how the client authenticates there: client_secret_basic,
+	// the default, which a token endpoint "MUST support" (specs/rfc6749.txt:875-877),
+	// or client_secret_post, the id and secret in the form (:883-893), which the
+	// RFC calls NOT RECOMMENDED (:903-904) and some token endpoints take alone.
+	OAuthClientAuth string
+	// OAuthAuthorizeURL, when set, has the target take the authorization code grant
+	// instead: somebody signs in there once (provision.BeginAuthorization), and each
+	// pass asks OAuthTokenURL for an access token with the refresh token that sign-in
+	// left, which Refresh keeps.
+	OAuthAuthorizeURL string
+	// Refresh holds that refresh token between passes. Nil for any other target.
+	Refresh RefreshTokens
+
+	// Compatibility names what this target needs that the protocol does not say
+	// it should (Compatibilities).
+	Compatibility []string
 }
 
 // User is the subset of the SCIM user schema we send.
@@ -89,6 +133,10 @@ type User struct {
 
 	// ID is assigned BY THE TARGET and only ever read, never sent.
 	ID string `json:"id,omitempty"`
+
+	// Enterprise is the extension as an upstream sends it, read by
+	// EnterpriseValues. Never sent to a target.
+	Enterprise json.RawMessage `json:"urn:ietf:params:scim:schemas:extension:enterprise:2.0:User,omitempty"`
 }
 
 // InboundUser is a User as an UPSTREAM sends it.
@@ -152,11 +200,17 @@ func NewUser(externalID, userName, displayName, email string, active bool) User 
 type Client struct {
 	target Target
 	http   *http.Client
+
+	// tokenMu guards a token asked for by the client credentials grant.
+	tokenMu     sync.Mutex
+	access      string
+	accessUntil time.Time
 }
 
+// NewClient talks to t over hc, or over safedial's client when hc is nil.
 func NewClient(t Target, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: defaultTimeout}
+		hc = safedial.Client(defaultTimeout)
 	}
 	return &Client{target: t, http: hc}
 }
@@ -169,6 +223,9 @@ type Error struct {
 	// Conflict marks 409, which for a create means the account already exists --
 	// not a failure to retry forever, but a signal to go and find its id.
 	Conflict bool
+	// OAuthError is the error code a token endpoint refused with, such as
+	// invalid_grant; "" from anything else.
+	OAuthError string
 }
 
 func (e *Error) Error() string {
@@ -213,6 +270,11 @@ func (c *Client) CreateUser(ctx context.Context, u User) (string, error) {
 func (c *Client) SetActive(ctx context.Context, remoteID string, active bool) error {
 	if c.target.DryRun {
 		return nil
+	}
+	if c.target.needs(CompatNoPatch) {
+		return c.replaceResource(ctx, "/Users/"+url.PathEscape(remoteID), func(user map[string]any) {
+			user["active"] = active
+		})
 	}
 	patch := map[string]any{
 		"schemas": []string{schemaPatch},
@@ -266,6 +328,18 @@ type ListResponse struct {
 // userName can change, and deleting whatever currently answers to a name is how
 // the wrong account gets removed.
 func (c *Client) FindByUserName(ctx context.Context, userName string) (*User, error) {
+	if c.target.needs(CompatNoFilter) {
+		everybody, err := c.ListUsers(ctx, 0)
+		if err != nil {
+			return nil, err
+		}
+		for i := range everybody {
+			if strings.EqualFold(everybody[i].UserName, userName) {
+				return &everybody[i], nil
+			}
+		}
+		return nil, nil
+	}
 	// The comparison value is a JSON string, not a Go one.
 	//
 	// RFC 7644 §3.4.2.2, of the filter grammar: "the `compValue` (comparison
@@ -334,38 +408,29 @@ func (c *Client) ListUsers(ctx context.Context, pageSize int) ([]User, error) {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, into any) error {
-	var reader io.Reader
+	var payload []byte
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
 			return err
 		}
-		reader = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method,
-		strings.TrimSuffix(c.target.BaseURL, "/")+path, reader)
+	status, raw, err := c.send(ctx, method, path, payload, false)
+	if err == nil && status == http.StatusUnauthorized && c.target.OAuthTokenURL != "" {
+		// A token can be revoked before its time. Asked for once more, and then
+		// the target's answer stands: this is not a loop to spend a credential in.
+		status, raw, err = c.send(ctx, method, path, payload, true)
+	}
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.target.Token)
-	req.Header.Set("Accept", contentType)
-	if body != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("calling the target: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-
-	if resp.StatusCode >= 400 {
+	if status >= 400 {
 		return &Error{
-			Status:   resp.StatusCode,
+			Status:   status,
 			Detail:   scimErrorDetail(raw),
-			Conflict: resp.StatusCode == http.StatusConflict,
+			Conflict: status == http.StatusConflict,
 		}
 	}
 	if into != nil && len(raw) > 0 {
@@ -374,6 +439,163 @@ func (c *Client) do(ctx context.Context, method, path string, body, into any) er
 		}
 	}
 	return nil
+}
+
+func (c *Client) send(ctx context.Context, method, path string, payload []byte, renew bool) (int, []byte, error) {
+	bearer, err := c.bearer(ctx, renew)
+	if err != nil {
+		return 0, nil, err
+	}
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method,
+		strings.TrimSuffix(c.target.BaseURL, "/")+path, reader)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Accept", contentType)
+	if payload != nil {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("calling the target: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return resp.StatusCode, raw, nil
+}
+
+// tokenSlack is how long before it expires a token is replaced, so one is not
+// sent to die on the way.
+const tokenSlack = 30 * time.Second
+
+// bearer is what a request authenticates with: the target's token, or one asked
+// for and kept until it nears its end. Kept here and not anywhere longer, since a
+// client lives for one pass: what a target issues is never written down.
+func (c *Client) bearer(ctx context.Context, renew bool) (string, error) {
+	if c.target.OAuthTokenURL == "" {
+		return c.target.Token, nil
+	}
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if !renew && c.access != "" && time.Now().Before(c.accessUntil) {
+		return c.access, nil
+	}
+	var issued issuedToken
+	var err error
+	if c.target.OAuthAuthorizeURL != "" {
+		issued, err = c.refresh(ctx)
+	} else {
+		form := url.Values{"grant_type": {"client_credentials"}}
+		if c.target.OAuthScope != "" {
+			form.Set("scope", c.target.OAuthScope)
+		}
+		issued, err = requestToken(ctx, c.http, c.target, form)
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := issued.usable(); err != nil {
+		return "", err
+	}
+	life := time.Duration(issued.ExpiresIn) * time.Second
+	if life <= 0 {
+		life = time.Hour
+	}
+	c.access, c.accessUntil = issued.AccessToken, time.Now().Add(life-tokenSlack)
+	return c.access, nil
+}
+
+// issuedToken is a token endpoint's answer (specs/rfc6749.txt:2386-2418).
+type issuedToken struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int64  `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// usable refuses an answer that gives nothing a SCIM request can carry.
+func (t issuedToken) usable() error {
+	if t.AccessToken == "" {
+		return errors.New("the token endpoint answered no access_token")
+	}
+	if !strings.EqualFold(t.TokenType, "bearer") {
+		return fmt.Errorf("the token endpoint issued a %q token, and a SCIM target is sent a bearer one",
+			t.TokenType)
+	}
+	return nil
+}
+
+// requestToken asks t's token endpoint for a token with form, as t's client.
+func requestToken(ctx context.Context, hc *http.Client, t Target, form url.Values) (issuedToken, error) {
+	post := t.OAuthClientAuth == ClientSecretPost
+	if post {
+		// Both in the body (specs/rfc6749.txt:887-893), and then not in a header
+		// as well: the client "MUST NOT use more than one authentication method
+		// in each request" (:864-865).
+		form.Set("client_id", t.OAuthClientID)
+		form.Set("client_secret", t.Token)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.OAuthTokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return issuedToken{}, err
+	}
+	if !post {
+		// Form-encoded first, which HTTP Basic alone is not: a secret with a colon
+		// or a percent sign in it is otherwise a different secret at the far end.
+		req.SetBasicAuth(url.QueryEscape(t.OAuthClientID), url.QueryEscape(t.Token))
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := hc.Do(req)
+	if err != nil {
+		return issuedToken{}, fmt.Errorf("asking the target's token endpoint: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return issuedToken{}, &Error{Status: resp.StatusCode, Detail: "the token endpoint: " + tokenErrorDetail(raw),
+			OAuthError: tokenErrorCode(raw)}
+	}
+	var issued issuedToken
+	if err := json.Unmarshal(raw, &issued); err != nil {
+		return issuedToken{}, fmt.Errorf("the token endpoint's response did not parse: %w", err)
+	}
+	return issued, nil
+}
+
+// tokenErrorDetail is the part of a token endpoint's refusal fit to repeat: what
+// it says went wrong, and never a body that could echo what it was sent.
+func tokenErrorDetail(raw []byte) string {
+	var e struct {
+		Error       string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil || e.Error == "" {
+		return "(no error it could name)"
+	}
+	if e.Description == "" {
+		return e.Error
+	}
+	return e.Error + ": " + e.Description
+}
+
+// tokenErrorCode is the error code alone, "" when the body names none.
+func tokenErrorCode(raw []byte) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	return e.Error
 }
 
 // scimErrorDetail pulls the human-readable part out of a SCIM error.

@@ -3,12 +3,20 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
+)
+
+// cibaPerUserLimit approval prompts may be put in front of one person per
+// cibaPerUserWindow, whatever client asks.
+const (
+	cibaPerUserLimit  = 5
+	cibaPerUserWindow = 10 * time.Minute
 )
 
 // Client-Initiated Backchannel Authentication, CIBA Core 1.0 (Final, 2021-09-01).
@@ -46,6 +54,18 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Duplicates refused BEFORE the client authenticates. CIBA §13 lists
+	// "includes a parameter more than once" under invalid_request
+	// (specs/ciba.html), and ParseCIBARequest below refused it, but only after
+	// authentication had read the first copy of each credential. A wrong secret
+	// followed by the right one was judged on the wrong one and charged to the
+	// client's failure budget.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusBadRequest,
+			Code: "invalid_request", Description: err.Error()})
+		return
+	}
+
 	// §7.1: "The Client MUST authenticate to the Backchannel Authentication
 	// Endpoint using the authentication method registered for its client_id".
 	//
@@ -78,7 +98,7 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-		s.log.Info("backchannel client authentication failed", "client_id", creds.ClientID,
+		s.log.InfoContext(ctx, "backchannel client authentication failed", "client_id", creds.ClientID,
 			"err", err, "correlation_id", correlationID(ctx))
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusUnauthorized,
 			Code: "invalid_client", Description: "client authentication failed"})
@@ -139,15 +159,39 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("resolving a CIBA subject", "err", err)
+		s.log.ErrorContext(ctx, "resolving a CIBA subject", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 			Code: "server_error", Description: "unavailable"})
 		return
 	}
 
+	// Paced per client and person. Each request puts an approval prompt in
+	// front of them, and there was no limit, so any client allowed CIBA could
+	// fill one person's queue until an approval was given to make it stop. CIBA
+	// §13 (specs/ciba.html, "Authentication Error Response") gives
+	// access_denied with 403 for a request the OP has decided to deny, which
+	// this is.
+	//
+	// Per client as well as per person. Keyed on the person alone, one client
+	// spending the allowance -- by design or by a bug -- denied that person CIBA
+	// from every other client in the organisation.
+	res, rerr := store.AllowRate(ctx, s.db, "ciba:user:"+c.ClientID+":"+userID,
+		cibaPerUserLimit, cibaPerUserWindow)
+	if rerr != nil {
+		s.log.ErrorContext(ctx, "checking the CIBA per-user limit", "err", rerr)
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
+			Code: "server_error", Description: "unavailable"})
+		return
+	}
+	if !res.Allowed {
+		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusForbidden,
+			Code: "access_denied", Description: "too many requests for this user; try again later"})
+		return
+	}
+
 	authReqID, err := oauth.NewAuthReqID()
 	if err != nil {
-		s.log.Error("minting an auth_req_id", "err", err)
+		s.log.ErrorContext(ctx, "minting an auth_req_id", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 			Code: "server_error", Description: "unavailable"})
 		return
@@ -156,10 +200,9 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 	lifetime := req.Expiry()
 	requestID, err := store.CreateBackchannelAuthentication(ctx, s.db, c.OrgID, c.ClientID,
 		userID, req.Scope, req.BindingMessage, req.ACRValues,
-		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime,
-		req.ClientNotificationToken)
+		store.HashToken(authReqID), oauth.CIBAMinPollInterval, lifetime)
 	if err != nil {
-		s.log.Error("recording a backchannel authentication", "err", err)
+		s.log.ErrorContext(ctx, "recording a backchannel authentication", "err", err)
 		writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 			Code: "server_error", Description: "unavailable"})
 		return
@@ -172,23 +215,23 @@ func (s *Server) handleBackchannelAuth(w http.ResponseWriter, r *http.Request) {
 		// Push parks the same way and for the same reason. What differs is what
 		// the row eventually carries: the tokens, sealed, written when the person
 		// decides. See store.CIBAPush.Sealed.
-		if err := store.QueueCIBAPush(ctx, s.db, requestID, c.ClientID,
+		if err := store.QueueCIBAPush(ctx, s.db, s.cfg.Root, requestID, c.ClientID,
 			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
 			authReqID); err != nil {
-			s.log.Error("parking a CIBA push", "err", err, "client_id", c.ClientID)
+			s.log.ErrorContext(ctx, "parking a CIBA push", "err", err, "client_id", c.ClientID)
 			writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 				Code: "server_error", Description: "unavailable"})
 			return
 		}
 	}
 	if c.BackchannelTokenDeliveryMode == oauth.DeliveryPing {
-		if err := store.QueueCIBAPing(ctx, s.db, requestID, c.ClientID,
+		if err := store.QueueCIBAPing(ctx, s.db, s.cfg.Root, requestID, c.ClientID,
 			c.BackchannelClientNotificationEndpoint, req.ClientNotificationToken,
 			authReqID); err != nil {
 			// Refused rather than issued: a ping client that receives an
 			// auth_req_id and no notification waits forever, which is the failure
 			// poll mode does not have and the reason this mode is opt-in.
-			s.log.Error("parking a CIBA ping", "err", err, "client_id", c.ClientID)
+			s.log.ErrorContext(ctx, "parking a CIBA ping", "err", err, "client_id", c.ClientID)
 			writeCIBAError(w, &oauth.CIBAError{Status: http.StatusInternalServerError,
 				Code: "server_error", Description: "unavailable"})
 			return
@@ -267,7 +310,7 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 			Status:      http.StatusBadRequest})
 		return
 	case errors.Is(err, store.ErrDeviceCodeWrongClient):
-		s.log.Info("auth_req_id presented by the wrong client", "presented_by", clientID,
+		s.log.InfoContext(ctx, "auth_req_id presented by the wrong client", "presented_by", clientID,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this auth_req_id was not issued to this client",
@@ -279,7 +322,7 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 		// was withdrawn rather than timed out — RFC 8628 §3.5 gives the code for
 		// "the end user denied", and a revoked session is the closest true
 		// statement: the authority behind the approval is gone.
-		s.log.Info("approval refused: the session behind it has ended",
+		s.log.InfoContext(ctx, "approval refused: the session behind it has ended",
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "access_denied",
 			Description: "the session this request was approved from has ended",
@@ -291,7 +334,7 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 			Status:      http.StatusBadRequest})
 		return
 	case err != nil:
-		s.log.Error("polling an auth_req_id", "err", err)
+		s.log.ErrorContext(ctx, "polling an auth_req_id", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -302,7 +345,6 @@ func (s *Server) handleCIBAGrant(w http.ResponseWriter, r *http.Request, clientI
 
 // handleBackchannelRequests shows the person what is waiting for them.
 func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/requests"), http.StatusSeeOther)
@@ -313,10 +355,16 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 		s.decideBackchannel(w, r, sid, userID, orgID)
 		return
 	}
+	s.renderBackchannel(w, r, userID, "")
+}
 
+// renderBackchannel lists the requests waiting on one person, with a refusal
+// to explain when there is one.
+func (s *Server) renderBackchannel(w http.ResponseWriter, r *http.Request, userID, refusal string) {
+	ctx := r.Context()
 	pending, err := store.PendingBackchannelFor(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("listing backchannel requests", "err", err)
+		s.log.ErrorContext(ctx, "listing backchannel requests", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -331,15 +379,28 @@ func (s *Server) handleBackchannelRequests(w http.ResponseWriter, r *http.Reques
 	}
 	printer := s.tr(r)
 	rows := make([]row, 0, len(pending))
+	ids := make([]string, 0, len(pending))
+	for _, p := range pending {
+		ids = append(ids, p.ClientID)
+	}
+	// Each in the reader's language when it has a name in it (10.12), read at once.
+	names, err := store.ClientNamesOf(r.Context(), s.db, ids)
+	if err != nil {
+		s.log.WarnContext(r.Context(), "reading clients' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
 	for _, p := range pending {
 		rows = append(rows, row{
-			ID: p.ID, ClientName: p.ClientName, Scope: p.Scope,
+			ID: p.ID, ClientName: pickClientName(names[p.ClientID], prefs, p.ClientName), Scope: p.Scope,
 			BindingMessage: p.BindingMessage,
 			Expires:        expiresIn(printer, time.Until(p.ExpiresAt)),
 		})
 	}
+	// The refusal is rendered with the page's ordinary status: renderPage sets
+	// the frame and content-security headers, and a status written before it
+	// would send the page without them.
 	s.renderPage(w, r, "backchannel", map[string]any{
-		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Requests": rows, "CSRF": csrf, "CSRFField": csrfFormField, "Error": refusal,
 	})
 }
 
@@ -377,6 +438,107 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 	id := r.PostForm.Get("id")
 	approve := r.PostForm.Get("decision") == "approve"
 
+	// The access policy, as at the authorization endpoint. CIBA signs a person
+	// in to a relying party like any other grant, and it was one of the ways in
+	// that never asked. A refusal is recorded as a denial, so the client hears
+	// access_denied rather than waiting for the request to expire.
+	refusal := ""
+	// Loaded whichever way the answer goes: the delivery after the decision
+	// needs the client, the scope and the person. nil when the request is not
+	// theirs, decided or expired -- DecideBackchannel then refuses it with the
+	// one answer, and nothing is delivered.
+	pending := store.PendingBackchannelRequest
+	if s.pendingBackchannel != nil {
+		pending = s.pendingBackchannel
+	}
+	d, derr := pending(ctx, s.db, id, userID)
+	switch {
+	case errors.Is(derr, store.ErrDeviceCodeUnknown):
+		d = nil
+	case derr != nil:
+		// Nothing decided. Any other failure used to leave d nil and carry on:
+		// the policy check below is skipped for a nil request, and the approval
+		// went through having asked nobody.
+		s.log.ErrorContext(ctx, "reading a backchannel request before deciding it", "err", derr,
+			"correlation_id", correlationID(ctx))
+		http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
+		return
+	}
+	if approve {
+		if d != nil {
+			mfa, amr := sessionFactors(ctx, s.db, sid)
+			if pd := s.checkAccessPolicy(ctx, r, orgID, d.ClientID, userID, d.Scope, mfa, amr); pd != nil {
+				s.auditDetached(ctx, audit.Event{
+					Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+					Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "ciba"},
+				})
+				approve, refusal = false, pd.Message
+			} else if s.clientAccessRefused(ctx, orgID, d.ClientID, userID) {
+				approve, refusal = false, clientAccessRefusal
+			}
+		}
+		// The request's acr_values, which the approving session must meet, as
+		// /authorize holds a session to a client's. CIBA §8 (specs/ciba.html:997):
+		// the OP authenticates the user "in line with the Client's requests
+		// regarding acr_values". They were stored "so the approval can be held
+		// to them" (migration 0088) and read by nothing, so a request asking for
+		// multi-factor was approved from a password-only session.
+		//
+		// Not a denial: the request stays pending, so the person can sign in
+		// again with a stronger factor and approve it.
+		if approve && d != nil && len(d.RequestedACR) > 0 {
+			var authTime time.Time
+			var amr []string
+			if err := s.db.QueryRow(ctx, `SELECT auth_time, amr FROM core.sessions WHERE sid = $1`,
+				sid).Scan(&authTime, &amr); err != nil {
+				s.log.ErrorContext(ctx, "loading the session to check a backchannel request's acr", "err", err)
+				http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
+				return
+			}
+			wanted := strings.Join(d.RequestedACR, " ")
+			if reason, _ := oauth.SessionSufficient(amr, authTime, time.Now(), wanted, nil, ""); reason != oauth.StepUpNone {
+				s.auditDetached(ctx, audit.Event{
+					Type: "ciba.step_up_required", OrgID: orgID, SubjectID: userID,
+					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+					Detail: map[string]any{"request_id": id, "requested_acr": d.RequestedACR},
+				})
+				msg := "This application asked for a stronger sign-in than this session has. " +
+					"Sign out, sign in again"
+				switch oauth.RequiredFactor(wanted) {
+				case "mfa":
+					msg += " with your second factor"
+				case "passkey":
+					msg += " with your passkey or security key"
+				}
+				s.renderBackchannel(w, r, userID, msg+", then approve it.")
+				return
+			}
+		}
+		// The client's floor (clientacr.go), whatever the request asked for.
+		// Not a denial either, for the same reason.
+		if approve && d != nil {
+			floor, err := clientFloor(ctx, s.db, d.ClientID)
+			if err != nil {
+				s.log.ErrorContext(ctx, "reading a client's acr floor at a backchannel approval", "err", err)
+				http.Error(w, "that request could not be checked; try again", http.StatusServiceUnavailable)
+				return
+			}
+			if _, amr := sessionFactors(ctx, s.db, sid); !oauth.Meets(amr, floor) {
+				s.auditDetached(ctx, audit.Event{
+					Type: "ciba.step_up_required", OrgID: orgID, SubjectID: userID,
+					ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+					Detail: map[string]any{"request_id": id, "client_minimum_acr": floor},
+				})
+				s.renderBackchannel(w, r, userID, floorRefusal(floor)+
+					" Sign out, sign in again with it, then approve it.")
+				return
+			}
+		}
+		// Not theirs, decided or expired: DecideBackchannel below refuses it with
+		// the one answer, so nothing here says whether it exists.
+	}
+
 	// The session's user is passed to the store, which puts it in the WHERE
 	// clause. Approving somebody else's request is therefore not something this
 	// handler has to remember to prevent.
@@ -384,7 +546,7 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 		// Not theirs, already answered, or expired. One message, because
 		// distinguishing them would say whether a request exists for somebody
 		// else.
-		s.log.Info("a backchannel decision did not apply", "err", err,
+		s.log.InfoContext(ctx, "a backchannel decision did not apply", "err", err,
 			"correlation_id", correlationID(ctx))
 	} else {
 		verb := "denied"
@@ -396,6 +558,25 @@ func (s *Server) decideBackchannel(w http.ResponseWriter, r *http.Request,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"request_id": id},
 		})
+
+		// The result, delivered. This page is the only place a CIBA request is
+		// decided, and it decided and stopped: ping and push -- both advertised
+		// in discovery -- parked a delivery at the request and nothing here ever
+		// released it, so neither mode ever told its client anything. The device
+		// page that did call these cannot see a CIBA request at all.
+		if d != nil {
+			if approve {
+				d.SID = sid
+				s.releaseCIBAPing(ctx, d.ID)
+				s.releaseCIBAPush(ctx, d)
+			} else {
+				s.announceDenial(ctx, d.ID)
+			}
+		}
+	}
+	if refusal != "" {
+		s.renderBackchannel(w, r, userID, refusal)
+		return
 	}
 	http.Redirect(w, r, "/account/requests", http.StatusSeeOther)
 }
@@ -408,6 +589,6 @@ func writeCIBAError(w http.ResponseWriter, e *oauth.CIBAError) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, status, map[string]string{
-		"error": e.Code, "error_description": e.Description,
+		"error": e.Code, "error_description": oauth.ErrorText(e.Description),
 	})
 }

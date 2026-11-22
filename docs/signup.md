@@ -38,7 +38,16 @@ could not reach something.
 sent is a standing way in.
 
 `signari invite list -org <uuid>` shows what is outstanding, used, expired or
-revoked.
+revoked, and `signari invite revoke` closes one.
+
+**Or have the engine mail it.** `-send`, with `-email`, prints no link. The
+engine's outbox mails it to the bound address instead, in the deployment's
+language, and makes the token only as the mail goes out, so the link exists
+nowhere but in that mail. A retried delivery makes a new one, and only the
+newest mail's link works. The same invitations can be made, listed and revoked
+through the Admin API (`/admin/invitations`, [admin-api](admin-api.md)), held to
+what adding a member to each named group is held to. Until October 2026 they
+were the CLI's alone, and every link was printed for an operator to pass on.
 
 ## Claiming is atomic, and reversible on failure
 
@@ -71,6 +80,87 @@ want, so it appears in the shell history of whoever did it.
 
 "Anyone may sign up" is almost never what an organisation means. "Anyone with an
 `@acme.com` address" usually is, and a checkbox cannot express the difference.
+
+### Approval before the first sign-in
+
+`signup enable -require-approval` keeps every account self-signup makes
+**pending** until an administrator lets it in. The account exists and holds its
+password, and signs nobody in: every way in (the sign-in form, an emailed code,
+a passkey, LDAP and RADIUS binds, a reset link) reads `status = 'active'`. The
+sign-up page says the account waits for approval, and offers no sign-in. An
+administrator approves it with `signari user approve -email <addr>`, with the
+Admin API's `PATCH /admin/users/{userID}` and `active: true`, or with the
+console's **Approve**. The person is then told by mail that they can sign in.
+Accounts made by invitation or by an administrator are never pending: somebody
+already chose them. `user.created` records `pending`, so a subscription to it
+([events](events.md)) can tell whoever approves. Until October 2026 an
+organisation that wanted to look first could only turn self-signup off.
+
+### The address is proved before the first sign-in
+
+A domain in the rule is only what somebody typed until a message sent to the
+address comes back. So, by default, an account self-signup creates cannot sign
+in until it has: its first sign-in is held at the sign-in flow's `verify_email`
+stage, a six-digit code goes to the address, and the session is issued when the
+code is entered. The address is then verified, and ID tokens and `/userinfo`
+say `email_verified: true`. Later sign-ins are not held.
+
+A code works for ten minutes, "send another" waits a minute between codes, and
+a wrong one counts against the same per-account budget as a second factor.
+Twenty wrong codes, across codes, close the confirmation; resetting the password
+from its emailed link then proves the address instead, as any completed reset
+does for the address its link was sent to.
+
+```sh
+signari signup enable -org <uuid> -domains acme.com -verify-email=false
+```
+
+turns it off, so new accounts sign straight in on an address nobody has proved
+and their tokens say `email_verified: false`.
+
+### Changing the address later
+
+A person moves their account to another address at `/account/email`, from a
+recent sign-in. A code goes to the new address, and the account keeps its old
+one — for sign-in, for recovery, and as the address its tokens carry — until the
+code comes back; then the new address is the account's, verified by that proof,
+and the old address and every channel the account has are told, naming
+neither. An address another account in the organisation uses is refused, a
+wrong code counts against the second-factor budget and twenty close that
+change, and the change can be abandoned with the address untouched. Audited
+`user.email_changed`. Usernames are not changeable by their owner: many
+organisations assign them from a directory, and that needs a per-organisation
+switch that does not exist yet. Accounts made by invitation or by
+an administrator are never held. Until October 2026 the rule's setting existed,
+was on, and was consulted by nothing: anybody could sign up, and straight in,
+as any address at an allowed domain.
+
+A self-signup never joins a group whose members may impersonate, even when
+`-groups` names one. The rule's groups go to anyone at an allowed domain, so
+that group would hand impersonation to whoever signs up. The account is created
+without that membership, the engine logs an error naming the group, and the
+`user.created` audit record lists only the groups that were actually joined.
+An invitation names one person and is sent by an operator, so its groups are
+joined as written.
+
+### An application asking for a new account
+
+An application can send people straight to the sign-up form with
+`prompt=create` on its authorization request
+([Initiating User Registration via OpenID Connect 1.0](https://openid.net/specs/openid-connect-prompt-create-1_0.html)).
+Where the application's organisation takes self-signup, the request goes to
+`/signup` and is carried through the form. The finished page's **Sign in** link
+then leads to a sign-in for that request, and the application gets its answer
+as from any sign-in. `create` is taken out of the request at that point, so the
+sign-in does not send the person back to the form. Where the organisation takes
+no self-signup, the person is shown the sign-in form with a note that accounts
+cannot be created there.
+
+Discovery lists `prompt_values_supported`: `none`, `login`, `consent`,
+`select_account` and `create`. A prompt value outside that list is refused with
+`invalid_request`, case included, so `prompt=Login` is an error rather than a
+request that silently re-authenticates nobody. Until October 2026 `create` was
+ignored, and so was any value the server did not know.
 
 ## Rate limiting
 

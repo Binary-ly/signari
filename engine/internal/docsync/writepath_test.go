@@ -62,94 +62,37 @@ import (
 // Each entry says what is fixed at its default as a result. **Delete entries as
 // they are closed; never add one to make a build pass.**
 var knownUnwritable = map[string]string{
-	// The engine's own runtime state, not operator configuration. These are
-	// written by nothing because the feature that would write them is absent,
-	// which is a different repair from adding a command.
-	"access_tokens.token_hash":       "the table is never inserted into, so the admin API's active-token count is structurally always zero",
-	"access_tokens.client_id":        "same table",
-	"access_tokens.user_id":          "same table",
-	"access_tokens.org_id":           "same table",
-	"access_tokens.sid":              "same table",
-	"access_tokens.scopes":           "same table",
-	"access_tokens.resources":        "same table",
-	"access_tokens.expires_at":       "same table",
-	"access_tokens.revoked_at":       "same table",
-	"sessions.ip_hash":               "never recorded at sign-in, so the admin session list always reports no address",
-	"sessions.user_agent":            "the same; the list always shows an empty user agent",
-	"audit_events.detail_enc":        "known: zero readers and zero writers, already named in the plan's documentation-honesty item",
-	"providers.wrap_key_ref":         "sealing context for provider credentials; no provider stores a secret yet",
-	"credential_nonces.org_id":       "written by the nonce path, which does not yet scope by organisation",
-	"registration_tokens.revoked_at": "a registration token can be spent but not revoked before it is",
+	// Single-row tables' keys: the migration inserts the one row with the
+	// column's only allowed value and every statement filters on it. Counted as
+	// written only while the guard read WHERE clauses as writes.
+	"config_version.id":           "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
+	"audit_stream_state.only_row": "the one row's key, true by CHECK, seeded by its migration; nothing has another value to write",
+
+	// Written by migration 0183's trigger on every insert and update of a
+	// prompt, from its title, body and fields, so that no writer can change the
+	// terms without moving the version, or move it without changing them.
+	"prompts.version":      "moved by the prompts_versioned trigger when the title, body or fields change; no writer sets it, by design",
+	"prompts.content_hash": "computed by the prompts_versioned trigger from the title, body and fields; no writer sets it, by design",
 
 	// Reported by the console through core_v1 and enforced NOWHERE on the request
-	// path. A command to set these would be the same defect from the other side:
-	// a suspension switch that suspends nothing is worse than an absent one,
-	// because an operator would believe the organisation was out of service.
-	// Closing this means enforcement first, at every sign-in and token path, then
-	// the command.
-	"organizations.status": "a suspended organisation is still served; nothing on the request path reads it",
-	"instances.status":     "the same for an issuer",
-
-	// Per-client protocol settings with no command. Each is a real gap; they
-	// cluster into a small number of `client set-*` verbs.
-	"clients.access_token_ttl_s":                   "per-client token lifetime is fixed at 300s in every deployment",
-	"clients.refresh_token_ttl_s":                  "per-client refresh lifetime fixed at 30 days",
-	"clients.id_token_signed_alg":                  "per-client ID token algorithm fixed at ES256",
-	"clients.pkce_methods":                         "fixed at S256",
-	"clients.require_pushed_authorization":         "PAR cannot be required per client",
-	"clients.may_exchange":                         "RFC 8693 token exchange cannot be granted per client",
-	"clients.exchange_audiences":                   "nor its audience list bounded",
-	"clients.first_party":                          "first-party consent skipping cannot be granted",
-	"clients.frontchannel_logout_uri":              "front-channel logout cannot be registered",
-	"clients.frontchannel_logout_session_required": "nor its sid requirement changed",
-	"clients.issuer_alias":                         "a client cannot be pinned to an issuer alias",
-
-	// Tables with no create path at all.
-	"client_post_logout_redirect_uris.client_id":    "no command registers a post-logout redirect URI",
-	"client_post_logout_redirect_uris.redirect_uri": "the same",
-	"instance_issuer_aliases.instance_id":           "issuer aliases cannot be registered, so issuer migration is unavailable",
-	"instance_issuer_aliases.issuer":                "the same",
-	"instance_issuer_aliases.retire_after":          "the same",
-	"migration_sources.kind":                        "delegated verification against an old provider cannot be configured",
-	"migration_sources.org_id":                      "the same",
-	"migration_sources.display_name":                "the same",
-	"migration_sources.token_endpoint":              "the same",
-	"migration_sources.client_id":                   "the same",
-	"migration_sources.client_secret_enc":           "the same",
-	"migration_sources.scope":                       "the same",
-	"migration_sources.enabled":                     "the same",
-	"proxy_hosts.host":                              "no command registers a forward-auth host",
-	"proxy_hosts.org_id":                            "the same",
-	"proxy_hosts.enabled":                           "the same",
-	"projects.slug":                                 "projects cannot be created",
-	"projects.org_id":                               "the same",
-	"projects.display_name":                         "the same",
-
-	// Enable/disable switches with no command.
-	"outposts.enabled":           "an outpost cannot be taken out of service without deleting it",
-	"prompts.enabled":            "a prompt cannot be switched off",
-	"rac_connections.enabled":    "a remote-access connection cannot be disabled",
-	"rac_connections.parameters": "protocol parameters cannot be set",
-	"ssf_streams.status":         "a Shared Signals stream cannot be paused",
-
-	// Smaller policy settings.
-	"client_attesters.description":             "cosmetic",
-	"credential_configurations.format":         "fixed at dc+sd-jwt",
-	"federation_config.contacts":               "federation entity contacts cannot be published",
-	"federation_config.trust_anchor_hints":     "nor trust anchor hints",
-	"federation_config.lifetime_seconds":       "nor the entity statement lifetime",
-	"registration_policies.allow_confidential": "dynamic registration cannot be allowed to mint confidential clients",
-	"signup_rules.require_verified_email":      "self-signup email verification cannot be relaxed",
+	// path. A command to set it would be the same defect from the other side: a
+	// suspension switch that suspends nothing is worse than an absent one,
+	// because an operator would believe the issuer was out of service. Closing
+	// this means enforcement first, then the command, as organizations.status
+	// did in October 2026 (6.09).
+	"instances.status": "a suspended issuer is still served; nothing on the request path reads it",
 }
 
 var (
 	createTable = regexp.MustCompile(`(?is)CREATE TABLE (?:IF NOT EXISTS )?(?:core\.)?([a-z_]+)\s*\((.*?)\n\);`)
 	alterTable  = regexp.MustCompile(`(?is)ALTER TABLE\s+(?:core\.)?([a-z_]+)(.*?);`)
 	addColName  = regexp.MustCompile(`(?i)ADD COLUMN\s+(?:IF NOT EXISTS\s+)?([a-z_]+)\s+([a-z_]+(?:\[\])?)([^,]*)`)
+	dropColName = regexp.MustCompile(`(?i)DROP COLUMN\s+(?:IF EXISTS\s+)?([a-z_]+)`)
+	dropTable   = regexp.MustCompile(`(?i)DROP TABLE\s+(?:IF EXISTS\s+)?(?:core\.)?([a-z_]+)`)
 	colDecl     = regexp.MustCompile(`(?i)^([a-z_]+)\s+([a-z_]+(?:\[\])?)\b(.*)$`)
 	// Values the database supplies. A column with one of these is not
 	// configuration and no code should be setting it.
-	dbOwned = regexp.MustCompile(`(?i)now\(\)|gen_random_uuid\(\)|nextval|uuid_generate|current_timestamp|generated always as identity`)
+	dbOwned = regexp.MustCompile(`(?i)now\(\)|gen_random_uuid\(\)|nextval|uuid_generate|current_timestamp|generated always as`)
 )
 
 var notAColumn = map[string]bool{
@@ -206,6 +149,30 @@ func readSchema(t *testing.T, root string) (tables []string, columns []schemaCol
 			for _, cm := range addColName.FindAllStringSubmatch(m[2], -1) {
 				columns = append(columns, schemaColumn{m[1], cm[1], strings.ToLower(cm[2]), cm[3]})
 			}
+			// A dropped column is gone. Kept, it would be judged forever by
+			// whatever text still shares its name: 0132 dropped a CIBA column
+			// whose name is also a form parameter, which read as a reader.
+			for _, dm := range dropColName.FindAllStringSubmatch(m[2], -1) {
+				kept := columns[:0]
+				for _, c := range columns {
+					if c.table != m[1] || c.column != dm[1] {
+						kept = append(kept, c)
+					}
+				}
+				columns = kept
+			}
+		}
+		// A dropped table is gone too, and for the same reason: its columns
+		// share names (`slug`, `org_id`) with half the schema.
+		for _, m := range dropTable.FindAllStringSubmatch(src, -1) {
+			delete(seen, m[1])
+			kept := columns[:0]
+			for _, c := range columns {
+				if c.table != m[1] {
+					kept = append(kept, c)
+				}
+			}
+			columns = kept
 		}
 	}
 	for name := range seen {
@@ -252,6 +219,30 @@ func sourceFiles(t *testing.T, root string) map[string]string {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	// A function a migration defines is code, though, and what it writes the
+	// engine writes whenever it calls it. Only the ones something calls: a trigger's
+	// function runs on a write the engine has already made.
+	dir := filepath.Join(root, "engine", "migrations", "core")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defined := regexp.MustCompile(`(?is)CREATE (?:OR REPLACE )?FUNCTION core\.([a-z0-9_]+)\(.*?\$\$(.*?)\$\$`)
+	for _, e := range entries {
+		src, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		for _, m := range defined.FindAllStringSubmatch(string(src), -1) {
+			for rel, body := range out {
+				if strings.HasSuffix(rel, ".go") && strings.Contains(body, "core."+m[1]+"(") {
+					out["function core."+m[1]] = m[2]
+					break
+				}
+			}
 		}
 	}
 	return out
@@ -341,6 +332,191 @@ func TestEveryTableTheEngineReadsCanBeWritten(t *testing.T) {
 // required all of them, so one column the code happens to UPDATE — a counter
 // like `migration_sources.delegated_successes` — was enough to make the whole
 // table report twice.
+// writtenText is the part of every write statement on table that names the
+// columns it writes, lower-cased: an UPDATE's SET list, an INSERT's column list
+// and its ON CONFLICT ... DO UPDATE SET list, and a COPY's column list. Each
+// statement runs to its first terminator -- a `;` in SQL or the backtick closing
+// a Go raw string -- so one INSERT does not swallow the file.
+//
+// Only that part. The whole statement used to count, so a column named in an
+// UPDATE's WHERE, an INSERT's conflict target or a RETURNING list passed as
+// written: `UPDATE core.t SET a = $1 WHERE b = $2` made b look writable, and a
+// column read on the request path with no writer anywhere was reported clean
+// as long as something filtered on it (SS-26).
+func writtenText(files map[string]string, table string) string {
+	stmt := regexp.MustCompile(`(?is)\b(INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
+	var b strings.Builder
+	for _, body := range files {
+		for _, m := range stmt.FindAllStringSubmatch(body, -1) {
+			b.WriteString(writtenPart(strings.ToUpper(m[1]), strings.ToLower(m[2])))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+var (
+	setList     = regexp.MustCompile(`(?s)\bset\b(.*?)(?:\bwhere\b|\breturning\b|\bfrom\b|$)`)
+	columnList  = regexp.MustCompile(`(?s)^\s*(?:as\s+\w+\s*)?\(([^)]*)\)`)
+	conflictSet = regexp.MustCompile(`(?s)\bdo\s+update\s+set\b(.*?)(?:\bwhere\b|\breturning\b|$)`)
+)
+
+// writtenPart is what one statement writes, from the text after its table name.
+func writtenPart(kind, rest string) string {
+	switch kind {
+	case "UPDATE":
+		if m := setList.FindStringSubmatch(rest); m != nil {
+			return m[1]
+		}
+		return ""
+	case "COPY":
+		if m := columnList.FindStringSubmatch(rest); m != nil {
+			return m[1]
+		}
+		return rest // no column list: every column, positionally
+	}
+	// INSERT. With no column list the row is every column positionally, which
+	// this cannot tell apart, so the whole statement counts.
+	m := columnList.FindStringSubmatch(rest)
+	if m == nil {
+		return rest
+	}
+	out := m[1]
+	if c := conflictSet.FindStringSubmatch(rest); c != nil {
+		out += "\n" + c[1]
+	}
+	return out
+}
+
+// knownUnread are columns written and deliberately read by nothing, each with
+// the reason. Guard 0.08b's list; it may only shrink.
+var knownUnread = map[string]string{
+	// Records, not settings: facts the engine notes about what happened, kept
+	// for an investigation and shown by nothing yet. Setting none of them
+	// changes behaviour, which is why they are allowed here; each is a place a
+	// future list or detail view can read from.
+	"webauthn_credentials.attestation_type":   "what the authenticator presented at registration; decisions read attestation_verified",
+	"rac_sessions.guacd_id":                   "guacd's id for the session, for matching its own logs",
+	"rac_sessions.ended_reason":               "why a remote-access session ended",
+	"impersonations.ended_reason":             "why an impersonation ended",
+	"event_deliveries.outbox_id":              "the outbox row a delivery came from",
+	"event_deliveries.status_code":            "what the subscriber answered",
+	"ssf_sources.last_event_at":               "when a transmitter last sent anything",
+	"ssf_received.event_time":                 "when the transmitter says the event happened",
+	"preauthorized_codes.tx_code_input_mode":  "describes the code to the wallet in the offer, which is built when minted from the same values",
+	"preauthorized_codes.tx_code_description": "the same",
+}
+
+// Guard 0.08b: every column the engine writes is read by something -- the
+// engine, the console, or a core_v1 view the console reads through. A column
+// written and read by nothing is a setting an operator can set that changes
+// nothing, which is worse than no setting: they will believe it worked.
+// RequireVerify and max_risk were that (SS-3, M34).
+//
+// Read here means mentioned anywhere outside the written part of a write
+// statement: a SELECT list, a WHERE clause, a RETURNING list, a view
+// definition, Go or PHP that names it. Lenient by construction -- a common
+// word matches somewhere -- so it misses some and never invents one.
+func TestEveryColumnTheEngineWritesIsRead(t *testing.T) {
+	root := repoRoot(t)
+	files := sourceFiles(t, root)
+	_, columns := readSchema(t, root)
+
+	stmt := regexp.MustCompile(`(?is)\b(INSERT INTO|UPDATE|COPY)\s+core\.[a-z_]+\b(.*?)(?:;|` + "`" + `)`)
+	var reads strings.Builder
+	for _, body := range files {
+		lower := strings.ToLower(body)
+		stripped := stmt.ReplaceAllStringFunc(lower, func(s string) string {
+			m := stmt.FindStringSubmatch(s)
+			written := writtenPart(strings.ToUpper(m[1]), m[2])
+			if written == "" || written == m[2] {
+				return s
+			}
+			return strings.Replace(s, written, " ", 1)
+		})
+		reads.WriteString(stripped)
+		reads.WriteString("\n")
+	}
+	// The views the console reads through are in the migrations.
+	views := regexp.MustCompile(`(?is)create\s+(?:or\s+replace\s+)?view\b.*?;`)
+	entries, err := os.ReadDir(filepath.Join(root, "engine", "migrations", "core"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		src, err := os.ReadFile(filepath.Join(root, "engine", "migrations", "core", e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range views.FindAllString(strings.ToLower(string(src)), -1) {
+			reads.WriteString(v)
+			reads.WriteString("\n")
+		}
+	}
+	read := reads.String()
+
+	writes := map[string]string{}
+	stale := map[string]bool{}
+	for k := range knownUnread {
+		stale[k] = true
+	}
+	for _, c := range columns {
+		if dbOwned.MatchString(c.rest) || strings.Contains(c.typ, "serial") {
+			continue
+		}
+		if _, ok := writes[c.table]; !ok {
+			writes[c.table] = writtenText(files, c.table)
+		}
+		word := regexp.MustCompile(`\b` + regexp.QuoteMeta(c.column) + `\b`)
+		if !word.MatchString(writes[c.table]) || word.MatchString(read) {
+			continue
+		}
+		key := c.table + "." + c.column
+		if _, known := knownUnread[key]; known {
+			delete(stale, key)
+			continue
+		}
+		t.Errorf("core.%s is written and read by nothing: no SELECT, WHERE, view, console "+
+			"or code names it. An operator who sets it changes nothing and will believe "+
+			"they did. Enforce it where it matters, drop it, or record it in knownUnread "+
+			"with the reason", key)
+	}
+	for key := range stale {
+		t.Errorf("knownUnread lists %q, which something now reads; remove the entry", key)
+	}
+}
+
+// The guard counts what a statement writes, not every column it mentions. A
+// column in a WHERE, a conflict target or a RETURNING list is read there, and
+// counting it as written hid two switches nothing could set:
+// scim_sources.enabled and invitations.revoked_at.
+func TestTheWritePathGuardCountsOnlyWrittenColumns(t *testing.T) {
+	for _, c := range []struct {
+		kind, rest string
+		written    []string
+		notWritten []string
+	}{
+		{"UPDATE", " set enabled = $3 where org_id = $1 and slug = $2 returning id",
+			[]string{"enabled"}, []string{"org_id", "slug", "id"}},
+		{"INSERT", " (org_id, host) values ($1, $2) on conflict (org_id, lower(host)) " +
+			"do update set enabled = excluded.enabled where core.proxy_hosts.flag returning created_at",
+			[]string{"org_id", "host", "enabled"}, []string{"flag", "created_at"}},
+		{"COPY", " (user_id, hash) from stdin", []string{"user_id", "hash"}, nil},
+	} {
+		got := writtenPart(c.kind, c.rest)
+		for _, w := range c.written {
+			if !regexp.MustCompile(`\b` + w + `\b`).MatchString(got) {
+				t.Errorf("%s%s: %s is written and was not counted (%q)", c.kind, c.rest, w, got)
+			}
+		}
+		for _, n := range c.notWritten {
+			if regexp.MustCompile(`\b` + n + `\b`).MatchString(got) {
+				t.Errorf("%s%s: %s is only read and was counted as written (%q)", c.kind, c.rest, n, got)
+			}
+		}
+	}
+}
+
 func tableFullyKnown(t *testing.T, root string, files map[string]string, table string) bool {
 	t.Helper()
 	_, cols := readSchema(t, root)
@@ -352,15 +528,7 @@ func tableFullyKnown(t *testing.T, root string, files map[string]string, table s
 	}
 	all := everything.String()
 
-	stmt := regexp.MustCompile(`(?is)(?:INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
-	var w strings.Builder
-	for _, body := range files {
-		for _, m := range stmt.FindAllStringSubmatch(body, -1) {
-			w.WriteString(strings.ToLower(m[1]))
-			w.WriteString("\n")
-		}
-	}
-	written := w.String()
+	written := writtenText(files, table)
 
 	var anyFailing bool
 	for _, c := range cols {
@@ -409,15 +577,7 @@ func TestEveryColumnTheEngineReadsCanBeWritten(t *testing.T) {
 		if v, ok := writes[table]; ok {
 			return v
 		}
-		stmt := regexp.MustCompile(`(?is)(?:INSERT INTO|UPDATE|COPY)\s+core\.` + table + `\b(.*?)(?:;|` + "`" + `)`)
-		var b strings.Builder
-		for _, body := range files {
-			for _, m := range stmt.FindAllStringSubmatch(body, -1) {
-				b.WriteString(strings.ToLower(m[1]))
-				b.WriteString("\n")
-			}
-		}
-		writes[table] = b.String()
+		writes[table] = writtenText(files, table)
 		return writes[table]
 	}
 

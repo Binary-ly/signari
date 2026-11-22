@@ -25,12 +25,13 @@ var factorTables = map[string]bool{
 	"sms_otp_credentials":   true,
 	"duo_enrollments":       true,
 
-	// A passkey is a FIRST factor here, not a second one. Somebody who
-	// registered one signs in with it directly; requiring a password and then
-	// the same passkey would be one credential counted twice. If that ever
-	// changes, flip this to true -- and the assertion below will then demand the
-	// query be updated to match.
-	"webauthn_credentials": false,
+	// A passkey or security key is both: a first factor on its own, and the
+	// second after a password, presented on the code page. This said a key was
+	// a first factor only, so a person whose one factor beyond the password was
+	// a key signed in on the password alone. Signing in with the key does not
+	// then ask for it again: a verified passkey sign-in is already
+	// multi-factor, and the step is skipped.
+	"webauthn_credentials": true,
 
 	// Recovery codes are the way BACK IN when a factor is lost. Counting them
 	// as a factor would mean a user whose only "factor" is a printed list is
@@ -47,6 +48,20 @@ var factorTables = map[string]bool{
 	// since a false positive costs one line here and a false negative is a
 	// bypass.
 	"recovery_requests": false,
+
+	// A TOTP secret shown for enrolment and not yet proved. Not a factor: the
+	// user may never have scanned it, and treating it as one would challenge
+	// them for a code their phone cannot produce. It becomes a factor only by
+	// being moved into totp_credentials on confirmation.
+	"totp_enrolments": false,
+
+	// A count of wrong recovery codes, not a credential. It removes a way in
+	// (the recovery codes, at the ceiling); it is never a way in itself.
+	"recovery_code_failures": false,
+
+	// A record of verifiable credentials issued to people's wallets. Those are claims
+	// the holder shows somebody else, and nothing here signs anybody in with one.
+	"issued_credentials": false,
 }
 
 // TestEveryFactorTableIsChecked fails when a second-factor table exists that
@@ -109,20 +124,22 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The body of HasSecondFactor only -- a mention anywhere else in the file
+	// What HasSecondFactor asks only -- a mention anywhere else in the file
 	// would not gate a sign-in.
-	//
-	// Matched to the next top-level func rather than to the first "\n}": the
-	// signature contains an inline interface literal, so the first closing brace
-	// is the interface's. An earlier version captured the signature alone and
-	// reported every table as missing.
-	body := regexp.MustCompile(`(?s)func HasSecondFactor\(.*?(\n}\n\n|\z)`).Find(src)
-	if body == nil {
-		t.Fatal("HasSecondFactor not found; this test is no longer checking anything")
+	body := factorQuestion(t, src, "HasSecondFactor")
+
+	// The sign-in's walk asks the same question in a batch (E.37). Asked in words of
+	// its own, it could leave out a table this test holds HasSecondFactor to, and the
+	// walk is where the answer gates a session.
+	queued := regexp.MustCompile(`(?s)func QueueSecondFactor\(.*?(\n}\n\n|\z)`).Find(src)
+	if queued == nil {
+		t.Fatal("QueueSecondFactor not found; this test is no longer checking it")
 	}
-	if !strings.Contains(string(body), "SELECT") {
-		t.Fatalf("the extracted body has no query in it, so this test is checking "+
-			"nothing:\n%s", body)
+	if strings.Contains(string(queued), "SELECT") ||
+		!strings.Contains(string(queued), "secondFactorStatement") ||
+		!strings.Contains(string(queued), "otherThanEmailStatement") {
+		t.Errorf("QueueSecondFactor does not ask exactly HasSecondFactor's and "+
+			"HasFactorOtherThanEmail's statements:\n%s", queued)
 	}
 
 	for _, tbl := range found {
@@ -133,7 +150,7 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 				"reason.", tbl)
 			continue
 		}
-		mentioned := strings.Contains(string(body), "core."+tbl)
+		mentioned := strings.Contains(body, "core."+tbl)
 		switch {
 		case gates && !mentioned:
 			t.Errorf("core.%s holds second-factor credentials and HasSecondFactor "+
@@ -145,4 +162,80 @@ func TestEveryFactorTableIsChecked(t *testing.T) {
 				"HasSecondFactor consults it. One of the two is wrong.", tbl)
 		}
 	}
+
+	// Consulting a table is not enough: each one has a half-enrolled state, and
+	// only the proved half is a factor. Email was consulted with no predicate
+	// at all, so an address abandoned at the code screen -- or one an intruder
+	// had just pointed the account at -- counted as the second factor (0126).
+	// HasFactorOtherThanEmail stands in for HasSecondFactor after an emailed
+	// code, so it must consult every table that one does, except email's: a
+	// factor it missed would be a factor that sign-in never asked for.
+	otherThanEmail := factorQuestion(t, src, "HasFactorOtherThanEmail")
+	for _, tbl := range found {
+		if !factorTables[tbl] {
+			continue
+		}
+		mentioned := strings.Contains(otherThanEmail, "core."+tbl)
+		if want := tbl != "email_otp_credentials"; mentioned != want {
+			t.Errorf("HasFactorOtherThanEmail consults core.%s: %v, want %v", tbl, mentioned, want)
+		}
+	}
+
+	for _, fn := range []string{"HasSecondFactor", "HasFactorOtherThanDuo", "HasFactorOtherThanEmail"} {
+		fnBody := factorQuestion(t, src, fn)
+		for tbl, pred := range provedPredicate {
+			i := strings.Index(fnBody, "core."+tbl)
+			if i < 0 {
+				if fn == "HasSecondFactor" {
+					t.Errorf("%s does not consult core.%s", fn, tbl)
+				}
+				continue
+			}
+			clause := fnBody[i:]
+			if j := strings.Index(clause, "EXISTS"); j >= 0 {
+				clause = clause[:j]
+			}
+			if !strings.Contains(clause, pred) {
+				t.Errorf("%s consults core.%s without %q, so an enrolment nobody "+
+					"proved counts as a second factor", fn, tbl, pred)
+			}
+		}
+	}
+}
+
+// factorQuestion is what a factor check asks: its body, and the text of every
+// constant it names that ends in Statement, where the query lives so that a batch can
+// ask the same words (E.37).
+//
+// The body is matched to the next top-level func rather than to the first "\n}": the
+// signature contains an inline interface literal, so the first closing brace is the
+// interface's. An earlier version captured the signature alone and reported every
+// table as missing.
+func factorQuestion(t *testing.T, src []byte, fn string) string {
+	t.Helper()
+	body := regexp.MustCompile(`(?s)func ` + fn + `\(.*?(\n}\n\n|\z)`).Find(src)
+	if body == nil {
+		t.Fatalf("%s not found; this test is no longer checking it", fn)
+	}
+	question := string(body)
+	for _, name := range regexp.MustCompile(`\b[a-zA-Z]+Statement\b`).FindAllString(string(body), -1) {
+		text := regexp.MustCompile("(?s)const " + name + " = `(.*?)`").FindSubmatch(src)
+		if text == nil {
+			t.Fatalf("%s asks %s, and no constant of that name was found in mfa.go", fn, name)
+		}
+		question += "\n" + string(text[1])
+	}
+	if !strings.Contains(question, "SELECT") {
+		t.Fatalf("what %s asks has no query in it, so this test is checking nothing:\n%s", fn, question)
+	}
+	return question
+}
+
+// provedPredicate is what makes a row in each second-factor table a factor
+// rather than an enrolment somebody started.
+var provedPredicate = map[string]string{
+	"totp_credentials":      "confirmed_at IS NOT NULL",
+	"email_otp_credentials": "verified_at IS NOT NULL",
+	"sms_otp_credentials":   "verified_at IS NOT NULL",
+	"duo_enrollments":       "i.enabled",
 }

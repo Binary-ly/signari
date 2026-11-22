@@ -4,8 +4,11 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Read endpoints.
@@ -55,6 +58,56 @@ func pageParams(r *http.Request) (limit int, cursor string) {
 	return limit, r.URL.Query().Get("cursor")
 }
 
+// idCursor refuses a cursor that cannot be the identifier a page ended on, which
+// a list keyed by a uuid now compares as one. As text anything at all was a place
+// to start from.
+func idCursor(w http.ResponseWriter, cursor string) bool {
+	if cursor == "" || store.ExactUUID(cursor) {
+		return true
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor",
+		"detail": "a cursor is the value returned by the previous page, not a value to construct"})
+	return false
+}
+
+// listing is a page's statement, built up from the conditions a request has. One it
+// does not have is left out and not written to hold when its parameter is empty,
+// because a statement reads the same that way and stops seeking once it is planned
+// generically, which pgx's are after a few calls: the OR is a filter there, and a
+// small organisation's page walks the primary key past everybody else's rows.
+//
+// A page is a seek and a stop. So the cursor is compared as the key and not as its
+// text, or each page walks from the start, and the order names its table, or `id`
+// in `SELECT id::text ... ORDER BY id` is that text, which no index holds, and every
+// page sorts the whole of the organisation to find its hundred rows (0.83).
+type listing struct {
+	where []string
+	args  []any
+}
+
+// add appends a condition, $? standing for the number of its argument.
+func (l *listing) add(cond string, v any) {
+	l.args = append(l.args, v)
+	l.where = append(l.where, strings.ReplaceAll(cond, "$?", "$"+strconv.Itoa(len(l.args))))
+}
+
+// inOrg keeps the page to the organisation orgFilter answers, nil being all of them.
+func (l *listing) inOrg(org *string) {
+	if org != nil {
+		l.add("org_id = $?::uuid", org)
+	}
+}
+
+// page is the end of the statement: the conditions, the order and the limit.
+func (l *listing) page(order string, limit int) string {
+	l.args = append(l.args, limit)
+	tail := " ORDER BY " + order + " LIMIT $" + strconv.Itoa(len(l.args))
+	if len(l.where) == 0 {
+		return tail
+	}
+	return " WHERE " + strings.Join(l.where, " AND ") + tail
+}
+
 // clientSummary is what a list returns per client.
 //
 // Deliberately NOT the whole row. `client_secret_hash` must never leave this
@@ -74,17 +127,21 @@ func (s *Server) listClients(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
 
+	var l listing
+	if cursor != "" {
+		l.add("client_id > $?", cursor)
+	}
+	l.inOrg(orgFilter(ctx))
+	if only := clientFilter(ctx); only != nil {
+		l.add("client_id = ANY($?::text[])", only)
+	}
+
 	// One row beyond the page, so "is there more" is answered without a second
 	// query and without a COUNT over the whole table.
 	rows, err := s.db.Query(ctx, `
 		SELECT client_id, org_id::text, display_name, client_type, enabled,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS created
-		  FROM core.clients
-		 WHERE ($1 = '' OR client_id > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		 ORDER BY client_id
-		 LIMIT $3`,
-		cursor, orgFilter(ctx), limit+1)
+		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM') AS created
+		  FROM core.clients`+l.page("client_id", limit+1), l.args...)
 	if err != nil {
 		s.log.Error("listing clients", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -132,25 +189,41 @@ func (s *Server) getClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c clientSummary
-	err := s.db.QueryRow(ctx, `
-		SELECT client_id, org_id::text, display_name, client_type, enabled,
-		       to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
-		  FROM core.clients WHERE client_id = $1`, clientID).
-		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.ClientType, &c.Enabled, &c.CreatedAt)
+	// The whole configuration (6.03): every column but the two secret hashes,
+	// with the redirect URIs sorted as the set they are, so a caller holding a
+	// desired configuration can compare all of it with the server's. This
+	// returned six fields, and the Terraform provider once reported a
+	// redirect-URI change as applied while it sent nothing, for want of one.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.Error("reading a client", "client_id", clientID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	c, err := clientState(ctx, tx, clientID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return
+	}
+	var created string
+	if err == nil {
+		err = tx.QueryRow(ctx, `SELECT to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
+			FROM core.clients WHERE client_id = $1`, clientID).Scan(&created)
 	}
 	if err != nil {
 		s.log.Error("reading a client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	c["created_at"] = created
+	// Read, so released before anything else takes a connection.
+	_ = tx.Rollback(ctx)
 	// The boundary applies to reads exactly as to writes. Answering 403 rather
 	// than 404 matches the write paths: the record exists, this credential may
 	// not see it, and pretending otherwise sends an operator hunting.
-	if err := requireOrg(ctx, c.OrgID); err != nil {
+	orgID, _ := c["org_id"].(string)
+	if err := requireOrg(ctx, orgID); err != nil {
 		writeCrossOrg(w, err)
 		return
 	}
@@ -174,16 +247,28 @@ type userSummary struct {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit, cursor := pageParams(r)
+	if !idCursor(w, cursor) {
+		return
+	}
+	// Filters (6.08), each in the WHERE clause beside the organisation, and
+	// each served by an index (0199): ?email= exactly, ?q= a prefix of the
+	// address or the user name, ?status= one of the statuses. Case does not
+	// matter, as it does not at sign-in. A support desk paged through every
+	// person to find one.
+	q := r.URL.Query()
+	email := strings.ToLower(strings.TrimSpace(q.Get("email")))
+	prefix := strings.ToLower(strings.TrimSpace(q.Get("q")))
+	status := q.Get("status")
+	switch status {
+	case "", "active", "deactivated", "locked", "pending":
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_status",
+			"detail": "status is active, deactivated, locked or pending"})
+		return
+	}
 
-	rows, err := s.db.Query(ctx, `
-		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
-		  FROM core.users
-		 WHERE ($1 = '' OR id::text > $1)
-		   AND ($2::uuid IS NULL OR org_id = $2::uuid)
-		 ORDER BY id
-		 LIMIT $3`,
-		cursor, orgFilter(ctx), limit+1)
+	sql, args := userListQuery(cursor, orgFilter(ctx), limit+1, email, prefix, status, reachFilter(ctx, ScopeUsersRead))
+	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		s.log.Error("listing users", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -216,16 +301,74 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	s.writeList(w, r, map[string]any{"users": out, "next_cursor": next})
 }
 
+// userListQuery is the user list's query with only the filters given, each its
+// own condition, as listing says why. The plan test reads the same text.
+func userListQuery(cursor string, org *string, limit int, email, prefix, status string, reach []string) (string, []any) {
+	var l listing
+	if cursor != "" {
+		l.add("id > $?::uuid", cursor)
+	}
+	l.inOrg(org)
+	if email != "" {
+		l.add("email_fold = $?", email)
+	}
+	if prefix != "" {
+		// A range rather than LIKE, whose function is not leakproof, so under
+		// row security it could use no index (0.52). The end is past anything
+		// the prefix can be followed by.
+		l.add("((email_fold ~>=~ lower($?) AND email_fold ~<~ (lower($?) || chr(1114111))) OR "+
+			"(username_fold ~>=~ lower($?) AND username_fold ~<~ (lower($?) || chr(1114111))))", prefix)
+	}
+	if status != "" {
+		l.add("status = $?", status)
+	}
+	// A role delegated over groups lists their members only (6.01), through the
+	// groups inside them too, as requireReach decides one.
+	if reach != nil {
+		l.add("EXISTS (SELECT 1 FROM core.groups_of(core.users.id) gm WHERE gm.group_id = ANY($?::uuid[]))", reach)
+	}
+	return `
+		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
+		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM')
+		  FROM core.users` + l.page("core.users.id", limit), l.args
+}
+
+// userDetail is one user read: the summary and every field PATCH sets or
+// clears (6.08). The read returned the summary alone, so a caller that set a
+// person's name, or asked for a new password at the next sign-in, could not
+// read back what it wrote, and an address change that cleared the
+// verification could not be seen to have.
+type userDetail struct {
+	userSummary
+	DisplayName           string `json:"display_name"`
+	GivenName             string `json:"given_name"`
+	Surname               string `json:"surname"`
+	EmailVerified         bool   `json:"email_verified"`
+	RequirePasswordChange bool   `json:"require_password_change"`
+	UpdatedAt             string `json:"updated_at"`
+	// Locale is empty when the person has none and the deployment's applies.
+	Locale string `json:"locale"`
+	// PosixUID is the number a host knows them by.
+	PosixUID int `json:"posix_uid"`
+}
+
 func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID := r.PathValue("userID")
 
-	var u userSummary
+	var u userDetail
 	err := s.db.QueryRow(ctx, `
-		SELECT id::text, org_id::text, coalesce(email, ''), coalesce(username, ''),
-		       status, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF')
-		  FROM core.users WHERE id = $1::uuid`, userID).
-		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt)
+		SELECT u.id::text, u.org_id::text, coalesce(u.email, ''), coalesce(u.username, ''),
+		       u.status, to_char(u.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
+		       coalesce(u.display_name, ''), coalesce(u.given_name, ''), coalesce(u.surname, ''),
+		       u.email_verified_at IS NOT NULL, coalesce(pc.must_change, false),
+		       to_char(u.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'), coalesce(u.locale, ''), u.posix_uid
+		  FROM core.users u
+		  LEFT JOIN core.password_credentials pc ON pc.user_id = u.id
+		 WHERE u.id = $1::uuid`, userID).
+		Scan(&u.ID, &u.OrgID, &u.Email, &u.Username, &u.Status, &u.CreatedAt,
+			&u.DisplayName, &u.GivenName, &u.Surname, &u.EmailVerified, &u.RequirePasswordChange,
+			&u.UpdatedAt, &u.Locale, &u.PosixUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 		return
@@ -252,11 +395,17 @@ func (s *Server) getUser(w http.ResponseWriter, r *http.Request) {
 // send it back as If-Match. Without it the caller has to make an extra request
 // to /admin/config-version between every read and its write, which is the kind
 // of friction that ends with people not using the precondition.
+//
+// auth tags every GET before its handler reads, which is the order that makes
+// the tag safe (0.20); this reads the version itself only for a read that came
+// some other way, and then the tag can be newer than the rows.
 func (s *Server) writeList(w http.ResponseWriter, r *http.Request, body any) {
-	var v int64
-	if err := s.db.QueryRow(r.Context(),
-		`SELECT version FROM core.config_version`).Scan(&v); err == nil {
-		setETag(w, v)
+	if w.Header().Get("ETag") == "" {
+		var v int64
+		if err := s.db.QueryRow(r.Context(),
+			`SELECT version FROM core.config_version`).Scan(&v); err == nil {
+			setETag(w, v)
+		}
 	}
 	writeJSON(w, http.StatusOK, body)
 }

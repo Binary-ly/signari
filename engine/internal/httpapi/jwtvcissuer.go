@@ -10,13 +10,20 @@ import (
 )
 
 func jwtVCIssuerPath(issuer string) string {
-	const wk = "/.well-known/jwt-vc-issuer"
+	// SD-JWT VC §3.1: "If the iss value contains a path component, any
+	// terminating / MUST be removed before inserting /.well-known/ and the
+	// well-known URI suffix".
+	return insertWellKnown(issuer, "/.well-known/jwt-vc-issuer")
+}
+
+// insertWellKnown places a well-known string between the issuer's host and its
+// path, dropping a terminating "/", the transformation RFC 8414 §3.1 and SD-JWT
+// VC §3.1 both specify.
+func insertWellKnown(issuer, wk string) string {
 	u, err := url.Parse(issuer)
 	if err != nil {
 		return wk
 	}
-	// §3.1: "If the iss value contains a path component, any terminating / MUST
-	// be removed before inserting /.well-known/ and the well-known URI suffix".
 	p := strings.TrimSuffix(u.Path, "/")
 	if p == "" {
 		return wk
@@ -30,9 +37,9 @@ func (s *Server) handleJWTVCIssuerMetadata(w http.ResponseWriter, r *http.Reques
 	// credential issuer metadata follows: a document naming a capability is one a
 	// verifier will act on, and an issuer with no configurations has no
 	// credentials for anybody to verify.
-	configs, err := store.AllCredentialConfigurations(r.Context(), s.db)
+	configs, err := store.AllCredentialConfigurations(r.Context(), s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("loading credential configurations", "err", err)
+		s.log.ErrorContext(r.Context(), "loading credential configurations", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

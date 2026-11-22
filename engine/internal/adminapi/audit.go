@@ -1,12 +1,41 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store"
 )
+
+// SetReadReplica points the audit read at a replica (E.18).
+//
+// The audit trail and nothing else, and the reason is in what every other read is
+// for. A list answered from a replica that has not caught up would carry an ETag the
+// primary has moved past, or a row the primary has changed, and `If-Match` exists so
+// that an apply cannot overwrite a change it never saw. The trail is append-only, takes
+// no precondition, and is the long read a primary should not be carrying. What a
+// replica costs here is that the newest events may be missing for as long as it lags.
+func (s *Server) SetReadReplica(replica *pgxpool.Pool) { s.reads = replica }
+
+// queryAudit reads from the replica where there is one. One that does not answer is
+// not a reason to refuse somebody investigating something, so the primary answers.
+func (s *Server) queryAudit(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if s.reads != nil {
+		rows, err := s.reads.Query(ctx, sql, args...)
+		if err == nil {
+			return rows, nil
+		}
+		s.log.Warn("the read replica did not answer; reading the audit trail from the primary", "err", err)
+	}
+	return s.db.Query(ctx, sql, args...)
+}
 
 // Reading the audit trail over HTTP.
 //
@@ -62,8 +91,12 @@ import (
 // explains is meaningless — a reader would hash what they received, find it
 // consistent, and believe they had checked something.
 type auditEvent struct {
-	ID             string          `json:"id"`
-	OrgID          string          `json:"org_id"`
+	ID string `json:"id"`
+	// Null for a deployment-wide event, which belongs to no organisation. A
+	// plain string here made every page holding one fail with a 500: scanning
+	// SQL NULL into a Go string is an error, and on the test database 43% of
+	// events have no organisation.
+	OrgID          *string         `json:"org_id"`
 	OccurredAt     string          `json:"occurred_at"`
 	EventType      string          `json:"event_type"`
 	SubjectID      string          `json:"subject_id,omitempty"`
@@ -71,6 +104,7 @@ type auditEvent struct {
 	ClientID       string          `json:"client_id,omitempty"`
 	CorrelationID  string          `json:"correlation_id,omitempty"`
 	RetentionClass string          `json:"retention_class,omitempty"`
+	AdminTokenID   string          `json:"admin_token_id,omitempty"` // the break-glass token, which has no row, is detail.break_glass
 	Detail         json.RawMessage `json:"detail,omitempty"`
 }
 
@@ -81,6 +115,9 @@ type auditEvent struct {
 // The first version read the view and PostgreSQL refused it: permission denied
 // for schema core_v1. That error is the boundary working rather than a
 // misconfiguration.
+//
+// It reads from a replica where one is set (SetReadReplica), since a long read of the
+// trail is the one thing here a primary should not be asked to carry.
 //
 // The core_v1 views exist for the CONSOLE, which has no privilege on schema core
 // at all (ADR-004). This handler is the engine, which owns core. Reading its own
@@ -140,10 +177,10 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Query(ctx, `
+	rows, err := s.queryAudit(ctx, `
 		SELECT id::text,
 		       org_id::text,
-		       to_char(occurred_at, 'YYYY-MM-DD"T"HH24:MI:SS.USOF'),
+		       to_char(occurred_at, 'YYYY-MM-DD"T"HH24:MI:SS.USTZH:TZM'),
 		       event_type,
 		       coalesce(subject_id::text, ''),
 		       coalesce(actor_id::text, ''),
@@ -155,6 +192,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		       -- parameter problem and is not.
 		       coalesce(correlation_id::text, ''),
 		       coalesce(retention_class, ''),
+		       coalesce(admin_token_id::text, ''),
 		       detail
 		  FROM core.audit_events
 		 WHERE ($1::uuid IS NULL OR org_id = $1::uuid)
@@ -165,15 +203,32 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		   AND ($2::timestamptz IS NULL OR
 		        (occurred_at, id) < ($2::timestamptz, $3::bigint))
 		   AND ($4 = '' OR event_type = $4)
-		   AND ($5 = '' OR subject_id::text = $5)
+		   AND ($5 = '' OR subject_id = $14::uuid)
 		   AND ($6 = '' OR client_id = $6)
 		   AND ($7::timestamptz IS NULL OR occurred_at >= $7::timestamptz)
 		   AND ($8::timestamptz IS NULL OR occurred_at <= $8::timestamptz)
+		   -- What one admin token did, which an investigation of a leaked one
+		   -- starts from (6.05).
+		   AND ($13 = '' OR admin_token_id = $15::uuid)
+		   -- A token restricted to named clients or groups reads only the
+		   -- events about them: reads are narrowed as writes are
+		   -- (docs/admin-tokens.md). It read the whole organisation's trail,
+		   -- every other client's and every person's. An event about neither
+		   -- a client nor a group is about something outside the token's
+		   -- objects, and is not shown to it.
+		   AND (NOT $10::boolean
+		        OR (client_id IS NOT NULL AND client_id <> ''
+		            AND ($11::text[] IS NULL OR client_id = ANY($11::text[])))
+		        OR (detail->>'group_id' IS NOT NULL
+		            AND ($12::text[] IS NULL OR lower(detail->>'group_id') = ANY($12::text[]))))
 		 ORDER BY occurred_at DESC, id DESC
 		 LIMIT $9`,
 		orgFilter(ctx), cursorTime, cursorID,
 		q.Get("event_type"), q.Get("subject_id"), q.Get("client_id"),
-		since, until, limit+1)
+		since, until, limit+1,
+		clientFilter(ctx) != nil || groupFilter(ctx) != nil, clientFilter(ctx), groupFilter(ctx),
+		q.Get("admin_token_id"), store.ExactUUIDOrNil(q.Get("subject_id")),
+		store.ExactUUIDOrNil(q.Get("admin_token_id")))
 	if err != nil {
 		s.log.Error("listing audit events", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -187,7 +242,7 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		var detail []byte
 		if err := rows.Scan(&e.ID, &e.OrgID, &e.OccurredAt, &e.EventType,
 			&e.SubjectID, &e.ActorID, &e.ClientID, &e.CorrelationID,
-			&e.RetentionClass, &detail); err != nil {
+			&e.RetentionClass, &e.AdminTokenID, &detail); err != nil {
 			s.log.Error("scanning an audit event", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 			return

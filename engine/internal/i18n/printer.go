@@ -21,7 +21,28 @@ type Printer struct {
 	b    *Bundle
 	lang string
 	tag  language.Tag
+	// words are an organisation's own, key by key (With). Plain text, where the
+	// catalogue's messages may carry markup.
+	words map[string]string
 }
+
+// With is this printer saying an organisation's own words where it has any.
+//
+// They are a tenant's rather than ours, so T escapes them whole: where a
+// catalogue message may hold a link, one of these can only ever be text. They
+// stay plain for Text, which goes into mail and into page data that the page
+// escapes itself.
+func (p *Printer) With(words map[string]string) *Printer {
+	if len(words) == 0 {
+		return p
+	}
+	own := *p
+	own.words = words
+	return &own
+}
+
+// Worded reports whether this printer carries an organisation's own words.
+func (p *Printer) Worded() bool { return len(p.words) > 0 }
 
 // For returns a printer for a named language, falling back to the default.
 func (b *Bundle) For(lang string) *Printer {
@@ -134,6 +155,9 @@ var rtlScript = map[string]bool{
 // have to be three template fragments in English clause order. Anything
 // substituted in is data and is escaped on the way; see subst.
 func (p *Printer) T(key string, data ...any) template.HTML {
+	if own, ok := p.words[key]; ok {
+		return p.render(key, template.HTMLEscapeString(own), nil, data...)
+	}
 	return p.render(key, p.form(key, "other"), nil, data...)
 }
 
@@ -160,6 +184,9 @@ func (p *Printer) T(key string, data ...any) template.HTML {
 // the HTML direction is a scripting hole.
 func (p *Printer) Text(key string, data ...any) string {
 	text := p.form(key, "other")
+	if own, ok := p.words[key]; ok {
+		text = own
+	}
 	if !strings.ContainsRune(text, '{') {
 		return text
 	}
@@ -318,8 +345,8 @@ func (p *Printer) render(key, text string, extra map[string]string, data ...any)
 // direction is decided by its own first strong character; U+2069 POP
 // DIRECTIONAL ISOLATE closes it.
 const (
-	firstStrongIsolate = "⁨"
-	popDirectional     = "⁩"
+	firstStrongIsolate = "\U00002068"
+	popDirectional     = "\U00002069"
 )
 
 // isolate stops a value from being re-ordered by the text around it.
@@ -469,6 +496,12 @@ func stringify(v any) (string, bool) {
 		// Deliberately treated as text. A caller that has already decided
 		// something is safe HTML does not get to smuggle it through a message
 		// argument, because the message may be an operator's.
+		return string(s), true
+	case template.URL:
+		// Text as well, so an href it lands in is still held to the safe
+		// schemes. The enrolment page passes its otpauth link as one, for the
+		// template's own sanitiser; refused here, the link read {URI} and
+		// went nowhere, while the preview, given a string, looked right.
 		return string(s), true
 	case int:
 		return strconv.Itoa(s), true

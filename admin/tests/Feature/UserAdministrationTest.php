@@ -5,12 +5,14 @@ namespace Tests\Feature;
 use App\Filament\Resources\EngineUsers\Pages\ListEngineUsers;
 use App\Models\EngineUser;
 use App\Models\User;
+use App\Services\SignariSignIn;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -23,6 +25,8 @@ use Tests\TestCase;
  */
 class UserAdministrationTest extends TestCase
 {
+    use SeedsEngineState;
+
     private ?User $operator = null;
 
     private string $orgId = '';
@@ -30,23 +34,20 @@ class UserAdministrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $org = DB::selectOne('SELECT id::text AS id FROM core_v1.organizations LIMIT 1');
-        if ($org === null) {
-            $this->markTestSkipped('no organisation seeded');
-        }
-        $this->orgId = $org->id;
+        $this->orgId = $this->plantOrganisation();
 
         $this->operator = new User;
         $this->operator->name = 'Operator';
         $this->operator->email = 'op-'.Str::random(8).'@example.test';
         $this->operator->password = bcrypt('irrelevant');
-        $this->operator->org_id = $org->id;
+        $this->operator->org_id = $this->orgId;
         $this->operator->save();
     }
 
     protected function tearDown(): void
     {
         $this->operator?->delete();
+        $this->removePlantedEngineState();
         parent::tearDown();
     }
 
@@ -82,15 +83,10 @@ class UserAdministrationTest extends TestCase
      */
     public function test_deactivation_reports_sessions_ended(): void
     {
-        $user = $this->seededUser();
-        if ($user === null) {
-            $this->markTestSkipped('no engine user to act on');
-        }
-        // The version read comes first: deactivating a user is a conditional
-        // write, so the console asks the engine where the configuration is
-        // before saying where it should stay. See EngineAdminApi.
+        $user = $this->plantedUser();
+        // Deactivating a user is a conditional write, held to the version the
+        // page was rendered from. See EngineAdminApi::asOf.
         Http::fake([
-            '*/admin/config-version' => Http::response(['config_version' => 9], 200),
             '*/admin/users/*' => Http::response(
                 ['id' => $user->id, 'sessions_ended' => 3, 'config_version' => 10], 200
             ),
@@ -99,13 +95,15 @@ class UserAdministrationTest extends TestCase
 
         DB::transaction(function () use ($user) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            // The success title, not any toast: the refusal path notifies too.
             Livewire::test(ListEngineUsers::class)
                 ->callAction(TestAction::make('toggleActive')->table($user))
-                ->assertNotified();
+                ->assertNotified(__('User deactivated'));
         });
 
+        // The planted user is active, so the action must ask for inactive.
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && array_key_exists('active', $r->data()));
+            && ($r->data()['active'] ?? null) === false);
     }
 
     /** A refused write must say so, not show a success toast over a failure. */
@@ -123,12 +121,181 @@ class UserAdministrationTest extends TestCase
             ->assertNotified(__('User not created'));
     }
 
-    private function seededUser(): ?EngineUser
+    /**
+     * Removing a sign-in method offers what the engine lists, sends the one
+     * chosen -- a passkey by its id -- and sends it conditionally, as every
+     * other write here is. The engine ends the sessions and tells the holder.
+     */
+    public function test_removing_a_sign_in_method_is_conditional_and_names_it(): void
     {
-        return DB::transaction(function () {
+        $user = $this->plantedUser();
+        $rendered = $this->renderedVersion();
+        Http::fake(function (Request $r) {
+            if ($r->method() === 'GET') {
+                return Http::response(['factors' => [
+                    ['type' => 'totp', 'confirmed' => true],
+                    ['type' => 'webauthn', 'id' => 'pk-1', 'label' => 'Laptop', 'confirmed' => true],
+                ], 'recovery_codes_unused' => 4], 200);
+            }
+
+            return Http::response(['removed' => 1, 'sessions_ended' => 2, 'config_version' => 10], 200);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('removeFactor')->table($user), data: ['factor' => 'webauthn:pk-1'])
+                ->assertHasNoActionErrors()
+                ->assertNotified(__('Sign-in method removed'));
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'DELETE'
+            && str_ends_with($r->url(), "/admin/users/{$user->id}/factors/webauthn/pk-1")
+            && $r->header('If-Match') === ['"'.$rendered.'"']);
+    }
+
+    /** A removal the engine refuses says so, not a success over a failure. */
+    public function test_a_refused_removal_is_reported(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            if ($r->method() === 'GET') {
+                return Http::response(['factors' => [['type' => 'totp', 'confirmed' => true]]], 200);
+            }
+
+            return Http::response(['error' => 'factor_not_found'], 404);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('removeFactor')->table($user), data: ['factor' => 'totp'])
+                ->assertNotified(__('Nothing was removed'));
+        });
+    }
+
+    /**
+     * A passkey link is sent conditionally, as every other write here is, and
+     * the console is told when it ends and nothing more: the token is in the
+     * person's email alone.
+     */
+    public function test_a_passkey_link_is_sent_conditionally(): void
+    {
+        $user = $this->plantedUser();
+        $rendered = $this->renderedVersion();
+        Http::fake(function (Request $r) {
+            return Http::response(['user_id' => 'u', 'link_id' => 'l-1',
+                'expires_at' => '2026-10-22T18:00:00Z', 'config_version' => 10], 200);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('sendPasskeyLink')->table($user))
+                ->assertHasNoActionErrors()
+                ->assertNotified(__('Passkey link on its way'));
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_ends_with($r->url(), "/admin/users/{$user->id}/passkey-link")
+            && $r->header('If-Match') === ['"'.$rendered.'"']
+            && $r->data() === ['ttl_seconds' => 0]);
+    }
+
+    /** One the engine refuses, an account with no address, says why. */
+    public function test_a_refused_passkey_link_is_reported(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(function (Request $r) {
+            return Http::response(['error' => 'cannot_send_link',
+                'detail' => 'the account has no email address to send the link to'], 409);
+        });
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('sendPasskeyLink')->table($user))
+                ->assertNotified(__('No link was sent'));
+        });
+    }
+
+    /**
+     * The export downloads the engine's document byte for byte, named by the person's
+     * id: decoded and encoded again in PHP, an empty section's {} would turn into [].
+     */
+    public function test_a_persons_data_is_exported_as_the_engine_wrote_it(): void
+    {
+        $user = $this->plantedUser();
+        $document = '{"format":"signari-subject-export/1","sections":{"sessions":[],"consents":{}}}';
+        Http::fake(['*/admin/subjects/*/export' => Http::response($document, 200, ['Content-Type' => 'application/json'])]);
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user, $document) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('export')->table($user))
+                ->assertHasNoActionErrors()
+                ->assertFileDownloaded('subject-'.$user->id.'.json', $document);
+        });
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_ends_with($r->url(), "/admin/subjects/{$user->id}/export"));
+    }
+
+    /** A token without the scope is told why, and nothing is downloaded. */
+    public function test_a_refused_export_is_reported_and_downloads_nothing(): void
+    {
+        $user = $this->plantedUser();
+        Http::fake(['*/admin/subjects/*/export' => Http::response(['error' => 'forbidden',
+            'detail' => 'this token lacks subjects:export'], 403)]);
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($user) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            Livewire::test(ListEngineUsers::class)
+                ->callAction(TestAction::make('export')->table($user))
+                ->assertNotified(__('Nothing was exported'))
+                ->assertNoFileDownloaded();
+        });
+    }
+
+    /** Offered to an operator whose sign-in carries subjects:export, and to nobody else. */
+    public function test_the_export_is_offered_only_to_an_operator_who_may_export(): void
+    {
+        config(['services.signari.issuer' => 'https://signari.test', 'services.signari.client_id' => 'console']);
+        $user = $this->plantedUser();
+        $this->actingAs($this->operator);
+
+        foreach ([['users:read', 'users:write'], ['users:read', 'subjects:export']] as $scopes) {
+            session([SignariSignIn::ME => ['scopes' => $scopes, 'delegated' => []]]);
+            DB::transaction(function () use ($user, $scopes) {
+                DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+                $page = Livewire::test(ListEngineUsers::class);
+                in_array('subjects:export', $scopes, true)
+                    ? $page->assertActionVisible(TestAction::make('export')->table($user))
+                    : $page->assertActionHidden(TestAction::make('export')->table($user));
+            });
+        }
+    }
+
+    private function plantedUser(): EngineUser
+    {
+        $userId = $this->plantUser($this->orgId);
+
+        return DB::transaction(function () use ($userId) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
 
-            return EngineUser::query()->first();
+            return EngineUser::query()->findOrFail($userId);
         });
+    }
+
+    /** The version a page rendered now carries, which its writes send as If-Match. */
+    private function renderedVersion(): int
+    {
+        return (int) DB::table('core_v1.config_status')->value('version');
     }
 }

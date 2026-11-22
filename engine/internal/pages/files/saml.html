@@ -17,4 +17,5 @@ button{color:#18181b;background:#ededf0}}
 {{if .RelayState}}<input type="hidden" name="RelayState" value="{{.RelayState}}">{{end}}
 <noscript><button type="submit">{{T "common.continue"}}</button></noscript>
 </form>
+<script nonce="{{.Nonce}}">document.forms[0].submit();</script>
 {{end}}

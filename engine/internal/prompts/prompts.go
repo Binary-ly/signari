@@ -34,6 +34,21 @@ type Field struct {
 	Help     string    `json:"help,omitempty" yaml:"help,omitempty"`
 	Required bool      `json:"required,omitempty" yaml:"required,omitempty"`
 	Options  []string  `json:"options,omitempty" yaml:"options,omitempty"`
+	// Attribute names the user attribute the answer is written to (5.14), from
+	// which a claim mapper can release it. A field left blank leaves it as it was.
+	Attribute string `json:"attribute,omitempty" yaml:"attribute,omitempty"`
+}
+
+// Candidates are the values the field can answer with, where that is a closed
+// set: what `prompt set` checks an attribute's type against before any answer.
+func (f Field) Candidates() []string {
+	switch f.Type {
+	case Checkbox:
+		return []string{"true", "false"}
+	case Select:
+		return f.Options
+	}
+	return nil
 }
 
 // Prompt is a question asked between authentication and the session.
@@ -43,14 +58,25 @@ type Prompt struct {
 	Title string
 	Body  string
 	Once  bool
+	// Version moves when the title, body or fields are edited; an answer is to
+	// one version (5.13).
+	Version int
 
 	Fields []Field
 }
+
+// RequiredAttributesSlug names the prompt sign-in makes for itself: the required
+// attributes a person may write and has no value for (5.05). No operator's prompt may
+// take it, or its answers would be read as that one's.
+const RequiredAttributesSlug = "signari.required-attributes"
 
 // Validate checks a prompt's definition.
 func (p *Prompt) Validate() error {
 	if p.Slug == "" {
 		return fmt.Errorf("a prompt needs a slug")
+	}
+	if p.Slug == RequiredAttributesSlug {
+		return fmt.Errorf("the slug %q is the one sign-in uses to ask for missing required attributes", p.Slug)
 	}
 	if p.Title == "" {
 		return fmt.Errorf("prompt %q needs a title: it is the heading somebody "+
@@ -60,6 +86,7 @@ func (p *Prompt) Validate() error {
 		return fmt.Errorf("prompt %q has no fields", p.Slug)
 	}
 	seen := map[string]bool{}
+	attributes := map[string]bool{}
 	collects := false
 	for i, f := range p.Fields {
 		if f.Type == Notice {
@@ -67,7 +94,18 @@ func (p *Prompt) Validate() error {
 				return fmt.Errorf("prompt %q field %d: a notice needs a label, which "+
 					"is the text it displays", p.Slug, i)
 			}
+			if f.Attribute != "" {
+				return fmt.Errorf("prompt %q field %d: a notice collects nothing, so it "+
+					"has nothing to write to attribute %q", p.Slug, i, f.Attribute)
+			}
 			continue
+		}
+		if f.Attribute != "" {
+			if attributes[f.Attribute] {
+				return fmt.Errorf("prompt %q writes attribute %q from two fields; one "+
+					"answer would silently overwrite the other", p.Slug, f.Attribute)
+			}
+			attributes[f.Attribute] = true
 		}
 		collects = true
 		switch {
@@ -117,7 +155,7 @@ type Answers map[string]string
 // this exists to prevent.
 func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 	out := Answers{}
-	var missing []string
+	var missing, notEmail, notOption []string
 
 	for _, f := range p.Fields {
 		if f.Type == Notice {
@@ -143,7 +181,7 @@ func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 			continue
 		}
 		if f.Type == Email && !strings.Contains(v, "@") {
-			missing = append(missing, f.Label+" (not an email address)")
+			notEmail = append(notEmail, f.Label)
 			continue
 		}
 		if f.Type == Select {
@@ -157,18 +195,39 @@ func (p *Prompt) ValidateAnswers(a Answers) (Answers, error) {
 			if !ok {
 				// Not merely invalid: a value outside the options is a submission
 				// that did not come from the rendered form.
-				missing = append(missing, f.Label+" (not one of the options)")
+				notOption = append(notOption, f.Label)
 				continue
 			}
 		}
 		if len(v) > 500 {
-			return nil, fmt.Errorf("%s is too long", f.Label)
+			return nil, &AnswerRefusal{TooLong: f.Label}
 		}
 		out[f.Name] = v
 	}
 
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("please complete: %s", strings.Join(missing, ", "))
+	if len(missing)+len(notEmail)+len(notOption) > 0 {
+		return nil, &AnswerRefusal{Missing: missing, NotEmail: notEmail, NotOption: notOption}
 	}
 	return out, nil
+}
+
+// AnswerRefusal is answers ValidateAnswers would not take, by each field's label, so a
+// page can say what is wrong in the reader's language. Error is English, for logs.
+type AnswerRefusal struct {
+	Missing, NotEmail, NotOption []string
+	TooLong                      string
+}
+
+func (e *AnswerRefusal) Error() string {
+	if e.TooLong != "" {
+		return e.TooLong + " is too long"
+	}
+	parts := append([]string{}, e.Missing...)
+	for _, l := range e.NotEmail {
+		parts = append(parts, l+" (not an email address)")
+	}
+	for _, l := range e.NotOption {
+		parts = append(parts, l+" (not one of the options)")
+	}
+	return "please complete: " + strings.Join(parts, ", ")
 }

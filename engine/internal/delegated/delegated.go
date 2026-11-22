@@ -2,14 +2,20 @@ package delegated
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/kerberos"
+	"signari.dev/engine/internal/safedial"
 )
 
 var (
@@ -39,28 +45,76 @@ type Source struct {
 	// of both.
 	StartTLS       bool
 	BindDNTemplate string
+	// CAPEM is the CA the directory's certificate must chain to, alone. Empty
+	// trusts the system roots and SIGNARI_CA_BUNDLE.
+	CAPEM string
+
+	// For Kind == "kerberos", the organisation's own keytab for this realm and the
+	// service principal in it. None falls back to the deployment's.
+	Keytab           []byte
+	ServicePrincipal string
+}
+
+// ldapTLS is the TLS configuration a directory connection is made with: the
+// source's own CA when it names one, else the roots every other outbound
+// connection trusts, and the URL's host as the name to verify.
+func ldapTLS(s Source) (*tls.Config, error) {
+	u, err := url.Parse(s.TokenEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("the directory URL does not parse: %w", err)
+	}
+	roots := safedial.Roots()
+	if s.CAPEM != "" {
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM([]byte(s.CAPEM)) {
+			return nil, fmt.Errorf("the source's CA is not a PEM certificate")
+		}
+	}
+	return &tls.Config{RootCAs: roots, ServerName: u.Hostname(), MinVersion: tls.VersionTLS12}, nil
 }
 
 // Verifier asks a source whether a password is correct.
 type Verifier struct {
 	client *http.Client
+	// Kerberos asks a source's realm about a password, answering as
+	// kerberos.PasswordVerifier does. A field so a test can stand in for a KDC.
+	Kerberos func(ctx context.Context, s Source, username, password string) error
 }
 
+// New forwards through safedial: the source's token endpoint is a stored
+// setting, and the request carries a password, so a source that resolves or
+// redirects into the private network is refused before anything is sent. An
+// old provider that is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
 func New() *Verifier {
-	return &Verifier{
-		client: &http.Client{
-			// Short. This sits on the login path, and a slow third party must not
-			// hold a connection open long enough to be a denial of service against
-			// our own sign-in.
-			Timeout: 8 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				// A token endpoint does not redirect. Following one would forward
-				// the user's password to wherever the redirect pointed, which is
-				// the worst possible way to lose a credential.
-				return http.ErrUseLastResponse
-			},
-		},
+	v := NewWithClient(safedial.Client(0))
+	v.Kerberos = func(ctx context.Context, s Source, username, password string) error {
+		realm := kerberos.PasswordVerifier{Realm: s.TokenEndpoint, ConfPath: os.Getenv("SIGNARI_KERBEROS_CONF"),
+			KeytabData: s.Keytab, ServicePrincipal: s.ServicePrincipal}
+		if s.Keytab == nil {
+			realm.KeytabPath, realm.ServicePrincipal = os.Getenv("SIGNARI_KERBEROS_KEYTAB"), os.Getenv("SIGNARI_KERBEROS_SPN")
+		}
+		return realm.Verify(ctx, username, password)
 	}
+	return v
+}
+
+// NewWithClient is New over a transport the caller chooses, such as a dialer
+// that refuses internal addresses or a test server's trust root. The timeout
+// and the redirect refusal are applied to a copy of it either way, because
+// neither is a matter of configuration.
+func NewWithClient(c *http.Client) *Verifier {
+	cp := *c
+	// Short. This sits on the login path, and a slow third party must not
+	// hold a connection open long enough to be a denial of service against
+	// our own sign-in.
+	cp.Timeout = 8 * time.Second
+	cp.CheckRedirect = func(*http.Request, []*http.Request) error {
+		// A token endpoint does not redirect. Following one would forward
+		// the user's password to wherever the redirect pointed, which is
+		// the worst possible way to lose a credential.
+		return http.ErrUseLastResponse
+	}
+	return &Verifier{client: &cp}
 }
 
 // Verify forwards the credentials to the source provider.
@@ -81,19 +135,51 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 		// the password goes to a third party -- and the same rules enforced
 		// rather than configured: encrypted transport only, and the DN built
 		// from a template with the username escaped. See ldapbind.go.
+		conf, err := ldapTLS(s)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
 		return VerifyLDAP(ctx, LDAPSource{
 			URL:            s.TokenEndpoint,
 			StartTLS:       s.StartTLS,
 			BindDNTemplate: s.BindDNTemplate,
+			CACerts:        conf,
 		}, username, password)
+	case "kerberos":
+		return v.askRealm(ctx, s, username, password)
 	default:
 		return fmt.Errorf("delegated: unsupported source kind %q", s.Kind)
 	}
+	_, err := v.exchange(ctx, s, username, password)
+	return err
+}
+
+// askRealm asks a realm, whose name a source holds where it says how it is
+// reached. A KDC that cannot show it is the realm's is not a wrong password, and
+// says nothing about the person.
+func (v *Verifier) askRealm(ctx context.Context, s Source, username, password string) error {
+	if v.Kerberos == nil {
+		return fmt.Errorf("%w: this process cannot reach a realm", ErrUnavailable)
+	}
+	err := v.Kerberos(ctx, s, username, password)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, kerberos.ErrRefused):
+		return ErrRejected
+	}
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
+}
+
+// exchange is the token endpoint's verification, answering the step it
+// stopped at, as a test names it (7.18).
+func (v *Verifier) exchange(ctx context.Context, s Source, username, password string) (string, error) {
 	u, err := url.Parse(s.TokenEndpoint)
 	if err != nil || u.Scheme != "https" {
 		// Checked here, not only at configuration time: a source edited in the
 		// database directly must not be able to downgrade the transport.
-		return fmt.Errorf("%w: token endpoint must be https, got %q", ErrUnavailable, s.TokenEndpoint)
+		return StepConfiguration, fmt.Errorf("%w: token endpoint must be https, got %q", ErrUnavailable,
+			s.TokenEndpoint)
 	}
 
 	form := url.Values{
@@ -110,14 +196,15 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.TokenEndpoint,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return StepConfiguration, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		// The connection or its TLS: named by the error itself.
+		return StepDial, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -132,9 +219,9 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 			Error       string `json:"error"`
 		}
 		if json.Unmarshal(body, &ok) == nil && ok.AccessToken != "" && ok.Error == "" {
-			return nil
+			return "", nil
 		}
-		return ErrRejected
+		return StepAnswer, ErrRejected
 
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized:
 		// invalid_grant is a wrong password. invalid_client is OUR
@@ -147,18 +234,66 @@ func (v *Verifier) Verify(ctx context.Context, s Source, username, password stri
 		_ = json.Unmarshal(body, &e)
 		if e.Error == "invalid_client" || e.Error == "unauthorized_client" ||
 			e.Error == "unsupported_grant_type" {
-			return fmt.Errorf("%w: source rejected OUR client (%s)", ErrUnavailable, e.Error)
+			return StepAnswer, fmt.Errorf("%w: source rejected OUR client (%s)", ErrUnavailable, e.Error)
 		}
-		return ErrRejected
+		return StepAnswer, ErrRejected
 
 	case resp.StatusCode >= 500:
-		return fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
+		return StepAnswer, fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
 
 	case resp.StatusCode == http.StatusTooManyRequests:
 		// Being rate limited by the old provider is not evidence about the user.
-		return fmt.Errorf("%w: source rate limited us", ErrUnavailable)
+		return StepAnswer, fmt.Errorf("%w: source rate limited us", ErrUnavailable)
 
 	default:
-		return fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
+		return StepAnswer, fmt.Errorf("%w: source returned %d", ErrUnavailable, resp.StatusCode)
 	}
+}
+
+// Result is what a test of a source found (7.18).
+type Result struct {
+	// OK is a credential the source accepted.
+	OK bool
+	// Step is where it stopped when it did not: configuration, dial, tls or
+	// bind for a directory, configuration, dial or answer for a token
+	// endpoint.
+	Step string
+	// Detail says what happened, for the operator running the test.
+	Detail string
+}
+
+// Test asks the source whether a credential is correct, exactly as a pending
+// person's first sign-in does, and names the step that failed: a wrong CA
+// or template, a stopped directory, a refused client. Without it the first
+// sign-in after enabling a source was the test, failed on somebody else.
+//
+// A directory's refusal carries its result code here, which sign-in never
+// passes on, since a code that tells "no such user" from "wrong password" is
+// an enumeration oracle. The operator running a test chose the account.
+func (v *Verifier) Test(ctx context.Context, s Source, username, password string) Result {
+	var step, result string
+	var err error
+	switch s.Kind {
+	case "ldap":
+		conf, cerr := ldapTLS(s)
+		if cerr != nil {
+			return Result{Step: StepConfiguration, Detail: cerr.Error()}
+		}
+		step, result, err = bindLDAP(ctx, LDAPSource{URL: s.TokenEndpoint, StartTLS: s.StartTLS,
+			BindDNTemplate: s.BindDNTemplate, CACerts: conf}, username, password)
+	case "oidc_password":
+		step, err = v.exchange(ctx, s, username, password)
+	case "kerberos":
+		step, err = StepBind, v.askRealm(ctx, s, username, password)
+	default:
+		return Result{Step: StepConfiguration, Detail: fmt.Sprintf("delegated: unsupported source kind %q", s.Kind)}
+	}
+	if err == nil {
+		return Result{OK: true, Detail: "the source accepted the credential"}
+	}
+	detail := err.Error()
+	if result != "" {
+		detail += " (the directory answered " + result + ")"
+	}
+	return Result{Step: step, Detail: detail}
 }

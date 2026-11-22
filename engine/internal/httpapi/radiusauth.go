@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/store"
 )
 
 // RADIUSAuthenticator verifies a network login against the same credential path
@@ -37,6 +39,40 @@ func NewRADIUSAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID st
 	}
 }
 
+// WithMFAGate is LDAPAuthenticator.WithMFAGate, for the same reason: RADIUS PAP
+// carries a password and nothing else.
+func (a *RADIUSAuthenticator) WithMFAGate(g MFAGate) *RADIUSAuthenticator {
+	return &RADIUSAuthenticator{inner: a.inner.WithMFAGate(g)}
+}
+
+// WithCodes is LDAPAuthenticator.WithCodes, and is also what lets a right
+// password without a code be answered with an Access-Challenge.
+func (a *RADIUSAuthenticator) WithCodes(c CodeCheck) *RADIUSAuthenticator {
+	return &RADIUSAuthenticator{inner: a.inner.WithCodes(c)}
+}
+
+// VerifyCode is the second half of an Access-Challenge: the person the password
+// was proved for, and the code they answered with.
+func (a *RADIUSAuthenticator) VerifyCode(ctx context.Context, username, code string) error {
+	var userID, orgID string
+	err := a.inner.db.QueryRow(ctx, `
+		SELECT u.id::text, u.org_id::text FROM core.users u
+		 WHERE u.org_id = $1::uuid AND u.status = 'active'
+		   AND (u.email_fold = lower($2) OR u.username_fold = lower($2))`,
+		store.ExactUUIDOrNil(a.inner.orgID), username).Scan(&userID, &orgID)
+	if err != nil {
+		return fmt.Errorf("finding who a code is for: %w", err)
+	}
+	if err := a.inner.secondFactor(ctx, orgID, userID, code); err != nil {
+		return err
+	}
+	a.inner.audit(ctx, audit.Event{
+		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
+		Detail: map[string]any{"via": a.inner.via, "amr": []string{"pwd", "otp", "mfa"}},
+	})
+	return nil
+}
+
 // Authenticate reports whether the credential is valid, and nothing else.
 //
 // The identity is discarded on purpose. RADIUS replies carry no user attributes
@@ -45,6 +81,9 @@ func NewRADIUSAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID st
 // leaking a directory.
 func (a *RADIUSAuthenticator) Authenticate(ctx context.Context, username, password string) error {
 	_, err := a.inner.Authenticate(ctx, username, password)
+	if errors.Is(err, errMFARequired) && a.inner.codes != nil {
+		return radius.ErrSecondFactor
+	}
 	return err
 }
 
@@ -71,18 +110,23 @@ func (a *RADIUSAuthenticator) Authenticate(ctx context.Context, username, passwo
 // reproduce.
 func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (radius.Authorization, error) {
 	var auth radius.Authorization
-	var vlan *int
-	var filter *string
+	var vlan, timeout *int
+	var filter, class *string
 
+	// Scoped to the listener's organisation on both sides. The engine role is
+	// not subject to row-level security, so nothing else narrows this: without
+	// the org predicate a user name held in two organisations put a person on
+	// whichever one's VLAN sorted first -- the other tenant's network.
 	err := a.inner.db.QueryRow(ctx, `
-		SELECT ra.vlan_id, ra.filter_id
-		FROM core.radius_group_authorization ra
-		JOIN core.group_members gm ON gm.group_id = ra.group_id
-		JOIN core.users u          ON u.id = gm.user_id
-		WHERE u.status = 'active'
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))
+		SELECT ra.vlan_id, ra.filter_id, ra.session_timeout, ra.class, ra.vendor_attributes
+		FROM core.users u
+		CROSS JOIN LATERAL core.groups_of(u.id) gm
+		JOIN core.radius_group_authorization ra ON ra.group_id = gm.group_id
+		WHERE u.status = 'active' AND `+store.OrgInService("u.org_id")+`
+		  AND u.org_id = $2::uuid AND ra.org_id = $2::uuid
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))
 		ORDER BY ra.priority DESC, ra.group_id
-		LIMIT 1`, username).Scan(&vlan, &filter)
+		LIMIT 1`, username, a.inner.orgID).Scan(&vlan, &filter, &timeout, &class, &auth.Vendor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No authorised group. Not an error: most deployments configure none,
 		// and the Access-Accept then carries nothing, exactly as before.
@@ -96,6 +140,12 @@ func (a *RADIUSAuthenticator) Authorize(ctx context.Context, username string) (r
 	}
 	if filter != nil {
 		auth.FilterID = *filter
+	}
+	if timeout != nil {
+		auth.SessionTimeout = *timeout
+	}
+	if class != nil {
+		auth.Class = *class
 	}
 	return auth, nil
 }

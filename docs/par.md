@@ -5,7 +5,7 @@ authenticated, and gets back an opaque handle. The browser carries only that.
 
 ```
 POST /oauth2/par        ->  {"request_uri": "urn:ietf:params:oauth:request_uri:...",
-                             "expires_in": 90}
+                             "expires_in": 300}
 GET  /oauth2/authorize?client_id=...&request_uri=...
 ```
 
@@ -20,28 +20,37 @@ It is also **editable**. Nothing stops whoever controls the browser changing
 `scope` or `redirect_uri` before it arrives.
 
 PAR moves the parameters onto a back channel from an authenticated client. What
-the browser carries is a handle that is single-use, expires in 90 seconds, and
+the browser carries is a handle that gives one code, expires in five minutes, and
 means nothing to anyone who captures it after use.
 
 ## Verified against the running server
 
 ```
-1. push, valid                    -> request_uri issued, expires_in=90
+1. push, valid                    -> request_uri issued, expires_in=300
 2. push with NO client auth       -> invalid_client
 3. push, unregistered redirect    -> redirect_uri is not registered for this client
-4. authorize with the handle      -> 200 (login page)
-5. REUSE the same handle          -> 400 (single use)
-6. a DIFFERENT client redeems it  -> 400 (bound to its pusher)
-7. query tries to add scope       -> 200, and the extra scope is IGNORED
+4. authorize with the handle      -> 200 (login page), as often as it is loaded
+5. sign in, and come back         -> a code
+6. the handle again after a code  -> 400 (one code)
+7. a DIFFERENT client redeems it  -> 400 (bound to its pusher)
+8. query tries to add scope       -> 200, and the extra scope is IGNORED
 ```
 
-**Line 7 is the rule that makes it worth having.** When `request_uri` is
+**Line 5 is why line 6 is after it.** A person arrives at the authorization
+endpoint several times on one handle: for the sign-in page, back from it, back
+from a second factor and from the consent screen. Software that fetches a link to
+see what is there arrives too. So a handle is spent in the transaction that issues
+the code, and nothing before that uses it up. It used to be spent by the first page,
+which looked exactly like single use and meant nobody who was not already signed in
+could finish a pushed request.
+
+**Line 8 is the rule that makes it worth having.** When `request_uri` is
 present, the pushed parameters *replace* the query entirely — only `client_id`
 survives, because it is needed to find the handle. Merging the two would undo
 the feature: whoever controls the browser could append `scope=admin` to a URL
 whose other parameters are protected.
 
-**Line 6:** the handle is bound to the client that pushed it. Otherwise a client
+**Line 7:** the handle is bound to the client that pushed it. Otherwise a client
 could redeem another's handle and begin an authorization carrying someone else's
 registered `redirect_uri`.
 
@@ -67,10 +76,36 @@ nobody remembers is there.
 handles make the parameters that will be authorized depend on a lookup chain,
 which is the indirection this endpoint removes.
 
-**`require_pushed_authorization`** can be set per client. Off by default, since
-turning it on breaks any integration that has not moved — but without it PAR is
-advisory: a client that can also send a plain request has gained an option, not
-the integrity property.
+**A pushed request may be signed**, with the parameters in a `request` object and
+nothing beside it but the client's own authentication. See [jar.md](jar.md).
+
+**`require_pushed_authorization`** can be set per client, with `signari client
+set-par`, the client PATCH and `apply` (`require_pushed_authorization_requests`),
+or by the client itself at dynamic registration under that RFC 9126 §6 name. Off
+by default, since turning it on breaks any integration that has not moved — but
+without it PAR is advisory: a client that can also send a plain request has
+gained an option, not the integrity property. A plain request from such a
+client is refused, and no session or code comes of it.
+
+**A push is at most 64 KiB**, refused with `413` past it: a pushed request is a
+handful of parameters. Until October 2026 the limit was declared and applied to
+nothing, so a push was read up to net/http's 10 MB form ceiling.
+
+**Sixty pushes per address per minute for a public client.** Every push is a
+stored row, and a public client authenticates nothing here, so before this a
+stranger could have the server write rows without limit. A browser pushes one
+per sign-in.
+
+**6,000 per minute per confidential client**, counted after it authenticates
+and not by address. A confidential relying party pushes from its own servers,
+one push per sign-in, often all from one egress address. Counted per address,
+such a client could start only sixty sign-ins a minute, on the endpoint
+FAPI 2.0 requires. The per-client ceiling still limits what a leaked secret can
+make the server store. A failed authentication stores nothing and is metered by
+the client-authentication budgets.
+
+A request over either limit gets `429` with `Retry-After`. A database error is
+refused rather than waved through.
 
 ## Duplicate parameters are refused
 
@@ -97,10 +132,15 @@ was used buys nothing and breaks real clients.
 
 ## Two properties worth knowing
 
-- **The `request_uri` lifetime is a fixed 90 seconds**, not configurable. RFC 9126
-  §2.2 says only "short-lived" and names no value; a fixed short default is
-  conformant and removes the footgun of an operator setting it long enough to
-  matter.
+- **The `request_uri` lifetime is a fixed five minutes**, not configurable, and it
+  covers the whole sign-in: a person has that long from the client's redirect to the
+  code, a second factor and a consent screen included. RFC 9126 §2.2 says only
+  "short-lived" and names no value, and FAPI 2.0 asks for under 600 seconds; a fixed
+  default removes the footgun of an operator setting it long enough to matter.
+- **What a page reads from the push decides nothing.** `login_hint`, `ui_locales` and
+  `acr_values` travel beside the handle so the sign-in page can use them, and are
+  replaced from the push on every arrival. A `prompt` is answered in the stored
+  request, never by the browser, so `prompt=login` cannot be skipped by editing a URL.
 - **Duplicate parameters are refused** (`dupeparams.go`), while the repeats
   RFC 8707 and RFC 8693 legitimately permit — `resource`, `audience` — are
   preserved as lists through the push.

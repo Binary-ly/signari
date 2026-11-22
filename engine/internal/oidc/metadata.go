@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net/url"
 	"signari.dev/engine/internal/abca"
+	"slices"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/tokens"
 )
 
 // Metadata is the OpenID Provider configuration served at
@@ -47,25 +50,58 @@ type Metadata struct {
 	// issued an auth_req_id it would wait on forever. That is the rule this file
 	// exists to keep: the document may only claim what the server enforces.
 	// UMA 2.0 Federated Authorization §2: where a resource server asks for a
-	// permission ticket.
+	// permission ticket, and where it registers the resources it asks about.
 	PermissionEndpoint                string   `json:"permission_endpoint,omitempty"`
+	ResourceRegistrationEndpoint      string   `json:"resource_registration_endpoint,omitempty"`
 	BackchannelAuthenticationEndpoint string   `json:"backchannel_authentication_endpoint,omitempty"`
 	BackchannelTokenDeliveryModes     []string `json:"backchannel_token_delivery_modes_supported,omitempty"`
 	BackchannelUserCodeSupported      *bool    `json:"backchannel_user_code_parameter_supported,omitempty"`
 	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
+	// The client ID metadata document draft's §6, once a rule says whose to fetch.
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+	// ID-JAG §7.1, once something can be issued, and §7.2, which says only that this
+	// server implements the profile and so never names who it would take one from.
+	IdentityChainingRequestedTokenTypesSupported []string `json:"identity_chaining_requested_token_types_supported,omitempty"`
+	AuthorizationGrantProfilesSupported          []string `json:"authorization_grant_profiles_supported,omitempty"`
+	// Grant Management §7.1.
+	GrantManagementActionsSupported []string `json:"grant_management_actions_supported,omitempty"`
+	GrantManagementEndpoint         string   `json:"grant_management_endpoint,omitempty"`
 	// RFC 9449 §5.1.
 	DPoPSigningAlgValuesSupported []string `json:"dpop_signing_alg_values_supported,omitempty"`
+	// RFC 8705 §3.3, whose default is false.
+	TLSClientCertificateBoundAccessTokens bool `json:"tls_client_certificate_bound_access_tokens,omitempty"`
 	// OIDC Discovery §3.
 	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	ResponseModesSupported                     []string `json:"response_modes_supported"`
-	GrantTypesSupported                        []string `json:"grant_types_supported"`
+	// JARM §4, and only what this deployment holds an active key for.
+	AuthorizationSigningAlgValuesSupported []string `json:"authorization_signing_alg_values_supported,omitempty"`
+	// What can be encrypted to a client, and the same for each thing that can.
+	AuthorizationEncryptionAlgValuesSupported []string `json:"authorization_encryption_alg_values_supported,omitempty"`
+	AuthorizationEncryptionEncValuesSupported []string `json:"authorization_encryption_enc_values_supported,omitempty"`
+	IDTokenEncryptionAlgValuesSupported       []string `json:"id_token_encryption_alg_values_supported,omitempty"`
+	IDTokenEncryptionEncValuesSupported       []string `json:"id_token_encryption_enc_values_supported,omitempty"`
+	UserinfoSigningAlgValuesSupported         []string `json:"userinfo_signing_alg_values_supported,omitempty"`
+	UserinfoEncryptionAlgValuesSupported      []string `json:"userinfo_encryption_alg_values_supported,omitempty"`
+	UserinfoEncryptionEncValuesSupported      []string `json:"userinfo_encryption_enc_values_supported,omitempty"`
+	// RFC 9701 §7.
+	IntrospectionSigningAlgValuesSupported    []string `json:"introspection_signing_alg_values_supported,omitempty"`
+	IntrospectionEncryptionAlgValuesSupported []string `json:"introspection_encryption_alg_values_supported,omitempty"`
+	IntrospectionEncryptionEncValuesSupported []string `json:"introspection_encryption_enc_values_supported,omitempty"`
+	GrantTypesSupported                       []string `json:"grant_types_supported"`
 	// RFC 9396 §10. Populated per deployment at request time, because the
 	// registered types are a deployment's own list -- so this is empty in the
 	// static document and filled in by the discovery handler.
 	AuthorizationDetailsTypesSupported []string `json:"authorization_details_types_supported,omitempty"`
 
 	SubjectTypesSupported []string `json:"subject_types_supported"`
+
+	// AcrValuesSupported is the acr values this server derives and can satisfy
+	// when a client asks for one (oauth.ACRFromAMR and its satisfies), so a
+	// relying party need not guess what `acr_values` to send. It was absent,
+	// and a client asking for an acr it could not discover learned only from
+	// a refusal.
+	AcrValuesSupported []string `json:"acr_values_supported"`
 
 	IDTokenSigningAlgValues  []string `json:"id_token_signing_alg_values_supported"`
 	TokenEndpointAuthMethods []string `json:"token_endpoint_auth_methods_supported"`
@@ -96,6 +132,12 @@ type Metadata struct {
 	ChallengeEndpoint             string   `json:"challenge_endpoint,omitempty"`
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 	ClaimsSupported               []string `json:"claims_supported"`
+	// ClaimsParameterSupported is true: the `claims` request parameter is read, as a
+	// request for what its scopes release (oauth.CompileClaims).
+	ClaimsParameterSupported bool `json:"claims_parameter_supported"`
+	// DisplayValuesSupported are what the one page there is suits. `display` is not
+	// read: every page is the same responsive page, so there is nothing to choose.
+	DisplayValuesSupported []string `json:"display_values_supported"`
 
 	// OIDC Core §3.1.2.1 defines ui_locales as a request parameter, and the
 	// Discovery spec defines this as the list a relying party may choose from.
@@ -105,6 +147,12 @@ type Metadata struct {
 	// messages are not present would be the same lie as advertising an endpoint
 	// that 404s, which this file already argues against at length.
 	UILocalesSupported []string `json:"ui_locales_supported,omitempty"`
+
+	// From Initiating User Registration via OpenID Connect 1.0 §4.2, which
+	// makes it a MUST for an OP supporting `prompt=create`, listing "all other
+	// prompt values which it supports" too: oauth.SupportedPrompts, the list
+	// ValidatePrompt refuses anything outside.
+	PromptValuesSupported []string `json:"prompt_values_supported"`
 
 	// RFC 9207. Cheap, and it closes the mix-up attack, so it is on by default.
 	AuthorizationResponseIssParamSupported bool `json:"authorization_response_iss_parameter_supported"`
@@ -116,17 +164,14 @@ type Metadata struct {
 
 	RequestParameterSupported    bool `json:"request_parameter_supported"`
 	RequestURIParameterSupported bool `json:"request_uri_parameter_supported"`
+	// RFC 9101 §4, and asymmetric only, as §10.1 needs a signature that says who.
+	RequestObjectSigningAlgValuesSupported []string `json:"request_object_signing_alg_values_supported,omitempty"`
 }
 
 // Config is what the engine knows about itself when rendering metadata.
 type Config struct {
 	Issuer string
 	Keys   *keys.Set
-
-	// IssuerAliases are legacy issuers this deployment also claims, for clients
-	// still being migrated from another provider. Tokens minted under one must
-	// still be accepted by our own userinfo and introspection.
-	IssuerAliases []string
 
 	// ProxyCookieDomain scopes the forward-auth cookie to the parent domain, so
 	// every protected subdomain receives it. Empty disables forward auth, which
@@ -152,8 +197,6 @@ type Config struct {
 	// readable, so anything that sets this in production has no security at all.
 	AllowInsecureIssuer bool
 
-	RefuseClonedAuthenticators bool
-
 	// UILocalesSupported is the languages the sign-in pages can be rendered in.
 	// Supplied by the caller because the catalogue lives with the pages, and
 	// this package must not reach into them.
@@ -177,6 +220,8 @@ const (
 	PathJWKS       = "/oauth2/jwks"
 	PathEndSession = "/oauth2/logout"
 	PathRevocation = "/oauth2/revoke"
+	// PathGrantManagement is Grant Management's endpoint, §6.2.
+	PathGrantManagement = "/oauth2/grants"
 	// PathAttestationChallenge is draft-ietf-oauth-attestation-based-client-auth-10 §6.1.
 	PathAttestationChallenge = "/oauth2/attestation-challenge"
 	PathIntrospection        = "/oauth2/introspect"
@@ -267,6 +312,7 @@ func Build(cfg Config) (*Metadata, error) {
 		PushedAuthorizationRequestEndpoint: at("/oauth2/par"),
 		DeviceAuthorizationEndpoint:        at("/oauth2/device_authorization"),
 		PermissionEndpoint:                 at("/uma2/permission"),
+		ResourceRegistrationEndpoint:       at("/uma2/resource_set"),
 		BackchannelAuthenticationEndpoint:  at("/oauth2/backchannel"),
 		// Ping is per-client: a client registered for poll experiences no change
 		// from this being advertised, and a client registered for ping is refused
@@ -288,10 +334,14 @@ func Build(cfg Config) (*Metadata, error) {
 			"ES256", "ES384", "ES512", "EdDSA",
 		},
 
-		// Code only. OAuth 2.1 removes implicit and the hybrid flows, and every
-		// response type that returns a token in the front channel is a class of
-		// bug we are choosing not to have.
-		ResponseTypesSupported: []string{"code"},
+		// Code, and the one hybrid type the authorization endpoint serves to a
+		// client permitted it (`signari client set-hybrid`, for an application
+		// being migrated in). It was implemented and not listed, so a relying
+		// party library that checks discovery before asking refused to ask.
+		// Implicit and every other type returning a token in the front channel
+		// stay out: OAuth 2.1 removes them and they are a class of bug this
+		// server does not carry.
+		ResponseTypesSupported: []string{"code", "code id_token"},
 		// All three, and all three are served.
 		//
 		// This comment used to say "`query` alone... the authorize endpoint now
@@ -305,8 +355,20 @@ func Build(cfg Config) (*Metadata, error) {
 		// list was shorter than it is. The invariant itself holds --
 		// `ValidateAuthz` accepts query, fragment and form_post, and
 		// `internal/httpapi/responsemode.go` renders all three, form_post as a
-		// self-posting HTML page.
-		ResponseModesSupported: []string{"query", "fragment", "form_post"},
+		// self-posting HTML page, and each of them again signed (JARM §4).
+		ResponseModesSupported: []string{"query", "fragment", "form_post",
+			"query.jwt", "fragment.jwt", "form_post.jwt", "jwt"},
+		AuthorizationSigningAlgValuesSupported:    algNames,
+		AuthorizationEncryptionAlgValuesSupported: tokens.EncryptionAlgorithms,
+		AuthorizationEncryptionEncValuesSupported: tokens.ContentEncryptions,
+		IDTokenEncryptionAlgValuesSupported:       tokens.EncryptionAlgorithms,
+		IDTokenEncryptionEncValuesSupported:       tokens.ContentEncryptions,
+		UserinfoSigningAlgValuesSupported:         algNames,
+		UserinfoEncryptionAlgValuesSupported:      tokens.EncryptionAlgorithms,
+		UserinfoEncryptionEncValuesSupported:      tokens.ContentEncryptions,
+		IntrospectionSigningAlgValuesSupported:    algNames,
+		IntrospectionEncryptionAlgValuesSupported: tokens.EncryptionAlgorithms,
+		IntrospectionEncryptionEncValuesSupported: tokens.ContentEncryptions,
 
 		// No `password` grant: ROPC is removed in OAuth 2.1 and there is no
 		// version of it that is safe to offer.
@@ -318,6 +380,9 @@ func Build(cfg Config) (*Metadata, error) {
 		// token endpoint dispatches it, a wallet can redeem an offer without
 		// sending client_id at all, and `signari credential offer` mints one. It
 		// was deliberately absent while only the rules existed.
+		AuthorizationGrantProfilesSupported: []string{"urn:ietf:params:oauth:grant-profile:id-jag"},
+		GrantManagementActionsSupported:     []string{"query", "revoke", "create", "merge", "replace"},
+		GrantManagementEndpoint:             at(PathGrantManagement),
 		GrantTypesSupported: []string{"authorization_code", "refresh_token",
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -332,7 +397,8 @@ func Build(cfg Config) (*Metadata, error) {
 			// unusable for the caching every relying party does.
 			"urn:ietf:params:oauth:grant-type:jwt-bearer"},
 
-		SubjectTypesSupported:   []string{"public"},
+		SubjectTypesSupported:   []string{"public", "pairwise"},
+		AcrValuesSupported:      []string{oauth.ACRSingleFactor, oauth.ACRMultiFactor, oauth.ACRPapeMultiFactor, oauth.ACRPhishingResistant, oauth.ACRPhishingResistantHardware},
 		IDTokenSigningAlgValues: algNames,
 		// private_key_jwt is advertised because it is implemented AND enforced --
 		// a client configured for it cannot fall back to a secret, which is the
@@ -351,6 +417,10 @@ func Build(cfg Config) (*Metadata, error) {
 			// to prevent.
 			abca.MethodPoP,
 		},
+		// RFC 8705 §3.3. Said for the reason the methods above are: a client set for
+		// it with `client set-tls -tls-bound-tokens` is issued them. Absent, which is
+		// false, a client reading discovery would not ask for them.
+		TLSClientCertificateBoundAccessTokens: true,
 
 		// S256 only, and the authorize endpoint enforces it. `plain` is not
 		// listed because it is not accepted.
@@ -361,25 +431,27 @@ func Build(cfg Config) (*Metadata, error) {
 		// omitempty is the honest way to say "there is no choice here".
 		UILocalesSupported: multiple(cfg.UILocalesSupported),
 
+		PromptValuesSupported: slices.Clone(oauth.SupportedPrompts),
+
 		ClaimsSupported: []string{
 			"groups",
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
 			"acr", "amr", "azp", "sid", "email", "email_verified",
-			// No "name": nothing stores a display name, and advertising a claim
-			// that is never emitted is the failure this file exists to prevent.
-			"preferred_username",
+			// Released under `profile` when the account holds them. "name" was
+			// left out while nothing stored a display name; migration 0105
+			// added one, and the claims followed only with 2.15.
+			"preferred_username", "name", "given_name", "family_name",
 		},
+		ClaimsParameterSupported: true,
+		DisplayValuesSupported:   []string{"page", "popup", "touch"},
 
 		AuthorizationResponseIssParamSupported: true,
 
 		BackchannelLogoutSupported:        true,
 		BackchannelLogoutSessionSupported: true,
 
-		// Both false, for two different reasons that must not be conflated.
-		//
-		// request_parameter_supported: we accept no inline `request` JWT (RFC 9101
-		// JAR). Advertising true and rejecting it is the Config OP failure this
-		// file exists to avoid.
+		// request_parameter_supported: an inline `request` JWT (RFC 9101) is taken,
+		// signed by a key the client has registered.
 		//
 		// request_uri_parameter_supported: we fetch no remote request object from
 		// a `request_uri` URL -- that is an SSRF surface we deliberately do not
@@ -390,8 +462,12 @@ func Build(cfg Config) (*Metadata, error) {
 		// pushed_authorization_request_endpoint above. So a PAR client is not
 		// misled by this false, and flipping it to true would falsely claim we
 		// fetch remote request objects.
-		RequestParameterSupported:    false,
+		RequestParameterSupported:    true,
 		RequestURIParameterSupported: false,
+		RequestObjectSigningAlgValuesSupported: []string{
+			"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+			"ES256", "ES384", "ES512", "EdDSA",
+		},
 	}, nil
 }
 

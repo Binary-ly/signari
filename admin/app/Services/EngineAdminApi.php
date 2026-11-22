@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -17,10 +18,18 @@ use RuntimeException;
  */
 class EngineAdminApi
 {
+    /** The version the page making these writes was rendered from; see asOf. */
+    private ?int $readAt = null;
+
     public function __construct(
         private readonly string $baseUrl,
         private readonly string $token,
         private readonly int $timeoutSeconds = 5,
+        // The signed-in console user, sent as Signari-Operator so the engine's
+        // audit record names who acted and not only the console's token: two
+        // people on one token were one actor in the trail. An opaque reference,
+        // never an address, because the trail is append-only.
+        private readonly ?string $operator = null,
     ) {
         if ($this->token === '') {
             throw new RuntimeException(
@@ -32,10 +41,46 @@ class EngineAdminApi
 
     public static function fromConfig(): self
     {
+        $user = auth()->user();
+
+        // An operator signed in through Signari writes as themselves, with the
+        // roles they hold there, read by the engine on each request (6.06).
+        // The environment token is a break-glass account's, or every
+        // operator's on a console with no Signari sign-in: handing it to a
+        // person who signed in through Signari would give them everything.
+        $token = (string) config('services.signari_admin.token', '');
+        if ($user !== null && SignariSignIn::configured() && ! $user->break_glass) {
+            $token = app(SignariSignIn::class)->accessToken();
+            if ($token === null) {
+                throw new RuntimeException('Your Signari sign-in has ended. Sign in again; nothing was written.');
+            }
+        }
+
         return new self(
-            rtrim((string) env('SIGNARI_ADMIN_URL', 'http://127.0.0.1:8090'), '/'),
-            (string) env('SIGNARI_ADMIN_TOKEN', ''),
+            self::baseUrl(),
+            $token,
+            operator: $user === null ? null : 'console-user:'.$user->getKey(),
         );
+    }
+
+    /** Where the engine's Admin API listens. */
+    public static function baseUrl(): string
+    {
+        return rtrim((string) config('services.signari_admin.url', 'http://127.0.0.1:8090'), '/');
+    }
+
+    /**
+     * Writes held to the configuration version a page was rendered from (the
+     * `CarriesConfigVersion` page's), sent as If-Match. Every write needs one:
+     * without it there is nothing to say what the operator saw, and a write
+     * conditional on a version read just before it would let a stale form win.
+     */
+    public function asOf(?int $renderedVersion): static
+    {
+        $held = clone $this;
+        $held->readAt = $renderedVersion;
+
+        return $held;
     }
 
     /**
@@ -70,7 +115,7 @@ class EngineAdminApi
             'password' => $password,
         ], fn ($v) => filled($v));
 
-        return (string) $this->request('post', '/admin/users', $body)['id'];
+        return (string) $this->request('post', '/admin/users', $body, $this->readAt())['id'];
     }
 
     /**
@@ -86,7 +131,7 @@ class EngineAdminApi
         // administrators deciding opposite things about the same person is
         // exactly the case worth refusing.
         return $this->request('patch', "/admin/users/{$userId}",
-            ['active' => $active], $this->configVersion());
+            ['active' => $active], $this->readAt());
     }
 
     /**
@@ -99,7 +144,48 @@ class EngineAdminApi
     public function setUserPassword(string $userId, string $password): array
     {
         return $this->request('patch', "/admin/users/{$userId}",
-            ['password' => $password], $this->configVersion());
+            ['password' => $password], $this->readAt());
+    }
+
+    /**
+     * A person's sign-in methods as the engine lists them: what each IS, never
+     * what it holds. `factors` carries a `type`, an `id` for the kinds a person
+     * may hold several of, and whether each is confirmed or disabled;
+     * `recovery_codes_unused` counts the codes without listing them.
+     */
+    public function userFactors(string $userId): array
+    {
+        return $this->request('get', "/admin/users/{$userId}/factors");
+    }
+
+    /**
+     * Remove one of a person's sign-in methods, for somebody whose phone or key
+     * is lost. The engine ends every session they hold and tells them by email
+     * and a verified number. A passkey is named by its id; `recovery` with no
+     * id removes the whole set.
+     *
+     * Conditional, like every other mutation here.
+     */
+    public function removeUserFactor(string $userId, string $kind, ?string $factorId = null): array
+    {
+        $path = "/admin/users/{$userId}/factors/".rawurlencode($kind);
+        if ($factorId !== null && $factorId !== '') {
+            $path .= '/'.rawurlencode($factorId);
+        }
+
+        return $this->request('delete', $path, [], $this->readAt());
+    }
+
+    /**
+     * Email a person a single-use link to register a passkey, for a new starter
+     * with no password or somebody whose only way in is lost. The answer names
+     * the link and when it ends, never its token: the engine mints that as it
+     * sends the email, so whoever issues a link cannot use it. 0 is a day.
+     */
+    public function sendPasskeyLink(string $userId, int $ttlSeconds = 0): array
+    {
+        return $this->request('post', "/admin/users/{$userId}/passkey-link",
+            ['ttl_seconds' => $ttlSeconds], $this->readAt());
     }
 
     /**
@@ -119,7 +205,7 @@ class EngineAdminApi
             'redirect_uris' => $redirectUris,
             'public' => $public,
             'secret' => $importSecret,
-        ], fn ($v) => $v !== null && $v !== ''));
+        ], fn ($v) => $v !== null && $v !== ''), $this->readAt());
     }
 
     /**
@@ -129,7 +215,83 @@ class EngineAdminApi
      */
     public function rotateClientSecret(string $clientId): array
     {
-        return $this->request('post', "/admin/clients/{$clientId}/rotate-secret");
+        return $this->request('post', "/admin/clients/{$clientId}/rotate-secret", [], $this->readAt());
+    }
+
+    /**
+     * Replace the organisation's own appearance. The engine refuses a palette
+     * nobody can read, and its reason is what the operator is shown.
+     *
+     * @param  array<string, string>  $brand
+     */
+    public function setOrganisationBrand(string $orgId, array $brand): int
+    {
+        return (int) $this->request('put', "/admin/organizations/{$orgId}/brand", $brand, $this->readAt())['config_version'];
+    }
+
+    /** Return the organisation to its instance's appearance. */
+    public function removeOrganisationBrand(string $orgId): int
+    {
+        return (int) $this->request('delete', "/admin/organizations/{$orgId}/brand", [], $this->readAt())['config_version'];
+    }
+
+    /** Every journey the organisation's sign-in flow can take. */
+    public function signInFlowPaths(string $orgId): array
+    {
+        return $this->request('get', "/admin/organizations/{$orgId}/sign-in-flow/paths");
+    }
+
+    /** End one session. The person is out on their next request (ADR-007). */
+    public function endSession(string $sid): int
+    {
+        return (int) $this->request('delete', '/admin/sessions/'.rawurlencode($sid), [], $this->readAt())['config_version'];
+    }
+
+    public function addGroupMember(string $groupId, string $userId): int
+    {
+        return (int) $this->request('put', "/admin/groups/{$groupId}/members/{$userId}", [], $this->readAt())['config_version'];
+    }
+
+    public function removeGroupMember(string $groupId, string $userId): int
+    {
+        return (int) $this->request('delete', "/admin/groups/{$groupId}/members/{$userId}", [], $this->readAt())['config_version'];
+    }
+
+    /**
+     * Erase a person. The engine shreds their key, ends their sessions and removes
+     * the row, and cannot undo any of that; the confirmation is its own check too.
+     */
+    public function eraseSubject(string $userId): array
+    {
+        return $this->request('post', "/admin/subjects/{$userId}/erase", ['confirm_subject_id' => $userId], $this->readAt());
+    }
+
+    /**
+     * Everything the engine keeps about a person, the signari-subject-export/1 document
+     * (docs/data-export.md), as the engine wrote it: decoded and encoded again in PHP, an
+     * empty section's {} would come out as []. Needs the subjects:export scope, and the
+     * engine records the export against this token and the operator.
+     */
+    public function exportSubject(string $userId): string
+    {
+        return $this->send('get', '/admin/subjects/'.rawurlencode($userId).'/export')->body();
+    }
+
+    /** Reword one message for the organisation, in one language, as plain text. */
+    public function setOrganisationMessage(string $orgId, string $locale, string $key, string $text): int
+    {
+        return (int) $this->request('put', $this->messagePath($orgId, $locale, $key), ['text' => $text], $this->readAt())['config_version'];
+    }
+
+    /** Return one message to the catalogue's wording. */
+    public function removeOrganisationMessage(string $orgId, string $locale, string $key): int
+    {
+        return (int) $this->request('delete', $this->messagePath($orgId, $locale, $key), [], $this->readAt())['config_version'];
+    }
+
+    private function messagePath(string $orgId, string $locale, string $key): string
+    {
+        return "/admin/organizations/{$orgId}/messages/".rawurlencode($locale).'/'.rawurlencode($key);
     }
 
     /** The engine's current config version, for showing propagation state. */
@@ -155,21 +317,23 @@ class EngineAdminApi
      * application that ships with it is the "a control nobody uses" shape this
      * project keeps finding elsewhere.
      *
-     * # Why the version is read here rather than carried from the page
+     * # Why the version comes from the page
      *
-     * Carrying it from the rendered page would be stricter and is the eventual
-     * goal: it would catch a change made while the operator was reading. Reading
-     * it immediately before the write catches a narrower window -- two
-     * administrators saving within the same moment -- and needs no change to
-     * every form in the console.
+     * It is the version the page was rendered from (asOf), not one read just
+     * before the write. Read just before, it caught only two administrators
+     * saving in the same moment: a form opened before somebody else's change
+     * still read the new version and wrote over that change, which is the case
+     * the precondition exists for. The version is global, so any configuration
+     * change since the page was rendered refuses the write, the operator's
+     * reload included; refusing too much is the side to err on.
      *
-     * The narrower guarantee is stated rather than implied, because a
+     * What it does and does not catch is stated rather than implied, because a
      * precondition that people believe is stronger than it is would be worse
      * than none. See PRECONDITION_SCOPE below.
      */
     public function conditionalPatch(string $path, array $body): int
     {
-        return (int) $this->request('patch', $path, $body, $this->configVersion())['config_version'];
+        return (int) $this->request('patch', $path, $body, $this->readAt())['config_version'];
     }
 
     /**
@@ -179,11 +343,28 @@ class EngineAdminApi
      * reads, not only in a document they may not have.
      */
     public const PRECONDITION_SCOPE =
-        'The console reads the configuration version immediately before each write '.
-        'and sends it as If-Match. That refuses a write when another change landed '.
-        'between the read and the write -- two administrators saving at the same '.
-        'moment. It does NOT catch a change made while somebody had a form open, '.
-        'which needs the version to travel with the rendered page.';
+        'Each console write sends, as If-Match, the configuration version its page '.
+        'was rendered from, read before the rows it shows. A change anywhere in the '.
+        'configuration after that, including one made while a form was open, refuses '.
+        'the write and nothing is written. It does NOT say which change moved the '.
+        'version: the version is one counter for the whole instance.';
+
+    /**
+     * The version this client's writes are held to, or a refusal when none was
+     * carried: a write with nothing to say what the operator saw is not made.
+     */
+    private function readAt(): int
+    {
+        if ($this->readAt === null) {
+            throw new RuntimeException(
+                'This page did not carry the configuration version it was shown at, '.
+                'so the change cannot be held to what you saw. Nothing was written. '.
+                'Reload and try again.'
+            );
+        }
+
+        return $this->readAt;
+    }
 
     private function patch(string $path, array $body): int
     {
@@ -198,6 +379,12 @@ class EngineAdminApi
 
     private function request(string $method, string $path, array $body = [], ?int $ifMatch = null): array
     {
+        return (array) $this->send($method, $path, $body, $ifMatch)->json();
+    }
+
+    /** The answer as the engine sent it, every refusal already turned into a RuntimeException. */
+    private function send(string $method, string $path, array $body = [], ?int $ifMatch = null): Response
+    {
         try {
             $request = Http::withToken($this->token)
                 ->timeout($this->timeoutSeconds)
@@ -205,6 +392,19 @@ class EngineAdminApi
                 // committed, and retrying it blindly would be a second mutation
                 // whose only visible effect is another config_version bump.
                 ->acceptJson();
+
+            // For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
+            $certificate = (string) config('services.signari_admin.client_cert', '');
+            if ($certificate !== '') {
+                $request = $request->withOptions([
+                    'cert' => $certificate,
+                    'ssl_key' => (string) config('services.signari_admin.client_key', ''),
+                ]);
+            }
+
+            if ($this->operator !== null) {
+                $request = $request->withHeaders(['Signari-Operator' => $this->operator]);
+            }
 
             if ($ifMatch !== null) {
                 // Quoted, because RFC 7232 does not permit a bare entity-tag and
@@ -278,6 +478,6 @@ class EngineAdminApi
             ));
         }
 
-        return (array) $response->json();
+        return $response;
     }
 }

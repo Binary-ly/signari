@@ -1,6 +1,7 @@
 package radius
 
 import (
+	"context"
 	// #nosec G501 -- RFC 2548 specifies MD5 for MPPE key encoding. It is not a
 	// choice: every access point in existence expects exactly this, and the
 	// keys it protects live for one wireless association.
@@ -21,7 +22,7 @@ import (
 // certificate problem and is not.
 
 // handleEAP advances one EAP conversation.
-func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
+func (s *Server) handleEAP(ctx context.Context, conn net.PacketConn, addr net.Addr, p *Packet,
 	secret []byte, client Client, raw []byte) {
 
 	eap, err := DecodeEAP(raw)
@@ -45,17 +46,27 @@ func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 		// operators and never used to decide anything.
 		s.log.Debug("EAP identity", "client", client.Name, "identity", string(eap.Data))
 
-		if s.eapTLS == nil {
-			// No EAP-TLS configured. Refused rather than offered a password
-			// method: a supplicant that asked for certificates and is answered
-			// with MD5 has been downgraded to a method this server does not
-			// implement anyway.
-			s.log.Info("EAP requested but EAP-TLS is not configured", "client", client.Name)
+		// EAP-TLS first where it is on: a certificate is the stronger credential,
+		// and a supplicant without one says so with a Nak naming what it would
+		// rather, which is answered below.
+		var sess *eapSession
+		var req *EAPPacket
+		switch {
+		case s.eapTLS != nil:
+			sess, req, err = s.startEAPTLS(eap.Identifier + 1)
+		case s.tunnelOn(EAPTypePEAP):
+			// PEAP before EAP-TTLS: it is what most supplicants try first.
+			sess, req, err = s.startTunnel(eap.Identifier+1, EAPTypePEAP)
+		case s.tunnelOn(EAPTypeTTLS):
+			sess, req, err = s.startTunnel(eap.Identifier+1, EAPTypeTTLS)
+		default:
+			// Nothing configured. Refused rather than offered a weaker method: a
+			// supplicant asking for EAP and answered with MD5 has been downgraded
+			// to a method this server does not implement anyway.
+			s.log.Info("EAP requested but neither EAP-TLS nor EAP-TTLS is configured", "client", client.Name)
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}
-
-		sess, req, err := s.startEAPTLS(eap.Identifier + 1)
 		if err != nil {
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
@@ -63,9 +74,11 @@ func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 		s.sessions.put(sess)
 		s.challenge(conn, addr, p, secret, sess, req)
 
-	case EAPTypeTLS:
+	case EAPTypeTLS, EAPTypeTTLS, EAPTypePEAP:
 		state, ok := p.Attr(AttrState)
-		if !ok {
+		if !ok || p.Count(AttrState) > 1 {
+			// One conversation per request: with two States, which session it
+			// continued was the parser's choice (7.17).
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}
@@ -77,24 +90,65 @@ func (s *Server) handleEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			return
 		}
+		if !sess.busy.TryLock() {
+			return
+		}
+		defer sess.busy.Unlock()
 
-		next, done, ok := s.continueEAPTLS(sess, eap)
+		// RFC 3748 §4.1: "An authenticator receiving a Response whose Identifier
+		// value does not match that of the currently outstanding Request ... MUST
+		// silently discard the Response." It is no reply at all, and feeding it to
+		// TLS would break the conversation the right one is still part of.
+		if eap.Identifier != sess.identifier {
+			s.log.Debug("EAP-TLS response out of sequence", "client", client.Name)
+			return
+		}
+		// A response of one method to a conversation of the other is neither.
+		if eap.Type != sess.method {
+			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
+			s.sessions.drop(sess.state)
+			return
+		}
+
+		next, done, ok := s.continueEAPTLS(ctx, sess, eap)
 		switch {
 		case !done:
 			s.challenge(conn, addr, p, secret, sess, next)
 		case ok:
-			s.acceptEAP(conn, addr, p, secret, sess, eap.Identifier)
+			s.acceptEAP(ctx, conn, addr, p, secret, sess, eap.Identifier)
 			s.sessions.drop(sess.state)
 		default:
-			s.log.Info("EAP-TLS authentication failed", "client", client.Name)
+			s.log.Info("EAP authentication failed", "client", client.Name, "method", eapMethodName(sess.method))
 			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
 			s.sessions.drop(sess.state)
 		}
 
 	case EAPTypeNak:
-		// The supplicant refuses the method offered. Nothing else is on offer.
-		s.log.Info("supplicant refused EAP-TLS", "client", client.Name)
-		s.rejectEAP(conn, addr, p, secret, eap.Identifier)
+		// The supplicant refuses the method offered, and its Nak lists the ones it
+		// would rather (RFC 3748 §5.3.1), in its order. PEAP and EAP-TTLS are the
+		// others there can be, each where it is on; anything else is refused.
+		if state, ok := p.Attr(AttrState); ok {
+			s.sessions.drop(string(state))
+		}
+		var wanted byte
+		for _, t := range eap.Data {
+			if (t == EAPTypePEAP || t == EAPTypeTTLS) && s.tunnelOn(t) {
+				wanted = t
+				break
+			}
+		}
+		if wanted == 0 {
+			s.log.Info("supplicant refused the EAP method offered", "client", client.Name, "wants", eap.Data)
+			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
+			return
+		}
+		sess, req, err := s.startTunnel(eap.Identifier+1, wanted)
+		if err != nil {
+			s.rejectEAP(conn, addr, p, secret, eap.Identifier)
+			return
+		}
+		s.sessions.put(sess)
+		s.challenge(conn, addr, p, secret, sess, req)
 
 	default:
 		s.rejectEAP(conn, addr, p, secret, eap.Identifier)
@@ -117,7 +171,7 @@ func (s *Server) challenge(conn net.PacketConn, addr net.Addr, p *Packet,
 }
 
 // acceptEAP answers Access-Accept with EAP-Success and the session keys.
-func (s *Server) acceptEAP(conn net.PacketConn, addr net.Addr, p *Packet,
+func (s *Server) acceptEAP(ctx context.Context, conn net.PacketConn, addr net.Addr, p *Packet,
 	secret []byte, sess *eapSession, id byte) {
 
 	attrs := EAPAttributes((&EAPPacket{Code: EAPSuccess, Identifier: id}).Encode())
@@ -146,11 +200,17 @@ func (s *Server) acceptEAP(conn net.PacketConn, addr net.Addr, p *Packet,
 	}
 	attrs = append(attrs, keys...)
 
+	// The VLAN and the rest, for the person the certificate named (7.06). A
+	// certificate on the same switch port got none of what a password did, so
+	// moving people onto EAP-TLS moved them off their VLAN. Advisory, as it is
+	// for a password: see accept.
+	attrs = append(attrs, s.authorization(ctx, sess.username)...)
+
 	out, err := Response(p, CodeAccessAccept, secret, attrs)
 	if err != nil {
 		return
 	}
-	s.log.Info("EAP-TLS authentication succeeded", "username", sess.username)
+	s.log.Info("EAP authentication succeeded", "method", eapMethodName(sess.method))
 	_, _ = conn.WriteTo(out, addr)
 }
 

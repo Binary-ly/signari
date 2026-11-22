@@ -2,8 +2,10 @@ package passwords
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"testing"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -26,6 +28,13 @@ func TestForeignHashVectors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHasher(MemoryBudgetMiB)
+			// MD5, which fips140=only refuses: a reasoned refusal, not a panic.
+			if fips140.Enforced() {
+				if _, err := h.Verify(context.Background(), tc.hash, pw); !errors.Is(err, ErrMismatch) {
+					t.Errorf("an MD5-based hash under fips140=only: %v", err)
+				}
+				return
+			}
 			needsRehash, err := h.Verify(context.Background(), tc.hash, pw)
 			if err != nil {
 				t.Fatalf("a real %s hash was rejected: %v", tc.name, err)
@@ -46,14 +55,20 @@ func TestForeignHashVectors(t *testing.T) {
 
 // Failing open on a malformed or unknown hash turns a bad import into an
 // authentication bypass for every affected user at once.
-// SHA-crypt is not supported yet (see passwords.go). It must be REFUSED, not
-// silently accepted -- and this test is what will fail, usefully, on the day
-// somebody wires in an implementation that does not agree with glibc.
-func TestUnsupportedSHACryptIsRefused(t *testing.T) {
+// SHA-crypt through Verify (4.09): it signs in, asks to be rehashed, and the
+// wrong password is refused. This test once asserted the opposite, while the
+// implementation disagreed with glibc; shacrypt_test.go holds the vectors.
+func TestSHACryptVerifiesAndIsRehashed(t *testing.T) {
 	h := NewHasher(MemoryBudgetMiB)
 	real := "$6$rounds=5000$abcdefghijklmnop$nmNyAaH/6gBRHJoLPwH1/AtpW5kLUN.F9idLxlyXJao/QMkkQWfPO87.ci./j.XYEWTw7OiynLl88jj3T2bDX1"
-	if _, err := h.Verify(context.Background(), real, "correct-horse"); err == nil {
-		t.Fatal("SHA-crypt reported as verified while unsupported")
+	if rehash, err := h.Verify(context.Background(), real, "correct-horse"); err != nil || !rehash {
+		t.Fatalf("an imported SHA-crypt hash: rehash %v, %v; want it to verify and move to Argon2id", rehash, err)
+	}
+	if _, err := h.Verify(context.Background(), real, "correct-horsE"); err == nil {
+		t.Fatal("SHA-crypt verified the wrong password")
+	}
+	if _, err := h.Verify(context.Background(), "$6$rounds=2000000$abcdefghijklmnop$x", "x"); err == nil {
+		t.Fatal("SHA-crypt above the rounds ceiling was attempted")
 	}
 }
 

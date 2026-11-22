@@ -1,0 +1,312 @@
+package config
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-jose/go-jose/v4"
+
+	"signari.dev/engine/internal/store"
+)
+
+func testJWKS(t *testing.T, private bool) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var k any = &key.PublicKey
+	if private {
+		k = key
+	}
+	raw, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: k, KeyID: "a1", Algorithm: "ES256"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func testCA(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "wallet-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour), IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// The kinds whose material is public (6.25): authorization details types and
+// the clients that may ask for them, a client's other grants kept, another
+// organisation's client refused; attesters by their public keys, a private
+// one refused; credentials and proof roots; all carried by an export.
+func TestACredentialFormatIsKeptAndItsRulesAreRead(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
+	f, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: degree, format: jwt_vc_json, " +
+		"vct: DegreeCredential, always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildPlan(ctx, tx, org, f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, f, p); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, f, false); err != nil || !again.Empty() {
+		t.Errorf("applied again it plans\n%s (%v)", again, err)
+	}
+	out, err := Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Credentials) != 1 || out.Credentials[0].Format != "jwt_vc_json" {
+		t.Errorf("the export says %+v", out.Credentials)
+	}
+
+	// The default stays out of the file, and a file that does not say keeps meaning it.
+	plain, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: id, vct: https://example.test/id, " +
+		"always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = BuildPlan(ctx, tx, org, plain, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, plain, p); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, plain, false); err != nil || !again.Empty() {
+		t.Errorf("a file naming no format plans a change: %s (%v)", again, err)
+	}
+
+	// Moving a credential from one format to the other is a change a plan shows.
+	moved, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: id, format: jwt_vc_json, " +
+		"vct: https://example.test/id, always_claims: [email]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err = BuildPlan(ctx, tx, org, moved, false); err != nil || p.Empty() {
+		t.Errorf("a new format plans nothing (%v)", err)
+	}
+
+	for why, entry := range map[string]string{
+		"a format nobody signs":    "format: mso_mdoc, vct: T, always_claims: [email]",
+		"selective claims":         "format: jwt_vc_json, vct: T, selective_claims: [email]",
+		"the base type as its own": "format: jwt_vc_json, vct: VerifiableCredential, always_claims: [email]",
+	} {
+		if _, err := Parse([]byte("version: 1\ncredential_configurations:\n  - {config_id: x, " + entry + "}\n")); err == nil {
+			t.Errorf("%s parsed", why)
+		}
+	}
+}
+
+// One file can register a service and name it in the flow, which needs the first
+// applied before the second, and comes back from an export as it went in.
+func TestAFileRegistersAServiceAndTheFlowThatAsksIt(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	org := freshOrg(t, ctx, tx)
+	factor := func(amr string) string {
+		return "external_factors:\n  - name: push\n    url: https://factor.example/ask\n" +
+			"    issuer: https://factor.example\n    amr: [" + amr + "]\n    jwks: " + testJWKS(t, false) + "\n"
+	}
+	flowDoc := "sign_in_flow: |\n  version: 1\n  flows:\n    - name: asked\n      on: authentication\n" +
+		"      stages:\n        - password\n        - {stage: external_factor, factor: push}\n        - session\n" +
+		"      tests:\n        - name: asked\n          given: {}\n          expect: [password, external_factor, session]\n"
+	file := factor("otp") + flowDoc
+	f, err := Parse([]byte("version: 1\n" + file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildPlan(ctx, tx, org, f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, tx, org, f, p); err != nil {
+		t.Fatalf("the service and the flow in one file: %v", err)
+	}
+	if again, err := BuildPlan(ctx, tx, org, f, false); err != nil || !again.Empty() {
+		t.Errorf("applied again it plans\n%s (%v)", again, err)
+	}
+	out, err := Export(ctx, tx, org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ExternalFactors) != 1 || out.ExternalFactors[0].URL != "https://factor.example/ask" ||
+		!slices.Equal(out.ExternalFactors[0].AMR, []string{"otp"}) || out.ExternalFactors[0].JWKS == nil {
+		t.Errorf("the export says %+v", out.ExternalFactors)
+	}
+
+	public := factor("otp")
+	for why, raw := range map[string]string{
+		"an amr saying how somebody arrived": factor("pwd"),
+		"a private key":                      public[:strings.Index(public, "    jwks: ")] + "    jwks: " + testJWKS(t, true) + "\n",
+	} {
+		if _, err := Parse([]byte("version: 1\n" + raw)); err == nil {
+			t.Errorf("%s parsed", why)
+		}
+	}
+}
+
+func TestThePublicKindsAreDeclaredAndRoundTrip(t *testing.T) {
+	ctx, pool, _ := applyFixture(t)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	n := time.Now().UnixNano()
+	plan := func(org, raw string, prune bool) (*File, *Plan, error) {
+		t.Helper()
+		f, err := Parse([]byte("version: 1\n" + raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := BuildPlan(ctx, tx, org, f, prune)
+		return f, p, err
+	}
+	apply := func(org, raw string, prune bool) *Plan {
+		t.Helper()
+		f, p, err := plan(org, raw, prune)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Apply(ctx, tx, org, f, p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	org := freshOrg(t, ctx, tx)
+	wiki, bank := fmt.Sprintf("wiki-%d", n), fmt.Sprintf("bank-%d", n)
+	clients := fmt.Sprintf("clients: [{client_id: %s, redirect_uris: ['https://w.example.test/cb']}, "+
+		"{client_id: %s, redirect_uris: ['https://b.example.test/cb']}]\n", wiki, bank)
+	types := func(to string) string {
+		return clients + fmt.Sprintf("authorization_detail_types:\n"+
+			"  - {type: payment, fields: [actions, locations], required: [actions], clients: [%s]}\n"+
+			"  - {type: account_read, fields: [datatypes]}\n", to)
+	}
+	apply(org, types(wiki), false)
+	// A grant the file does not govern: account_read names no clients.
+	if err := store.AllowClientDetailType(ctx, tx, wiki, "account_read"); err != nil {
+		t.Fatal(err)
+	}
+	if _, p, _ := plan(org, types(wiki), false); !p.Empty() {
+		t.Errorf("applied again it plans\n%s", p)
+	}
+	apply(org, types(bank), false)
+	if got, _ := store.ClientDetailTypes(ctx, tx, wiki); !slices.Equal(got, []string{"account_read"}) {
+		t.Errorf("moved to another client, payment left %s holding %v", wiki, got)
+	}
+	if got, _ := store.ClientDetailTypes(ctx, tx, bank); !slices.Equal(got, []string{"payment"}) {
+		t.Errorf("the client given payment holds %v", got)
+	}
+	other := freshOrg(t, ctx, tx)
+	theirs := fmt.Sprintf("theirs-%d", n)
+	if _, err := tx.Exec(ctx, `INSERT INTO core.clients (client_id, org_id, display_name, client_type,
+		client_secret_hash, grant_types, scopes) VALUES ($1, $2::uuid, 'T', 'public', '', '{authorization_code}',
+		'{openid}')`, theirs, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan(org, types(theirs), false); !errors.Is(err, ErrRefused) {
+		t.Errorf("a grant to another organisation's client answered %v", err)
+	}
+
+	issuer := freshOrg(t, ctx, tx)
+	material := fmt.Sprintf(`client_attesters: [{name: android, jwks: %s, description: Play Integrity}]
+credential_configurations:
+  - {config_id: employee, vct: 'https://example.test/employee', always_claims: [sub], selective_claims: [email],
+     lifetime: 720h}
+credential_proof_roots:
+  - name: wallet-ca
+    certificate: %q
+`, testJWKS(t, false), testCA(t))
+	apply(issuer, material, false)
+	if _, p, _ := plan(issuer, material, false); !p.Empty() {
+		t.Errorf("applied again it plans\n%s", p)
+	}
+	if p := apply(issuer, strings.Replace(material, "720h", "24h", 1), false); !strings.Contains(p.String(), "lifetime") {
+		t.Errorf("a new lifetime was planned as\n%s", p)
+	}
+	opened := strings.Replace(material, "lifetime: 720h", "lifetime: 24h, wallet_initiated: true", 1)
+	if p := apply(issuer, opened, false); !strings.Contains(p.String(), "wallet_initiated") {
+		t.Errorf("opening a credential was planned as\n%s", p)
+	}
+	exported, err := Export(ctx, tx, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exported.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyOrg := freshOrg(t, ctx, tx)
+	body := strings.TrimPrefix(string(out), "version: 1\n")
+	apply(copyOrg, body, false)
+	if _, p, _ := plan(copyOrg, body, false); !p.Empty() {
+		t.Errorf("the export applied elsewhere plans\n%s", p)
+	}
+	if p := apply(issuer, "", true); len(p.Destructive()) != 3 {
+		t.Errorf("pruned, the plan reads\n%s", p)
+	}
+
+	for name, raw := range map[string]string{
+		"a type with no fields":          "authorization_detail_types: [{type: t, fields: []}]",
+		"a field RFC 9396 does not name": "authorization_detail_types: [{type: t, fields: [colour]}]",
+		"a private attester key":         "client_attesters: [{name: a, jwks: " + testJWKS(t, true) + "}]",
+		"a credential asserting nothing": "credential_configurations: [{config_id: c, vct: 'https://x.test/v'}]",
+		"a claim the issuer cannot put":  "credential_configurations: [{config_id: c, vct: 'https://x.test/v', always_claims: [salary]}]",
+		"a root that is no CA":           fmt.Sprintf("credential_proof_roots: [{name: r, certificate: %q}]", lifecycleLeaf(t)),
+	} {
+		if _, err := Parse([]byte("version: 1\n" + raw + "\n")); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+// lifecycleLeaf is a certificate that is no CA.
+func lifecycleLeaf(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(8), Subject: pkix.Name{CommonName: "leaf"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(48 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}

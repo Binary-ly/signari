@@ -16,7 +16,26 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/clientauth"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
+	"signari.dev/engine/internal/store"
+)
+
+// parPerAddressLimit pushed requests are accepted from one address per
+// parPerAddressWindow for a public client. Each authorization a person starts
+// pushes one, so this is far above a browser's need and bounds a script.
+//
+// A confidential client is paced per client instead, once it has
+// authenticated, at parPerClientLimit. Its pushes come from its own servers,
+// often one egress address, and one per sign-in: sixty a minute per address
+// capped a relying party at sixty sign-ins a minute, on the endpoint FAPI 2.0
+// requires. The client ceiling still bounds what a leaked secret can make this
+// server store (each row lives parLifetime).
+const (
+	parPerAddressLimit  = 60
+	parPerAddressWindow = time.Minute
+	parPerClientLimit   = 6000
 )
 
 // Pushed Authorization Requests (RFC 9126).
@@ -40,10 +59,12 @@ const (
 	// different prefix means a handle nothing recognises.
 	requestURIPrefix = "urn:ietf:params:oauth:request_uri:"
 
-	// parLifetime is short because the handle is used immediately -- the client
-	// redirects the browser as soon as it has one. Anything longer is a window
-	// in which a captured handle still works.
-	parLifetime = 90 * time.Second
+	// parLifetime is how long a person has from the client's redirect to the code,
+	// which is the whole sign-in, a second factor and a consent screen included,
+	// because the handle is spent at the code and not at the first page. Longer is a
+	// window in which a captured handle still works, though only for its client and
+	// only by somebody who can then sign in. FAPI 2.0 §5.3.2.2 wants under 600.
+	parLifetime = 5 * time.Minute
 
 	maxPARBody = 64 << 10
 )
@@ -53,7 +74,15 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
+	// A pushed request is a handful of parameters. Declared from the start and
+	// applied to nothing, so a push parsed up to net/http's 10 MB form ceiling.
+	r.Body = http.MaxBytesReader(w, r.Body, maxPARBody)
 	if err := r.ParseForm(); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request", "the pushed request is too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
 		return
 	}
@@ -97,6 +126,10 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := creds.ClientID
+	if object := r.PostForm.Get("request"); object != "" {
+		s.admitFederatedClient(r, clientID, object)
+	}
+	s.admitMetadataClient(r, clientID)
 	c, err := s.lookupClient(ctx, clientID)
 	if err != nil || c == nil {
 		// writeTokenError, not writeError.
@@ -121,7 +154,7 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// just harder to see.
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-			s.log.Info("PAR client authentication failed", "client_id", clientID, "err", err,
+			s.log.InfoContext(ctx, "PAR client authentication failed", "client_id", clientID, "err", err,
 				"correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
@@ -129,26 +162,76 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Out of its profile, a client gets nothing to authorize.
+	if problems := c.ProfileProblems(); len(problems) > 0 {
+		s.log.ErrorContext(ctx, "a client out of its security profile was refused", "client_id", clientID,
+			"problems", problems, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusBadRequest, "unauthorized_client", "this client does not meet its security profile")
+		return
+	}
+
+	// Paced before anything is stored. Every pushed request is a row, and a
+	// public client authenticates nothing here, so there was once no limit at
+	// all on how many rows a stranger could have this server write: a public
+	// client is paced per address. An authenticated confidential client is
+	// paced as itself (parPerClientLimit). A failed authentication stores
+	// nothing and is metered by the client-authentication budgets.
+	why, rerr := s.pushPaced(ctx, r, c)
+	if rerr != nil {
+		s.log.ErrorContext(ctx, "checking the PAR rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if why != "" {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", why)
+		return
+	}
+
+	// A push may be a signed Request Object, whose parameters are then the only ones
+	// there are: RFC 9101 §6.3, which is what the client signed.
+	signed := false
+	if object := r.PostForm.Get("request"); object != "" {
+		params, perr := s.requestObjectParams(ctx, c, object)
+		if perr != nil {
+			s.log.InfoContext(ctx, "pushed request object refused", "client_id", clientID, "err", perr,
+				"correlation_id", correlationID(ctx))
+			writeError(w, http.StatusBadRequest, "invalid_request_object", perr.Error())
+			return
+		}
+		r.PostForm, signed = params, true
+	} else if c.RequireSignedRequest {
+		writeError(w, http.StatusBadRequest, "invalid_request", "this client must sign its authorization requests")
+		return
+	}
+
 	// Validated NOW, with the same rules the authorization endpoint applies.
 	// Deferring validation to redemption would let a client push nonsense,
 	// receive a handle, and discover the problem in a browser -- where the error
 	// has to be rendered to a person instead of returned to the caller that can
 	// act on it.
-	req := oauth.AuthzRequest{
-		ClientID:            clientID,
-		RedirectURI:         r.PostForm.Get("redirect_uri"),
-		ResponseType:        r.PostForm.Get("response_type"),
-		Scope:               r.PostForm.Get("scope"),
-		State:               r.PostForm.Get("state"),
-		Nonce:               r.PostForm.Get("nonce"),
-		CodeChallenge:       r.PostForm.Get("code_challenge"),
-		CodeChallengeMethod: r.PostForm.Get("code_challenge_method"),
-	}
+	req := oauth.ParseAuthz(r.PostForm)
+	req.ClientID = clientID
 	if aerr := oauth.ValidateAuthz(req, c, nil); aerr != nil {
 		// Returned as a normal error response, NOT as a redirect. There is no
 		// browser here, and redirecting a back-channel caller would be
 		// meaningless -- worse, it would echo an unvalidated redirect_uri.
 		writeError(w, http.StatusBadRequest, aerr.Code, aerr.Description)
+		return
+	}
+	// As the authorization endpoint would, and here because the redeemed request is
+	// all it will see.
+	if _, cerr := oauth.CompileClaims(r.PostForm, c); cerr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", cerr.Error())
+		return
+	}
+	if err := s.checkResources(ctx, s.db, c, c.OrgID, req.Resources); err != nil {
+		if refusedTarget(err) {
+			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+			return
+		}
+		s.log.ErrorContext(ctx, "checking resource indicators", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
 		return
 	}
 
@@ -165,7 +248,11 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	// header to every authorization-server request -- which §10.1 explicitly
 	// exists to accommodate -- silently lose the binding.
 	jkt := r.PostForm.Get("dpop_jkt")
-	if proofJKT, derr := s.verifyDPoPForRequest(r, ""); derr != nil {
+	if proofJKT, derr := s.verifyDPoPForRequest(r, ""); errors.Is(derr, errDPoPNonce) {
+		s.offerDPoPNonce(w)
+		writeError(w, http.StatusBadRequest, "use_dpop_nonce", "this server requires a nonce in the DPoP proof")
+		return
+	} else if derr != nil {
 		writeError(w, http.StatusBadRequest, "invalid_dpop_proof", derr.Error())
 		return
 	} else if proofJKT != "" {
@@ -191,66 +278,159 @@ func (s *Server) handlePAR(w http.ResponseWriter, r *http.Request) {
 	params := map[string][]string{}
 	for k, v := range r.PostForm {
 		switch k {
-		case "client_secret", "client_assertion", "client_assertion_type":
+		case "client_secret", "client_assertion", "client_assertion_type", signedRequestMark:
 			// Never stored. These authenticate the push and have no business
 			// surviving into the authorization, where they would sit in a jsonb
-			// column being a credential nobody remembers is there.
+			// column being a credential nobody remembers is there. And the mark is
+			// this server's to set: a client sending it would be saying it signed.
 			continue
 		}
 		if len(v) > 0 {
 			params[k] = v
 		}
 	}
+	if signed {
+		params[signedRequestMark] = []string{"1"}
+	}
 
-	handle, err := newRequestURI()
+	handle, err := s.parkRequest(ctx, c, params, jkt)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	blob, err := json.Marshal(params)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	sum := sha256.Sum256([]byte(handle))
-	if _, err := s.db.Exec(ctx, `
-		INSERT INTO core.pushed_requests
-			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
-		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
-		sum[:], c.OrgID, clientID, blob, parLifetime.String(), jkt); err != nil {
-		s.log.Error("storing a pushed request", "err", err)
+		s.log.ErrorContext(ctx, "storing a pushed request", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	writeJSONBody(w, map[string]any{
+	// writeJSON, which names the type before the status. This wrote the status and
+	// then set Content-Type, which a header written already ignores, so every pushed
+	// request was answered text/plain (13.01, the FAPI 2.0 plan's EnsureContentTypeJson).
+	writeJSON(w, http.StatusCreated, map[string]any{
 		"request_uri": handle,
 		"expires_in":  int(parLifetime.Seconds()),
 	})
 }
 
-// consumePushedRequest redeems a handle at the authorization endpoint.
+// signedRequestMark is how a parked request remembers it was a signed Request Object,
+// among its parameters, so that a client held to signing is held at the redemption too.
+const signedRequestMark = "signari_signed_request_object"
+
+// pushPaced says why a request may not be parked now, empty when it may.
+func (s *Server) pushPaced(ctx context.Context, r *http.Request, c *clients.Client) (string, error) {
+	key, limit, why := "par:ip:"+budgetIP(clientIP(r)), parPerAddressLimit, "too many pushed requests from this address"
+	if c.Type == "confidential" {
+		key, limit, why = "par:client:"+c.ClientID, parPerClientLimit, "too many pushed requests from this client"
+	}
+	res, err := store.AllowRate(ctx, s.db, key, limit, parPerAddressWindow)
+	if err != nil {
+		return "", err
+	}
+	if !res.Allowed {
+		return why, nil
+	}
+	return "", nil
+}
+
+// parkRequest stores a request's parameters behind a new handle.
+func (s *Server) parkRequest(ctx context.Context, c *clients.Client, params map[string][]string, jkt string) (string, error) {
+	handle, err := newRequestURI()
+	if err != nil {
+		return "", err
+	}
+	blob, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.pushed_requests
+			(uri_hash, org_id, client_id, params, expires_at, dpop_jkt)
+		VALUES ($1, $2::uuid, $3, $4, now() + $5::interval, NULLIF($6,''))`,
+		pushedHash(handle), c.OrgID, c.ClientID, blob, parLifetime.String(), jkt); err != nil {
+		return "", err
+	}
+	return handle, nil
+}
+
+// requestObjectParams verifies a client's signed Request Object.
+func (s *Server) requestObjectParams(ctx context.Context, c *clients.Client, object string) (url.Values, error) {
+	jwks, err := store.ClientJWKS(ctx, s.db, c.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the client's keys: %w", err)
+	}
+	return clientauth.VerifyRequestObject(object, c.ClientID, jwks, []string{s.cfg.Issuer}, time.Now(),
+		s.requestObjectRules(ctx, c))
+}
+
+// parkRequestObject verifies a Request Object sent by value and parks what it says,
+// answering the handle, or the problem to tell the client. Paced as a push is: it is a
+// row each time, and a captured URL can be sent again.
+func (s *Server) parkRequestObject(r *http.Request, clientID, requestURI, object string) (handle, problem string) {
+	ctx := r.Context()
+	// §5: "'request_uri' MUST NOT be present" with `request`, and it would be a handle
+	// beside an object, naming two requests.
+	if requestURI != "" {
+		return "", "send request or request_uri, not both"
+	}
+	s.admitFederatedClient(r, clientID, object)
+	s.admitMetadataClient(r, clientID)
+	c, err := s.lookupClient(ctx, clientID)
+	if err != nil || c == nil {
+		return "", "unknown client"
+	}
+	params, err := s.requestObjectParams(ctx, c, object)
+	if err != nil {
+		s.log.InfoContext(ctx, "request object refused", "client_id", clientID, "err", err,
+			"correlation_id", correlationID(ctx))
+		return "", err.Error()
+	}
+	why, err := s.pushPaced(ctx, r, c)
+	if err != nil {
+		s.log.ErrorContext(ctx, "checking the PAR rate limit", "err", err)
+		return "", "please try again shortly"
+	}
+	if why != "" {
+		return "", why
+	}
+	params.Del(signedRequestMark)
+	stored := map[string][]string(params)
+	stored[signedRequestMark] = []string{"1"}
+	handle, err = s.parkRequest(ctx, c, stored, "")
+	if err != nil {
+		s.log.ErrorContext(ctx, "storing a request object", "err", err)
+		return "", "please try again shortly"
+	}
+	return handle, ""
+}
+
+// errPushedRequestSpent is a handle that has given a code, or run out.
+var errPushedRequestSpent = errors.New("this request_uri has already been used, or has expired")
+
+// pushedHash is what a handle is stored and found by.
+func pushedHash(requestURI string) []byte {
+	sum := sha256.Sum256([]byte(requestURI))
+	return sum[:]
+}
+
+// readPushedRequest answers the parameters behind a handle, and leaves it as it found it.
 //
-// Returns the pushed parameters. Single use, enforced in the same statement
-// that reads, so two concurrent redemptions cannot both succeed.
-func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID string) (url.Values, error) {
+// A person arrives at this endpoint several times on one handle: for the sign-in page,
+// back from it, back from a second factor, back from the consent screen. Software that
+// fetches a link to see what is there arrives too. So the handle is not spent here but in
+// the transaction that issues the code, which is the point FAPI 2.0 §5.3.2.2 NOTE 3 names:
+// "at the point of authorization, not at the point of loading an authorization page".
+func (s *Server) readPushedRequest(ctx context.Context, requestURI, clientID string) (url.Values, error) {
 	if !strings.HasPrefix(requestURI, requestURIPrefix) {
 		return nil, fmt.Errorf("request_uri is not a pushed request handle")
 	}
-	sum := sha256.Sum256([]byte(requestURI))
 
 	var blob []byte
 	var storedClient string
 	var storedJKT *string
 	err := s.db.QueryRow(ctx, `
-		UPDATE core.pushed_requests
-		SET used_at = now()
-		WHERE uri_hash = $1 AND used_at IS NULL AND expires_at > now()
-		RETURNING params, client_id, dpop_jkt`, sum[:]).Scan(&blob, &storedClient, &storedJKT)
+		SELECT params, client_id, dpop_jkt FROM core.pushed_requests
+		WHERE uri_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+		pushedHash(requestURI)).Scan(&blob, &storedClient, &storedJKT)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("this request_uri has already been used, or has expired")
+			return nil, errPushedRequestSpent
 		}
 		return nil, err
 	}
@@ -291,6 +471,39 @@ func (s *Server) consumePushedRequest(ctx context.Context, requestURI, clientID 
 	return out, nil
 }
 
+// parkedRequest is a parked query as the request it stands for: the query itself, or for
+// a pushed request what was pushed, which is the only place its redirect_uri is. A handle
+// that opens nothing answers the query, with no redirect_uri to send anybody to.
+func (s *Server) parkedRequest(ctx context.Context, authzQuery string) url.Values {
+	q := parseQuery(authzQuery)
+	handle := q.Get("request_uri")
+	if handle == "" {
+		return q
+	}
+	pushed, err := s.readPushedRequest(ctx, handle, q.Get("client_id"))
+	if err != nil {
+		s.log.InfoContext(ctx, "a parked pushed request could not be read", "err", err, "correlation_id", correlationID(ctx))
+		return q
+	}
+	pushed.Set("client_id", q.Get("client_id"))
+	return pushed
+}
+
+// answerPrompts says these prompts have been answered, wherever the request is kept:
+// taken out of the query a browser carries, or for a pushed request, out of the row. The
+// browser's copy of a pushed request holds no prompt to take out, and has no say in it,
+// or whoever held the browser could answer prompt=login by editing a URL.
+func (s *Server) answerPrompts(ctx context.Context, authzQuery string, answered ...string) string {
+	handle := parseQuery(authzQuery).Get("request_uri")
+	if handle == "" {
+		return consumePrompt(authzQuery, answered...)
+	}
+	if err := store.AnswerPushedPrompts(ctx, s.db, pushedHash(handle), answered); err != nil {
+		s.log.ErrorContext(ctx, "recording an answered prompt", "err", err, "correlation_id", correlationID(ctx))
+	}
+	return authzQuery
+}
+
 // newRequestURI mints an opaque handle.
 func newRequestURI() (string, error) {
 	b := make([]byte, 32)
@@ -305,15 +518,6 @@ func writeJSONBody(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// clientRequiresPAR reports whether a client may only start through PAR.
-func (s *Server) clientRequiresPAR(ctx context.Context, clientID string) (bool, error) {
-	var required bool
-	err := s.db.QueryRow(ctx,
-		`SELECT require_pushed_authorization FROM core.clients WHERE client_id = $1`,
-		clientID).Scan(&required)
-	return required, err
-}
-
 // renderAuthzFailure reports a failure that cannot be sent to a redirect_uri.
 //
 // Everything reaching here failed BEFORE a redirect target was established, so
@@ -321,9 +525,7 @@ func (s *Server) clientRequiresPAR(ctx context.Context, clientID string) (bool, 
 // html/template, because the reason can contain text derived from what the
 // caller supplied.
 func (s *Server) renderAuthzFailure(w http.ResponseWriter, r *http.Request, reason string) {
-	htmlPageHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "federr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "federr", map[string]any{
 		"Reason":        reason,
 		"CorrelationID": correlationID(r.Context()),
 	})

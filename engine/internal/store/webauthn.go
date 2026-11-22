@@ -92,7 +92,7 @@ func SaveCredential(ctx context.Context, tx pgx.Tx, userID, orgID, rpID string,
 	if err != nil {
 		return fmt.Errorf("saving webauthn credential: %w", err)
 	}
-	return nil
+	return QueueCredentialChange(ctx, tx, userID, passkeyCredentialType(transports), ChangeCreate, "user")
 }
 
 // CredentialsForUser lists a user's authenticators.
@@ -220,6 +220,64 @@ func CountCredentials(ctx context.Context, tx pgx.Tx, userID string) (int, error
 	return n, nil
 }
 
+// HasPasskey reports whether a user has at least one authenticator: the
+// `user_has_passkey` flow condition.
+func HasPasskey(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (bool, error) {
+	var any bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM core.webauthn_credentials WHERE user_id = $1::uuid)`, userID).Scan(&any); err != nil {
+		return false, fmt.Errorf("checking for a passkey: %w", err)
+	}
+	return any, nil
+}
+
+// HasWebAuthnKey reports whether a person holds a passkey or security key,
+// and with deviceBound one that is not synced (backup_eligible false): what
+// the acr rungs "3" and "4" need (oauth.Assurance).
+func HasWebAuthnKey(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string, deviceBound bool) (bool, error) {
+	var held bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM core.webauthn_credentials
+		 WHERE user_id = $1::uuid AND (NOT $2 OR NOT backup_eligible))`, userID, deviceBound).Scan(&held); err != nil {
+		return false, fmt.Errorf("checking for a key: %w", err)
+	}
+	return held, nil
+}
+
+// ErrPasswordNeeded is a password removal that would leave its holder with
+// fewer passkeys than MinCredentialsForPasswordless.
+var ErrPasswordNeeded = errors.New("the password is needed: fewer than two passkeys would be left to sign in with")
+
+// RemovePassword removes a person's password, which every path that removes
+// one goes through (5.15): only while they hold MinCredentialsForPasswordless
+// passkeys, counted with the passkeys locked, so a removal racing this one
+// counts after it. Reports whether there was a password to remove.
+func RemovePassword(ctx context.Context, tx pgx.Tx, userID, initiator string) (bool, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.webauthn_credentials WHERE user_id = $1::uuid FOR UPDATE`,
+		userID); err != nil {
+		return false, fmt.Errorf("locking the passkeys: %w", err)
+	}
+	ok, err := CanGoPasswordless(ctx, tx, userID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, ErrPasswordNeeded
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM core.password_credentials WHERE user_id = $1::uuid`, userID)
+	if err != nil {
+		return false, fmt.Errorf("removing the password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	return true, QueueCredentialChange(ctx, tx, userID, CredentialPassword, ChangeDelete, initiator)
+}
+
 // CanGoPasswordless reports whether it is safe to let this user remove their
 // password. See MinCredentialsForPasswordless for why the answer is not one.
 func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
@@ -228,6 +286,31 @@ func CanGoPasswordless(ctx context.Context, tx pgx.Tx, userID string) (bool, err
 		return false, err
 	}
 	return n >= MinCredentialsForPasswordless, nil
+}
+
+// SignInMethodsBesides counts the ways a person could still sign in once one is
+// removed (2.56): every password credential -- an imported hash not yet
+// rehashed signs in as well as a current one -- every passkey but exceptPasskey
+// and every linked provider but exceptProvider. It is the one count every
+// removal path asks, taken under a lock on the person, so two removals at once
+// cannot each count the other's method and leave none. There were two: passkey
+// removal counted no linked provider, and unlinking counted only rehashed
+// passwords, so each refused removals that left a way in.
+func SignInMethodsBesides(ctx context.Context, tx pgx.Tx, userID, exceptPasskey, exceptProvider string) (int, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.users WHERE id = $1::uuid FOR UPDATE`, userID); err != nil {
+		return 0, fmt.Errorf("locking the person: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.password_credentials WHERE user_id = $1::uuid)
+		     + (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid AND id::text <> $2)
+		     + (SELECT count(*) FROM core.federated_identities f
+		        JOIN core.identity_providers p ON p.id = f.provider_id
+		        WHERE f.user_id = $1::uuid AND p.slug <> $3)`,
+		userID, exceptPasskey, exceptProvider).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting the remaining sign-in methods: %w", err)
+	}
+	return n, nil
 }
 
 // DeleteCredential removes an authenticator, refusing when it is the user's last
@@ -241,11 +324,11 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 	// owns the credential computes it from the WRONG account: a stranger with no
 	// credentials trips "this is your last one" and gets a misleading error,
 	// while the ownership check never runs at all. Order is the whole fix.
-	var owned bool
+	var transports []string
 	err := tx.QueryRow(ctx, `
-		SELECT true FROM core.webauthn_credentials
+		SELECT transports FROM core.webauthn_credentials
 		WHERE id = $1::uuid AND user_id = $2::uuid
-		FOR UPDATE`, credentialRowID, userID).Scan(&owned)
+		FOR UPDATE`, credentialRowID, userID).Scan(&transports)
 	if err == pgx.ErrNoRows {
 		// Same answer whether the credential does not exist or belongs to
 		// someone else -- distinguishing them would confirm which uuids are real.
@@ -255,19 +338,15 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 		return fmt.Errorf("locating webauthn credential: %w", err)
 	}
 
-	var total, withPassword int
-	if err := tx.QueryRow(ctx, `
-		SELECT (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid),
-		       (SELECT count(*) FROM core.password_credentials WHERE user_id = $1::uuid)`,
-		userID).Scan(&total, &withPassword); err != nil {
-		return fmt.Errorf("checking remaining credentials: %w", err)
+	// Removing the last way in leaves the account with no authentication method
+	// at all, and no recovery path that does not go through a human being --
+	// which is the weakest link in any system that has one. A password, another
+	// passkey or a linked provider each keeps one.
+	left, err := SignInMethodsBesides(ctx, tx, userID, credentialRowID, "")
+	if err != nil {
+		return err
 	}
-
-	// Removing the last passkey is only safe when a password remains. Otherwise
-	// the account has no authentication method at all, and no recovery path that
-	// does not go through a human being -- which is the weakest link in any
-	// system that has one.
-	if total <= 1 && withPassword == 0 {
+	if left == 0 {
 		return ErrWouldLockOut
 	}
 
@@ -276,7 +355,7 @@ func DeleteCredential(ctx context.Context, tx pgx.Tx, userID, credentialRowID st
 		WHERE id = $1::uuid AND user_id = $2::uuid`, credentialRowID, userID); err != nil {
 		return fmt.Errorf("deleting webauthn credential: %w", err)
 	}
-	return nil
+	return QueueCredentialChange(ctx, tx, userID, passkeyCredentialType(transports), ChangeDelete, "user")
 }
 
 // clampSignCount narrows a stored counter without wrapping.

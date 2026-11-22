@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/passwords"
 	"signari.dev/engine/internal/store"
 )
 
@@ -61,6 +62,12 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeCrossOrg(w, err)
 		return
 	}
+	// A person made outside every group is one a delegated role would not
+	// reach the moment it had made them.
+	if reachFilter(ctx, ScopeUsersWrite) != nil {
+		writeCrossOrg(w, errDelegatedCreate)
+		return
+	}
 	if req.Email == "" && req.Username == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "identifier_required", "detail": "email or username is required",
@@ -92,8 +99,26 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hashed BEFORE the write, not inside it. mutateIf holds the configuration
+	// version for the length of its transaction, and every administrative
+	// write queues behind it. Argon2 waits for a slot in the hasher the
+	// sign-in paths share, so under a sign-in flood one user created with a
+	// password held every write in the deployment until a slot came free.
+	var hash string
+	if req.Password != "" {
+		var herr error
+		if hash, herr = s.hasher.Hash(ctx, req.Password); herr != nil {
+			s.log.Error("hashing the password", "err", herr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable"})
+			return
+		}
+	}
+
 	var userID string
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+			return err
+		}
 		// The 64-byte user_handle is generated HERE and never derived from the
 		// email. WebAuthn requires it to be opaque: a handle derived from an
 		// address would leak that address to any authenticator holding a
@@ -110,14 +135,10 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Password != "" {
-			hash, herr := s.hasher.Hash(ctx, req.Password)
-			if herr != nil {
-				return fmt.Errorf("hashing the password: %w", herr)
-			}
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)`,
-				userID, req.OrgID, hash); err != nil {
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)`,
+				userID, req.OrgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 				return err
 			}
 		}
@@ -130,6 +151,8 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "users_org_email_key"),
 		err != nil && strings.Contains(err.Error(), "users_org_username_key"):
@@ -174,6 +197,14 @@ type patchUserRequest struct {
 	DisplayName *string `json:"display_name"`
 	GivenName   *string `json:"given_name"`
 	Surname     *string `json:"surname"`
+	// Locale is the BCP 47 tag the person's notices are written in, and their
+	// pages once they next sign in, as `signari user locale` sets it; empty
+	// clears it to the deployment's default.
+	Locale *string `json:"locale"`
+
+	// PosixUID is a number kept from a directory this one replaces, so that a
+	// person's files stay theirs.
+	PosixUID *int `json:"posix_uid"`
 }
 
 // nullableTrimmed maps an absent or blank field to SQL NULL.
@@ -203,10 +234,14 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Active == nil && req.Password == nil && req.RequirePasswordChange == nil &&
 		req.Email == nil && req.Username == nil && req.DisplayName == nil &&
-		req.GivenName == nil && req.Surname == nil {
+		req.GivenName == nil && req.Surname == nil && req.Locale == nil && req.PosixUID == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
+		return
+	}
+	if req.PosixUID != nil && !store.PosixIDAssignable(*req.PosixUID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_posix_id", "detail": store.PosixIDRule})
 		return
 	}
 	// Validated before the transaction opens, so a malformed address is a 400
@@ -236,8 +271,20 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hashed before the write takes the configuration version, as at create.
+	var newHash string
+	if req.Password != nil {
+		var herr error
+		if newHash, herr = s.hasher.Hash(ctx, *req.Password); herr != nil {
+			s.log.Error("hashing the password", "err", herr)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "temporarily_unavailable"})
+			return
+		}
+	}
+
 	var orgID string
 	var sessionsEnded int
+	var approved, moved bool
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
 			`SELECT org_id::text FROM core.users WHERE id = $1::uuid`, userID).Scan(&orgID); err != nil {
@@ -251,6 +298,14 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Active != nil {
+			// Activating a self-sign-up that waits for approval approves it,
+			// and tells the person, as the sign-up page said it would (5.19).
+			if *req.Active {
+				var err error
+				if approved, err = store.ApproveUser(ctx, tx, userID); err != nil {
+					return err
+				}
+			}
 			status := "active"
 			if !*req.Active {
 				status = "deactivated"
@@ -311,6 +366,20 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 		//
 		// Found by a test, not by reading: the version with two UPDATEs passed
 		// every single-field case and failed the first combined one.
+		// The address before the change, so the holder is told there too: if the
+		// change was not theirs, the old address is the one they still read.
+		var oldEmail string
+		if req.Email != nil {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(email, '') FROM core.users WHERE id = $1::uuid`,
+				userID).Scan(&oldEmail); err != nil {
+				return err
+			}
+			// Moved, compared as the unique index compares addresses. The
+			// address sent back as it is moves nothing, and once cleared the
+			// mark here, so whatever wrote a whole user back -- a form, an
+			// apply -- unverified a confirmed address (0.46).
+			moved = !strings.EqualFold(oldEmail, strings.TrimSpace(*req.Email))
+		}
 		if req.Email != nil || req.Username != nil {
 			if _, err := tx.Exec(ctx, `
 				UPDATE core.users SET
@@ -318,14 +387,21 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					-- Cleared only when the address itself moves, so an
 					-- unrelated username change does not silently unverify a
 					-- confirmed address.
-					email_verified_at = CASE WHEN $2 THEN NULL ELSE email_verified_at END,
+					email_verified_at = CASE WHEN $6 THEN NULL ELSE email_verified_at END,
 					username          = CASE WHEN $4 THEN $5 ELSE username END,
 					updated_at        = now()
 				WHERE id = $1::uuid`,
 				userID,
 				req.Email != nil, nullableTrimmed(req.Email),
-				req.Username != nil, nullableTrimmed(req.Username),
+				req.Username != nil, nullableTrimmed(req.Username), moved,
 			); err != nil {
+				return err
+			}
+		}
+
+		if req.PosixUID != nil {
+			if _, err := tx.Exec(ctx, `UPDATE core.users SET posix_uid = $2, updated_at = now() WHERE id = $1::uuid`,
+				userID, *req.PosixUID); err != nil {
 				return err
 			}
 		}
@@ -339,6 +415,7 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			{"display_name", req.DisplayName},
 			{"given_name", req.GivenName},
 			{"surname", req.Surname},
+			{"locale", req.Locale},
 		} {
 			if f.value == nil {
 				continue
@@ -365,22 +442,24 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 					s.log.Error("recording the retired password", "err", rerr)
 				}
 			}
-			hash, herr := s.hasher.Hash(ctx, *req.Password)
-			if herr != nil {
-				return fmt.Errorf("hashing the password: %w", herr)
-			}
-			if _, err := tx.Exec(ctx, `
+			var replaced bool
+			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)
 				ON CONFLICT (user_id) DO UPDATE SET
-					hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
+					hash = EXCLUDED.hash, algorithm = EXCLUDED.algorithm, is_current = true,
 					failed_attempts = 0, throttled_until = NULL, updated_at = now(),
 					-- Cleared with the password they belonged to. A stale
 					-- must_change would ask the user to replace a password an
 					-- administrator has just deliberately set for them.
 					must_change = false, must_change_reason = NULL,
-					last_breach_check = NULL`,
-				userID, orgID, hash); err != nil {
+					last_breach_check = NULL
+				RETURNING xmax <> 0`,
+				userID, orgID, newHash, passwords.AlgorithmOf(newHash)).Scan(&replaced); err != nil {
+				return err
+			}
+			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,
+				store.ChangeOf(replaced), "admin"); err != nil {
 				return err
 			}
 			// An administrator setting a password is a credential change, and every
@@ -407,6 +486,21 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// The holder hears of a password or address an administrator changed,
+		// queued with the change so it goes out exactly when the change commits.
+		if req.Password != nil {
+			if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+				Notice: store.NoticePasswordSet}); err != nil {
+				return err
+			}
+		}
+		if req.Email != nil && oldEmail != "" && !strings.EqualFold(oldEmail, strings.TrimSpace(*req.Email)) {
+			if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+				Notice: store.NoticeEmailChanged, OldAddress: oldEmail}); err != nil {
+				return err
+			}
+		}
+
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.user_updated", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID, SubjectID: userID,
 			// WHICH fields moved, never their values. An audit trail that
@@ -417,15 +511,18 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			// verified address and when.
 			Detail: map[string]any{
 				"active_set":             req.Active != nil,
+				"approved":               approved,
 				"password_set":           req.Password != nil,
 				"must_change":            req.RequirePasswordChange != nil && *req.RequirePasswordChange,
 				"sessions_ended":         sessionsEnded,
 				"email_set":              req.Email != nil,
-				"email_verified_cleared": req.Email != nil,
+				"email_verified_cleared": moved,
 				"username_set":           req.Username != nil,
 				"display_name_set":       req.DisplayName != nil,
 				"given_name_set":         req.GivenName != nil,
 				"surname_set":            req.Surname != nil,
+				"locale_set":             req.Locale != nil,
+				"posix_uid_set":          req.PosixUID != nil,
 			},
 		})
 	})
@@ -448,11 +545,23 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request) {
 			"error": "already_exists", "detail": "that email or username is taken in this organisation",
 		})
 		return
+	case err != nil && strings.Contains(err.Error(), "users_posix_uid"):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "already_exists", "detail": "another person in this organisation has that POSIX number",
+		})
+		return
 	// `CHECK (username IS NOT NULL OR email IS NOT NULL)`. Clearing the last
 	// identifier would leave an account nobody can sign in to and no
 	// administrator can search for -- reachable only by its uuid. The database
 	// refuses it; without this case the caller is told "server_error" and left
 	// to guess, when the truthful answer is that the request was impossible.
+	// The locale column's shape constraint: a typo, and saying so costs
+	// nothing.
+	case err != nil && strings.Contains(err.Error(), "users_locale_is_a_tag"):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_locale", "detail": "not a BCP 47 language tag, such as en, de or pt-BR",
+		})
+		return
 	case err != nil && strings.Contains(err.Error(), "users_has_an_identifier"):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "no_identifier_left",
@@ -524,7 +633,7 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var ended, notified, tokens int
+	var ended, notified, families int
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		var orgID string
 		if err := tx.QueryRow(ctx,
@@ -538,11 +647,11 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Counted before the cascade. "How much did this revoke" is asked
-		// afterwards, by which time the rows are gone.
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM core.access_tokens WHERE user_id = $1::uuid`,
-			userID).Scan(&tokens); err != nil {
+		// Counted before the sessions end, since ending them revokes the
+		// families minted under them, and before the cascade. "How much did
+		// this revoke" is asked afterwards, by which time the rows are gone.
+		if err := tx.QueryRow(ctx, liveFamilies+` AND f.user_id = $1::uuid`,
+			userID).Scan(&families); err != nil {
 			return err
 		}
 
@@ -562,9 +671,9 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 			Type: "admin.user_deleted", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, SubjectID: userID,
 			Detail: map[string]any{
-				"sessions_ended": ended,
-				"notices_queued": notified,
-				"tokens_revoked": tokens,
+				"sessions_ended":           ended,
+				"notices_queued":           notified,
+				"refresh_families_revoked": families,
 			},
 		})
 	})
@@ -585,9 +694,9 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	s.log.Warn("user deleted", "user_id", userID, "sessions_ended", ended,
-		"tokens_revoked", tokens, "config_version", version)
+		"refresh_families_revoked", families, "config_version", version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": userID, "sessions_ended": ended, "notices_queued": notified,
-		"tokens_revoked": tokens, "config_version": version,
+		"refresh_families_revoked": families, "config_version": version,
 	})
 }

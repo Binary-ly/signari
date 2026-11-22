@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -25,8 +27,40 @@ class NoThirdPartyAssetsTest extends TestCase
 {
     public function test_the_sign_in_page_loads_no_asset_from_another_origin(): void
     {
-        $html = $this->get('/admin/login')->assertOk()->getContent();
+        $this->assertSame(
+            [],
+            $this->foreignHosts($this->get('/admin/login')->assertOk()->getContent()),
+            'The console sign-in page fetches from another origin. Vendor the '.
+            'asset into public/ and serve it from here, or record it in '.
+            'docs/egress-inventory.md and allow it explicitly.',
+        );
+    }
 
+    /*
+     * Signed in too. Only the sign-in page was looked at, and it has no user menu,
+     * so the avatar beside every signed-in screen's menu went to ui-avatars.com
+     * with the operator's initials until November 2026.
+     */
+    public function test_a_signed_in_screen_loads_no_asset_from_another_origin(): void
+    {
+        $operator = new User;
+        $operator->name = 'Ada Lovelace';
+        $operator->email = 'egress-'.Str::random(8).'@example.test';
+        $operator->password = bcrypt('irrelevant');
+        $this->enrol($operator)->save();
+
+        try {
+            $html = $this->actingAs($operator)->get('/admin')->assertOk()->getContent();
+            $this->assertSame([], $this->foreignHosts($html), 'a signed-in screen fetches from another origin');
+            $this->assertStringContainsString('data:image/svg+xml;base64,', $html, 'no avatar was drawn, so this looked at nothing');
+        } finally {
+            $operator->delete();
+        }
+    }
+
+    /** @return list<string> */
+    private function foreignHosts(string $html): array
+    {
         // Only attributes that make the browser fetch something. A page may
         // legitimately display an absolute URL as text; that is content.
         preg_match_all(
@@ -50,13 +84,7 @@ class NoThirdPartyAssetsTest extends TestCase
             $foreign[] = $host;
         }
 
-        $this->assertSame(
-            [],
-            array_values(array_unique($foreign)),
-            'The console sign-in page fetches from another origin. Vendor the '.
-            'asset into public/ and serve it from here, or record it in '.
-            'docs/egress-inventory.md and allow it explicitly.',
-        );
+        return array_values(array_unique($foreign));
     }
 
     public function test_the_vendored_typeface_is_actually_present(): void

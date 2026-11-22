@@ -56,6 +56,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Trusted proxies
+    |--------------------------------------------------------------------------
+    |
+    | The addresses or CIDR ranges of the proxies in front of the console,
+    | comma separated. Behind a proxy that terminates TLS every request reaches
+    | PHP as plain HTTP, so the console believed none of them was secure: HSTS
+    | was never sent and URLs were generated as http. Unset, no proxy is
+    | believed, which is right for a console served directly.
+    |
+    */
+
+    'trusted_proxies' => env('TRUSTED_PROXIES'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |

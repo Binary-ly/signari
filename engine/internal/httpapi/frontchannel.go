@@ -49,7 +49,7 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		WHERE sc.sid = $1 AND c.frontchannel_logout_uri IS NOT NULL AND c.enabled
 		ORDER BY c.client_id`, sid)
 	if err != nil {
-		s.log.Error("listing front-channel logout targets", "err", err)
+		s.log.ErrorContext(ctx, "listing front-channel logout targets", "err", err)
 		return nil
 	}
 	defer rows.Close()
@@ -68,7 +68,7 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		// attacker's choosing during their logout.
 		u, err := url.Parse(raw)
 		if err != nil {
-			s.log.Error("a registered front-channel logout URI does not parse",
+			s.log.ErrorContext(ctx, "a registered front-channel logout URI does not parse",
 				"client_id", clientID, "err", err)
 			continue
 		}
@@ -84,6 +84,14 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 		}
 		out = append(out, frontChannelTarget{ClientID: clientID, URL: u.String()})
 	}
+	// A read that failed partway leaves applications that will not be told
+	// the session ended. The ones read are still told, which is what a logout
+	// can do now, and the failure is said rather than taken for the whole list
+	// (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.ErrorContext(ctx, "listing front-channel logout targets; some applications will not be told",
+			"err", err, "told", len(out))
+	}
 	return out
 }
 
@@ -97,21 +105,16 @@ func (s *Server) frontChannelTargets(ctx context.Context, sid, issuer string) []
 func (s *Server) renderFrontChannelLogout(w http.ResponseWriter, r *http.Request,
 	targets []frontChannelTarget, continueTo string) {
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	// This page must not itself be framed: a logout page inside somebody else's
-	// frame is a way to sign a user out without their knowledge.
-	w.Header().Set("X-Frame-Options", "DENY")
-	// frame-src is deliberately broad because the frames ARE the point, and the
-	// URLs are registered rather than caller-supplied. Everything else is denied:
-	// no script, no styles from elsewhere, and no form submission.
-	setCSP(w, "default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
-		"frame-ancestors 'none'")
-
 	if continueTo == "" {
 		continueTo = "/"
 	}
-	s.renderBare(w, r, "fclogout", map[string]any{
+	// This page must not itself be framed: a logout page inside somebody else's
+	// frame is a way to sign a user out without their knowledge. frame-src is
+	// deliberately broad because the frames ARE the point, and the URLs are
+	// registered rather than caller-supplied. Everything else is denied: no script,
+	// no styles from elsewhere, and no form submission.
+	s.renderBare(w, r, "fclogout", "default-src 'none'; frame-src https:; style-src 'unsafe-inline'; "+
+		"frame-ancestors 'none'", map[string]any{
 		"Targets":    targets,
 		"ContinueTo": continueTo,
 		// Seconds before the page moves on regardless. A relying party that never

@@ -136,6 +136,7 @@ func TestAClientCanPinItselfToDPoPAtRegistration(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/register", strings.NewReader(
 		`{"redirect_uris":["https://rp.test/cb"],"client_name":"pinned",`+
 			`"dpop_bound_access_tokens":true}`))
+	req.RemoteAddr = freshAddress() + ":443"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+registrationToken(t, f))
 	rec := httptest.NewRecorder()

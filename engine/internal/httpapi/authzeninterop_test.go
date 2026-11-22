@@ -11,15 +11,18 @@ import (
 	"signari.dev/engine/internal/authzen"
 )
 
+// The OpenID AuthZEN working group's interop decision fixture, run against the
+// real evaluation routes: 40 single evaluations and 3 boxcarred ones over the
+// interop "Todo" application, each with the decision the working group expects.
+//
+// The fixture is vendored, unchanged, in testdata/authzen-interop (sha256
+// 26a066eb…411aab7). It used to be read from a path in an environment variable,
+// so the suite skipped on every run nobody had set it up for, which was every
+// run.
 func TestAuthZENInteropSuite(t *testing.T) {
-	path := os.Getenv("SIGNARI_AUTHZEN_INTEROP")
-	if path == "" {
-		t.Skip("SIGNARI_AUTHZEN_INTEROP not set; see the comment for where to get " +
-			"decisions-authorization-api-1_0-02.json")
-	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile("testdata/authzen-interop/decisions-authorization-api-1_0-02.json")
 	if err != nil {
-		t.Fatalf("reading the interop suite: %v", err)
+		t.Fatalf("the interop fixture is missing; this test is vacuous without it: %v", err)
 	}
 	var suite struct {
 		Evaluation []struct {
@@ -35,6 +38,12 @@ func TestAuthZENInteropSuite(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &suite); err != nil {
 		t.Fatalf("parsing the interop suite: %v", err)
+	}
+	// A truncated or emptied fixture would pass every scenario it still has.
+	if len(suite.Evaluation) != 40 || len(suite.Evaluations) != 3 {
+		t.Fatalf("the fixture holds %d evaluations and %d boxcars, want 40 and 3; "+
+			"if it was replaced by a newer version, update these counts with it",
+			len(suite.Evaluation), len(suite.Evaluations))
 	}
 
 	f := newTokenFixture(t)

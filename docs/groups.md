@@ -61,6 +61,60 @@ first third-party application anyone integrates would do exactly that.
 `groups` appears in `scopes_supported` because it now works. Advertising it does
 not mean a client gets anything.
 
+## Groups inside groups
+
+```sh
+signari group nest -org <uuid> -group oncall-eu -in oncall
+signari group nest -org <uuid> -group oncall -in engineering
+signari group nest -org <uuid> -group oncall-eu -in oncall -remove
+```
+
+A group can be a member of another. Whoever is in `oncall-eu` is then in `oncall`,
+and whoever is in `oncall` is in `engineering`, so a person put in one group is in
+every group above it. That holds everywhere a group means something: the `groups`
+claim and SAML attribute, LDAP `memberOf` and a group entry's members, a `memberOf=`
+filter, the access policy's `groups` and `any_group`, relations granted to a group,
+remote-access connections, RADIUS authorisation, forward auth, impersonation, the
+reach of a role delegated over a group, and the people a SCIM target is sent for a
+group or a scope. In a configuration file:
+
+```yaml
+groups:
+  - name: oncall
+    member_of: [engineering]
+```
+
+`member_of` left out keeps what the group is inside; `member_of: []` takes it out of
+everything.
+
+**Read at the moment it is asked, as membership is.** Taking `oncall-eu` out of
+`oncall` takes everybody who was in `oncall` only through it out of `oncall` and
+`engineering` on their next token, with the same caveat as removing a person: tokens
+already issued keep their claims until they expire.
+
+**A loop is refused when it is made.** `engineering` inside `oncall-eu` would put
+every one of the three inside the others, which nobody means. The database refuses it
+for every writer (the CLI, the Admin API, a configuration file), holding off other
+nestings in the organisation while it checks, so two that would close a loop together
+cannot both pass. A configuration file whose own `member_of` makes a loop is refused
+by `signari plan` before anything is applied. Both groups must be the same
+organisation's.
+
+**Only an organisation-wide administrator nests.** A nesting changes who is in every
+group above it, so it reaches people the caller never named. A token narrowed to named
+groups, or a role delegated over some, is refused both ways. A group inside one that
+may impersonate gives every one of its members that power, so the Admin API treats it
+as the group above: adding a member to it, or putting a group in it, needs
+`privileged-users:write`. `signari group nest` says when a nesting grants impersonation
+the members did not have.
+
+**What stays direct.** The Admin API's member list, `GET .../members`, is the people
+put in the group by name, because that is what can be removed there; `GET
+.../member-groups` is the groups put in it. A directory or identity provider sync, an
+inbound SCIM source, and an import keep the direct memberships they manage and leave
+nesting alone. A SCIM target is sent people, never a group inside a group, because not
+every target can hold one.
+
 ## Smaller decisions
 
 **Names are constrained** to `[a-zA-Z0-9._-]{1,64}` by a CHECK. The value

@@ -90,11 +90,38 @@ worse outcome than losing the square.
 Against the running engine, using only what the QR code carries:
 
 ```
-GET /account/mfa/totp        -> page with an inline <svg>
-decode the served SVG        -> otpauth://totp/Default:...?secret=YDFBKF3G...
-derive a TOTP code from it   -> 6 digits
-POST /account/mfa/totp       -> "Two-factor authentication is on", 10 recovery codes
+GET  /account/mfa/totp         -> introduction and a button; nothing is stored
+POST /account/mfa/totp/start   -> page with an inline <svg> (CSRF token required)
+decode the served SVG          -> otpauth://totp/Default:...?secret=YDFBKF3G...
+derive a TOTP code from it     -> 6 digits
+POST /account/mfa/totp         -> "Two-factor authentication is on", 10 recovery codes
 ```
 
 The secret read out of the QR code matched the one shown for manual entry, and
 the code derived from it was accepted.
+
+## Enrolment never disturbs the factor you already have
+
+The secret shown on the setup page is stored as an enrolment in progress, apart
+from any authenticator the account already has. That one keeps working until the
+new code is confirmed; an abandoned setup page changes nothing, and a setup page
+somebody else sent you to cannot turn your second factor off. Opening the page is
+a GET and stores nothing at all, because a GET is what a link from any other site
+can make a signed-in browser send. Confirming a replacement tells the account
+holder by email (and SMS, where a verified number exists).
+
+Starting and confirming both need a sign-in from the last ten minutes. An older
+session is sent to sign in again and brought back to the page. Both are refused
+outright in an [impersonation session](impersonation.md). Confirming replaces
+the authenticator and deletes the recovery codes, so a stolen cookie must not
+be enough to do it.
+
+## Removing it
+
+`/account/security` lists the authenticator app with the person's other sign-in
+methods, and removes it under the same recent-sign-in rule. The holder is told
+on every channel they have, the removal is audited as `mfa.totp_removed`, and
+when it was their last second factor the recovery codes go with it. Until
+October 2026 only an administrator could remove one, so somebody who had moved
+to a new phone was asked at every sign-in for an authenticator they no longer
+had.

@@ -19,11 +19,9 @@ import (
 // system a requirement for exactly that reason, and a SIEM is where detection and
 // alerting actually happen.
 //
-// What is streamed is the METADATA, never the crypto-shredded plaintext.
-// `detail` is the non-sensitive detail already stored in the clear; `detail_enc`
-// (the wrapped plaintext) is not sent, because a SIEM is a copy an erasure
-// request cannot reach, and shipping the plaintext there would defeat the shred.
-// The `entry_hash` is included so a receiver can tie a streamed line back to the
+// What is streamed is the row: `detail`, which holds nothing personal by the
+// package rule, since a SIEM is a copy an erasure request cannot reach. The
+// `entry_hash` is included so a receiver can tie a streamed line back to the
 // verifiable chain.
 
 // StreamRecord is one audit event as it goes to an external sink.

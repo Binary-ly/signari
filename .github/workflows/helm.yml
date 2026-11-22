@@ -1,0 +1,396 @@
+# The chart, installed and upgraded on a real cluster.
+#
+# Rendering the chart proves little: helm lint and helm template passed on a
+# chart whose migration Job replaced the image's entrypoint, and later on one
+# whose pods could not start because the image named its user. Both were found
+# only by installing it. This job installs it on kind from the image built here,
+# with PostgreSQL beside it, then upgrades it and checks that the hooks ran again.
+#
+# It runs when something that ships in the image or the chart changes, not on
+# every push: a change to tests or documentation cannot change what installs.
+name: helm
+
+on:
+  push:
+    paths:
+      - deploy/helm/**
+      - engine/**
+      - "!engine/**/*_test.go"
+      - "!engine/**/testdata/**"
+      - .github/workflows/helm.yml
+  pull_request:
+    paths:
+      - deploy/helm/**
+      - engine/**
+      - "!engine/**/*_test.go"
+      - "!engine/**/testdata/**"
+      - .github/workflows/helm.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE: ci
+      # The chart names what it makes <release>-signari.
+      NAME: ci-signari
+      ISSUER: https://signari.ci.test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools on the runner
+        run: |
+          kind version
+          helm version --short
+          kubectl version --client
+
+      # The tag the chart pulls by default, so the install uses the chart's own
+      # image reference and not one this job overrides.
+      - name: The image the chart deploys
+        run: |
+          tag=$(awk -F'"' '/^appVersion:/{print $2}' deploy/helm/signari/Chart.yaml)
+          test -n "$tag"
+          echo "IMAGE=ghcr.io/binary-ly/signari:$tag" >> "$GITHUB_ENV"
+          docker build -t "ghcr.io/binary-ly/signari:$tag" engine
+
+      - name: A cluster
+        run: |
+          kind create cluster --name signari --wait 180s
+          kind load docker-image --name signari "$IMAGE"
+
+      # The chart deploys the engine and not its database. signari_engine is made
+      # by the bootstrap migration without a password, so this throwaway server
+      # trusts its connections, as the suite's own CI database does.
+      - name: PostgreSQL beside it
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels: {app: postgres}
+            template:
+              metadata:
+                labels: {app: postgres}
+              spec:
+                containers:
+                  - name: postgres
+                    image: postgres:17
+                    env:
+                      - {name: POSTGRES_DB, value: signari}
+                      - {name: POSTGRES_PASSWORD, value: unused}
+                      - {name: POSTGRES_HOST_AUTH_METHOD, value: trust}
+                    ports: [{containerPort: 5432}]
+                    # Over TCP: during initdb the image runs a server on the
+                    # socket only, and a socket check would pass before the real
+                    # server starts.
+                    readinessProbe:
+                      exec: {command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "signari"]}
+                      periodSeconds: 2
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres
+          spec:
+            selector: {app: postgres}
+            ports: [{port: 5432}]
+          EOF
+          kubectl rollout status deploy/postgres --timeout=300s
+
+      # Managed by hand, as the chart's README recommends for production. The
+      # migration bootstraps roles, so it gets a superuser DSN under a key of its
+      # own; the engine connects as signari_engine.
+      - name: The Secret
+        run: |
+          kubectl create secret generic signari-secrets \
+            --from-literal=SIGNARI_DSN='postgres://signari_engine@postgres:5432/signari?sslmode=disable' \
+            --from-literal=BOOTSTRAP_DSN='postgres://postgres@postgres:5432/signari?sslmode=disable' \
+            --from-literal=SIGNARI_ROOT_KEY="$(head -c 32 /dev/urandom | base64)" \
+            --from-literal=SIGNARI_ROOT_KEY_REF=k8s
+
+      - name: Install
+        run: |
+          helm install "$RELEASE" deploy/helm/signari \
+            --set issuer="$ISSUER" \
+            --set secret.existingSecret=signari-secrets \
+            --set migrations.superuserDsnSecretKey=BOOTSTRAP_DSN \
+            --set metrics.enabled=true \
+            --wait --timeout 10m
+          ready=$(kubectl get deploy "$NAME" -o jsonpath='{.status.readyReplicas}')
+          echo "ready replicas: $ready"
+          test "$ready" = 2
+
+      # The hooks delete their Jobs once they succeed, so what is left of a run is
+      # its events. Each count is kept to compare with the upgrade's.
+      - name: Both hook Jobs ran
+        run: |
+          for job in migrate instance; do
+            n=$(kubectl get events -o name \
+              --field-selector "involvedObject.kind=Job,involvedObject.name=$NAME-$job,reason=SuccessfulCreate" | wc -l)
+            echo "$job: $n pod(s) created"
+            test "$n" -ge 1
+            echo "INSTALL_${job}=$n" >> "$GITHUB_ENV"
+          done
+
+      # The test pod runs `signari verify`, which exits non-zero unless the schema
+      # is the one this image expects; the pod is deleted once it succeeds, so its
+      # exit status, through helm's, is the evidence.
+      - name: helm test
+        run: helm test "$RELEASE"
+
+      # Through the Service, as a client inside the cluster would reach it: ready,
+      # discovery naming the issuer the chart was given, and the engine's metrics.
+      - name: Serving through its Services
+        run: |
+          kubectl port-forward "svc/$NAME" 18080:8080 >/dev/null 2>&1 &
+          kubectl port-forward "svc/$NAME-metrics" 19090:9090 >/dev/null 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/readyz >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/readyz
+          echo
+          curl -fsS http://127.0.0.1:18080/.well-known/openid-configuration > "$RUNNER_TEMP/discovery.json"
+          got=$(jq -r .issuer "$RUNNER_TEMP/discovery.json")
+          echo "issuer: $got"
+          test "$got" = "$ISSUER"
+          jwks=$(jq -r .jwks_uri "$RUNNER_TEMP/discovery.json")
+          curl -fsS "http://127.0.0.1:18080${jwks#"$ISSUER"}" | jq -e '.keys | length > 0'
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:19090/metrics >/dev/null 2>&1 && break; sleep 1; done
+          n=$(curl -fsS http://127.0.0.1:19090/metrics | grep -c '^signari_')
+          echo "signari_ series: $n"
+          test "$n" -gt 0
+
+      - name: Upgrade
+        run: |
+          helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
+            --set replicaCount=3 \
+            --wait --timeout 10m
+          ready=$(kubectl get deploy "$NAME" -o jsonpath='{.status.readyReplicas}')
+          echo "ready replicas: $ready"
+          test "$ready" = 3
+
+      # An upgrade that skipped its hooks would leave a new image on an old
+      # schema, so each Job must have run again.
+      - name: The upgrade ran both hooks again
+        run: |
+          for job in migrate instance; do
+            before=$(printenv "INSTALL_${job}")
+            n=$(kubectl get events -o name \
+              --field-selector "involvedObject.kind=Job,involvedObject.name=$NAME-$job,reason=SuccessfulCreate" | wc -l)
+            echo "$job: $before pod(s) at install, $n now"
+            test "$n" -gt "$before"
+          done
+          helm test "$RELEASE"
+
+      # A pod being deleted leaves the Service before it stops answering (2.10): on
+      # SIGTERM the engine reports unready for drainSeconds and keeps serving, and the
+      # grace period covers that and the shutdown. A client inside the cluster asks the
+      # Service for discovery every 50 ms throughout (discovery, not /readyz, which a
+      # draining pod rightly answers 503); one pod of three is deleted; its address must
+      # stop being ready in the Service's EndpointSlice while the pod still exists, and
+      # no request may fail.
+      - name: A deleted pod leaves the Service before it stops answering
+        run: |
+          kubectl run prober --image=busybox:1.37.0 --restart=Never --command -- sh -c \
+            'n=0; f=0; end=$(( $(date +%s) + 45 )); while [ "$(date +%s)" -lt "$end" ]; do
+               n=$((n+1)); wget -q -T 2 -O /dev/null "http://'"$NAME"':8080/.well-known/openid-configuration" || f=$((f+1))
+               sleep 0.05; done; echo "requests=$n failed=$f"'
+          kubectl wait --for=condition=Ready pod/prober --timeout=120s
+          sleep 5
+          sel=$(kubectl get deploy "$NAME" -o json | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')
+          pod=$(kubectl get pods -l "$sel" -o jsonpath='{.items[0].metadata.name}')
+          ip=$(kubectl get pod "$pod" -o jsonpath='{.status.podIP}')
+          readiness() {
+            kubectl get endpointslices -l "kubernetes.io/service-name=$NAME" -o json |
+              jq -r --arg ip "$ip" '[.items[] | (.endpoints // [])[] | select(any(.addresses[]; . == $ip)) | .conditions.ready] | first // "gone"'
+          }
+          # Listed and ready first, or the check below would pass on an address that never was.
+          test "$(readiness)" = true
+          echo "deleting $pod ($ip), ready in the Service's EndpointSlice"
+          kubectl delete pod "$pod" --wait=false
+          ready=true
+          for i in $(seq 1 300); do
+            ready=$(readiness)
+            if [ "$ready" != "true" ]; then
+              terminating=$(kubectl get pod "$pod" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)
+              echo "after ${i}00 ms its address reads ready=$ready in the EndpointSlice; the pod still exists: ${terminating:+yes, terminating since $terminating}"
+              test -n "$terminating"
+              break
+            fi
+            sleep 0.1
+          done
+          test "$ready" != "true"
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/prober --timeout=120s
+          result=$(kubectl logs prober | tail -1)
+          echo "the client in the cluster: $result"
+          kubectl delete pod prober
+          case "$result" in *" failed=0") ;; *) exit 1 ;; esac
+
+      # Prometheus scraping the engine through the chart's ServiceMonitor (3.24): the
+      # operator from a pinned release, a Prometheus selecting ServiceMonitors by one
+      # label, the chart given that label, and then Prometheus's own answer that every
+      # replica is a target that is up and that the engine's series arrived.
+      - name: Prometheus scrapes it through the ServiceMonitor
+        run: |
+          kubectl create -f https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.94.2/bundle.yaml > /dev/null
+          kubectl wait --for condition=Established crd/servicemonitors.monitoring.coreos.com crd/prometheuses.monitoring.coreos.com --timeout=120s
+          kubectl wait --for=condition=Available deploy/prometheus-operator --timeout=300s
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: prometheus
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: ci-prometheus
+          rules:
+            - apiGroups: [""]
+              resources: [services, endpoints, pods]
+              verbs: [get, list, watch]
+            - apiGroups: [discovery.k8s.io]
+              resources: [endpointslices]
+              verbs: [get, list, watch]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: ci-prometheus
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: ci-prometheus
+          subjects:
+            - kind: ServiceAccount
+              name: prometheus
+              namespace: default
+          ---
+          apiVersion: monitoring.coreos.com/v1
+          kind: Prometheus
+          metadata:
+            name: prometheus
+          spec:
+            serviceAccountName: prometheus
+            serviceMonitorSelector:
+              matchLabels:
+                release: ci-prometheus
+            serviceMonitorNamespaceSelector: {}
+            scrapeInterval: 5s
+          EOF
+          helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
+            --set metrics.serviceMonitor.enabled=true \
+            --set metrics.serviceMonitor.labels.release=ci-prometheus \
+            --set metrics.serviceMonitor.interval=5s \
+            --wait --timeout 10m
+          kubectl get servicemonitor "$NAME" -o jsonpath='{.metadata.labels.release}' | grep -qx ci-prometheus
+          for i in $(seq 1 90); do kubectl get statefulset prometheus-prometheus > /dev/null 2>&1 && break; sleep 2; done
+          kubectl rollout status statefulset/prometheus-prometheus --timeout=300s
+          kubectl port-forward svc/prometheus-operated 19091:9090 > /dev/null 2>&1 &
+          q() { curl -fsS -G http://127.0.0.1:19091/api/v1/query --data-urlencode "query=$1" | jq -r '.data.result[0].value[1] // "0"'; }
+          up=0
+          for i in $(seq 1 60); do
+            up=$(q "sum(up{service=\"$NAME-metrics\"})" 2>/dev/null || echo 0)
+            [ "$up" = 3 ] && break
+            sleep 5
+          done
+          echo "replicas Prometheus scrapes through the ServiceMonitor and finds up: $up"
+          test "$up" = 3
+          n=$(q 'count({__name__=~"signari_.+"})')
+          echo "signari_ series in Prometheus: $n"
+          test "$n" -gt 0
+
+      # The chart's backup (3.10), drilled as the runbook restores: the CronJob run once,
+      # its newest dump restored into a fresh database on the same server (so the roles
+      # are already there), and the engine image, given the root key and the key's label
+      # that were written beside the dump, passing the runbook's three checks and then
+      # finalize. keys list is the one that proves the set: it decrypts the signing keys
+      # with that key. The first drill restored the key without its label and every
+      # signing key was refused ("wrapped with root key "k8s" but "" is configured").
+      - name: Backup, restore and the runbook's checks
+        run: |
+          # The claim is the operator's, as the chart requires: it binds when the backup
+          # Job first mounts it (kind's storage class waits for a consumer).
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata: {name: ci-backups}
+          spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+          EOF
+          helm upgrade "$RELEASE" deploy/helm/signari --reuse-values \
+            --set backup.enabled=true --set backup.dsnSecretKey=BOOTSTRAP_DSN \
+            --set backup.persistence.existingClaim=ci-backups --wait --timeout 10m
+          kubectl create job --from="cronjob/$NAME-backup" backup-drill
+          kubectl wait --for=condition=complete job/backup-drill --timeout=300s
+          kubectl logs job/backup-drill
+          image=$(kubectl get deploy "$NAME" -o jsonpath='{.spec.template.spec.containers[0].image}')
+          kubectl apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata: {name: restore-drill}
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                securityContext: {runAsUser: 999, runAsGroup: 999, fsGroup: 999}
+                volumes: [{name: backup, persistentVolumeClaim: {claimName: ci-backups}}]
+                initContainers:
+                  - name: restore
+                    image: postgres:17
+                    volumeMounts: [{name: backup, mountPath: /backup}]
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -eu
+                        # The engine refuses a root key file anybody else can read.
+                        umask 077
+                        dump=\$(ls /backup/signari-*.dump | sort | tail -1)
+                        ts=\${dump#/backup/signari-}; ts=\${ts%.dump}
+                        cp "/backup/signari-rootkey-\$ts.b64" /backup/restore-rootkey.b64
+                        # The key's label is the third half: every sealed value names it, and
+                        # the engine refuses a key configured under another. The backup has to
+                        # carry the one the engines below are given.
+                        test "\$(cat "/backup/signari-rootkey-\$ts.ref")" = k8s
+                        psql "postgres://postgres@postgres:5432/postgres" -c "CREATE DATABASE signari_restore"
+                        pg_restore --dbname="postgres://postgres@postgres:5432/signari_restore" \
+                          --clean --if-exists --exit-on-error "\$dump"
+                        echo "restored \$dump"
+                  - {name: verify, image: "$image", args: ["verify"], env: &engine [
+                      {name: SIGNARI_DSN, value: "postgres://signari_engine@postgres:5432/signari_restore?sslmode=disable"},
+                      {name: SIGNARI_ROOT_KEY_FILE, value: /backup/restore-rootkey.b64},
+                      {name: SIGNARI_ROOT_KEY_REF, value: k8s}],
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                  - {name: keys, image: "$image", args: ["keys", "list"], env: *engine,
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                  - {name: audit, image: "$image", args: ["audit", "verify"], env: *engine,
+                     volumeMounts: [{name: backup, mountPath: /backup}]}
+                containers:
+                  - {name: finalize, image: "$image", args: ["restore", "finalize", "-confirm", "signari_restore"],
+                     env: *engine, volumeMounts: [{name: backup, mountPath: /backup}]}
+          EOF
+          kubectl wait --for=condition=complete job/restore-drill --timeout=300s
+          for c in restore verify keys audit finalize; do
+            echo "== $c"; kubectl logs job/restore-drill -c "$c"
+          done
+
+      - name: What the cluster held
+        if: failure()
+        run: |
+          kubectl get all,events -o wide || true
+          kubectl describe pods || true
+          for p in $(kubectl get pods -o name); do
+            echo "=== $p"
+            kubectl logs "$p" --all-containers --tail=200 || true
+          done
+          helm status "$RELEASE" || true

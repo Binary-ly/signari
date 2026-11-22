@@ -194,7 +194,7 @@ func ValidateExchange(req ExchangeRequest, confidential, mayExchange bool,
 	// unrestricted exchanger can mint a token for any resource server in the
 	// deployment, which is exactly the escalation the allow-list prevents.
 	aud = append(append([]string{}, req.Audience...), req.Resource...)
-	if err := validateResources(req.Resource); err != nil {
+	if err := ValidateResources(req.Resource); err != nil {
 		return nil, nil, tokenErr("invalid_target", err.Error())
 	}
 	if len(aud) == 0 {

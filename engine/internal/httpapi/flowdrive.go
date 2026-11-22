@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +36,8 @@ type flowCache struct {
 	// hundred concurrent sign-ins produce one query rather than a hundred.
 	refreshing sync.Mutex
 	inFlight   bool
-	// reported remembers which documents have already had their inert conditions
-	// reported, so a thirty-second reload does not repeat the message forever.
+	// reported remembers which stored documents have already been reported as
+	// refused, so a thirty-second reload does not repeat the message forever.
 	reportedMu sync.Mutex
 	reported   map[string]bool
 }
@@ -63,7 +64,11 @@ func newFlowCache() *flowCache { return &flowCache{byOrg: map[string]*flow.File{
 // refreshes in the background. The window is already thirty seconds wide by
 // design; making it thirty seconds and a bit, rather than deadlocking, is not a
 // trade worth agonising over.
-func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation) *flow.Flow {
+//
+// q is what the first load of the process reads through: the caller's own
+// transaction when it holds one, since loading from the pool there takes a
+// second connection.
+func (s *Server) flowFor(ctx context.Context, q dbReader, orgID string, on flow.Designation) *flow.Flow {
 	s.flows.mu.RLock()
 	fresh := time.Since(s.flows.loadedAt) < flowRefresh
 	everLoaded := s.flows.everLoaded
@@ -75,7 +80,7 @@ func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation)
 		// Once per process. Serving the built-in flow here instead would mean the
 		// first sign-ins after a restart silently ran a different journey than the
 		// operator applied.
-		s.reloadFlows(ctx)
+		s.reloadFlowsFrom(ctx, q)
 		s.flows.mu.RLock()
 		f = s.flows.byOrg[orgID]
 		s.flows.mu.RUnlock()
@@ -93,7 +98,7 @@ func (s *Server) flowFor(ctx context.Context, orgID string, on flow.Designation)
 	// sign anybody in.
 	def, err := flow.Default()
 	if err != nil {
-		s.log.Error("the built-in flows did not load", "err", err)
+		s.log.ErrorContext(ctx, "the built-in flows did not load", "err", err)
 		return nil
 	}
 	fl, ok := def.For(on)
@@ -130,10 +135,14 @@ func (s *Server) refreshFlowsInBackground() {
 	}()
 }
 
-func (s *Server) reloadFlows(ctx context.Context) {
-	rows, err := s.db.Query(ctx, `SELECT org_id::text, document FROM core.sign_in_flows`)
+func (s *Server) reloadFlows(ctx context.Context) { s.reloadFlowsFrom(ctx, s.db) }
+
+// reloadFlowsFrom is reloadFlows reading through q, for the first load a
+// sign-in walk makes while it holds its transaction.
+func (s *Server) reloadFlowsFrom(ctx context.Context, q dbReader) {
+	rows, err := q.Query(ctx, `SELECT org_id::text, document FROM core.sign_in_flows`)
 	if err != nil {
-		s.log.Error("loading sign-in flows", "err", err)
+		s.log.ErrorContext(ctx, "loading sign-in flows", "err", err)
 		return
 	}
 	defer rows.Close()
@@ -142,25 +151,44 @@ func (s *Server) reloadFlows(ctx context.Context) {
 	for rows.Next() {
 		var orgID, doc string
 		if err := rows.Scan(&orgID, &doc); err != nil {
-			continue
+			// As a failed read below: keep every flow already loaded.
+			s.log.ErrorContext(ctx, "loading sign-in flows; keeping the flows already loaded", "err", err)
+			return
 		}
 		f, perr := flow.Parse([]byte(doc))
 		if perr != nil {
-			// Written straight to the table, bypassing `signari flow apply`. The
-			// PREVIOUS flow is kept rather than dropped: dropping it falls back to
-			// the built-in journey, which is a different journey than the operator
-			// believes is running, changing under them without a word.
-			s.log.Error("the stored sign-in flow will not load; keeping the previous one",
-				"org_id", orgID, "err", perr)
+			// Written straight to the table, bypassing `signari flow apply`, or
+			// applied before a rule that now refuses it -- a condition no journey
+			// evaluates, since 2.20. The PREVIOUS flow is kept rather than
+			// dropped: dropping it falls back to the built-in journey, which is a
+			// different journey than the operator believes is running. A process
+			// that never loaded this document has no previous one and serves the
+			// built-in flow; the log says which, and `signari doctor` reports it.
 			s.flows.mu.RLock()
-			if prev := s.flows.byOrg[orgID]; prev != nil {
+			prev := s.flows.byOrg[orgID]
+			s.flows.mu.RUnlock()
+			if prev != nil {
 				loaded[orgID] = prev
 			}
-			s.flows.mu.RUnlock()
+			if s.firstReport(orgID, doc) {
+				serving := "the built-in flows"
+				if prev != nil {
+					serving = "the previous flow"
+				}
+				s.log.ErrorContext(ctx, "the stored sign-in flow will not load; serving "+serving,
+					"org_id", orgID, "err", perr)
+			}
 			continue
 		}
-		s.reportInertConditions(orgID, doc, f)
 		loaded[orgID] = f
+	}
+	// A read that failed partway is not the set of flows: taken for it, every
+	// organisation whose row went unread was served the built-in journey, the
+	// one its operator replaced, perhaps to require a second factor (0.31).
+	// The flows already loaded are kept, and the next reload tries again.
+	if err := rows.Err(); err != nil {
+		s.log.ErrorContext(ctx, "loading sign-in flows; keeping the flows already loaded", "err", err)
+		return
 	}
 
 	s.flows.mu.Lock()
@@ -206,9 +234,22 @@ type signInFacts struct {
 	db     signInReader
 	orgID  string
 	userID string
+	// authzQuery is the parked authorization request, which answers
+	// client_requires_mfa. Empty where there is none, as for a bind.
+	authzQuery string
+	// amr is what the sign-in proved so far, which answers the proved_by
+	// conditions.
+	amr []string
+	// ip is the person's address, which answers risk_elevated. Empty where
+	// there is no person's request -- a bind, or a question asked before the
+	// walk -- and the condition is then false.
+	ip string
 
 	promptsOnce bool
 	prompts     []prompts.Prompt
+
+	providerAsked bool
+	provider      store.FlowConditionResult
 
 	// known memoises every answer, and carries the ones the caller decided
 	// before the walk began.
@@ -218,6 +259,9 @@ type signInFacts struct {
 	// the way past so the stage does not repeat the query that produced it.
 	changeKnown  bool
 	changeReason string
+
+	obligationsKnown bool
+	obligations      store.Obligations
 }
 
 // Holds answers one condition, querying only if asked and only once.
@@ -235,41 +279,141 @@ func (f *signInFacts) Holds(name string) bool {
 	if v, ok := f.known[name]; ok {
 		return v
 	}
+	// A condition with no evaluator reads false. Parse refuses a sign-in flow
+	// that branches on one, except captcha_required guarding the captcha
+	// stage, which the form has already settled; so false here is either that
+	// or a stored document that bypassed Parse.
 	var v bool
-	switch flow.Condition(name) {
-	case flow.CondHasSecondFactor:
-		enrolled, err := store.HasSecondFactor(f.ctx, f.db, f.userID)
-		if err != nil {
-			f.s.log.Error("checking second factor", "err", err)
-		}
-		v = enrolled
-	case flow.CondPromptsPending:
-		v = len(f.pendingPrompts()) > 0
-	case flow.CondPasswordChangeRequired:
-		must, reason, err := store.PasswordChangeRequired(f.ctx, f.db, f.userID)
-		if err != nil {
-			f.s.log.Error("checking whether a password change is required", "err", err)
-		}
-		v, f.changeReason = must, reason
-		f.changeKnown = true
-	default:
-		// A condition this path does not answer: either it is decided earlier
-		// (captcha, at the form) or the signal is not wired into sign-in yet
-		// (device posture, risk, network). False, so the stage it guards is
-		// skipped.
-		//
-		// NOT logged here. This runs on every sign-in, and the built-in file
-		// itself mentions captcha_required -- so a warning here fired on every
-		// successful login of every deployment, about the default configuration.
-		// The same information is reported once at load, by
-		// reportInertConditions.
-		v = false
+	if eval, ok := signInConditions[flow.Condition(name)]; ok {
+		v = eval(f)
 	}
 	if f.known == nil {
 		f.known = map[string]bool{}
 	}
 	f.known[name] = v
 	return v
+}
+
+// signInConditions are the evaluators behind flow.Answered(flow.Authentication),
+// and TestEveryConditionAFlowCanUseIsAnswered holds the two to the same set: a
+// condition answered here and not there is refused at parse for no reason, and
+// one listed there and not answered here reads false while the flow that names
+// it believes it is guarded.
+var signInConditions = map[flow.Condition]func(f *signInFacts) bool{
+	// Which way the person came in, from amr; no query.
+	flow.CondProvedByPassword:  func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StagePassword },
+	flow.CondProvedByPasskey:   func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StagePasskey },
+	flow.CondProvedByKerberos:  func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageKerberos },
+	flow.CondProvedByFederated: func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageFederated },
+	flow.CondProvedByEmail:     func(f *signInFacts) bool { return primaryProof(f.amr) == flow.StageEmailOTP },
+	flow.CondHasSecondFactor: func(f *signInFacts) bool {
+		has := store.HasSecondFactor
+		if primaryProof(f.amr) == flow.StageEmailOTP {
+			// The mailbox was the first factor; it cannot be the second too.
+			has = store.HasFactorOtherThanEmail
+		}
+		enrolled, err := has(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.ErrorContext(f.ctx, "checking second factor", "err", err)
+		}
+		return enrolled
+	},
+	flow.CondHasPasskey: func(f *signInFacts) bool {
+		has, err := store.HasPasskey(f.ctx, f.db, f.userID)
+		if err != nil {
+			f.s.log.ErrorContext(f.ctx, "checking for a passkey", "err", err)
+		}
+		return has
+	},
+	flow.CondPromptsPending: func(f *signInFacts) bool {
+		return len(f.pendingPrompts()) > 0
+	},
+	flow.CondPasswordChangeRequired: func(f *signInFacts) bool {
+		return f.accountObligations().PasswordChange
+	},
+	flow.CondClientRequiresMFA: func(f *signInFacts) bool {
+		return clientRequiresMFA(f.authzQuery) || f.authzClientFloorIsMFA()
+	},
+	flow.CondRiskElevated: func(f *signInFacts) bool {
+		return f.s.riskElevated(f.ctx, f.db, f.userID, f.ip) || f.providerAnswer().Facts["risk_elevated"]
+	},
+	// What only the operator's own service knows.
+	flow.CondProviderCondition: func(f *signInFacts) bool { return f.providerAnswer().Decision },
+	flow.CondDeviceManaged:     func(f *signInFacts) bool { return f.providerAnswer().Facts["device_managed"] },
+	flow.CondDeviceCompliant:   func(f *signInFacts) bool { return f.providerAnswer().Facts["device_compliant"] },
+	flow.CondNetworkTrusted:    func(f *signInFacts) bool { return f.providerAnswer().Facts["network_trusted"] },
+	// Read through the walk's handle, so the transaction that just took the
+	// right code answers false and the walk goes on.
+	flow.CondEmailVerificationPending: func(f *signInFacts) bool {
+		return f.accountObligations().EmailPending
+	},
+}
+
+// providerAnswer asks the flow_condition provider once, however many conditions it
+// answers. A row that will not load counts as a provider that is down: somebody
+// registered it, and a walk that guessed would be running a different flow.
+func (f *signInFacts) providerAnswer() store.FlowConditionResult {
+	if f.providerAsked {
+		return f.provider
+	}
+	f.providerAsked = true
+	memo, _ := f.ctx.Value(flowAnswerKey{}).(*flowAnswerMemo)
+	if memo != nil && memo.asked {
+		f.provider = memo.answer
+		return f.provider
+	}
+	res, err := store.ConsultFlowCondition(f.ctx, f.db, f.s.root, f.s.outboundClient, f.s.log, f.orgID,
+		store.AuthenticateHookRequest{Subject: f.userID, OrgID: f.orgID, AMR: f.amr, ClientIP: f.ip})
+	if err != nil {
+		f.s.log.ErrorContext(f.ctx, "consulting the flow_condition provider", "err", err)
+		res.Down = true
+	}
+	if memo != nil {
+		memo.asked, memo.answer = true, res
+	}
+	f.provider = res
+	return res
+}
+
+type flowAnswerKey struct{}
+
+// flowAnswerMemo is one sign-in's answer. A password sign-in asks the flow twice in one
+// request, once to see whether a second factor is due and once for real, and a service
+// that answered differently would have the two disagree about the same sign-in.
+type flowAnswerMemo struct {
+	asked  bool
+	answer store.FlowConditionResult
+}
+
+func withFlowAnswerMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, flowAnswerKey{}, &flowAnswerMemo{})
+}
+
+// accountObligations reads, once, the two things the built-in flow asks of
+// every account: a flagged password and an address to prove. One query for
+// both, so the address check added nothing to a sign-in's round trips.
+func (f *signInFacts) accountObligations() store.Obligations {
+	if f.obligationsKnown {
+		return f.obligations
+	}
+	o, err := store.AccountObligations(f.ctx, f.db, f.userID)
+	if err != nil {
+		f.s.log.ErrorContext(f.ctx, "reading what the account must do before signing in", "err", err)
+	}
+	return f.setObligations(o)
+}
+
+// setObligations records what accountObligations read, however it was read.
+func (f *signInFacts) setObligations(o store.Obligations) store.Obligations {
+	f.obligations, f.obligationsKnown = o, true
+	// Both answers recorded whichever condition asked: the password_change
+	// stage reads the recorded answer once changeKnown is set, and an
+	// unconditional stage after verify_email would otherwise read a flagged
+	// password as not.
+	f.changeReason, f.changeKnown = o.ChangeReason, true
+	f.setKnown(flow.CondPasswordChangeRequired, o.PasswordChange)
+	f.setKnown(flow.CondEmailVerificationPending, o.EmailPending)
+	return o
 }
 
 // setKnown records a condition the caller has already decided.
@@ -287,13 +431,113 @@ func (f *signInFacts) pendingPrompts() []prompts.Prompt {
 		return f.prompts
 	}
 	f.promptsOnce = true
-	ps, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
+	ps, missing, err := store.PendingPrompts(f.ctx, f.db, f.orgID, f.userID)
 	if err != nil {
-		f.s.log.Error("reading prompts", "err", err)
+		f.s.log.ErrorContext(f.ctx, "reading prompts", "err", err)
 		return nil
 	}
-	f.prompts = ps
-	return ps
+	return f.setPrompts(ps, missing)
+}
+
+// setPrompts records what pendingPrompts read, however it was read: the operator's
+// prompts this sign-in has not answered, then the required attributes the person may
+// write and has no value for.
+func (f *signInFacts) setPrompts(ps []prompts.Prompt, missing []store.Attribute) []prompts.Prompt {
+	f.promptsOnce = true
+	f.prompts = slices.DeleteFunc(ps, func(p prompts.Prompt) bool {
+		return flow.Marked(f.amr, flow.StagePrompt, p.Slug)
+	})
+	// After the operator's own, the required attributes the person may write and
+	// has no value for (5.05).
+	if len(missing) > 0 && !flow.Marked(f.amr, flow.StagePrompt, prompts.RequiredAttributesSlug) {
+		f.prompts = append(f.prompts, requiredAttributesPrompt(missing))
+	}
+	return f.prompts
+}
+
+// prefetch asks, in one batch through the walk's own transaction, the facts a
+// statement answers that this flow reads (E.37): an account's obligations, a second
+// factor and pending prompts, wherever a condition branches on one or a stage reads
+// one. Asked as the walk reached each, the built-in flow's password sign-in waited on
+// three round trips for them, one after another.
+//
+// Only what the flow mentions, so a flow still pays for nothing it does not branch on;
+// a fact the walk then never reaches, past a stage that takes the response, costs a
+// statement in the same trip and no wait. One fact alone is left to the walk, since a
+// batch of one saves nothing. And whatever the batch did not answer is asked as it was
+// before, one at a time when reached, so a batch that fails costs its trip and nothing
+// else: in a transaction its error leaves the transaction aborted, as the same
+// statement failing on its own would.
+//
+// Through the transaction because the walk reads through it: an address proved by a
+// code this request just took reads as proved. Nothing the walk writes before reaching
+// a fact bears on it; the only write it makes on the way, Duo failing open, is an audit
+// record.
+func (f *signInFacts) prefetch(fl *flow.Flow, db interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}) {
+	reads := map[flow.Condition]bool{}
+	for _, name := range fl.Conditions() {
+		reads[flow.Condition(name)] = true
+	}
+	note := func(stage flow.StageName) {
+		switch stage {
+		case flow.StageMFA, flow.StageEnrolMFA:
+			reads[flow.CondHasSecondFactor] = true
+		case flow.StagePrompt:
+			reads[flow.CondPromptsPending] = true
+		case flow.StageVerifyEmail:
+			reads[flow.CondEmailVerificationPending] = true
+		case flow.StagePasswordChange:
+			reads[flow.CondPasswordChangeRequired] = true
+		}
+	}
+	for _, st := range fl.Stages {
+		note(st.Stage)
+		for _, br := range st.OneOf {
+			note(br.Stage)
+		}
+	}
+
+	b := &pgx.Batch{}
+	var obligations func() (store.Obligations, error)
+	if (reads[flow.CondPasswordChangeRequired] || reads[flow.CondEmailVerificationPending]) && !f.obligationsKnown {
+		obligations = store.QueueAccountObligations(b, f.userID)
+	}
+	var factor func() (bool, error)
+	if _, known := f.known[string(flow.CondHasSecondFactor)]; reads[flow.CondHasSecondFactor] && !known {
+		// The mailbox that was the first factor cannot be the second, as the condition
+		// itself asks.
+		factor = store.QueueSecondFactor(b, f.userID, primaryProof(f.amr) == flow.StageEmailOTP)
+	}
+	var pending func() ([]prompts.Prompt, []store.Attribute, error)
+	if reads[flow.CondPromptsPending] && !f.promptsOnce {
+		pending = store.QueuePendingPrompts(b, f.orgID, f.userID)
+	}
+	if b.Len() < 2 {
+		return
+	}
+	if err := db.SendBatch(f.ctx, b).Close(); err != nil {
+		// Each fact the batch did not answer is asked again when reached, and logged
+		// there if that fails too.
+		f.s.log.WarnContext(f.ctx, "reading a sign-in's facts in one batch", "err", err,
+			"correlation_id", correlationID(f.ctx))
+	}
+	if obligations != nil {
+		if o, err := obligations(); err == nil {
+			f.setObligations(o)
+		}
+	}
+	if factor != nil {
+		if has, err := factor(); err == nil {
+			f.setKnown(flow.CondHasSecondFactor, has)
+		}
+	}
+	if pending != nil {
+		if ps, missing, err := pending(); err == nil {
+			f.setPrompts(ps, missing)
+		}
+	}
 }
 
 // signInReader is what signInState reads through: the open transaction during
@@ -326,7 +570,8 @@ func clientRequiresMFA(authzQuery string) bool {
 		return false
 	}
 	for _, v := range oauth.ParseACRValues(q.Get("acr_values")) {
-		if v == oauth.ACRMultiFactor || v == oauth.ACRPapeMultiFactor {
+		// "2" and above: the two rungs over it are multi-factor too.
+		if oauth.RequiredRung(v, "") >= 2 {
 			return true
 		}
 	}
@@ -356,20 +601,26 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 	userID, orgID string, amr []string, authzQuery string) signInDecision {
 
 	ctx := r.Context()
-	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	fl := s.flowFor(ctx, tx, orgID, flow.Authentication)
 	if fl == nil {
 		// No flow at all, not even the built-in one. Fall through to the session:
 		// the subject has already been proved by the time this is called, so
 		// refusing here would lock out a deployment over a configuration read.
-		s.log.Error("no authentication flow is available; issuing the session")
+		s.log.ErrorContext(ctx, "no authentication flow is available; issuing the session")
 		return decisionSession
 	}
 
-	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID}
-	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
-	// Settled at the sign-in form, before the flow is walked. Recording it as
-	// known keeps the walker from treating it as an unanswerable condition.
+	facts := &signInFacts{s: s, ctx: ctx, db: tx, orgID: orgID, userID: userID, authzQuery: authzQuery,
+		amr: amr, ip: clientIP(r)}
+	// Settled at the sign-in form, before the flow is walked, which is why
+	// Parse lets it guard nothing but the captcha stage.
 	facts.setKnown(flow.CondCaptchaRequired, false)
+	// What the walk will read, in one round trip rather than one each (E.37).
+	facts.prefetch(fl, tx)
+
+	// Whether Duo already failed open for this sign-in -- on the password path,
+	// before this walk began, or at an earlier mfa stage of this walk.
+	waived := mfaWaivedByFailOpen(ctx)
 
 	c := fl.Cursor()
 	for {
@@ -378,8 +629,19 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// The flow ran out of stages without reaching a terminal. Parse refuses
 			// such a file, so this needs a file that bypassed it -- refuse rather
 			// than guess, because the guess would be a session.
-			s.log.Error("the sign-in flow ended without a terminal stage",
+			s.log.ErrorContext(ctx, "the sign-in flow ended without a terminal stage",
 				"flow", fl.Name, "correlation_id", correlationID(ctx))
+			return decisionDeny
+		}
+		// A condition the walk just needed has no answer, from a provider that
+		// said what that means.
+		if facts.provider.Down {
+			_ = tx.Rollback(ctx)
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"reason": "flow_provider_down", "flow": fl.Name},
+			})
 			return decisionDeny
 		}
 
@@ -388,6 +650,10 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			return decisionSession
 
 		case flow.StageDeny:
+			// The caller abandons the transaction on a denial, so it is released
+			// here, before the refusal is recorded on a connection of its own.
+			// Recording it first held two connections, which deadlocks the pool.
+			_ = tx.Rollback(ctx)
 			s.auditDetached(ctx, audit.Event{
 				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
 				CorrelationID: correlationID(ctx),
@@ -406,6 +672,9 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 				// a step, and holding the sign-in for one would be a dead end.
 				continue
 			}
+			// The walk's transaction is abandoned once a stage takes the
+			// response, and released before that stage renders.
+			_ = tx.Rollback(ctx)
 			s.beginPrompt(w, r, userID, orgID, amr, authzQuery, pending[0])
 			return decisionHandled
 
@@ -424,7 +693,40 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			if reason == "" {
 				reason = "Your password needs to be changed before you continue."
 			}
+			_ = tx.Rollback(ctx)
 			s.beginPasswordChange(w, r, userID, orgID, amr, authzQuery, reason)
+			return decisionHandled
+
+		case flow.StageEnrolMFA:
+			// Somebody with a factor has nothing to enrol, whatever the stage's
+			// condition said; somebody without one is held until they have one
+			// (enrolmfa.go). It never replaces a factor.
+			if facts.Holds(string(flow.CondHasSecondFactor)) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginEnrolMFA(w, r, userID, orgID, amr, authzQuery)
+			return decisionHandled
+
+		case flow.StageVerifyEmail:
+			// Nothing outstanding, whatever the stage's condition said: an
+			// address already proved, or one nobody asked to have proved, is
+			// not held (verifyemail.go).
+			if !facts.Holds(string(flow.CondEmailVerificationPending)) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginVerifyEmail(w, r, userID, orgID, amr, authzQuery)
+			return decisionHandled
+
+		case flow.StageExternalFactor:
+			// Passed by the mark the answer left, which is this service's alone: an
+			// `otp` from an authenticator app does not say that it was asked.
+			if flow.Marked(amr, stage, c.Factor()) {
+				continue
+			}
+			_ = tx.Rollback(ctx)
+			s.beginExternalFactor(w, r, userID, orgID, c.Factor(), amr, authzQuery)
 			return decisionHandled
 
 		case flow.StageMFA:
@@ -443,6 +745,12 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 			// sources and the second password path at flow.go:2207 all reached a
 			// session without consulting it. A control that binds one route out of
 			// ten is not a control.
+			if waived {
+				// Duo failed open earlier in this sign-in, and that was recorded.
+				// Asking again would ask Duo again: see duoFailedOpen for the
+				// recursion this used to be.
+				continue
+			}
 			if hasSecondFactorAMR(amr) {
 				// Already multi-factor, so the stage is satisfied by what has been
 				// proved. Delegated to the same predicate the session's acr claim is
@@ -450,11 +758,19 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 				// about whether this sign-in was multi-factor.
 				continue
 			}
+			if !facts.Holds(string(flow.CondClientRequiresMFA)) &&
+				s.deviceRemembered(ctx, r, tx, orgID, userID) {
+				// A device the person remembered (rememberdevice.go), where no
+				// client requires more. The session stays single-factor.
+				continue
+			}
 			if !facts.Holds(string(flow.CondHasSecondFactor)) {
 				// Demanded of everybody, and this account has nothing enrolled.
 				// Refused rather than waved through: skipping would mean the control
 				// holds for every account except the ones it was written to catch.
-				// Same answer the password path gave before this moved.
+				// Same answer the password path gave before this moved. The caller
+				// abandons the transaction on this path; released first, as above.
+				_ = tx.Rollback(ctx)
 				s.auditDetached(ctx, audit.Event{
 					Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
 					CorrelationID: correlationID(ctx),
@@ -466,18 +782,163 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 						"Please contact your administrator.")
 				return decisionHandled
 			}
-			s.beginMFAChallenge(w, r, userID, orgID, authzQuery, amr)
+			// Duo is asked through this transaction first, because one answer
+			// keeps the walk in it: unreachable, failing open, and nothing else
+			// to present. Then it is recorded here and the walk carries on to the
+			// session, on a password alone and saying so.
+			probe := s.probeDuo(ctx, tx, userID, orgID)
+			if probe.failsOpen() {
+				if aerr := audit.Write(ctx, tx, audit.Event{
+					Type: "mfa.duo_unavailable", OrgID: orgID, SubjectID: userID,
+					CorrelationID: correlationID(ctx),
+					Detail:        map[string]any{"fail_open": true},
+				}); aerr != nil {
+					s.log.ErrorContext(ctx, "recording Duo's absence", "err", aerr)
+				}
+				s.recordDuoFailOpen(ctx, tx, orgID, userID)
+				waived = true
+				continue
+			}
+			// Every other answer takes over the response: a redirect to Duo, a
+			// refusal, or the code prompt, which sends codes and renders. The
+			// walk's transaction is abandoned on these paths, so it is released
+			// before any of them takes a connection of its own.
+			_ = tx.Rollback(ctx)
+			if s.challengeMFA(w, r, probe, userID, orgID, authzQuery, amr) {
+				// The probe said Duo would not fail open, and challengeMFA acts on
+				// that probe, so this is unreachable. Refused rather than signed
+				// in if it ever is: the transaction is gone.
+				s.renderLogin(w, r, authzQuery, "Something went wrong. Please try again.")
+			}
 			return decisionHandled
 
 		default:
-			// Every other stage either proved the subject before this point
-			// (password, passkey, certificate, kerberos, federated, delegated),
-			// or belongs to a different part of the request (captcha at the form,
-			// consent at the authorization endpoint, identify in the same form as
-			// the password). Nothing to do here.
-			continue
+			if _, settled := signInSettledStages[stage]; settled {
+				// A proving stage is passed only by the proof it names (2.49).
+				// The walker passed every settled stage whatever amr held, so
+				// `passkey, session` admitted a password and a one_of branch
+				// chosen for a passkey holder let them in on a password.
+				if _, proving := flow.ProofCondition(stage); proving && primaryProof(amr) != stage {
+					_ = tx.Rollback(ctx)
+					s.auditDetached(ctx, audit.Event{
+						Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+						CorrelationID: correlationID(ctx),
+						Detail: map[string]any{"reason": "flow_requires_another_proof", "flow": fl.Name,
+							"required": string(stage), "presented": string(primaryProof(amr))},
+					})
+					return decisionDeny
+				}
+				// Asked only of the walk the callback started: one resumed after a
+				// second factor passed this on the way there.
+				if slug := federatedProviderFrom(ctx); stage == flow.StageFederated && slug != "" &&
+					!fl.AdmitsProvider(slug) {
+					_ = tx.Rollback(ctx)
+					s.auditDetached(ctx, audit.Event{
+						Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+						CorrelationID: correlationID(ctx),
+						Detail: map[string]any{"reason": "flow_requires_another_provider", "flow": fl.Name,
+							"presented": slug},
+					})
+					return decisionDeny
+				}
+				continue
+			}
+			// Parse refuses a sign-in flow naming any other stage, so reaching
+			// here needs a flow that bypassed it. Walking past was the old
+			// answer, and it made `password, kerberos, session` a password
+			// sign-in; refusing is the one that cannot be weaker than the file.
+			_ = tx.Rollback(ctx)
+			s.log.ErrorContext(ctx, "the sign-in flow names a stage this engine does not run; refusing",
+				"flow", fl.Name, "stage", stage, "correlation_id", correlationID(ctx))
+			return decisionDeny
 		}
 	}
+}
+
+// federatedProviderKey carries which provider a callback came from into the walk.
+type federatedProviderKey struct{}
+
+func withFederatedProvider(ctx context.Context, slug string) context.Context {
+	return context.WithValue(ctx, federatedProviderKey{}, slug)
+}
+
+func federatedProviderFrom(ctx context.Context) string {
+	slug, _ := ctx.Value(federatedProviderKey{}).(string)
+	return slug
+}
+
+// pinnedProvider is the provider this organisation's flow sends everybody through, with
+// its kind, when that is the only way in. The sign-in page would offer nothing else that
+// could succeed. One the file names that has since gone away shows the page, which says
+// so better than a redirect to nothing.
+func (s *Server) pinnedProvider(ctx context.Context, orgID string) (slug, kind string, err error) {
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil {
+		return "", "", nil
+	}
+	only := fl.OnlyProvider()
+	if only == "" {
+		return "", "", nil
+	}
+	return store.SignInProvider(ctx, s.db, orgID, only)
+}
+
+// signInSettledStages are the sign-in stages decided before the walk, by the
+// page or endpoint that reached it, so the walker passes them. With the cases
+// advanceSignIn acts on they are flow.Drivable(flow.Authentication), and
+// TestEveryStageAFlowCanUseIsDriven holds the two to the same set.
+var signInSettledStages = map[flow.StageName]string{
+	flow.StageIdentify:  "the sign-in form, with the password",
+	flow.StageCaptcha:   "the sign-in form, by the address's counter",
+	flow.StagePassword:  "the sign-in form",
+	flow.StagePasskey:   "the sign-in page's passkey ceremony",
+	flow.StageKerberos:  "the Negotiate exchange",
+	flow.StageFederated: "an upstream provider's callback",
+	flow.StageConsent:   "the authorization endpoint, whenever a client asks for more than was granted",
+	flow.StageEmailOTP:  "the emailed sign-in code (emailsignin.go)",
+}
+
+// primaryProof is the proving stage the route that reached the walk settled,
+// read from what it recorded in amr. Every route records one: the sign-in form
+// and a migration's delegated check `pwd`, the passkey ceremony `user` with
+// `hwk` or `swk`, Kerberos `krb`, a provider `fed`. What follows in amr is a
+// second factor -- a security key there also reads `hwk` -- so the earlier
+// routes are looked for first, and a passkey is what remains.
+//
+// It names a route, not a strength: whether a sign-in is multi-factor is
+// oauth.IsMultiFactor's question alone.
+//
+// An emailed code is read from the front of amr, because `otp` means an
+// authenticator app anywhere else and a security key after a code would
+// otherwise read as a passkey.
+func primaryProof(amr []string) flow.StageName {
+	if len(amr) > 0 && amr[0] == oauth.AMROTP {
+		return flow.StageEmailOTP
+	}
+	for _, r := range routeMarkers {
+		for _, v := range r.values {
+			if slices.Contains(amr, v) {
+				return r.stage
+			}
+		}
+	}
+	return ""
+}
+
+// routeMarkers are the amr values each route records, in the order they are
+// looked for.
+var routeMarkers = []struct {
+	stage  flow.StageName
+	values []string
+}{
+	{flow.StageFederated, []string{"fed"}},
+	{flow.StageKerberos, []string{"krb"}},
+	{flow.StagePassword, []string{oauth.AMRPassword}},
+	{flow.StagePasskey, []string{oauth.AMRUserPresence, oauth.AMRHardwareKey, "swk"}},
+	// Last: `otp` is also what an authenticator app adds as a second factor, so
+	// it names the route only when nothing before it does -- a sign-in by an
+	// emailed code alone (5.16).
+	{flow.StageEmailOTP, []string{oauth.AMROTP}},
 }
 
 // FlowDemandsMFA reports whether the flow puts an mfa stage in this sign-in's
@@ -497,12 +958,13 @@ func (s *Server) advanceSignIn(w http.ResponseWriter, r *http.Request, tx pgx.Tx
 func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 	orgID, userID, authzQuery string, amr []string) (demanded, enrolled bool) {
 
-	fl := s.flowFor(ctx, orgID, flow.Authentication)
+	// Called before the sign-in's transaction opens, so the first load of the
+	// process, if this is it, reads from the pool as it always did.
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
 	if fl == nil {
 		return false, false
 	}
-	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID}
-	facts.setKnown(flow.CondClientRequiresMFA, clientRequiresMFA(authzQuery))
+	facts := &signInFacts{s: s, ctx: ctx, db: db, orgID: orgID, userID: userID, authzQuery: authzQuery, amr: amr}
 	facts.setKnown(flow.CondCaptchaRequired, false)
 
 	if hasSecondFactorAMR(amr) {
@@ -519,6 +981,31 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 		return false, facts.known[string(flow.CondHasSecondFactor)]
 	}
 	return true, facts.Holds(string(flow.CondHasSecondFactor))
+}
+
+// BindDemandsMFA reports whether the sign-in flow would ask this person for a
+// second factor after a password, for the protocols that can carry nothing
+// else (LDAPAuthenticator.WithMFAGate).
+//
+// Not FlowDemandsMFA, because that one treats a failed enrolment lookup as "no
+// factor" -- harmless on the browser path, where completeSignIn asks again
+// inside its transaction, and a bypass here, where nothing asks again. The
+// lookup is made first and its error returned, and the caller refuses on it.
+func (s *Server) BindDemandsMFA(ctx context.Context, orgID, userID string) (bool, error) {
+	enrolled, err := store.HasSecondFactor(ctx, s.db, userID)
+	if err != nil {
+		return false, err
+	}
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil {
+		return enrolled, nil
+	}
+	facts := &signInFacts{s: s, ctx: ctx, db: s.db, orgID: orgID, userID: userID}
+	facts.setKnown(flow.CondHasSecondFactor, enrolled)
+	// No relying party asked for anything: a bind has no authorization request.
+	facts.setKnown(flow.CondClientRequiresMFA, false)
+	facts.setKnown(flow.CondCaptchaRequired, false)
+	return fl.WillRun(flow.StageMFA, facts), nil
 }
 
 // hasSecondFactorAMR reports whether the factors already proved satisfy an mfa
@@ -538,69 +1025,29 @@ func (s *Server) FlowDemandsMFA(ctx context.Context, db signInReader,
 // is not a factor. A passkey that reports `user` without a hardware key or PIN
 // proves someone touched a device, not which someone."
 //
-// Currently reachable only with amr=["pwd"], because the password path is the
-// one caller. It was still wrong, and the moment another path is routed through
-// the sequencer it would have become reachable and quiet.
+// It was unreachable while the password path was the one caller, and became
+// reachable once every caller walked the sequencer. A federated sign-in reaches
+// it as ["fed", "mfa"] when the provider's MFA is trusted (`idp trust-mfa`).
 func hasSecondFactorAMR(amr []string) bool {
-	return oauth.ACRFromAMR(amr) == oauth.ACRMultiFactor
+	return oauth.IsMultiFactor(amr)
 }
 
-// evaluatedConditions are the conditions the sign-in path actually answers.
-//
-// The language defines more than this. That is deliberate -- a flow can be
-// written against a signal before the signal is wired in -- but the gap has to be
-// visible, or an operator configures a control that silently does nothing, which
-// is the failure this codebase keeps finding in other systems.
-var evaluatedConditions = map[flow.Condition]bool{
-	flow.CondHasSecondFactor:        true,
-	flow.CondPromptsPending:         true,
-	flow.CondPasswordChangeRequired: true,
-	flow.CondClientRequiresMFA:      true,
-}
-
-// conditionsDecidedElsewhere are answered before the flow is consulted, so
-// reporting them as inert would be wrong -- the stage they guard did run, just
-// not under the sequencer.
-var conditionsDecidedElsewhere = map[flow.Condition]string{
-	flow.CondCaptchaRequired: "decided at the sign-in form, before the flow is walked",
-}
-
-// reportInertConditions says once, at load, which parts of a flow do nothing.
+// firstReport reports whether this organisation's document has not been
+// reported as refused before.
 //
 // Once per distinct document, not once per reload: the cache refreshes every
 // thirty seconds, and a message repeated twice a minute forever is noise rather
 // than information.
-func (s *Server) reportInertConditions(orgID, doc string, f *flow.File) {
+func (s *Server) firstReport(orgID, doc string) bool {
 	sum := sha256.Sum256([]byte(doc))
 	key := orgID + ":" + hex.EncodeToString(sum[:8])
 
 	s.flows.reportedMu.Lock()
+	defer s.flows.reportedMu.Unlock()
 	if s.flows.reported == nil {
 		s.flows.reported = map[string]bool{}
 	}
 	already := s.flows.reported[key]
 	s.flows.reported[key] = true
-	s.flows.reportedMu.Unlock()
-	if already {
-		return
-	}
-
-	for i := range f.Flows {
-		fl := &f.Flows[i]
-		for _, c := range fl.Conditions() {
-			cond := flow.Condition(c)
-			if evaluatedConditions[cond] {
-				continue
-			}
-			if why, ok := conditionsDecidedElsewhere[cond]; ok {
-				s.log.Debug("flow condition is settled before the flow runs",
-					"org_id", orgID, "flow", fl.Name, "condition", c, "reason", why)
-				continue
-			}
-			s.log.Warn("this flow branches on a condition the sign-in path does not "+
-				"evaluate; the stage it guards will never run. Remove it, or the "+
-				"control it looks like is not one",
-				"org_id", orgID, "flow", fl.Name, "condition", c)
-		}
-	}
+	return !already
 }

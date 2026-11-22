@@ -157,12 +157,38 @@ implements what we implement.
 |---|---|
 | §3.1.4 single-factor OTP: "Verifiers **SHALL** accept a given OTP only once while it is valid to provide replay resistance" | **met** — the last accepted counter is stored per credential and a repeat is refused (`TestReplayIsRefused`) |
 | §3.1.2 look-up secrets: "A secret from a look-up secret authenticator **SHALL** be used successfully only once" | **met** — recovery codes are consumed by `UPDATE … WHERE used_at IS NULL`, so the row is spent by the statement that finds it and a concurrent second use affects no rows |
-| §3.2.2 rate limiting: "The verifier **SHALL** limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 **by disabling that authenticator**" | **met for TOTP; deliberately deviated for passwords** — see below |
+| §3.2.2 rate limiting: "The verifier **SHALL** limit consecutive failed authentication attempts using a specific authenticator on a single subscriber account to no more than 100 **by disabling that authenticator**" | **met for authenticator apps and recovery codes since October 2026; deliberately deviated for passwords** — see below |
 
 ### The deviation, stated rather than glossed
 
-**TOTP meets it comfortably.** `MaxTOTPFailures = 5` locks the credential, which
-is twenty times tighter than the ceiling the SHALL sets.
+**Authenticator apps and recovery codes meet it, since October 2026.** This row
+used to say TOTP met it "comfortably", because `MaxTOTPFailures = 5` locks the
+credential. That was wrong. The lock is a five-minute pause, and every failure
+after the fifth paused it again, forever. It never disabled anything. So the
+ceiling was not twenty times tighter than the SHALL: it did not exist. The real
+limit was a rate, about 288 guesses a day for as long as the attacker kept going.
+Recovery codes were not counted at all.
+
+Now the failure that reaches 100 consecutive wrong codes (or a lower
+`SIGNARI_MFA_FAILURE_LIMIT`) sets `disabled_at`. The authenticator app, or the
+account's set of recovery codes, then accepts nothing until it is re-enrolled,
+regenerated or removed by an operator. A success resets the count, so it really
+is *consecutive*. A wrong code is charged only to the authenticator it could have
+been: six digits to the app, twenty recovery-code characters to the codes. A
+right code presented a second time is refused as a replay and charged to
+nothing, since it is no guess: until October 2026 it counted toward disabling
+the app, so replaying a code somebody watched being typed was a way to switch
+the factor off (`TestAReplayedAuthenticatorCodeIsRefusedAndChargedToNothing`). The
+holder is notified, and `mfa.factor_disabled` is audited. Tests:
+`TestTheCeilingFailureDisablesTheAuthenticator`,
+`TestRecoveryCodesAreDisabledAtTheCeiling`,
+`TestTheCeilingFailureDisablesTheFactorAndTellsTheHolder`.
+
+The objection below does not apply here, and the reason is specific. Only
+somebody who has already passed the password step can reach the code step. That
+person can disable a factor, but a stranger cannot. And a disabled factor still
+counts as the account's second factor, so disabling it never lets a password sign
+in alone.
 
 **Passwords do not meet it as written.** The protection is a *windowed rate
 limit* — 30 failures per 15 minutes per account, 20 per 5 minutes per address —
@@ -207,25 +233,29 @@ and made while writing the section that records them.
 | | Overall timeout | Inactivity timeout | Signari |
 |---|---|---|---|
 | AAL1 | SHALL exist; SHOULD ≤ 30 days | optional | met |
-| AAL2 | SHALL exist; SHOULD ≤ 24 hours | SHOULD ≤ 1 hour | **overall met; inactivity absent** |
-| AAL3 | **SHALL** ≤ 12 hours | SHOULD ≤ 15 minutes | **overall met exactly; inactivity absent** |
+| AAL2 | SHALL exist; SHOULD ≤ 24 hours | SHOULD ≤ 1 hour | **overall met; inactivity met when configured** |
+| AAL3 | **SHALL** ≤ 12 hours | SHOULD ≤ 15 minutes | **overall met exactly by default; inactivity met when configured** |
 
-`sessionTTL = 12 * time.Hour` (`flow.go:34`), written to `sessions.not_after` at
-creation and — as established in the V10.4.8 work — **never extended anywhere**.
-So the overall timeout is a real ceiling rather than a sliding window: it satisfies
-AAL2's SHOULD comfortably and lands exactly on AAL3's SHALL.
+*Updated October 2026.* The overall timeout is the organisation's
+`session_lifetime_s`, 12 hours unless changed (`signari instance
+session-lifetime`). It is written to `sessions.absolute_not_after` at sign-in and
+never moves later: a CHECK constraint holds the deadline every check reads,
+`not_after`, inside it, so use cannot extend a session past it. It is a real
+ceiling, not a sliding window. At the default it meets AAL2's SHOULD comfortably
+and lands exactly on AAL3's SHALL. An organisation that sets a longer lifetime
+gives up the AAL3 figure, and the command says nothing to stop it.
 
-**There is no inactivity timeout.** A session idle for eleven hours is as good as
-one used a minute ago. That misses AAL2's and AAL3's SHOULD — both are SHOULDs,
-not SHALLs, so this is a deviation rather than a violation, but it was previously
-unrecorded either way.
+**The inactivity timeout exists, and is off until it is set.** `-idle` ends a
+session that long after its last use, where a use is the browser presenting the
+cookie or an application refreshing a token under it. Until October 2026 there
+was none, and a session idle for eleven hours was as good as one used a minute
+ago. A deployment that wants AAL2's or AAL3's inactivity figure has to set it;
+the default keeps the earlier behaviour, so an upgrade signs nobody out.
 
-Worth being precise about what it would cost. An inactivity timeout needs a
-`last_seen_at` written on each authenticated request, which is a write on the hot
-path for every request — the reason it is usually implemented as a coarse
-throttled update rather than a true one. That is a design with a performance
-consequence, not a constant to change, which is why it is recorded here rather
-than added quietly.
+The cost is what this section said it would be. The use is written at most once
+a minute rather than on every request, folded into the statement that already
+resolves the cookie. That throttle is why the smallest idle limit is five
+minutes: a session in use always has minutes in hand.
 
 ### Phishing resistance
 
@@ -249,10 +279,10 @@ loss, compromise, revocation. This review had never opened it.
 
 | Requirement | Signari |
 |---|---|
-| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **not met** — see below |
+| §4.1.2.1: "When an authenticator is added, the CSP **SHALL** notify the subscriber via a mechanism independent of the transaction binding the new authenticator" | **met.** Passkeys have been covered since 20 August 2026 (see *Account Notifications* below), authenticator apps and email codes since October 2026, and regenerated recovery codes as well. An SMS number was the last: proving one now tells every channel the account has (`httpapi/enrol.go`, `mail.smsotp.enrolled`), and this row said otherwise until November 2026. The section below is kept as the record of the gap |
 | §4.3: "**SHALL** suspend, invalidate, or destroy compromised authenticators … promptly following compromise detection" | met — a credential can be removed from the account screen, and a session compromise revokes the refresh lineage |
 | §4.5: "**SHALL** promptly invalidate authenticators when a subscriber account ceases to exist …, when requested by the subscriber, when the authenticator is compromised …" | met |
-| §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | not met, same cause |
+| §4.5: "**SHOULD** notify the subscriber when an authenticator is invalidated" | met for passkey removal (see *§4.5 Invalidation* below), and for an authenticator app or a set of recovery codes disabled at §3.2.2's ceiling |
 
 ### The gap: adding an authenticator is silent
 
@@ -314,10 +344,15 @@ and §5 (session management) have now each been read against source. §6, §7 an
 — Security, Privacy and Customer Experience Considerations — are **informative**
 and carry no verifier SHALLs.
 
-One unmet SHALL stands: **§4.1.2.1's binding notification** (TODO 9h). One
-deliberate deviation stands: **§3.2.2's consecutive-failure limit** for passwords
-(TODO 9e), taken to avoid a targeted denial-of-service. Everything else in the
-normative sections is met, and now says where.
+When this was written, one SHALL was unmet: **§4.1.2.1's binding notification**
+(TODO 9h). It has since been closed for every authenticator, an SMS number included:
+a number proved by its code is told to every channel the account has
+(`httpapi/enrol.go`, the `mail.smsotp.enrolled` notice), and a number it replaced
+hears that its codes have moved.
+One deliberate deviation stands: **§3.2.2's consecutive-failure limit** for
+passwords (TODO 9e), taken to avoid a targeted denial of service. The authenticator
+half of §3.2.2 was recorded here as met, and it was not; October 2026 corrects
+that above. Everything else in the normative sections is met, and says where.
 
 ## Syncable authenticators and account notifications (20 August 2026)
 
@@ -333,8 +368,8 @@ defect fixed earlier this session — so the two pieces of work meet here.
 | Requirement | Ours |
 |---|---|
 | UP — "Verifiers SHOULD confirm that the User Present flag has been set" | the library verifies it on every assertion |
-| UV — "Verifiers SHALL indicate that UV is preferred **and SHALL inspect responses to confirm the value of the UV flag**" | we go further than "preferred": `BeginLogin` and `BeginDiscoverableLogin` both pass `VerificationRequired`, and `amrForPasskey` reads the returned flag |
-| **"If the user is not verified, agencies SHALL treat the authenticator as a single-factor cryptographic authenticator"** | `amrForPasskey` adds `mfa` **only** when `UserVerified`, and `ACRFromAMR` then yields `ACRSingleFactor` — tested in `amr_test.go` across all four flag combinations |
+| UV — "Verifiers SHALL indicate that UV is preferred **and SHALL inspect responses to confirm the value of the UV flag**" | a passkey sign-in goes further than "preferred" by default: `BeginDiscoverableLogin` passes `VerificationRequired`, so the library refuses an assertion without the flag. An organisation can set `-user-verification preferred` (`signari webauthn policy`), and then the response's own flag is inspected. A key asked for after a password (`BeginSecondFactor`, October 2026) passes `VerificationPreferred`: without verification it is a single-factor cryptographic authenticator, and with the password that is still two factors. After a key that did not verify, it passes `VerificationRequired`, and the response's flag is checked, so one key is not counted twice |
+| **"If the user is not verified, agencies SHALL treat the authenticator as a single-factor cryptographic authenticator"** | `amrForPasskey` adds `mfa` **only** when this assertion's flag is set, and `ACRFromAMR` then yields `ACRSingleFactor`. It reads the flag from the assertion, not the stored credential's, which the library reports as set once it has ever been. Tested in `amr_test.go` across all four flag combinations, and end to end in `webauthnceremony_test.go` |
 | BE — "necessary to distinguish authenticators that are device-bound from those that may be cloned" | stored as of this session, and emitted as `hwk` vs `swk` in `amr` |
 | BS — "Agencies SHOULD NOT condition acceptance based on this flag for public-facing applications" | we do not condition acceptance on it; it is recorded, and a 1→0 transition is audited |
 
@@ -377,10 +412,13 @@ credential list is a page nobody visits.
 
 > "CSPs SHALL support at least two notification addresses per subscriber account."
 
-**Still unmet.** We model one email address per user, so the notice reaches
-exactly one place — and if that mailbox is the one the attacker holds, it reaches
-nobody who matters. Recorded as **9l**: which channels to support is a decision
-about the product, and the schema and send path follow from it.
+**Met since this was written.** Every security notice now goes out through
+`notifyAccount`, which sends to the account's email address and, when the account
+has one, its verified SMS number (`accountChannels` in `httpapi/notify.go`). A
+number that was never verified is left out: an address the account does not
+control is worse than none. The text below is kept as the record. At the time,
+only one email address was modelled per user, so a notice reached exactly one
+place, and if the attacker held that mailbox it reached nobody who mattered.
 
 ## §4.5 Invalidation: the subscriber could not request it (21 August 2026)
 

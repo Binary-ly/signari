@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
@@ -52,6 +54,14 @@ const (
 	deviceAttemptsPerUser = 8
 
 	deviceAttemptWindow = 10 * time.Minute
+
+	// deviceStartsPerAddress device sign-ins may start from one address per
+	// deviceStartWindow for a public client, and deviceStartsPerClient for a
+	// confidential one once it has authenticated, as a pushed request is paced
+	// (par.go). One person starts one, so neither is near what a device needs.
+	deviceStartsPerAddress = 60
+	deviceStartsPerClient  = 6000
+	deviceStartWindow      = time.Minute
 )
 
 // handleDeviceAuthorization answers a device asking to be authorised.
@@ -61,6 +71,13 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 
 	if err := r.ParseForm(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
+		return
+	}
+	// Duplicates refused, as at the token and authorization endpoints (see
+	// dupeparams.go): `scope` twice was granted from the first while a proxy
+	// or log reading the last recorded a different request.
+	if err := refuseDuplicateParams(r.PostForm); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
@@ -84,7 +101,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	// phish a user code that names a trusted application.
 	if c.Type == "confidential" {
 		if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-			s.log.Info("device authorization: client authentication failed",
+			s.log.InfoContext(ctx, "device authorization: client authentication failed",
 				"client_id", clientID, "err", err)
 			writeError(w, http.StatusUnauthorized, "invalid_client",
 				"client authentication failed")
@@ -100,10 +117,33 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	// display a user code to a person and ask them to approve it. The phishing
 	// value of a device flow is in the verification screen, not in the token.
 	if !c.AllowsGrantType(oauth.GrantTypeDeviceCode) {
-		s.log.Info("device authorization refused: client is not registered for the grant",
+		s.log.InfoContext(ctx, "device authorization refused: client is not registered for the grant",
 			"client_id", clientID, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusBadRequest, "unauthorized_client",
 			"this client is not registered for the device grant")
+		return
+	}
+
+	// Paced before anything is stored, as a pushed request is. Every start is a row
+	// that lives ten minutes, and a public client authenticates nothing here while
+	// its id is printed on every television running it, so there was no limit on how
+	// many rows a stranger could have this server write: measuring it found 3,000 a
+	// second. A failed authentication stores nothing and has its own budgets.
+	key, limit, why := "device:start:ip:"+budgetIP(clientIP(r)), deviceStartsPerAddress,
+		"too many device sign-ins from this address"
+	if c.Type == "confidential" {
+		key, limit, why = "device:start:client:"+c.ClientID, deviceStartsPerClient,
+			"too many device sign-ins from this client"
+	}
+	res, rerr := store.AllowRate(ctx, s.db, key, limit, deviceStartWindow)
+	if rerr != nil {
+		s.log.ErrorContext(ctx, "checking the device start rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", why)
 		return
 	}
 
@@ -111,7 +151,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 
 	if scope != "" {
 		if unknown := c.UnknownScopes(splitScopes(scope)); len(unknown) > 0 {
-			s.log.Info("device authorization requested an unregistered scope",
+			s.log.InfoContext(ctx, "device authorization requested an unregistered scope",
 				"client_id", clientID, "scope", unknown[0],
 				"correlation_id", correlationID(ctx))
 			writeError(w, http.StatusBadRequest, "invalid_scope",
@@ -125,16 +165,32 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	if resource == nil {
 		resource = []string{}
 	}
+	// They become the audience, as at authorize: checked for shape and against
+	// the organisation's resource servers. Neither was, and whatever was sent
+	// was stored and minted.
+	if err := oauth.ValidateResources(resource); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+		return
+	}
+	if err := s.checkResources(ctx, s.db, c, c.OrgID, resource); err != nil {
+		if refusedTarget(err) {
+			writeError(w, http.StatusBadRequest, "invalid_target", err.Error())
+			return
+		}
+		s.log.ErrorContext(ctx, "checking resource indicators", "err", err, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
 
 	deviceCode, err := newSID()
 	if err != nil {
-		s.log.Error("generating a device code", "err", err)
+		s.log.ErrorContext(ctx, "generating a device code", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 	userCode, err := oauth.NewUserCode()
 	if err != nil {
-		s.log.Error("generating a user code", "err", err)
+		s.log.ErrorContext(ctx, "generating a user code", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -142,7 +198,7 @@ func (s *Server) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 	if _, err := store.CreateDeviceAuthorization(ctx, s.db, c.OrgID, c.ClientID, scope,
 		resource, store.HashToken(deviceCode), store.HashToken(userCode),
 		devicePollInterval, deviceCodeLifetime); err != nil {
-		s.log.Error("recording a device authorization", "err", err)
+		s.log.ErrorContext(ctx, "recording a device authorization", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -192,7 +248,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 		}
 		if d != nil {
 			data["Confirm"] = true
-			data["ClientName"] = s.clientDisplayName(ctx, d.ClientID)
+			data["ClientName"] = s.clientDisplayName(ctx, r, d.ClientID)
 			data["Scopes"] = strings.Fields(d.Scope)
 		}
 		s.renderPage(w, r, "device", data)
@@ -217,13 +273,13 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 	// Per-address is also strictly better at the job the limit exists for.
 	// Guessing comes from somewhere, so charging the source both slows the
 	// guesser and leaves everybody else unaffected.
-	if res, err := store.AllowRate(ctx, s.db, "device:ip:"+clientIP(r),
+	if res, err := store.AllowRate(ctx, s.db, "device:ip:"+budgetIP(clientIP(r)),
 		deviceAttemptsPerWindow, deviceAttemptWindow); err != nil {
 		// Fail CLOSED. This endpoint's whole protection against guessing an
 		// eight-character code is the limit; serving it unlimited because the
 		// database is unhappy removes the defence exactly when nobody is
 		// watching.
-		s.log.Error("device rate limit unavailable", "err", err)
+		s.log.ErrorContext(ctx, "device rate limit unavailable", "err", err)
 		render("", "Try again in a moment.", nil)
 		return
 	} else if !res.Allowed {
@@ -256,7 +312,7 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 	// twice, never eight times.
 	if res, err := store.AllowRate(ctx, s.db, "device:user:"+userID,
 		deviceAttemptsPerUser, deviceAttemptWindow); err != nil {
-		s.log.Error("device per-user rate limit unavailable", "err", err)
+		s.log.ErrorContext(ctx, "device per-user rate limit unavailable", "err", err)
 		render("", "Try again in a moment.", nil)
 		return
 	} else if !res.Allowed {
@@ -304,35 +360,80 @@ func (s *Server) handleDeviceVerification(w http.ResponseWriter, r *http.Request
 
 	switch r.PostForm.Get("decision") {
 	case "approve":
+		// The access policy, as at the authorization endpoint. The device grant
+		// is a way to sign a person in to a relying party, and it was the one
+		// that never asked: a deny rule for a client refused its browser
+		// sign-ins and approved its smart-TV ones.
+		mfa, amr := sessionFactors(ctx, s.db, sid)
+		if pd := s.checkAccessPolicy(ctx, r, orgID, d.ClientID, userID, d.Scope, mfa, amr); pd != nil {
+			s.auditDetached(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				ClientID: d.ClientID, CorrelationID: correlationID(ctx),
+				Detail: map[string]any{"reason": "access_policy", "rule": pd.Rule, "via": "device"},
+			})
+			// Refused as a denial, so the waiting device is told access_denied
+			// rather than left polling until the code expires.
+			s.refuseDeviceAuthorization(ctx, d)
+			render("", pd.Message, nil)
+			return
+		}
+		if s.clientAccessRefused(ctx, orgID, d.ClientID, userID) {
+			s.refuseDeviceAuthorization(ctx, d)
+			render("", clientAccessRefusal, nil)
+			return
+		}
+		// The client's floor (clientacr.go). Not a denial: the device keeps
+		// waiting, so the person can sign in again with a second factor and
+		// enter the code once more.
+		if floor, err := clientFloor(ctx, s.db, d.ClientID); err != nil {
+			s.log.ErrorContext(ctx, "reading a client's acr floor at a device approval", "err", err)
+			render("", "Try again in a moment.", nil)
+			return
+		} else if !oauth.Meets(amr, floor) {
+			render("", floorRefusal(floor)+" Sign out, sign in again with it, then enter the code again.", nil)
+			return
+		}
 		if err := store.ApproveDeviceAuthorization(ctx, s.db, d.ID, userID, sid); err != nil {
 			render("", "That request is no longer waiting. Start again on the device.", nil)
 			return
 		}
-		s.log.Info("device authorization approved", "client_id", d.ClientID,
+		s.log.InfoContext(ctx, "device authorization approved", "client_id", d.ClientID,
 			"user_id", userID, "correlation_id", correlationID(ctx))
 		s.releaseCIBAPing(ctx, d.ID)
 		s.releaseCIBAPush(ctx, d)
 		s.renderPage(w, r, "device", map[string]any{"Done": true})
 	case "deny":
-		if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
-			s.log.Error("denying a device authorization", "err", err)
-		}
-		// §10 notifies on the RESULT, not on approval. A ping client left
-		// polling after a refusal is exactly the wait this mode removes.
-		s.releaseCIBAPing(ctx, d.ID)
-		// A denial has no tokens to push. §10.3 defines the push callback as a
-		// token delivery, so the parked row is dropped rather than delivered
-		// empty. A ping client is told about a refusal because it would otherwise
-		// poll forever; a push client is not waiting on anything it can stop.
-		if err := store.DiscardCIBAPush(ctx, s.db, d.ID); err != nil {
-			s.log.Error("discarding a denied CIBA push", "err", err, "request_id", d.ID)
-		}
+		s.refuseDeviceAuthorization(ctx, d)
 		s.renderPage(w, r, "device", map[string]any{"Denied": true})
 	default:
 		// First POST: the code was right, so show what is being authorised and
 		// ask. The confirmation step is the only place a phished user is told
 		// what they are actually approving.
 		render(oauth.FormatUserCode(typed), "", d)
+	}
+}
+
+// refuseDeviceAuthorization denies a waiting request and tells whoever waits.
+// Shared by a person pressing deny and the access policy refusing an approval,
+// so both end the wait the same way.
+func (s *Server) refuseDeviceAuthorization(ctx context.Context, d *store.DeviceAuthorization) {
+	if err := store.DenyDeviceAuthorization(ctx, s.db, d.ID); err != nil {
+		s.log.ErrorContext(ctx, "denying a device authorization", "err", err)
+	}
+	s.announceDenial(ctx, d.ID)
+}
+
+// announceDenial tells a waiting CIBA client that the answer was no.
+func (s *Server) announceDenial(ctx context.Context, requestID string) {
+	// §10 notifies on the RESULT, not on approval. A ping client left
+	// polling after a refusal is exactly the wait this mode removes.
+	s.releaseCIBAPing(ctx, requestID)
+	// A denial has no tokens to push. §10.3 defines the push callback as a
+	// token delivery, so the parked row is dropped rather than delivered
+	// empty. A ping client is told about a refusal because it would otherwise
+	// poll forever; a push client is not waiting on anything it can stop.
+	if err := store.DiscardCIBAPush(ctx, s.db, requestID); err != nil {
+		s.log.ErrorContext(ctx, "discarding a denied CIBA push", "err", err, "request_id", requestID)
 	}
 }
 
@@ -364,7 +465,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 			Description: "the user refused this device", Status: http.StatusBadRequest})
 		return
 	case errors.Is(err, store.ErrDeviceCodeWrongClient):
-		s.log.Info("device code presented by the wrong client", "presented_by", clientID,
+		s.log.InfoContext(ctx, "device code presented by the wrong client", "presented_by", clientID,
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 			Description: "this device code was not issued to this client",
@@ -376,7 +477,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 		// was withdrawn rather than timed out — RFC 8628 §3.5 gives the code for
 		// "the end user denied", and a revoked session is the closest true
 		// statement: the authority behind the approval is gone.
-		s.log.Info("approval refused: the session behind it has ended",
+		s.log.InfoContext(ctx, "approval refused: the session behind it has ended",
 			"correlation_id", correlationID(ctx))
 		writeTokenError(w, &oauth.TokenError{Code: "access_denied",
 			Description: "the session this request was approved from has ended",
@@ -392,7 +493,7 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 			Status:      http.StatusBadRequest})
 		return
 	case err != nil:
-		s.log.Error("polling a device code", "err", err)
+		s.log.ErrorContext(ctx, "polling a device code", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
 			Status: http.StatusInternalServerError})
 		return
@@ -403,12 +504,14 @@ func (s *Server) handleDeviceCodeGrant(w http.ResponseWriter, r *http.Request, c
 
 // clientDisplayName is what the person is asked to trust. Falls back to the id,
 // never to something invented.
-func (s *Server) clientDisplayName(ctx context.Context, clientID string) string {
+func (s *Server) clientDisplayName(ctx context.Context, r *http.Request, clientID string) string {
 	var name string
 	if err := s.db.QueryRow(ctx,
 		`SELECT display_name FROM core.clients WHERE client_id = $1`, clientID).Scan(&name); err != nil {
 		return clientID
 	}
+	// In the reader's language when the client has a name in it (10.12).
+	name = s.clientNameFor(ctx, r, clientID, name)
 	if strings.TrimSpace(name) == "" {
 		return clientID
 	}
@@ -431,6 +534,19 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	scopes := splitScopes(d.Scope)
+	if len(scopes) == 0 {
+		scopes = c.Scopes
+	}
+	// The device grant and CIBA's poll and ping both end here.
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+		Subject: d.UserID, ClientID: c.ClientID, Scopes: scopes,
+		Grant: firstForm(r, "grant_type"), OrgID: d.OrgID})
+	if !ok {
+		return
+	}
+	ctx = hookCtx
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error",
@@ -438,11 +554,6 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	scopes := splitScopes(d.Scope)
-	if len(scopes) == 0 {
-		scopes = c.Scopes
-	}
 
 	// No nonce: there was no authorization request from a browser to bind one to.
 	// An id_token here asserts the authentication the person performed at the
@@ -453,10 +564,9 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		// grant has no rich permissions, it does not have zero of them.
 		nil, "")
 	if err != nil {
-		s.log.Error("minting tokens for a device grant", "err", err,
+		s.log.ErrorContext(ctx, "minting tokens for a device grant", "err", err,
 			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "server_error",
-			Status: http.StatusInternalServerError})
+		writeMintError(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -465,7 +575,7 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	s.log.Info("device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
+	s.log.InfoContext(ctx, "device grant redeemed", "client_id", d.ClientID, "user_id", d.UserID,
 		"correlation_id", correlationID(ctx))
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -479,11 +589,11 @@ func (s *Server) issueDeviceTokens(w http.ResponseWriter, r *http.Request,
 func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 	released, err := store.ReleaseCIBAPing(ctx, s.db, requestID)
 	if err != nil {
-		s.log.Error("releasing a CIBA ping", "err", err, "request_id", requestID)
+		s.log.ErrorContext(ctx, "releasing a CIBA ping", "err", err, "request_id", requestID)
 		return
 	}
 	if released {
-		s.log.Info("CIBA ping released for delivery", "request_id", requestID)
+		s.log.InfoContext(ctx, "CIBA ping released for delivery", "request_id", requestID)
 	}
 }
 
@@ -505,8 +615,12 @@ func (s *Server) releaseCIBAPing(ctx context.Context, requestID string) {
 // would not.
 func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorization) {
 	c, err := s.lookupClient(ctx, d.ClientID)
+	if errors.Is(err, clients.ErrDisabled) || errors.Is(err, clients.ErrOrgSuspended) {
+		// Refused since it asked: nothing is pushed, and lookupClient said so.
+		return
+	}
 	if err != nil || c == nil {
-		s.log.Error("looking up a client for a CIBA push", "err", err,
+		s.log.ErrorContext(ctx, "looking up a client for a CIBA push", "err", err,
 			"client_id", d.ClientID)
 		return
 	}
@@ -516,37 +630,52 @@ func (s *Server) releaseCIBAPush(ctx context.Context, d *store.DeviceAuthorizati
 		return
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.log.Error("beginning a CIBA push mint", "err", err, "request_id", d.ID)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	scopes := splitScopes(d.Scope)
 	if len(scopes) == 0 {
 		scopes = c.Scopes
 	}
+	// No response to write: the client is told nothing by a refusal here, and
+	// the delivery stays parked, as it does when the mint fails.
+	hookReq := store.TokenHookRequest{Subject: d.UserID, ClientID: c.ClientID, Scopes: scopes,
+		Grant: oauth.GrantTypeCIBA, OrgID: d.OrgID}
+	hook, herr := store.ConsultTokenProvider(ctx, s.db, s.root, s.outboundClient, s.log, d.OrgID, hookReq)
+	if herr != nil {
+		s.log.ErrorContext(ctx, "consulting the token provider for a CIBA push", "err", herr, "request_id", d.ID)
+		return
+	}
+	if hook.Vetoed {
+		s.recordVeto(ctx, hookReq, hook.Reason)
+		return
+	}
+	ctx = withHookClaims(ctx, hook.Claims)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		s.log.ErrorContext(ctx, "beginning a CIBA push mint", "err", err, "request_id", d.ID)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	resp, _, err := s.mintSet(ctx, tx, c, d.OrgID, d.UserID, d.SID, "", scopes,
 		d.Resource, nil, "")
 	if err != nil {
-		s.log.Error("minting tokens for a CIBA push", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "minting tokens for a CIBA push", "err", err, "request_id", d.ID)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing a CIBA push mint", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "committing a CIBA push mint", "err", err, "request_id", d.ID)
 		return
 	}
 
 	released, err := store.ReleaseCIBAPush(ctx, s.db, s.cfg.Root, d.ID, resp)
 	if err != nil {
-		s.log.Error("releasing a CIBA push", "err", err, "request_id", d.ID)
+		s.log.ErrorContext(ctx, "releasing a CIBA push", "err", err, "request_id", d.ID)
 		return
 	}
 	if !released {
-		s.log.Warn("a CIBA push had nothing parked to release", "request_id", d.ID,
+		s.log.WarnContext(ctx, "a CIBA push had nothing parked to release", "request_id", d.ID,
 			"client_id", d.ClientID)
 		return
 	}
-	s.log.Info("CIBA push released", "client_id", d.ClientID, "request_id", d.ID)
+	s.log.InfoContext(ctx, "CIBA push released", "client_id", d.ClientID, "request_id", d.ID)
 }

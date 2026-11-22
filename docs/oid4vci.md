@@ -11,14 +11,12 @@ OID4VCI separates two roles:
 - The **Authorization Server** issues the access token that credential endpoint
   will accept.
 
-Signari is the second. Its entire contribution to OID4VCI is the **Pre-Authorized
-Code grant** and the **Credential Offer** that carries it.
-
-Nothing here mints a credential, and nothing advertises that it can. An
-implementation that published a `credential_endpoint` it could not serve would be
-the same mistake as advertising a federation fetch endpoint that 404s — and this
-repository's rule is that an endpoint enters a metadata document only once it
-works.
+Signari began as the second, with the **Pre-Authorized Code grant** and the
+**Credential Offer** that carries it, and is now both: see
+[the Credential Issuer half](#the-credential-issuer-half). An implementation that
+published a `credential_endpoint` it could not serve would be the same mistake as
+advertising a federation fetch endpoint that 404s, so an endpoint enters a metadata
+document only once it works.
 
 ## Why this grant needs more care than it looks
 
@@ -139,6 +137,13 @@ copies to the holder defeats it entirely, so the output says so.
 `-offer-expires` defaults to five minutes and is capped at an hour: §3.5 says the
 code MUST be short lived, and it is redeemed within seconds of being scanned.
 
+A front desk with no shell mints the same offer at
+`POST /admin/users/{userID}/credential-offers` in the [Admin API](admin-api.md#users),
+which also defines credentials and trusts `x5c` roots under the organisation
+(`credential-configurations`, `credential-proof-roots`). It answers the
+transaction code beside the offer only so the caller can send it by another
+channel.
+
 ## Registering the grant
 
 A client may only use grants it is registered for — RFC 6749 §5.2's
@@ -187,10 +192,46 @@ Everything above is the authorization server. This is the other role: Signari no
 ```
 POST /oid4vci/nonce                          §7  — unauthenticated
 POST /oid4vci/credential                     §8  — bearer or DPoP
+POST /oid4vci/notification                   §11 — bearer or DPoP
+POST /oid4vci/deferred_credential            §9  — bearer or DPoP
+GET  /oid4vci/offer/{handle}                 §4.1.3 — unauthenticated
 GET  /.well-known/openid-credential-issuer   §12.2
 ```
 
 Format: **SD-JWT VC**, `draft-ietf-oauth-sd-jwt-vc-18` (10 August 2026).
+
+### Which tokens it accepts
+
+Only a token that a redeemed offer minted, and only for the configurations that
+offer named. §5.1.2 has the issuer read what a token authorizes as the issuance
+of particular credential types (`specs/oid4vci.txt:1332`). §8.3.1.1 answers a
+token that does not enable the requested one with an RFC 6750 error. So:
+
+| The token | The answer |
+|---|---|
+| audienced to anything but this endpoint, which is every sign-in token | `401`, `error="invalid_token"` |
+| audienced here and minted by no offer | `401`, `error="invalid_token"` |
+| from an offer that did not name the requested configuration | `403`, `error="insufficient_scope"` |
+| from an offer naming a configuration since removed | `400`, `unknown_credential_configuration` (§8.3.1.2) |
+| revoked, or from a revoked grant or an ended session | `401`, read at the request as userinfo reads it |
+
+The redemption records the access token it minted on the offer (migration 0133),
+in the minting transaction. That is the binding, rather than an
+`authorization_details` claim: returning `openid_credential` details obliges the
+wallet to use the `credential_identifiers` that come with them (§6.2), and an
+offer's wallet already knows the configuration ids. A token from the
+[authorization code flow](#a-wallet-that-asks-first) carries the claim instead.
+
+The audience runs the other way too. A redeemed token's `aud` is the credential
+endpoint and nothing else, because nobody signed in to get it, so userinfo refuses
+it, introspection reports it inactive to every caller, and token exchange and
+transaction tokens refuse it as a subject or an actor. A wallet that wants an
+ordinary token has to sign somebody in.
+
+**Until October 2026 this endpoint accepted any access token audienced to the
+issuer.** A sign-in token from an unrelated client minted any configuration for
+its subject, bound to whatever key the caller proved, and a token its client had
+revoked kept minting until it expired.
 
 ### Why SD-JWT rather than a plain signed credential
 
@@ -273,6 +314,15 @@ client"* are different states, and only the second forbids the claim.
 nonce establish freshness. A nonce that can be presented twice establishes it
 once, so it is spent in the statement that reads it.
 
+Once per request, not once per proof. A batch's proofs, each for a key of its own,
+carry the one nonce the wallet fetched, and that is no replay; spent at the first
+proof, it refused the second, so no batch could be issued until November 2026. A
+nonce already spent, or never given out, is answered `invalid_nonce`, after which
+"the wallet should retrieve a new c_nonce value" (§8.3.1.2); a proof with no nonce
+at all is `invalid_proof`. Both were `invalid_proof`, which tells a wallet to give up.
+A request with no `proofs` is `invalid_proof` too, "if the field is missing", where it
+was `invalid_credential_request`.
+
 The endpoint is **unauthenticated**, which §7.1 states outright and which is
 worth not second-guessing: a wallet needs the nonce *before* it can build the
 proof that the token-bearing request depends on.
@@ -326,15 +376,308 @@ disclosures the holder may reveal:
 The access token was obtained by redeeming a pre-authorized code **with no
 `client_id`**, which is the ordinary wallet case §6.1 describes.
 
+## An offer too big for a QR code
+
+An offer by value carries everything in the code a person scans. `signari credential
+offer -by-reference`, or `"by_reference": true` on the Admin API, keeps it here instead
+and gives a short address (§4.1.3):
+
+```
+openid-credential-offer://?credential_offer_uri=https%3A%2F%2Fid.example%2Foid4vci%2Foffer%2F...
+```
+
+The offer holds a pre-authorized code, so it is sealed under the root key, only the
+handle's hash is stored, it is served `no-store`, and it goes when the code does. The
+address is as good as the code to whoever has it, so use a transaction code for an
+offer shown where others can see it.
+
+## What became of a credential
+
+A Credential Response carries a `notification_id`, and the metadata names
+`POST /oid4vci/notification` (§11). A wallet may report `credential_accepted`,
+`credential_failure` or `credential_deleted` with the token that asked, and that token
+only. Each is recorded as `oid4vci.credential_notified`. Nothing depends on it, since a
+wallet may never say, and the window is the token's lifetime.
+
+## A credential somebody has to look at first
+
+Some credentials are not issued on the strength of a code alone. `signari credential
+define -deferred`, `"deferred": true` on the Admin API, or `deferred: true` in a
+configuration file holds each request for a decision (§9):
+
+```sh
+signari credential requests -org <uuid>
+signari credential decide -org <uuid> -request <id> -decision approve
+```
+
+The wallet's proofs are checked when it asks, and it is answered `202` with a
+`transaction_id` and an `interval`. It then asks `POST /oid4vci/deferred_credential`
+with the same token until there is an answer:
+
+| The decision | The wallet is answered |
+|---|---|
+| none yet | `202`, with the same `transaction_id` |
+| approved | `200` with the credentials, bound to the keys it proved, once |
+| denied | `400 credential_request_denied` |
+| the configuration has been removed | `400 credential_request_denied` |
+| an id not given to this token, or already used | `400 invalid_transaction_id` |
+
+What waits is the public keys and not the proofs, because a nonce is spent once. A
+person deactivated while waiting gets nothing: their token stops working, as it does
+at the Credential Endpoint.
+
+**A decision has as long as the wallet's token lasts**, which is five minutes unless
+`signari client set-lifetimes -access-ttl` says otherwise for the wallet client, and at
+most an hour. §9 requires a token valid for the issuance, and an offer's code is
+spent, so a wallet cannot get another. A request nobody decides in that time is swept.
+This suits a person at a counter, and not a review that takes days.
+
+## A wallet that asks first
+
+Everything above starts with an offer. The authorization code flow (§3.3) can
+start with the wallet: it sends the holder to the authorization endpoint with
+details of type `openid_credential`, they sign in and approve what they are
+shown, and the token response names what they were granted.
+
+```
+GET /oauth2/authorize?response_type=code&client_id=wallet&code_challenge=...
+    &code_challenge_method=S256&redirect_uri=https://wallet.example/cb
+    &authorization_details=[{"type":"openid_credential",
+                             "credential_configuration_id":"Employee"}]
+```
+
+`scope` can be left out, as the specification's own example does, and then no ID
+token comes back. The client has to be allowed the type, as for any other detail:
+
+```sh
+signari rar register -org <uuid> -type openid_credential -fields locations
+signari rar allow -client-id wallet -type openid_credential
+```
+
+**Who may ask.** A wallet can ask for anything the metadata lists, and the claims
+coming from the person's own record does not make holding the credential theirs to
+decide. So a configuration is closed until it says otherwise:
+
+```sh
+signari credential define -org <uuid> -credential-configuration Employee ... -wallet-initiated
+```
+
+That opens it to anybody who can sign in here. Asking for one that is closed
+answers `access_denied`, and says nothing about whether somebody else was offered
+it.
+
+**An offer to sign in with.** `credential offer -authorization-code` (or
+`authorization_code` at the Admin API) makes an offer of a closed credential that
+the holder signs in to take up. It carries an `issuer_state` and no code:
+
+```json
+{"credential_issuer": "https://id.example.com",
+ "credential_configuration_ids": ["Employee"],
+ "grants": {"authorization_code": {"issuer_state": "..."}}}
+```
+
+§5.1.3 warns that a state "could have been injected by an attacker", so it decides
+nothing about who is signing in. It counts only for the person the offer names,
+through the client it names, for what it names, once. For anybody else it is as
+good as absent. The offer is spent when the code is issued, not when the consent
+screen is drawn, so looking twice costs nothing and of two racing one gets a code.
+
+A state is kept in the column a pre-authorized code is, under a hash no code can
+match, because a code is a bearer secret and a state travels through a browser's
+address bar. Presented as a code it is unknown, to this release and to the last.
+
+**The token** is good at the credential endpoint and nowhere else, and a refresh
+of the grant is the same. So details of this type are asked for alone: another
+detail beside them would be approved on the screen and carried by a token no
+resource server accepts. It says what it was granted in its own signed
+`authorization_details` claim, and needs no offer behind it. The token response
+returns those details with `credential_identifiers`, here the configuration's id,
+since each configuration makes one credential from one person's record.
+
+A wallet then asks by identifier. §8.2 lets it use nothing else, and in turn an
+identifier from a token that was given none is refused:
+
+```json
+{"credential_identifier": "Employee", "proofs": {"jwt": ["..."]}}
+```
+
+## A W3C credential as a JWT
+
+For a verifier that reads W3C Verifiable Credentials rather than SD-JWT VCs:
+
+```sh
+signari credential define -org <uuid> \
+  -credential-configuration DegreeCredential -credential-format jwt_vc_json \
+  -vct UniversityDegreeCredential -always email,given_name -valid-for 8760h
+```
+
+`jwt_vc_json` is Appendix A.1.1. `-vct` is the credential's own type, and the metadata
+gives `credential_definition.type` as `["VerifiableCredential", "UniversityDegreeCredential"]`
+with no `vct`. The credential is a JWT with a `vc` claim, shaped as the appendix's
+example is, and nothing in it is processed as JSON-LD.
+
+The holder's key is bound as a `did:jwk`, in `sub` and `credentialSubject.id`, so
+`cryptographic_binding_methods_supported` says `did:jwk` and there is no `cnf`. The
+person the credential is about is not named by an identifier of ours, only by the
+claims you list.
+
+It is disclosed whole: this format has no way to show one claim and hide another, so a
+configuration of it naming `-selective` is refused. Use `dc+sd-jwt`, the default, when a
+holder should choose. Everything else here applies to both: key proofs, attestation,
+deferred issuance, wallet-initiated requests and the notification endpoint.
+
+## A credential only the wallet can read
+
+TLS ends where it ends. A wallet with a backend, or an issuer behind something that
+terminates TLS, can have a credential pass through a component that should not see it.
+So a wallet can ask for the credential sealed to a key of its own (§10):
+
+```sh
+signari credential encryption-key
+```
+
+That makes a key and publishes it, as `credential_request_encryption.jwks` in the issuer
+metadata, with `credential_response_encryption` beside it. Until there is a key the
+metadata mentions neither, and a request with `Content-Type: application/jwt` is refused.
+An issuer with no key offers nothing it could not do.
+
+The key is for this. It is a P-256 key used for `ECDH-ES`, it signs nothing and is never
+in the JWKS, and it is sealed under the root key like any other, so
+`signari keys rotate` leaves it alone and `signari keys rewrap-root` carries it.
+
+The wallet sends its request as a JWE in `application/jwt`, with
+`credential_response_encryption` inside it: `{"jwk": {...}, "enc": "A256GCM"}`, the key
+carrying an `alg` of `ECDH-ES` or `RSA-OAEP-256`. The answer comes back as a JWE in
+`application/jwt` with that key's `kid` in the header. It works the same at the deferred
+endpoint, and there the object in each request decides that request's answer, whatever
+the first one said.
+
+**A request for encryption has to arrive encrypted.** §8.2: "Credential Request encryption
+MUST be used if the credential_response_encryption parameter is included, to prevent it
+being substituted by an attacker". Whoever could read the credential could otherwise have
+swapped the key for theirs, so the request is refused with
+`invalid_encryption_parameters`. It works the other way round: a sealed request that does
+not ask gets a plain JSON answer.
+
+**What cannot be sealed is refused before anything is issued.** A compressed answer, an
+`enc` or `alg` not on offer, a key with no `alg` or a signing key, all answer
+`invalid_encryption_parameters` with no proof spent and no credential minted. If sealing
+fails after that, the wallet gets a 500 and not the credential in the clear. Errors are
+`application/json` either way, as §8.3.1 has them.
+
+**Running the command again rotates.** The new key goes into the metadata, the old one
+keeps opening what a wallet sealed from a cached copy, and the one before that stops
+opening anything. So a key you believe lost takes two runs. Wallets have nothing to redo:
+they take the key from the metadata, and a refusal sends them back for it. There is no
+dwell as with a signing key, since nothing verifies against this key later. Each run is
+recorded as `keys.rotated`, with `purpose` saying which key.
+
+Under `fips140=only` the offered `enc` values are the CBC ones ([FIPS 140-3](fips.md)).
+
+## Taking a credential back
+
+A credential is signed and handed over, and after that the holder has it. To be able to
+take one back, ask for that when defining it:
+
+```sh
+signari credential define -org <uuid> -credential-configuration Employee ... -revocable
+```
+
+Each credential then carries a place in a
+[Token Status List](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/), the
+`status` claim, and is remembered: who it was issued to, from which configuration, when, and
+where its bit is. Without `-revocable` nothing about a credential is kept and it can only
+expire, so turning it on covers credentials issued from then on.
+
+```sh
+signari credential issued -org <uuid> -email ada@example.com
+signari credential revoke -org <uuid> -credential <id>     # one
+signari credential revoke -org <uuid> -email ada@example.com   # everything they hold
+```
+
+A revocation cannot be undone. There is no suspended state: the draft warns (§12.8) that
+any status besides valid and invalid tells whoever reads the list more than it needs to, and
+revoking and issuing a new one comes to the same. A new credential gets a new place.
+
+**A verifier fetches `GET /oid4vci/status/{list}`**, anonymously, from the `uri` in the
+credential, and gets a `statuslist+jwt` signed with the same key as the credential. It has
+one bit per place, 131,072 of them, and `sub` equal to that `uri`. The token is made from the
+database at each request, so the moment a revocation commits it is in the next fetch. It
+carries a `ttl` of five minutes and an `exp` of an hour, and a verifier that follows the `ttl`
+learns within five minutes. That wait is the verifier's, and how far behind one is willing to
+be is up to it.
+
+**The list is what keeps the holder private.** A verifier asks about one credential by
+fetching all of them, so the issuer learns that somebody looked at a list and not which
+credential. That is why there are not more lists than needed: an organisation has one
+filling at a time, and it stops taking credentials at half full. The other half are never
+handed out, which hides how many are real, and each place is chosen at random, since one
+handed out in order says how many came before it. Each credential of a batch gets its own
+(§13.2), so revoking a batch shows up as a batch.
+
+**A person who is deleted takes their credentials with them.** However a person goes, by
+erasure, SCIM, the Admin API or anything else, their places read as revoked in the next
+fetch, because a place with nobody behind it counts as revoked. Deactivating somebody does
+not do this: an operator who wants it says so with `credential revoke`.
+
+A list goes away once it is full and everything in it expired a day ago, which the janitor
+sees to. One holding a credential with no expiry stays for good, so give a revocable
+credential a `-valid-for`. Credentials are JWT only, as SD-JWT VC requires of a status list,
+so there is no CWT form. `?time=` asks about the past (§8.4) and answers `501`: only the
+present is kept.
+
 ## What is still not built
 
-- **ISO mdoc** (`mso_mdoc`). The `format` column has a CHECK constraint listing
-  only SD-JWT VC, so adding it is a migration rather than a rewrite.
-- **Deferred issuance** (§9) and the **notification endpoint** (§11).
-- **Credential response encryption** (§10) and encrypted requests.
-- The **authorization code flow** variant (`issuer_state`).
-- **`x5c` proof form** — a certificate chain we would have to trust. Accepting one
-  without doing that work is accepting a proof we did not verify.
+- **ISO mdoc** (`mso_mdoc`), which needs COSE, and **`ldp_vc`**, which needs JSON-LD
+  canonicalization. The `format` column has a CHECK constraint listing what is
+  signed, so adding one is a migration rather than a rewrite.
+- **Requiring encryption.** `encryption_required` is `false` both ways, and the
+  metadata names no `zip_values_supported`, so a compressed request is refused.
+- A credential requested by **`scope`** (§5.1.2). A wallet asks with
+  authorization details, and the metadata names no scope for it to use instead.
+- **Issuing fewer claims than a configuration carries** because a wallet's `claims`
+  asked for fewer. A credential holds what its configuration says, and the holder
+  chooses what to disclose of it.
+
+## What a wallet asks to have in its credential
+
+The `claims` of an `openid_credential` authorization detail (§5.1.1) are claims
+description objects (Appendix B.1), each a claim path pointer and whether the
+wallet takes no credential without the claim. They are held to Appendix B.3: a
+claim described twice, one array addressed whole and by an index, or one claim
+taken for an array and an object, refuses the request at the authorization endpoint
+with `invalid_authorization_details`, as does a path that is not one (Appendix C),
+or an empty list.
+
+A claim marked `mandatory` must be one the configuration carries, named as its
+format names claims: the first key for `dc+sd-jwt`, the key under
+`credentialSubject` for `jwt_vc_json`. Otherwise the request is refused before
+anybody signs in, since no credential of that configuration would be one the wallet
+takes. A claim it carries and the person's record has no value for, such as an
+address on an account that has only a username, is refused at the credential
+endpoint with `credential_request_denied`, before a proof spends its nonce. A claim
+not marked mandatory and not carried is let go, as the wallet said it could be.
+
+Until November 2026 nothing decoded `claims`, so a wallet that marked a claim
+mandatory was given a credential without it and nothing said so.
+
+## `x5c` key proofs — built
+
+A proof may name its key with an `x5c` chain, leaf first, instead of `jwk`. The
+chain must verify, with each certificate in its validity window, to a CA the
+organisation registered:
+
+```sh
+signari credential trust-root -org <id> -name wallet-provider -root-cert ./ca.pem
+signari credential roots
+signari credential untrust-root -org <id> -name wallet-provider
+```
+
+With none registered every `x5c` proof is refused. It is never accepted on its
+own signature, which a self-signed certificate satisfies. The file must hold one
+CA certificate and no private key. A server holding the CA's key could mint the
+chains it is meant to be checking. The roots are read on every credential
+request, so a withdrawal holds at the next one.
 
 ## Key attestation (Appendix D) — built
 
@@ -348,7 +691,30 @@ header is refused rather than ignored. Accepting an unverified attestation is
 taking the wallet's word about its own security, and a wallet that sends one and
 receives a credential concludes the attestation was checked.
 
-Register one with `signari attester add`.
+Register one with `signari attester add -org <id> -name <n> -attester-jwks <file>`.
+The same registry serves attestation-based client authentication, because the
+party that vouches for a wallet's keys is the wallet's provider, which is the
+party that vouches for the wallet. The credential endpoint reads the
+organisation's attesters for every request, so one added or removed holds at the
+next credential. Until October 2026 it read none, and every attested proof was
+refused while this page said to register one.
+
+An attestation is accepted when it is offered. To *require* one for a
+credential, define it with `-require-key-attestation`:
+
+```sh
+signari credential define -org <uuid> -credential-configuration IdentityCredential \
+  -vct https://example.com/identity -selective email -require-key-attestation
+```
+
+The credential endpoint then refuses a proof whose key no trusted attester
+vouches for, and the issuer metadata lists `key_attestations_required: {}` under
+that configuration's `jwt` proof type, empty because it puts no constraint on
+`key_storage` or `user_authentication`. It is listed for those configurations
+and no others: the specification says the member "MUST NOT be present" when the
+issuer does not require one (`specs/oid4vci.txt:2429`). An attestation that
+vouches for a key other than the one the proof is signed with is refused, for
+every key source.
 
 
 ## Harsh review of SD-JWT against RFC 9901 (August 2026)

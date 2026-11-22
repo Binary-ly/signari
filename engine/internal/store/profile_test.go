@@ -67,6 +67,29 @@ func profileFixture(t *testing.T) (ctx context.Context, orgID, userID string) {
 	return ctx, orgID, userID
 }
 
+// A prompt field may write only an attribute the organisation declared, and
+// only if every answer it can give fits the attribute's type (5.14).
+func TestAPromptFieldMayWriteOnlyADeclaredAttributeItsAnswersFit(t *testing.T) {
+	ctx, orgID, _ := profileFixture(t)
+	conn := connect(t)
+	tx, err := conn.Begin(ctx)
+	must(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	name := fmt.Sprintf("on_call_%d", time.Now().UnixNano())
+	_, err = DeclareAttribute(ctx, tx, orgID, Attribute{Name: name, ValueType: "boolean"})
+	must(t, err)
+
+	if err := CheckPromptAttribute(ctx, tx, orgID, name+"_nobody", nil); !errors.Is(err, ErrNoSuchAttribute) {
+		t.Errorf("an undeclared attribute: %v, want ErrNoSuchAttribute", err)
+	}
+	if err := CheckPromptAttribute(ctx, tx, orgID, name, []string{"true", "false"}); err != nil {
+		t.Errorf("a checkbox into a boolean was refused: %v", err)
+	}
+	if err := CheckPromptAttribute(ctx, tx, orgID, name, []string{"yes", "no"}); !errors.Is(err, ErrInvalidAttributeValue) {
+		t.Errorf("a select of yes and no into a boolean: %v, want ErrInvalidAttributeValue", err)
+	}
+}
+
 func TestErasureDestroysPersonalAttributesAndSparesTheRest(t *testing.T) {
 	ctx, orgID, userID := profileFixture(t)
 	conn := connect(t)

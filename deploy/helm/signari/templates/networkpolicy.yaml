@@ -1,0 +1,37 @@
+{{- if .Values.networkPolicy.enabled }}
+# Ingress to each port from named peers only. The public port is open to all
+# unless httpFrom names who may reach it (the ingress controller, say); the
+# metrics and admin ports admit nobody unless named. Egress is left alone: the
+# engine calls providers, webhooks and identity providers the cluster does not
+# know in advance.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "signari.fullname" . }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "signari.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: http
+      {{- with .Values.networkPolicy.httpFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- if and .Values.metrics.enabled .Values.networkPolicy.metricsFrom }}
+    - ports:
+        - port: metrics
+      from:
+        {{- toYaml .Values.networkPolicy.metricsFrom | nindent 8 }}
+    {{- end }}
+    {{- if and .Values.adminApi.enabled .Values.networkPolicy.adminFrom }}
+    - ports:
+        - port: admin
+      from:
+        {{- toYaml .Values.networkPolicy.adminFrom | nindent 8 }}
+    {{- end }}
+{{- end }}

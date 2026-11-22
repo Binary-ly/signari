@@ -24,11 +24,17 @@ package policy
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/oauth"
 )
 
 // File is a parsed policy document.
@@ -81,10 +87,40 @@ type Conditions struct {
 	Groups []string `yaml:"groups"`
 	// AnyGroup: the user must be in at least one.
 	AnyGroup []string `yaml:"any_group"`
+	// ApplicationRoles: the user must hold at least one of these roles in the
+	// application being signed in to, a relation on application:<client>.
+	ApplicationRoles []string `yaml:"application_roles"`
+	// UserAttributes: the user must hold each of these, as the directory has
+	// it: one of the values listed, or any value when none are. Only attributes
+	// declared and not personal; storing a policy that names another is refused.
+	UserAttributes map[string][]string `yaml:"user_attributes"`
 	// MFA requires a multi-factor authentication context.
 	MFA bool `yaml:"mfa"`
 	// FromNetworks limits the request to these CIDR ranges.
 	FromNetworks []string `yaml:"from_networks"`
+	// FromCountries limits the request to these ISO 3166 codes, as the GeoIP
+	// database places its address. Unplaced, it is not met, as FromNetworks is
+	// not: "we do not know" must not read as "inside".
+	FromCountries []string `yaml:"from_countries"`
+	// NotFromCountries refuses these. An address nothing can place passes: this
+	// is evidence against a request, and there is none.
+	NotFromCountries []string `yaml:"not_from_countries"`
+	// FromASNs limits the request to these autonomous systems, the network
+	// operators the ASN database (SIGNARI_GEOIP_ASN_DB) names for its address: a
+	// company's own network, or its cloud provider's. Unplaced, it is not met, as
+	// FromCountries is not.
+	FromASNs []uint32 `yaml:"from_asns"`
+	// NotFromASNs refuses these, a hosting provider bots sign in from, say. An
+	// address nothing places passes, as NotFromCountries does: there is no
+	// evidence against it.
+	NotFromASNs []uint32 `yaml:"not_from_asns"`
+	// MaxRecentFailures refuses an address that has failed more sign-ins than
+	// this lately, across every account: a reputation this deployment earned
+	// for it, read from the budget the sign-in form already keeps.
+	MaxRecentFailures int `yaml:"max_recent_failures"`
+	// Time limits the request to a window, by this server's clock. It is checked
+	// at a refresh too: access for office hours stops at the end of them.
+	Time *authzen.TimeWindow `yaml:"time"`
 	// NoImpossibleTravel refuses when the previous sign-in was somewhere this
 	// person could not have travelled from in the time available.
 	//
@@ -137,12 +173,29 @@ type Request struct {
 	Client string   `yaml:"client"`
 	Scope  string   `yaml:"scope"`
 	Groups []string `yaml:"groups"`
-	MFA    bool     `yaml:"mfa"`
+	// Attributes are the user's attributes that are not personal, read when a
+	// rule asks (File.AttributeNames).
+	Attributes map[string]string `yaml:"attributes"`
+	// ApplicationRoles are their roles in Client, read when a rule asks.
+	ApplicationRoles []string `yaml:"application_roles"`
+	MFA              bool     `yaml:"mfa"`
 	// AMR is what the session ACTUALLY proved, in RFC 8176 terms. A test case
 	// sets it directly, which is how factor conditions are covered by the
 	// file's own tests without a phone.
 	AMR []string `yaml:"amr"`
 	IP  string   `yaml:"ip"`
+	// Country is where the GeoIP database places IP, empty when it cannot, and
+	// RecentFailures how many sign-ins that address has failed lately. Each is
+	// set by the caller only when a rule asks, and by a test case directly.
+	Country        string `yaml:"country"`
+	RecentFailures int    `yaml:"recent_failures"`
+	// ASN is the autonomous system the ASN database places IP in, 0 when nothing
+	// can, set like Country only when a rule asks.
+	ASN uint32 `yaml:"asn"`
+	// At is the moment of the decision as RFC 3339, for a test case: a window
+	// whose tests only pass between nine and five is a test nobody can run. A
+	// real request leaves it empty and is decided by this server's clock.
+	At string `yaml:"at"`
 	// ImpossibleTravel is set by the caller from a risk check that RAN. A test
 	// case can set it directly, which is how the condition is covered by the
 	// file's own tests without a GeoIP database.
@@ -153,6 +206,28 @@ type Request struct {
 	// conditions are covered by the file's own tests without an MDM.
 	DeviceManaged   bool `yaml:"device_managed"`
 	DeviceCompliant bool `yaml:"device_compliant"`
+
+	// Refresh is a refresh-token grant: the application's server asking again
+	// for a person who is not there. Who they are is checked again -- groups,
+	// deny rules, the factors their session recorded -- because those can change
+	// after the grant was issued, and a person removed from a group must stop
+	// receiving tokens for what the group admitted them to. Where they are is
+	// not: the network, device and travel conditions describe the browser at
+	// sign-in, were checked then, and the request at hand comes from the
+	// application's server, whose address and lack of a device certificate say
+	// nothing about the person.
+	Refresh bool `yaml:"refresh"`
+
+	// Unobserved is a decision nothing here watched the person arrive for: a
+	// jwt-bearer, pre-authorized code, token exchange, UMA or transaction-token
+	// grant, made by a server or a wallet with no sign-in to this client in
+	// front of it, and forward auth, whose request is the proxy's. Who they are
+	// is checked as for a refresh. Where they are cannot be, and unlike a
+	// refresh no sign-in to this client checked it earlier, so the network,
+	// device and travel conditions are NOT met. Counting them as met made a
+	// rule admitting a client only from the office decorative for every grant
+	// that does not pass through a browser.
+	Unobserved bool `yaml:"unobserved"`
 }
 
 // Decision is the result.
@@ -161,6 +236,12 @@ type Decision struct {
 	// Rule names the rule that refused, so an operator can find it in the file.
 	Rule    string
 	Message string
+	// StepUp says the rule that refused asked only for a stronger sign-in:
+	// everything else it requires holds, so signing in again with more factors
+	// would pass it. ACR is the value that asks for that sign-in, "" when the rule
+	// names factors that no one value stands for.
+	StepUp bool
+	ACR    string
 }
 
 // Parse reads a policy file and RUNS ITS TESTS.
@@ -220,6 +301,26 @@ func (f *File) validate() error {
 				return fmt.Errorf("policy %q: %q is not a network in CIDR form", r.Name, cidr)
 			}
 		}
+		for _, code := range append(slices.Clone(r.Require.FromCountries), r.Require.NotFromCountries...) {
+			if len(code) != 2 || strings.ToUpper(code) != code {
+				return fmt.Errorf("policy %q: %q is not an ISO 3166 country code, two capital letters: "+
+					"it would match nothing, and nobody would see why", r.Name, code)
+			}
+		}
+		// 0 is what a request carries when nothing places its address, so a rule
+		// naming it would match every address the database does not know.
+		if slices.Contains(r.Require.FromASNs, 0) || slices.Contains(r.Require.NotFromASNs, 0) {
+			return fmt.Errorf("policy %q: AS0 is not a network any address belongs to; here it "+
+				"would match every address nothing can place", r.Name)
+		}
+		if r.Require.MaxRecentFailures < 0 {
+			return fmt.Errorf("policy %q: max_recent_failures of %d", r.Name, r.Require.MaxRecentFailures)
+		}
+		if r.Require.Time != nil {
+			if err := r.Require.Time.Validate("policy " + r.Name); err != nil {
+				return err
+			}
+		}
 	}
 	if len(f.Tests) == 0 {
 		// Refused, not warned about. A policy with no tests is a policy whose
@@ -233,10 +334,13 @@ func (f *File) validate() error {
 }
 
 func (c Conditions) isEmpty() bool {
-	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && !c.MFA &&
+	return len(c.Groups) == 0 && len(c.AnyGroup) == 0 && len(c.UserAttributes) == 0 &&
+		len(c.ApplicationRoles) == 0 && !c.MFA &&
 		!c.PhishingResistant && len(c.FactorsAnyOf) == 0 &&
 		len(c.FromNetworks) == 0 && !c.NoImpossibleTravel &&
-		!c.DeviceManaged && !c.DeviceCompliant
+		!c.DeviceManaged && !c.DeviceCompliant &&
+		len(c.FromCountries) == 0 && len(c.NotFromCountries) == 0 && c.MaxRecentFailures == 0 && c.Time == nil &&
+		len(c.FromASNs) == 0 && len(c.NotFromASNs) == 0
 }
 
 // RunTests evaluates every case in the file.
@@ -295,7 +399,11 @@ func (f *File) Evaluate(req Request) Decision {
 			return Decision{Allowed: false, Rule: r.Name, Message: message(r)}
 		}
 		if !r.Require.satisfiedBy(req) {
-			return Decision{Allowed: false, Rule: r.Name, Message: message(r)}
+			d := Decision{Allowed: false, Rule: r.Name, Message: message(r)}
+			if r.Require.asksFactors() && r.Require.withoutFactors().satisfiedBy(req) {
+				d.StepUp, d.ACR = true, r.Require.acr()
+			}
+			return d
 		}
 	}
 	if !matched && f.Default == "deny" {
@@ -355,6 +463,17 @@ func (c Conditions) satisfiedBy(req Request) bool {
 			return false
 		}
 	}
+	if len(c.ApplicationRoles) > 0 && !slices.ContainsFunc(c.ApplicationRoles, func(role string) bool {
+		return contains(req.ApplicationRoles, role)
+	}) {
+		return false
+	}
+	for name, allowed := range c.UserAttributes {
+		v, held := req.Attributes[name]
+		if !held || (len(allowed) > 0 && !contains(allowed, v)) {
+			return false
+		}
+	}
 	if c.PhishingResistant && !hasPhishingResistantFactor(req.AMR) {
 		return false
 	}
@@ -363,6 +482,28 @@ func (c Conditions) satisfiedBy(req Request) bool {
 	}
 	if c.MFA && !req.MFA {
 		return false
+	}
+	if c.Time != nil {
+		now := time.Now()
+		if req.At != "" {
+			var err error
+			if now, err = time.Parse(time.RFC3339, req.At); err != nil {
+				return false
+			}
+		}
+		if !c.Time.Contains(now) {
+			return false
+		}
+	}
+	if req.Refresh {
+		// The where-from conditions below were checked at sign-in; see Request.
+		return true
+	}
+	if req.Unobserved {
+		// Nothing checked them, now or at a sign-in; see Request. Travel too:
+		// it is met when the check could not run because a person who IS here
+		// may have no history, and a request with nobody here is not that.
+		return !c.asksWhereFrom()
 	}
 	if c.DeviceManaged && !req.DeviceManaged {
 		return false
@@ -374,6 +515,21 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		return false
 	}
 	if c.NoImpossibleTravel && req.ImpossibleTravel {
+		return false
+	}
+	if len(c.FromCountries) > 0 && !contains(c.FromCountries, req.Country) {
+		return false
+	}
+	if contains(c.NotFromCountries, req.Country) {
+		return false
+	}
+	if len(c.FromASNs) > 0 && (req.ASN == 0 || !slices.Contains(c.FromASNs, req.ASN)) {
+		return false
+	}
+	if req.ASN != 0 && slices.Contains(c.NotFromASNs, req.ASN) {
+		return false
+	}
+	if c.MaxRecentFailures > 0 && req.RecentFailures > c.MaxRecentFailures {
 		return false
 	}
 	if len(c.FromNetworks) > 0 {
@@ -398,6 +554,14 @@ func (c Conditions) satisfiedBy(req Request) bool {
 		}
 	}
 	return true
+}
+
+// asksWhereFrom reports whether c has a condition about where the person is or
+// what they are holding, which only a request from the person can answer.
+func (c Conditions) asksWhereFrom() bool {
+	return c.DeviceManaged || c.DeviceCompliant || c.NoImpossibleTravel || len(c.FromNetworks) > 0 ||
+		len(c.FromCountries) > 0 || len(c.NotFromCountries) > 0 || c.MaxRecentFailures > 0 ||
+		len(c.FromASNs) > 0 || len(c.NotFromASNs) > 0
 }
 
 func contains(hay []string, needle string) bool {
@@ -437,6 +601,63 @@ func (f *File) UsesImpossibleTravel() bool {
 	return false
 }
 
+// UsesCountries reports whether any rule asks where an address is, for the same
+// reason, and for `signari doctor`: with no GeoIP database nothing can be placed,
+// so from_countries refuses everybody.
+func (f *File) UsesCountries() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.FromCountries) > 0 || len(r.Require.NotFromCountries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesASNs reports whether any rule asks which network an address belongs to,
+// for the same reasons as UsesCountries: the lookup is done only when asked, and
+// `signari doctor` warns when nothing could answer it.
+func (f *File) UsesASNs() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.FromASNs) > 0 || len(r.Require.NotFromASNs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesApplicationRoles reports whether any rule asks about a role.
+func (f *File) UsesApplicationRoles() bool {
+	for _, r := range f.Policies {
+		if len(r.Require.ApplicationRoles) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// UsesRecentFailures reports whether any rule asks about an address's record.
+func (f *File) UsesRecentFailures() bool {
+	for _, r := range f.Policies {
+		if r.Require.MaxRecentFailures > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// AttributeNames lists the attributes the rules read, sorted, so nothing is read
+// for a policy that asks about none, and whoever stores the policy can check
+// them against the organisation's declarations.
+func (f *File) AttributeNames() []string {
+	seen := map[string]bool{}
+	for _, r := range f.Policies {
+		for name := range r.Require.UserAttributes {
+			seen[name] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
 // UsesDevicePosture reports whether any rule asks about the device.
 //
 // Same reason as UsesImpossibleTravel: establishing posture verifies a
@@ -469,6 +690,34 @@ func hasPhishingResistantFactor(amr []string) bool {
 		}
 	}
 	return false
+}
+
+// asksFactors reports whether the conditions name how the person signed in.
+func (c Conditions) asksFactors() bool {
+	return c.MFA || c.PhishingResistant || len(c.FactorsAnyOf) > 0
+}
+
+// withoutFactors is the conditions with how the person signed in left out: what
+// still has to hold whatever they sign in with.
+func (c Conditions) withoutFactors() Conditions {
+	c.MFA, c.PhishingResistant, c.FactorsAnyOf = false, false, nil
+	return c
+}
+
+// acr is the authentication context that asks for the factors these conditions
+// name: a device-bound key for phishing_resistant, which hasPhishingResistantFactor
+// holds to `hwk`, and two factors for mfa. A list of factors has no one value, as
+// two factors can be met by one the list leaves out.
+func (c Conditions) acr() string {
+	switch {
+	case len(c.FactorsAnyOf) > 0:
+		return ""
+	case c.PhishingResistant:
+		return oauth.ACRPhishingResistantHardware
+	case c.MFA:
+		return oauth.ACRMultiFactor
+	}
+	return ""
 }
 
 // hasAnyFactor reports whether the session used at least one of the named

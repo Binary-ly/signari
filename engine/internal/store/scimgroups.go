@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,10 +88,15 @@ func UpsertSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 
 	case errors.Is(err, pgx.ErrNoRows):
+		// A new group, never an existing one with the same name. This once
+		// upserted on (org_id, name) and then replaced the members, so an
+		// upstream could take over any local group by naming it: one whose
+		// members may impersonate, one an operator manages, or one another
+		// source owns. Whatever that group reached, the upstream's users then
+		// reached it too.
 		err = tx.QueryRow(ctx, `
 			INSERT INTO core.groups (org_id, name, display_name)
 			VALUES ($1::uuid, $2, $3)
-			ON CONFLICT (org_id, name) DO UPDATE SET display_name = EXCLUDED.display_name
 			RETURNING id::text`, src.OrgID, name, displayName).Scan(&groupID)
 		if err != nil {
 			return out, groupUniquenessError(err, name, displayName)
@@ -136,8 +142,8 @@ func groupUniquenessError(err error, name, displayName string) error {
 			"not a usable group name", displayName, name)
 	case strings.Contains(msg, "duplicate key"), strings.Contains(msg, "unique constraint"):
 		return &SCIMConflictError{Detail: fmt.Sprintf(
-			"a group named %q already exists and belongs to a different upstream "+
-				"record; two sources cannot both own one group", name)}
+			"a group named %q already exists in this organisation and this source did "+
+				"not create it; a source manages only the groups it creates", name)}
 	}
 	return err
 }
@@ -158,18 +164,22 @@ func replaceMembersTx(ctx context.Context, tx pgx.Tx, src *SCIMSource,
 		`DELETE FROM core.group_members WHERE group_id = $1::uuid`, groupID); err != nil {
 		return err
 	}
-	for _, uid := range userIDs {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO core.group_members (group_id, user_id, org_id)
-			VALUES ($1::uuid, $2::uuid, $3::uuid)
-			ON CONFLICT DO NOTHING`, groupID, uid, src.OrgID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return addMembersTx(ctx, tx, src, groupID, userIDs)
 }
 
-// usersForResourceIDs maps /Users resource ids to local user ids.
+// addMembersTx adds people to a group in one statement. Named twice is a
+// member once.
+func addMembersTx(ctx context.Context, tx pgx.Tx, src *SCIMSource, groupID string, userIDs []string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO core.group_members (group_id, user_id, org_id)
+		SELECT $1::uuid, unnest($2::uuid[]), $3::uuid
+		ON CONFLICT DO NOTHING`, groupID, userIDs, src.OrgID)
+	return err
+}
+
+// usersForResourceIDs maps /Users resource ids to local user ids, in one query
+// on the index however long the list: this asked once per member, which is
+// what a ten-thousand-member PUT spent its time on.
 //
 // A member naming a resource id this source does not know is an ERROR, not a
 // skipped row. Skipping would answer 200 to a membership change that did not
@@ -178,20 +188,39 @@ func replaceMembersTx(ctx context.Context, tx pgx.Tx, src *SCIMSource,
 func usersForResourceIDs(ctx context.Context, tx pgx.Tx, src *SCIMSource,
 	resourceIDs []string) ([]string, error) {
 
+	wellFormed := make([]string, 0, len(resourceIDs))
+	for _, rid := range resourceIDs {
+		if ExactUUID(rid) {
+			wellFormed = append(wellFormed, rid)
+		}
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT resource_id::text, user_id::text FROM core.scim_source_links
+		WHERE source_id = $1::uuid AND resource_id = ANY($2::uuid[])`,
+		src.ID, wellFormed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make(map[string]string, len(wellFormed))
+	for rows.Next() {
+		var rid, userID string
+		if err := rows.Scan(&rid, &userID); err != nil {
+			return nil, err
+		}
+		users[rid] = userID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	out := make([]string, 0, len(resourceIDs))
 	for _, rid := range resourceIDs {
-		var userID string
-		err := tx.QueryRow(ctx, `
-			SELECT user_id::text FROM core.scim_source_links
-			WHERE source_id = $1::uuid AND resource_id::text = $2`,
-			src.ID, rid).Scan(&userID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, fmt.Errorf("member %q is not a user provisioned by this "+
-					"source, so the membership cannot be recorded; provision the user "+
-					"before adding them to a group", rid)
-			}
-			return nil, err
+		userID, ok := users[rid]
+		if !ok {
+			return nil, fmt.Errorf("member %q is not a user provisioned by this "+
+				"source, so the membership cannot be recorded; provision the user "+
+				"before adding them to a group", rid)
 		}
 		out = append(out, userID)
 	}
@@ -203,63 +232,82 @@ func GetSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	resourceID string) (SCIMGroup, error) {
 
 	var g SCIMGroup
+	if !ExactUUID(resourceID) {
+		return g, pgx.ErrNoRows
+	}
 	err := db.QueryRow(ctx, `
 		SELECT l.resource_id::text, l.external_id, l.group_id::text,
 		       g.name, l.display_name, l.created_at, l.updated_at
 		FROM core.scim_source_group_links l
 		JOIN core.groups g ON g.id = l.group_id
-		WHERE l.source_id = $1::uuid AND l.resource_id::text = $2`,
+		WHERE l.source_id = $1::uuid AND l.resource_id = $2::uuid`,
 		src.ID, resourceID).
 		Scan(&g.ResourceID, &g.ExternalID, &g.GroupID, &g.Name, &g.DisplayName,
 			&g.CreatedAt, &g.UpdatedAt)
 	if err != nil {
 		return g, err
 	}
-	g.Members, err = membersOf(ctx, db, src, g.GroupID)
+	members, err := membersOf(ctx, db, src, []string{g.GroupID})
+	g.Members = members[g.GroupID]
 	return g, err
 }
 
-// membersOf lists a group's members as the upstream knows them.
+// membersOf lists the members of each group as the upstream knows them, in one
+// query however many groups: a page of groups asked once per group.
 //
 // Joined through scim_source_links, so a member added in the CONSOLE rather than
 // provisioned does not appear. That is correct rather than lossy: the upstream
 // asked what it provisioned, and reporting a member it has no resource id for
 // would have it try to reconcile an identifier that means nothing to it.
 func membersOf(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	groupID string) ([]SCIMGroupMember, error) {
+	groupIDs []string) (map[string][]SCIMGroupMember, error) {
 
+	out := make(map[string][]SCIMGroupMember, len(groupIDs))
+	for _, id := range groupIDs {
+		out[id] = []SCIMGroupMember{}
+	}
 	rows, err := db.Query(ctx, `
-		SELECT sl.resource_id::text, COALESCE(sl.user_name, '')
+		SELECT gm.group_id::text, sl.resource_id::text, COALESCE(sl.user_name, '')
 		FROM core.group_members gm
 		JOIN core.scim_source_links sl
 		  ON sl.user_id = gm.user_id AND sl.source_id = $1::uuid
-		WHERE gm.group_id = $2::uuid
-		ORDER BY sl.user_name`, src.ID, groupID)
+		WHERE gm.group_id = ANY($2::uuid[])
+		ORDER BY gm.group_id, sl.user_name`, src.ID, groupIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []SCIMGroupMember{}
 	for rows.Next() {
+		var groupID string
 		var m SCIMGroupMember
-		if err := rows.Scan(&m.ResourceID, &m.DisplayName); err != nil {
+		if err := rows.Scan(&groupID, &m.ResourceID, &m.DisplayName); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		out[groupID] = append(out[groupID], m)
 	}
 	return out, rows.Err()
 }
 
 // ListSCIMGroups pages through the groups this source provisioned.
+//
+// SCIM pages by index (RFC 7644 §3.4.2.4, specs/rfc7644.txt:1431: "set the
+// startIndex to 11 and re-fetch"), so there is no key to resume from and the
+// offset stays. What it walks is the index behind the sort, and only the
+// page's rows reach the join: a deep page used to sort the collection and join
+// every row it skipped.
 func ListSCIMGroups(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	displayName string, start, count int) ([]SCIMGroup, int, error) {
+	filter *scim.Filter, start, count int) ([]SCIMGroup, int, error) {
+
+	cond, err := scimFilterSQL(filter, scimGroupAttrs, scimGroupSchema, 2)
+	if err != nil {
+		return nil, 0, err
+	}
+	matching := `core.scim_source_group_links l WHERE l.source_id = $1::uuid AND ` + cond.where
+	args := append([]any{src.ID}, cond.args...)
 
 	var total int
-	if err := db.QueryRow(ctx, `
-		SELECT count(*) FROM core.scim_source_group_links
-		WHERE source_id = $1::uuid AND ($2 = '' OR display_name = $2)`,
-		src.ID, displayName).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM `+matching, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if count == 0 {
@@ -267,19 +315,23 @@ func ListSCIMGroups(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	}
 
 	rows, err := db.Query(ctx, `
+		WITH page AS (
+			SELECT l.external_id FROM `+matching+`
+			ORDER BY l.created_at, l.external_id
+			OFFSET $`+strconv.Itoa(len(args)+1)+` LIMIT $`+strconv.Itoa(len(args)+2)+`)
 		SELECT l.resource_id::text, l.external_id, l.group_id::text,
 		       g.name, l.display_name, l.created_at, l.updated_at
-		FROM core.scim_source_group_links l
+		FROM page
+		JOIN core.scim_source_group_links l ON l.source_id = $1::uuid AND l.external_id = page.external_id
 		JOIN core.groups g ON g.id = l.group_id
-		WHERE l.source_id = $1::uuid AND ($2 = '' OR l.display_name = $2)
-		ORDER BY l.created_at, l.external_id
-		OFFSET $3 LIMIT $4`, src.ID, displayName, start-1, count)
+		ORDER BY l.created_at, l.external_id`, append(args, start-1, count)...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 
 	out := []SCIMGroup{}
+	ids := []string{}
 	for rows.Next() {
 		var g SCIMGroup
 		if err := rows.Scan(&g.ResourceID, &g.ExternalID, &g.GroupID, &g.Name,
@@ -287,16 +339,17 @@ func ListSCIMGroups(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			return nil, 0, err
 		}
 		out = append(out, g)
+		ids = append(ids, g.GroupID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
+	members, err := membersOf(ctx, db, src, ids)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i := range out {
-		m, err := membersOf(ctx, db, src, out[i].GroupID)
-		if err != nil {
-			return nil, 0, err
-		}
-		out[i].Members = m
+		out[i].Members = members[out[i].GroupID]
 	}
 	return out, total, nil
 }
@@ -306,6 +359,9 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	resourceID string, p *scim.GroupPatch) (SCIMGroup, error) {
 
 	var out SCIMGroup
+	if !ExactUUID(resourceID) {
+		return out, pgx.ErrNoRows
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -315,7 +371,7 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	var groupID string
 	if err := tx.QueryRow(ctx, `
 		SELECT group_id::text FROM core.scim_source_group_links
-		WHERE source_id = $1::uuid AND resource_id::text = $2`,
+		WHERE source_id = $1::uuid AND resource_id = $2::uuid`,
 		src.ID, resourceID).Scan(&groupID); err != nil {
 		return out, err
 	}
@@ -332,7 +388,7 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE core.scim_source_group_links SET display_name = $3, updated_at = now()
-			WHERE source_id = $1::uuid AND resource_id::text = $2`,
+			WHERE source_id = $1::uuid AND resource_id = $2::uuid`,
 			src.ID, resourceID, *p.DisplayName); err != nil {
 			return out, err
 		}
@@ -351,13 +407,8 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		if err != nil {
 			return out, err
 		}
-		for _, uid := range ids {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO core.group_members (group_id, user_id, org_id)
-				VALUES ($1::uuid, $2::uuid, $3::uuid) ON CONFLICT DO NOTHING`,
-				groupID, uid, src.OrgID); err != nil {
-				return out, err
-			}
+		if err := addMembersTx(ctx, tx, src, groupID, ids); err != nil {
+			return out, err
 		}
 	}
 	if len(p.RemoveMembers) > 0 {
@@ -365,17 +416,15 @@ func PatchSCIMGroup(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		if err != nil {
 			return out, err
 		}
-		for _, uid := range ids {
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM core.group_members WHERE group_id = $1::uuid AND user_id = $2::uuid`,
-				groupID, uid); err != nil {
-				return out, err
-			}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM core.group_members WHERE group_id = $1::uuid AND user_id = ANY($2::uuid[])`,
+			groupID, ids); err != nil {
+			return out, err
 		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.scim_source_group_links SET updated_at = now()
-		WHERE source_id = $1::uuid AND resource_id::text = $2`,
+		WHERE source_id = $1::uuid AND resource_id = $2::uuid`,
 		src.ID, resourceID); err != nil {
 		return out, err
 	}

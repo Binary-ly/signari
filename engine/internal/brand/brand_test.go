@@ -87,6 +87,44 @@ func TestAReadablePaletteIsAccepted(t *testing.T) {
 	}
 }
 
+// TestAnOrganisationsBrandFallsThroughAsAWhole: the name, logo and support link
+// each fall through alone, and the colours only together, because a background
+// of one brand under the text of another is a pair nobody checked.
+func TestAnOrganisationsBrandFallsThroughAsAWhole(t *testing.T) {
+	base := &Brand{ProductName: "Hostname", LogoURL: "https://host.example/logo.svg",
+		SupportURL: "https://host.example/help", Primary: "#112233", OnPrimary: "#ffffff",
+		Background: "#fdfdfd", Text: "#202020"}
+
+	named := (&Brand{ProductName: "Acme"}).Over(base)
+	if named.ProductName != "Acme" || named.LogoURL != base.LogoURL || named.SupportURL != base.SupportURL {
+		t.Errorf("a name alone wore %+v", named)
+	}
+	if named.Primary != base.Primary || named.OnPrimary != base.OnPrimary ||
+		named.Background != base.Background || named.Text != base.Text {
+		t.Errorf("a brand with no colours did not take all four: %+v", named)
+	}
+
+	own := &Brand{Primary: "#aa0000", OnPrimary: "#ffffff", Background: "#fafafa", Text: "#101010"}
+	coloured := own.Over(base)
+	if *coloured != (Brand{ProductName: "Hostname", LogoURL: base.LogoURL, SupportURL: base.SupportURL,
+		Primary: "#aa0000", OnPrimary: "#ffffff", Background: "#fafafa", Text: "#101010"}) {
+		t.Errorf("a palette over a base wore %+v", coloured)
+	}
+
+	if got := (*Brand)(nil).Over(base); got != base {
+		t.Errorf("nothing over a base is %+v", got)
+	}
+	if got := own.Over(nil); got != own {
+		t.Errorf("a brand over nothing is %+v", got)
+	}
+	if got := (*Brand)(nil).Over(nil); got != nil {
+		t.Errorf("nothing over nothing is %+v", got)
+	}
+	if own.ProductName != "" || base.ProductName != "Hostname" {
+		t.Error("wearing one brand over another changed one of them")
+	}
+}
+
 // TestPartialPalettesAreRefused covers the failure this is most likely to see
 // in practice: somebody sets a dark background and leaves the text default.
 func TestPartialPalettesAreRefused(t *testing.T) {

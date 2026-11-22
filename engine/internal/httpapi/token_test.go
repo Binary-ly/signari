@@ -22,6 +22,7 @@ import (
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Handler-level tests for the token endpoint.
@@ -107,6 +108,7 @@ func newTokenFixture(t *testing.T) *tokenFixture {
 		FROM o RETURNING org_id::text, id::text`).Scan(&f.orgID, &f.userID); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 
 	f.clientID = "tok-" + suffix
 	if _, err := pool.Exec(ctx, `

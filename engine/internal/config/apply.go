@@ -2,13 +2,20 @@ package config
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/proxyrules"
+	"signari.dev/engine/internal/saml"
 	"signari.dev/engine/internal/store"
 )
 
@@ -25,6 +32,7 @@ type current struct {
 	clients       map[string]Client
 	samlProviders map[string]SAMLProvider
 	radiusClients map[string]RADIUSClient
+	proxyHosts    map[string]ProxyHost
 }
 
 // read loads the current state for one organisation.
@@ -34,6 +42,7 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		clients:       map[string]Client{},
 		samlProviders: map[string]SAMLProvider{},
 		radiusClients: map[string]RADIUSClient{},
+		proxyHosts:    map[string]ProxyHost{},
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -51,18 +60,42 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.groups[g.Name] = g
 	}
 	rows.Close()
+	// A query's failure arrives here, after the rows, not from Query: unread,
+	// a failed read was taken for an empty one, so a plan diffed against part
+	// of the state and an export wrote part of it, and the next statement
+	// reported only that the transaction had aborted (0.30).
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the groups: %w", err)
+	}
+	// What each group is inside (11.09), every group given a list, empty for none,
+	// so a file's member_of is compared with what is there and not with nothing.
+	for name, g := range c.groups {
+		none := []string{}
+		g.MemberOf = &none
+		c.groups[name] = g
+	}
+	nestings, err := store.GroupNestings(ctx, tx, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("reading what the groups are inside: %w", err)
+	}
+	for _, n := range nestings {
+		if g, ok := c.groups[n.Group]; ok {
+			*g.MemberOf = append(*g.MemberOf, n.Parent)
+		}
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
 		       COALESCE(c.initiate_login_uri,''), COALESCE(c.logo_uri,''),
-		       c.portal_hidden,
+		       c.portal_hidden, c.may_exchange, c.exchange_audiences,
 		       COALESCE(array_agg(r.redirect_uri) FILTER (WHERE r.redirect_uri IS NOT NULL),
 		                '{}') AS uris
 		  FROM core.clients c
 		  LEFT JOIN core.client_redirect_uris r ON r.client_id = c.client_id
 		 WHERE c.org_id = $1::uuid
 		 GROUP BY c.client_id, c.display_name, c.client_type, c.scopes, c.enabled,
-		          c.initiate_login_uri, c.logo_uri, c.portal_hidden`, orgID)
+		          c.initiate_login_uri, c.logo_uri, c.portal_hidden, c.may_exchange,
+		          c.exchange_audiences`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,38 +103,97 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		var cl Client
 		var kind string
 		var enabled bool
+		x := &TokenExchange{}
 		if err := rows.Scan(&cl.ClientID, &cl.Name, &kind, &cl.Scopes, &enabled,
-			&cl.LaunchURL, &cl.LogoURL, &cl.PortalHidden, &cl.RedirectURIs); err != nil {
+			&cl.LaunchURL, &cl.LogoURL, &cl.PortalHidden, &x.Enabled, &x.Audiences,
+			&cl.RedirectURIs); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		cl.Public = kind == "public"
 		cl.Enabled = &enabled
+		cl.TokenExchange = x
 		c.clients[cl.ClientID] = cl
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the clients: %w", err)
+	}
+	for id, cl := range c.clients {
+		// A client deleted since the list above is not there to compare, and
+		// somebody else deleting one must not fail a plan of everything else.
+		uris, fc, sid, err := store.ClientLogoutOf(ctx, tx, id)
+		if errors.Is(err, store.ErrClientNotFound) {
+			delete(c.clients, id)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		cl.PostLogoutRedirectURIs, cl.FrontchannelLogoutURI, cl.FrontchannelSessionRequired = &uris, &fc, &sid
+		names, err := store.ClientNames(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		cl.LocalizedNames = &names
+		st, err := store.ClientSettingsOf(ctx, tx, id)
+		if errors.Is(err, store.ErrClientNotFound) {
+			delete(c.clients, id)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		cl.AccessTokenTTL, cl.RefreshTokenTTL, cl.IDTokenAlg = &st.AccessTokenTTL, &st.RefreshTokenTTL, &st.IDTokenAlg
+		cl.AccessTokenAlg, cl.RolesClaim, cl.AccessTokenFormat = &st.AccessTokenAlg, &st.RolesClaim, &st.AccessTokenFormat
+		cl.LoginUI = &st.LoginUI
+		cl.SubjectType, cl.Sector, cl.SecurityProfile = &st.SubjectType, &st.Sector, &st.SecurityProfile
+		cl.RequirePAR, cl.FirstParty, cl.IssuerAlias = &st.RequirePAR, &st.FirstParty, &st.IssuerAlias
+		cl.RequireState = &st.RequireState
+		cl.RequireSignedRequest = &st.RequireSignedRequest
+		cl.AuthorizationResponseAlg = &st.AuthorizationResponseAlg
+		cl.UserinfoSignedAlg = &st.UserinfoSignedAlg
+		cl.IDTokenEncryptedAlg, cl.IDTokenEncryptedEnc = &st.IDTokenEncryption.Alg, &st.IDTokenEncryption.Enc
+		cl.UserinfoEncryptedAlg, cl.UserinfoEncryptedEnc = &st.UserinfoEncryption.Alg, &st.UserinfoEncryption.Enc
+		cl.AuthorizationEncryptedAlg, cl.AuthorizationEncryptedEnc = &st.AuthorizationEncryption.Alg, &st.AuthorizationEncryption.Enc
+		cl.IntrospectionSignedAlg = &st.IntrospectionSignedAlg
+		cl.IntrospectionEncryptedAlg, cl.IntrospectionEncryptedEnc = &st.IntrospectionEncryption.Alg, &st.IntrospectionEncryption.Enc
+		cl.MinimumACR = &st.MinimumACR
+		c.clients[id] = cl
+	}
 
 	rows, err = tx.Query(ctx, `
-		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled,
-		       COALESCE(array_agg(a.url) FILTER (WHERE a.url IS NOT NULL), '{}')
+		SELECT p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated, p.default_relay_state,
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-POST'), '{}'),
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'HTTP-Artifact'), '{}'),
+		       COALESCE(array_agg(a.url) FILTER (WHERE a.binding = 'PAOS'), '{}'),
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('Index', x.endpoint_index, 'URL', x.url)
+		                                  ORDER BY x.endpoint_index)
+		                   FROM core.saml_artifact_resolution x WHERE x.provider_id = p.id), '[]'::jsonb)
 		  FROM core.saml_providers p
 		  LEFT JOIN core.saml_acs_urls a ON a.provider_id = p.id
 		 WHERE p.org_id = $1::uuid
-		 GROUP BY p.entity_id, p.display_name, p.name_id_format, p.enabled`, orgID)
+		 GROUP BY p.id, p.entity_id, p.display_name, p.name_id_format, p.enabled, p.idp_initiated,
+		          p.default_relay_state`, orgID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var p SAMLProvider
-		var enabled bool
-		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &p.ACSURLs); err != nil {
+		var enabled, idpInitiated bool
+		var relayState string
+		if err := rows.Scan(&p.EntityID, &p.Name, &p.NameID, &enabled, &idpInitiated, &relayState,
+			&p.ACSURLs, &p.ArtifactACSURLs, &p.ECPACSURLs, &p.ArtifactResolution); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		p.Enabled = &enabled
+		p.Enabled, p.IdPInitiated, p.DefaultRelayState = &enabled, &idpInitiated, &relayState
 		c.samlProviders[p.EntityID] = p
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the SAML providers: %w", err)
+	}
 
 	rows, err = tx.Query(ctx, `
 		SELECT name, network::text, enabled FROM core.radius_clients
@@ -120,6 +212,48 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 		c.radiusClients[r.Network] = r
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the RADIUS clients: %w", err)
+	}
+
+	rows, err = tx.Query(ctx, `
+		SELECT host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie
+		  FROM core.proxy_hosts WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var h ProxyHost
+		var enabled, signed, own bool
+		var release []string
+		var rules []proxyrules.Rule
+		var domain string
+		if err := rows.Scan(&h.Host, &enabled, &release, &signed, &rules, &domain, &own); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		h.Enabled = &enabled
+		if domain != "" {
+			h.CookieDomain = &domain
+		}
+		if own {
+			h.OwnCookie = &own
+		}
+		if len(release) > 0 {
+			h.ReleaseGroups = &release
+		}
+		if signed {
+			h.SignedIdentity = &signed
+		}
+		if len(rules) > 0 {
+			h.Rules = &rules
+		}
+		c.proxyHosts[h.Host] = h
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the protected hosts: %w", err)
+	}
 
 	return c, nil
 }
@@ -132,20 +266,50 @@ func read(ctx context.Context, tx pgx.Tx, orgID string) (*current, error) {
 // through it, and that should never be the result of an edit somebody did not
 // realise was destructive.
 func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool) (*Plan, error) {
+	return BuildPlanWith(ctx, tx, orgID, f, prune, Options{})
+}
+
+// BuildPlanWith is BuildPlan given what a file holding secrets needs; Apply
+// carries the plan out with the same options.
+func BuildPlanWith(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool, opts Options) (*Plan, error) {
 	cur, err := read(ctx, tx, orgID)
 	if err != nil {
 		return nil, err
 	}
-	p := &Plan{}
+	p := &Plan{opts: opts}
 
 	for _, g := range f.Groups {
 		have, ok := cur.groups[g.Name]
+		// What it is to be inside, when the file says: each the organisation's or
+		// the file's own, and different from what it is inside now.
+		var nests bool
+		var inside []string
+		if want := g.memberOf(); g.MemberOf != nil {
+			missing, err := missingGroups(ctx, tx, orgID, f, prune, want)
+			if err != nil {
+				return nil, err
+			}
+			if len(missing) > 0 {
+				return nil, refuse("group %s: member_of names %s, which the organisation does not have; "+
+					"declare it in groups", g.Name, strings.Join(missing, ", "))
+			}
+			nests = !sameSet(have.memberOf(), want)
+			if nests && len(want) > 0 {
+				inside = insideThroughFile(f.Groups, g.Name)
+			}
+		}
 		switch {
 		case !ok:
-			p.Add(Change{Action: "create", Kind: "group", Name: g.Name})
-		case have.DisplayName != g.DisplayName || have.Description != g.Description:
+			p.Add(Change{Action: "create", Kind: "group", Name: g.Name, Inside: inside})
+		case have.DisplayName != g.shownAs() || have.Description != g.Description:
+			detail := "display name or description"
+			if nests {
+				detail += ", and the groups it is inside"
+			}
+			p.Add(Change{Action: "update", Kind: "group", Name: g.Name, Detail: detail, Inside: inside})
+		case nests:
 			p.Add(Change{Action: "update", Kind: "group", Name: g.Name,
-				Detail: "display name or description"})
+				Detail: "the groups it is inside: " + strings.Join(sortedCopy(g.memberOf()), ", "), Inside: inside})
 		}
 	}
 
@@ -188,6 +352,54 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		}
 	}
 
+	for _, h := range f.ProxyHosts {
+		want := h.Enabled == nil || *h.Enabled
+		have, ok := cur.proxyHosts[h.Host]
+		if !ok {
+			p.Add(Change{Action: "create", Kind: "proxy_host", Name: h.Host})
+			continue
+		}
+		if *have.Enabled != want {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host,
+				Detail: fmt.Sprintf("enabled %v → %v", *have.Enabled, want)})
+			continue
+		}
+		var haveRelease []string
+		if have.ReleaseGroups != nil {
+			haveRelease = *have.ReleaseGroups
+		}
+		if h.ReleaseGroups != nil && !sameSet(haveRelease, *h.ReleaseGroups) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "release_groups"})
+			continue
+		}
+		if h.SignedIdentity != nil && *h.SignedIdentity != (have.SignedIdentity != nil) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "signed_identity"})
+			continue
+		}
+		var haveRules []proxyrules.Rule
+		if have.Rules != nil {
+			haveRules = *have.Rules
+		}
+		// In order: their order is what they mean.
+		if h.Rules != nil && !reflect.DeepEqual(append([]proxyrules.Rule{}, haveRules...), append([]proxyrules.Rule{}, *h.Rules...)) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "rules"})
+			continue
+		}
+		haveDomain, haveOwn := "", have.OwnCookie != nil
+		if have.CookieDomain != nil {
+			haveDomain = *have.CookieDomain
+		}
+		if (h.CookieDomain != nil && *h.CookieDomain != haveDomain) || (h.OwnCookie != nil && *h.OwnCookie != haveOwn) {
+			p.Add(Change{Action: "update", Kind: "proxy_host", Name: h.Host, Detail: "cookie"})
+		}
+	}
+
+	for _, s := range sections {
+		if err := s.plan(ctx, tx, orgID, f, prune, p); err != nil {
+			return nil, err
+		}
+	}
+
 	if !prune {
 		sortPlan(p)
 		return p, nil
@@ -208,9 +420,16 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 	for _, r := range f.RADIUSClients {
 		fileRadius[r.Network] = true
 	}
+	fileHosts := map[string]bool{}
+	for _, h := range f.ProxyHosts {
+		fileHosts[h.Host] = true
+	}
 
 	for name := range cur.groups {
 		if !inFile(fileGroups, name) {
+			if err := scopedTo(ctx, tx, orgID, f, name); err != nil {
+				return nil, err
+			}
 			p.Add(Change{Action: "delete", Kind: "group", Name: name, Destructive: true,
 				Detail: "every policy naming this group stops matching"})
 		}
@@ -231,6 +450,12 @@ func BuildPlan(ctx context.Context, tx pgx.Tx, orgID string, f *File, prune bool
 		if !inFile(fileRadius, name) {
 			p.Add(Change{Action: "delete", Kind: "radius_client", Name: name,
 				Destructive: true, Detail: "this network device stops authenticating"})
+		}
+	}
+	for name := range cur.proxyHosts {
+		if !inFile(fileHosts, name) {
+			p.Add(Change{Action: "delete", Kind: "proxy_host", Name: name, Destructive: true,
+				Detail: "sign-in stops returning people to this application"})
 		}
 	}
 
@@ -278,6 +503,97 @@ func clientDiff(have, want Client) string {
 	if want.Enabled != nil && have.Enabled != nil && *have.Enabled != *want.Enabled {
 		d = append(d, "enabled")
 	}
+	if w, h := want.TokenExchange, have.TokenExchange; w != nil && h != nil {
+		wantAud, _ := store.CleanExchangeAudiences(w.Audiences)
+		if !w.Enabled {
+			wantAud = nil
+		}
+		if w.Enabled != h.Enabled || !sameSet(wantAud, h.Audiences) {
+			d = append(d, "token_exchange")
+		}
+	}
+	if w, h := want.PostLogoutRedirectURIs, have.PostLogoutRedirectURIs; w != nil && h != nil && !sameSet(*w, *h) {
+		d = append(d, "post_logout_redirect_uris")
+	}
+	if w, h := want.LocalizedNames, have.LocalizedNames; w != nil && h != nil {
+		clean, err := store.NormaliseClientNames(*w)
+		if err != nil || !maps.Equal(clean, *h) {
+			d = append(d, "localized_names")
+		}
+	}
+	if w, h := want.FrontchannelLogoutURI, have.FrontchannelLogoutURI; w != nil && h != nil && *w != *h {
+		d = append(d, "frontchannel_logout_uri")
+	}
+	if w, h := want.FrontchannelSessionRequired, have.FrontchannelSessionRequired; w != nil && h != nil && *w != *h {
+		d = append(d, "frontchannel_logout_session_required")
+	}
+	if w, h := want.AccessTokenTTL, have.AccessTokenTTL; w != nil && h != nil && *w != *h {
+		d = append(d, "access_token_ttl")
+	}
+	if w, h := want.RefreshTokenTTL, have.RefreshTokenTTL; w != nil && h != nil && *w != *h {
+		d = append(d, "refresh_token_ttl")
+	}
+	if w, h := want.IDTokenAlg, have.IDTokenAlg; w != nil && h != nil && *w != *h {
+		d = append(d, "id_token_signed_response_alg")
+	}
+	if w, h := want.AccessTokenAlg, have.AccessTokenAlg; w != nil && h != nil && *w != *h {
+		d = append(d, "access_token_signed_response_alg")
+	}
+	if w, h := want.AuthorizationResponseAlg, have.AuthorizationResponseAlg; w != nil && h != nil && *w != *h {
+		d = append(d, "authorization_signed_response_alg")
+	}
+	for name, values := range map[string][2]*string{
+		"userinfo_signed_response_alg":         {want.UserinfoSignedAlg, have.UserinfoSignedAlg},
+		"id_token_encrypted_response_alg":      {want.IDTokenEncryptedAlg, have.IDTokenEncryptedAlg},
+		"id_token_encrypted_response_enc":      {want.IDTokenEncryptedEnc, have.IDTokenEncryptedEnc},
+		"userinfo_encrypted_response_alg":      {want.UserinfoEncryptedAlg, have.UserinfoEncryptedAlg},
+		"userinfo_encrypted_response_enc":      {want.UserinfoEncryptedEnc, have.UserinfoEncryptedEnc},
+		"authorization_encrypted_response_alg": {want.AuthorizationEncryptedAlg, have.AuthorizationEncryptedAlg},
+		"authorization_encrypted_response_enc": {want.AuthorizationEncryptedEnc, have.AuthorizationEncryptedEnc},
+		"introspection_signed_response_alg":    {want.IntrospectionSignedAlg, have.IntrospectionSignedAlg},
+		"introspection_encrypted_response_alg": {want.IntrospectionEncryptedAlg, have.IntrospectionEncryptedAlg},
+		"introspection_encrypted_response_enc": {want.IntrospectionEncryptedEnc, have.IntrospectionEncryptedEnc},
+	} {
+		if w, h := values[0], values[1]; w != nil && h != nil && *w != *h {
+			d = append(d, name)
+		}
+	}
+	if w, h := want.RolesClaim, have.RolesClaim; w != nil && h != nil && *w != *h {
+		d = append(d, "roles_claim")
+	}
+	if w, h := want.LoginUI, have.LoginUI; w != nil && h != nil && *w != *h {
+		d = append(d, "login_ui_url")
+	}
+	if w, h := want.AccessTokenFormat, have.AccessTokenFormat; w != nil && h != nil && *w != *h {
+		d = append(d, "access_token_format")
+	}
+	if w, h := want.SubjectType, have.SubjectType; w != nil && h != nil && *w != *h {
+		d = append(d, "subject_type")
+	}
+	if w, h := want.Sector, have.Sector; w != nil && h != nil && *w != *h {
+		d = append(d, "sector")
+	}
+	if w, h := want.SecurityProfile, have.SecurityProfile; w != nil && h != nil && *w != *h {
+		d = append(d, "security_profile")
+	}
+	if w, h := want.RequirePAR, have.RequirePAR; w != nil && h != nil && *w != *h {
+		d = append(d, "require_pushed_authorization_requests")
+	}
+	if w, h := want.RequireSignedRequest, have.RequireSignedRequest; w != nil && h != nil && *w != *h {
+		d = append(d, "require_signed_request_object")
+	}
+	if w, h := want.RequireState, have.RequireState; w != nil && h != nil && *w != *h {
+		d = append(d, "require_state")
+	}
+	if w, h := want.FirstParty, have.FirstParty; w != nil && h != nil && *w != *h {
+		d = append(d, "first_party")
+	}
+	if w, h := want.IssuerAlias, have.IssuerAlias; w != nil && h != nil && strings.TrimSpace(*w) != *h {
+		d = append(d, "issuer_alias")
+	}
+	if w, h := want.MinimumACR, have.MinimumACR; w != nil && h != nil && *w != *h {
+		d = append(d, "minimum_acr")
+	}
 	return strings.Join(d, ", ")
 }
 
@@ -289,11 +605,27 @@ func samlDiff(have, want SAMLProvider) string {
 	if !sameSet(have.ACSURLs, want.ACSURLs) {
 		d = append(d, "acs_urls")
 	}
+	if !sameSet(have.ArtifactACSURLs, want.ArtifactACSURLs) {
+		d = append(d, "artifact_acs_urls")
+	}
+	if !sameSet(have.ECPACSURLs, want.ECPACSURLs) {
+		d = append(d, "ecp_acs_urls")
+	}
+	if !sameSet(resolutionText(have.ArtifactResolution), resolutionText(want.ArtifactResolution)) {
+		d = append(d, "artifact_resolution")
+	}
 	if want.NameID != "" && have.NameID != want.NameID {
 		d = append(d, "name_id_format")
 	}
 	if want.Enabled != nil && have.Enabled != nil && *have.Enabled != *want.Enabled {
 		d = append(d, "enabled")
+	}
+	if want.IdPInitiated != nil && have.IdPInitiated != nil && *have.IdPInitiated != *want.IdPInitiated {
+		d = append(d, "idp_initiated")
+	}
+	if want.DefaultRelayState != nil && have.DefaultRelayState != nil &&
+		*have.DefaultRelayState != *want.DefaultRelayState {
+		d = append(d, "default_relay_state")
 	}
 	return strings.Join(d, ", ")
 }
@@ -319,19 +651,37 @@ func sameSet(a, b []string) bool {
 	return true
 }
 
+// resolutionText writes artifact resolution services as "index=url", to compare as sets.
+func resolutionText(services []ArtifactResolutionService) []string {
+	out := make([]string, 0, len(services))
+	for _, s := range services {
+		out = append(out, fmt.Sprintf("%d=%s", s.Index, s.URL))
+	}
+	return out
+}
+
 // Apply performs a plan.
 //
 // One transaction. A configuration that is half applied looks like it worked
 // and fails somewhere in the middle, which is the hardest state to diagnose and
 // the easiest to avoid.
 func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) error {
-	byName := map[string]Change{}
-	for _, c := range plan.Changes {
-		byName[c.Kind+"/"+c.Name] = c
+	// Before the first write, as every writer that moves the version does
+	// (store.LockConfigVersion): recordApply audits and then bumps, which
+	// for a caller outside the CLI is the order that deadlocks with it.
+	if err := store.LockConfigVersion(ctx, tx); err != nil {
+		return err
 	}
-	planned := func(kind, name string) (Change, bool) {
-		c, ok := byName[kind+"/"+name]
-		return c, ok
+	planned := plan.planned
+
+	// What the built-in kinds are checked against comes first: a client's
+	// scopes must be declared by the time it is written.
+	for _, s := range sections {
+		if s.first() {
+			if err := s.apply(ctx, tx, orgID, f, plan); err != nil {
+				return fmt.Errorf("%s: %w", s.kind(), err)
+			}
+		}
 	}
 
 	for _, g := range f.Groups {
@@ -341,14 +691,17 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.groups (org_id, name, display_name, description)
-			VALUES ($1::uuid, $2, NULLIF($3,''), NULLIF($4,''))
+			VALUES ($1::uuid, $2, $3, NULLIF($4,''))
 			ON CONFLICT (org_id, name) DO UPDATE SET
 				display_name = EXCLUDED.display_name,
 				description = EXCLUDED.description,
 				updated_at = now()`,
-			orgID, g.Name, g.DisplayName, g.Description); err != nil {
+			orgID, g.Name, g.shownAs(), g.Description); err != nil {
 			return fmt.Errorf("group %q: %w", g.Name, err)
 		}
+	}
+	if err := applyNestings(ctx, tx, orgID, f, planned); err != nil {
+		return err
 	}
 
 	for _, cl := range f.Clients {
@@ -360,9 +713,14 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		if cl.Public {
 			kind = "public"
 		}
-		scopes := cl.Scopes
-		if len(scopes) == 0 {
-			scopes = []string{"openid", "profile", "email", "offline_access"}
+		// What the file leaves out keeps its value on an update, as the plan
+		// reported, and takes the default only for a new client. This wrote the
+		// defaults every time: an apply that moved one redirect URI re-enabled a
+		// client an operator had switched off, renamed it to its identifier and
+		// reset its scopes, while the plan said none of that would happen.
+		var scopes any // NULL keeps the current scopes
+		if len(cl.Scopes) > 0 {
+			scopes = cl.Scopes
 		}
 
 		// Every non-standard scope must be one the organisation declared.
@@ -376,7 +734,7 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		//
 		// Refused rather than warned. A warning during apply is read by nobody
 		// at 2am, and the failure it predicts is silent for months.
-		if undeclared, uerr := store.UndeclaredScopes(ctx, tx, orgID, scopes); uerr != nil {
+		if undeclared, uerr := store.UndeclaredScopes(ctx, tx, orgID, cl.Scopes); uerr != nil {
 			return fmt.Errorf("checking the scopes for client %q: %w", cl.ClientID, uerr)
 		} else if len(undeclared) > 0 {
 			return fmt.Errorf("client %q is registered for scope(s) %s, which this "+
@@ -386,26 +744,37 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				"intended spelling silently never fires",
 				cl.ClientID, strings.Join(undeclared, ", "))
 		}
-		enabled := true
-		if cl.Enabled != nil {
-			enabled = *cl.Enabled
-		}
-		if _, err := tx.Exec(ctx, `
+		// The update is confined to this organisation's row. client_id is unique
+		// across the deployment and the plan reads only this organisation's
+		// clients, so another tenant's identifier was planned as a create and
+		// then rewrote that tenant's client, redirect URIs included.
+		var written string
+		err := tx.QueryRow(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          scopes, enabled, initiate_login_uri, logo_uri,
-			                          portal_hidden, client_secret_hash)
-			VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), NULLIF($8,''), $9,
-			        CASE WHEN $4 = 'confidential' THEN 'unset' ELSE NULL END)
+			                          portal_hidden, client_secret_hash, token_endpoint_auth_method)
+			VALUES ($1, $2::uuid, COALESCE(NULLIF($3, ''), $1), $4,
+			        COALESCE($5::text[], ARRAY['openid','profile','email','offline_access']),
+			        COALESCE($6::boolean, true), NULLIF($7,''), NULLIF($8,''), $9,
+			        CASE WHEN $4 = 'confidential' THEN 'unset' ELSE NULL END,
+			        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)
 			ON CONFLICT (client_id) DO UPDATE SET
-				display_name = EXCLUDED.display_name,
-				scopes = EXCLUDED.scopes,
-				enabled = EXCLUDED.enabled,
+				display_name = COALESCE(NULLIF($3, ''), core.clients.display_name),
+				scopes = COALESCE($5::text[], core.clients.scopes),
+				enabled = COALESCE($6::boolean, core.clients.enabled),
 				initiate_login_uri = EXCLUDED.initiate_login_uri,
 				logo_uri = EXCLUDED.logo_uri,
 				portal_hidden = EXCLUDED.portal_hidden,
-				updated_at = now()`,
-			cl.ClientID, orgID, firstNonEmpty(cl.Name, cl.ClientID), kind, scopes,
-			enabled, cl.LaunchURL, cl.LogoURL, cl.PortalHidden); err != nil {
+				updated_at = now()
+			 WHERE core.clients.org_id = EXCLUDED.org_id
+			RETURNING client_id`,
+			cl.ClientID, orgID, cl.Name, kind, scopes,
+			cl.Enabled, cl.LaunchURL, cl.LogoURL, cl.PortalHidden).Scan(&written)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("client %q is registered by another organisation; a client_id "+
+				"is unique across the deployment, so it cannot be declared here", cl.ClientID)
+		}
+		if err != nil {
 			return fmt.Errorf("client %q: %w", cl.ClientID, err)
 		}
 		// Redirect URIs are replaced wholesale: the file is the list, and merging
@@ -421,6 +790,27 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				return fmt.Errorf("client %q redirect_uri %q: %w", cl.ClientID, u, err)
 			}
 		}
+		// Through the one writer the CLI and the Admin API use, so a grant means
+		// the same thing whichever surface made it.
+		if x := cl.TokenExchange; x != nil {
+			if _, err := store.SetClientExchange(ctx, tx, cl.ClientID, x.Enabled, x.Audiences); err != nil {
+				return fmt.Errorf("client %q token_exchange: %w", cl.ClientID, err)
+			}
+		}
+		if err := store.SetClientLogout(ctx, tx, cl.ClientID, store.ClientLogout{
+			PostLogoutRedirectURIs: cl.PostLogoutRedirectURIs, FrontchannelURI: cl.FrontchannelLogoutURI,
+			FrontchannelSessionRequired: cl.FrontchannelSessionRequired,
+		}); err != nil {
+			return fmt.Errorf("client %q logout: %w", cl.ClientID, err)
+		}
+		if err := store.SetClientSettings(ctx, tx, cl.ClientID, cl.settings()); err != nil {
+			return fmt.Errorf("client %q: %w", cl.ClientID, err)
+		}
+		if cl.LocalizedNames != nil {
+			if err := store.SetClientNames(ctx, tx, orgID, cl.ClientID, *cl.LocalizedNames); err != nil {
+				return fmt.Errorf("client %q localized_names: %w", cl.ClientID, err)
+			}
+		}
 	}
 
 	for _, sp := range f.SAMLProviders {
@@ -428,27 +818,29 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		if !ok || c.Action == "delete" {
 			continue
 		}
-		nameID := sp.NameID
-		if nameID == "" {
-			nameID = "persistent"
-		}
-		enabled := true
-		if sp.Enabled != nil {
-			enabled = *sp.Enabled
-		}
+		// As for clients: an omitted name, name-ID format or `enabled` keeps its
+		// value on an update and takes the default only on create.
 		var id string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO core.saml_providers (org_id, entity_id, display_name,
-			                                 name_id_format, enabled)
-			VALUES ($1::uuid, $2, $3, $4, $5)
+			                                 name_id_format, enabled, idp_initiated, default_relay_state, org_endpoint)
+			VALUES ($1::uuid, $2, COALESCE(NULLIF($3, ''), $2),
+			        COALESCE(NULLIF($4, ''), 'persistent'), COALESCE($5::boolean, true),
+			        COALESCE($6::boolean, false), COALESCE($7::text, ''), `+store.EntityHeldElsewhere+`)
 			ON CONFLICT (org_id, entity_id) DO UPDATE SET
-				display_name = EXCLUDED.display_name,
-				name_id_format = EXCLUDED.name_id_format,
-				enabled = EXCLUDED.enabled,
+				display_name = COALESCE(NULLIF($3, ''), core.saml_providers.display_name),
+				name_id_format = COALESCE(NULLIF($4, ''), core.saml_providers.name_id_format),
+				enabled = COALESCE($5::boolean, core.saml_providers.enabled),
+				idp_initiated = COALESCE($6::boolean, core.saml_providers.idp_initiated),
+				default_relay_state = COALESCE($7::text, core.saml_providers.default_relay_state),
 				updated_at = now()
 			RETURNING id::text`,
-			orgID, sp.EntityID, firstNonEmpty(sp.Name, sp.EntityID), nameID,
-			enabled).Scan(&id); err != nil {
+			orgID, sp.EntityID, sp.Name, sp.NameID, sp.Enabled, sp.IdPInitiated, sp.DefaultRelayState).Scan(&id); err != nil {
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.ConstraintName == "saml_providers_entity_id_key" {
+				return fmt.Errorf("saml provider %q was registered by another organisation "+
+					"as this ran; apply again", sp.EntityID)
+			}
 			return fmt.Errorf("saml provider %q: %w", sp.EntityID, err)
 		}
 		if _, err := tx.Exec(ctx,
@@ -461,6 +853,22 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 				VALUES ($1::uuid, $2, 'HTTP-POST', $3)`, id, u, i == 0); err != nil {
 				return fmt.Errorf("saml provider %q acs %q: %w", sp.EntityID, u, err)
 			}
+		}
+		for binding, list := range map[string][]string{"HTTP-Artifact": sp.ArtifactACSURLs, "PAOS": sp.ECPACSURLs} {
+			for _, u := range list {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO core.saml_acs_urls (provider_id, url, binding, is_default)
+					VALUES ($1::uuid, $2, $3, false)`, id, u, binding); err != nil {
+					return fmt.Errorf("saml provider %q %s acs %q: %w", sp.EntityID, binding, u, err)
+				}
+			}
+		}
+		resolution := make([]saml.IndexedEndpoint, 0, len(sp.ArtifactResolution))
+		for _, a := range sp.ArtifactResolution {
+			resolution = append(resolution, saml.IndexedEndpoint{Index: a.Index, URL: a.URL})
+		}
+		if err := store.ReplaceSAMLArtifactResolution(ctx, tx, id, resolution); err != nil {
+			return fmt.Errorf("saml provider %q artifact_resolution: %w", sp.EntityID, err)
 		}
 	}
 
@@ -481,10 +889,71 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 		}
 	}
 
+	for _, h := range f.ProxyHosts {
+		c, ok := planned("proxy_host", h.Host)
+		if !ok || c.Action == "delete" {
+			continue
+		}
+		enabled := h.Enabled == nil || *h.Enabled
+		var release any
+		if h.ReleaseGroups != nil {
+			if err := store.CheckReleaseGroups(*h.ReleaseGroups); err != nil {
+				return fmt.Errorf("proxy host %q: %w", h.Host, err)
+			}
+			release = append([]string{}, *h.ReleaseGroups...)
+		}
+		var rules any
+		if h.Rules != nil {
+			held, err := json.Marshal(append([]proxyrules.Rule{}, *h.Rules...))
+			if err != nil {
+				return fmt.Errorf("proxy host %q: %w", h.Host, err)
+			}
+			rules = string(held)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'),
+			        COALESCE($7::text, ''), COALESCE($8::boolean, false))
+			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
+				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules),
+				cookie_domain = COALESCE($7::text, CASE WHEN $8::boolean THEN '' ELSE core.proxy_hosts.cookie_domain END),
+				own_cookie = COALESCE($8::boolean, CASE WHEN $7::text <> '' THEN false ELSE core.proxy_hosts.own_cookie END)`,
+			orgID, h.Host, enabled, release, h.SignedIdentity, rules, h.CookieDomain, h.OwnCookie); err != nil {
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key" {
+				return fmt.Errorf("proxy host %q is registered by another organisation; a "+
+					"protected host is unique across the deployment, because verify admits "+
+					"whoever's organisation registered it", h.Host)
+			}
+			return fmt.Errorf("proxy host %q: %w", h.Host, err)
+		}
+	}
+
+	for _, s := range sections {
+		if !s.first() {
+			if err := s.apply(ctx, tx, orgID, f, plan); err != nil {
+				return fmt.Errorf("%s: %w", s.kind(), err)
+			}
+		}
+	}
+
 	// Deletions last, so a plan that both creates and deletes never leaves a gap
-	// where neither exists.
+	// where neither exists; a section's in the reverse of the order they are
+	// applied, so what names a thing goes before the thing.
+	for i := len(sections) - 1; i >= 0; i-- {
+		s := sections[i]
+		for _, c := range plan.Changes {
+			if c.Action == "delete" && c.Kind == s.kind() {
+				if err := s.remove(ctx, tx, orgID, c.Name); err != nil {
+					return fmt.Errorf("deleting %s %q: %w", c.Kind, c.Name, err)
+				}
+			}
+		}
+	}
 	for _, c := range plan.Changes {
-		if c.Action != "delete" {
+		if c.Action != "delete" || sectionOf(c.Kind) != nil {
 			continue
 		}
 		var err error
@@ -503,6 +972,9 @@ func Apply(ctx context.Context, tx pgx.Tx, orgID string, f *File, plan *Plan) er
 			_, err = tx.Exec(ctx,
 				`DELETE FROM core.radius_clients WHERE org_id = $1::uuid AND network = $2::cidr`,
 				orgID, c.Name)
+		case "proxy_host":
+			_, err = tx.Exec(ctx,
+				`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, c.Name)
 		}
 		if err != nil {
 			return fmt.Errorf("deleting %s %q: %w", c.Kind, c.Name, err)
@@ -537,15 +1009,23 @@ func recordApply(ctx context.Context, tx pgx.Tx, orgID string, plan *Plan) error
 	// the same edits made individually. A single "config applied" row would make
 	// the trail for fifty changes indistinguishable from the trail for one.
 	for _, c := range plan.Changes {
+		detail := map[string]any{
+			"kind":   c.Kind,
+			"name":   c.Name,
+			"action": c.Action,
+			"source": "config-as-code",
+		}
+		// That one was made, never what it is, as the routes that mint one
+		// record it.
+		for _, m := range plan.Minted {
+			if m.Kind == c.Kind && m.Name == c.Name {
+				detail["secret_minted"] = true
+			}
+		}
 		if err := audit.Write(ctx, tx, audit.Event{
-			Type:  "config.applied",
-			OrgID: orgID,
-			Detail: map[string]any{
-				"kind":   c.Kind,
-				"name":   c.Name,
-				"action": c.Action,
-				"source": "config-as-code",
-			},
+			Type:   "config.applied",
+			OrgID:  orgID,
+			Detail: detail,
 		}); err != nil {
 			return fmt.Errorf("auditing %s %q: %w", c.Kind, c.Name, err)
 		}
@@ -561,13 +1041,4 @@ func recordApply(ctx context.Context, tx pgx.Tx, orgID string, plan *Plan) error
 		return fmt.Errorf("bumping the configuration version: %w", err)
 	}
 	return nil
-}
-
-func firstNonEmpty(vs ...string) string {
-	for _, v := range vs {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

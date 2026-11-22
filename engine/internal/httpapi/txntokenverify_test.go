@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -79,7 +80,7 @@ func goodTxnClaims(issuer string) txntoken.Claims {
 // everything being refused.
 func TestAValidTransactionTokenVerifies(t *testing.T) {
 	s, set, issuer := txnVerifyServer(t)
-	got, err := s.verifyTxnToken(signTxn(t, set, goodTxnClaims(issuer)))
+	got, err := s.verifyTxnToken(context.Background(), signTxn(t, set, goodTxnClaims(issuer)))
 	if err != nil {
 		t.Fatalf("a well-formed transaction token was refused: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestATransactionTokenWithoutAnExpiryIsRefused(t *testing.T) {
 	claims := goodTxnClaims(issuer)
 	claims.Expiry = 0
 
-	_, err := s.verifyTxnToken(signTxn(t, set, claims))
+	_, err := s.verifyTxnToken(context.Background(), signTxn(t, set, claims))
 	if err == nil {
 		t.Fatal("a transaction token with no exp was accepted; it never expires, and " +
 			"every replacement built on it gets a fresh lifetime")
@@ -127,7 +128,7 @@ func TestAnExpiredTransactionTokenIsRefused(t *testing.T) {
 	claims := goodTxnClaims(issuer)
 	claims.Expiry = time.Now().Add(-time.Second).Unix()
 
-	if _, err := s.verifyTxnToken(signTxn(t, set, claims)); err == nil {
+	if _, err := s.verifyTxnToken(context.Background(), signTxn(t, set, claims)); err == nil {
 		t.Fatal("an expired transaction token was accepted")
 	}
 }
@@ -154,7 +155,7 @@ func TestAnAccessTokenIsNotATransactionToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.verifyTxnToken(raw); err == nil {
+	if _, err := s.verifyTxnToken(context.Background(), raw); err == nil {
 		t.Fatal("an access token verified as a transaction token; the distinct typ " +
 			"exists precisely to stop that")
 	}
@@ -165,7 +166,7 @@ func TestATransactionTokenFromAnotherIssuerIsRefused(t *testing.T) {
 	s, set, _ := txnVerifyServer(t)
 
 	claims := goodTxnClaims("https://somebody-else.example")
-	if _, err := s.verifyTxnToken(signTxn(t, set, claims)); err == nil {
+	if _, err := s.verifyTxnToken(context.Background(), signTxn(t, set, claims)); err == nil {
 		t.Fatal("a transaction token naming another issuer was accepted")
 	}
 }
@@ -194,7 +195,7 @@ func TestATransactionTokenIsNotAnAccessToken(t *testing.T) {
 
 	// A genuine Txn-Token: our key, our issuer, nothing wrong with it.
 	raw := signTxn(t, set, goodTxnClaims(issuer))
-	if _, err := srv.verifyTxnToken(raw); err != nil {
+	if _, err := srv.verifyTxnToken(context.Background(), raw); err != nil {
 		t.Fatalf("the fixture token is not a valid Txn-Token: %v", err)
 	}
 

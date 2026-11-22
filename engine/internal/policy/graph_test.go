@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/authzen"
 )
 
 // TestEveryConditionIsDrawn fails when a condition is enforced and not drawn.
@@ -25,6 +27,14 @@ func TestEveryConditionIsDrawn(t *testing.T) {
 		NoImpossibleTravel: true,
 		DeviceManaged:      true,
 		DeviceCompliant:    true,
+		UserAttributes:     map[string][]string{"cost_centre": {"4100"}},
+		ApplicationRoles:   []string{"admin"},
+		FromCountries:      []string{"GB"},
+		NotFromCountries:   []string{"FR"},
+		FromASNs:           []uint32{64500},
+		NotFromASNs:        []uint32{64666},
+		MaxRecentFailures:  5,
+		Time:               &authzen.TimeWindow{Days: []string{"mon"}},
 	}
 
 	// Anything left at its zero value means this test was not updated when the

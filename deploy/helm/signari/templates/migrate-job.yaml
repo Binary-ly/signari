@@ -39,8 +39,12 @@ spec:
           # DSN with rights to create roles; superuserDsnSecretKey names a Secret
           # key holding that DSN, falling back to SIGNARI_DSN when the engine's own
           # user is a superuser.
+          #
+          # `args`, not `command`: command replaces the image's ENTRYPOINT
+          # ["/signari"], so the container looked for a binary named `migrate`
+          # and the Job, and with it every install, failed.
           {{- if .Values.migrations.superuserDsnSecretKey }}
-          command: ["migrate", "all"]
+          args: ["migrate", "all"]
           env:
             - name: SIGNARI_DSN
               valueFrom:
@@ -48,7 +52,7 @@ spec:
                   name: {{ include "signari.secretName" . }}
                   key: {{ .Values.migrations.superuserDsnSecretKey }}
           {{- else }}
-          command: ["migrate", "all"]
+          args: ["migrate", "all"]
           envFrom:
             - secretRef:
                 name: {{ include "signari.secretName" . }}

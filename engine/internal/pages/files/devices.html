@@ -1,0 +1,24 @@
+{{define "title"}}{{T "devices.title"}}{{end}}
+{{define "content"}}<h1>{{T "devices.title"}}</h1>
+<p>{{T "devices.intro"}}</p>
+{{if not .Devices}}
+<p class="muted">{{T "devices.none"}}</p>
+{{else}}
+<ul class="links">
+{{range .Devices}}<li>
+<strong>{{if .UserAgent}}{{.UserAgent}}{{else}}{{T "sessions.unknownbrowser"}}{{end}}</strong>
+<span class="muted">{{T "devices.since" .}}, {{T "devices.until" .}}</span>
+<form method="POST" action="/account/devices/forget">
+<input type="hidden" name="{{$.CSRFField}}" value="{{$.CSRF}}">
+<input type="hidden" name="id" value="{{.ID}}">
+<button type="submit">{{T "devices.forget"}}</button>
+</form>
+</li>{{end}}
+</ul>
+<form method="POST" action="/account/devices/forget">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="id" value="all">
+<button type="submit">{{T "devices.forgetall"}}</button>
+</form>
+{{end}}
+{{end}}

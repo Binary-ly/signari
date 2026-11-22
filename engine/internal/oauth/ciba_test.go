@@ -12,18 +12,18 @@ func TestTheBindingMessageRejectsWhatCanDisguiseItAndAcceptsWhatPeopleWrite(t *t
 	// Every one of these was ACCEPTED by the enumerated deny-list this replaced,
 	// including members of the two categories that list claimed to cover.
 	hostile := map[string]string{
-		"U+2028 line separator":         "Approve Cancel to continue",
-		"U+2029 paragraph separator":    "Approve Cancel to continue",
-		"U+200E left-to-right mark":     "Send ‎100 GBP",
-		"U+200F right-to-left mark":     "Send ‏100 GBP",
-		"U+200B zero width space":       "Transfer​ 4000",
-		"U+00AD soft hyphen":            "Trans­fer 4000",
-		"U+FFF9 interlinear":            "Pay ￹hidden￻ 5",
-		"U+202E right-to-left override": "Send ‮0004 GBP",
-		"U+2066 first strong isolate":   "Send ⁦4000 GBP",
+		"U+2028 line separator":         "Approve\U00002028Cancel to continue",
+		"U+2029 paragraph separator":    "Approve\U00002029Cancel to continue",
+		"U+200E left-to-right mark":     "Send \U0000200E100 GBP",
+		"U+200F right-to-left mark":     "Send \U0000200F100 GBP",
+		"U+200B zero width space":       "Transfer\U0000200B 4000",
+		"U+00AD soft hyphen":            "Trans\U000000ADfer 4000",
+		"U+FFF9 interlinear":            "Pay \U0000FFF9hidden\U0000FFFB 5",
+		"U+202E right-to-left override": "Send \U0000202E0004 GBP",
+		"U+2066 first strong isolate":   "Send \U000020664000 GBP",
 		"a bare newline":                "Approve\nCancel",
 		"a NUL":                         "Approve\x00Cancel",
-		"a non-ASCII space (NBSP)":      "Transfer 4000",
+		"a non-ASCII space (NBSP)":      "Transfer\U000000A04000",
 	}
 	for name, s := range hostile {
 		if err := validBindingMessage(s); err == nil {

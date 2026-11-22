@@ -11,6 +11,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/ldapd"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store"
 )
 
 // The LDAP write path, RFC 4511 §4.6–§4.9, against the real store.
@@ -56,6 +57,52 @@ type logger interface {
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 	Error(msg string, args ...any)
+}
+
+// actorID resolves the bound account's username to its subject id, for an
+// audit row's ActorID; "" when it names nobody in this organisation. The rows
+// carried the username itself, and the entry's, in plaintext detail (3.35):
+// the trail holds subject ids only, because erasure reaches a subject's key
+// and not a name written into an append-only row.
+func (w *LDAPWriter) actorID(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, actor string) string {
+	if actor == "" {
+		return ""
+	}
+	var id string
+	err := q.QueryRow(ctx, `
+		SELECT id::text FROM core.users
+		WHERE org_id = $1::uuid AND (username_fold = lower($2) OR email_fold = lower($2))`,
+		w.orgID, actor).Scan(&id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		w.log.Error("resolving the bound LDAP account", "err", err)
+	}
+	return id
+}
+
+// Refused records a write refused because the bound account is not in the
+// write group (3.33). An attempt to change the directory by an account not
+// allowed to is what an investigation looks for, and it was only a log line
+// naming the account. Recorded by subject, without the username.
+func (w *LDAPWriter) Refused(ctx context.Context, actor, operation string) {
+	userID := w.actorID(ctx, w.db, actor)
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		w.log.Error("auditing a refused LDAP write", "err", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "ldap.write_refused", OrgID: w.orgID, SubjectID: userID, ActorID: userID,
+		Detail: map[string]any{"via": "ldap", "operation": operation},
+	}); err != nil {
+		w.log.Error("auditing a refused LDAP write", "err", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		w.log.Error("committing a refused LDAP write's audit", "err", err)
+	}
 }
 
 // NewLDAPWriter builds the write half of the directory.
@@ -135,8 +182,8 @@ func (w *LDAPWriter) Create(ctx context.Context, actor string, e *ldapd.NewEntry
 		// the one in the walkthrough.
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-			VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)`,
-			userID, w.orgID, hash); err != nil {
+			VALUES ($1::uuid, $2::uuid, $3, $4, true)`,
+			userID, w.orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
 			return fmt.Errorf("storing the password: %w", err)
 		}
 	}
@@ -144,12 +191,10 @@ func (w *LDAPWriter) Create(ctx context.Context, actor string, e *ldapd.NewEntry
 	// Audited INSIDE the transaction. A directory write that is not in the trail
 	// is one nobody can answer for, and committing the change while the record of
 	// it failed would be exactly that.
+	actorID := w.actorID(ctx, tx, actor)
 	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "ldap.entry_created", OrgID: w.orgID, SubjectID: userID,
-		Detail: map[string]any{
-			"via": "ldap", "actor": actor, "uid": e.Username,
-			"password_set": hash != "",
-		},
+		Type: "ldap.entry_created", OrgID: w.orgID, SubjectID: userID, ActorID: actorID,
+		Detail: map[string]any{"via": "ldap", "password_set": hash != ""},
 	}); err != nil {
 		return fmt.Errorf("auditing the entry creation: %w", err)
 	}
@@ -161,11 +206,8 @@ func (w *LDAPWriter) Create(ctx context.Context, actor string, e *ldapd.NewEntry
 	// other than their owner from the very first moment.
 	if hash != "" {
 		if err := audit.Write(ctx, tx, audit.Event{
-			Type: "ldap.password_set", OrgID: w.orgID, SubjectID: userID,
-			Detail: map[string]any{
-				"via": "ldap", "actor": actor, "uid": e.Username,
-				"at_creation": true, "removed": false,
-			},
+			Type: "ldap.password_set", OrgID: w.orgID, SubjectID: userID, ActorID: actorID,
+			Detail: map[string]any{"via": "ldap", "at_creation": true, "removed": false},
 		}); err != nil {
 			return fmt.Errorf("auditing the password: %w", err)
 		}
@@ -191,7 +233,7 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 	err = tx.QueryRow(ctx, `
 		SELECT id::text, COALESCE(email,'') FROM core.users
 		WHERE org_id = $1::uuid AND status = 'active'
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		  AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		w.orgID, username).Scan(&userID, &currentEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -245,11 +287,15 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 		if *u.Password == "" {
 			// `delete userPassword` -- the credential goes, the account stays. Not
 			// the same as a password of zero length, which would be an account
-			// anybody can bind to.
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM core.password_credentials WHERE user_id = $1::uuid`,
-				userID); err != nil {
-				return fmt.Errorf("removing the password: %w", err)
+			// anybody can bind to. Through the guard every removal passes (5.15):
+			// it deleted the password of somebody with no passkey at all, leaving
+			// an account nobody could sign in to.
+			if _, err := store.RemovePassword(ctx, tx, userID, "admin"); errors.Is(err, store.ErrPasswordNeeded) {
+				return fmt.Errorf("%w: the entry's password cannot be removed while it has fewer than "+
+					"%d passkeys, or nothing would be left to sign in with", ldapd.ErrConstraint,
+					store.MinCredentialsForPasswordless)
+			} else if err != nil {
+				return err
 			}
 		} else {
 			email := currentEmail
@@ -266,16 +312,22 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 			// any of them behind attaches a previous password's history to a new
 			// one, most visibly as a user who changes their password as instructed
 			// and is asked to do it again.
-			if _, err := tx.Exec(ctx, `
+			var replaced bool
+			if err := tx.QueryRow(ctx, `
 				INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm, is_current)
-				VALUES ($1::uuid, $2::uuid, $3, 'argon2id', true)
+				VALUES ($1::uuid, $2::uuid, $3, $4, true)
 				ON CONFLICT (user_id) DO UPDATE
-				SET hash = EXCLUDED.hash, algorithm = 'argon2id', is_current = true,
+				SET hash = EXCLUDED.hash, algorithm = EXCLUDED.algorithm, is_current = true,
 				    updated_at = now(), failed_attempts = 0, throttled_until = NULL,
 				    last_failure_at = NULL, must_change = false,
-				    must_change_reason = NULL, last_breach_check = NULL`,
-				userID, w.orgID, hash); err != nil {
+				    must_change_reason = NULL, last_breach_check = NULL
+				RETURNING xmax <> 0`,
+				userID, w.orgID, hash, passwords.AlgorithmOf(hash)).Scan(&replaced); err != nil {
 				return fmt.Errorf("storing the password: %w", err)
+			}
+			if err := store.QueueCredentialChange(ctx, tx, userID, store.CredentialPassword,
+				store.ChangeOf(replaced), "admin"); err != nil {
+				return fmt.Errorf("queueing the credential change: %w", err)
 			}
 		}
 		passwordChanged = true
@@ -285,23 +337,18 @@ func (w *LDAPWriter) Update(ctx context.Context, actor, username string, u *ldap
 	// into "the entry was modified". Somebody with directory write access can set
 	// any password and then bind as that person, which is the most consequential
 	// thing this interface can do and the thing an investigation looks for.
+	actorID := w.actorID(ctx, tx, actor)
 	if passwordChanged {
 		if err := audit.Write(ctx, tx, audit.Event{
-			Type: "ldap.password_set", OrgID: w.orgID, SubjectID: userID,
-			Detail: map[string]any{
-				"via": "ldap", "actor": actor, "uid": username,
-				"removed": *u.Password == "",
-			},
+			Type: "ldap.password_set", OrgID: w.orgID, SubjectID: userID, ActorID: actorID,
+			Detail: map[string]any{"via": "ldap", "removed": *u.Password == ""},
 		}); err != nil {
 			return fmt.Errorf("auditing the password change: %w", err)
 		}
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "ldap.entry_modified", OrgID: w.orgID, SubjectID: userID,
-		Detail: map[string]any{
-			"via": "ldap", "actor": actor, "uid": username,
-			"attributes": changedAttrs(u),
-		},
+		Type: "ldap.entry_modified", OrgID: w.orgID, SubjectID: userID, ActorID: actorID,
+		Detail: map[string]any{"via": "ldap", "attributes": changedAttrs(u)},
 	}); err != nil {
 		return fmt.Errorf("auditing the modification: %w", err)
 	}
@@ -332,7 +379,7 @@ func (w *LDAPWriter) Remove(ctx context.Context, actor, username string) error {
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
 		WHERE org_id = $1::uuid
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		  AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		w.orgID, username).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -345,16 +392,21 @@ func (w *LDAPWriter) Remove(ctx context.Context, actor, username string) error {
 	// row for SubjectID to point at, and an audit trail whose most destructive
 	// event names nobody is the one you cannot read later.
 	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "ldap.entry_deleted", OrgID: w.orgID, SubjectID: userID,
-		Detail: map[string]any{"via": "ldap", "actor": actor, "uid": username},
+		Type: "ldap.entry_deleted", OrgID: w.orgID, SubjectID: userID, ActorID: w.actorID(ctx, tx, actor),
+		Detail: map[string]any{"via": "ldap"},
 	}); err != nil {
 		return fmt.Errorf("auditing the deletion: %w", err)
+	}
+	// Signed out first, as the admin API's delete is: the DELETE cascades the
+	// sessions away, and with them the list of applications to tell.
+	if _, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonUserDeleted); err != nil {
+		return fmt.Errorf("ending the entry's sessions: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM core.users WHERE id = $1::uuid`, userID); err != nil {
 		return fmt.Errorf("deleting the entry: %w", err)
 	}
-	w.log.Warn("ldap deleted a user", "uid", username, "actor", actor)
+	w.log.Warn("ldap deleted a user", "subject", userID)
 	return tx.Commit(ctx)
 }
 
@@ -369,7 +421,7 @@ func (w *LDAPWriter) Rename(ctx context.Context, actor, from, to string) error {
 	var userID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		WHERE org_id = $1::uuid AND lower(username) = lower($2)`,
+		WHERE org_id = $1::uuid AND username_fold = lower($2)`,
 		w.orgID, from).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ldapd.ErrNoSuchEntry
@@ -392,8 +444,10 @@ func (w *LDAPWriter) Rename(ctx context.Context, actor, from, to string) error {
 		return fmt.Errorf("renaming the entry: %w", err)
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "ldap.entry_renamed", OrgID: w.orgID, SubjectID: userID,
-		Detail: map[string]any{"via": "ldap", "actor": actor, "from": from, "to": to},
+		// Which field moved, never its values, as the Admin API's update
+		// records it.
+		Type: "ldap.entry_renamed", OrgID: w.orgID, SubjectID: userID, ActorID: w.actorID(ctx, tx, actor),
+		Detail: map[string]any{"via": "ldap", "fields": []string{"username"}},
 	}); err != nil {
 		return fmt.Errorf("auditing the rename: %w", err)
 	}
@@ -426,8 +480,7 @@ func (w *LDAPWriter) hashPassword(ctx context.Context, password, username, email
 		// A configured control that did not run. Logged loudly rather than
 		// swallowed, the same as the sign-up path does: a check that quietly
 		// stopped running is worse than one never configured.
-		w.log.Warn("the breach check did not run for a password set over LDAP",
-			"uid", username)
+		w.log.Warn("the breach check did not run for a password set over LDAP")
 	}
 	hash, err := w.hasher.Hash(ctx, password)
 	if err != nil {
@@ -441,7 +494,7 @@ func (w *LDAPWriter) nameTaken(ctx context.Context, q pgx.Tx, name, exceptID str
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM core.users
 		WHERE org_id = $1::uuid
-		  AND (lower(username) = lower($2) OR lower(email) = lower($2))
+		  AND (username_fold = lower($2) OR email_fold = lower($2))
 		  AND ($3 = '' OR id <> $3::uuid)`, w.orgID, name, exceptID).Scan(&n)
 	return n > 0, err
 }
@@ -450,7 +503,7 @@ func (w *LDAPWriter) emailTaken(ctx context.Context, q pgx.Tx, email, exceptID s
 	var n int
 	err := q.QueryRow(ctx, `
 		SELECT count(*) FROM core.users
-		WHERE org_id = $1::uuid AND lower(email) = lower($2)
+		WHERE org_id = $1::uuid AND email_fold = lower($2)
 		  AND ($3 = '' OR id <> $3::uuid)`, w.orgID, email, exceptID).Scan(&n)
 	return n > 0, err
 }

@@ -95,8 +95,15 @@ reasons to block a release tonight.
 | keys | no active RS256 | info — SAML needs one, most SPs cannot verify ECDSA |
 | clients | plaintext redirect URI on a non-loopback host | critical |
 | clients | enabled client not requiring PKCE | warning |
+| clients | hybrid-flow exemption past the review date `client set-hybrid` recorded | warning — the date was demanded and, until October 2026, never mentioned again |
+| clients | signing algorithm (`client set-alg`) with no active key on its instance | critical — its tokens cannot be minted |
+| claim mappers | `required_scope` neither standard nor declared by the organisation | warning — the claim is released to nobody |
+| providers | an enabled extension provider with no signing secret | warning — it is called without `Signari-Signature` and cannot tell this engine's calls from anybody's; `provider rotate` gives it one |
 | saml | logout URL registered but no SP certificate | warning — every logout from it is refused |
 | federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
+| flows | a stored sign-in flow that does not load | critical — the organisation runs the last flow that did, or the built-in one |
+| flows | a sign-in flow that refuses a passkey sign-in where people hold passkeys, or a provider sign-in where a provider is enabled | warning — a sign-in's proving stage must be the proof presented, so a flow naming only `password` refuses both; see [flows](flows.md#a-sign-ins-proving-stage-is-the-proof-presented) |
+| authorization | a stored model that does not load | critical — the engine evaluates the stored copy, so that organisation's decisions are failing |
 | outbox | notices parked after exhausting retries | critical — sessions may still be live downstream |
 | policy | none in force | info — everything is open, which may be correct |
 | theme | `SIGNARI_THEME_DIR` unreadable | critical — every page is silently the built-in one |

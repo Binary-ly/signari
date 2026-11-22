@@ -19,6 +19,16 @@ POST /oauth2/token                → authorization_pending
 
 The person answers at **`/account/requests`**.
 
+A client uses CIBA only once it has the grant, which defaults to off:
+
+```sh
+signari client set-grants -client-id call-centre \
+    -grant-types urn:openid:params:grant-type:ciba
+```
+
+Until October 2026 `set-grants` refused this grant type, so no client could be
+given it. A client without it is refused with `unauthorized_client`.
+
 ## All three delivery modes
 
 §7.3 defines three, and `backchannel_token_delivery_modes_supported` lists all
@@ -38,12 +48,28 @@ machinery as back-channel logout, so they inherit its private-address refusal,
 its retry schedule and its parked-failure queue rather than opening a second
 delivery path with its own bugs.
 
+The delivery is parked when the request arrives and released when the person
+answers on `/account/requests`. Approving makes a ping due. For push, it mints
+the tokens once, seals them into the parked row and makes it due. Refusing makes
+a ping due (§10 notifies on the result, not only on approval) and drops a push,
+which has no tokens to deliver. **Until October 2026 the answer was recorded and
+nothing was released.** Both modes were advertised and parked a delivery, and
+neither ever told its client anything. The tests approved by writing the
+decision directly, which skipped the page where the release was missing; they
+now go through that page.
+
 `client_notification_token` is checked **in both directions**, and the second is
 the one implementations skip. A `poll` client that sends one is refused — it
 expects a callback that will never arrive. A `ping` or `push` client that omits
 one is also refused: §7.1 makes that token the means by which the notification is
 authenticated to the client, so without it the callback could be delivered but
 never proven to have come from us.
+
+That token is the client's bearer credential, and the client accepts it from
+whoever presents it. It is kept in one place only: the parked delivery, sealed
+under the root key together with the `auth_req_id`, and opened by the worker at
+the moment it sends. It was once also copied into the request row in the clear
+and never read back; migration 0132 dropped that column.
 
 Likewise `backchannel_user_code_parameter_supported` is an explicit `false`
 rather than an omitted field, and the endpoint refuses a `user_code`. A client
@@ -101,18 +127,32 @@ this", to a person about to approve access to their own account — a
 right-to-left override in it can make the screen read as something other than
 what it says.
 
+**`acr_values` holds the approval to them.** §8 has the provider authenticate
+the user "in line with the Client's requests regarding acr_values". A request
+asking for multi-factor is therefore not approved from a session that signed in
+with a password alone. The request stays pending, and the person is told to
+sign in again with their second factor and approve it. An acr this server does
+not implement is never treated as met. Until October 2026 the values were
+stored "so the approval can be held to them", and nothing read them.
+
 ## Limits, stated
 
 - **`login_hint` only.** `login_hint_token` and `id_token_hint` are parsed and
   refused with `invalid_request`. Treating them as a `login_hint` would resolve
   an opaque token as an email address, find nobody, and report `unknown_user_id`
   for a request that was in fact unsupported.
-- **No ping or push**, as above.
 - **No `user_code`**, as above.
 - `requested_expiry` is honoured **downwards only**, capped at 15 minutes. A
   longer pending authorization is a longer window in which a prompt somebody has
   forgotten about can still be approved. The response says what the client
   actually got.
+- **Five prompts per person per ten minutes from each client.** A sixth from
+  the same client is refused with `403 access_denied`, the code CIBA §13 gives
+  for a request the OP has decided to deny. Without the limit, any client
+  allowed CIBA could keep filling one person's queue until they approved
+  something to make it stop. The count is per client because it was once per
+  person only, and then one client spending the allowance denied that person
+  CIBA from every other client.
 
 
 ## See also

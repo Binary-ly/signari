@@ -17,34 +17,27 @@ func newProxyServer() *Server {
 	}
 }
 
-// TestProxyVerifyStripsCallerIdentityHeaders is the test for the vulnerability
-// this endpoint exists to avoid.
-//
-// A forward-auth setup copies the auth server's RESPONSE headers onto the
-// upstream request. So a header the caller sent that we echo -- or merely fail
-// to overwrite -- arrives at the application as an authenticated identity. The
-// caller here is unauthenticated and is claiming to be an administrator.
-func TestProxyVerifyStripsCallerIdentityHeaders(t *testing.T) {
+// TestAnUnauthenticatedCallerClaimingAnIdentityIsRefused: the caller has no
+// cookie and sends the identity headers itself. The answer is 401 and the
+// response asserts nobody. (An earlier version of this test pre-filled the
+// recorder's response headers to "prove" they were deleted; no server's
+// response starts out holding the request's headers, so it tested a loop that
+// did nothing. The property that matters on the success path is in
+// TestEveryIdentityHeaderIsSentEvenWhenEmpty.)
+func TestAnUnauthenticatedCallerClaimingAnIdentityIsRefused(t *testing.T) {
 	s := newProxyServer()
 
 	for _, h := range []string{"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Sub"} {
 		req := httptest.NewRequest(http.MethodGet, "/proxy/verify", nil)
 		req.Header.Set(h, "admin@evil.test")
 		rec := httptest.NewRecorder()
-
-		// Some proxies pre-populate the recorder's headers from the request.
-		// Simulating that is the only way to prove we DELETE rather than merely
-		// decline to set.
-		rec.Header().Set(h, "admin@evil.test")
-
 		s.handleProxyVerify(rec, req)
 
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("%s: unauthenticated request got %d, want 401", h, rec.Code)
 		}
 		if got := rec.Header().Get(h); got != "" {
-			t.Errorf("%s survived to the response as %q; the application would "+
-				"treat that as a signed-in user", h, got)
+			t.Errorf("%s appeared on the refusal as %q", h, got)
 		}
 	}
 }
@@ -107,6 +100,42 @@ func TestProxyVerifyDenyPointsAtStart(t *testing.T) {
 	if rec.Header().Get("X-Signari-Reason") == "" {
 		t.Error("no X-Signari-Reason: nginx auth_request discards the body, so an " +
 			"operator debugging a 401 has nowhere to look")
+	}
+}
+
+// Envoy's ext_authz asks at the redirect variant with the request's own path
+// appended and its own method (measured against Envoy 1.31, 8.25). Through the
+// router, as Envoy reaches it: a page load by GET is sent to sign in, a POST and
+// a fetch keep the 401, and the return URL is the one in X-Forwarded-*, not the
+// path appended.
+func TestEnvoyAsksBelowTheRedirectVariant(t *testing.T) {
+	s := newProxyServer()
+	ask := func(method, path, forwardedMethod, accept string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "app.example.test")
+		req.Header.Set("X-Forwarded-Uri", "/dashboard?tab=1")
+		req.Header.Set("X-Forwarded-Method", forwardedMethod)
+		req.Header.Set("Accept", accept)
+		rec := httptest.NewRecorder()
+		s.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+	want := "https://auth.example.test/proxy/start?rd=https%3A%2F%2Fapp.example.test%2Fdashboard%3Ftab%3D1"
+	if rec := ask(http.MethodGet, "/proxy/verify/redirect/dashboard?tab=1", "GET", "text/html"); rec.Code != http.StatusFound ||
+		rec.Header().Get("Location") != want {
+		t.Errorf("a page load: %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := ask(http.MethodPost, "/proxy/verify/redirect/api/items", "POST", "text/html"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a POST, asked about by POST: %d", rec.Code)
+	}
+	if rec := ask(http.MethodGet, "/proxy/verify/redirect/api/items", "GET", "application/json"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a fetch: %d", rec.Code)
+	}
+	// Not below the plain endpoint, whose 401 is for nginx to turn into a redirect.
+	if rec := ask(http.MethodGet, "/proxy/verify/dashboard", "GET", "text/html"); rec.Code != http.StatusNotFound {
+		t.Errorf("below the plain endpoint: %d", rec.Code)
 	}
 }
 

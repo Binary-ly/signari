@@ -63,6 +63,11 @@ which a caller could then present as evidence that we had considered it.
 
 ## Issuing
 
+The Admin API issues, revokes, accepts, drops and delegates Trust Marks the same
+way, under `/admin/instances/{instanceID}/trust-marks`,
+`/held-trust-marks` and `/trust-mark-delegations`, with a deployment-wide
+token; see [admin-api.md](admin-api.md).
+
     signari trust-mark issue \
       -trust-mark-type https://federation.example/profile/privacy-v2 \
       -trust-mark-sub  https://rp.example.org \
@@ -171,6 +176,13 @@ refusal in `oidfed.Build`, two gates for one rule. §3.1.2 says every reader
 **MUST ignore** these claims anywhere else, so publishing them from a subordinate
 writes down a federation policy that appears to be in force and is applied
 nowhere.
+
+**And this engine cannot be a Trust Anchor yet**, so setting either is refused
+outright; `{}` still clears them. A Trust Anchor MUST publish a
+`federation_fetch_endpoint`, which is not built, so an anchor published here was
+one no resolver could fetch a Subordinate Statement from. See
+[OpenID Federation](openid-federation.md#enabling-it). The rest of this section
+describes the claims for when it can.
 
 ### `trust_mark_issuers` and the empty array
 

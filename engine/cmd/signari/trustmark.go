@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,10 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
-	"signari.dev/engine/internal/tokens"
 )
 
 // `signari trust-mark ...` -- OpenID Federation 1.0 §7 and §8.4 to §8.6.
@@ -51,8 +50,9 @@ func trustMarkIssue(ctx context.Context, conn *pgx.Conn, markType, subject, logo
 		delegation = strings.TrimSpace(string(b))
 	}
 
-	tm, err := oidfed.BuildTrustMark(oidfed.TrustMarkParams{
-		Issuer:     issuer,
+	// Signed with a federation key (store.SignAsFederationEntity), never the
+	// OIDC one.
+	signed, tm, err := store.IssueSignedTrustMark(ctx, conn, root, instanceID, issuer, oidfed.TrustMarkParams{
 		Subject:    subject,
 		Type:       markType,
 		Lifetime:   lifetime,
@@ -60,37 +60,15 @@ func trustMarkIssue(ctx context.Context, conn *pgx.Conn, markType, subject, logo
 		Ref:        ref,
 		Delegation: delegation,
 	}, time.Now())
+	if errors.Is(err, store.ErrNoFederationKey) {
+		return fmt.Errorf("%w -- run `signari federation enable` first", err)
+	}
 	if err != nil {
 		return err
 	}
-
-	// §7: "The key used by the Trust Mark issuer to sign its Trust Marks MUST be
-	// one of the private keys in its set of Federation Entity Keys." The OIDC
-	// key is loaded a few lines away in half this file's neighbours and would
-	// work; using it would tie the federation's accreditation decisions to the
-	// key that asserts who users are.
-	set, err := keys.LoadSetFor(ctx, conn, instanceID, keys.PurposeFederation, root)
-	if err != nil {
-		return fmt.Errorf("loading the federation keys -- run `signari federation "+
-			"enable` first: %w", err)
-	}
-	key, err := firstActiveKey(set)
-	if err != nil {
-		return err
-	}
-	signed, err := tokens.NewSigner(key).SignJSON(tm, oidfed.TrustMarkTyp)
-	if err != nil {
-		return fmt.Errorf("signing the trust mark: %w", err)
-	}
-
 	var expires time.Time
 	if tm.Expiry != 0 {
 		expires = time.Unix(tm.Expiry, 0)
-	}
-	if err := store.IssueTrustMark(ctx, conn, instanceID, store.IssuedTrustMark{
-		Type: tm.Type, Subject: tm.Subject, JWT: signed, ExpiresAt: expires,
-	}); err != nil {
-		return err
 	}
 
 	fmt.Printf("issued %s\n  to     %s\n  by     %s\n", tm.Type, tm.Subject, tm.Issuer)
@@ -134,7 +112,11 @@ func trustMarkRevoke(ctx context.Context, conn *pgx.Conn, markType, subject, rea
 }
 
 // trustMarkList prints what this entity has issued and what it holds.
-func trustMarkList(ctx context.Context, conn *pgx.Conn) error {
+func trustMarkList(ctx context.Context, conn *pgx.Conn, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	instanceID, issuer, err := selectInstance(ctx, conn, "")
 	if err != nil {
 		return err
@@ -144,6 +126,34 @@ func trustMarkList(ctx context.Context, conn *pgx.Conn) error {
 	issued, err := store.ListIssuedTrustMarks(ctx, conn, instanceID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		held, err := store.ListHeldTrustMarks(ctx, conn, instanceID)
+		if err != nil {
+			return err
+		}
+		issues := make([]map[string]any, 0, len(issued))
+		for _, m := range issued {
+			row := map[string]any{"type": m.Type, "subject": m.Subject, "state": m.StatusAt(now), "expires_at": nil,
+				"revoked_at": nil, "reason": m.Reason}
+			if !m.ExpiresAt.IsZero() {
+				row["expires_at"] = m.ExpiresAt.UTC()
+			}
+			if m.Status == "revoked" {
+				row["revoked_at"] = m.RevokedAt.UTC()
+			}
+			issues = append(issues, row)
+		}
+		holds := make([]map[string]any, 0, len(held))
+		for _, m := range held {
+			row := map[string]any{"type": m.Type, "issuer": m.Issuer, "expires_at": nil,
+				"expired": !m.ExpiresAt.IsZero() && !m.ExpiresAt.After(now)}
+			if !m.ExpiresAt.IsZero() {
+				row["expires_at"] = m.ExpiresAt.UTC()
+			}
+			holds = append(holds, row)
+		}
+		return out.value(map[string]any{"entity_id": issuer, "issues": issues, "holds": holds})
 	}
 	fmt.Printf("%s issues:\n", issuer)
 	if len(issued) == 0 {
@@ -206,32 +216,16 @@ func trustMarkAccept(ctx context.Context, conn *pgx.Conn, file string) error {
 	}
 	raw := strings.TrimSpace(string(b))
 
-	// Parsed without verifying, deliberately and by name: we have no key for the
-	// issuer here, and every check below is about the mark's fit with our own
-	// document rather than about whether the issuer really signed it.
-	tm, err := oidfed.ParseTrustMarkUnverified(raw)
+	// Parsed without verifying, deliberately and by name: we have no key for
+	// the issuer here, and the checks are about the mark's fit with our own
+	// document (store.AcceptTrustMark).
+	tm, err := store.AcceptTrustMark(ctx, conn, instanceID, issuer, raw, time.Now())
 	if err != nil {
-		return fmt.Errorf("this file is not a Trust Mark: %w", err)
+		return err
 	}
-	if tm.Subject != issuer {
-		return fmt.Errorf("this Trust Mark was issued to %q and this entity is %q; "+
-			"publishing somebody else's mark makes every conformant reader reject "+
-			"it (section 7.3)", tm.Subject, issuer)
-	}
-	if tm.Expiry != 0 && !time.Unix(tm.Expiry, 0).After(time.Now()) {
-		return fmt.Errorf("this Trust Mark expired at %s; publishing it would put a "+
-			"claim in our signed configuration that every reader is required to "+
-			"discard", time.Unix(tm.Expiry, 0).UTC().Format(time.RFC3339))
-	}
-
 	var expires time.Time
 	if tm.Expiry != 0 {
 		expires = time.Unix(tm.Expiry, 0)
-	}
-	if err := store.AddHeldTrustMark(ctx, conn, instanceID, store.HeldTrustMark{
-		Type: tm.Type, JWT: raw, Issuer: tm.Issuer, ExpiresAt: expires,
-	}); err != nil {
-		return err
 	}
 	fmt.Printf("now publishing %s\n  from %s\n", tm.Type, tm.Issuer)
 	if expires.IsZero() {
@@ -276,24 +270,11 @@ func trustMarkDelegate(ctx context.Context, conn *pgx.Conn, markType, delegate, 
 	if err != nil {
 		return err
 	}
-	d, err := oidfed.BuildDelegation(oidfed.DelegationParams{
-		Owner: issuer, Delegate: delegate, Type: markType,
-		Lifetime: lifetime, Ref: ref,
+	signed, err := store.SignDelegation(ctx, conn, root, instanceID, issuer, oidfed.DelegationParams{
+		Delegate: delegate, Type: markType, Lifetime: lifetime, Ref: ref,
 	}, time.Now())
 	if err != nil {
 		return err
-	}
-	set, err := keys.LoadSetFor(ctx, conn, instanceID, keys.PurposeFederation, root)
-	if err != nil {
-		return fmt.Errorf("loading the federation keys: %w", err)
-	}
-	key, err := firstActiveKey(set)
-	if err != nil {
-		return err
-	}
-	signed, err := tokens.NewSigner(key).SignJSON(d, oidfed.DelegationTyp)
-	if err != nil {
-		return fmt.Errorf("signing the delegation: %w", err)
 	}
 	fmt.Printf("%s\n", signed)
 	fmt.Fprintf(os.Stderr, "\n%s may now issue %s.\n\nFor this to validate, the "+
@@ -303,6 +284,16 @@ func trustMarkDelegate(ctx context.Context, conn *pgx.Conn, markType, delegate, 
 		"publishes, not against anything the delegation carries.\n",
 		delegate, markType, issuer)
 	return nil
+}
+
+// errNoTrustAnchor refuses a claim only a Trust Anchor may publish. A Trust
+// Anchor MUST publish a federation_fetch_endpoint (specs/oidfed.html:3451-3462)
+// and this engine serves none, so it cannot be one, and a claim set for it
+// would only stop the Entity Configuration being built. Clearing still works.
+func errNoTrustAnchor(claim string) error {
+	return fmt.Errorf("%s is a Trust Anchor claim, and this engine cannot be a Trust Anchor "+
+		"until it serves the federation_fetch_endpoint every Trust Anchor MUST publish. "+
+		"Pass a file containing `{}` to clear it", claim)
 }
 
 // trustMarkIssuers writes §3.1.2's trust_mark_issuers claim from a JSON file.
@@ -336,6 +327,9 @@ func trustMarkIssuers(ctx context.Context, conn *pgx.Conn, file string) error {
 	}
 	if len(issuers) == 0 {
 		issuers = nil
+	}
+	if issuers != nil {
+		return errNoTrustAnchor("trust_mark_issuers")
 	}
 	if err := store.SetTrustMarkIssuers(ctx, conn, instanceID, issuers); err != nil {
 		return err
@@ -397,6 +391,9 @@ func trustMarkOwners(ctx context.Context, conn *pgx.Conn, file string) error {
 	if len(owners) == 0 {
 		owners = nil
 	}
+	if owners != nil {
+		return errNoTrustAnchor("trust_mark_owners")
+	}
 	if err := store.SetTrustMarkOwners(ctx, conn, instanceID, owners); err != nil {
 		return err
 	}
@@ -441,18 +438,4 @@ func refuseNonPublicJWKS(raw json.RawMessage) error {
 		}
 	}
 	return nil
-}
-
-// firstActiveKey picks a federation signing key, preferring ES256.
-func firstActiveKey(set *keys.Set) (keys.Key, error) {
-	if k, err := set.Active(keys.ES256); err == nil {
-		return k, nil
-	}
-	for _, alg := range set.Algorithms() {
-		if k, err := set.Active(alg); err == nil {
-			return k, nil
-		}
-	}
-	return nil, fmt.Errorf("this instance has no active federation signing key; " +
-		"run `signari federation enable`")
 }

@@ -5,6 +5,9 @@
 {{else if eq .CaptchaProvider "hcaptcha"}}
 <div class="h-captcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
 <script src="https://hcaptcha.com/1/api.js" async defer></script>
+{{else if eq .CaptchaProvider "siteverify"}}
+<div class="{{.CaptchaClass}}" data-sitekey="{{.CaptchaSiteKey}}"></div>
+<script src="{{.CaptchaScript}}" async defer></script>
 {{else}}
 <div class="g-recaptcha" data-sitekey="{{.CaptchaSiteKey}}"></div>
 <script src="https://www.google.com/recaptcha/api.js" async defer></script>

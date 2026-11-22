@@ -27,6 +27,7 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ include "signari.gracePeriod" . }}
       containers:
         - name: engine
           image: {{ include "signari.image" . | quote }}
@@ -41,12 +42,28 @@ spec:
             - name: admin
               containerPort: {{ .Values.adminApi.port }}
             {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
           env:
             - name: SIGNARI_ISSUER
               value: {{ .Values.issuer | quote }}
+            - name: SIGNARI_SHUTDOWN_DRAIN
+              value: {{ printf "%ds" (int .Values.shutdown.drainSeconds) | quote }}
+            - name: SIGNARI_SHUTDOWN_TIMEOUT
+              value: {{ printf "%ds" (int .Values.shutdown.timeoutSeconds) | quote }}
             {{- if .Values.adminApi.enabled }}
             - name: SIGNARI_ADMIN_ADDR
               value: {{ printf ":%d" (int .Values.adminApi.port) | quote }}
+            {{- if .Values.adminApi.insecure }}
+            - name: SIGNARI_ADMIN_INSECURE
+              value: "1"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - name: SIGNARI_METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metrics.port) | quote }}
             {{- end }}
             {{- if .Values.tls.certSecretName }}
             - name: SIGNARI_TLS_CERT
@@ -68,7 +85,15 @@ spec:
               readOnly: true
           {{- end }}
           # /healthz is liveness only -- it describes the process, never the
-          # deployment. Readiness gates traffic until the engine can serve.
+          # deployment. Readiness gates traffic until the engine can serve, on
+          # /readyz, which checks the database and the signing keys. Both probes
+          # asked /healthz, so a pod whose database was unreachable kept taking
+          # traffic.
+          #
+          # Liveness is for a process that cannot answer at all, so it waits a
+          # minute for one: five seconds a probe, six in a row. On the defaults, a
+          # second and three, a node short of CPU had every replica restarted at
+          # once on kind, which turns a slow minute into an outage.
           livenessProbe:
             httpGet:
               path: /healthz
@@ -78,15 +103,18 @@ spec:
               {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
               {{- if .Values.tls.certSecretName }}
               scheme: HTTPS
               {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 5
+            timeoutSeconds: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- if .Values.tls.certSecretName }}

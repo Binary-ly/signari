@@ -15,23 +15,17 @@
 //
 //  2. THE HASH CHAIN COVERS `detail`, WHICH IS PLAINTEXT.
 //
-//     This said the chain covered CIPHERTEXT, with personal detail in
-//     `detail_enc` encrypted under the subject's key, so shredding removed the
-//     content and left the record verifiable. That design is sound and it is NOT
-//     BUILT: `core.audit_events.detail_enc` exists in the schema with no writer
-//     and no reader anywhere in the tree, `chainHash(prev, e, detail)` hashes the
-//     plaintext column, and the INSERT never names detail_enc.
+//     This said the chain covered CIPHERTEXT, with personal detail in a
+//     `detail_enc` column encrypted under the subject's key. Nothing ever wrote
+//     or read that column, and migration 0165 dropped it (3.23). Nothing in this
+//     table is encrypted, so anything personal written into `detail` would
+//     survive a shred, and the safety of shredding rests on rule 1: enforced by
+//     TestNoAuditRowNamesAPerson over the code that writes, and by
+//     TestAnErasedPersonLeavesNoIdentifierInTheAuditTrail over the rows a
+//     person's whole life through the admin API leaves.
 //
-//     So the safety of shredding rests entirely on rule 1 rather than on
-//     encryption. That is a real guarantee while rule 1 holds, and a weaker one
-//     than was claimed here. Somebody deciding whether an erasure request has
-//     been satisfied needs the true version: nothing in this table is encrypted,
-//     so anything personal written into `detail` survives a shred.
-//
-//     Chaining over plaintext is still correct given rule 1 -- the rows a shred
-//     touches carry no personal content, so no link is invalidated. Building
-//     detail_enc would restore the stronger property; until then this comment
-//     describes the code.
+//     Chaining over plaintext is correct given rule 1 -- the rows a shred
+//     touches carry no personal content, so no link is invalidated.
 //
 //  3. WRITES JOIN THE CALLER'S TRANSACTION. An audit row that commits when the
 //     decision it describes rolled back is a false record, and one that rolls
@@ -45,29 +39,35 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 // Event types. Constants rather than free strings so a typo is a compile error
 // and the set is greppable -- an audit trail nobody can query is decoration.
+//
+// Not here, deliberately: an event per code issued or redeemed, per refresh,
+// per client-credentials token. Constants for those were declared and written
+// by nothing (2.52), and writing them would put the chain's advisory lock on
+// the issuance of every token. What a token's life records is the decisions:
+// sign-in, consent, a reused code or refresh token, a revocation.
 const (
-	EventLoginSucceeded   = "login.succeeded"
-	EventLoginFailed      = "login.failed"
-	EventLogout           = "session.logout"
-	EventCodeIssued       = "oauth.code_issued"
-	EventCodeRedeemed     = "oauth.code_redeemed"
-	EventCodeReused       = "oauth.code_reused"
-	EventTokenRefreshed   = "oauth.token_refreshed"
-	EventRefreshReused    = "oauth.refresh_reused"
-	EventTokenRevoked     = "oauth.token_revoked"
-	EventClientCredential = "oauth.client_credentials_issued"
-	EventClientUpdated    = "admin.client_updated"
-	EventKeyRotated       = "keys.rotated"
+	EventLoginSucceeded = "login.succeeded"
+	EventLoginFailed    = "login.failed"
+	EventLogout         = "session.logout"
+	EventCodeReused     = "oauth.code_reused"
+	EventRefreshReused  = "oauth.refresh_reused"
+	EventRefreshRetried = "oauth.refresh_retried"
+	EventTokenRevoked   = "oauth.token_revoked"
+	EventClientUpdated  = "admin.client_updated"
+	EventKeyRotated     = "keys.rotated"
 )
 
 // Retention classes decide what survives an erasure request.
@@ -101,10 +101,49 @@ type Event struct {
 	// one did. Empty for actions taken by a user, by the engine itself, or
 	// through the break-glass environment token, which has no row to point at.
 	AdminTokenID string
-	// Detail is NON-personal context: reason codes, counts, scope names. Anything
-	// identifying a person belongs in the encrypted column, not here.
+	// Detail is NON-personal context: reason codes, counts, scope names. Nothing
+	// identifying a person belongs here or anywhere in this table, which has no
+	// encrypted column since migration 0165 (rule 2 above); a personal field is
+	// named, never recorded.
 	Detail map[string]any
+	// OccurredAt is when it happened; the zero value is now. Set here and
+	// hashed (hash version 2, 3.19): the column defaulted to the database's
+	// clock and sat outside the hash, so a row's time could be rewritten and
+	// the chain still verified.
+	OccurredAt time.Time
 }
+
+// Actor is what the Admin API knows of who made a change beyond its token.
+//
+// BreakGlass marks a change made with the environment token, which has no row
+// for admin_token_id to name; without it such a write read as unattributed.
+// Operator is the person a caller such as the console says it acts for: an
+// opaque reference of its own (the console sends console-user:<id>), asserted
+// by the token's holder, never an address, and never authenticated here -- the
+// token is the authenticated party, and its id is recorded beside this.
+//
+// Principal and UserID are a caller acting through an administrative role
+// (6.01), which has no token row: Principal names it (user:<id>, client:<id>)
+// in detail.admin_principal, and UserID, a person's, is the record's actor_id.
+// Both come from a verified token and the holder's live session, not from the
+// caller's say.
+type Actor struct {
+	BreakGlass bool
+	Operator   string
+	Principal  string
+	UserID     string
+}
+
+type actorKey struct{}
+
+// WithActor carries an Actor to every Write the request makes.
+func WithActor(ctx context.Context, a Actor) context.Context {
+	return context.WithValue(ctx, actorKey{}, a)
+}
+
+// hashVersion is what Write hashes. Version 1 left occurred_at out; rows
+// written before it, and by a release before this one, keep verifying as 1.
+const hashVersion = 2
 
 // Write appends one event inside the caller's transaction.
 //
@@ -121,8 +160,43 @@ const auditChainLock int64 = 0x51474e415249_01
 // writers cannot both chain off the same predecessor and silently fork the chain
 // -- the second serialises behind the first.
 func Write(ctx context.Context, tx pgx.Tx, e Event) error {
+	return write(ctx, tx, e, hashVersion)
+}
+
+// write is Write at a given hash version; a test writes a version-1 row with it
+// to prove such rows keep verifying.
+func write(ctx context.Context, tx pgx.Tx, e Event, version int) error {
+	e, err := prepare(ctx, e)
+	if err != nil {
+		return err
+	}
+	r, err := canonical(ctx, tx, e)
+	if err != nil {
+		return err
+	}
+	fanOut(ctx, tx, r)
+	if err := appendRecords(ctx, tx, []record{r}, version); err != nil {
+		return err
+	}
+	if observe != nil {
+		observe(r.e)
+	}
+	return nil
+}
+
+// record is an event made ready to append: prepared, with its ids and detail in the
+// form PostgreSQL stores them, which is the form hashed.
+type record struct {
+	e      Event
+	detail string
+}
+
+// prepare is what an event takes from its request, and its defaults: who acted, when,
+// and a subject the column can hold. From the request's context, so the request does it
+// even when its record is appended by another request's statement (Detached).
+func prepare(ctx context.Context, e Event) (Event, error) {
 	if e.Type == "" {
-		return fmt.Errorf("audit: event type is required")
+		return e, fmt.Errorf("audit: event type is required")
 	}
 	if e.Retention == "" {
 		// Default to the strictest retention. An event nobody classified is far
@@ -133,10 +207,63 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
+	// Who an administrative change was made by, beyond the token (6.05), from
+	// the request: written onto every record the request makes, so no write
+	// can forget it. On a copy, since the caller owns its map.
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && (a.BreakGlass || a.Operator != "" || a.Principal != "") {
+		detail := make(map[string]any, len(e.Detail)+3)
+		for k, v := range e.Detail {
+			detail[k] = v
+		}
+		if a.BreakGlass {
+			detail["break_glass"] = true
+		}
+		if a.Operator != "" {
+			detail["operator"] = a.Operator
+		}
+		if a.Principal != "" {
+			detail["admin_principal"] = a.Principal
+		}
+		e.Detail = detail
+	}
+	// A person acting through their role is the record's actor, unless the
+	// write named one itself (6.01).
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && a.UserID != "" && e.ActorID == "" {
+		e.ActorID = a.UserID
+	}
+	// The subject column holds a person's id. A token's subject can be a
+	// client, acting for itself, and an exchanged or transaction token passed
+	// that here: the insert failed on the uuid cast and the record was lost.
+	// Kept in the detail instead, on a copy, since the caller owns its map.
+	if e.SubjectID != "" {
+		if _, perr := uuid.Parse(e.SubjectID); perr != nil {
+			detail := make(map[string]any, len(e.Detail)+1)
+			for k, v := range e.Detail {
+				detail[k] = v
+			}
+			detail["subject"] = e.SubjectID
+			e.Detail, e.SubjectID = detail, ""
+		}
+	}
 
+	// Microseconds, which is what timestamptz keeps, so the time hashed is the
+	// time stored.
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
+	return e, nil
+}
+
+// canonical is e made a record: its detail and ids in the form PostgreSQL stores, asked
+// of q. A pure expression, so any connection answers it the same, inside a transaction or
+// not.
+func canonical(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, e Event) (record, error) {
 	raw, err := json.Marshal(e.Detail)
 	if err != nil {
-		return fmt.Errorf("audit: encoding detail: %w", err)
+		return record{}, fmt.Errorf("audit: encoding detail: %w", err)
 	}
 
 	// Hash the form PostgreSQL will actually STORE, not the bytes Go produced.
@@ -149,13 +276,57 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	// tampered, which is the most useless possible failure mode for an integrity
 	// mechanism -- it would be indistinguishable from a real attack.
 	//
-	// One extra round trip to let the database canonicalise it, and both sides
-	// then hash exactly the same string.
+	// So the database canonicalises it, and both sides then hash exactly the same
+	// string.
+	//
+	// The ids go through the same statement, for the same reason. PostgreSQL
+	// accepts a uuid in upper case, in braces, without hyphens or with one after
+	// every four digits, and stores the canonical form. A respelled id therefore
+	// hashed as one string and was stored as another, and the chain read as
+	// tampered from that row on, permanently: an Admin API PATCH to
+	// /admin/users/d578-90c1-... did exactly this to the shared test database.
 	var detail string
-	if err := tx.QueryRow(ctx, `SELECT $1::jsonb::text`, raw).Scan(&detail); err != nil {
-		return fmt.Errorf("audit: canonicalising detail: %w", err)
+	var org, subject, actor, correlation, token *string
+	if err := q.QueryRow(ctx,
+		`SELECT $1::jsonb::text, $2::uuid::text, $3::uuid::text, $4::uuid::text, $5::uuid::text, $6::uuid::text`,
+		raw, nullIfEmpty(e.OrgID), nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+		nullIfEmpty(e.CorrelationID), nullIfEmpty(e.AdminTokenID)).
+		Scan(&detail, &org, &subject, &actor, &correlation, &token); err != nil {
+		return record{}, fmt.Errorf("audit: canonicalising the entry: %w", err)
 	}
+	e.OrgID, e.SubjectID, e.ActorID = deref(org), deref(subject), deref(actor)
+	e.CorrelationID, e.AdminTokenID = deref(correlation), deref(token)
+	return record{e: e, detail: detail}, nil
+}
 
+// fanOut queues r for the subscriptions that want it, in tx.
+func fanOut(ctx context.Context, tx pgx.Tx, r record) {
+	// Fan the event out to subscribers, in THIS transaction.
+	//
+	// Here rather than at each call site for the same reason the audit entry
+	// itself is written here: there are dozens of places that record an event,
+	// and a fan-out written at each of them is one missing from some of them --
+	// discovered by an operator whose alerting never fired for the one event
+	// type that mattered.
+	//
+	// Same transaction, which is the entire point of an outbox: the event and
+	// the intent to deliver it commit together, so there is no window where the
+	// log says something happened and nothing was ever sent.
+	//
+	// Before the chain's lock, because everything after the lock is a round trip
+	// every other audited transaction in the deployment waits out, and nothing
+	// here needs it.
+	//
+	// NOT fatal to the audit write. A subscription that cannot be enqueued must
+	// not stop the thing being audited from happening -- that would make an event
+	// subscription a way to break sign-in.
+	if publish != nil && r.e.OrgID != "" {
+		_ = publish(ctx, tx, r.e, r.detail)
+	}
+}
+
+// appendRecords appends rs to the chain in tx, in order, at a hash version.
+func appendRecords(ctx context.Context, tx pgx.Tx, rs []record, version int) error {
 	// An advisory lock on the CHAIN, not a row lock on its current tail.
 	//
 	// The first version took FOR UPDATE on the tail row, reasoning that
@@ -184,52 +355,61 @@ func Write(ctx context.Context, tx pgx.Tx, e Event) error {
 	// is a constant because the chain is global: it is verified in id order
 	// across every organisation, so a per-organisation lock would permit
 	// exactly the interleaving this prevents.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditChainLock); err != nil {
-		return fmt.Errorf("audit: taking the chain lock: %w", err)
-	}
-
-	var prev []byte
-	err = tx.QueryRow(ctx, `
-		SELECT entry_hash FROM core.audit_events
-		ORDER BY id DESC LIMIT 1`).Scan(&prev)
-	if err != nil && err != pgx.ErrNoRows {
-		return fmt.Errorf("audit: reading chain head: %w", err)
-	}
-
-	entry := chainHash(prev, e, detail)
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO core.audit_events
-			(org_id, event_type, subject_id, actor_id, client_id, correlation_id,
-			 retention_class, detail, prev_hash, entry_hash, admin_token_id)
-		VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, $10, $11::uuid)`,
-		nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
-		nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention,
-		detail, prev, entry, nullIfEmpty(e.AdminTokenID))
-	if err != nil {
-		return fmt.Errorf("audit: appending %s: %w", e.Type, err)
-	}
-
-	// Fan the event out to subscribers, in THIS transaction.
 	//
-	// Here rather than at each call site for the same reason the audit entry
-	// itself is written here: there are dozens of places that record an event,
-	// and a fan-out written at each of them is one missing from some of them --
-	// discovered by an operator whose alerting never fired for the one event
-	// type that mattered.
+	// Lock, tail and insert are one statement (migration 0239), since each round
+	// trip inside the lock is one every other audited transaction waits out. The
+	// bytes hashed are built here, and the function puts the tail in front of them.
 	//
-	// Same transaction, which is the entire point of an outbox: the event and
-	// the intent to deliver it commit together, so there is no window where the
-	// log says something happened and nothing was ever sent.
-	if publish != nil && e.OrgID != "" {
-		if err := publish(ctx, tx, e, detail); err != nil {
-			// NOT fatal to the audit write. A subscription that cannot be
-			// enqueued must not stop the thing being audited from happening --
-			// that would make an event subscription a way to break sign-in.
-			return nil
+	// The column is a smallint, and a version is 1 or 2, so the one conversion holds it
+	// for both paths.
+	stored := int16(version)
+	if len(rs) == 1 {
+		e, detail := rs[0].e, rs[0].detail
+		body, tail := hashParts(version, e, detail)
+		if _, err := tx.Exec(ctx, `
+			SELECT core.audit_append($1, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7::uuid, $8, $9::jsonb,
+			                         $10::uuid, $11, $12, $13, $14)`,
+			auditChainLock, nullIfEmpty(e.OrgID), e.Type, nullIfEmpty(e.SubjectID), nullIfEmpty(e.ActorID),
+			nullIfEmpty(e.ClientID), nullIfEmpty(e.CorrelationID), e.Retention, detail,
+			nullIfEmpty(e.AdminTokenID), e.OccurredAt, stored, body, tail); err != nil {
+			return fmt.Errorf("audit: appending %s: %w", e.Type, err)
 		}
+		return nil
+	}
+	// Several, in one statement (migration 0305): the lock and the tail once, and each
+	// record hashed after the one before it, as the same records appended one by one
+	// would be. One field an array, each record at the same place in every array.
+	n := len(rs)
+	org, subject, actor, client := make([]*string, n), make([]*string, n), make([]*string, n), make([]*string, n)
+	correlation, token := make([]*string, n), make([]*string, n)
+	types, retention, details := make([]string, n), make([]string, n), make([]string, n)
+	at, versions := make([]time.Time, n), make([]int16, n)
+	bodies, tails := make([][]byte, n), make([][]byte, n)
+	for i, r := range rs {
+		e := r.e
+		org[i], subject[i], actor[i] = nilIfEmpty(e.OrgID), nilIfEmpty(e.SubjectID), nilIfEmpty(e.ActorID)
+		client[i], correlation[i], token[i] = nilIfEmpty(e.ClientID), nilIfEmpty(e.CorrelationID), nilIfEmpty(e.AdminTokenID)
+		types[i], retention[i], details[i] = e.Type, e.Retention, r.detail
+		at[i], versions[i] = e.OccurredAt, stored
+		bodies[i], tails[i] = hashParts(version, e, r.detail)
+	}
+	if _, err := tx.Exec(ctx, `
+		SELECT core.audit_append_many($1, $2::text[]::uuid[], $3::text[], $4::text[]::uuid[], $5::text[]::uuid[],
+		                              $6::text[], $7::text[]::uuid[], $8::text[], $9::text[]::jsonb[],
+		                              $10::text[]::uuid[], $11::timestamptz[], $12::smallint[], $13::bytea[], $14::bytea[])`,
+		auditChainLock, org, types, subject, actor, client, correlation, retention, details,
+		token, at, versions, bodies, tails); err != nil {
+		return fmt.Errorf("audit: appending %d records: %w", n, err)
 	}
 	return nil
+}
+
+// nilIfEmpty is nullIfEmpty for an array's element.
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // Publisher fans an audited event out to event subscriptions.
@@ -245,6 +425,18 @@ var publish Publisher
 // SetPublisher installs the fan-out. Called once, at startup.
 func SetPublisher(p Publisher) { publish = p }
 
+// Observer sees every event Write appends, once it is written, for counting:
+// the metrics engine counts sign-ins and failures here, so every path that
+// audits one is counted by it. It runs before the caller commits, so a
+// transaction that then rolls back has still been counted; a counter is an
+// approximation, and the audit trail is the record.
+type Observer func(e Event)
+
+var observe Observer
+
+// SetObserver installs the observer. Called once, at startup.
+func SetObserver(o Observer) { observe = o }
+
 // chainHash binds each entry to its predecessor.
 //
 // The fields are written in a fixed order with explicit separators rather than
@@ -254,6 +446,13 @@ func SetPublisher(p Publisher) { publish = p }
 func chainHash(prev []byte, e Event, detail string) []byte {
 	h := sha256.New()
 	h.Write(prev)
+	h.Write(chainBody(e, detail))
+	return h.Sum(nil)
+}
+
+// chainBody is what chainHash hashes after the previous entry's hash.
+func chainBody(e Event, detail string) []byte {
+	var h bytes.Buffer
 	for _, f := range []string{
 		e.Type, e.OrgID, e.SubjectID, e.ActorID, e.ClientID, e.CorrelationID, e.Retention,
 	} {
@@ -284,7 +483,39 @@ func chainHash(prev []byte, e Event, detail string) []byte {
 	}
 
 	h.Write([]byte(detail))
-	return h.Sum(nil)
+	return h.Bytes()
+}
+
+// hashFor is the entry hash at a version, or nil for one this binary does
+// not know, which no stored hash equals: a row claiming an unknown version is
+// read as broken, not skipped.
+//
+// Version 2 is version 1 followed by the version and occurred_at, in UTC to
+// the microsecond. Appended rather than mixed in, so version 1 stays exactly
+// what every existing row was hashed as.
+func hashFor(version int, prev []byte, e Event, detail string) []byte {
+	switch version {
+	case 1:
+		return chainHash(prev, e, detail)
+	case 2:
+		_, tail := hashParts(version, e, detail)
+		h := sha256.New()
+		h.Write(chainHash(prev, e, detail))
+		h.Write(tail)
+		return h.Sum(nil)
+	}
+	return nil
+}
+
+// hashParts is hashFor without the previous hash, which core.audit_append
+// supplies: sha256(prev || body), and then, when there is a tail, sha256 of that
+// and the tail.
+func hashParts(version int, e Event, detail string) (body, tail []byte) {
+	body = chainBody(e, detail)
+	if version == 2 {
+		tail = []byte("v2\x00" + e.OccurredAt.UTC().Format("2006-01-02T15:04:05.000000Z"))
+	}
+	return body, tail
 }
 
 // Verify walks the chain and reports the first entry whose hash does not follow
@@ -293,31 +524,43 @@ func chainHash(prev []byte, e Event, detail string) []byte {
 // This is what makes the chain worth having: a log nobody can check is a log
 // that only deters attackers who have not thought about it. Returns the id of
 // the first broken entry, or 0 when the chain is intact.
+//
+// After an archive (3.18) the trail starts where the latest one ended: the
+// first entry left must link to the last one archived, and no entry the
+// archive removed may still be here.
 func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err error) {
+	anchor, archivedThrough, err := archiveAnchor(ctx, tx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading the latest archive: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
 		SELECT id, event_type, COALESCE(org_id::text,''), COALESCE(subject_id::text,''),
 		       COALESCE(actor_id::text,''), COALESCE(client_id,''),
 		       COALESCE(correlation_id::text,''), retention_class,
 		       detail::text, prev_hash, entry_hash,
-		       COALESCE(admin_token_id::text,'')
+		       COALESCE(admin_token_id::text,''), occurred_at, hash_version
 		FROM core.audit_events ORDER BY id`)
 	if err != nil {
 		return 0, 0, err
 	}
 	defer rows.Close()
 
-	var expectedPrev []byte
+	expectedPrev := anchor
 	for rows.Next() {
 		var id int64
 		var e Event
 		var detail string
 		var prev, entry []byte
+		var version int
 		if err := rows.Scan(&id, &e.Type, &e.OrgID, &e.SubjectID, &e.ActorID,
 			&e.ClientID, &e.CorrelationID, &e.Retention, &detail, &prev, &entry,
-			&e.AdminTokenID); err != nil {
+			&e.AdminTokenID, &e.OccurredAt, &version); err != nil {
 			return 0, checked, err
 		}
 		checked++
+		if id <= archivedThrough {
+			return id, checked, nil
+		}
 
 		// A rewritten or deleted predecessor shows up here, not at the entry
 		// that was tampered with -- which is the property that makes deletion
@@ -325,7 +568,7 @@ func Verify(ctx context.Context, tx pgx.Tx) (brokenAt int64, checked int, err er
 		if !equalBytes(prev, expectedPrev) {
 			return id, checked, nil
 		}
-		want := chainHash(prev, e, detail)
+		want := hashFor(version, prev, e, detail)
 		if !equalBytes(want, entry) {
 			return id, checked, nil
 		}
@@ -351,4 +594,11 @@ func nullIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

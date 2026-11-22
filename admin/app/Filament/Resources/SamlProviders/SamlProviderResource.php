@@ -5,6 +5,7 @@ namespace App\Filament\Resources\SamlProviders;
 use App\Filament\Resources\SamlProviders\Pages\ListSamlProviders;
 use App\Filament\Resources\SamlProviders\Tables\SamlProvidersTable;
 use App\Models\SamlProvider;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
@@ -20,6 +21,12 @@ use Filament\Tables\Table;
 class SamlProviderResource extends Resource
 {
     protected static ?string $model = SamlProvider::class;
+
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('config:read');
+    }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedShieldCheck;
 

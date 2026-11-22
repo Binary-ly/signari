@@ -31,7 +31,7 @@ import (
 //   - It promised throttling that did not exist either. Nothing on this path
 //     consulted a limiter, so the LDAP port was an unmetered guessing oracle
 //     against every account while the sign-in form next to it was capped at 30
-//     failures per quarter hour. Fixed; see `allowBind` below.
+//     failures per quarter hour. Fixed; see `reserveBind` below.
 //
 // It also claimed a "lockout". There is no lockout anywhere in the product --
 // sign-in uses expiring rate limits precisely so nobody can be locked out on
@@ -47,7 +47,28 @@ type LDAPAuthenticator struct {
 	// would be recorded as an LDAP bind -- and an investigation asking "how did
 	// this account authenticate" would be told the wrong answer confidently.
 	via string
+	// outpost names the outpost a credential reached the core through, on every
+	// event written here. An outpost's RADIUS Access-Accept used to be recorded
+	// as an LDAP bind naming no outpost, and its handler wrote a second
+	// login.failed beside this type's for every wrong password.
+	outpost string
+	// demandsMFA answers whether the sign-in flow would ask this person for a
+	// second factor after a password (Server.BindDemandsMFA). nil falls back to
+	// whether they have one enrolled, which is the built-in flow's answer and
+	// misses only an operator's unconditional mfa stage.
+	demandsMFA MFAGate
+	// codes checks a code that came with a bind (Server.BindCodeOK). nil means
+	// this protocol path can carry none, and a password ending in digits is
+	// only a password.
+	codes CodeCheck
 }
+
+// MFAGate reports whether the sign-in flow would demand a second factor of a
+// person who has proved only a password.
+type MFAGate func(ctx context.Context, orgID, userID string) (bool, error)
+
+// CodeCheck reports whether a code is good for a person, charging it if not.
+type CodeCheck func(ctx context.Context, orgID, userID, code string) (bool, error)
 
 func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID string,
 	log *slog.Logger) *LDAPAuthenticator {
@@ -57,10 +78,69 @@ func NewLDAPAuthenticator(db *pgxpool.Pool, hasher *passwords.Hasher, orgID stri
 	return &LDAPAuthenticator{db: db, hasher: hasher, orgID: orgID, log: log, via: "ldap"}
 }
 
+// WithMFAGate supplies the flow's answer to "would this person be asked for a
+// second factor", so an organisation that refuses password-only binds refuses
+// exactly the people its sign-in page would challenge.
+func (a *LDAPAuthenticator) WithMFAGate(g MFAGate) *LDAPAuthenticator {
+	c := *a
+	c.demandsMFA = g
+	return &c
+}
+
+// WithCodes lets a bind carry a code after its password (7.05).
+func (a *LDAPAuthenticator) WithCodes(c CodeCheck) *LDAPAuthenticator {
+	copied := *a
+	copied.codes = c
+	return &copied
+}
+
+// splitCode separates `password;123456`, the one way a protocol with a single
+// credential field can carry a second factor. Only that shape: a person whose
+// password ends so is tried with the whole of it too.
+func splitCode(password string) (secret, code string) {
+	i := strings.LastIndexByte(password, ';')
+	if i <= 0 || len(password)-i-1 < 6 || len(password)-i-1 > 8 {
+		return password, ""
+	}
+	for _, c := range password[i+1:] {
+		if c < '0' || c > '9' {
+			return password, ""
+		}
+	}
+	return password[:i], password[i+1:]
+}
+
+// errMFARequired is a correct password the organisation will not accept alone.
+// Answered as a refusal like any other -- the protocol layer collapses it into
+// invalid credentials -- and deliberately not errLDAPInvalid, so it is not
+// charged to the guessing budget: the password was right, and charging it would
+// let a VPN client retrying in a loop spend the person's budget at the sign-in
+// page too.
+var errMFARequired = errors.New("a second factor is required and none came with the password")
+
+// refusesPasswordOnly applies core.organizations.password_only_binds (0128).
+func (a *LDAPAuthenticator) refusesPasswordOnly(ctx context.Context, orgID, userID string) (bool, error) {
+	refuses, err := store.RefusesPasswordOnlyBinds(ctx, a.db, orgID)
+	if err != nil || !refuses {
+		return false, err
+	}
+	if a.demandsMFA != nil {
+		return a.demandsMFA(ctx, orgID, userID)
+	}
+	return store.HasSecondFactor(ctx, a.db, userID)
+}
+
 // withVia returns a copy labelling its audit events differently.
 func (a *LDAPAuthenticator) withVia(via string) *LDAPAuthenticator {
 	c := *a
 	c.via = via
+	return &c
+}
+
+// withOutpost returns a copy naming an outpost on its audit events.
+func (a *LDAPAuthenticator) withOutpost(name string) *LDAPAuthenticator {
+	c := *a
+	c.outpost = name
 	return &c
 }
 
@@ -83,6 +163,9 @@ func (a *LDAPAuthenticator) withVia(via string) *LDAPAuthenticator {
 // correct authentication decision into an error -- the decision is already
 // made by the time this runs.
 func (a *LDAPAuthenticator) audit(ctx context.Context, e audit.Event) {
+	if a.outpost != "" && e.Detail != nil {
+		e.Detail["outpost"] = a.outpost
+	}
 	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		a.log.Error("auditing an LDAP bind", "event", e.Type, "err", err)
@@ -100,12 +183,13 @@ func (a *LDAPAuthenticator) audit(ctx context.Context, e audit.Event) {
 
 var errLDAPInvalid = errors.New("invalid credentials")
 
-// allowBind reports whether this bind may be attempted at all.
+// reserveBind takes this bind's place in both failure budgets before anything
+// expensive happens, or refuses it.
 //
 // # The buckets are the sign-in form's, deliberately
 //
-// This charges and reads `signin:fail:ip:` and `signin:fail:user:` -- the exact
-// keys `allowSignInAttempt` uses -- rather than an `ldap:` namespace of its own.
+// `signin:fail:ip:` and `signin:fail:user:` -- the exact keys
+// `allowSignInAttempt` uses -- rather than an `ldap:` namespace of its own.
 //
 // A separate namespace was the obvious implementation and it is the wrong one.
 // It would have given an attacker a second full allowance per account: thirty
@@ -113,91 +197,91 @@ var errLDAPInvalid = errors.New("invalid credentials")
 // documented as thirty. Two doors onto one credential must draw down one
 // budget, or the budget describes neither door.
 //
-// # Failures only
+// # Reserved first, kept only for a failure
 //
-// Read here, charged in recordBindFailure, so a correct bind costs nothing.
-// Charging every attempt would be defensible for a browser form at human pace
-// and is not defensible here: a mail server or a VPN concentrator binds on
-// every request, and a limit that counted successes would take out the
-// integrations this port exists to serve within a minute of a busy morning.
-func (a *LDAPAuthenticator) allowBind(ctx context.Context, identifier string) error {
+// The budgets used to be read here and charged after the Argon2 verification.
+// Every bind that arrived while others were being verified read a count below
+// the limit, so a parallel burst was hashed in full before the first failure
+// was counted: a counter, not a control. The place is now taken first
+// (store.ReserveRate, which does not count a caller it refuses) and handed
+// back by Authenticate for anything but a wrong credential, so a correct bind
+// still costs nothing. Charging successes would take out a mail server or a
+// VPN concentrator, which bind on every request, within a minute of a busy
+// morning.
+//
+// Kept for an unknown username as for a known one. Charging only for users
+// that exist would make the counter itself an enumeration oracle.
+func (a *LDAPAuthenticator) reserveBind(ctx context.Context, identifier string) ([]store.Reservation, error) {
+	var held []store.Reservation
+	refuse := func(err error) ([]store.Reservation, error) {
+		if err != nil {
+			// Fail closed. The credential lookup needs the same database, so
+			// refusing costs nothing that was going to succeed, and failing open
+			// would turn a database blip into an unmetered guessing window on
+			// the one port with no human in front of it.
+			a.log.Error("reserving against the LDAP bind rate limit", "err", err)
+		}
+		a.release(ctx, held)
+		return nil, ldapd.ErrBusy
+	}
 	// From the socket, never from the request. The peer is the one thing on an
 	// LDAP bind an attacker cannot choose.
 	if ip := ldapd.PeerAddr(ctx); ip != "" {
-		n, err := store.CountRate(ctx, a.db, "signin:fail:ip:"+ip, signInPerIPWindow)
-		if err != nil {
-			// Fail closed. The credential lookup one line down needs the same
-			// database, so refusing here costs nothing that was going to
-			// succeed, and failing open would turn a database blip into an
-			// unmetered guessing window on the one port with no human in front
-			// of it.
-			a.log.Error("checking the LDAP bind rate limit", "err", err)
-			return ldapd.ErrBusy
+		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:ip:"+budgetIP(ip), signInPerIPLimit, signInPerIPWindow)
+		if err != nil || !ok {
+			return refuse(err)
 		}
-		if n >= signInPerIPLimit {
-			return ldapd.ErrBusy
-		}
+		held = append(held, r)
 	}
-
 	// Lowercased to match the form's key exactly. Without it Alice@example.com
 	// and alice@example.com would be two budgets on one account, and the LDAP
 	// port would hand out a fresh one per spelling.
-	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if identifier == "" {
-		return nil
+	if identifier = strings.ToLower(strings.TrimSpace(identifier)); identifier != "" {
+		r, ok, err := store.ReserveRate(ctx, a.db, "signin:fail:user:"+identifier,
+			signInPerAccountLimit, signInPerAccountWindow)
+		if err != nil || !ok {
+			return refuse(err)
+		}
+		held = append(held, r)
 	}
-	n, err := store.CountRate(ctx, a.db, "signin:fail:user:"+identifier,
-		signInPerAccountWindow)
-	if err != nil {
-		a.log.Error("checking the per-account LDAP bind rate limit", "err", err)
-		return ldapd.ErrBusy
-	}
-	if n >= signInPerAccountLimit {
-		return ldapd.ErrBusy
-	}
-	return nil
+	return held, nil
 }
 
-// recordBindFailure charges one failure against both budgets.
-//
-// Called for every outcome that denies the bind, including an unknown username.
-// Charging only for users that exist would make the counter itself an
-// enumeration oracle: guess a thousand names, see which thousandth attempt is
-// refused, and the refusals name the real accounts.
-func (a *LDAPAuthenticator) recordBindFailure(ctx context.Context, identifier string) {
-	if ip := ldapd.PeerAddr(ctx); ip != "" {
-		if _, err := store.AllowRate(ctx, a.db, "signin:fail:ip:"+ip,
-			signInPerIPLimit, signInPerIPWindow); err != nil {
-			a.log.Error("recording an LDAP bind failure", "err", err)
+// release hands reserved places back. On a context of its own: a bind that ran
+// out of time must still return its place, or a slow hasher would charge
+// correct binds as failures.
+func (a *LDAPAuthenticator) release(ctx context.Context, held []store.Reservation) {
+	ctx = context.WithoutCancel(ctx)
+	for _, r := range held {
+		if err := r.Release(ctx, a.db); err != nil {
+			a.log.Error("releasing an LDAP bind reservation", "err", err)
 		}
-	}
-	identifier = strings.ToLower(strings.TrimSpace(identifier))
-	if identifier == "" {
-		return
-	}
-	if _, err := store.AllowRate(ctx, a.db, "signin:fail:user:"+identifier,
-		signInPerAccountLimit, signInPerAccountWindow); err != nil {
-		a.log.Error("recording an LDAP bind failure", "err", err)
 	}
 }
 
 func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password string) (_ *ldapd.Identity, err error) {
-	// Charged once, at the single exit, rather than at each of the four returns
-	// that deny a bind. A new denial branch added later inherits the charge; a
-	// call at each site is one somebody adds a fifth branch without.
-	//
-	// Scoped to errLDAPInvalid exactly, and the two exclusions are the point:
-	//
-	//   - Not ErrBusy. Charging a caller who was already refused would let a
-	//     client's own retries extend its ban without limit, turning an
-	//     expiring rate limit into the permanent lockout this product
-	//     deliberately does not have.
-	//   - Not a database error. That failure is ours, and spending a real
-	//     user's budget for it would let a five-minute outage deny sign-in for
-	//     fifteen more.
+	// Before the lookup and before the hash: the point of a guessing budget is
+	// to stop spending Argon2 on an attacker. A refusal is not counted
+	// (ReserveRate), so a client's own retries cannot extend it into the
+	// permanent lockout this product deliberately does not have.
+	held, rerr := a.reserveBind(ctx, username)
+	if rerr != nil {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: a.orgID,
+			Detail: map[string]any{"via": a.via, "reason": "rate_limited"},
+		})
+		return nil, rerr
+	}
+	// Kept once, at the single exit, rather than at each of the returns that
+	// deny a bind: a new denial branch inherits it, where a call at each site
+	// is one somebody adds a branch without. Kept for errLDAPInvalid exactly.
+	// Anything else hands the place back: a correct bind; errMFARequired, a
+	// right password the organisation will not take alone; and a database error
+	// or a timeout, which are our failures, and spending a real user's budget
+	// for them would let a five-minute outage deny sign-in for fifteen more.
 	defer func() {
-		if errors.Is(err, errLDAPInvalid) {
-			a.recordBindFailure(ctx, username)
+		if !errors.Is(err, errLDAPInvalid) {
+			a.release(ctx, held)
 		}
 	}()
 
@@ -208,39 +292,44 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		return nil, errLDAPInvalid
 	}
 
-	// Before the hash is verified, and before the lookup: the point of a
-	// guessing budget is to stop spending Argon2 on an attacker, and a check
-	// that runs after the expensive part has already run is a counter, not a
-	// control.
-	if err := a.allowBind(ctx, username); err != nil {
-		a.audit(ctx, audit.Event{
-			Type: audit.EventLoginFailed, OrgID: a.orgID,
-			Detail: map[string]any{"via": a.via, "reason": "rate_limited"},
-		})
-		return nil, err
-	}
-
 	// The same query the sign-in form uses, including its status check: a
 	// deactivated account must not be able to bind, and duplicating the rule
-	// here is how the two paths drift apart.
+	// here is how the two paths drift apart. They had: this one also required
+	// `pc.is_current`, which means only "rehashed to current policy" and which
+	// both importers set false, so an imported person could not bind until a
+	// web sign-in rehashed them, with the password the form accepted.
+	// In the listener's organisation, in the query. It used to match the name in
+	// every organisation and then refuse a row from the wrong one -- so when two
+	// tenants held the same user name, QueryRow picked one of them and the right
+	// person's bind failed whenever it picked the other. An empty orgID (a test
+	// fixture) matches any.
 	var userID, orgID, hash string
 	err = a.db.QueryRow(ctx, `
 		SELECT u.id::text, u.org_id::text, pc.hash
 		FROM core.users u
 		JOIN core.password_credentials pc ON pc.user_id = u.id
-		WHERE u.status = 'active' AND pc.is_current
-		  AND (lower(u.email) = lower($1) OR lower(u.username) = lower($1))`,
-		username).Scan(&userID, &orgID, &hash)
+		WHERE u.status = 'active'
+		  AND `+store.OrgInService("u.org_id")+`
+		  AND ($2 = '' OR u.org_id = $3::uuid)
+		  AND (u.email_fold = lower($1) OR u.username_fold = lower($1))`,
+		username, a.orgID, store.ExactUUIDOrNil(a.orgID)).Scan(&userID, &orgID, &hash)
 	found := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("looking up the credential: %w", err)
+	}
+	secret, code := password, ""
+	if a.codes != nil {
+		secret, code = splitCode(password)
 	}
 	if !found || (a.orgID != "" && orgID != a.orgID) {
 		// The dummy verify keeps the timing of "no such user" indistinguishable
 		// from "wrong password". Skipping it here would make the LDAP port a
 		// user-enumeration oracle by stopwatch even though the error text is
-		// identical.
+		// identical. Twice for what looks like a code, as a wrong password is.
 		_, _ = a.hasher.Verify(ctx, dummyHash, password)
+		if code != "" {
+			_, _ = a.hasher.Verify(ctx, dummyHash, secret)
+		}
 		// No subject: there is nobody to name. The event still records that a
 		// bind was attempted against this directory, which is what makes a
 		// guessing run visible at all.
@@ -250,12 +339,45 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 		})
 		return nil, errLDAPInvalid
 	}
-	if _, err := a.hasher.Verify(ctx, hash, password); err != nil {
+	if _, err := a.hasher.Verify(ctx, hash, secret); err != nil {
+		// A password of its own may end in what looks like a code.
+		whole := err
+		if code != "" {
+			_, whole = a.hasher.Verify(ctx, hash, password)
+			code = ""
+		}
+		if whole != nil {
+			a.audit(ctx, audit.Event{
+				Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+				Detail: map[string]any{"via": a.via, "reason": "bad_password"},
+			})
+			return nil, errLDAPInvalid
+		}
+	}
+
+	// After the password, so the answer and its timing are the same as for a
+	// wrong one: a refusal here must not tell a guesser the password was right.
+	refuse, err := a.refusesPasswordOnly(ctx, orgID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("checking whether a password alone is accepted: %w", err)
+	}
+	amr := []string{"pwd"}
+	switch {
+	case code != "":
+		// Given, it has to be right, whether or not one was needed: a wrong code
+		// passing because the policy would not have asked is a person told
+		// nothing about a typing error, and a guesser told the password was
+		// right.
+		if err := a.secondFactor(ctx, orgID, userID, code); err != nil {
+			return nil, err
+		}
+		amr = append(amr, "otp", "mfa")
+	case refuse:
 		a.audit(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
-			Detail: map[string]any{"via": a.via, "reason": "bad_password"},
+			Detail: map[string]any{"via": a.via, "reason": "second_factor_required"},
 		})
-		return nil, errLDAPInvalid
+		return nil, errMFARequired
 	}
 
 	id, err := a.Lookup(ctx, username)
@@ -269,9 +391,27 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 
 	a.audit(ctx, audit.Event{
 		Type: audit.EventLoginSucceeded, OrgID: orgID, SubjectID: userID,
-		Detail: map[string]any{"via": a.via, "amr": []string{"pwd"}},
+		Detail: map[string]any{"via": a.via, "amr": amr},
 	})
+	id.UserID, id.AMR = userID, amr
 	return id, nil
+}
+
+// secondFactor checks a code for somebody whose password was right. A wrong one
+// is charged as a wrong password is, beside what Server.BindCodeOK charges it to.
+func (a *LDAPAuthenticator) secondFactor(ctx context.Context, orgID, userID, code string) error {
+	ok, err := a.codes(ctx, orgID, userID, code)
+	if err != nil {
+		return fmt.Errorf("checking a code: %w", err)
+	}
+	if !ok {
+		a.audit(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: orgID, SubjectID: userID,
+			Detail: map[string]any{"via": a.via, "reason": "bad_second_factor"},
+		})
+		return errLDAPInvalid
+	}
+	return nil
 }
 
 func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd.Identity, error) {
@@ -280,13 +420,13 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text),
 		       COALESCE(u.email,''), u.status = 'active',
 		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
-		       COALESCE(u.given_name,'')
+		       COALESCE(u.given_name,''), u.posix_uid
 		FROM core.users u
 		WHERE u.org_id = $1::uuid
-		  AND (lower(u.username) = lower($2) OR lower(u.email) = lower($2))
-		  AND u.status = 'active'`, a.orgID, username).
+		  AND (u.username_fold = lower($2) OR u.email_fold = lower($2))
+		  AND u.status = 'active' AND `+store.OrgInService("u.org_id"), a.orgID, username).
 		Scan(&id.Username, &id.Email, &id.Active,
-			&id.DisplayName, &id.Surname, &id.GivenName)
+			&id.DisplayName, &id.Surname, &id.GivenName, &id.UIDNumber)
 	if err != nil {
 		return nil, nil
 	}
@@ -304,7 +444,7 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 	var userID string
 	if err := a.db.QueryRow(ctx,
 		`SELECT id::text FROM core.users WHERE org_id = $1::uuid
-		   AND (lower(username) = lower($2) OR lower(email) = lower($2))`,
+		   AND (username_fold = lower($2) OR email_fold = lower($2))`,
 		a.orgID, username).Scan(&userID); err == nil {
 		if groups, gerr := store.AllGroupsForUser(ctx, a.db, userID); gerr == nil {
 			id.Groups = groups
@@ -313,24 +453,48 @@ func (a *LDAPAuthenticator) Lookup(ctx context.Context, username string) (*ldapd
 	return &id, nil
 }
 
-func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Identity, error) {
+// List answers a page of the directory (7.01), ordered by id so a position
+// stays one, and narrowed by what the filter says about who could match. The
+// page is chosen before anybody's groups are read.
+func (a *LDAPAuthenticator) List(ctx context.Context, q ldapd.Query) ([]*ldapd.Identity, error) {
+	if q.Limit <= 0 {
+		return nil, nil
+	}
+	args := []any{a.orgID, q.Limit}
+	var where strings.Builder
+	if q.After != "" {
+		after, ok := store.CanonicalUUID(q.After)
+		if !ok {
+			return nil, ldapd.ErrBadPosition
+		}
+		args = append(args, after)
+		fmt.Fprintf(&where, " AND u.id > $%d::uuid", len(args))
+	}
+	if q.Narrow != nil {
+		condition, err := ldapCondition(q.Narrow, &args)
+		if err != nil {
+			return nil, err
+		}
+		where.WriteString(" AND " + condition)
+	}
 	// Groups come back in the SAME query. The obvious shape -- list users, then
 	// look up each one's groups -- is a query per user on a path a client can
 	// call repeatedly, which is a denial of service with a valid bind.
 	rows, err := a.db.Query(ctx, `
-		SELECT COALESCE(NULLIF(u.username,''), u.email, u.id::text), COALESCE(u.email,''),
-		       COALESCE(u.display_name,''), COALESCE(u.surname,''),
-		       COALESCE(u.given_name,''),
-		       COALESCE(array_agg(g.name ORDER BY g.name)
-		                FILTER (WHERE g.name IS NOT NULL), '{}')
-		FROM core.users u
-		LEFT JOIN core.group_members m ON m.user_id = u.id
-		LEFT JOIN core.groups g ON g.id = m.group_id
-		WHERE u.org_id = $1::uuid AND u.status = 'active'
-		GROUP BY u.id, u.username, u.email, u.display_name, u.surname,
-		         u.given_name, u.created_at
-		ORDER BY u.created_at
-		LIMIT $2`, a.orgID, limit)
+		WITH page AS (
+			SELECT u.id, u.username, u.email, u.display_name, u.surname, u.given_name, u.posix_uid
+			  FROM core.users u
+			 WHERE u.org_id = $1::uuid AND u.status = 'active' AND `+store.OrgInService("u.org_id")+where.String()+`
+			 ORDER BY u.id
+			 LIMIT $2)
+		SELECT p.id::text, COALESCE(NULLIF(p.username,''), p.email, p.id::text), COALESCE(p.email,''),
+		       COALESCE(p.display_name,''), COALESCE(p.surname,''),
+		       COALESCE(p.given_name,''), p.posix_uid,
+		       COALESCE((SELECT array_agg(g.name ORDER BY g.name)
+		                   FROM core.groups_of(p.id) m
+		                   JOIN core.groups g ON g.id = m.group_id), '{}')
+		FROM page p
+		ORDER BY p.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -339,8 +503,8 @@ func (a *LDAPAuthenticator) List(ctx context.Context, limit int) ([]*ldapd.Ident
 	var out []*ldapd.Identity
 	for rows.Next() {
 		var id ldapd.Identity
-		if err := rows.Scan(&id.Username, &id.Email, &id.DisplayName,
-			&id.Surname, &id.GivenName, &id.Groups); err != nil {
+		if err := rows.Scan(&id.Position, &id.Username, &id.Email, &id.DisplayName,
+			&id.Surname, &id.GivenName, &id.UIDNumber, &id.Groups); err != nil {
 			return nil, err
 		}
 		id.Active = true

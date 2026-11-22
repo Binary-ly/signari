@@ -17,6 +17,47 @@ SIGNARI_RADIUS_ORG_ID=<org-uuid> \
   signari serve
 ```
 
+The Admin API registers devices, revokes them and places groups on VLANs the
+same way, under `/admin/organizations/{orgID}/radius-clients` and
+`/admin/groups/{groupID}/radius`; see [admin-api.md](admin-api.md).
+
+A group can give its members more than a VLAN, and an Access-Accept says the same
+thing whether the person arrived with a password or a certificate:
+
+```sh
+signari radius authorize --org=<org-uuid> --group=network-admins --vlan=20 \
+  --filter-id=staff --session-timeout=28800 --radius-class=staff \
+  --vendor-attributes=9:1=shell:priv-lvl=15
+```
+
+| Flag | Attribute | |
+|---|---|---|
+| `--vlan` | Tunnel-Type, Tunnel-Medium-Type, Tunnel-Private-Group-ID | 1 to 4094. |
+| `--filter-id` | Filter-Id | A filter list already on the device. |
+| `--session-timeout` | Session-Timeout | Seconds the device may keep the session. |
+| `--radius-class` | Class | Opaque to the device, which echoes it in accounting. |
+| `--vendor-attributes` | Vendor-Specific | `vendor:type=value`, comma-separated. |
+
+A vendor attribute is given by number, because the engine carries no dictionary:
+the vendor's IANA enterprise number, the attribute number from its documentation,
+and a value of up to 247 bytes, sent as it stands. Only the first `=` divides, so
+a value may hold more; one holding a comma is given in a
+[configuration file](config-as-code.md) or through the Admin API instead. Somebody in several authorised groups gets the one with the
+highest `--priority`, ties broken by group id, and only that group's attributes:
+they are not merged.
+
+Networks may overlap. A packet is checked against the **most specific** network
+that contains its source address, so a `/24` for a controller inside a `/16`
+for the building uses the controller's secret. Two entries for exactly the same
+network are refused when they are added.
+
+A network that covers every address is refused, whether it is written as
+`0.0.0.0/0`, as `::/0`, or as the IPv4-mapped `::ffff:0.0.0.0/96`. An
+IPv4-mapped network is read as the IPv4 network it means, both when it is added
+and when it is loaded. The mapped `/96` passed the old check, because 96 bits
+are not zero. Yet it matched every IPv4 source, and at 96 bits it outranked
+every real range under most-specific matching.
+
 ## A correction
 
 An earlier version of this page documented `SIGNARI_RADIUS_CLIENTS` as the way to
@@ -96,15 +137,68 @@ the network login screen a user-enumeration oracle.
 **Empty passwords are rejected** before the credential checker, matching the
 LDAP shim's rule about unauthenticated binds.
 
-**Packets are handled inline, not one goroutine each.** UDP has no handshake, so
-a goroutine per datagram is a spawn primitive for anybody who can send packets —
-and the work here is one Argon2 verification, which is deliberately expensive.
+**A fixed set of workers answers, and only a device can make them.** The loop
+reading the socket checks the source and the Message-Authenticator, and only a
+packet that passes takes a place in a queue of 1,024. UDP has no handshake, so a
+goroutine per datagram would be a spawn primitive for anybody who can send
+packets, and a forged packet costs one HMAC here. There are twice as many workers
+as the hasher has slots, so a slow password holds up nobody behind it, and
+throughput is what the hasher can do. Past the queue a packet is dropped, which a
+device treats as any lost datagram, and the log says how many.
+
+**A retransmission is answered, not asked again.** The same bytes from the same
+source within thirty seconds get the same reply, or nothing while the first is
+still being answered. Otherwise a device retrying a wrong password counted twice
+towards the budget, a retried code was refused because the first had spent it,
+and an access point that missed an Accept was sent a Reject. The packet is
+checked first, so a device disabled since is answered nothing.
+
+**A supplicant can resume.** The session stays on the server for eight hours and
+the supplicant holds a random name for it, because a sealed ticket carries the
+client certificate and costs what it saves. With a three-kilobyte certificate a
+resumption takes three round trips where the whole handshake takes seven under
+TLS 1.2, and six where it takes nine under TLS 1.3. Certificate expiry and the
+chain are checked again and the owner is asked about again, so somebody
+deactivated since is refused. A restart, or a node that does not know the name,
+means the whole handshake. wpa_supplicant offers a ticket under TLS 1.2 only
+with `tls_disable_session_ticket=0` in `phase1`; without it, it does the whole
+handshake every time.
+
+**EAP-TLS under TLS 1.3 follows RFC 9190.** The server says it has accepted
+somebody over TLS, with one byte of application data, before EAP-Success, and it
+says so only after asking about the certificate's owner, so somebody refused is
+sent EAP-Failure and never that byte. Until November 2026 it was not sent, and the
+keys given to the access point were derived with the wrong arguments, so a real
+supplicant could finish only under TLS 1.2. This is checked with `eapol_test` from
+wpa_supplicant 2.10, which compares the keys in the Accept with the ones it derived
+for itself: they match under both versions, on a whole handshake and a resumed
+one. A response whose EAP Identifier is not the outstanding request's is
+discarded with no reply, as RFC 3748 requires.
 
 **A zero-length attribute is refused.** It would not advance the parse cursor,
 so the loop would spin forever on a packet an attacker sends once.
 
+**A request means one thing.** One with a second User-Name, a second
+User-Password or a second State is rejected. Until October 2026 only a second
+User-Name was. With two passwords the first was checked, so a request carrying
+the right one first and anything after it was accepted, and a proxy that read
+the other would have checked something else.
+
+**A certificate chain is reassembled up to one megabyte**, whatever its
+fragments declare. The cap used to hold only when the first fragment declared a
+total length, so a supplicant that declared none could grow the buffer for as
+long as it kept sending.
+
 **Binds go through the same credential path** as every other way into this
-product — same Argon2 parameters, same throttling, same audit trail.
+product — same Argon2 parameters, same throttling, same audit trail. That
+includes the budget [LDAP](ldap.md) claims before verifying a password.
+
+**An Access-Request has five seconds from arrival**, the queue and the wait for
+the shared hasher included. The verification waits for the hasher slots the
+sign-in form also uses, so without a deadline a sign-in flood could keep a worker
+busy long after the client had retransmitted and given up. One that has waited
+that long in the queue is dropped unanswered, and one that runs out of time at
+the hasher is rejected.
 
 ## The bug the round-trip caught
 
@@ -152,6 +246,18 @@ same Argon2 parameters, the same throttling and the same audit trail. A protocol
 front end with its own quiet password check routes around every control the rest
 of the system has, so `RADIUSAuthenticator` is a thin wrapper over the LDAP
 shim's authenticator rather than its own query.
+
+The same path also decides what PAP does for somebody the sign-in page would ask
+for a second factor. See
+[a password alone, and a second factor](ldap.md#a-password-alone-and-a-second-factor).
+Under `refuse_when_mfa`, the default since migration 0128, a right password with
+no code is answered with an **Access-Challenge**: a prompt for the device to
+show, and a State for its next request, which carries the code where the password
+was. That State is good once, for two minutes, from that device and for that
+person. A device that shows no prompt sends `password;123456` in the one field.
+A State lives in the node that issued it, so behind a balancer that does not keep
+a device on one node, use the second form. Through a RADIUS outpost only the
+second form works, and a password alone is an Access-Reject.
 
 The identity is discarded: an Access-Accept carries no user attributes here,
 because a network device did not ask for a directory and should not be handed

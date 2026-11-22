@@ -6,10 +6,15 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/store"
 )
 
 // Scopes. Deliberately few. A permission model nobody can hold in their head is
@@ -30,12 +35,24 @@ const (
 	// decision from being able to reset a password.
 	ScopeGroupsRead  = "groups:read"
 	ScopeGroupsWrite = "groups:write"
+	// Relations get a pair of their own for the application that keeps them
+	// (11.01): something enforcing access writes who owns what as people do
+	// things, and has no business with the organisation's settings, which is
+	// what organizations:write was the only way to reach them. It still reaches
+	// them, so no token issued before this lost anything.
+	ScopeRelationsRead  = "relations:read"
+	ScopeRelationsWrite = "relations:write"
 	// ScopeSubjectsErase is its own scope rather than part of users:write.
 	//
 	// A token that may rename a user should not thereby be able to destroy one
 	// irreversibly, and most tokens that need the former do not need the latter.
 	// Erasure is the only operation in this API that nobody can undo.
 	ScopeSubjectsErase = "subjects:erase"
+	// ScopeSubjectsExport takes everything kept about one person at once --
+	// their sessions, what each application was given, the trail of their
+	// account -- and is its own scope for the reason audit:read is: a token
+	// that may look a person up should not thereby be able to take all of them.
+	ScopeSubjectsExport = "subjects:export"
 	// ScopeOrganizationsWrite provisions tenants, and is separate for the same
 	// reason as subjects:erase: the blast radius differs in kind.
 	//
@@ -54,6 +71,12 @@ const (
 	// provisioning script that needs to look up users should not thereby be able
 	// to read every person's authentication history.
 	ScopeAuditRead = "audit:read"
+	// ScopePrivilegedUsersWrite is needed, in addition to a route's own scope,
+	// to write on a user who may impersonate others or on a group that lets its
+	// members do so (see privileged.go). Without it the lesser credential could
+	// become the greater: users:write could take over such an account and
+	// groups:write could join such a group.
+	ScopePrivilegedUsersWrite = "privileged-users:write"
 	// ScopeAll is what the break-glass environment token carries. It is not
 	// grantable to a database token: a stored credential that can do everything
 	// is the thing this package exists to stop handing out.
@@ -62,9 +85,17 @@ const (
 
 // KnownScopes is what `admin-token create` will accept.
 var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
-	ScopeSubjectsErase, ScopeUsersRead, ScopeClientsRead,
-	ScopeGroupsRead, ScopeGroupsWrite, ScopeOrganizationsWrite,
-	ScopeAuditRead}
+	ScopeSubjectsErase, ScopeSubjectsExport, ScopeUsersRead, ScopeClientsRead,
+	ScopeGroupsRead, ScopeGroupsWrite, ScopeRelationsRead, ScopeRelationsWrite, ScopeOrganizationsWrite,
+	ScopeAuditRead, ScopePrivilegedUsersWrite, ScopeTokensRead, ScopeTokensWrite}
+
+// ScopeTokensWrite mints, rotates and revokes admin tokens over the API, and
+// only tokens no wider than the caller (6.04): a token that could mint a wider
+// one would be every scope it can name. ScopeTokensRead lists them.
+const (
+	ScopeTokensRead  = "tokens:read"
+	ScopeTokensWrite = "tokens:write"
+)
 
 // impliedBy says which scope a write scope satisfies on its own.
 //
@@ -72,10 +103,16 @@ var KnownScopes = []string{ScopeUsersWrite, ScopeClientsWrite, ScopeConfigRead,
 // be granted would mean every existing write-scoped token silently lost the
 // ability to read the thing it edits the moment read endpoints existed. The
 // implication runs one way only: a read scope never grants a write.
+//
+// It is followed to the end, so organizations:write satisfies relations:read
+// through relations:write.
 var impliedBy = map[string]string{
-	ScopeUsersRead:   ScopeUsersWrite,
-	ScopeClientsRead: ScopeClientsWrite,
-	ScopeGroupsRead:  ScopeGroupsWrite,
+	ScopeUsersRead:      ScopeUsersWrite,
+	ScopeClientsRead:    ScopeClientsWrite,
+	ScopeGroupsRead:     ScopeGroupsWrite,
+	ScopeRelationsRead:  ScopeRelationsWrite,
+	ScopeRelationsWrite: ScopeOrganizationsWrite,
+	ScopeTokensRead:     ScopeTokensWrite,
 }
 
 // Principal is whoever is making an admin request.
@@ -100,6 +137,25 @@ type Principal struct {
 	// time somebody cleared a list intending to revoke access.
 	ClientIDs []string
 	GroupIDs  []string
+	// AttributeNames narrows the token to named user attributes (V8.2.3), by
+	// the same rule: nil is every attribute, empty is none.
+	AttributeNames []string
+
+	// UserGroups narrows a scope to the members of named groups, for a
+	// principal whose only binding granting it is a delegated user-manager
+	// (6.01): users:write -> the groups whose members it may change. A scope
+	// absent is unrestricted, and only a role principal has any; enforced by
+	// auth for a route addressing a person and by the handlers that find
+	// theirs another way (requireReach, reachFilter).
+	UserGroups map[string][]string
+
+	// UserID is the person a role principal acts as, recorded as the actor of
+	// what they change; empty for a token or an application.
+	UserID string
+
+	// ExpiresAt is when the token stops working, nil for never: a token may not
+	// mint one that outlives it (6.04).
+	ExpiresAt *time.Time
 }
 
 // MayActOnClient reports whether this principal may touch a client.
@@ -112,23 +168,44 @@ func (p *Principal) MayActOnGroup(groupID string) error {
 	return p.mayActOnObject("group", groupID, p.GroupIDs)
 }
 
+// MayActOnAttribute reports whether this principal may read, set or release a
+// user attribute's values. A name is an attribute's declared name, compared
+// exactly, as it is stored.
+func (p *Principal) MayActOnAttribute(name string) error {
+	return p.mayActOnObject("attribute", name, p.AttributeNames)
+}
+
 // mayActOnObject is the shared rule.
 //
 // nil is unrestricted; anything else is an allow-list, including the empty one.
 // Written once because the two call sites must not drift: a copy that treated
 // empty as unrestricted for groups and not for clients would be a boundary that
 // holds for one object kind, which reads as enforced and is not.
+//
+// Compared as each kind's key is compared everywhere else. A client id is a
+// case-sensitive key, so it matches exactly: compared without case, a token
+// for `app` could act on a different client called `APP`. A group id is a
+// uuid, so it matches in the canonical form PostgreSQL stores.
 func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
 	if allowed == nil {
 		return nil
 	}
+	if kind == "group" {
+		if c, ok := store.CanonicalUUID(id); ok {
+			id = c
+		}
+	}
 	for _, a := range allowed {
-		if strings.EqualFold(a, id) {
+		if kind == "group" {
+			if c, ok := store.CanonicalUUID(a); ok {
+				a = c
+			}
+		}
+		if a == id {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: this token is restricted to named %ss and %s is not one of them",
-		errCrossOrg, kind, id)
+	return outsideObjects{fmt.Sprintf("this token is restricted to named %ss and %s is not one of them", kind, id)}
 }
 
 // Can reports whether this principal holds a scope.
@@ -137,12 +214,11 @@ func (p *Principal) mayActOnObject(kind, id string, allowed []string) error {
 // adding read endpoints would have quietly broken every token already issued with
 // `clients:write`, which would have been an upgrade that removed access.
 func (p *Principal) Can(scope string) bool {
-	implied := impliedBy[scope]
-	for _, s := range p.Scopes {
-		if s == scope || s == ScopeAll {
-			return true
-		}
-		if implied != "" && s == implied {
+	if slices.Contains(p.Scopes, ScopeAll) {
+		return true
+	}
+	for ; scope != ""; scope = impliedBy[scope] {
+		if slices.Contains(p.Scopes, scope) {
 			return true
 		}
 	}
@@ -199,19 +275,24 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 		return &Principal{Name: "break-glass environment token",
 			Scopes: []string{ScopeAll}, BreakGlass: true}, nil
 	}
+	if looksLikeAccessToken(presented) {
+		return s.resolveAccessToken(ctx, presented)
+	}
 
 	sum := sha256.Sum256([]byte(presented))
 
 	var p Principal
 	var orgID *string
 	var expires, revoked *time.Time
+	var serving bool
 	err := s.db.QueryRow(ctx, `
 		SELECT id::text, name, org_id::text, scopes, expires_at, revoked_at,
-		       client_ids, group_ids
+		       client_ids, group_ids, attribute_names,
+		       org_id IS NULL OR `+store.OrgInService("org_id")+`
 		FROM core.admin_tokens
 		WHERE token_hash = $1`, sum[:]).
 		Scan(&p.TokenID, &p.Name, &orgID, &p.Scopes, &expires, &revoked,
-			&p.ClientIDs, &p.GroupIDs)
+			&p.ClientIDs, &p.GroupIDs, &p.AttributeNames, &serving)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errTokenRejected
@@ -224,11 +305,31 @@ func (s *Server) resolveToken(ctx context.Context, presented string) (*Principal
 	if expires != nil && time.Now().After(*expires) {
 		return nil, errTokenRejected
 	}
+	// A suspended organisation's own tokens are refused, so its automation stops
+	// with the rest of it (6.09); a deployment-wide token still reaches it, which
+	// is how it is reactivated. Told apart from a bad token, since the holder of
+	// a good one is owed the reason.
+	if !serving {
+		return nil, errOrgSuspended
+	}
 	if orgID != nil {
 		p.OrgID = *orgID
 	}
+	p.ExpiresAt = expires
 	return &p, nil
 }
+
+// errOrgSuspended refuses a good token of a suspended organisation.
+var errOrgSuspended = errors.New("organisation suspended")
+
+// OperatorHeader names the person a caller acts for, recorded with its token
+// on every audit record the request makes (6.05). The console sends its own
+// user's reference; the token is still the authenticated party.
+const OperatorHeader = "Signari-Operator"
+
+// operatorPattern holds the header to an opaque reference: no "@", so an
+// address cannot be put into the append-only trail by way of it.
+var operatorPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 // touch records that a token was used, best-effort and out of band.
 //
@@ -256,12 +357,26 @@ func (s *Server) touch(tokenID string) {
 // saying "not found" would be a lie that costs an operator an hour.
 var errCrossOrg = errors.New("outside this token's organisation")
 
-// requireOrg enforces the organisation boundary for a request.
-//
-// Called at BOTH points an organisation is decided: the request body on a
-// create, and the existing row on an update. Enforcing it in only one leaves a
-// boundary that holds for new records and not for edits -- worse than none,
-// because it reads as enforced.
+// outsideObjects is a refusal for a client, group or attribute the token is
+// not narrowed to. It is an errCrossOrg, so every handler that answers one
+// answers this, and writeCrossOrg says what it is: until November 2026 it went
+// out as outside_token_organisation, "outside this token's organisation", for
+// a token whose organisation it was.
+type outsideObjects struct{ msg string }
+
+func (e outsideObjects) Error() string        { return e.msg }
+func (e outsideObjects) Is(target error) bool { return target == errCrossOrg }
+
+// errUnknownOrg and errMalformedOrg are an organisation the caller named that
+// does not exist, or an id that is not one (0.23). Both are the caller's
+// mistake; before them each reached the database and came back as a foreign
+// key or a cast failure answered 500, or for a token, 400 with PostgreSQL's
+// own message.
+var (
+	errUnknownOrg   = errors.New("no organisation has that id")
+	errMalformedOrg = errors.New("org_id must be a uuid in its canonical form, lower case 8-4-4-4-12")
+)
+
 // requireClient narrows a request to the clients this token may act on.
 //
 // Called ALONGSIDE requireOrg, never instead of it: the organisation check
@@ -286,6 +401,12 @@ func requireGroup(ctx context.Context, groupID string) error {
 	return p.MayActOnGroup(groupID)
 }
 
+// requireOrg enforces the organisation boundary for a request.
+//
+// Called at BOTH points an organisation is decided: the request body on a
+// create, and the existing row on an update. Enforcing it in only one leaves a
+// boundary that holds for new records and not for edits -- worse than none,
+// because it reads as enforced.
 func requireOrg(ctx context.Context, orgID string) error {
 	p, ok := principalFrom(ctx)
 	if !ok {
@@ -299,6 +420,73 @@ func requireOrg(ctx context.Context, orgID string) error {
 	}
 	return nil
 }
+
+// requireNamedOrg is requireOrg for an organisation the caller names, in a
+// body or a path, rather than one read from an existing row: the id must be a
+// uuid as canonicalIDs requires of a path, the token must reach it, and it must
+// exist. Answered by writeOrgRefusal.
+//
+// The boundary is checked before existence, so a token held to one
+// organisation is refused every other id alike and cannot use the difference
+// to learn which exist. Existence is read in the write's own transaction, so an
+// organisation an earlier operation of the same batch created is found.
+func requireNamedOrg(ctx context.Context, tx pgx.Tx, orgID string) error {
+	if id, err := uuid.Parse(orgID); err != nil || id.String() != orgID {
+		return errMalformedOrg
+	}
+	if err := requireOrg(ctx, orgID); err != nil {
+		return err
+	}
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT true FROM core.organizations WHERE id = $1::uuid`, orgID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errUnknownOrg
+	}
+	return err
+}
+
+// requireReach refuses a person a role delegated over groups does not reach
+// for scope (6.01): one who is a member of none of its groups. auth applies it
+// to every route that names a person in its path; a handler that finds its
+// person another way calls it itself. A person who does not exist is refused
+// alike, so a delegate cannot tell the two apart.
+func requireReach(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, p *Principal, scope, userID string) error {
+	groups, narrowed := p.UserGroups[scope]
+	if !narrowed {
+		return nil
+	}
+	// In one of its groups or a group inside one (11.09): the role was delegated
+	// over the group, and whoever is in it by nesting is in it. Only an
+	// organisation-wide caller can nest, so no delegate widens its own reach.
+	var member bool
+	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.groups_of($1::uuid)
+		WHERE group_id = ANY($2::uuid[]))`, store.ExactUUIDOrNil(userID), groups).Scan(&member); err != nil {
+		return err
+	}
+	if !member {
+		return fmt.Errorf("%w: this role reaches only the members of its groups, and %s is not one",
+			errCrossOrg, userID)
+	}
+	return nil
+}
+
+// reachFilter is the groups a list of people is narrowed to for scope, as
+// requireReach narrows one person, or nil for everyone. Passed to the query
+// as a nullable uuid[], so the narrowing is in the WHERE clause.
+func reachFilter(ctx context.Context, scope string) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return p.UserGroups[scope]
+}
+
+// errDelegatedCreate refuses a role delegated over groups a person it would
+// not reach: one made outside any group, or invited into one not its own.
+var errDelegatedCreate = fmt.Errorf("%w: a role delegated over groups adds people by invitation "+
+	"into its own groups, so that it reaches who it adds", errCrossOrg)
 
 // orgFilter is the organisation a LIST must be restricted to, or nil for a
 // principal that may see every organisation.
@@ -322,6 +510,89 @@ func orgFilter(ctx context.Context) *string {
 	}
 	org := p.OrgID
 	return &org
+}
+
+// clientFilter and groupFilter narrow a LIST to the objects a token may act on,
+// as orgFilter narrows it to the token's organisation. Before them, a token
+// restricted to one application listed every application in the organisation.
+//
+// nil means every object and goes to the query as NULL. A non-nil slice is an
+// allow-list, and an empty one matches nothing: pgx sends it as '{}', and
+// `= ANY('{}')` is false. This is the same distinction mayActOnObject draws.
+// Lower-cased, because mayActOnObject compares without case. Fails closed
+// without a principal.
+// clientFilter is the token's client allow-list as given: client ids are
+// case-sensitive keys and match exactly (see mayActOnObject).
+func clientFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return p.ClientIDs
+}
+
+func groupFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return lowered(p.GroupIDs)
+}
+
+// attributeFilter is the attributes the caller may reach: nil for every one.
+func attributeFilter(ctx context.Context) []string {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return []string{}
+	}
+	return p.AttributeNames
+}
+
+// requireAttribute refuses an attribute the caller may not reach, with
+// errCrossOrg, as requireClient refuses a client.
+func requireAttribute(ctx context.Context, name string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("%w: no principal", errCrossOrg)
+	}
+	return p.MayActOnAttribute(name)
+}
+
+func lowered(ids []string) []string {
+	if ids == nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, strings.ToLower(id))
+	}
+	return out
+}
+
+// requireUnrestricted refuses a create from a token narrowed to named objects
+// of that kind. The new object would not be on the token's list, so the token
+// could create it and then not manage it. Worse, an application it registers
+// receives credentials and redirect URIs that nobody narrowed to anything.
+func requireUnrestricted(ctx context.Context, kind string) error {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return fmt.Errorf("no admin principal on the request context; the handler is " +
+			"registered without auth()")
+	}
+	var restricted bool
+	switch kind {
+	case "client":
+		restricted = p.ClientIDs != nil
+	case "group":
+		restricted = p.GroupIDs != nil
+	default:
+		return fmt.Errorf("%w: no object restriction is defined for %q", errCrossOrg, kind)
+	}
+	if restricted {
+		return fmt.Errorf("%w: this token is restricted to named %ss and cannot create one",
+			errCrossOrg, kind)
+	}
+	return nil
 }
 
 // TokenIDFrom returns the acting token's id for the audit trail, empty when the

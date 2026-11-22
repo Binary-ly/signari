@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/store"
@@ -64,13 +63,13 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 	// the rotation states, the wrapping and the retirement sweep that the
 	// protocol keys already have, instead of a second half-implementation.
 	if s.fedKeys == nil {
-		s.log.Error("federated instance with no federation key set loaded")
+		s.log.ErrorContext(ctx, "federated instance with no federation key set loaded")
 		http.Error(w, "no federation key", http.StatusInternalServerError)
 		return
 	}
 	fedJWKS, err := s.fedKeys.MarshalJWKS()
 	if err != nil {
-		s.log.Error("marshalling the federation JWKS", "err", err)
+		s.log.ErrorContext(ctx, "marshalling the federation JWKS", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -82,7 +81,7 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 	// operator reading their own configuration sees the accreditation listed.
 	held, err := store.PublishableTrustMarks(ctx, s.db, s.instanceID)
 	if err != nil {
-		s.log.Error("reading the trust marks this entity holds", "err", err)
+		s.log.ErrorContext(ctx, "reading the trust marks this entity holds", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -104,22 +103,14 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 		TrustMarkOwners:  cfg.TrustMarkOwners,
 	}, time.Now())
 	if err != nil {
-		s.log.Error("building the entity configuration", "err", err)
+		s.log.ErrorContext(ctx, "building the entity configuration", "err", err)
 		http.Error(w, "misconfigured", http.StatusInternalServerError)
 		return
 	}
 
-	key, err := s.fedKeys.Active(keys.ES256)
+	key, err := s.federationKey()
 	if err != nil {
-		for _, alg := range s.fedKeys.Algorithms() {
-			if k, e := s.fedKeys.Active(alg); e == nil {
-				key, err = k, nil
-				break
-			}
-		}
-	}
-	if err != nil {
-		s.log.Error("no active federation signing key", "err", err)
+		s.log.ErrorContext(ctx, "no active federation signing key", "err", err)
 		http.Error(w, "no federation key", http.StatusInternalServerError)
 		return
 	}
@@ -129,7 +120,7 @@ func (s *Server) handleEntityConfiguration(w http.ResponseWriter, r *http.Reques
 	// a MUST for Entity Statement JWTs.
 	signed, err := tokens.NewSigner(key).SignJSON(conf, oidfed.Typ)
 	if err != nil {
-		s.log.Error("signing the entity configuration", "err", err)
+		s.log.ErrorContext(ctx, "signing the entity configuration", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -188,12 +179,19 @@ func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSe
 		// Logged and treated as "not an issuer". The alternative -- failing the
 		// whole Entity Configuration -- would take this entity out of its
 		// federation entirely over a claim that is OPTIONAL in §5.1.1.
-		s.log.Error("deciding whether to advertise the trust mark endpoints", "err", err)
+		s.log.ErrorContext(ctx, "deciding whether to advertise the trust mark endpoints", "err", err)
 	} else if issuer {
 		base := strings.TrimRight(s.cfg.Issuer, "/")
 		fedEntity["federation_trust_mark_status_endpoint"] = base + trustMarkStatusPath
 		fedEntity["federation_trust_mark_list_endpoint"] = base + trustMarkListPath
 		fedEntity["federation_trust_mark_endpoint"] = base + trustMarkPath
+	}
+
+	if s.federationSuperior(ctx, cfg) {
+		base := strings.TrimRight(s.cfg.Issuer, "/")
+		fedEntity["federation_fetch_endpoint"] = base + federationFetchPath
+		fedEntity["federation_list_endpoint"] = base + federationListPath
+		fedEntity["federation_resolve_endpoint"] = base + federationResolvePath
 	}
 
 	md := map[string]any{"federation_entity": fedEntity}
@@ -207,6 +205,12 @@ func (s *Server) federationMetadata(ctx context.Context, cfg *store.FederationSe
 		if raw, merr := json.Marshal(doc); merr == nil {
 			if json.Unmarshal(raw, &op) == nil {
 				md["openid_provider"] = op
+				// §12.1 and §12.2: "MUST include" each keyword, and only once an
+				// operator has said whose word to take does either mean anything.
+				if anchors, aerr := store.FederationAnchors(ctx, s.db, s.instanceID); aerr == nil && len(anchors) > 0 {
+					op["client_registration_types_supported"] = []string{"automatic", "explicit"}
+					op["federation_registration_endpoint"] = strings.TrimRight(s.cfg.Issuer, "/") + federationRegisterPath
+				}
 			}
 		}
 	}

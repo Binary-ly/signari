@@ -119,7 +119,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("reading a permission ticket for claims gathering", "err", err)
+		s.log.ErrorContext(ctx, "reading a permission ticket for claims gathering", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -147,7 +147,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 
 	handle, err := newSID()
 	if err != nil {
-		s.log.Error("minting a claims interaction handle", "err", err)
+		s.log.ErrorContext(ctx, "minting a claims interaction handle", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -162,7 +162,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := store.BeginInteraction(ctx, s.db, i, store.HashToken(handle),
 		InteractionLifetime); err != nil {
-		s.log.Error("recording a claims interaction", "err", err)
+		s.log.ErrorContext(ctx, "recording a claims interaction", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -185,7 +185,7 @@ func (s *Server) beginUMAClaims(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	s.renderPage(w, r, "umaclaims", map[string]any{
-		"ClientName":     c.DisplayName,
+		"ClientName":     s.clientNameFor(r.Context(), r, c.ClientID, c.DisplayName),
 		"ResourceServer": t.ResourceServer,
 		"Asks":           asks,
 		"Handle":         handle,
@@ -205,7 +205,7 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 	// lookup, so a forged post cannot spend an interaction even if it somehow
 	// carried a session cookie.
 	if !checkCSRF(r) {
-		s.log.Info("uma claims interaction refused: csrf",
+		s.log.InfoContext(ctx, "uma claims interaction refused: csrf",
 			"correlation_id", correlationID(ctx))
 		s.renderClaimsError(w, r, "That request could not be verified.",
 			"Return to the application and start again.")
@@ -234,7 +234,7 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("consuming a claims interaction", "err", err)
+		s.log.ErrorContext(ctx, "consuming a claims interaction", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -249,7 +249,7 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.log.Error("redeeming a permission ticket at the claims endpoint", "err", err)
+		s.log.ErrorContext(ctx, "redeeming a permission ticket at the claims endpoint", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -260,7 +260,7 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 	// a comparison somebody has to remember to make.
 	next, err := uma.NewTicket()
 	if err != nil {
-		s.log.Error("minting a successor permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "minting a successor permission ticket", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -273,8 +273,11 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 			// proved to THIS client; a second client presenting the successor
 			// ticket would be handed somebody else's proof.
 			BoundClient: i.ClientID,
+			// Off unless they ticked it: §6.2 recommends asking a person before
+			// keeping anything of theirs across authorization processes.
+			PersistClaims: r.PostForm.Get("remember") != "",
 		}, uma.TicketLifetime); err != nil {
-		s.log.Error("recording a successor permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "recording a successor permission ticket", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -303,7 +306,7 @@ func (s *Server) finishUMAClaims(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if err != nil {
-		s.log.Error("building the claims redirect", "err", err)
+		s.log.ErrorContext(ctx, "building the claims redirect", "err", err)
 		s.renderClaimsError(w, r, "Something went wrong.", "Please try again.")
 		return
 	}
@@ -365,8 +368,7 @@ func appendQuery(raw string, add func(url.Values)) (string, error) {
 // renderClaimsError tells the requesting party what went wrong, here, on this
 // origin -- never by redirecting.
 func (s *Server) renderClaimsError(w http.ResponseWriter, r *http.Request, title, detail string) {
-	w.WriteHeader(http.StatusBadRequest)
-	s.renderPage(w, r, "umaclaimserr", map[string]any{
+	s.renderPageStatus(w, r, http.StatusBadRequest, "umaclaimserr", map[string]any{
 		"Title": title, "Detail": detail,
 	})
 }
@@ -412,6 +414,28 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 			"claim_token and claim_token_format must appear together (section 3.3.1)")
 	}
 
+	// §3.3.1 has the client make "a best effort" that the person is the one a PCT
+	// was issued for, which is all it can be. This server's part is to refuse one it
+	// did not issue to this client, and one disagreeing with anything else in the
+	// request: it stands for an identity, so two of them are one or the other.
+	remembered := ""
+	if pct := r.PostForm.Get("pct"); pct != "" {
+		var err error
+		if remembered, err = store.PersonOfPersistedClaims(ctx, s.db, pct, c.ClientID); err != nil {
+			if !errors.Is(err, store.ErrPersistedClaimsUnknown) {
+				s.log.ErrorContext(ctx, "reading a persisted claims token", "err", err)
+			}
+			return requestingParty{}, uma.InvalidGrant(
+				"this persisted claims token is unknown, has expired, or was not issued to this client")
+		}
+	}
+	disagrees := func(person string) *uma.Error {
+		if remembered != "" && remembered != person {
+			return uma.InvalidGrant("the persisted claims token is about somebody other than this request")
+		}
+		return nil
+	}
+
 	if t.RequestingParty != "" {
 		if pushed != "" {
 			return requestingParty{}, uma.InvalidRequest(
@@ -420,10 +444,13 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 					"claim_token; the two would have to be the same person and this " +
 					"server will not guess which one you meant")
 		}
+		if bad := disagrees(t.RequestingParty); bad != nil {
+			return requestingParty{}, bad
+		}
 		ref, err := store.RequestingPartyRef(ctx, s.db, t.RequestingParty)
 		if err != nil {
 			if !errors.Is(err, store.ErrNoSuchSubject) {
-				s.log.Error("resolving a bound requesting party", "err", err)
+				s.log.ErrorContext(ctx, "resolving a bound requesting party", "err", err)
 			}
 			return requestingParty{}, uma.InvalidGrant(
 				"the requesting party on this ticket no longer exists")
@@ -432,7 +459,14 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 	}
 
 	if pushed == "" {
-		return requestingParty{}, nil
+		if remembered == "" {
+			return requestingParty{}, nil
+		}
+		ref, err := store.RequestingPartyRef(ctx, s.db, remembered)
+		if err != nil {
+			return requestingParty{}, uma.InvalidGrant("the person this token was about no longer exists")
+		}
+		return requestingParty{userID: remembered, ref: ref}, nil
 	}
 	if format != uma.ClaimTokenFormatIDToken {
 		// Named, not generic. A client that sent a SAML assertion needs to know
@@ -489,12 +523,20 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 		return requestingParty{}, s.claimTokenNeedInfo(ctx, t,
 			"the pushed claim_token has expired; fetch a fresh ID token")
 	}
-	ref, err := store.RequestingPartyRef(ctx, s.db, claims.Subject)
+	person, err := store.PersonNamedBy(ctx, s.db, aud, claims.Subject)
 	if err != nil {
 		return requestingParty{}, uma.InvalidGrant(
 			"the pushed claim_token names a subject this server does not know")
 	}
-	return requestingParty{userID: claims.Subject, ref: ref}, nil
+	if bad := disagrees(person); bad != nil {
+		return requestingParty{}, bad
+	}
+	ref, err := store.RequestingPartyRef(ctx, s.db, person)
+	if err != nil {
+		return requestingParty{}, uma.InvalidGrant(
+			"the pushed claim_token names a subject this server does not know")
+	}
+	return requestingParty{userID: person, ref: ref}, nil
 }
 
 // claimTokenNeedInfo answers a RECOVERABLE claim-token fault.
@@ -521,7 +563,7 @@ func (s *Server) requestingParty(ctx context.Context, r *http.Request,
 func (s *Server) claimTokenNeedInfo(ctx context.Context, t *store.Ticket, why string) *uma.Error {
 	next, err := s.successorTicket(ctx, t, "", "", "")
 	if err != nil {
-		s.log.Error("minting a need_info ticket for a claim token fault", "err", err)
+		s.log.ErrorContext(ctx, "minting a need_info ticket for a claim token fault", "err", err)
 		return uma.InvalidGrant(why)
 	}
 	return uma.NeedInfo(next, strings.TrimRight(s.cfg.Issuer, "/")+claimsInteractionPath,
@@ -572,7 +614,7 @@ func (s *Server) refuseUMA(w http.ResponseWriter, r *http.Request, c *clients.Cl
 		}
 		next, err := s.successorTicket(ctx, t, "", "", "")
 		if err != nil {
-			s.log.Error("minting a need_info ticket", "err", err)
+			s.log.ErrorContext(ctx, "minting a need_info ticket", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
@@ -587,7 +629,7 @@ func (s *Server) refuseUMA(w http.ResponseWriter, r *http.Request, c *clients.Cl
 
 	settings, err := store.LoadUMASettings(ctx, s.db, c.OrgID)
 	if err != nil {
-		s.log.Error("reading UMA settings", "err", err)
+		s.log.ErrorContext(ctx, "reading UMA settings", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -601,13 +643,13 @@ func (s *Server) refuseUMA(w http.ResponseWriter, r *http.Request, c *clients.Cl
 		RequestingParty: party.userID, Permissions: t.Permissions,
 	}, PendingRequestLifetime)
 	if err != nil {
-		s.log.Error("submitting a UMA request for owner intervention", "err", err)
+		s.log.ErrorContext(ctx, "submitting a UMA request for owner intervention", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	next, err := s.successorTicket(ctx, t, party.userID, c.ClientID, pending.ID)
 	if err != nil {
-		s.log.Error("minting a request_submitted ticket", "err", err)
+		s.log.ErrorContext(ctx, "minting a request_submitted ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -645,7 +687,7 @@ func (s *Server) successorTicket(ctx context.Context, t *store.Ticket,
 		store.TicketOrigin{
 			OrgID: t.OrgID, ResourceServer: t.ResourceServer,
 			Permissions: t.Permissions, RequestingParty: party,
-			BoundClient: boundClient, PendingRequest: pending,
+			BoundClient: boundClient, PendingRequest: pending, PersistClaims: t.PersistClaims,
 		}, uma.TicketLifetime); err != nil {
 		return "", err
 	}
@@ -662,19 +704,19 @@ func (s *Server) successorTicket(ctx context.Context, t *store.Ticket,
 func (s *Server) handleUMAMetadata(w http.ResponseWriter, r *http.Request) {
 	doc, err := oidc.Build(s.cfg)
 	if err != nil {
-		s.log.Error("building the UMA discovery document", "err", err)
+		s.log.ErrorContext(r.Context(), "building the UMA discovery document", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
-		s.log.Error("marshalling the UMA discovery document", "err", err)
+		s.log.ErrorContext(r.Context(), "marshalling the UMA discovery document", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		s.log.Error("rebuilding the UMA discovery document", "err", err)
+		s.log.ErrorContext(r.Context(), "rebuilding the UMA discovery document", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

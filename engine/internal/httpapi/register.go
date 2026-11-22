@@ -4,13 +4,25 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/safedial"
 	"signari.dev/engine/internal/store"
+)
+
+// registrationsPerAddress registration attempts are accepted from one address
+// per registrationAddressWindow, before any other work.
+const (
+	registrationsPerAddress   = 20
+	registrationAddressWindow = time.Hour
 )
 
 // Dynamic client registration, RFC 7591, with RFC 7592 management.
@@ -38,6 +50,15 @@ type registrationRequest struct {
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	LogoutURI               string   `json:"backchannel_logout_uri"`
 
+	// Sign-out registration: where RP-initiated logout may return the browser,
+	// and the front-channel logout URI. Once dropped, as unmodelled metadata is,
+	// so a client registering them was refused at sign-out with no way to know
+	// why. They only ever concern the client registering them.
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI  string   `json:"frontchannel_logout_uri"`
+	// A pointer, so a client that does not send it keeps the stored default.
+	FrontchannelSessionRequired *bool `json:"frontchannel_logout_session_required"`
+
 	// CIBA §4 makes this REQUIRED client metadata for a client registering to
 	// use CIBA. This server implements all three modes, but DYNAMIC registration
 	// is narrowed to poll -- see the check in the handler for why.
@@ -63,6 +84,119 @@ type registrationRequest struct {
 	// and the only effect is that its own unproofed requests are refused. It
 	// fails closed for the party that asked for it and touches nobody else.
 	DPoPBoundAccessTokens bool `json:"dpop_bound_access_tokens"`
+
+	// OpenID Connect Dynamic Client Registration §2: the JWS algorithm for the
+	// ID token signed to this client, which here signs its access tokens too.
+	// Only ever about the registrant's own tokens. Dropped before, so a client
+	// asking for RS256 was answered in ES256 and could not verify it.
+	IDTokenSignedResponseAlg string `json:"id_token_signed_response_alg"`
+
+	// RFC 9126 §6: "Indicates whether the client is required to use PAR to
+	// initiate authorization requests." A client constraining itself, so safe
+	// from open registration like dpop_bound_access_tokens.
+	RequirePushedAuthorizationRequests bool `json:"require_pushed_authorization_requests"`
+	// RFC 9101 §10.5, a client constraining itself in the same way.
+	RequireSignedRequestObject bool `json:"require_signed_request_object"`
+	// JARM §3, and another: with one, the client takes only signed responses.
+	AuthorizationSignedResponseAlg string `json:"authorization_signed_response_alg"`
+
+	// How its responses are signed and encrypted, and the keys to encrypt them to.
+	// Dropped silently, a client that asked for encryption would get plaintext.
+	UserinfoSignedResponseAlg         string          `json:"userinfo_signed_response_alg"`
+	IDTokenEncryptedResponseAlg       string          `json:"id_token_encrypted_response_alg"`
+	IDTokenEncryptedResponseEnc       string          `json:"id_token_encrypted_response_enc"`
+	UserinfoEncryptedResponseAlg      string          `json:"userinfo_encrypted_response_alg"`
+	UserinfoEncryptedResponseEnc      string          `json:"userinfo_encrypted_response_enc"`
+	AuthorizationEncryptedResponseAlg string          `json:"authorization_encrypted_response_alg"`
+	AuthorizationEncryptedResponseEnc string          `json:"authorization_encrypted_response_enc"`
+	IntrospectionSignedResponseAlg    string          `json:"introspection_signed_response_alg"`
+	IntrospectionEncryptedResponseAlg string          `json:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedResponseEnc string          `json:"introspection_encrypted_response_enc"`
+	JWKS                              json.RawMessage `json:"jwks"`
+
+	// How the client names people, and for pairwise the document saying which
+	// redirect URIs one party holds (specs/oidc-registration.txt:109-112). Dropped
+	// before, so a client that asked for pairwise subjects was handed the id every
+	// other client is.
+	SubjectType         string `json:"subject_type"`
+	SectorIdentifierURI string `json:"sector_identifier_uri"`
+}
+
+const (
+	sectorFetchTimeout = 10 * time.Second
+	maxSectorDocument  = 64 << 10
+)
+
+// registeredSubject reads subject_type and sector_identifier_uri: the type asked
+// for, "" for none, and the sector a client's subjects belong to, "" for none named.
+// A pairwise client names its sector by a document or by having one host.
+func (s *Server) registeredSubject(ctx context.Context, kind, sectorURI string, redirects []string) (string, string, error) {
+	if kind != "" && kind != "public" && kind != "pairwise" {
+		return "", "", fmt.Errorf("subject_type %q is not one this issuer has: public or pairwise", kind)
+	}
+	if sectorURI != "" {
+		sector, err := s.fetchSectorIdentifier(ctx, sectorURI, redirects)
+		return kind, sector, err
+	}
+	if kind == "pairwise" {
+		sector, why := store.RedirectSector(redirects)
+		if why != "" {
+			// "If there are multiple hostnames in the registered redirect_uris, the
+			// Client MUST register a sector_identifier_uri" (specs/oidc-core.txt:5246-5248).
+			return "", "", fmt.Errorf("%s; a pairwise client names it with a sector_identifier_uri", why)
+		}
+		return kind, sector, nil
+	}
+	return kind, "", nil
+}
+
+// fetchSectorIdentifier reads a sector_identifier_uri and answers its host, the
+// sector, once every redirect URI is in the array it holds: "The values registered
+// in redirect_uris MUST be included in the elements of the array, or registration
+// MUST fail" (specs/oidc-registration.txt:363), compared code point for code point
+// (:384-385). Through safedial, since a stranger chose the address; nothing of what it
+// answered is kept, as the same paragraph allows.
+func (s *Server) fetchSectorIdentifier(ctx context.Context, raw string, redirects []string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return "", errors.New("sector_identifier_uri must be a URL using the https scheme")
+	}
+	ctx, cancel := context.WithTimeout(ctx, sectorFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", errors.New("sector_identifier_uri must be a URL using the https scheme")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := safedial.Client(sectorFetchTimeout).Do(req)
+	if err != nil {
+		// What the dial met stays in the log: a stranger asking is told only that it
+		// could not be read, not what lies at an address it cannot reach itself.
+		s.log.InfoContext(ctx, "reading a sector_identifier_uri", "uri", raw, "err", err,
+			"correlation_id", correlationID(ctx))
+		return "", errors.New("sector_identifier_uri could not be read from here")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("sector_identifier_uri answered %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSectorDocument+1))
+	if err != nil {
+		return "", errors.New("sector_identifier_uri could not be read from here")
+	}
+	if len(body) > maxSectorDocument {
+		return "", fmt.Errorf("sector_identifier_uri holds more than %d bytes", maxSectorDocument)
+	}
+	var listed []string
+	if err := json.Unmarshal(body, &listed); err != nil {
+		return "", errors.New("sector_identifier_uri does not hold a JSON array of redirect URIs")
+	}
+	for _, r := range redirects {
+		if !slices.Contains(listed, r) {
+			return "", fmt.Errorf("redirect_uri %s is not in the array at sector_identifier_uri", r)
+		}
+	}
+	return strings.ToLower(u.Hostname()), nil
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +204,55 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	// Rate limited whether or not it is open: this endpoint writes rows.
+	//
+	// Per address first, in the database, so one caller's attempts are bounded
+	// on every instance and spend only that caller's allowance.
+	res, rerr := store.AllowRate(ctx, s.db, "register:ip:"+budgetIP(clientIP(r)),
+		registrationsPerAddress, registrationAddressWindow)
+	if rerr != nil {
+		s.log.ErrorContext(ctx, "checking the registration rate limit", "err", rerr)
+		writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
+		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
+			"too many registrations from this address")
+		return
+	}
+
+	var req registrationRequest
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata",
+			"the request body is not valid JSON")
+		return
+	}
+	// The name in other languages, client_name#<tag> (RFC 7591 section 2.2), which no
+	// struct field can name.
+	names, err := localizedNamesIn(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+
+	// Which organisation, and may this caller register at all?
+	orgID, tokenID, err := s.authorizeRegistration(ctx, r)
+	if err != nil {
+		s.log.InfoContext(ctx, "registration refused", "err", err,
+			"correlation_id", correlationID(ctx))
+		// One answer for "not enabled here", "no token" and "bad token". Telling
+		// a caller which would let them map where registration is open.
+		writeError(w, http.StatusUnauthorized, "invalid_token",
+			"registration is not available with these credentials")
+		return
+	}
+
+	// The shared bucket, spent only by a caller allowed to register. It was
+	// spent before that check, so anybody could exhaust it with garbage and
+	// keep every real registration out.
 	//
 	// Its OWN bucket. This shared the device flow's limiter, which meant the two
 	// endpoints could not be tuned apart -- and when the device limit was
@@ -80,25 +263,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !s.register.Allow() {
 		writeError(w, http.StatusTooManyRequests, "temporarily_unavailable",
 			"too many registrations just now")
-		return
-	}
-
-	var req registrationRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_client_metadata",
-			"the request body is not valid JSON")
-		return
-	}
-
-	// Which organisation, and may this caller register at all?
-	orgID, tokenID, err := s.authorizeRegistration(ctx, r)
-	if err != nil {
-		s.log.Info("registration refused", "err", err,
-			"correlation_id", correlationID(ctx))
-		// One answer for "not enabled here", "no token" and "bad token". Telling
-		// a caller which would let them map where registration is open.
-		writeError(w, http.StatusUnauthorized, "invalid_token",
-			"registration is not available with these credentials")
 		return
 	}
 
@@ -130,7 +294,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	pol, err := store.LoadRegistrationPolicy(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("loading the registration policy", "err", err)
+		s.log.ErrorContext(ctx, "loading the registration policy", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -139,7 +303,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// stops a flood doing work.
 	count, err := store.CountDynamicClients(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("counting dynamic clients", "err", err)
+		s.log.ErrorContext(ctx, "counting dynamic clients", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
@@ -180,23 +344,88 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		confidential = false
 	}
 
-	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
-		OrgID:        orgID,
-		DisplayName:  displayNameFor(req.ClientName),
-		RedirectURIs: req.RedirectURIs,
-		Scopes:       granted,
-		Confidential: confidential,
-		LogoutURI:    strings.TrimSpace(req.LogoutURI),
-		TokenID:      tokenID,
-		DPoPBound:    req.DPoPBoundAccessTokens,
-	})
+	var settings store.ClientSettings
+	if a := strings.TrimSpace(req.IDTokenSignedResponseAlg); a != "" {
+		settings.IDTokenAlg = &a
+	}
+	if a := strings.TrimSpace(req.AuthorizationSignedResponseAlg); a != "" {
+		settings.AuthorizationResponseAlg = &a
+	}
+	if a := strings.TrimSpace(req.UserinfoSignedResponseAlg); a != "" {
+		settings.UserinfoSignedAlg = &a
+	}
+	if a := strings.TrimSpace(req.IntrospectionSignedResponseAlg); a != "" {
+		settings.IntrospectionSignedAlg = &a
+	}
+	for _, e := range []struct {
+		from [2]string
+		alg  **string
+		enc  **string
+	}{
+		{[2]string{req.IDTokenEncryptedResponseAlg, req.IDTokenEncryptedResponseEnc}, &settings.IDTokenEncryptedAlg, &settings.IDTokenEncryptedEnc},
+		{[2]string{req.UserinfoEncryptedResponseAlg, req.UserinfoEncryptedResponseEnc}, &settings.UserinfoEncryptedAlg, &settings.UserinfoEncryptedEnc},
+		{[2]string{req.AuthorizationEncryptedResponseAlg, req.AuthorizationEncryptedResponseEnc}, &settings.AuthorizationEncryptedAlg, &settings.AuthorizationEncryptedEnc},
+		{[2]string{req.IntrospectionEncryptedResponseAlg, req.IntrospectionEncryptedResponseEnc}, &settings.IntrospectionEncryptedAlg, &settings.IntrospectionEncryptedEnc},
+	} {
+		if alg := strings.TrimSpace(e.from[0]); alg != "" {
+			*e.alg = &alg
+		}
+		if enc := strings.TrimSpace(e.from[1]); enc != "" {
+			*e.enc = &enc
+		}
+	}
+	if req.RequirePushedAuthorizationRequests {
+		settings.RequirePAR = &req.RequirePushedAuthorizationRequests
+	}
+	if req.RequireSignedRequestObject {
+		settings.RequireSignedRequest = &req.RequireSignedRequestObject
+	}
+	kind, sector, err := s.registeredSubject(ctx, req.SubjectType, req.SectorIdentifierURI, req.RedirectURIs)
 	if err != nil {
-		s.log.Error("registering a client", "err", err, "org_id", orgID)
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if kind != "" {
+		settings.SubjectType = &kind
+	}
+	if sector != "" {
+		settings.Sector = &sector
+	}
+	reg, err := store.RegisterClient(ctx, s.db, store.NewClientRegistration{
+		Settings:       settings,
+		JWKS:           req.JWKS,
+		OrgID:          orgID,
+		DisplayName:    displayNameFor(req.ClientName),
+		RedirectURIs:   req.RedirectURIs,
+		Scopes:         granted,
+		Confidential:   confidential,
+		LogoutURI:      strings.TrimSpace(req.LogoutURI),
+		TokenID:        tokenID,
+		DPoPBound:      req.DPoPBoundAccessTokens,
+		LocalizedNames: names,
+		Logout: store.ClientLogout{
+			PostLogoutRedirectURIs:      &req.PostLogoutRedirectURIs,
+			FrontchannelURI:             &req.FrontchannelLogoutURI,
+			FrontchannelSessionRequired: req.FrontchannelSessionRequired,
+			// Through the writer's check as well as the insert: a registrant's
+			// back-channel URI was stored unchecked, so plaintext or a
+			// fragment was accepted for the endpoint logout tokens are posted
+			// to (6.03).
+			BackchannelURI: &req.LogoutURI,
+		},
+	})
+	if errors.Is(err, store.ErrInvalidLogoutRegistration) || errors.Is(err, store.ErrInvalidClientSetting) ||
+		errors.Is(err, store.ErrInvalidClientName) {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "registering a client", "err", err, "org_id", orgID)
 		writeError(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 
-	s.log.Info("client registered dynamically", "client_id", reg.ClientID,
+	s.log.InfoContext(ctx, "client registered dynamically", "client_id", reg.ClientID,
 		"org_id", orgID, "confidential", confidential,
 		"correlation_id", correlationID(ctx))
 
@@ -219,6 +448,43 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// agreed to enforce it -- a client that asked to be pinned and was
 		// silently not would believe it was constrained when it was not.
 		"dpop_bound_access_tokens": req.DPoPBoundAccessTokens,
+	}
+	withLocalizedNames(body, names)
+	if len(req.PostLogoutRedirectURIs) > 0 {
+		body["post_logout_redirect_uris"] = req.PostLogoutRedirectURIs
+	}
+	// Echoed whether or not it was asked for: the client needs to know what it
+	// will be verifying.
+	if req.SectorIdentifierURI != "" {
+		body["sector_identifier_uri"] = req.SectorIdentifierURI
+	}
+	if st, serr := store.ClientSettingsOf(ctx, s.db, reg.ClientID); serr == nil {
+		body["subject_type"] = st.SubjectType
+		body["id_token_signed_response_alg"] = st.IDTokenAlg
+		body["require_pushed_authorization_requests"] = st.RequirePAR
+		body["require_signed_request_object"] = st.RequireSignedRequest
+		for name, value := range map[string]string{
+			"authorization_signed_response_alg":    st.AuthorizationResponseAlg,
+			"userinfo_signed_response_alg":         st.UserinfoSignedAlg,
+			"id_token_encrypted_response_alg":      st.IDTokenEncryption.Alg,
+			"id_token_encrypted_response_enc":      st.IDTokenEncryption.Enc,
+			"userinfo_encrypted_response_alg":      st.UserinfoEncryption.Alg,
+			"userinfo_encrypted_response_enc":      st.UserinfoEncryption.Enc,
+			"authorization_encrypted_response_alg": st.AuthorizationEncryption.Alg,
+			"authorization_encrypted_response_enc": st.AuthorizationEncryption.Enc,
+			"introspection_signed_response_alg":    st.IntrospectionSignedAlg,
+			"introspection_encrypted_response_alg": st.IntrospectionEncryption.Alg,
+			"introspection_encrypted_response_enc": st.IntrospectionEncryption.Enc,
+		} {
+			if value != "" {
+				body[name] = value
+			}
+		}
+	}
+	if req.FrontchannelLogoutURI != "" {
+		body["frontchannel_logout_uri"] = req.FrontchannelLogoutURI
+		_, _, sid, _ := store.ClientLogoutOf(ctx, s.db, reg.ClientID)
+		body["frontchannel_logout_session_required"] = sid
 	}
 	if confidential {
 		body["client_secret"] = reg.ClientSecret
@@ -243,7 +509,7 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	c, err := store.LoadRegisteredClient(ctx, s.db, clientID, sha256Sum(token))
+	c, err := store.LoadRegisteredClient(ctx, s.db, clientID, sha256Sum(token), s.instanceID)
 	if err != nil {
 		// Wrong token, wrong client, or a client that was never dynamically
 		// registered: one answer, so this cannot be used to discover which
@@ -255,39 +521,144 @@ func (s *Server) handleRegisteredClient(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"client_id":     c.ClientID,
 			"client_name":   c.DisplayName,
 			"redirect_uris": c.RedirectURIs,
 			"scope":         strings.Join(c.Scopes, " "),
 			"grant_types":   []string{"authorization_code", "refresh_token"},
-		})
-	case http.MethodDelete:
-		if err := store.DeleteRegisteredClient(ctx, s.db, clientID); err != nil {
-			s.log.Error("deleting a registered client", "err", err)
+		}
+		if st, err := store.ClientSettingsOf(ctx, s.db, c.ClientID); err == nil {
+			body["subject_type"] = st.SubjectType
+		}
+		names, err := store.ClientNames(ctx, s.db, c.ClientID)
+		if err != nil {
+			s.log.ErrorContext(ctx, "reading a registered client's names", "err", err)
 			writeError(w, http.StatusInternalServerError, "server_error", "")
 			return
 		}
-		s.log.Info("registered client deleted", "client_id", clientID,
+		withLocalizedNames(body, names)
+		writeJSON(w, http.StatusOK, body)
+	case http.MethodPut:
+		s.replaceRegisteredClient(w, r, c)
+	case http.MethodDelete:
+		if err := store.DeleteRegisteredClient(ctx, s.db, clientID); err != nil {
+			s.log.ErrorContext(ctx, "deleting a registered client", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "")
+			return
+		}
+		s.log.InfoContext(ctx, "registered client deleted", "client_id", clientID,
 			"correlation_id", correlationID(ctx))
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		w.Header().Set("Allow", "GET, DELETE")
+		w.Header().Set("Allow", "GET, PUT, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "")
 	}
+}
+
+// replaceRegisteredClient is RFC 7592's update, held to what registering was: the same
+// redirect rules and the same ceiling on scopes, read from the policy as it stands now.
+// A registrant holding the token is not thereby trusted with more than a stranger
+// registering afresh, so a policy tightened since narrows the client here. A secret
+// cannot be chosen, and the token stays as it is.
+func (s *Server) replaceRegisteredClient(w http.ResponseWriter, r *http.Request, c *store.RegisteredClient) {
+	ctx := r.Context()
+	var req struct {
+		registrationRequest
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "the request body is not valid JSON")
+		return
+	}
+	names, err := localizedNamesIn(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if req.ClientID != c.ClientID {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "client_id must be the client being updated")
+		return
+	}
+	if req.ClientSecret != "" {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "a client secret cannot be chosen")
+		return
+	}
+	if len(req.RedirectURIs) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_redirect_uri",
+			"redirect_uris is required: a client with none can never complete a flow")
+		return
+	}
+	for _, u := range req.RedirectURIs {
+		if err := validateRegisteredRedirect(u); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_redirect_uri", err.Error())
+			return
+		}
+	}
+	pol, err := store.LoadRegistrationPolicy(ctx, s.db, c.OrgID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "loading the registration policy", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	granted := intersectScopes(strings.Fields(req.Scope), pol.AllowedScopes)
+	if len(granted) == 0 {
+		granted = []string{"openid"}
+	}
+	// The sector held to the one the client has, in the store, since new redirect URIs
+	// are where that sector's subjects would go.
+	kind, sector, err := s.registeredSubject(ctx, req.SubjectType, req.SectorIdentifierURI, req.RedirectURIs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	name := displayNameFor(req.ClientName)
+	err = store.UpdateRegisteredClient(ctx, s.db, c.ClientID, name, names, req.RedirectURIs, granted,
+		store.RegisteredSubject{Type: kind, Sector: sector})
+	if errors.Is(err, store.ErrInvalidClientSetting) || errors.Is(err, store.ErrInvalidClientName) {
+		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "updating a registered client", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "")
+		return
+	}
+	s.log.InfoContext(ctx, "registered client updated", "client_id", c.ClientID, "correlation_id", correlationID(ctx))
+	body := map[string]any{
+		"client_id":               c.ClientID,
+		"client_name":             name,
+		"redirect_uris":           req.RedirectURIs,
+		"scope":                   strings.Join(granted, " "),
+		"grant_types":             []string{"authorization_code", "refresh_token"},
+		"registration_client_uri": s.cfg.Issuer + "/oauth2/register/" + c.ClientID,
+	}
+	withLocalizedNames(body, names)
+	if req.SectorIdentifierURI != "" {
+		body["sector_identifier_uri"] = req.SectorIdentifierURI
+	}
+	if st, err := store.ClientSettingsOf(ctx, s.db, c.ClientID); err == nil {
+		body["subject_type"] = st.SubjectType
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // authorizeRegistration decides whether this caller may register, and where.
 func (s *Server) authorizeRegistration(ctx context.Context, r *http.Request) (orgID, tokenID string, err error) {
 	if token := bearerToken(r); token != "" {
-		return store.RedeemRegistrationToken(ctx, s.db, sha256Sum(token))
+		return store.RedeemRegistrationToken(ctx, s.db, sha256Sum(token), s.instanceID)
 	}
 
 	// No token. Only an organisation that has explicitly opened registration
 	// accepts this, and only when exactly one has -- "open" plus several
 	// organisations has no answer to which one a stranger meant, and guessing
 	// would put a client in the wrong tenant.
-	org, err := store.SingleOpenRegistrationOrg(ctx, s.db)
+	org, err := store.SingleOpenRegistrationOrg(ctx, s.db, s.instanceID)
 	if err != nil {
 		return "", "", err
 	}
@@ -337,19 +708,12 @@ func validateRegisteredRedirect(u string) error {
 // characters. It is NOT sanitised into something trustworthy -- it cannot be,
 // since a stranger chose it -- which is why the consent screen shows the
 // client_id beside it.
+//
+// The cleaning is store.CleanClientName's, which the names in other languages get too,
+// so a mark that reverses the text around it is taken out of either.
 func displayNameFor(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, name)
-	if name == "" {
+	if name = store.CleanClientName(name); name == "" {
 		return "Unnamed application"
-	}
-	if len([]rune(name)) > 60 {
-		return string([]rune(name)[:60])
 	}
 	return name
 }

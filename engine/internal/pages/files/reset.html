@@ -2,9 +2,26 @@
 {{define "content"}}
 <h1>{{T "reset.title"}}</h1>
 {{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="note">{{.Notice}}</p>{{end}}
 {{if .Pending}}
 <p>{{T "reset.pending" .}}</p>
 <p class="hint">{{T "reset.pending.hint"}}</p>
+{{end}}
+{{if .Factor}}
+<p>{{if .FactorRequired}}{{T "reset.factor.required"}}{{else}}{{T "reset.factor.skip"}}{{end}}</p>
+<form method="POST" action="/recover/reset/factor">
+<input type="hidden" name="token" value="{{.Token}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="c">{{T "reset.factor.code"}}</label>
+<input id="c" name="code" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required>
+<button type="submit">{{T "reset.factor.submit"}}</button>
+</form>
+{{if .SMS}}<form method="POST" action="/recover/reset/factor">
+<input type="hidden" name="token" value="{{.Token}}">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<input type="hidden" name="send" value="sms">
+<button type="submit">{{T "reset.factor.sendsms"}}</button>
+</form>{{end}}
 {{end}}
 {{if .Ready}}
 <form method="POST" action="/recover/reset">

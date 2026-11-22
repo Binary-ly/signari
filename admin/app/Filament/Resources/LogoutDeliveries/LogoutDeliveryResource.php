@@ -5,6 +5,7 @@ namespace App\Filament\Resources\LogoutDeliveries;
 use App\Filament\Resources\LogoutDeliveries\Pages\ListLogoutDeliveries;
 use App\Filament\Resources\LogoutDeliveries\Tables\LogoutDeliveriesTable;
 use App\Models\LogoutDelivery;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
@@ -13,6 +14,12 @@ use Filament\Tables\Table;
 class LogoutDeliveryResource extends Resource
 {
     protected static ?string $model = LogoutDelivery::class;
+
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('config:read');
+    }
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedArrowRightStartOnRectangle;
 
@@ -27,6 +34,12 @@ class LogoutDeliveryResource extends Resource
     public static function getModelLabel(): string
     {
         return __('logout delivery');
+    }
+
+    // See EngineClientResource: the default plural is English.
+    public static function getPluralModelLabel(): string
+    {
+        return __('Logout deliveries');
     }
 
     /**

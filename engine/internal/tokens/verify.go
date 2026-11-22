@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,10 @@ import (
 // logged, never returned: telling a bearer *why* their token failed is a probing
 // oracle.
 var ErrInvalidToken = errors.New("token is invalid")
+
+// ErrWrongIssuer is a sound token from an issuer not among those asked about, the
+// one failure that asking about more issuers can change.
+var ErrWrongIssuer = errors.New("wrong issuer")
 
 // Leeway absorbs clock skew between us and whoever minted the token. Small on
 // purpose -- generous leeway extends the life of a revoked token.
@@ -52,6 +57,18 @@ func VerifyAccessToken(set *keys.Set, issuer, raw string) (*AccessTokenClaims, e
 // else. It is emphatically not "skip the issuer check": an unregistered issuer
 // is still refused, which is what keeps this from being a mix-up attack.
 func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
+	return verifyAccessToken(set, issuers, raw, false)
+}
+
+// VerifyEvenExpired is VerifyAccessTokenAny for the one thing a token that has run
+// out may still do: say what it held. UMA §3.3.1 lets a client present an RPT that
+// "MAY be expired" to have it upgraded. What comes back is a signed statement and no
+// authority, and its caller decides again everything it carries.
+func VerifyEvenExpired(set *keys.Set, issuers []string, raw string) (*AccessTokenClaims, error) {
+	return verifyAccessToken(set, issuers, raw, true)
+}
+
+func verifyAccessToken(set *keys.Set, issuers []string, raw string, expiredToo bool) (*AccessTokenClaims, error) {
 	// The header and signature checks live in verifiedPayload, shared with
 	// VerifyTypedJSON. Two copies of this is one copy that eventually forgets
 	// the jku check, which is alg confusion through the back door.
@@ -76,10 +93,10 @@ func VerifyAccessTokenAny(set *keys.Set, issuers []string, raw string) (*AccessT
 	now := time.Now()
 	switch {
 	case !accepted:
-		return nil, fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, ErrWrongIssuer)
 	case c.Subject == "":
 		return nil, fmt.Errorf("%w: no subject", ErrInvalidToken)
-	case c.Expiry == 0 || now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
+	case c.Expiry == 0, !expiredToo && now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
 		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
 	case c.IssuedAt == 0 || now.Add(Leeway).Before(time.Unix(c.IssuedAt, 0)):
 		return nil, fmt.Errorf("%w: issued in the future", ErrInvalidToken)
@@ -116,6 +133,14 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 // make logout harder precisely when it matters. The signature and issuer still
 // must check out, so the hint cannot be forged.
 func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
+	_, audience, err := VerifyIDTokenHint(set, issuer, raw)
+	return audience, err
+}
+
+// VerifyIDTokenHint verifies an `id_token_hint` and returns who it names and whom it was
+// for. Past its expiry is no matter, for the reason above: it is a statement of who, and
+// an ID token long expired is the usual one a client has to hand.
+func VerifyIDTokenHint(set *keys.Set, issuer, raw string) (subject, audience string, err error) {
 	// Through the SHARED verifier, which is the whole point of there being one.
 	//
 	// This function used to hand-roll its own copy of the header hardening, and
@@ -135,16 +160,40 @@ func VerifyIDTokenAudience(set *keys.Set, issuer, raw string) (string, error) {
 	// the tests went through code that did not use it.
 	payload, err := verifiedPayload(set, raw, TypIDToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var c IDTokenClaims
 	if err := json.Unmarshal(payload, &c); err != nil {
-		return "", fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+		return "", "", fmt.Errorf("%w: malformed claims", ErrInvalidToken)
 	}
 	if c.Issuer != issuer {
-		return "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
+		return "", "", fmt.Errorf("%w: wrong issuer", ErrInvalidToken)
 	}
-	return c.Audience, nil
+	return c.Subject, c.Audience, nil
+}
+
+// VerifyIDToken verifies an ID token that is being spent, so unlike a hint it has to be
+// in date. `typ` on its own does not make one: OpenID Connect gives ID tokens no type of
+// their own, and a signed userinfo response or a W3C credential comes out of here as a
+// plain JWT with a subject too, which the `exp` rule and a caller's `sid` lookup leave out.
+func VerifyIDToken(set *keys.Set, issuers []string, raw string, now time.Time) (*IDTokenClaims, error) {
+	payload, err := verifiedPayload(set, raw, TypIDToken)
+	if err != nil {
+		return nil, err
+	}
+	var c IDTokenClaims
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return nil, fmt.Errorf("%w: malformed claims", ErrInvalidToken)
+	}
+	switch {
+	case !slices.Contains(issuers, c.Issuer):
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, ErrWrongIssuer)
+	case c.Subject == "" || c.Audience == "":
+		return nil, fmt.Errorf("%w: not an ID token", ErrInvalidToken)
+	case c.Expiry == 0, now.After(time.Unix(c.Expiry, 0).Add(Leeway)):
+		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
+	}
+	return &c, nil
 }
 
 // VerifyTyped verifies a token this server issued for its own internal use and
@@ -226,7 +275,8 @@ func VerifyTypedJSON(set *keys.Set, issuers []string, raw, wantTyp string, into 
 // verifiedPayload does the signature and header checks common to every token we
 // verify, and returns the raw payload.
 func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
-	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.ES256, jose.PS256, jose.EdDSA}
+	permitted := []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.PS256, jose.PS384, jose.PS512,
+		jose.ES256, jose.ES384, jose.ES512, jose.EdDSA}
 
 	tok, err := jose.ParseSigned(raw, permitted)
 	if err != nil {
@@ -293,6 +343,16 @@ func verifiedPayload(set *keys.Set, raw, wantTyp string) ([]byte, error) {
 // userinfo endpoint asks for both, which is what RFC 8707 §2 means by allowing
 // multiple `resource` parameters -- rather than getting the second for free
 // because nobody checked.
+// AdminAudience is the audience of a token for the Admin API (6.01): the
+// issuer with /admin, an identifier whether or not anything is served there.
+// Asked for alone, by a client the deployment designated, and accepted by the
+// Admin API only from such a client, read per request: an application's own
+// token carries its client id or a resource's, which the Admin API refuses,
+// and a client named with this string is refused there unless designated.
+func AdminAudience(issuer string) string {
+	return strings.TrimRight(issuer, "/") + "/admin"
+}
+
 func AudienceAccepted(c *AccessTokenClaims, issuer string) bool {
 	// No audience at all is not a pass. A token that names no recipient cannot
 	// be shown to have been meant for this one, and RFC 9068 §4 requires the

@@ -2,6 +2,7 @@ package oid4vci
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,8 +18,12 @@ import (
 // authorization server for OID4VCI, issuing the access token a credential
 // endpoint would accept. This mints the credential itself.
 
-// FormatSDJWTVC is the only credential format implemented.
-const FormatSDJWTVC = "dc+sd-jwt"
+// The credential formats implemented: an SD-JWT VC, and a W3C Verifiable Credential
+// signed as a JWT (jwtvc.go).
+const (
+	FormatSDJWTVC = "dc+sd-jwt"
+	FormatJWTVC   = "jwt_vc_json"
+)
 
 // MaxProofsPerRequest bounds how many credentials one request may mint.
 //
@@ -46,7 +51,8 @@ type CredentialRequest struct {
 	Proofs map[string][]json.RawMessage `json:"proofs,omitempty"`
 	// ResponseEncryption is §8.2's `credential_response_encryption`.
 	//
-	// Parsed only so it can be REFUSED. §8.3: "If the Client requested an
+	// Read by the endpoint, which alone knows the request came encrypted, as §8.2 has
+	// it. §8.3: "If the Client requested an
 	// encrypted response by including the credential_response_encryption object
 	// in the request, the Credential Issuer MUST encode the information in the
 	// Credential Response as specified by Section 10... Note that this is done
@@ -63,21 +69,9 @@ type CredentialRequest struct {
 // CredentialResponse is §8.3's response body.
 type CredentialResponse struct {
 	Credentials []IssuedCredential `json:"credentials,omitempty"`
-	// NotificationID is §11's handle for the Notification Endpoint, and it must
-	// stay EMPTY until that endpoint exists.
-	//
-	// §11: "The Credential Issuer needs to return one notification_id parameter
-	// per Credential Response ... for the Wallet to be able to use this endpoint.
-	// Support for this endpoint is OPTIONAL."
-	//
-	// We do not implement §11, so emitting an id would hand a wallet a handle for
-	// an endpoint that 404s -- the wallet would POST its issuance notification and
-	// get nothing, which is worse than never offering the capability. `omitempty`
-	// plus nothing assigning it is what keeps that true today.
-	//
-	// Kept rather than deleted because the field is the right shape and the
-	// coupling is the part worth recording: whoever implements the Notification
-	// Endpoint sets this in the same change, and nobody sets it before.
+	// NotificationID is §11's handle for the Notification Endpoint: "The Credential
+	// Issuer needs to return one notification_id parameter per Credential Response ...
+	// for the Wallet to be able to use this endpoint."
 	NotificationID string `json:"notification_id,omitempty"`
 }
 
@@ -97,7 +91,24 @@ type Configuration struct {
 	SelectiveClaims []string
 	Lifetime        time.Duration
 	DisplayName     string
+	// RequireKeyAttestation issues only on a proof whose key a trusted
+	// attester vouches for, and is what the metadata's
+	// key_attestations_required describes.
+	RequireKeyAttestation bool
+	// Deferred holds a request for somebody to decide on (§9).
+	Deferred bool
+	// WalletInitiated lets anybody signed in ask for this at the authorization
+	// endpoint, with no offer naming them.
+	WalletInitiated bool
+	// Revocable gives each credential a place in a status list.
+	Revocable bool
 }
+
+// ErrNoProof is a request whose proofs parameter is missing or empty, which
+// §8.3.1.2 answers invalid_proof, "(1) if the field is missing"
+// (specs/oid4vci.txt:1920), and not as a malformed request.
+var ErrNoProof = errors.New("proofs is required: a credential is bound to a " +
+	"key, and without a proof there is no key to bind it to")
 
 // ValidateRequest applies §8.2's parameter rules.
 //
@@ -107,40 +118,23 @@ func (r CredentialRequest) Validate() ([]string, error) {
 	// §8.2: `credential_identifier` is "REQUIRED when an Authorization Details
 	// of type openid_credential was returned from the Token Response. It MUST
 	// NOT be used otherwise", and when it is used "the credential_configuration_id
-	// MUST NOT be present". We do not issue those authorization details yet, so
-	// the identifier form cannot be correct here -- and accepting it would mean
-	// resolving an identifier we never handed out.
-	if r.CredentialIdentifier != "" {
-		return nil, fmt.Errorf("credential_identifier is only usable when the " +
-			"token response returned authorization_details of type " +
-			"openid_credential, which this issuer does not yet do; send " +
-			"credential_configuration_id instead")
+	// MUST NOT be present". Which of the two a request owes depends on its token,
+	// so that half is the endpoint's. That it sends one is here.
+	identifier := strings.TrimSpace(r.CredentialIdentifier) != ""
+	configuration := strings.TrimSpace(r.ConfigurationID) != ""
+	if identifier && configuration {
+		return nil, fmt.Errorf("credential_identifier and credential_configuration_id " +
+			"may not be sent together")
 	}
-	if strings.TrimSpace(r.ConfigurationID) == "" {
-		return nil, fmt.Errorf("credential_configuration_id is required")
-	}
-
-	// §8.3 makes encrypting the response mandatory once the client asks. We do
-	// not implement §10 encryption, so the request is refused rather than
-	// answered in the clear.
-	//
-	// This is not advertised in our issuer metadata either, so a conformant
-	// client has no reason to ask — but "no reason to" is not the same as
-	// "cannot", and the failure of the alternative is silent.
-	if len(r.ResponseEncryption) > 0 && string(r.ResponseEncryption) != "null" {
-		return nil, fmt.Errorf("this issuer does not implement credential response " +
-			"encryption (section 10), and section 8.3 requires the response to be " +
-			"encrypted once credential_response_encryption is present. Refusing " +
-			"rather than returning the credential in the clear to a client that " +
-			"asked for it encrypted")
+	if !identifier && !configuration {
+		return nil, fmt.Errorf("credential_configuration_id or credential_identifier is required")
 	}
 
 	// §8.2: "The proofs parameter contains exactly one parameter named as the
 	// proof type". More than one would leave which proof type was actually
 	// honoured up to map iteration order.
 	if len(r.Proofs) == 0 {
-		return nil, fmt.Errorf("proofs is required: a credential is bound to a " +
-			"key, and without a proof there is no key to bind it to")
+		return nil, ErrNoProof
 	}
 	if len(r.Proofs) > 1 {
 		names := make([]string, 0, len(r.Proofs))
@@ -158,7 +152,7 @@ func (r CredentialRequest) Validate() ([]string, error) {
 		}
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("the jwt proofs array is empty")
+		return nil, fmt.Errorf("%w: the jwt proofs array is empty", ErrNoProof)
 	}
 	if len(raw) > MaxProofsPerRequest {
 		return nil, fmt.Errorf("this request carries %d key proofs and the limit "+
@@ -187,18 +181,25 @@ type Issuer struct {
 	CredentialIssuer string
 	// Sign produces a compact JWS over the payload with the given typ.
 	Sign func(payload []byte, typ string) (string, error)
+	// Status is the credential's place in a status list, for a configuration that can
+	// be revoked.
+	Status *StatusPlace
 }
 
-// Issue returns the combined SD-JWT VC serialisation.
+// Issue returns the credential in the configuration's format: the combined SD-JWT VC
+// serialisation, or a JWT.
 func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 	holderKey *jose.JSONWebKey, now time.Time) (string, error) {
 
-	if cfg.Format != FormatSDJWTVC {
+	if cfg.Format != FormatSDJWTVC && cfg.Format != FormatJWTVC {
 		return "", fmt.Errorf("credential format %q is not implemented", cfg.Format)
 	}
 	if holderKey == nil {
 		return "", fmt.Errorf("no holder key: an unbound credential is a bearer " +
 			"token, which is what binding exists to prevent")
+	}
+	if cfg.Format == FormatJWTVC {
+		return i.issueJWTVC(cfg, subject, holderKey, now)
 	}
 
 	// RFC 9901 §10.1: the time claims in a batch MUST be rounded or randomized,
@@ -222,6 +223,9 @@ func (i Issuer) Issue(cfg Configuration, subject map[string]any,
 	}
 	if cfg.Lifetime > 0 {
 		always["exp"] = now.Add(cfg.Lifetime).Unix()
+	}
+	if i.Status != nil {
+		always["status"] = i.Status.claim()
 	}
 
 	// Claims are split by the configuration, and a claim the subject does not

@@ -32,6 +32,12 @@ type createClientRequest struct {
 	// Secret may be supplied to import an application's EXISTING credential, so
 	// migrating it needs no change on their side. Left empty, one is generated.
 	Secret string `json:"secret"`
+	// RequirePKCE defaults to true for every client. This handler once stored
+	// `public` here, so every confidential client created through the API, the
+	// console or Terraform accepted an authorization request with no challenge.
+	// false is an explicit opt-out, for an application that cannot send one,
+	// and a public client cannot take it.
+	RequirePKCE *bool `json:"require_pkce"`
 }
 
 func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +63,10 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	}
 	// The organisation boundary, at the point the org is chosen.
 	if err := requireOrg(r.Context(), req.OrgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	if err := requireUnrestricted(ctx, "client"); err != nil {
 		writeCrossOrg(w, err)
 		return
 	}
@@ -110,20 +120,29 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 	if req.Public {
 		kind = "public"
 	}
+	requirePKCE := req.RequirePKCE == nil || *req.RequirePKCE
+	if req.Public && !requirePKCE {
+		writePublicClientNeedsPKCE(w)
+		return
+	}
 	pre, ok := s.readPrecondition(w, r)
 	if !ok {
 		return
 	}
 
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, req.OrgID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 			                          client_secret_hash, enabled, grant_types, scopes,
-			                          require_pkce)
+			                          require_pkce, token_endpoint_auth_method)
 			VALUES ($1, $2::uuid, $3, $4, $5, true,
 			        ARRAY['authorization_code','refresh_token'],
-			        ARRAY['openid','profile','email'], $6)`,
-			req.ClientID, req.OrgID, req.DisplayName, kind, hash, req.Public); err != nil {
+			        ARRAY['openid','profile','email'], $6,
+			        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_post' END)`,
+			req.ClientID, req.OrgID, req.DisplayName, kind, hash, requirePKCE); err != nil {
 			return err
 		}
 		for _, u := range req.RedirectURIs {
@@ -135,12 +154,15 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		}
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_created", AdminTokenID: TokenIDFrom(ctx), OrgID: req.OrgID, ClientID: req.ClientID,
-			Detail: map[string]any{"type": kind, "imported_secret": req.Secret != ""},
+			Detail: map[string]any{"type": kind, "imported_secret": req.Secret != "",
+				"require_pkce": requirePKCE},
 		})
 	})
 
 	switch {
 	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
 		return
 	case err != nil && strings.Contains(err.Error(), "clients_pkey"):
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -156,7 +178,8 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("client created", "client_id", req.ClientID, "type", kind, "config_version", version)
 
-	resp := map[string]any{"client_id": req.ClientID, "type": kind, "config_version": version}
+	resp := map[string]any{"client_id": req.ClientID, "type": kind,
+		"require_pkce": requirePKCE, "config_version": version}
 	if plaintext != "" {
 		resp["client_secret"] = plaintext
 		// Said in the response, because an operator who does not copy it now has
@@ -164,6 +187,16 @@ func (s *Server) createClient(w http.ResponseWriter, r *http.Request) {
 		resp["notice"] = "This secret is shown once and is not recoverable. Copy it now."
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// writePublicClientNeedsPKCE refuses a PKCE opt-out for a public client, on
+// create and on patch alike.
+func writePublicClientNeedsPKCE(w http.ResponseWriter) {
+	writeJSON(w, http.StatusBadRequest, map[string]string{
+		"error": "pkce_required",
+		"detail": "a public client must require PKCE: it holds no secret, so the " +
+			"challenge is the only proof the code reached the application that asked for it",
+	})
 }
 
 // rotateClientSecret issues a new secret and invalidates the old one.
@@ -312,7 +345,7 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sessions, tokens int
+	var sessions, families int
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		var orgID string
 		if err := tx.QueryRow(ctx,
@@ -328,9 +361,8 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 
 		// Counted before the cascade, for the audit record. "How much was revoked"
 		// is asked afterwards, and the rows are gone by then.
-		if err := tx.QueryRow(ctx,
-			`SELECT count(*) FROM core.access_tokens WHERE client_id = $1`,
-			clientID).Scan(&tokens); err != nil {
+		if err := tx.QueryRow(ctx, liveFamilies+` AND f.client_id = $1`,
+			clientID).Scan(&families); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(ctx,
@@ -347,8 +379,8 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 			Type: "admin.client_deleted", AdminTokenID: TokenIDFrom(ctx),
 			OrgID: orgID, ClientID: clientID,
 			Detail: map[string]any{
-				"tokens_revoked":   tokens,
-				"sessions_touched": sessions,
+				"refresh_families_revoked": families,
+				"sessions_touched":         sessions,
 			},
 		})
 	})
@@ -369,8 +401,20 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 	}
 	setETag(w, version)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id":      clientID,
-		"tokens_revoked": tokens,
-		"config_version": version,
+		"client_id":                clientID,
+		"refresh_families_revoked": families,
+		"config_version":           version,
 	})
 }
+
+// liveFamilies counts the refresh token families a delete ends: not revoked,
+// and holding a token that could still be redeemed. A family whose last token
+// expired was over before the delete and is not counted as its doing.
+//
+// Families, because they are what is recorded. An access token is a signed JWT
+// stored nowhere, so there is no count of those to give. The count used to read
+// core.access_tokens, which nothing ever wrote, and reported 0 for every delete.
+const liveFamilies = `SELECT count(*) FROM core.refresh_token_families f
+	WHERE f.revoked_at IS NULL
+	  AND EXISTS (SELECT 1 FROM core.refresh_tokens t
+	              WHERE t.family_id = f.id AND t.consumed_at IS NULL AND t.expires_at > now())`

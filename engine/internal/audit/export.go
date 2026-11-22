@@ -63,6 +63,14 @@ type ExportResult struct {
 	// making a stronger claim than the data supports: everything before the
 	// checkpoint is not asserted, and a reader has to be told so.
 	Checkpoint *Checkpoint
+
+	// HeadsChecked and HeadFailure are JudgeChain's (3.20). LatestHead is the
+	// newest signed head, carried so the export can be checked later against
+	// the chain as it is then, and LatestHeadAt when it was signed.
+	HeadsChecked int
+	HeadFailure  string
+	LatestHead   string
+	LatestHeadAt time.Time
 }
 
 // ExportCSV writes the trail and reports whether it can be trusted.
@@ -71,16 +79,67 @@ type ExportResult struct {
 // export that silently omits a failed verification would be worse than no export
 // at all: it would carry the appearance of integrity without the fact.
 func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (*ExportResult, error) {
-	res := &ExportResult{}
+	state, err := JudgeChain(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	res := &ExportResult{ChainVerified: state.Verified, BrokenAt: state.BrokenAt,
+		Checked: state.Checked, Checkpoint: state.Checkpoint,
+		HeadsChecked: state.HeadsChecked, HeadFailure: state.HeadFailure}
+	if res.LatestHead, res.LatestHeadAt, err = LatestHead(ctx, tx); err != nil {
+		return nil, err
+	}
+	return res, writeCSV(ctx, tx, w, opt, res)
+}
+
+// ChainState is what the chain can be said to prove.
+type ChainState struct {
+	// Verified is whether the chain verified: the whole of it, or everything
+	// since Checkpoint when that is set.
+	Verified bool
+	// BrokenAt is the first entry that does not verify, 0 when none.
+	BrokenAt int64
+	Checked  int
+	// Checkpoint is the declared restart point the judgement relied on, if
+	// any. A caller that reports Verified without it claims more than the data
+	// supports.
+	Checkpoint *Checkpoint
+	// HeadsChecked is how many signed heads were checked against the chain
+	// (3.20); HeadFailure says why one did not match, and BrokenAt is then the
+	// head's entry. A chain recomputed after a rewrite verifies by its hashes
+	// and fails here.
+	HeadsChecked int
+	HeadFailure  string
+}
+
+// JudgeChain verifies the chain the way every reader of it does (3.21): the
+// whole of it, or, when that fails, everything from the latest declared
+// checkpoint provided the break is before it. The export, `signari audit
+// verify` and doctor all ask through this, so they cannot disagree. It must
+// run in one snapshot, since it may read the chain twice.
+func JudgeChain(ctx context.Context, tx pgx.Tx) (*ChainState, error) {
+	// The verification and the rows have to come from one snapshot. Under READ
+	// COMMITTED each statement takes its own, so a row appended between the two
+	// was exported under a verification that never read it, and a row changed
+	// between them was exported changed under a verification of the original.
+	var isolation string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&isolation); err != nil {
+		return nil, err
+	}
+	if isolation != "repeatable read" && isolation != "serializable" {
+		return nil, fmt.Errorf("verifying the audit chain, and exporting it, must read one snapshot: "+
+			"begin the transaction REPEATABLE READ (this one is %s)", isolation)
+	}
+	res := &ChainState{}
 
 	// The whole trail first. If it verifies, nothing else is needed and no
 	// disclaimer is made.
 	brokenAt, checked, err := Verify(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("verifying the chain before export: %w", err)
+		return nil, fmt.Errorf("verifying the chain: %w", err)
 	}
 	res.BrokenAt, res.Checked = brokenAt, checked
-	res.ChainVerified = brokenAt == 0
+	res.Verified = brokenAt == 0
 
 	// Only when it does not: fall back to a declared checkpoint, if an operator
 	// has recorded one.
@@ -89,7 +148,7 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 	// checkpoint narrows what is being asserted, so it must never be used while
 	// a wider claim is available -- otherwise an export would quietly assert
 	// less than it could, every time, and nobody would notice.
-	if !res.ChainVerified {
+	if !res.Verified {
 		cp, cerr := LatestCheckpoint(ctx, tx)
 		if cerr != nil {
 			return nil, fmt.Errorf("reading the audit checkpoint: %w", cerr)
@@ -103,7 +162,7 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 				return nil, fmt.Errorf("verifying from the checkpoint: %w", verr)
 			}
 			if fromBroken == 0 {
-				res.ChainVerified = true
+				res.Verified = true
 				res.Checkpoint = cp
 				res.Checked = fromChecked
 				res.BrokenAt = 0
@@ -123,6 +182,28 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 		}
 	}
 
+	// The hashes agree with each other; the signed heads say whether they
+	// still agree with what was signed (3.20).
+	if res.Verified {
+		var from int64
+		if res.Checkpoint != nil {
+			from = res.Checkpoint.EntryID
+		}
+		n, at, why, err := VerifyHeads(ctx, tx, from)
+		if err != nil {
+			return nil, fmt.Errorf("checking the signed heads: %w", err)
+		}
+		res.HeadsChecked = n
+		if at != 0 {
+			res.Verified, res.BrokenAt, res.HeadFailure = false, at, why
+		}
+	}
+	return res, nil
+}
+
+// writeCSV writes the rows the export covers, in the transaction JudgeChain
+// read, recording the first and last hash on res.
+func writeCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions, res *ExportResult) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
@@ -131,7 +212,7 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 		"client_id", "admin_token_id", "correlation_id", "retention_class",
 		"detail", "entry_hash",
 	}); err != nil {
-		return nil, err
+		return err
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -147,7 +228,7 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 		ORDER BY id`,
 		nullUUID(opt.OrgID), nullTime(opt.From), nullTime(opt.To))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 
@@ -159,7 +240,7 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 		var entryHash []byte
 		if err := rows.Scan(&id, &occurred, &eventType, &orgID, &subjectID, &actorID,
 			&clientID, &tokenID, &correlationID, &retention, &detail, &entryHash); err != nil {
-			return nil, err
+			return err
 		}
 
 		h := hex.EncodeToString(entryHash)
@@ -176,16 +257,16 @@ func ExportCSV(ctx context.Context, tx pgx.Tx, w io.Writer, opt ExportOptions) (
 			eventType, orgID, subjectID, actorID, clientID, tokenID,
 			correlationID, retention, detail, h,
 		}); err != nil {
-			return nil, err
+			return err
 		}
 		res.Rows++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
 
 	cw.Flush()
-	return res, cw.Error()
+	return cw.Error()
 }
 
 func nullUUID(s string) *string {

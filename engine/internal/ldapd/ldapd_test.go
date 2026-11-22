@@ -18,20 +18,33 @@ import (
 // self-consistent -- and self-consistency is exactly what a protocol bug looks
 // like from the inside.
 
-type fakeAuth struct{ calls int }
+// fakeAuth's groups are every fixture's, so a test can put its binder in the
+// search or write group.
+type fakeAuth struct {
+	calls  int
+	groups []string
+	// left is how long the last Authenticate's context had before its
+	// deadline, or zero when it had none.
+	left time.Duration
+}
 
 var fixtures = map[string]struct{ pw, email, name string }{
 	"alice": {"correct-horse-battery", "alice@example.test", "Alice Example"},
 	"bob":   {"hunter2hunter2", "bob@example.test", "Bob Example"},
 }
 
-func (f *fakeAuth) Authenticate(_ context.Context, u, p string) (*Identity, error) {
+func (f *fakeAuth) Authenticate(ctx context.Context, u, p string) (*Identity, error) {
 	f.calls++
+	f.left = 0
+	if d, ok := ctx.Deadline(); ok {
+		f.left = time.Until(d)
+	}
 	r, ok := fixtures[strings.ToLower(u)]
 	if !ok || r.pw != p {
 		return nil, errors.New("invalid credentials")
 	}
-	return &Identity{Username: strings.ToLower(u), Email: r.email, DisplayName: r.name, Active: true}, nil
+	return &Identity{Username: strings.ToLower(u), Email: r.email, DisplayName: r.name, Active: true,
+		Groups: f.groups}, nil
 }
 
 func (f *fakeAuth) Lookup(_ context.Context, u string) (*Identity, error) {
@@ -39,10 +52,11 @@ func (f *fakeAuth) Lookup(_ context.Context, u string) (*Identity, error) {
 	if !ok {
 		return nil, nil
 	}
-	return &Identity{Username: strings.ToLower(u), Email: r.email, DisplayName: r.name, Active: true}, nil
+	return &Identity{Username: strings.ToLower(u), Email: r.email, DisplayName: r.name, Active: true,
+		Groups: f.groups}, nil
 }
 
-func (f *fakeAuth) List(_ context.Context, limit int) ([]*Identity, error) {
+func (f *fakeAuth) List(context.Context, Query) ([]*Identity, error) {
 	var out []*Identity
 	for u, r := range fixtures {
 		out = append(out, &Identity{Username: u, Email: r.email, DisplayName: r.name, Active: true})
@@ -135,6 +149,20 @@ func TestCorrectBindSucceeds(t *testing.T) {
 	c := dial(t, addr)
 	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
 		t.Fatalf("a valid bind was refused: %v", err)
+	}
+}
+
+// A bind's verification has a deadline. It waits for a slot in the hasher the
+// sign-in form shares, on a context that otherwise lived as long as the
+// connection, so a bind flood queued there without end.
+func TestABindHasADeadline(t *testing.T) {
+	addr, auth := startServer(t, Config{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatalf("a valid bind was refused: %v", err)
+	}
+	if auth.left <= 0 || auth.left > BindTimeout {
+		t.Fatalf("the bind was verified with %v before its deadline, want (0, %v]", auth.left, BindTimeout)
 	}
 }
 
@@ -251,6 +279,75 @@ func TestBoundSearchReturnsEntries(t *testing.T) {
 	}
 	if e.GetAttributeValue("mail") != "alice@example.test" {
 		t.Errorf("mail = %q", e.GetAttributeValue("mail"))
+	}
+}
+
+// A password is all it takes to bind, and a bind is not a grant to read the
+// organisation. With no search group configured, a bound user's search returns
+// their own entry and nobody else's, by subtree and by base alike, and asking
+// for someone who exists is answered exactly as asking for someone who does not.
+func TestABoundUserSeesOnlyThemselvesByDefault(t *testing.T) {
+	addr, _ := startServer(t, Config{})
+	c := dial(t, addr)
+	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+		t.Fatal(err)
+	}
+	search := func(base string, scope int, filter string) []*ldapclient.Entry {
+		t.Helper()
+		res, err := c.Search(ldapclient.NewSearchRequest(base, scope,
+			ldapclient.NeverDerefAliases, 0, 0, false, filter, []string{"uid"}, nil))
+		if err != nil {
+			t.Fatalf("search %s %q: %v", base, filter, err)
+		}
+		return res.Entries
+	}
+
+	all := search(baseDN, ldapclient.ScopeWholeSubtree, "(objectClass=*)")
+	if len(all) != 1 || all[0].DN != "uid=alice,"+baseDN {
+		var dns []string
+		for _, e := range all {
+			dns = append(dns, e.DN)
+		}
+		t.Fatalf("a subtree search by an ordinary user returned %v, want only their own entry", dns)
+	}
+	if got := search(baseDN, ldapclient.ScopeWholeSubtree, "(uid=bob)"); len(got) != 0 {
+		t.Errorf("searching for another user by name found them: %d entries", len(got))
+	}
+	if got := search("uid=alice,"+baseDN, ldapclient.ScopeBaseObject, "(objectClass=*)"); len(got) != 1 {
+		t.Errorf("reading one's own entry by DN returned %d entries", len(got))
+	}
+	if got := search("uid=bob,"+baseDN, ldapclient.ScopeBaseObject, "(objectClass=*)"); len(got) != 0 {
+		t.Errorf("reading another user's entry by DN returned it")
+	}
+	if got := search("uid=nobody,"+baseDN, ldapclient.ScopeBaseObject, "(objectClass=*)"); len(got) != 0 {
+		t.Errorf("a DN that does not exist returned an entry")
+	}
+}
+
+// Members of the search group, and only they, see the directory.
+func TestTheSearchGroupSeesTheDirectory(t *testing.T) {
+	for _, c := range []struct {
+		groups []string
+		want   int
+	}{
+		{[]string{"directory-readers"}, len(fixtures)},
+		{[]string{"staff"}, 1},
+		{nil, 1},
+	} {
+		addr := startServerWith(t, Config{SearchGroup: "directory-readers"},
+			&fakeAuth{groups: c.groups})
+		conn := dial(t, addr)
+		if err := conn.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
+			t.Fatal(err)
+		}
+		res, err := conn.Search(ldapclient.NewSearchRequest(baseDN, ldapclient.ScopeWholeSubtree,
+			ldapclient.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"uid"}, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Entries) != c.want {
+			t.Errorf("groups %v: %d entries, want %d", c.groups, len(res.Entries), c.want)
+		}
 	}
 }
 
@@ -600,7 +697,7 @@ func TestAnOrdinarySearchStillCarriesValues(t *testing.T) {
 // query that is slower than the client is prepared to wait.
 type slowAuth struct{ fakeAuth }
 
-func (s *slowAuth) List(ctx context.Context, _ int) ([]*Identity, error) {
+func (s *slowAuth) List(ctx context.Context, _ Query) ([]*Identity, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -622,7 +719,8 @@ func (s *slowAuth) List(ctx context.Context, _ int) ([]*Identity, error) {
 // it set should be told it was that limit, not handed an unclassified failure it
 // has to guess about.
 func TestASearchIsCutOffAtTheClientsTimeLimit(t *testing.T) {
-	addr := startServerWith(t, Config{}, &slowAuth{})
+	addr := startServerWith(t, Config{SearchGroup: "directory-readers"},
+		&slowAuth{fakeAuth{groups: []string{"directory-readers"}}})
 	c := dial(t, addr)
 	if err := c.Bind("uid=alice,"+baseDN, "correct-horse-battery"); err != nil {
 		t.Fatal(err)

@@ -38,6 +38,9 @@ Tested.
 | `jti` unique | a captured assertion is replayable within its lifetime |
 | asymmetric algorithm | HMAC is `client_secret_jwt`, verified with a key both sides hold |
 
+`client_id` can be left out of the form: the assertion's `sub` names the client. If it is
+sent it has to be the same one.
+
 The audience check is the one most often skipped, because everything works
 without it right up until it matters. Clients legitimately talk to several
 authorization servers, and it is the only thing stopping an assertion to one
@@ -64,7 +67,9 @@ otherwise an attacker holding the old secret keeps working and the migration to
 keys bought nothing. The method is read from configuration and dispatched on,
 never inferred from whichever credential the request happens to carry.
 
-`client set-keys` also **removes the secret**, for the same reason.
+`client set-keys` also **removes the secret**, for the same reason. `-keep-auth` is for
+keys that are not how the client authenticates, and leaves all of this as it was: see
+[response-encryption.md](response-encryption.md).
 
 **Line 6:** two credentials in one request are refused rather than resolved by
 precedence. Accepting both leaves which one authenticated the caller up to

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -65,7 +63,11 @@ func umaSettings(ctx context.Context, conn *pgx.Conn, orgID string,
 }
 
 // umaRequests lists the requests awaiting a decision.
-func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
+func umaRequests(ctx context.Context, conn *pgx.Conn, orgID, format string) error {
+	out, err := newOutput(format)
+	if err != nil {
+		return err
+	}
 	if orgID == "" {
 		return fmt.Errorf("-org is required")
 	}
@@ -73,13 +75,27 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	if err != nil {
 		return err
 	}
-	if len(pending) == 0 {
+	if len(pending) == 0 && out.text() {
 		fmt.Println("nothing is waiting for a decision")
 		return nil
 	}
 	model, err := store.LoadModel(ctx, conn, orgID)
 	if err != nil {
 		return err
+	}
+	if !out.text() {
+		for _, p := range pending {
+			perms := make([]map[string]any, 0, len(p.Permissions))
+			for _, perm := range p.Permissions {
+				perms = append(perms, map[string]any{"resource_type": perm.ResourceType,
+					"resource_id": perm.ResourceID, "scopes": perm.ResourceScopes})
+			}
+			out.add(map[string]any{"id": p.ID, "requesting_party": p.RequestingParty,
+				"requesting_party_email": p.RequestingPartyEmail, "client_id": p.ClientID,
+				"resource_server": p.ResourceServer, "created_at": p.CreatedAt.UTC(), "permissions": perms,
+				"candidate_relations": nonNilList(store.UMACandidateRelations(model, p))})
+		}
+		return out.flush()
 	}
 	for _, p := range pending {
 		who := p.RequestingPartyEmail
@@ -97,8 +113,9 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
 		// operator has to choose one and the model is the only place that answer
 		// exists -- and reading a compiled authorization model to find out is not
 		// a reasonable thing to ask of somebody approving a request.
-		if cands := candidateRelations(model, p); len(cands) > 0 {
-			fmt.Printf("  grant   -relation %s\n", strings.Join(cands, " | "))
+		if cands := store.UMACandidateRelations(model, p); len(cands) > 0 {
+			fmt.Printf("  grant   signari uma approve -uma-request %s -relation %s\n",
+				p.ID, strings.Join(cands, " | "))
 		} else {
 			fmt.Println("  grant   NO relation in this model grants every scope asked " +
 				"for; the model has to change before this can be approved")
@@ -108,124 +125,53 @@ func umaRequests(ctx context.Context, conn *pgx.Conn, orgID string) error {
 	return nil
 }
 
-// candidateRelations returns the relations that would satisfy EVERY scope in a
-// request.
-//
-// Every, not any. Granting a relation that covers three of four scopes leaves
-// the client polling forever against a decision somebody believes they made --
-// and the operator's evidence would be that the approval command said nothing.
-func candidateRelations(model interface {
-	RelationsFor(objectType, action string) ([]string, bool)
-}, p *store.PendingRequest) []string {
-
-	var common map[string]bool
-	for _, perm := range p.Permissions {
-		for _, scope := range perm.ResourceScopes {
-			rels, ok := model.RelationsFor(perm.ResourceType, scope)
-			if !ok {
-				return nil
-			}
-			this := map[string]bool{}
-			for _, r := range rels {
-				this[r] = true
-			}
-			if common == nil {
-				common = this
-				continue
-			}
-			for r := range common {
-				if !this[r] {
-					delete(common, r)
-				}
-			}
-		}
-	}
-	out := make([]string, 0, len(common))
-	for r := range common {
-		out = append(out, r)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // umaApprove grants a relation and closes the request.
-func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string) error {
+func umaApprove(ctx context.Context, conn *pgx.Conn, requestID, relation string, expiresIn time.Duration) error {
 	if requestID == "" {
 		return fmt.Errorf("-uma-request is required; run `signari uma requests` for the list")
 	}
-	p, err := store.PendingRequestByID(ctx, conn, requestID)
-	if errors.Is(err, store.ErrPendingUnknown) {
-		return fmt.Errorf("no such pending request")
-	}
+	expires, err := grantExpiry(expiresIn)
 	if err != nil {
 		return err
 	}
-	if p.State != "pending" {
-		return fmt.Errorf("this request was already %s", p.State)
-	}
-	model, err := store.LoadModel(ctx, conn, p.OrgID)
-	if err != nil {
-		return err
-	}
-	if model == nil {
-		return fmt.Errorf("this organisation has no authorization model, so there " +
-			"is no relation to grant; run `signari authz set-model` first")
-	}
-	cands := candidateRelations(model, p)
-	if relation == "" {
-		if len(cands) == 0 {
-			return fmt.Errorf("no relation in this model grants every scope this " +
-				"request asks for; the model has to change before it can be approved")
-		}
-		return fmt.Errorf("-relation is required. These would satisfy the whole "+
-			"request: %s", strings.Join(cands, ", "))
-	}
-	// Refused rather than granted-and-warned. An approval that does not actually
-	// let the request through leaves the client polling against a decision
-	// somebody believes they made, and the pending row would say `approved`.
-	if !contains(cands, relation) {
-		if len(cands) == 0 {
-			return fmt.Errorf("no relation in this model grants every scope this "+
-				"request asks for, %q included", relation)
-		}
-		return fmt.Errorf("granting %q would not satisfy every scope this request "+
-			"asks for; these would: %s", relation, strings.Join(cands, ", "))
-	}
-
-	who := p.RequestingPartyEmail
-	if who == "" {
-		who = p.RequestingParty
-	}
-
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// The grant and the decision, in one transaction. Separately, a failure
-	// between them leaves either access nobody approved or an approval that
-	// granted nothing -- and the second is the one the client would keep polling
-	// against.
-	for _, perm := range p.Permissions {
-		if err := store.GrantRelation(ctx, tx, p.OrgID, store.Relation{
-			SubjectType: "user", SubjectID: who, Relation: relation,
-			ObjectType: perm.ResourceType, ObjectID: perm.ResourceID,
-		}, ""); err != nil {
-			return fmt.Errorf("granting %s on %s:%s: %w",
-				relation, perm.ResourceType, perm.ResourceID, err)
-		}
-	}
-	if err := store.DecidePendingRequest(ctx, tx, requestID, "approved", "", relation); err != nil {
+	// The grant and the decision, in one transaction, refused rather than
+	// granted-and-warned when the relation would not let the whole request
+	// through: the approval the Admin API shares.
+	p, err := store.ApproveUMARequest(ctx, tx, "", requestID, relation, "", expires)
+	var rel store.UMARelationError
+	switch {
+	case errors.Is(err, store.ErrPendingUnknown):
+		return fmt.Errorf("no such pending request")
+	case errors.Is(err, store.ErrUMADecided):
+		return fmt.Errorf("this request was already decided")
+	case errors.Is(err, store.ErrUMANoModel):
+		return fmt.Errorf("%w; run `signari authz set-model` first", err)
+	case errors.As(err, &rel) && rel.Relation == "" && len(rel.Candidates) > 0:
+		return fmt.Errorf("-relation is required. These would satisfy the whole request: %s",
+			strings.Join(rel.Candidates, ", "))
+	case err != nil:
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
+	who := p.RequestingPartyEmail
+	if who == "" {
+		who = p.RequestingParty
+	}
 	fmt.Printf("approved: %s is now %s of\n", who, relation)
 	for _, perm := range p.Permissions {
 		fmt.Printf("  %s:%s\n", perm.ResourceType, perm.ResourceID)
+	}
+	if expires != nil {
+		fmt.Printf("until %s\n", expires.Format(time.RFC3339))
 	}
 	fmt.Println("\nThe grant lives in the authorization model, so `signari authz " +
 		"check` sees it and `signari authz revoke` undoes it. The client's next " +
@@ -238,10 +184,18 @@ func umaDeny(ctx context.Context, conn *pgx.Conn, requestID string) error {
 	if requestID == "" {
 		return fmt.Errorf("-uma-request is required")
 	}
-	if err := store.DecidePendingRequest(ctx, conn, requestID, "denied", "", ""); err != nil {
-		if errors.Is(err, store.ErrPendingUnknown) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.DenyUMARequest(ctx, tx, "", requestID, ""); err != nil {
+		if errors.Is(err, store.ErrPendingUnknown) || errors.Is(err, store.ErrUMADecided) {
 			return fmt.Errorf("no such pending request, or it was already decided")
 		}
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	fmt.Println("denied")
@@ -257,40 +211,16 @@ func umaDeny(ctx context.Context, conn *pgx.Conn, requestID string) error {
 // clientSetClaimsRedirects registers UMA claims redirection URIs.
 func clientSetClaimsRedirects(ctx context.Context, conn *pgx.Conn, clientID, uris string) error {
 	if clientID == "" {
-		return fmt.Errorf("-client is required")
+		return fmt.Errorf("-client-id is required")
 	}
-	// A non-nil empty slice, NOT nil. A nil slice reaches PostgreSQL as NULL,
-	// and clearing the list is exactly what an operator does in a hurry when a
-	// URI is wrong. (This is the same bug the jwt-bearer provider list had, and
-	// it was found by running the command rather than by reading it.)
-	list := []string{}
-	for _, u := range strings.Split(uris, ",") {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
+	// The rules, and the empty-not-NULL clear, are store.SetClientClaimsRedirects',
+	// which the Admin API shares (6.03).
+	list := splitList(uris)
+	if err := store.SetClientClaimsRedirects(ctx, conn, clientID, list); err != nil {
+		if errors.Is(err, store.ErrClientNotFound) {
+			return fmt.Errorf("no client %q", clientID)
 		}
-		parsed, err := url.Parse(u)
-		if err != nil {
-			return fmt.Errorf("%q does not parse as a URL: %w", u, err)
-		}
-		if parsed.Scheme != "https" {
-			return fmt.Errorf("%q must use https: this URI receives a permission "+
-				"ticket bound to whoever just signed in, and a plaintext hop hands "+
-				"it to the network", u)
-		}
-		if parsed.Fragment != "" || strings.Contains(u, "#") {
-			return fmt.Errorf("%q must not contain a fragment (UMA 2.0 section 3.3.2)", u)
-		}
-		list = append(list, u)
-	}
-	tag, err := conn.Exec(ctx,
-		`UPDATE core.clients SET claims_redirect_uris = $2 WHERE client_id = $1`,
-		clientID, list)
-	if err != nil {
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("no client %q", clientID)
 	}
 	if len(list) == 0 {
 		fmt.Printf("%s has no claims redirection URIs\n", clientID)
@@ -314,13 +244,4 @@ func clientSetClaimsRedirects(ctx context.Context, conn *pgx.Conn, clientID, uri
 			"relying on the single-URI default will start being refused.")
 	}
 	return nil
-}
-
-func contains(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
 }

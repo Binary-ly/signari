@@ -20,6 +20,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The whole event path, against a real database and a real HTTP receiver.
@@ -64,6 +65,7 @@ func seedOrg(t *testing.T, pool *pgxpool.Pool) string {
 		instanceID, "wh"+itoa64(suffix)).Scan(&orgID); err != nil {
 		t.Fatalf("org: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	return orgID
 }
 

@@ -36,10 +36,14 @@ type ConsentDecision struct {
 
 // CheckConsent reports whether a user has already agreed to these scopes.
 func CheckConsent(ctx context.Context, db *pgxpool.Pool, userID, clientID string, requested []string) (ConsentDecision, error) {
+	// A consent past its client's lifetime (0188) counts for nothing: the
+	// person is asked again, for what is requested now.
 	var granted []string
 	err := db.QueryRow(ctx, `
-		SELECT scopes FROM core.consents
-		WHERE user_id = $1::uuid AND client_id = $2 AND withdrawn_at IS NULL`,
+		SELECT c.scopes FROM core.consents c JOIN core.clients k ON k.client_id = c.client_id
+		WHERE c.user_id = $1::uuid AND c.client_id = $2 AND c.withdrawn_at IS NULL
+		  AND (k.consent_lifetime_s IS NULL
+		       OR c.granted_at > now() - make_interval(secs => k.consent_lifetime_s))`,
 		userID, clientID).Scan(&granted)
 	if err != nil && err != pgx.ErrNoRows {
 		return ConsentDecision{}, fmt.Errorf("checking consent: %w", err)
@@ -71,15 +75,24 @@ func CheckConsent(ctx context.Context, db *pgxpool.Pool, userID, clientID string
 // Merged rather than replaced: a client asking for one extra scope must not
 // silently lose the ones the user granted last week, which would make every
 // incremental request look like a fresh full grant.
+//
+// Merged only into a consent that still stands. One withdrawn, or past its
+// client's lifetime (0188), was replaced by nothing the person saw: merging
+// into it brought back every scope of the old grant behind the screen that
+// showed only what was asked for now.
 func RecordConsent(ctx context.Context, tx pgx.Tx, userID, clientID string, scopes []string) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.consents (user_id, client_id, scopes)
 		VALUES ($1::uuid, $2, $3)
 		ON CONFLICT (user_id, client_id) DO UPDATE SET
-			scopes = (
-				SELECT array_agg(DISTINCT s ORDER BY s)
-				FROM unnest(core.consents.scopes || EXCLUDED.scopes) AS s
-			),
+			scopes = CASE
+				WHEN core.consents.withdrawn_at IS NULL
+				 AND NOT EXISTS (SELECT 1 FROM core.clients k WHERE k.client_id = EXCLUDED.client_id
+				                    AND core.consents.granted_at <= now() - make_interval(secs => k.consent_lifetime_s))
+				THEN (SELECT array_agg(DISTINCT s ORDER BY s)
+				        FROM unnest(core.consents.scopes || EXCLUDED.scopes) AS s)
+				ELSE EXCLUDED.scopes
+			END,
 			granted_at = now(),
 			-- Re-granting revives a withdrawn consent rather than leaving a row
 			-- that says "withdrawn" while access works.
@@ -106,7 +119,28 @@ func WithdrawConsent(ctx context.Context, tx pgx.Tx, userID, clientID string) er
 	if err != nil {
 		return fmt.Errorf("withdrawing consent: %w", err)
 	}
+	// A grant is that consent under another name, and one left behind could be merged
+	// into later and hand back what was taken away.
+	if _, err := tx.Exec(ctx, `DELETE FROM core.client_grants WHERE user_id = $1::uuid AND client_id = $2`, userID, clientID); err != nil {
+		return fmt.Errorf("removing the client's grants: %w", err)
+	}
 	return nil
+}
+
+// ConsentWithdrawn reports whether the person withdrew their consent from this
+// client and has not given it again: a decision every grant that mints for them
+// without them present must honour, not only the next authorization.
+func ConsentWithdrawn(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID, clientID string) (bool, error) {
+	var withdrawn bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.consents
+		               WHERE user_id = $1::uuid AND client_id = $2 AND withdrawn_at IS NOT NULL)`,
+		userID, clientID).Scan(&withdrawn); err != nil {
+		return false, fmt.Errorf("checking for a withdrawn consent: %w", err)
+	}
+	return withdrawn, nil
 }
 
 // ConnectedApp is one application a user has granted access to.
@@ -119,6 +153,14 @@ type ConnectedApp struct {
 	// number a user actually cares about: "does this app still have access
 	// right now", as distinct from "did I agree to it once".
 	ActiveTokens int
+	// OfflineUntil is when the last offline grant to the application ends, nil
+	// when it has none: until then it can act for the person while they are
+	// signed out (5.10), and they should be able to see that it can.
+	OfflineUntil *time.Time
+	// PersistedClaimsUntil is when the last UMA persisted claims token the
+	// application holds about the person ends, nil when it holds none (11.12):
+	// until then it is given tokens on their claims without asking them again.
+	PersistedClaimsUntil *time.Time
 }
 
 // ConnectedApps lists what a user has granted, with the client's real name.
@@ -126,17 +168,53 @@ type ConnectedApp struct {
 // GrantedScopes returns the raw map; this is what a person can read. A screen
 // that says client_id `a7f3-crm-prod` is a screen nobody uses to make a
 // decision.
+//
+// An application holding a live grant with no consent on record is listed too:
+// a first-party client skips the consent screen, so it never had one, and an
+// offline grant to it can act for the person while they are signed out
+// (5.10). Unlisted, they could neither see that nor remove it. Its scopes are
+// those of its newest refresh token.
+//
+// So is one holding a persisted claims token about them (11.12), which is
+// given tokens on their claims without asking them again for a month: a grant
+// in all but name, and one they had no way to see or end but signing out
+// everywhere. It has no scopes of its own.
 func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]ConnectedApp, error) {
 	rows, err := db.Query(ctx, `
-		SELECT c.client_id, COALESCE(cl.display_name, c.client_id), c.scopes,
-		       c.granted_at,
+		WITH apps AS (
+			SELECT c.client_id, c.scopes, c.granted_at FROM core.consents c
+			 WHERE c.user_id = $1::uuid AND c.withdrawn_at IS NULL
+			UNION ALL
+			(SELECT DISTINCT ON (f.client_id) f.client_id,
+			        COALESCE((SELECT t.scopes FROM core.refresh_tokens t WHERE t.family_id = f.id
+			                   ORDER BY t.created_at DESC LIMIT 1), '{}'),
+			        f.created_at
+			   FROM core.refresh_token_families f
+			  WHERE f.user_id = $1::uuid AND f.revoked_at IS NULL
+			    AND NOT EXISTS (SELECT 1 FROM core.consents c WHERE c.user_id = f.user_id
+			                      AND c.client_id = f.client_id AND c.withdrawn_at IS NULL)
+			  ORDER BY f.client_id, f.created_at DESC)
+			UNION ALL
+			SELECT p.client_id, '{}'::text[], min(p.created_at)
+			  FROM core.uma_persisted_claims p
+			 WHERE p.user_id = $1::uuid AND p.expires_at > now()
+			   AND NOT EXISTS (SELECT 1 FROM core.consents c WHERE c.user_id = p.user_id
+			                     AND c.client_id = p.client_id AND c.withdrawn_at IS NULL)
+			   AND NOT EXISTS (SELECT 1 FROM core.refresh_token_families f WHERE f.user_id = p.user_id
+			                     AND f.client_id = p.client_id AND f.revoked_at IS NULL)
+			 GROUP BY p.client_id)
+		SELECT a.client_id, COALESCE(cl.display_name, a.client_id), a.scopes, a.granted_at,
 		       (SELECT count(*) FROM core.refresh_token_families f
-		         WHERE f.user_id = c.user_id AND f.client_id = c.client_id
-		           AND f.revoked_at IS NULL)
-		FROM core.consents c
-		LEFT JOIN core.clients cl ON cl.client_id = c.client_id
-		WHERE c.user_id = $1::uuid AND c.withdrawn_at IS NULL
-		ORDER BY c.granted_at DESC`, userID)
+		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
+		           AND f.revoked_at IS NULL),
+		       (SELECT max(f.offline_not_after) FROM core.refresh_token_families f
+		         WHERE f.user_id = $1::uuid AND f.client_id = a.client_id
+		           AND f.revoked_at IS NULL AND f.offline_not_after > now()),
+		       (SELECT max(p.expires_at) FROM core.uma_persisted_claims p
+		         WHERE p.user_id = $1::uuid AND p.client_id = a.client_id AND p.expires_at > now())
+		FROM apps a
+		LEFT JOIN core.clients cl ON cl.client_id = a.client_id
+		ORDER BY a.granted_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("listing connected applications: %w", err)
 	}
@@ -146,7 +224,7 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 	for rows.Next() {
 		var a ConnectedApp
 		if err := rows.Scan(&a.ClientID, &a.DisplayName, &a.Scopes, &a.GrantedAt,
-			&a.ActiveTokens); err != nil {
+			&a.ActiveTokens, &a.OfflineUntil, &a.PersistedClaimsUntil); err != nil {
 			return nil, err
 		}
 		sort.Strings(a.Scopes)
@@ -169,15 +247,26 @@ func ConnectedApps(ctx context.Context, db *pgxpool.Pool, userID string) ([]Conn
 // Access tokens already minted are NOT revoked here and cannot be: they are
 // self-contained and valid until they expire. That is why the count returned is
 // of refresh lineages, and why the page says minutes rather than immediately.
-func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID string) (int64, error) {
+//
+// reason is recorded on each grant it revokes: the person, from their account
+// page, or an administrator, from the Admin API (6.08).
+//
+// The application's persisted claims tokens about the person go too (11.12):
+// left, it would go on being given tokens on their claims after they took its
+// access away.
+func DisconnectApp(ctx context.Context, tx pgx.Tx, userID, clientID, reason string) (int64, error) {
 	if err := WithdrawConsent(ctx, tx, userID, clientID); err != nil {
 		return 0, err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.uma_persisted_claims WHERE user_id = $1::uuid AND client_id = $2`,
+		userID, clientID); err != nil {
+		return 0, fmt.Errorf("ending persisted claims tokens for %q: %w", clientID, err)
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE core.refresh_token_families
-		SET revoked_at = now(), revocation_reason = 'user disconnected the application'
+		SET revoked_at = now(), revocation_reason = $3
 		WHERE user_id = $1::uuid AND client_id = $2 AND revoked_at IS NULL`,
-		userID, clientID)
+		userID, clientID, reason)
 	if err != nil {
 		return 0, fmt.Errorf("revoking refresh tokens for %q: %w", clientID, err)
 	}

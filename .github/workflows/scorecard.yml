@@ -1,0 +1,52 @@
+# OpenSSF Scorecard: the repository's own security practice, checked the way a
+# prospective user's tooling checks it -- branch protection, pinned dependencies,
+# token permissions in these workflows, signed releases, a security policy, fuzzing,
+# dependency updates. Free. The results go to the repository's code scanning alerts,
+# are kept as an artifact, and are published to the OpenSSF API, which makes the score
+# public and allows a badge (the owner's choice, 21 Nov). Publishing is what needs
+# id-token: the API checks the run's GitHub identity.
+#
+# On main only: the action refuses any other branch ("Only the default branch main is
+# supported"), which a push to a branch found on its first run.
+name: scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 5 * * 1"
+  branch_protection_rule:
+
+permissions: read-all
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scorecard
+          path: scorecard.sarif
+          retention-days: 30
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard

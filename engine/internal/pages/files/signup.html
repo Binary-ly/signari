@@ -6,6 +6,7 @@
 <form method="POST" action="/signup">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 {{if .Invite}}<input type="hidden" name="invite" value="{{.Invite}}">{{end}}
+{{if .Authz}}<input type="hidden" name="authz" value="{{.Authz}}">{{end}}
 <label for="e">{{T "common.email"}}</label>
 {{if .EmailFixed}}
 <input id="e" name="email" type="email" value="{{.Email}}" readonly>
@@ -18,6 +19,15 @@
 <input id="p" name="password" type="password" autocomplete="new-password" required
   minlength="8">
 <p class="hint">{{T "signup.passwordhint"}}</p>
+{{range .Fields}}
+<label for="attr-{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+{{if eq .Type "boolean"}}<select id="attr-{{.Name}}" name="attr.{{.Name}}"{{if .Required}} required{{end}}>
+<option value="">{{T "prompt.choose"}}</option>
+<option value="true"{{if eq .Value "true"}} selected{{end}}>{{T "profile.yes"}}</option>
+<option value="false"{{if eq .Value "false"}} selected{{end}}>{{T "profile.no"}}</option>
+</select>
+{{else}}<input id="attr-{{.Name}}" name="attr.{{.Name}}" type="{{if eq .Type "number"}}number{{else if eq .Type "date"}}date{{else}}text{{end}}" value="{{.Value}}"{{if .Required}} required{{end}}>{{end}}
+{{end}}
 {{template "captcha" .}}<button type="submit">{{T "signup.submit"}}</button>
 </form>
 {{end}}

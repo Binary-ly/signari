@@ -23,8 +23,8 @@ Since August 2026 it can also be **written to** — `add`, `modify`, `delete` an
 `modify DN` (RFC 4511 §4.6–§4.9) — against an explicit schema. That is **off by
 default** and takes two decisions to turn on. See [Writes](#writes) below.
 
-It is still not a directory. There is no replication, no subschema subentry, no
-DIT structure rules, no aliases, no subordinate entries: the tree is flat and
+It is still not a directory. There is no replication, no DIT structure rules, no
+aliases, no subordinate entries: the tree is flat and
 holds `person` entries. Everything outside that is **refused**, not stubbed,
 because a half-implemented directory is one somebody eventually depends on.
 
@@ -64,6 +64,38 @@ directory published to anyone who can reach the port, which is how internal
 address books end up in breach dumps. `SIGNARI_LDAP_ANONYMOUS_SEARCH=1` enables
 it deliberately.
 
+**A bound user sees only their own entry.** Binding proves a password, and
+that is all it proves. Reading every name, address and group in the
+organisation is a separate grant, so it goes to a group:
+
+    SIGNARI_LDAP_SEARCH_GROUP=directory-readers
+
+Members of that group, usually the service accounts applications bind as to
+look people up, can search the whole directory. Everyone else can search, but
+the only entry they get back is their own. Reading another person's DN directly
+returns nothing, and the answer is the same whether or not that person exists.
+Members of `SIGNARI_LDAP_WRITE_GROUP` can search as well, since they can already
+rename and delete anyone. When anonymous search is on, every connection sees
+everything, because nothing is gained by limiting bound users then.
+
+An LDAP outpost takes its search group from its registration instead, with
+`signari outpost search-group`, and the core enforces it. See
+[outposts](outposts.md#what-an-outpost-token-is-worth).
+
+Before this, any account that could bind could list the directory. If an
+application's service account searches for other users, add it to the search
+group, or its searches will come back with only its own entry. The same setting
+applies to an LDAP outpost, which reads it from its own environment.
+
+**Group membership is read on every operation, not at bind.** A client keeps a
+connection open for as long as it likes. Each search and each write therefore
+looks the bound person up again. Once someone is removed from the search group,
+their next search on the same connection returns only their own entry. Once
+someone is removed from the write group, their next write is refused with
+`insufficientAccessRights`. A deactivated person gets nothing back. Until
+October 2026 both groups were taken from the bind, so a connection opened
+before the change kept listing or rewriting the directory until it was closed.
+
 **No `userPassword` attribute is ever returned**, at any value. Some directories
 return a hash; some return a placeholder. Both teach applications to compare
 credentials themselves, which is how a password ends up compared with `==` in
@@ -76,8 +108,12 @@ counter anywhere near it.
 **StartTLS is refused; LDAPS is supported.** A server that answers success to
 StartTLS without actually upgrading the connection has told the client the
 channel is protected, and the client then sends a password over it in the clear.
-Supplying `-tls-cert` makes the LDAP listener LDAPS; without one it warns loudly
-that every bind crosses the network readable.
+Supplying `-tls-cert` makes the LDAP listener LDAPS. Without one the engine
+**refuses to start** unless `SIGNARI_LDAP_INSECURE=1` asks for plaintext by
+name, the same rule as the admin API and the LDAP outpost. It used to warn and
+listen anyway, so a deployment that terminated TLS in front of the engine, and
+so started it with no certificate, took every directory password in clear with
+one log line to show for it.
 
 **A failed re-bind drops the identity.** A connection that stayed bound as its
 previous identity would let a client authenticate once and then keep the session
@@ -87,8 +123,62 @@ while claiming to be someone else.
 and the timing — the dummy verify runs even when no user was found. Otherwise
 the port is a user-enumeration oracle for anyone who can reach it.
 
-**Unsupported filters match nothing.** Failing open on a filter we cannot parse
-would answer it with the entire directory.
+**A filter this directory cannot evaluate matches nothing, negated or not.** A
+filter is TRUE, FALSE or Undefined, and only TRUE returns an entry; an attribute
+it does not know, a matching rule it does not recognise or a malformed substring
+is Undefined, and stays Undefined through a NOT. Until October 2026 such a filter
+was FALSE, so `(!(shoeSize=12))` returned the entire directory.
+
+**Filters.** Equality, presence, substrings (`(cn=al*)`, at most eight parts,
+none of them overlapping), `>=` and `<=` (the case-folded value in byte order),
+`~=` (as equality, as RFC 4511 says where approximate matching is not supported)
+and extensible matches. An extensible match names its rule, `caseIgnoreMatch` or
+`caseExactMatch` or their IA5 forms, by name; a rule given by OID is not
+recognised. `:dn:` also tries the entry's DN. A value is matched as its BER
+carried it, so a `*` a client escapes is a character. Beginning-of-name searches
+on `uid` and `mail` are asked of the database; other substrings are read a page
+at a time and checked here.
+
+**Groups are entries.** Each group with somebody active in it is a
+`groupOfNames` at `cn=<name>,ou=groups,<base>`, which is where a person's
+`memberOf` has always pointed, with a `member` for each active person. A search
+of `ou=groups`, or a subtree search of the base, finds them, paged like people,
+and whoever may read the directory may read them; anyone else has their groups
+on their own entry. An empty group is not published, since `groupOfNames` must
+have a member and the alternative is a member who is not one. Through an outpost
+they are read from the core the same way.
+
+**The schema is published.** The root DSE names `cn=Subschema` as
+`subschemaSubentry`, and a base search of it, which needs no bind, returns
+`attributeTypes`, `objectClasses` and `ldapSyntaxes`: what this directory really
+holds, single-valued where it is, rather than what the standard allows.
+
+**Everybody can be found, and a short list says so.** A filter on `uid`, `mail`,
+`cn` or `memberOf`, alone or in an AND or OR, is asked of the database, so one
+person among a hundred thousand is one query. Anything else is read a page at a
+time and checked here: slower and just as right, since the database only ever
+narrows and this check decides. A search returns 500 entries at most. Past that
+it answers `adminLimitExceeded`, or `sizeLimitExceeded` for a limit the client
+set, with the entries so far, never success. To read more, use the RFC 2696 paged
+results control (`ldapsearch -E pr=500/noprompt`), advertised in the root DSE; a
+page carries on from its last entry however far in that is, and a cookie this
+directory did not issue is a `protocolError`. Until October 2026 the directory
+read the first 500 people and filtered those, so nobody after them could be
+found by any search.
+
+**The search base and scope are honoured.** Every person is a direct child of
+the base DN, so a one-level search reaches people only from the base DN, a
+subtree search reaches everyone from the base DN or one person from that
+person's DN, and a search based anywhere else returns nobody: `ou=groups,…`
+reaches the groups and no person. Until October 2026 any one-level or subtree search under the
+base returned the whole directory, wherever it was based.
+
+**A critical control is refused.** This server applies no request controls, so
+an operation carrying one marked critical is not performed and is answered
+`unavailableCriticalExtension` (12), as RFC 4511 §4.1.11 requires; a
+non-critical control is ignored. Critical controls used to be ignored too, so a
+client that made, say, a server-side sort a condition of its search got the
+search without it.
 
 **One organisation per listener, stated explicitly.** LDAP has no way to express
 a tenant — the DN is the only input, and the client chooses it. Inferring the
@@ -113,6 +203,21 @@ a VPN concentrator that binds on every request is never throttled by its own
 success. The limits expire by themselves; there is no lockout and no
 administrator action needed to clear one.
 
+**The place is taken before the password is verified.** Each bind claims its
+place in both budgets first, and hands it back unless the password turns out to
+be wrong. The budgets used to be read before the Argon2 verification and only
+charged after it. So every bind that arrived while others were still being
+verified read a count under the limit, and a parallel burst was hashed in full
+before the first failure was counted. A burst of sixty wrong binds now produces
+thirty verifications and thirty `busy` answers. Binds in flight count while
+they are in flight, so a single client making more simultaneous binds than the
+limit is told `busy` for the rest.
+
+**A bind has ten seconds**, the wait for the shared hasher included. Past that
+it answers `busy` and the client retries. The verification waits for the same
+hasher slots as the sign-in form. Without a deadline, a bind flood queued there
+indefinitely, ahead of people signing in at the browser.
+
 A bind refused for throttling answers **`busy` (51)**, not `invalidCredentials`
 (49). Every other failure — no such user, wrong password, deactivated account —
 is deliberately indistinguishable, because telling them apart is a user
@@ -121,6 +226,50 @@ because its answer is identical whether or not the account exists, so it
 discloses nothing, and because reporting it as a bad password sends an operator
 to rotate a credential that was correct while the guessing run that actually
 spent the budget stays invisible.
+
+### A password alone, and a second factor
+
+A bind has one credential field. RADIUS PAP and the outposts (see
+[outposts](outposts.md)) are the same. So a person with an authenticator can put
+their code after their password, `password;123456`: six to eight digits after
+the last semicolon. It is held to what the sign-in form holds a code to: spent
+once, and a wrong one charged to the authenticator and the person's budget. A
+code that is given has to be right, even where the password alone would have
+done, and a password that really does end that way still works. An emailed or
+texted code cannot be used: each is taken only for the sign-in it was sent for,
+and nothing here sends one. A texted code was taken until November 2026.
+
+Each organisation decides what happens
+when the person binding is someone its sign-in page would ask for a second
+factor: under the built-in flow, anybody who has one enrolled; under an
+unconditional `mfa` stage, everybody. A registered security key or passkey
+counts as enrolled since October 2026, when the sign-in page began asking for
+one after a password, so a person who has registered a passkey is refused a
+password-only bind under `refuse_when_mfa`.
+
+| `password_only_binds` | A correct password from such a person |
+|---|---|
+| `refuse_when_mfa` | refused unless a code came with it, answered as `invalidCredentials` (49) like any other failure, and audited as `login.failed` with reason `second_factor_required`. **The default for organisations created since migration 0128** |
+| `allow` | accepted. The value every older organisation keeps until changed, so an upgrade does not stop a VPN working |
+
+Set it with `signari instance password-binds -org <id> -binds refuse_when_mfa`.
+`signari doctor` names every organisation still set to `allow` that has an LDAP
+or RADIUS listener or outpost: under `allow`, a sign-in page that demands a
+second factor sits next to a port that does not, and a stolen password only has
+to be typed into a VPN prompt.
+
+The refusal is checked **after** the password. So the timing and the answer are
+the same as for a wrong password, and a guesser learns nothing from it. It is
+**not charged** to the guessing budget, because the password was right: a client
+retrying it in a loop would otherwise spend the person's budget at the sign-in
+page as well. If whether the person has a second factor cannot be read, the bind
+is refused.
+
+Service accounts that bind to the directory should have no second factor
+enrolled, or `refuse_when_mfa` refuses them too. Carrying a code with the
+password (a `;123456` suffix, RADIUS Access-Challenge) is the full answer. It is
+not built yet, and when it is, this setting will decide only what happens
+without one.
 
 ## Verified against
 
@@ -210,11 +359,21 @@ is the one outcome §4.6 promises cannot happen.
 The MUST attributes are checked on the **result**, not per change — a request that
 deletes `sn` and adds it back is legal; one that only deletes it is not.
 
+Deleting `userPassword` removes the credential and keeps the account, and is
+refused with `constraintViolation` unless the entry holds at least two passkeys.
+Otherwise nothing would be left to sign in with (see
+[passkey-signals.md](passkey-signals.md#signing-in-without-a-password)).
+
 ### `delete` deletes
 
 It does not deactivate. A directory `delete` that quietly deactivates is the
 failure this whole design is against: the client asked for the entry to be gone,
 a subsequent search would not find it, and the row would still be there.
+
+The person's sessions are ended first, in the same transaction, so each
+application they signed in to is sent a back-channel logout notice with
+`reason` `user_deleted`. Letting the delete cascade the sessions away would
+remove the list of applications to tell before anyone was told.
 
 It is **not** `signari erase subject`. Deleting removes the row and everything
 cascading from it; it does not destroy the subject's data-encryption key, so
@@ -242,10 +401,22 @@ committing the change while the record of it failed would be exactly that.
 Deletion is audited **before** the row goes, because afterwards there is no
 subject for the event to name.
 
+The entry is named by its subject id and the bound account by `actor_id`. A
+rename records that the username moved, not what to. Until October 2026 every
+row carried both usernames in its detail, in plaintext inside the hash chain,
+where erasure cannot reach; a test now fails on any audit event whose detail
+names a person.
+
 A password set through this path gets **its own event**, separate from "the entry
 was modified". Somebody with directory write access can set any password and then
 bind as that person — the most consequential thing this interface can do, and the
 thing an investigation looks for.
+
+A write **refused** because the bound account is not in the write group is
+audited too, as `ldap.write_refused` with the operation (`add`, `modify`,
+`delete`, `modify_dn`), by the account's subject id. Until October 2026 it was a
+log line naming the account, which is where an attempt to change the directory
+without permission would have been looked for and not found.
 
 Passwords go through the **same policy** as the sign-in form. A directory write is
 the one path where a password arrives with no person in front of a form to be
@@ -259,13 +430,44 @@ with `unwillingToPerform`, as before. Adding one would mean putting directory
 mutation on the outpost API, which is deliberately a
 password-verification oracle and nothing more.
 
+## POSIX accounts
+
+A host can take its accounts from this directory, through SSSD or anything else that
+reads RFC 2307:
+
+```sh
+SIGNARI_LDAP_POSIX=1 SIGNARI_LDAP_POSIX_HOME=/home/{username} SIGNARI_LDAP_POSIX_SHELL=/bin/bash
+```
+
+People then also carry `posixAccount`, with `uid`, `uidNumber`, `gidNumber`,
+`homeDirectory`, `loginShell` and `gecos`, and groups carry `posixGroup`, with
+`gidNumber` and `memberUid` beside `member`. Nothing changes for a directory that does
+not ask. All of it is read-only here. The host still binds with a search account: a
+person who only binds sees their own entry, so name one in
+`SIGNARI_LDAP_SEARCH_GROUP`.
+
+**Every person and group has a number from when they are made.** It comes from a
+sequence that never goes back, so deleting somebody frees nothing, and a new employee
+can never be given an erased one's files. Numbers start at 2000000000, well above a
+host's own accounts. The sequence is the deployment's, so a tenant comparing two of
+its own numbers can estimate how many accounts were made between them.
+
+**A number you already have can be kept.** Moving from a directory whose hosts have
+files owned by uid 1234, set `posix_uid` on `PATCH /admin/users/{userID}` and
+`posix_gid` on `PATCH /admin/groups/{groupID}`. They take 1000 to 1999999999: nothing
+allocated can land there, and below it are a host's own accounts, root among them.
+Two people in an organisation cannot share one. A restore from a backup restores the
+sequence too, so numbers given out after that backup can be given out again; a host
+that kept their files should be treated with the same care as the people it restored.
+
+A person's `gidNumber` is their own number, the group private to them. This directory
+publishes no such group, so `id` shows the number where a name would be. Groups they
+belong to come through `memberUid` and show normally. A group with nobody in it is not
+published, here as anywhere in this directory.
+
 ## Not implemented
 
-Referrals, aliases, paged results, substring and approximate filters, and SASL.
-Substring filters in particular are absent on purpose: they ask the server to do
-open-ended work on behalf of whoever opened the connection.
+Referrals, aliases, every request control but paged results, and SASL.
 
-Group entries are neither readable nor writable. `memberOf` is published on a
-person, but there is no `ou=groups` subtree to search or modify — writing group
-membership means writing the group's `member` attribute, and a subtree that could
-be written and not read would be incoherent.
+Group entries are read-only. Membership is managed where groups are, and a
+directory-shaped write to it would be a second way in.

@@ -52,6 +52,8 @@ type Statement struct {
 	IssuedAt int64           `json:"iat"`
 	Expiry   int64           `json:"exp"`
 	JWKS     json.RawMessage `json:"jwks"`
+	// Audience is on an Explicit Registration request and nothing else here.
+	Audience json.RawMessage `json:"aud,omitempty"`
 
 	// Constraints is §6.2, present only on Subordinate Statements. See
 	// constraints.go: §10.2 makes enforcing these a MUST, and this engine
@@ -67,6 +69,12 @@ type Statement struct {
 	// -- so an issuer saying "do not use this statement unless you process X"
 	// was answered by using it without processing X.
 	Crit []string `json:"crit,omitempty"`
+
+	// TrustMarks are those an Entity Configuration holds, and TrustMarkIssuers and
+	// TrustMarkOwners what a Trust Anchor's says of them, read by RequireTrustMarks.
+	TrustMarks       []TrustMarkEntry `json:"trust_marks,omitempty"`
+	TrustMarkIssuers TrustMarkIssuers `json:"trust_mark_issuers,omitempty"`
+	TrustMarkOwners  TrustMarkOwners  `json:"trust_mark_owners,omitempty"`
 }
 
 // ChainResult is a validated chain.
@@ -153,7 +161,10 @@ func ValidateChain(chain []Statement, trustAnchorID string, trustAnchorKeys json
 		if err := checkCrit(es); err != nil {
 			return nil, fmt.Errorf("statement %d: %w", j, err)
 		}
-		if !time.Unix(es.IssuedAt, 0).Before(now) {
+		// With Leeway, as a Trust Mark is read: a statement made at the moment of
+		// asking has the same iat as the clock that asked, or a later one by as
+		// much as two clocks differ, and that is not the future.
+		if time.Unix(es.IssuedAt, 0).After(now.Add(Leeway)) {
 			return nil, fmt.Errorf("statement %d has an iat in the future", j)
 		}
 		if !time.Unix(es.Expiry, 0).After(now) {

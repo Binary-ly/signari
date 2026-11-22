@@ -3,6 +3,8 @@ package pages
 import (
 	"fmt"
 	"html/template"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -84,7 +86,12 @@ var criticalFields = []string{
 	//	Invite     which invitation a signup is redeeming
 	//	UserCode   which device authorization is being approved
 	//	SID        which session is being ended on the self-service page
-	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID",
+	//	Version    which wording of a prompt is being answered; without it every
+	//	           answer is refused as made to changed terms, and nobody with a
+	//	           prompt outstanding can finish signing in
+	//	State      which cross-device wallet sign-in the emailed code finishes
+	//	DCState    which wallet sign-in the browser's Digital Credentials API answers
+	"Token", "ClientID", "ID", "Slug", "Address", "Invite", "UserCode", "SID", "Version", "State", "DCState",
 }
 
 // sentinel is what a critical field is set to while probing.
@@ -108,6 +115,7 @@ var (
 	probeBools = []string{
 		"Captcha", "Ready", "Done", "Denied", "Confirm", "Empty", "Configured",
 		"EmailFixed", "Unlaunchable", "Granted", "Required", "Verified",
+		"SecurityKey",
 	}
 	probeLists = []string{
 		"Scopes", "Providers", "Fields", "Codes", "Apps", "Rows", "Connections",
@@ -435,10 +443,39 @@ func Check(dir string) ([]string, []error) {
 	if err != nil {
 		return nil, []error{err}
 	}
-	if len(over) == 0 {
+	orgs, err := os.ReadDir(filepath.Join(dir, OrgThemesDir))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, []error{err}
+	}
+	if len(over) == 0 && len(orgs) == 0 {
 		return nil, []error{fmt.Errorf("%s contains no .html files, so nothing "+
 			"would be overridden", dir)}
 	}
+
+	ok, problems := checkFiles(src, over, "")
+	// An organisation's theme is checked over the deployment's, which is what it
+	// will be loaded over.
+	for _, n := range ok {
+		src[n] = over[n]
+	}
+	for _, e := range orgs {
+		if !e.IsDir() {
+			continue
+		}
+		prefix := filepath.Join(OrgThemesDir, e.Name()) + string(filepath.Separator)
+		own, err := overrideSources(filepath.Join(dir, OrgThemesDir, e.Name()))
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", prefix, err))
+			continue
+		}
+		passed, refused := checkFiles(src, own, prefix)
+		ok, problems = append(ok, passed...), append(problems, refused...)
+	}
+	return ok, problems
+}
+
+// checkFiles validates one directory's pages over src, naming each with prefix.
+func checkFiles(src, over map[string]string, prefix string) ([]string, []error) {
 	names := make([]string, 0, len(over))
 	for n := range over {
 		names = append(names, n)
@@ -451,18 +488,21 @@ func Check(dir string) ([]string, []error) {
 		if !partials[n] {
 			if _, known := src[n]; !known {
 				problems = append(problems, fmt.Errorf(
-					"%s.html does not correspond to any page this server renders, so "+
-						"it would be ignored", n))
+					"%s%s.html does not correspond to any page this server renders, so "+
+						"it would be ignored", prefix, n))
 				continue
 			}
 		}
 		candidate := clone(src)
 		candidate[n] = over[n]
 		if err := validateOne(candidate, n); err != nil {
+			if prefix != "" {
+				err = fmt.Errorf("%s%s.html: %w", prefix, n, err)
+			}
 			problems = append(problems, err)
 			continue
 		}
-		ok = append(ok, n)
+		ok = append(ok, prefix+n)
 	}
 	return ok, problems
 }

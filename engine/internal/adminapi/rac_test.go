@@ -1,0 +1,155 @@
+package adminapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"signari.dev/engine/internal/store"
+)
+
+// A remote-access connection is registered, given parameters and taken out of
+// service through the Admin API as `signari rac` does it (6.07): its
+// credentials sealed and never read back, and nothing that chooses where the
+// machine guacd runs on writes.
+func TestARemoteAccessConnectionIsManagedThroughTheAPI(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := newDriftMigrationOrg(t, s, false)
+	if _, err := s.db.Exec(ctx, `INSERT INTO core.groups (org_id, name, display_name)
+		VALUES ($1::uuid, 'finance', 'Finance')`, org); err != nil {
+		t.Fatal(err)
+	}
+	base := "/admin/organizations/" + org + "/rac-connections"
+	errorOf := func(method, path string, body any, want int) string {
+		t.Helper()
+		rec := call(t, s, method, path, testToken, body)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		if rec.Code != want {
+			t.Errorf("%s %s %v answered %d, want %d: %s", method, path, body, rec.Code, want, rec.Body.String())
+		}
+		e, _ := out["error"].(string)
+		return e
+	}
+	const password = "a-desk-service-password"
+	for _, bad := range []struct {
+		body map[string]any
+		want string
+	}{
+		{map[string]any{"slug": "desk", "protocol": "telnet", "host": "10.0.4.21"}, "invalid_protocol"},
+		{map[string]any{"slug": "desk", "protocol": "rdp", "host": "10.0.4.21", "require_group": "nobody"}, "unknown_group"},
+		{map[string]any{"slug": "desk", "protocol": "rdp"}, "host_required"},
+		{map[string]any{"slug": "desk", "protocol": "rdp", "host": "10.0.4.21", "recording_path": "/tmp"}, "invalid_json"},
+	} {
+		if e := errorOf(http.MethodPost, base, bad.body, http.StatusBadRequest); e != bad.want {
+			t.Errorf("%v answered %q, want %q", bad.body, e, bad.want)
+		}
+	}
+
+	// A key is sealed like a password, is for ssh, and is PEM; a connection given
+	// none of these asks whoever opens it, and that is not a refusal.
+	const key = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"
+	for _, bad := range []map[string]any{{"slug": "k1", "protocol": "rdp", "host": "h", "private_key": key},
+		{"slug": "k2", "protocol": "ssh", "host": "h", "private_key": "not a key"},
+		{"slug": "k3", "protocol": "ssh", "host": "h", "passphrase": "no key to open"}} {
+		if e := errorOf(http.MethodPost, base, bad, http.StatusBadRequest); e != "invalid_private_key" {
+			t.Errorf("%v answered %q", bad, e)
+		}
+	}
+	keyed := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "build", "protocol": "ssh",
+		"host": "build.internal", "login": "deploy", "private_key": key, "passphrase": "opens-the-key"})
+	if keyed.Code != http.StatusCreated {
+		t.Fatalf("registering with a key: %d %s", keyed.Code, keyed.Body.String())
+	}
+	if held, err := store.HeldRACCredentials(ctx, s.db, s.root, org, "build"); err != nil {
+		t.Fatal(err)
+	} else if held != (store.RACCredentials{Login: "deploy", PrivateKey: key, Passphrase: "opens-the-key"}) {
+		t.Errorf("the connection holds %+v", held)
+	}
+	if rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "asks", "protocol": "vnc",
+		"host": "desk.internal"}); rec.Code != http.StatusCreated {
+		t.Fatalf("registering with nothing: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := call(t, s, http.MethodPost, base, testToken, map[string]any{"slug": "desk", "name": "Finance desktop",
+		"protocol": "rdp", "host": "10.0.4.21", "login": "svc-desk", "password": password, "require_group": "finance"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("registering: %d %s", rec.Code, rec.Body.String())
+	}
+	// Sealed where the connect path opens it, with the protocol's own port.
+	c, err := store.LoadRACConnection(ctx, s.db, org, "desk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := c.Resolve(s.root, 1024, 768, 96)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Parameters["password"] != password || resolved.Parameters["username"] != "svc-desk" ||
+		resolved.Parameters["port"] != "3389" || c.RequireGroup != "finance" || c.RecordingPath != "" {
+		t.Errorf("the connection resolves to port %s, group %q, recording %q, credentials opened %v",
+			resolved.Parameters["port"], c.RequireGroup, c.RecordingPath, resolved.Parameters["password"] == password)
+	}
+	if e := errorOf(http.MethodPost, base, map[string]any{"slug": "desk", "protocol": "ssh", "host": "bastion"},
+		http.StatusConflict); e != "already_exists" {
+		t.Errorf("a second connection of the slug answered %q", e)
+	}
+
+	for params, want := range map[string]string{
+		`{"parameters":{"password":"hunter2"}}`:     "reserved_parameter",
+		`{"parameters":{"hostname":"elsewhere"}}`:   "reserved_parameter",
+		`{"parameters":{"drive-path":"/etc"}}`:      "parameter_names_a_path",
+		`{"parameters":{"typescript-path":"/var"}}`: "parameter_names_a_path",
+		`{"parameters":{"recording-path":"/root"}}`: "parameter_names_a_path",
+		`{"parameters":{" ":"x"}}`:                  "invalid_parameter",
+		`{}`:                                        "nothing_to_change",
+	} {
+		if e := errorOf(http.MethodPatch, base+"/desk", json.RawMessage(params), http.StatusBadRequest); e != want {
+			t.Errorf("%s answered %q, want %q", params, e, want)
+		}
+	}
+	// A limit is kept when another is set, and one that cannot mean what it says is
+	// refused before it changes anything.
+	for _, body := range []map[string]any{{"max_connections": -1}, {"max_duration_seconds": -1},
+		{"max_duration_seconds": 31 * 24 * 3600}} {
+		if e := errorOf(http.MethodPatch, base+"/desk", body, http.StatusBadRequest); e != "invalid_limit" {
+			t.Errorf("%v answered %q", body, e)
+		}
+	}
+	for _, body := range []map[string]any{{"max_connections": 2}, {"max_duration_seconds": 28800}} {
+		if rec := call(t, s, http.MethodPatch, base+"/desk", testToken, body); rec.Code != http.StatusOK {
+			t.Fatalf("limiting %v: %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if c, err := store.LoadRACConnection(ctx, s.db, org, "desk"); err != nil {
+		t.Fatal(err)
+	} else if c.MaxConnections != 2 || c.MaxDuration != 8*time.Hour {
+		t.Errorf("the connection holds %d and %v", c.MaxConnections, c.MaxDuration)
+	}
+	if list := call(t, s, http.MethodGet, base, testToken, nil); !strings.Contains(list.Body.String(),
+		`"max_connections":2,"max_duration_seconds":28800`) {
+		t.Errorf("the limits are not listed: %s", list.Body.String())
+	}
+
+	if rec := call(t, s, http.MethodPatch, base+"/desk", testToken, map[string]any{"enabled": false,
+		"parameters": map[string]string{"ignore-cert": "true"}}); rec.Code != http.StatusOK {
+		t.Fatalf("disabling with parameters: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.LoadRACConnection(ctx, s.db, org, "desk"); err == nil {
+		t.Error("a disabled connection still loads for connecting")
+	}
+	list := call(t, s, http.MethodGet, base, testToken, nil)
+	if strings.Contains(list.Body.String(), password) || strings.Contains(list.Body.String(), "svc-desk") ||
+		!strings.Contains(list.Body.String(), `"parameters":{"ignore-cert":"true"}`) ||
+		!strings.Contains(list.Body.String(), `"has_credentials":true`) {
+		t.Errorf("the connections read %s", list.Body.String())
+	}
+	if e := errorOf(http.MethodPatch, base+"/elsewhere", map[string]any{"enabled": true},
+		http.StatusNotFound); e != "connection_not_found" {
+		t.Errorf("an unknown connection answered %q", e)
+	}
+}

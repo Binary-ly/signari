@@ -19,11 +19,14 @@ origin go to 127.0.0.1:8099 with the Host header preserved -- the issuer the
 engine sees, and therefore every issuer check, is unchanged.
 """
 import html as htmlmod
+import os
 import re
+import subprocess
 import sys
 import time
 import urllib3
 import requests
+from urllib.parse import urlsplit
 
 urllib3.disable_warnings()
 
@@ -37,6 +40,9 @@ SUBMIT_RE = re.compile(r"""xhr\.open\(\s*['"]POST['"]\s*,\s*['"]([^'"]+)['"]""")
 HIDDEN_RE = re.compile(r"""<input[^>]*type=["']hidden["'][^>]*>""", re.I)
 ATTR_RE = re.compile(r"""([\w-]+)\s*=\s*["']([^"']*)["']""")
 ACTION_RE = re.compile(r"""<form[^>]*action=["']([^"']*)["']""", re.I)
+FRAME_RE = re.compile(r"""<iframe[^>]*\bsrc=["']([^"']+)["']""", re.I)
+CONTINUE_RE = re.compile(r"""</iframe>\s*<p><a href=["']([^"']+)["']""", re.I)
+TITLE_RE = re.compile(r"""<title>([^<]*)</title>""", re.I)
 
 
 def rewrite(url):
@@ -84,28 +90,70 @@ def form_action(page, default):
     return act if act.startswith("http") else ENGINE_ORIGIN + act
 
 
-def submit_implicit(sess, page, log):
-    """Do what the callback page's script would have done, if it had run."""
-    m = SUBMIT_RE.search(page)
+def submit_implicit(sess, response, log):
+    """Do what the callback page's script would have done, if it had run.
+
+    That script posts location.hash, '#' and all, which the suite strips with
+    substring(1) before it decodes. Empty for a code flow, and the whole answer for
+    hybrid, which returns in the fragment: posting nothing reads as the server having
+    dropped `code` and `state`, and posting it without the '#' as `ode` and an `iss`
+    still percent-encoded.
+    """
+    m = SUBMIT_RE.search(response.text or "")
     if not m:
         return False
     # Inlined by Thymeleaf's th:inline="javascript", i.e. a JS string literal:
     # every forward slash arrives as \/ and non-ASCII as \uXXXX.
     url = htmlmod.unescape(m.group(1)).replace("\\/", "/").encode().decode("unicode_escape")
-    r = post(sess, url, data="", headers={"Content-type": "text/plain"})
+    fragment = urlsplit(response.url).fragment
+    r = post(sess, url, data="#" + fragment if fragment else "", headers={"Content-type": "text/plain"})
     log(f"      implicit submit -> {r.status_code}")
     return True
 
 
-def drive_url(sess, url, log):
+def ended(r, log):
+    """Where a visit stopped, so that a module left for a human (REVIEW) carries what
+    the engine showed: its own error page, and not a redirect to the client."""
+    m = TITLE_RE.search(r.text or "")
+    log(f"      ended at {r.status_code} {urlsplit(r.url).path} {m.group(1).strip() if m else ''!r}")
+    return True
+
+
+def drive_url(sess, url, log, refuse=False, look_only=False):
+    """refuse answers the consent page Deny, for a module about a person who says no.
+    look_only stops at the first page, for one that has the page opened and left
+    before the same request is used again."""
     r = get(sess, url, allow_redirects=True)
+    if look_only:
+        return ended(r, log)
     for _ in range(8):
         page = r.text or ""
 
-        if submit_implicit(sess, page, log):
+        if submit_implicit(sess, r, log):
             return True
 
+        # Front-channel logout: a browser loads every frame and then goes on.
+        frames = FRAME_RE.findall(page)
+        if frames:
+            for src in frames:
+                f = get(sess, htmlmod.unescape(src))
+                log(f"      front-channel frame -> {f.status_code}")
+            m = CONTINUE_RE.search(page)
+            if not m:
+                return ended(r, log)
+            onward = htmlmod.unescape(m.group(1))
+            r = get(sess, onward if onward.startswith("http") else ENGINE_ORIGIN + onward,
+                    allow_redirects=True)
+            continue
+
         if 'name="username"' in page and 'name="password"' in page:
+            if refuse and 'name="cancel"' in page:
+                # Saying no where a person is asked first: a consent given in an
+                # earlier module means no consent page comes to say it on.
+                log("      cancelling the sign-in")
+                r = post(sess, form_action(page, "/login"), data=hidden_fields(page) + [("cancel", "1")],
+                         allow_redirects=True)
+                continue
             fields = hidden_fields(page) + [("username", USER), ("password", PASSWORD)]
             log("      signing in")
             r = post(sess, form_action(page, "/login"), data=fields, allow_redirects=True)
@@ -117,8 +165,8 @@ def drive_url(sess, url, log):
         # access_denied, which reads like the user declined rather than like the
         # harness forgot to click.
         if 'name="decision"' in page:
-            fields = hidden_fields(page) + [("decision", "allow")]
-            log("      granting consent")
+            fields = hidden_fields(page) + [("decision", "deny" if refuse else "allow")]
+            log("      refusing consent" if refuse else "      granting consent")
             r = post(sess, form_action(page, "/consent"), data=fields, allow_redirects=True)
             continue
 
@@ -128,7 +176,7 @@ def drive_url(sess, url, log):
                      allow_redirects=True)
             continue
 
-        return True
+        return ended(r, log)
     return False
 
 
@@ -136,6 +184,18 @@ def drive_url(sess, url, log):
 # picture, and what it is really recording is "a human confirmed they saw this".
 BLANK_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf"
              "FcSJAAAADUlEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
+
+
+# Seconds a placeholder is left alone after the driver first sees it. In the OID4VP
+# plans the suite's own scripted browser fills the evidence placeholder itself
+# (fapiconfig.py --vp configures it), within a second of the module making it, and
+# when the driver had filled it first the suite's browser found nothing to fill,
+# threw, and the module was interrupted: three positive modules in one runner run,
+# put down until then to the suite's browser being early. The placeholders the
+# driver exists for wait on a human for ever, so a few seconds cost them nothing.
+# Timed by the driver's own clock, since the suite's may be a VM's.
+PLACEHOLDER_GRACE = 8
+first_seen = {}
 
 
 def fill_placeholders(api, mid, log):
@@ -163,9 +223,12 @@ def fill_placeholders(api, mid, log):
         entries = r.json()
     except Exception:
         return
+    now = time.monotonic()
     for e in entries:
         ph = e.get("upload")
         if not ph:
+            continue
+        if now - first_seen.setdefault(ph, now) < PLACEHOLDER_GRACE:
             continue
         try:
             resp = api.post(f"{SUITE}/api/log/{mid}/images/{ph}", data=BLANK_PNG,
@@ -176,16 +239,92 @@ def fill_placeholders(api, mid, log):
             log(f"      placeholder error: {type(ex).__name__}: {ex}")
 
 
-def module_status(api, mid):
+def module_info(api, mid):
     # /api/info/{id} carries the status; /api/runner/{id} has no status key at
     # all, so reading it returns None forever and every module looks live.
     try:
         r = api.get(f"{SUITE}/api/info/{mid}", verify=False, timeout=15)
         if r.status_code == 200:
-            return r.json().get("status")
+            return r.json()
     except Exception:
         pass
-    return None
+    return {}
+
+
+def module_status(api, mid):
+    return module_info(api, mid).get("status")
+
+
+# A command that mints a credential offer and prints it, as `signari credential offer`
+# does: the openid-credential-offer:// link on a line of its own, and the transaction
+# code after "transaction code:". run.sh sets it for the issuer-initiated OID4VCI plan.
+OFFER = os.environ.get("CONFORMANCE_OFFER_CMD", "")
+
+
+def deliver_offer(api, mid, sess, delivered, log):
+    """Be the issuer's front desk: when a module waits at its credential_offer_endpoint,
+    mint an offer and send it there, and the transaction code to tx_code_endpoint when
+    that appears. The code travels separately, as §3.5 has it."""
+    if not OFFER:
+        return
+    try:
+        exposed = api.get(f"{SUITE}/api/runner/{mid}", verify=False, timeout=15).json().get("exposed") or {}
+    except Exception:
+        return
+    endpoint = exposed.get("credential_offer_endpoint")
+    if endpoint and "offer" not in delivered:
+        out = subprocess.run(OFFER, shell=True, capture_output=True, text=True, timeout=60).stdout
+        link = next((l for l in out.splitlines() if l.startswith("openid-credential-offer://")), "")
+        code = re.search(r"transaction code: (\S+)", out)
+        delivered["offer"], delivered["tx"] = True, code.group(1) if code else ""
+        if link:
+            r = get(sess, endpoint + "?" + link.split("?", 1)[1])
+            log(f"      offer delivered -> {r.status_code}")
+    tx = exposed.get("tx_code_endpoint")
+    if tx and delivered.get("tx") and "tx_sent" not in delivered:
+        delivered["tx_sent"] = True
+        r = get(sess, tx.replace("your_tx_code", delivered["tx"]))
+        log(f"      transaction code delivered -> {r.status_code}")
+
+
+# The start of a wallet sign-in at the engine, for the OID4VP verifier plans: run.sh
+# sets it. Its answer is a redirect to the wallet, openid4vp://?..., whose query the
+# suite (as the wallet) takes at its authorization endpoint.
+VP_START = os.environ.get("CONFORMANCE_VP_START", "")
+
+
+def deliver_vp(api, mid, sess, delivered, log):
+    """Be the person tapping "sign in with a wallet": when a module exposes its
+    authorization_endpoint, start a sign-in at the engine and take the wallet URL there."""
+    if not VP_START or "vp" in delivered:
+        return
+    try:
+        exposed = api.get(f"{SUITE}/api/runner/{mid}", verify=False, timeout=15).json().get("exposed") or {}
+    except Exception:
+        return
+    endpoint = exposed.get("authorization_endpoint")
+    if not endpoint:
+        return
+    delivered["vp"] = True
+    try:
+        r = get(sess, VP_START, allow_redirects=False)
+        wallet = r.headers.get("Location", "")
+        if not wallet.startswith("openid4vp:") or "?" not in wallet:
+            log(f"      the engine answered {r.status_code} with no wallet URL: {wallet[:80]}")
+            return
+        # Not followed by requests: the wallet sends the browser back to the engine
+        # by the name the suite resolves, which only rewrite() reaches from here.
+        r = get(sess, endpoint + "?" + wallet.split("?", 1)[1], allow_redirects=False)
+        back = r.headers.get("Location", "")
+        log(f"      wallet request delivered -> {r.status_code} {back[:60]}")
+        if back.startswith(ENGINE_ORIGIN):
+            # The browser back at the engine with the cookie it left with, which is
+            # what finishes the sign-in.
+            r = get(sess, back, allow_redirects=False)
+            said = re.findall(r"<p>(.*?)</p>", r.text, re.S)[:2] if r.status_code >= 400 else []
+            log(f"      back at the engine -> {r.status_code} {r.headers.get('Location', '')[:60]} {said}")
+    except Exception as e:
+        log(f"      wallet driver error: {type(e).__name__}: {e}")
 
 
 def drive_module(api, mid, log, budget=320):
@@ -205,11 +344,20 @@ def drive_module(api, mid, log, budget=320):
     # CheckIdTokenAuthTimeClaimsSameIfPresent -- an engine defect that is really
     # the harness throwing the session away between requests.
     sess = requests.Session()
+    # Two modules want what a person does differently: one says no, and one opens the
+    # sign-in page and leaves it before the same pushed request is used again. The
+    # second fails outright if the first visit signs in.
+    name = module_info(api, mid).get("testName", "")
+    refuse = name.endswith("user-rejects-authentication")
+    leave_first = "reused-request-uri-prior-to-auth-completion" in name
+    delivered = {}
     try:
         while time.time() < deadline:
             st = module_status(api, mid)
             if st in ("FINISHED", "INTERRUPTED"):
                 return st
+            deliver_offer(api, mid, sess, delivered, log)
+            deliver_vp(api, mid, sess, delivered, log)
             try:
                 r = api.get(f"{SUITE}/api/runner/browser/{mid}", verify=False, timeout=15)
                 # The field is "urls", not "urlsToVisit".
@@ -220,7 +368,7 @@ def drive_module(api, mid, log, budget=320):
                 seen.add(u)
                 log(f"    visit {u[:92]}")
                 try:
-                    drive_url(sess, u, log)
+                    drive_url(sess, u, log, refuse=refuse, look_only=leave_first and len(seen) == 1)
                 except Exception as e:
                     log(f"      driver error: {type(e).__name__}: {e}")
                 try:
@@ -246,7 +394,12 @@ def main():
     api = requests.Session()
     handled = set()
     idle = 0
-    while idle < 90:
+    # Fifteen minutes without a new module, to outlast the longest the runner waits
+    # on one: a module left WAITING holds it that long, 240 s as the suite ships and
+    # 600 s in the workflow, and a driver that gave up first left every module after
+    # it with nobody to sign in or deliver an offer. run.sh ends the driver when the
+    # runner exits, so this only bounds a driver run alone.
+    while idle < 450:
         try:
             text = open(logpath, errors="ignore").read()
         except FileNotFoundError:

@@ -1,0 +1,166 @@
+{{- if .Values.console.enabled }}
+{{- include "signari.validate" . -}}
+{{- $name := printf "%s-console" (include "signari.fullname" .) -}}
+{{- $secret := .Values.console.secret.existingSecret | default (printf "%s-secrets" $name) -}}
+{{- $tag := .Values.console.image.tag | default .Chart.AppVersion -}}
+{{- if not .Values.console.secret.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-secrets
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+  # A hook before the console's migration Job, as the engine's Secret is before its own.
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+type: Opaque
+stringData:
+  APP_KEY: {{ .Values.console.secret.appKey | quote }}
+  DB_PASSWORD: {{ .Values.console.secret.dbPassword | quote }}
+  SIGNARI_ADMIN_TOKEN: {{ .Values.console.secret.adminToken | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_URL: {{ .Values.console.url | quote }}
+  LOG_CHANNEL: stderr
+  DB_CONNECTION: pgsql
+  DB_HOST: {{ .Values.console.database.host | quote }}
+  DB_PORT: {{ .Values.console.database.port | quote }}
+  DB_DATABASE: {{ .Values.console.database.name | quote }}
+  DB_SSLMODE: {{ .Values.console.database.sslmode | quote }}
+  # signari_admin and never a wider role: the console's whole boundary is the GRANT.
+  DB_USERNAME: signari_admin
+  SESSION_DRIVER: database
+  CACHE_STORE: database
+  QUEUE_CONNECTION: sync
+  SIGNARI_ADMIN_URL: {{ .Values.console.adminUrl | default (printf "%s://%s-admin:%d" (ternary "http" "https" .Values.adminApi.insecure) (include "signari.fullname" .) (int .Values.adminApi.port)) | quote }}
+---
+# The console's own tables, in the admin schema, once per install or upgrade, after
+# the engine's migration (weight -5) made the schema it reads.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-migrate
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ printf "%s:%s" .Values.console.image.repository $tag | quote }}
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          # As args, so the image's own entrypoint stays in front of it.
+          args: ["php", "artisan", "migrate", "--force"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+            - secretRef:
+                name: {{ $secret }}
+          volumeMounts:
+            - {name: views, mountPath: /app/storage/framework/views}
+            - {name: cache, mountPath: /app/storage/framework/cache}
+      volumes:
+        - {name: views, emptyDir: {}}
+        - {name: cache, emptyDir: {}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "signari.consoleSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "signari.consoleSelectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # Laravel, on 127.0.0.1:9000 inside the pod.
+        - name: fpm
+          image: {{ printf "%s:%s" .Values.console.image.repository $tag | quote }}
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+            - secretRef:
+                name: {{ $secret }}
+          # The only places it writes; the root filesystem is read-only.
+          volumeMounts:
+            - {name: views, mountPath: /app/storage/framework/views}
+            - {name: cache, mountPath: /app/storage/framework/cache}
+        # nginx in front, serving the assets and passing the rest to fpm.
+        - name: web
+          image: {{ printf "%s:%s" .Values.console.image.webRepository $tag | quote }}
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          env:
+            - name: CONSOLE_FPM
+              value: "127.0.0.1:9000"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /admin/login, port: http}
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # nginx writes its configuration from the template at start, and its pid
+          # and temporary files.
+          volumeMounts:
+            - {name: nginx-conf, mountPath: /etc/nginx/conf.d}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: views, emptyDir: {}}
+        - {name: cache, emptyDir: {}}
+        - {name: nginx-conf, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "signari.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "signari.consoleSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.console.service.port }}
+      targetPort: http
+{{- end }}

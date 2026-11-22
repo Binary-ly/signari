@@ -208,6 +208,52 @@ func TestADifferentIdentifierIsNotANarrowing(t *testing.T) {
 	}
 }
 
+// OID4VCI §5.1.1: one field is required, and this type "is never considered
+// invalid due to unknown fields", which is §5's rule for every other type turned
+// round. Registered with its own fields, it still takes the ones the OpenID
+// specification gave it, and the type's field is nobody else's.
+func TestACredentialDetailKeepsItsOwnRules(t *testing.T) {
+	reg := testRegistry()
+	reg[CredentialType] = TypeSpec{Type: CredentialType, Fields: []string{FieldLocations}}
+	check := func(raw string) error {
+		t.Helper()
+		details, objs, err := Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Validate(details, objs, reg)
+	}
+	if err := check(`[{"type":"openid_credential","credential_configuration_id":"a","claims":[],"vendor":1}]`); err != nil {
+		t.Errorf("an unknown field was refused: %v", err)
+	}
+	for _, raw := range []string{
+		`[{"type":"openid_credential"}]`,
+		`[{"type":"openid_credential","credential_configuration_id":""}]`,
+		`[{"type":"openid_credential","credential_configuration_id":1}]`,
+		`[{"type":"openid_credential","credential_configuration_id":"a","locations":"x"}]`,
+		`[{"type":"account_information","credential_configuration_id":"a","actions":["list_accounts"]}]`,
+	} {
+		if check(raw) == nil {
+			t.Errorf("accepted: %s", raw)
+		}
+	}
+	details, _, err := Parse(`[{"type":"openid_credential","credential_configuration_id":"a",` +
+		`"credential_identifiers":["from-the-request"]}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := details[0].CredentialIdentifiers; got != nil {
+		t.Errorf("identifiers were read from a request: %v", got)
+	}
+	answered := WithCredentialIdentifiers(details)
+	if got := answered[0].CredentialIdentifiers; len(got) != 1 || got[0] != "a" {
+		t.Errorf("answered with %v", got)
+	}
+	if details[0].CredentialIdentifiers != nil {
+		t.Error("answering changed what is kept as granted")
+	}
+}
+
 // §10 feeds the discovery document, which clients cache and compare.
 func TestRegisteredTypesAreSorted(t *testing.T) {
 	got := testRegistry().Types()

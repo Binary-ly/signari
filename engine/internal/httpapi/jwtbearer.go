@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/federation"
@@ -73,152 +76,26 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
-	// Step one: the issuer, and NOTHING else, from an unverified parse.
-	untrustedIssuer, err := oauth.PeekAssertionIssuer(assertion)
-	if err != nil {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
+	statement, ok := s.readAssertion(ctx, w, c, assertion, "invalid_grant")
+	if !ok {
 		return
 	}
-
-	provider, err := store.LoadJWTBearerProvider(ctx, s.db, c.OrgID, untrustedIssuer)
-	if err != nil {
-		// One answer for "not trusted", "disabled", "not opted in" and
-		// "ambiguous". The client learns that the grant failed, not which
-		// issuers this deployment trusts -- that list is a map of who can be
-		// impersonated if one of them is ever compromised.
-		s.log.Info("jwt-bearer: no usable trusted issuer",
-			"issuer", untrustedIssuer, "client_id", c.ClientID,
-			"err", err, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	// Step one-and-a-half: may THIS client use THIS provider?
-	//
-	// Two gates already passed — the provider is opted in to the grant, and the
-	// client is registered for it — and neither relates the two. In an
-	// organisation trusting both a CI platform and a Kubernetes cluster, a client
-	// that exists to let one pipeline reach one API could otherwise spend a pod's
-	// service-account token. Nothing crosses a tenant boundary and it is still
-	// authority nobody granted.
-	//
-	// Refused with the SAME sentence as every other failure, deliberately. A
-	// distinct "this client may not use that provider" would confirm that the
-	// named issuer is trusted here, which is the enumeration the shared message
-	// exists to prevent — and it would confirm it to a caller who has just been
-	// told they may not use it.
-	if !c.MayUseAssertionsFrom(provider.Slug) {
-		s.log.Info("jwt-bearer: client is not paired with this provider",
-			"client_id", c.ClientID, "provider", provider.Slug,
-			"permitted", c.JWTBearerProviders, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	// Step two: the signature, against that provider's published keys only.
-	hc := &http.Client{Timeout: federationTimeout}
-	payload, err := federation.VerifyAssertion(ctx, hc, &s.assertionKeys, *provider, assertion)
-	if err != nil {
-		s.log.Info("jwt-bearer: assertion did not verify",
-			"provider", provider.Slug, "client_id", c.ClientID,
-			"err", err, "correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	// Step three: every claim, re-read from the verified bytes.
-	var claims oauth.AssertionClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-	// The verified issuer must be the provider we selected. The payload that was
-	// peeked at and the payload that was verified are the same bytes today, so
-	// this cannot currently differ -- it is here because "cannot currently
-	// differ" is a property of code above, and a refactor that separates
-	// selection from verification would otherwise silently trust the wrong
-	// anchor.
-	if claims.Issuer != provider.Issuer() {
-		s.log.Warn("jwt-bearer: verified issuer differs from the selected provider",
-			"verified", claims.Issuer, "selected", provider.Issuer(),
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-	if terr := oauth.ValidateAssertionClaims(claims, s.assertionAudiences(), time.Now()); terr != nil {
-		// The per-rule descriptions are precise and stay in the log. They are not
-		// returned: "the assertion names more than one audience" and "the
-		// assertion has no jti" describe the CALLER's own token, which is
-		// harmless, but "issued more than 1h0m0s ago" and the audience rules also
-		// describe this deployment's policy, and the whole set is a probe surface
-		// for free. One sentence out, the detail in the log.
-		s.log.Info("jwt-bearer: assertion claims refused",
-			"provider", provider.Slug, "reason", terr.Description,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	// Step four: the local account, which must still be allowed to sign in.
-	userID, orgID, err := store.FindActiveFederatedUser(ctx, s.db, provider.ID, claims.Subject)
-	if err != nil {
-		s.log.Info("jwt-bearer: no active linked account",
-			"provider", provider.Slug, "err", err,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-	if orgID != c.OrgID {
-		// The provider, the account and the client must all belong to one
-		// organisation. Without this a client in tenant A could spend an
-		// assertion from tenant B's trusted issuer and receive a token for
-		// tenant B's user -- a cross-tenant escalation assembled entirely out of
-		// individually valid pieces.
-		s.log.Warn("jwt-bearer: cross-organisation attempt",
-			"client_org", c.OrgID, "account_org", orgID, "provider", provider.Slug,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
-
-	// Step five: replay. Above RFC 7523, which makes this optional.
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := store.ClaimAssertionJTI(ctx, tx, provider.ID, claims.JTI, claims.Expiry); err != nil {
-		if !errors.Is(err, store.ErrAssertionReplayed) {
-			// The database could not answer. Reporting that as a replay tells the
-			// client something false and tells whoever reads the log that they are
-			// under attack, which is how an outage becomes an incident response.
-			s.log.Error("jwt-bearer: could not record the assertion identifier",
-				"provider", provider.Slug, "err", err,
-				"correlation_id", correlationID(ctx))
-			writeTokenError(w, &oauth.TokenError{Code: "server_error",
-				Status: http.StatusInternalServerError})
-			return
-		}
-		s.log.Warn("jwt-bearer: assertion replay refused",
-			"provider", provider.Slug, "client_id", c.ClientID,
-			"correlation_id", correlationID(ctx))
-		writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
-			Description: assertionRefused, Status: http.StatusBadRequest})
-		return
-	}
+	userID := statement.userID
 
 	scopes := c.Scopes
-	if raw := firstForm(r, "scope"); raw != "" {
+	audience := []string{c.ClientID}
+	if oauth.IsIDJAG(assertion) {
+		// What a grant says decides, so a scope parameter beside it is not read.
+		granted, resources, ok := s.idJAGGrant(ctx, w, c, statement)
+		if !ok {
+			return
+		}
+		scopes = granted
+		// §4.4.1: "The access token MUST be restricted" to the resources it names.
+		if len(resources) > 0 {
+			audience = resources
+		}
+	} else if raw := firstForm(r, "scope"); raw != "" {
 		scopes = splitScopes(raw)
 		if unknown := c.UnknownScopes(scopes); len(unknown) > 0 {
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_scope",
@@ -240,10 +117,42 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		return
 	}
 
-	alg := keys.Algorithm(c.IDTokenAlg)
+	// The access policy, as /authorize would ask it. No session: the assertion
+	// proves the upstream vouched, not which factors anybody presented here.
+	// Asked about the scope the token will carry, not the one requested: an
+	// absent scope parameter mints the client's whole registration, and a rule
+	// on one of those scopes was otherwise passed by leaving the parameter out.
+	if s.grantRefusedByPolicy(w, r, c, userID, "",
+		joinScopes(scopes), "jwt_bearer") {
+		return
+	}
+	if s.assertionConsentRefused(ctx, w, c, statement, "invalid_grant") {
+		return
+	}
+	// The operator's token provider, before the transaction below holds a
+	// connection for as long as it takes to answer.
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+		Subject: userID, ClientID: c.ClientID, Scopes: scopes, Grant: oauth.GrantTypeJWTBearer, OrgID: c.OrgID})
+	if !ok {
+		return
+	}
+	ctx = hookCtx
+
+	// Step five: replay. Above RFC 7523, which makes this optional.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if !s.spendAssertion(ctx, w, tx, c, statement, "invalid_grant") {
+		return
+	}
+
+	alg := keys.Algorithm(c.AccessTokenAlg())
 	key, err := s.cfg.Keys.Active(alg)
 	if err != nil {
-		s.log.Error("no active key for jwt-bearer", "alg", alg, "err", err)
+		s.log.ErrorContext(ctx, "no active key for jwt-bearer", "alg", alg, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -260,11 +169,11 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	jkt := dpopThumbprintFrom(ctx)
 
 	now := time.Now()
-	at, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
-		Issuer:   s.cfg.Issuer,
+	at, err := issueAccessToken(ctx, tx, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
+		Issuer:   s.issuerFor(c),
 		Subject:  userID,
-		Audience: []string{c.ClientID},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Audience: audience,
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		Cnf:      bindingFor(jkt, certThumb),
@@ -273,9 +182,9 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		// No SessionID. There is no browser session behind this: nothing was
 		// signed in and nothing can be signed out. Inventing one would make
 		// logout appear to cover a token it cannot reach.
-	}, tokens.TypAccessToken)
+	})
 	if err != nil {
-		s.log.Error("signing jwt-bearer token", "err", err)
+		s.log.ErrorContext(ctx, "signing jwt-bearer token", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -286,7 +195,7 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 		// rolls back with it. The alternative -- commit first -- would burn the
 		// jti on a request that returned an error, and the caller's retry would
 		// be refused as a replay.
-		s.log.Error("committing jwt-bearer replay record", "err", err)
+		s.log.ErrorContext(ctx, "committing jwt-bearer replay record", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
@@ -299,9 +208,180 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken: at,
 		TokenType:   bearerOrDPoP(jkt),
-		ExpiresIn:   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		ExpiresIn:   int(c.AccessTokenTTL().Seconds()),
 		Scope:       joinScopes(scopes),
 	})
+}
+
+// assertionStatement is a JWT from a registered issuer, verified, and tied to an
+// account in the calling client's organisation.
+type assertionStatement struct {
+	provider *federation.Config
+	claims   oauth.AssertionClaims
+	payload  []byte
+	userID   string
+}
+
+// readAssertion is everything a JWT from another issuer has to pass before it speaks
+// for anybody, for both of the grants that take one. Every refusal is the one sentence,
+// under the error code the grant's specification gives: invalid_grant for an assertion
+// (RFC 7523 §3.1) and invalid_request for a subject token (RFC 8693 §2.2.2).
+func (s *Server) readAssertion(ctx context.Context, w http.ResponseWriter, c *clients.Client, assertion, code string) (*assertionStatement, bool) {
+	refuse := func() (*assertionStatement, bool) {
+		writeTokenError(w, &oauth.TokenError{Code: code, Description: assertionRefused, Status: http.StatusBadRequest})
+		return nil, false
+	}
+
+	// Step one: the issuer, and NOTHING else, from an unverified parse.
+	untrustedIssuer, err := oauth.PeekAssertionIssuer(assertion)
+	if err != nil {
+		return refuse()
+	}
+
+	provider, err := store.LoadJWTBearerProvider(ctx, s.db, c.OrgID, untrustedIssuer)
+	if err != nil {
+		// One answer for "not trusted", "disabled", "not opted in" and
+		// "ambiguous". The client learns that the grant failed, not which
+		// issuers this deployment trusts -- that list is a map of who can be
+		// impersonated if one of them is ever compromised.
+		s.log.InfoContext(ctx, "jwt-bearer: no usable trusted issuer",
+			"issuer", untrustedIssuer, "client_id", c.ClientID,
+			"err", err, "correlation_id", correlationID(ctx))
+		return refuse()
+	}
+
+	// Step one-and-a-half: may THIS client use THIS provider?
+	//
+	// Two gates already passed — the provider is opted in to the grant, and the
+	// client is registered for it — and neither relates the two. In an
+	// organisation trusting both a CI platform and a Kubernetes cluster, a client
+	// that exists to let one pipeline reach one API could otherwise spend a pod's
+	// service-account token. Nothing crosses a tenant boundary and it is still
+	// authority nobody granted.
+	//
+	// Refused with the SAME sentence as every other failure, deliberately. A
+	// distinct "this client may not use that provider" would confirm that the
+	// named issuer is trusted here, which is the enumeration the shared message
+	// exists to prevent — and it would confirm it to a caller who has just been
+	// told they may not use it.
+	if !c.MayUseAssertionsFrom(provider.Slug) {
+		s.log.InfoContext(ctx, "jwt-bearer: client is not paired with this provider",
+			"client_id", c.ClientID, "provider", provider.Slug,
+			"permitted", c.JWTBearerProviders, "correlation_id", correlationID(ctx))
+		return refuse()
+	}
+
+	// Step two: the signature, against that provider's published keys only.
+	hc := s.outboundClient(federationTimeout)
+	payload, err := federation.VerifyAssertion(ctx, hc, &s.assertionKeys, *provider, assertion)
+	if err != nil {
+		s.log.InfoContext(ctx, "jwt-bearer: assertion did not verify",
+			"provider", provider.Slug, "client_id", c.ClientID,
+			"err", err, "correlation_id", correlationID(ctx))
+		return refuse()
+	}
+
+	// Step three: every claim, re-read from the verified bytes.
+	var claims oauth.AssertionClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return refuse()
+	}
+	// The verified issuer must be the provider we selected. The payload that was
+	// peeked at and the payload that was verified are the same bytes today, so
+	// this cannot currently differ -- it is here because "cannot currently
+	// differ" is a property of code above, and a refactor that separates
+	// selection from verification would otherwise silently trust the wrong
+	// anchor.
+	if claims.Issuer != provider.Issuer() {
+		s.log.WarnContext(ctx, "jwt-bearer: verified issuer differs from the selected provider",
+			"verified", claims.Issuer, "selected", provider.Issuer(),
+			"correlation_id", correlationID(ctx))
+		return refuse()
+	}
+	if terr := oauth.ValidateAssertionClaims(claims, s.assertionAudiences(ctx), time.Now()); terr != nil {
+		// The per-rule descriptions are precise and stay in the log. They are not
+		// returned: "the assertion names more than one audience" and "the
+		// assertion has no jti" describe the CALLER's own token, which is
+		// harmless, but "issued more than 1h0m0s ago" and the audience rules also
+		// describe this deployment's policy, and the whole set is a probe surface
+		// for free. One sentence out, the detail in the log.
+		s.log.InfoContext(ctx, "jwt-bearer: assertion claims refused",
+			"provider", provider.Slug, "reason", terr.Description,
+			"correlation_id", correlationID(ctx))
+		return refuse()
+	}
+
+	// Step four: the local account, which must still be allowed to sign in.
+	userID, orgID, err := store.FindActiveFederatedUser(ctx, s.db, provider.ID, claims.Subject)
+	if err != nil {
+		s.log.InfoContext(ctx, "jwt-bearer: no active linked account",
+			"provider", provider.Slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		return refuse()
+	}
+	if orgID != c.OrgID {
+		// The provider, the account and the client must all belong to one
+		// organisation. Without this a client in tenant A could spend an
+		// assertion from tenant B's trusted issuer and receive a token for
+		// tenant B's user -- a cross-tenant escalation assembled entirely out of
+		// individually valid pieces.
+		s.log.WarnContext(ctx, "jwt-bearer: cross-organisation attempt",
+			"client_org", c.OrgID, "account_org", orgID, "provider", provider.Slug,
+			"correlation_id", correlationID(ctx))
+		return refuse()
+	}
+	return &assertionStatement{provider: provider, claims: claims, payload: payload, userID: userID}, true
+}
+
+// assertionConsentRefused answers whether the person withdrew their consent from this
+// client on the account page: they are not minted for by it again. No prior consent is
+// required: these grants exist for workloads that never see a consent screen, and pairing
+// the client with the issuer is the operator's authorisation. But a withdrawal is the
+// person's decision about this client, and the next assertion overrode it.
+func (s *Server) assertionConsentRefused(ctx context.Context, w http.ResponseWriter, c *clients.Client,
+	st *assertionStatement, code string) bool {
+
+	withdrawn, err := store.ConsentWithdrawn(ctx, s.db, st.userID, c.ClientID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "jwt-bearer: checking for a withdrawn consent", "err", err,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+		return true
+	}
+	if !withdrawn {
+		return false
+	}
+	s.log.InfoContext(ctx, "jwt-bearer: the person withdrew consent from this client",
+		"provider", st.provider.Slug, "client_id", c.ClientID, "correlation_id", correlationID(ctx))
+	writeTokenError(w, &oauth.TokenError{Code: code, Description: assertionRefused, Status: http.StatusBadRequest})
+	return true
+}
+
+// spendAssertion takes the token's jti in tx, which also issues what it buys, so that a
+// failure to issue does not spend it. False when it has been spent or could not be.
+func (s *Server) spendAssertion(ctx context.Context, w http.ResponseWriter, tx pgx.Tx, c *clients.Client,
+	st *assertionStatement, code string) bool {
+
+	err := store.ClaimAssertionJTI(ctx, tx, st.provider.ID, st.claims.JTI, st.claims.Expiry)
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, store.ErrAssertionReplayed) {
+		// The database could not answer. Reporting that as a replay tells the
+		// client something false and tells whoever reads the log that they are
+		// under attack, which is how an outage becomes an incident response.
+		s.log.ErrorContext(ctx, "jwt-bearer: could not record the assertion identifier",
+			"provider", st.provider.Slug, "err", err,
+			"correlation_id", correlationID(ctx))
+		writeTokenError(w, &oauth.TokenError{Code: "server_error",
+			Status: http.StatusInternalServerError})
+		return false
+	}
+	s.log.WarnContext(ctx, "jwt-bearer: assertion replay refused",
+		"provider", st.provider.Slug, "client_id", c.ClientID,
+		"correlation_id", correlationID(ctx))
+	writeTokenError(w, &oauth.TokenError{Code: code, Description: assertionRefused, Status: http.StatusBadRequest})
+	return false
 }
 
 // assertionAudiences is every value an assertion may legitimately use to name
@@ -321,9 +401,10 @@ func (s *Server) handleJWTBearerGrant(w http.ResponseWriter, r *http.Request, c 
 // Both values are this server's own identity, so accepting either does not widen
 // what the audience check protects: an assertion addressed to somebody else still
 // matches neither.
-func (s *Server) assertionAudiences() []string {
-	out := s.acceptedIssuers()
-	for _, base := range s.acceptedIssuers() {
+func (s *Server) assertionAudiences(ctx context.Context) []string {
+	issuers := s.acceptedIssuers(ctx)
+	out := append([]string(nil), issuers...)
+	for _, base := range issuers {
 		out = append(out, strings.TrimSuffix(base, "/")+oidc.PathToken)
 	}
 	return out

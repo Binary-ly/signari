@@ -159,23 +159,14 @@ flows:
 // create the account and skip the stage. Skipping it would make an account
 // without the second factor the operator required: the exact "a written flow
 // governs nothing" bug wearing a driver.
+//
+// Parse refuses such a flow (flow.drivable), so it can only arrive around it;
+// this is the driver's own refusal, kept as the last line.
 func TestEnrolmentFlowFailsClosedOnAStageItCannotDrive(t *testing.T) {
 	f := newTokenFixture(t)
 	enableSelfSignup(t, f)
-	applyEnrolFlow(t, f, `
-version: 1
-flows:
-  - name: forced-mfa-signup
-    on: enrolment
-    stages:
-      - enrol_mfa
-      - create_user
-      - done
-    tests:
-      - name: enrol then create
-        given: {}
-        expect: [enrol_mfa, create_user, done]
-`)
+	placeUnparsedFlow(t, f.srv, f.orgID, flow.Enrolment,
+		flow.StageEnrolMFA, flow.StageCreateUser, flow.StageDone)
 
 	const addr = "forced-mfa@example.test"
 	rec := postSignup(t, f, url.Values{

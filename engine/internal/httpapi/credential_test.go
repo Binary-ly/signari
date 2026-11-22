@@ -17,6 +17,8 @@ import (
 
 	"signari.dev/engine/internal/oid4vci"
 	"signari.dev/engine/internal/sdjwt"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tokens"
 )
 
 // The OID4VCI Credential Issuer, end to end: nonce → proof → credential.
@@ -81,9 +83,56 @@ func configureCredential(t *testing.T, f *tokenFixture) {
 	})
 }
 
-// mintAccessToken produces a token for the fixture's user, the way the
-// pre-authorized code grant would.
-func (f *tokenFixture) mintAccessToken(t *testing.T) string {
+// mintAccessToken produces a token for the fixture's user the way the
+// pre-authorized code grant does: an offer for the configurations named
+// (IdentityCredential by default), claimed, minted, and the token recorded
+// against the offer.
+func (f *tokenFixture) mintAccessToken(t *testing.T, configIDs ...string) string {
+	t.Helper()
+	if len(configIDs) == 0 {
+		configIDs = []string{"IdentityCredential"}
+	}
+	ctx := context.Background()
+	_, hash, err := store.NewPreAuthCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewPreAuthorizedCode(ctx, f.pool, f.orgID, f.userID, f.clientID,
+		hash, configIDs, nil, nil, 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.LookupPreAuthorizedCode(ctx, f.pool, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClaimPreAuthorizedCode(ctx, f.pool, stored.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	c, err := f.srv.lookupClient(ctx, f.clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(ctx), tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordPreAuthorizedToken(ctx, tx, stored.ID, resp.jti); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return resp.AccessToken
+}
+
+// A login token from the same client, audienced here, which no offer minted.
+func (f *tokenFixture) mintLoginToken(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := f.pool.Begin(ctx)
@@ -91,12 +140,11 @@ func (f *tokenFixture) mintAccessToken(t *testing.T) string {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
 	c, err := f.srv.lookupClient(ctx, f.clientID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, _, err := f.srv.mintSet(ctx, tx, c, f.orgID, f.userID, "", "", []string{}, nil, nil, "")
+	resp, _, err := f.srv.mintSet(withIssuanceAudience(ctx), tx, c, f.orgID, f.userID, "", "", []string{"profile"}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +152,81 @@ func (f *tokenFixture) mintAccessToken(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return resp.AccessToken
+}
+
+// OID4VCI §5.1.2 (specs/oid4vci.txt:1332): what a token authorizes is the
+// issuance of particular credential types, and §8.3.1.1 answers a token that
+// does not enable the one requested with an RFC 6750 error. Before migration
+// 0133 any token audienced to this issuer minted any configuration.
+func TestOnlyAnOffersTokenMintsAndOnlyWhatItOffered(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.credential_configurations
+			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
+		VALUES ($1::uuid, 'EmployeeCredential', 'https://signari.test/employee',
+		        ARRAY['sub'], ARRAY['email'], interval '30 days', 'Employee')`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	wa := newWallet(t)
+	request := func(token, config string) (int, map[string]any) {
+		t.Helper()
+		_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+		nonce, _ := nb["c_nonce"].(string)
+		body := `{"credential_configuration_id":"` + config + `",
+		          "proofs":{"jwt":[` + mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce)) + `]}}`
+		return f.postJSON(t, "/oid4vci/credential", token, body)
+	}
+
+	if status, body := request(f.mintLoginToken(t), "IdentityCredential"); status != http.StatusUnauthorized {
+		t.Errorf("a sign-in token no offer minted got %d %v, want 401", status, body)
+	}
+	identityOnly := f.mintAccessToken(t, "IdentityCredential")
+	if status, body := request(identityOnly, "EmployeeCredential"); status != http.StatusForbidden {
+		t.Errorf("an offer's token asking for a configuration it did not offer got %d %v, want 403",
+			status, body)
+	}
+	if status, body := request(identityOnly, "IdentityCredential"); status != http.StatusOK {
+		t.Errorf("the offer's own configuration was refused: %d %v", status, body)
+	}
+
+	// An offer naming a configuration since removed is §8.3.1.2's error.
+	gone := f.mintAccessToken(t, "RetiredCredential")
+	if status, body := request(gone, "RetiredCredential"); status != http.StatusBadRequest ||
+		body["error"] != "unknown_credential_configuration" {
+		t.Errorf("a removed configuration got %d %v, want 400 unknown_credential_configuration",
+			status, body)
+	}
+}
+
+// A revoked token stops minting at once (ADR-007), as it stops at userinfo.
+func TestARevokedTokenMintsNoCredential(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+	token := f.mintAccessToken(t)
+	claims, err := tokens.VerifyAccessTokenAny(f.srv.cfg.Keys, f.srv.acceptedIssuers(context.Background()), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RevokeJTI(ctx, tx, claims.JTI, f.clientID, time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wa := newWallet(t)
+	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ := nb["c_nonce"].(string)
+	body := `{"credential_configuration_id":"IdentityCredential",
+	          "proofs":{"jwt":[` + mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce)) + `]}}`
+	if status, resp := f.postJSON(t, "/oid4vci/credential", token, body); status != http.StatusUnauthorized {
+		t.Errorf("a revoked token got %d %v, want 401", status, resp)
+	}
 }
 
 func (f *tokenFixture) postJSON(t *testing.T, path, token, body string) (int, map[string]any) {
@@ -254,8 +377,37 @@ func TestACredentialNonceCannotBeReplayed(t *testing.T) {
 		t.Fatal("the same proof minted a second credential; a captured proof " +
 			"would be replayable indefinitely")
 	}
-	if resp["error"] != "invalid_proof" {
-		t.Errorf("error = %v, want invalid_proof", resp["error"])
+	// specs/oid4vci.txt:1923, a spent nonce being an "invalid c_nonce value", after
+	// which "the wallet should retrieve a new c_nonce value". invalid_proof, which this
+	// answered, is a proof with none (:1920), and tells a wallet to give up.
+	if resp["error"] != "invalid_nonce" {
+		t.Errorf("error = %v, want invalid_nonce", resp["error"])
+	}
+}
+
+// A batch's proofs, each for a key of its own, carry the one c_nonce the wallet
+// fetched. The nonce was spent at the first proof and the second refused, so no batch
+// was ever issued (13.01, the OID4VCI plan's batch-issuance). It is spent once for the
+// request, and still once.
+func TestABatchIsIssuedUnderOneNonce(t *testing.T) {
+	f := newTokenFixture(t)
+	configureCredential(t, f)
+	first, second := newWallet(t), newWallet(t)
+	token := f.mintAccessToken(t)
+	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ := nb["c_nonce"].(string)
+	body := `{"credential_configuration_id":"IdentityCredential","proofs":{"jwt":[` +
+		mustJSONString(t, first.proof(t, f.srv.cfg.Issuer, nonce)) + `,` +
+		mustJSONString(t, second.proof(t, f.srv.cfg.Issuer, nonce)) + `]}}`
+	status, resp := f.postJSON(t, "/oid4vci/credential", token, body)
+	if status != http.StatusOK {
+		t.Fatalf("a batch under one nonce answered %d: %v", status, resp)
+	}
+	if issued, _ := resp["credentials"].([]any); len(issued) != 2 {
+		t.Errorf("a batch of two proofs issued %d credentials", len(issued))
+	}
+	if status, resp := f.postJSON(t, "/oid4vci/credential", token, body); status == http.StatusOK || resp["error"] != "invalid_nonce" {
+		t.Errorf("the batch replayed answered %d %v", status, resp)
 	}
 }
 
@@ -271,12 +423,13 @@ func TestTheCredentialEndpointRequiresAnAccessToken(t *testing.T) {
 	}
 }
 
-// A configuration this issuer does not offer.
+// A configuration this issuer does not offer, named by the offer itself, so
+// the token is good for it and only the configuration is missing.
 func TestAnUnknownCredentialConfigurationIsRefused(t *testing.T) {
 	f := newTokenFixture(t)
 	configureCredential(t, f)
 	wa := newWallet(t)
-	token := f.mintAccessToken(t)
+	token := f.mintAccessToken(t, "SomethingElse")
 
 	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
 	nonce, _ := nb["c_nonce"].(string)
@@ -286,8 +439,23 @@ func TestAnUnknownCredentialConfigurationIsRefused(t *testing.T) {
 	if status == http.StatusOK {
 		t.Fatal("a credential was issued for a configuration nobody registered")
 	}
-	if resp["error"] != "unsupported_credential_type" {
+	// §8.3.1.2 (specs/oid4vci.txt:1914). This was unsupported_credential_type,
+	// a code the final specification does not define.
+	if resp["error"] != "unknown_credential_configuration" {
 		t.Errorf("error = %v", resp["error"])
+	}
+
+	// And with a token offered something real: unknown before it is not this token's.
+	// It was the RFC 6750 403, which sends a wallet for another token that cannot help
+	// (13.01, the OID4VCI plan's fail-unknown-credential-configuration).
+	offered := f.mintAccessToken(t)
+	_, nb = f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ = nb["c_nonce"].(string)
+	status, resp = f.postJSON(t, "/oid4vci/credential", offered,
+		`{"credential_configuration_id":"NoSuchCredential","proofs":{"jwt":[`+
+			mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce))+`]}}`)
+	if status != http.StatusBadRequest || resp["error"] != "unknown_credential_configuration" {
+		t.Errorf("a configuration nobody defined, with a token offered another: %d %v", status, resp)
 	}
 }
 
@@ -303,7 +471,10 @@ func TestACredentialRequestWithoutAProofIsRefused(t *testing.T) {
 		t.Fatal("a credential was issued with no key proof, so it is bound to " +
 			"nothing and is a bearer token")
 	}
-	if resp["error"] != "invalid_credential_request" {
+	// specs/oid4vci.txt:1920: invalid_proof, "(1) if the field is missing". This was
+	// invalid_credential_request, the code for a request of the wrong shape (13.01, the
+	// OID4VCI plan's fail-missing-proof).
+	if resp["error"] != "invalid_proof" {
 		t.Errorf("error = %v", resp["error"])
 	}
 	// The message must name the missing thing. Removing the guard leaves a

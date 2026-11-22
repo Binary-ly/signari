@@ -131,6 +131,65 @@ func TestImpersonationCannotChain(t *testing.T) {
 	}
 }
 
+// Someone who may impersonate is not impersonated. Acting as another
+// administrator gives the actor that administrator's reach under a support
+// visit's name.
+func TestAnAdministratorIsNotImpersonated(t *testing.T) {
+	ctx := context.Background()
+	conn := connect(t)
+	orgID, actorID, subjectID := twoUsers(t, conn)
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const why = "ticket 4471 -- investigating a login failure"
+	var groupID string
+	must(t, tx.QueryRow(ctx, `
+		INSERT INTO core.groups (org_id, name, display_name, may_impersonate)
+		VALUES ($1, $2, 'Support', true) RETURNING id::text`,
+		orgID, "support"+itoa(time.Now().UnixNano())).Scan(&groupID))
+	_, err = tx.Exec(ctx, `
+		INSERT INTO core.group_members (group_id, user_id, org_id) VALUES ($1::uuid, $2::uuid, $3)`,
+		groupID, subjectID, orgID)
+	must(t, err)
+
+	gotOrg, privileged, found, err := PrivilegedUser(ctx, tx, subjectID)
+	if err != nil || !found || !privileged || gotOrg != orgID {
+		t.Fatalf("PrivilegedUser = (%q, %v, %v, %v), want (%q, true, true, nil)",
+			gotOrg, privileged, found, err, orgID)
+	}
+	if _, _, found, err := PrivilegedUser(ctx, tx, "not-a-uuid"); err != nil || found {
+		t.Fatalf("a malformed id gave found=%v err=%v, want neither", found, err)
+	}
+
+	_, err = BeginImpersonation(ctx, tx, orgID, actorID, subjectID, why, "cid", time.Minute)
+	if !errors.Is(err, ErrImpersonationRefused) || !strings.Contains(err.Error(), "may impersonate others") {
+		t.Fatalf("impersonating a member of a group that may impersonate gave %v, want a refusal naming why", err)
+	}
+
+	// The same person spelled as PostgreSQL also accepts them: braced, and with
+	// a hyphen after every four digits. Each is the administrator to the check
+	// as it is to the database, and impersonating them is refused.
+	hex := strings.ReplaceAll(subjectID, "-", "")
+	var fours []string
+	for i := 0; i < len(hex); i += 4 {
+		fours = append(fours, hex[i:i+4])
+	}
+	for _, spelled := range []string{"{" + hex + "}", strings.Join(fours, "-"), strings.ToUpper(subjectID)} {
+		if _, privileged, found, err := PrivilegedUser(ctx, tx, spelled); err != nil || !found || !privileged {
+			t.Errorf("PrivilegedUser(%q) = (privileged %v, found %v, %v), want the administrator",
+				spelled, privileged, found, err)
+		}
+		_, err = BeginImpersonation(ctx, tx, orgID, actorID, spelled, why, "cid", time.Minute)
+		if !errors.Is(err, ErrImpersonationRefused) {
+			t.Errorf("impersonating the administrator spelled %q gave %v, want a refusal", spelled, err)
+		}
+	}
+}
+
 func TestImpersonationEndsByItself(t *testing.T) {
 	ctx := context.Background()
 	conn := connect(t)

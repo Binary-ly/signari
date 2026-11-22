@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"signari.dev/engine/internal/kerberos"
 	"strconv"
@@ -21,13 +23,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/captcha"
+	"signari.dev/engine/internal/clientip"
 	"signari.dev/engine/internal/delegated"
 	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/fidomds"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/metrics"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/oidfed"
 	"signari.dev/engine/internal/pages"
@@ -38,18 +43,23 @@ import (
 	"signari.dev/engine/internal/sms"
 	"signari.dev/engine/internal/ssf"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tracing"
 )
 
 // Server holds the public endpoints. Everything it serves is derived from a live
 // key set, so metadata cannot drift from what the server can actually do.
 type Server struct {
+	// fetchFederation stands in for how a Trust Chain is fetched, in a test.
+	fetchFederation func() *oidfed.Fetcher
+
 	cfg  oidc.Config
 	log  *slog.Logger
 	jwks *ratelimit.Bucket
 	// ssfKeys caches transmitters' signing keys.
 	ssfKeys *ssf.KeyFetcher
 	// assertionKeys caches trusted issuers' signing keys for the RFC 7523
-	// jwt-bearer grant. On the Server rather than per-request because a cache
+	// jwt-bearer grant, a provider's logout tokens, and the ID tokens of a sign-in
+	// through a provider (E.30). On the Server rather than per-request because a cache
 	// rebuilt per request is not a cache: it would put an outbound HTTP fetch on
 	// the token endpoint for every single grant.
 	assertionKeys federation.JWKSCache
@@ -57,7 +67,30 @@ type Server struct {
 	jwksMu    sync.Mutex
 	jwksCache []byte
 	jwksETag  string
-	login     *ratelimit.Bucket
+	jwksGzip  gzipMemo
+
+	// samlCertCache is each signing key's certificate, by key id. See
+	// samlCertificateFor.
+	samlCertCache sync.Map
+
+	// discoveryCache is the discovery document as of discoveryVersion and the
+	// algorithms in discoveryKeys. See discoveryDocument.
+	discoveryGzip    gzipMemo
+	discoveryMu      sync.Mutex
+	discoveryCache   []byte
+	discoveryETag    string
+	discoveryVersion int64
+	discoveryKeys    string
+
+	login *ratelimit.Bucket
+	// tokenCharges counts each organisation's tokens against its budget (6.10), the
+	// tokens waiting on one organisation's statement counted by the next together
+	// (E.23). It holds nothing once an organisation has nothing in flight.
+	tokenCharges *store.RateCombiner
+	// detachedAudit appends the records written in transactions of their own, those
+	// arriving while one group is written appended by the next together (E.32). It
+	// holds nothing once nothing is in flight.
+	detachedAudit *audit.Detached
 	// captcha is nil-safe: every method tolerates a nil receiver, so a
 	// deployment that has never configured one needs no branches elsewhere.
 	captcha *captcha.Verifier
@@ -117,6 +150,9 @@ type Server struct {
 	// tests and cleared the static safety analysis is ever cached.
 	flows *flowCache
 	geo   risk.Resolver
+	// asn names an address's network operator for from_asns rules, read once at
+	// startup from SIGNARI_GEOIP_ASN_DB like geo.
+	asn risk.ASNResolver
 	// mailer is never nil: New substitutes a logging driver when no SMTP is
 	// configured, so no call site has to nil-check before telling a user
 	// something important.
@@ -140,6 +176,8 @@ type Server struct {
 	// has not asked for browser-based remote desktop, and an endpoint that
 	// exists but always errors is worse than one that says it is off.
 	guacdAddr string
+	// guacdTLS, when set, is how guacd is reached. nil is plaintext.
+	guacdTLS *tls.Config
 
 	// Kerberos, when configured. A nil keytab means the SPNEGO route is not
 	// registered at all rather than registered and always failing.
@@ -157,11 +195,80 @@ type Server struct {
 	// have to know about instrumentation.
 	metrics *metrics.Engine
 
+	// accessLog writes one line per request; see SetAccessLog.
+	accessLog bool
+
+	// readiness are the checks /readyz runs after its database ping.
+	readiness []readinessCheck
+
 	// root unwraps subject keys, which is what a personal user attribute is
 	// sealed under. nil means operator-defined claims are not resolved at all --
 	// the fixed claim set still works, so a Server built without a root key
 	// serves ordinary OIDC rather than failing.
 	root *keys.RootKey
+
+	// release is SetRelease's.
+	release string
+
+	// dpopNonces makes every DPoP proof carry a nonce from this server.
+	dpopNonces bool
+
+	// decisionLogRate is the share of authorization decisions recorded.
+	decisionLogRate float64
+
+	// factorFailureLimit is how many consecutive wrong codes switch a second
+	// factor off. Zero -- a Server built as a literal -- means the NIST ceiling;
+	// read through failureLimit().
+	factorFailureLimit int
+
+	// outboundHTTP replaces the SSRF-safe client for requests to destinations
+	// an operator configured: providers, an upstream identity provider's token
+	// endpoint and keys. Never set outside this package's tests, which use it
+	// to reach a local server: the real client refuses one, by design (see
+	// authzprovider_test.go), so without it no test could observe what the
+	// engine holds while a provider is being asked.
+	outboundHTTP func(time.Duration) *http.Client
+
+	// pendingBackchannel replaces store.PendingBackchannelRequest when set.
+	// Never set outside this package's tests, which use it to fail the read
+	// before a CIBA decision -- the one way to show that a failed read refuses
+	// the decision rather than approving without asking the policy.
+	pendingBackchannel func(context.Context, *pgxpool.Pool, string, string) (*store.DeviceAuthorization, error)
+
+	// smsVerifier is a delegated verification service that makes, sends and
+	// checks SMS codes itself; nil unless SIGNARI_SMS_GATEWAY=verify-webhook.
+	smsVerifier sms.Verifier
+	// smsPolicy bounds text messages: countries and daily ceilings (smsgate.go).
+	// The zero value allows any country under the default ceilings.
+	smsPolicy sms.Policy
+
+	// clientIPs decides which address a request came from (see withClientIP).
+	// nil reads the socket, which is right when nothing is in front.
+	clientIPs *clientip.Resolver
+	// unconfiguredProxyWarning fires the warning about forwarding headers
+	// arriving with no trusted proxy configured, once per process.
+	unconfiguredProxyWarning sync.Once
+}
+
+// SetFactorFailureLimit supplies how many consecutive wrong codes disable a
+// second factor, already checked by store.FactorFailureLimit.
+func (s *Server) SetFactorFailureLimit(n int) { s.factorFailureLimit = n }
+
+// SetSMSPolicy supplies the country list and daily ceilings for text messages.
+func (s *Server) SetSMSPolicy(p sms.Policy) { s.smsPolicy = p }
+
+// SetSMSVerifier supplies a delegated verification service for SMS codes.
+func (s *Server) SetSMSVerifier(v sms.Verifier) { s.smsVerifier = v }
+
+// SetClientIPResolver supplies how the client address is read behind a proxy,
+// from SIGNARI_CLIENT_IP_SOURCE and SIGNARI_TRUSTED_PROXIES.
+func (s *Server) SetClientIPResolver(r *clientip.Resolver) { s.clientIPs = r }
+
+func (s *Server) failureLimit() int {
+	if s.factorFailureLimit <= 0 {
+		return store.MaxConsecutiveFactorFailures
+	}
+	return s.factorFailureLimit
 }
 
 // SetRootKey supplies the key that unwraps subject keys.
@@ -170,6 +277,10 @@ type Server struct {
 // unaffected and mapped claims are silently absent, which is the right failure
 // for a capability an unconfigured deployment is not using.
 func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
+
+// SetRelease names the release this binary was built as, which an outpost
+// compares with its own.
+func (s *Server) SetRelease(release string) { s.release = release }
 
 // SetMetrics supplies the metric handles, or nil for none.
 //
@@ -229,6 +340,10 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// for exactly one instance, and silently stops escalating with more than
 	// one -- the same shape of bug the sign-in rate limiter had.
 	cap = cap.WithCounter(&sharedCaptchaCounter{db: db, log: log})
+	guacdTLS, err := guacdTLSFromEnv(os.Getenv("SIGNARI_GUACD_ADDR"))
+	if err != nil {
+		return nil, err
+	}
 
 	// The HTML pages, from the embedded filesystem, with SIGNARI_THEME_DIR
 	// layered over them when one is set.
@@ -245,6 +360,18 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	}
 	for _, p := range themeProblems {
 		log.Warn("a themed page was refused and the built-in is being used", "err", p)
+	}
+	// A directory naming no organisation is a typo, and it themes nobody.
+	if slugs := pageSet.OrgThemes(); len(slugs) > 0 && db != nil {
+		known, err := store.OrgSlugsKnown(context.Background(), db, slugs)
+		if err != nil {
+			log.Warn("checking the organisations' themes", "err", err)
+		}
+		for _, slug := range slugs {
+			if err == nil && !known[slug] {
+				log.Warn("a theme directory names no organisation, so nobody sees it", "slug", slug)
+			}
+		}
 	}
 
 	// Discovery advertises the languages the pages actually loaded with,
@@ -268,7 +395,16 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// evaluation. Rate limiting in FRONT of the hash is what keeps a flood
 		// from turning into memory exhaustion, independent of the semaphore.
 		// An overload guard, not the security limit: see allowSignInAttempt.
-		login: ratelimit.New(50, 100),
+		// Nor a tenant's limit: each organisation's sign-ins are counted
+		// against its own budget (6.10, store.DefaultSignInBudget, 20 a
+		// second), so this is set at five times one, which one tenant spending
+		// all of its budget cannot fill. At 50 it was the number two busy
+		// tenants shared.
+		// Sized from this machine since E.28 (loginguard.go): it was this fixed 100,
+		// which four cores' worth of sign-ins already exceeded.
+		login:         ratelimit.New(loginGuard(), 2*loginGuard()),
+		tokenCharges:  store.NewRateCombiner(),
+		detachedAudit: audit.NewDetached(),
 		// A backstop against a distributed attempt, not the primary limit --
 		// that is per-address in handleDeviceVerification. At 3/s this bucket
 		// was the primary limit by accident, and one address could hold it
@@ -282,15 +418,17 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 		// protocol it is protecting. This bounds the pathological case, not the
 		// busy one.
 		federation: ratelimit.New(200, 400),
-		hasher:     passwords.NewHasher(passwords.MemoryBudgetMiB),
+		hasher:     passwords.Shared(),
 		pwPolicy:   passwords.PolicyFromEnv(),
 		policies:   newPolicyCache(),
 		flows:      newFlowCache(),
 		ssfKeys:    &ssf.KeyFetcher{},
 		geo:        risk.NewResolver(),
+		asn:        risk.NewASNResolver(),
 		mailer:     mailer,
 		texter:     texter,
 		guacdAddr:  os.Getenv("SIGNARI_GUACD_ADDR"),
+		guacdTLS:   guacdTLS,
 		krbConfig: kerberos.Config{
 			KeytabPath:       os.Getenv("SIGNARI_KERBEROS_KEYTAB"),
 			Realm:            os.Getenv("SIGNARI_KERBEROS_REALM"),
@@ -305,6 +443,9 @@ func New(cfg oidc.Config, db *pgxpool.Pool, log *slog.Logger, mailer mail.Sender
 	// reasonably assumes it is working.
 	if why := risk.Explain(srv.geo); why != "" {
 		log.Warn("location lookup unavailable", "detail", why)
+	}
+	if why := risk.ExplainASN(srv.asn); why != "" {
+		log.Warn("network operator lookup unavailable", "detail", why)
 	}
 
 	// The keytab is loaded at startup, not on the first SPNEGO request.
@@ -339,7 +480,10 @@ func (s *Server) Routes() http.Handler {
 	// sits outside everything else, so a panic in any middleware -- not only in a
 	// route handler -- is still caught, logged in this server's format, and
 	// answered.
-	inner := http.Handler(s.mux())
+	inner := tracing.NoteRoute(s.mux())
+	if s.accessLog {
+		inner = noteRoute(inner)
+	}
 	if s.metrics != nil {
 		// INNERMOST, wrapping the mux directly, and this position is load-bearing
 		// rather than a preference.
@@ -361,7 +505,16 @@ func (s *Server) Routes() http.Handler {
 		// small next to labels that are always "other".
 		inner = s.metrics.Middleware(inner)
 	}
-	return s.withCorrelation(s.withRecovery(s.withSecurityHeaders(s.withCORS(inner))))
+	// withClientIP outermost, so the correlation log line, the recovery log
+	// line and everything inside them name the same client. The access log
+	// inside correlation, so its line carries the id, and outside recovery, so
+	// a panic's 500 is logged as the response it was.
+	outer := s.withRecovery(s.withSecurityHeaders(s.withCORS(s.withFormRedirects(inner))))
+	if s.accessLog {
+		outer = s.withAccessLog(outer)
+	}
+	// Tracing outside everything, so a request's span covers all of it (3.09).
+	return tracing.Middleware(s.withClientIP(s.withCorrelation(outer)))
 }
 
 // recordingMux is an http.ServeMux that also declares each pattern to the
@@ -396,8 +549,19 @@ func routeLabel(pattern string) string {
 func (s *Server) mux() *http.ServeMux {
 	mux := recordingMux{http.NewServeMux()}
 	mux.HandleFunc("GET "+oidc.PathDiscovery, s.handleDiscovery)
+	// RFC 8414 §3: OAuth 2.0 Authorization Server Metadata, "at a path formed
+	// by inserting a well-known URI string into the authorization server's
+	// issuer identifier between the host component and the path component", by
+	// default /.well-known/oauth-authorization-server. The same document as
+	// the OpenID one: §3 lets a server "publish its metadata at multiple
+	// well-known locations", and its issuer is the issuer either way (§3.3).
+	// MCP clients look here first, and docs/mcp-authorization.md said it was
+	// served while it answered 404.
+	mux.HandleFunc("GET "+insertWellKnown(s.cfg.Issuer, "/.well-known/oauth-authorization-server"),
+		s.handleDiscovery)
 	mux.HandleFunc("GET "+oidc.PathJWKS, s.handleJWKS)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("POST "+cspReportPath, s.handleCSPReport)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	mux.HandleFunc("GET "+oidc.PathAuthorize, s.handleAuthorize)
@@ -406,17 +570,19 @@ func (s *Server) mux() *http.ServeMux {
 	// merged. The CORS exclusion at cors.go:39 is unaffected and must stay: this
 	// is a top-level navigation endpoint, not one script calls cross-origin.
 	mux.HandleFunc("POST "+oidc.PathAuthorize, s.handleAuthorize)
-	mux.HandleFunc("POST "+oidc.PathToken, s.handleToken)
+	mux.HandleFunc("POST "+oidc.PathToken, formCapped(s.handleToken))
 	mux.HandleFunc("POST /oauth2/par", s.handlePAR)
-	mux.HandleFunc("POST /oauth2/device_authorization", s.handleDeviceAuthorization)
+	mux.HandleFunc("POST /oauth2/device_authorization", formCapped(s.handleDeviceAuthorization))
 	mux.HandleFunc("POST /oauth2/register", s.handleRegister)
 	mux.HandleFunc("GET /oauth2/register/{clientID}", s.handleRegisteredClient)
+	mux.HandleFunc("PUT /oauth2/register/{clientID}", s.handleRegisteredClient)
 	mux.HandleFunc("DELETE /oauth2/register/{clientID}", s.handleRegisteredClient)
 	// Both methods on one path: GET renders the code entry screen, POST handles
 	// entry and the approve/refuse decision.
 	mux.HandleFunc("GET /account/mfa/email", s.handleEmailOTPEnrol)
 	mux.HandleFunc("POST /account/mfa/email", s.handleEmailOTPEnrol)
 	mux.HandleFunc("GET /login/duo/callback", s.handleDuoCallback)
+	mux.HandleFunc("GET "+factorCallbackPath, s.handleExternalFactorCallback)
 	mux.HandleFunc("GET /account/mfa/sms", s.handleSMSOTPEnrol)
 	mux.HandleFunc("POST /account/mfa/sms", s.handleSMSOTPEnrol)
 	mux.HandleFunc("GET /device", s.handleDeviceVerification)
@@ -427,32 +593,39 @@ func (s *Server) mux() *http.ServeMux {
 	// confirmation form submits when no valid id_token_hint was supplied.
 	mux.HandleFunc("GET "+oidc.PathEndSession, s.handleEndSession)
 	mux.HandleFunc("POST "+oidc.PathEndSession, s.handleEndSession)
-	mux.HandleFunc("POST "+oidc.PathRevocation, s.handleRevoke)
+	mux.HandleFunc("GET "+pathLogoutComplete, s.handleLogoutComplete)
+	mux.HandleFunc("POST "+oidc.PathRevocation, formCapped(s.handleRevoke))
 	// draft-ietf-oauth-attestation-based-client-auth-10 §6.1. Unauthenticated by
 	// necessity: a client fetches a challenge in order to authenticate.
 	mux.HandleFunc("POST "+oidc.PathAttestationChallenge, s.handleAttestationChallenge)
-	mux.HandleFunc("POST "+oidc.PathIntrospection, s.handleIntrospect)
+	mux.HandleFunc("POST "+oidc.PathIntrospection, formCapped(s.handleIntrospect))
 	mux.HandleFunc("GET /login/with/{slug}", s.handleFederatedStart)
 	mux.HandleFunc("GET /login/callback/{slug}", s.handleFederatedCallback)
+	mux.HandleFunc("POST /login/callback/{slug}/backchannel-logout", s.handleFederatedBackchannelLogout)
 	// WebAuthn Level 3 signal methods. See internal/httpapi/passkeysignal.go.
 	mux.HandleFunc("GET /account/passkeys/signal", s.handlePasskeySignal)
 	mux.HandleFunc("GET /static/passkey-signal.js", s.handlePasskeySignalJS)
 	mux.HandleFunc("GET /static/passkey-unknown.js", s.handleUnknownCredentialJS)
 	mux.HandleFunc("GET /account", s.handleAccount)
+	mux.HandleFunc("GET /account/broker/{slug}/token", s.handleBrokerToken)
 	mux.HandleFunc("GET /account/connected", s.handleConnectedApps)
-	// SPNEGO is registered only when a keytab is loaded. A route that answers
-	// 401 Negotiate with no keytab behind it makes every domain browser show a
-	// credential dialog for a service that cannot check the answer.
-	if h := s.wrapKerberos(http.HandlerFunc(s.handleKerberosLogin)); h != nil {
-		mux.Handle("GET /login/kerberos", h)
-	}
+	mux.HandleFunc("GET "+umaResourcePage, s.handleResourcesPage)
+	// SPNEGO answers only for a host with a keytab behind it. A route that answers
+	// 401 Negotiate with none makes every domain browser show a credential dialog
+	// for a service that cannot check the answer, so handleKerberos says 404.
+	mux.HandleFunc("GET /login/kerberos", s.handleKerberos)
 	mux.HandleFunc("GET /wsfed", s.handleWSFed)
 	mux.HandleFunc("POST /wsfed", s.handleWSFed)
+	mux.HandleFunc("GET /FederationMetadata/2007-06/FederationMetadata.xml", s.handleWSFedMetadata)
+	mux.HandleFunc("GET /wsfed/org/{org}", s.handleWSFed)
+	mux.HandleFunc("POST /wsfed/org/{org}", s.handleWSFed)
+	mux.HandleFunc("GET /wsfed/org/{org}/FederationMetadata.xml", s.handleWSFedMetadata)
 	mux.HandleFunc("GET /outpost/hello", s.handleOutpostHello)
 	mux.HandleFunc("POST /outpost/authenticate", s.handleOutpostAuthenticate)
 	mux.HandleFunc("POST /outpost/desktop", s.handleDesktopVerify)
 	mux.HandleFunc("POST /outpost/lookup", s.handleOutpostLookup)
 	mux.HandleFunc("POST /outpost/list", s.handleOutpostList)
+	mux.HandleFunc("POST /outpost/groups", s.handleOutpostGroups)
 	mux.HandleFunc("POST /login/prompt", s.handlePromptPost)
 	mux.HandleFunc("POST /login/password-change", s.handlePasswordChangePost)
 	// OpenID AuthZEN Authorization API 1.0.
@@ -464,8 +637,21 @@ func (s *Server) mux() *http.ServeMux {
 	// queued SETs here and acknowledges them, authenticating as the stream's
 	// client. See internal/httpapi/ssfpoll.go.
 	mux.HandleFunc("POST /ssf/poll", s.handleSSFPoll)
+	mux.HandleFunc("POST "+ssf.VerifyPath, s.handleSSFVerify)
+	// And what a receiver may do with its own stream (ssfmanage.go).
+	mux.HandleFunc("GET "+ssf.StreamPath, s.handleSSFStreamRead)
+	mux.HandleFunc("PATCH "+ssf.StreamPath, s.handleSSFStreamChange(false))
+	mux.HandleFunc("PUT "+ssf.StreamPath, s.handleSSFStreamChange(true))
+	mux.HandleFunc("POST "+ssf.StreamPath, s.handleSSFStreamNotYours)
+	mux.HandleFunc("DELETE "+ssf.StreamPath, s.handleSSFStreamNotYours)
+	mux.HandleFunc("GET "+ssf.StatusPath, s.handleSSFStatusRead)
+	mux.HandleFunc("POST "+ssf.StatusPath, s.handleSSFStatusUpdate)
+	mux.HandleFunc("POST "+ssf.AddSubjectPath, s.handleSSFSubject(false))
+	mux.HandleFunc("POST "+ssf.RemoveSubjectPath, s.handleSSFSubject(true))
 
 	mux.HandleFunc("GET /.well-known/authzen-configuration", s.handleAuthzMetadata)
+	mux.HandleFunc("GET /.well-known/webauthn", s.handleWebAuthnWellKnown)
+	mux.HandleFunc("GET /.well-known/webfinger", s.handleWebFinger)
 
 	// SSF §7.2. The bare path is correct for an issuer with no path component,
 	// which is the ordinary case and the only one most implementations serve.
@@ -480,6 +666,7 @@ func (s *Server) mux() *http.ServeMux {
 	// RFC 9728. Signari is a protected resource for its own /oauth2/userinfo,
 	// and this document is where MCP's discovery flow begins.
 	mux.HandleFunc("GET "+protectedResourcePath, s.handleProtectedResourceMetadata)
+	mux.HandleFunc("GET "+store.ResourceMetadataPath+"{id}", s.handleResourceMetadata)
 	// OpenID Federation 1.0 §9. Registered only when this instance has a
 	// federation key set loaded: a path that answers with an improvised or
 	// unsigned Entity Configuration would put a statement into a federation
@@ -494,11 +681,21 @@ func (s *Server) mux() *http.ServeMux {
 		mux.HandleFunc("POST "+trustMarkStatusPath, s.handleTrustMarkStatus)
 		mux.HandleFunc("GET "+trustMarkListPath, s.handleTrustMarkList)
 		mux.HandleFunc("GET "+trustMarkPath, s.handleTrustMark)
+		// §8.1 to §8.3, for the entities this one speaks for.
+		mux.HandleFunc("GET "+federationFetchPath, s.handleFederationFetch)
+		mux.HandleFunc("GET "+federationListPath, s.handleFederationList)
+		mux.HandleFunc("GET "+federationResolvePath, s.handleFederationResolve)
+		// §12.2, and it answers 404 until an operator has listed a trust anchor.
+		mux.HandleFunc("POST "+federationRegisterPath, s.handleFederationRegister)
 	}
 	// UMA 2.0. The permission endpoint authenticates the resource server; the
 	// grant is dispatched from the token endpoint; the claims interaction
 	// endpoint authenticates the REQUESTING PARTY, who is neither.
 	mux.HandleFunc("POST /uma2/permission", s.handleUMAPermission)
+	// Federated Authorization §3, behind a PAT. Every method reaches the handler,
+	// which answers §3.2's 405 for one it does not take.
+	mux.HandleFunc("/uma2/resource_set", s.handleUMAResources)
+	mux.HandleFunc("/uma2/resource_set/{id}", s.handleUMAResource)
 	mux.HandleFunc("GET "+claimsInteractionPath, s.handleUMAClaims)
 	mux.HandleFunc("POST "+claimsInteractionPath, s.handleUMAClaims)
 	// UMA 2.0 §2: "The discovery document MUST be available at an endpoint
@@ -510,7 +707,7 @@ func (s *Server) mux() *http.ServeMux {
 
 	// CIBA Core 1.0. The backchannel endpoint authenticates the client; the
 	// approval page authenticates the person.
-	mux.HandleFunc("POST /oauth2/backchannel", s.handleBackchannelAuth)
+	mux.HandleFunc("POST /oauth2/backchannel", formCapped(s.handleBackchannelAuth))
 	mux.HandleFunc("/account/requests", s.handleBackchannelRequests)
 
 	mux.HandleFunc("POST /access/v1/evaluation", s.handleAuthzEvaluate)
@@ -531,10 +728,26 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /rac/connections", s.handleRACList)
 	mux.HandleFunc("GET /rac/connect/{slug}", s.handleRACConnect)
 	mux.HandleFunc("POST /account/connected/revoke", s.handleConnectedRevoke)
+	mux.HandleFunc("POST "+umaResourcePage+"/share", s.handleResourceShare)
+	mux.HandleFunc("POST "+umaResourcePage+"/unshare", s.handleResourceShare)
 	mux.HandleFunc("GET /account/sessions", s.handleSessions)
+	mux.HandleFunc("GET /account/devices", s.handleDevices)
+	mux.HandleFunc("GET /account/delete", s.handleAccountDelete)
+	mux.HandleFunc("POST /account/delete", s.handleAccountDeletePost)
+	mux.HandleFunc("GET /account/export", s.handleAccountExport)
+	mux.HandleFunc("POST /account/export", s.handleAccountExportPost)
+	mux.HandleFunc("GET /account/email", s.handleEmailChange)
+	mux.HandleFunc("POST /account/email", s.handleEmailChangePost)
+	mux.HandleFunc("GET /account/profile", s.handleProfile)
+	mux.HandleFunc("POST /account/profile", s.handleProfilePost)
+	mux.HandleFunc("POST /account/language", s.handleAccountLanguage)
+	mux.HandleFunc("GET /account/security", s.handleSecurity)
+	mux.HandleFunc("POST /account/security/remove", s.handleSecurityRemove)
+	mux.HandleFunc("POST /account/devices/forget", s.handleDevicesForget)
 	mux.HandleFunc("POST /account/sessions/revoke", s.handleSessionsRevoke)
 	mux.HandleFunc("GET /account/password", s.handleAccountPassword)
 	mux.HandleFunc("POST /account/password", s.handleAccountPasswordPost)
+	mux.HandleFunc("POST /account/password/remove", s.handlePasswordRemove)
 	mux.HandleFunc("GET /account/recovery", s.handleRecoveryCodes)
 	mux.HandleFunc("POST /account/recovery", s.handleRecoveryCodesRegenerate)
 	mux.HandleFunc("GET /account/link/{slug}", s.handleFederatedLink)
@@ -542,14 +755,44 @@ func (s *Server) mux() *http.ServeMux {
 	mux.HandleFunc("GET /saml/metadata", s.handleSAMLMetadata)
 	mux.HandleFunc("GET /saml/sso", s.handleSAMLSSO)
 	mux.HandleFunc("POST /saml/sso", s.handleSAMLSSO)
+	mux.HandleFunc("GET "+pathSAMLInit+"{id}", s.handleSAMLInit)
 	mux.HandleFunc("GET /saml/slo", s.handleSAMLSLO)
 	mux.HandleFunc("POST /saml/slo", s.handleSAMLSLO)
+	mux.HandleFunc("POST /saml/artifact", s.handleSAMLArtifactResolve)
+	mux.HandleFunc("POST /saml/ecp", s.handleSAMLECP)
+	// The same again for an organisation's own providers: see providerAt.
+	mux.HandleFunc("GET /saml/org/{org}/metadata", s.handleSAMLMetadata)
+	mux.HandleFunc("GET /saml/org/{org}/sso", s.handleSAMLSSO)
+	mux.HandleFunc("POST /saml/org/{org}/sso", s.handleSAMLSSO)
+	mux.HandleFunc("GET /saml/org/{org}/slo", s.handleSAMLSLO)
+	mux.HandleFunc("POST /saml/org/{org}/slo", s.handleSAMLSLO)
+	mux.HandleFunc("POST /saml/org/{org}/artifact", s.handleSAMLArtifactResolve)
+	mux.HandleFunc("POST /saml/org/{org}/ecp", s.handleSAMLECP)
 
 	// Inbound: signing in FROM an upstream SAML provider. The mirror of the
 	// three routes above, which serve applications consuming what we issue.
 	mux.HandleFunc("GET /saml/source/{slug}/start", s.handleSAMLSourceStart)
 	mux.HandleFunc("POST /saml/source/{slug}/acs", s.handleSAMLSourceACS)
 	mux.HandleFunc("GET /saml/source/{slug}/metadata", s.handleSAMLSourceMetadata)
+	mux.HandleFunc("GET /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
+	mux.HandleFunc("POST /saml/source/{slug}/slo", s.handleSAMLSourceSLO)
+	mux.HandleFunc("POST /saml/source/{slug}/slo/soap", s.handleSAMLSourceSOAPLogout)
+
+	// Signing in with a credential from a wallet: this server as an OpenID4VP
+	// verifier (oid4vp.go).
+	mux.HandleFunc("GET /oid4vp/{slug}/start", s.handleVPStart)
+	mux.HandleFunc("GET /oid4vp/{slug}/request/{state}", s.handleVPRequest)
+	mux.HandleFunc("POST /oid4vp/{slug}/request/{state}", s.handleVPRequest)
+	mux.HandleFunc("POST /oid4vp/{slug}/response", s.handleVPResponse)
+	mux.HandleFunc("GET /oid4vp/{slug}/done", s.handleVPDone)
+	// The wallet on another device: the page waits, then takes the account's code.
+	mux.HandleFunc("GET /oid4vp/{slug}/wait", s.handleVPWait)
+	mux.HandleFunc("GET /oid4vp/{slug}/confirm", s.handleVPConfirmPage)
+	mux.HandleFunc("POST /oid4vp/{slug}/confirm", s.handleVPConfirm)
+	mux.HandleFunc("GET /static/wallet-wait.js", s.handleWalletWaitJS)
+	// The browser's Digital Credentials API: the page posts back what it brought.
+	mux.HandleFunc("POST /oid4vp/{slug}/dcapi", s.handleVPDCAPI)
+	mux.HandleFunc("GET /static/wallet-dcapi.js", s.handleWalletDCAPIJS)
 
 	// SCIM as a source: an upstream provisions users INTO this engine. The
 	// mirror of internal/scim's client, which pushes them out.
@@ -567,6 +810,12 @@ func (s *Server) mux() *http.ServeMux {
 	// issues nothing publishes nothing.
 	mux.HandleFunc("POST "+oidcPathCredential, s.handleCredential)
 	mux.HandleFunc("POST "+oidcPathCredentialNonce, s.handleCredentialNonce)
+	mux.HandleFunc("POST "+oidcPathCredentialNotification, s.handleCredentialNotification)
+	mux.HandleFunc("POST "+oidcPathDeferredCredential, s.handleDeferredCredential)
+	mux.HandleFunc("GET "+credentialStatusPath+"{listID}", s.handleCredentialStatus)
+	mux.HandleFunc("GET "+oidc.PathGrantManagement+"/{grantID}", s.handleClientGrantQuery)
+	mux.HandleFunc("DELETE "+oidc.PathGrantManagement+"/{grantID}", s.handleClientGrantRevoke)
+	mux.HandleFunc("GET "+store.CredentialOfferPath+"{handle}", s.handleCredentialOffer)
 	mux.HandleFunc("GET /.well-known/openid-credential-issuer", s.handleCredentialIssuerMetadata)
 	// SD-JWT VC §3: how a VERIFIER — not the wallet — resolves the key that
 	// signed a credential. §2.5 defines only two mechanisms, this and an inline
@@ -581,19 +830,38 @@ func (s *Server) mux() *http.ServeMux {
 
 	mux.HandleFunc("/scim/v2/Groups", s.handleSCIMGroups)
 	mux.HandleFunc("/scim/v2/Groups/{id}", s.handleSCIMGroup)
+	mux.HandleFunc("/scim/v2/Bulk", s.handleSCIMBulk)
 	mux.HandleFunc("GET /proxy/verify", s.handleProxyVerify)
+	mux.HandleFunc("GET "+pathProxyVerifyRedirect, s.handleProxyVerify)
+	// Envoy's ext_authz, which appends the request's path and keeps its method.
+	mux.HandleFunc(pathProxyVerifyRedirect+"/{rest...}", s.handleProxyVerify)
 	mux.HandleFunc("GET /proxy/start", s.handleProxyStart)
+	mux.HandleFunc("GET "+pathProxyBegin, s.handleProxyBegin)
+	mux.HandleFunc("GET "+pathProxyCallback, s.handleProxyCallback)
 	mux.HandleFunc("GET /passkey.js", s.handlePasskeyJS)
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.rateLimitedLogin)
+	mux.HandleFunc("GET /login/accounts", s.handleAccountsGet)
+	mux.HandleFunc("POST /login/accounts", s.handleAccountsPost)
+	mux.HandleFunc("POST /login/email", s.handleEmailSignInStart)
+	mux.HandleFunc("POST /login/email/verify", s.handleEmailSignInVerify)
 	mux.HandleFunc("POST /login/mfa", s.handleMFAPost)
+	mux.HandleFunc("POST /login/mfa/sms", s.handleMFASMSSend)
+	mux.HandleFunc("POST /login/mfa/webauthn/begin", s.handleMFAKeyBegin)
+	mux.HandleFunc("POST /login/enrol-mfa/start", s.handleEnrolMFAStart)
+	mux.HandleFunc("POST /login/enrol-mfa", s.handleEnrolMFAConfirm)
+	mux.HandleFunc("POST /login/enrol-mfa/continue", s.handleEnrolMFAContinue)
+	mux.HandleFunc("POST /login/verify-email", s.handleVerifyEmailPost)
+	mux.HandleFunc("POST /login/verify-email/resend", s.handleVerifyEmailResend)
 	mux.HandleFunc("POST /consent", s.handleConsentPost)
 	mux.HandleFunc("GET /recover", s.handleRecoverGet)
 	mux.HandleFunc("POST /recover", s.handleRecoverPost)
 	mux.HandleFunc("GET /recover/cancel", s.handleRecoverCancel)
 	mux.HandleFunc("GET /recover/reset", s.handleResetGet)
 	mux.HandleFunc("POST /recover/reset", s.handleResetPost)
-	mux.HandleFunc("GET /account/mfa/totp", s.handleTOTPStart)
+	mux.HandleFunc("POST /recover/reset/factor", s.handleResetFactor)
+	mux.HandleFunc("GET /account/mfa/totp", s.handleTOTPPage)
+	mux.HandleFunc("POST /account/mfa/totp/start", s.handleTOTPStart)
 	mux.HandleFunc("POST /account/mfa/totp", s.handleTOTPConfirm)
 	mux.HandleFunc("POST /account/passkeys/begin", s.handlePasskeyRegisterBegin)
 	mux.HandleFunc("POST /account/passkeys/finish", s.handlePasskeyRegisterFinish)
@@ -601,18 +869,25 @@ func (s *Server) mux() *http.ServeMux {
 	// subscriber". There was no way to request it: store.DeleteCredential existed,
 	// was tested, and had no caller.
 	mux.HandleFunc("POST /account/passkeys/delete", s.handlePasskeyDelete)
+	// A passkey registered from an emailed link, with no session (passkeylink.go).
+	mux.HandleFunc("GET /enrol/passkey", s.handlePasskeyLinkPage)
+	mux.HandleFunc("POST /enrol/passkey/begin", s.handlePasskeyLinkBegin)
+	mux.HandleFunc("POST /enrol/passkey/finish", s.handlePasskeyLinkFinish)
 	mux.HandleFunc("POST /login/passkey/begin", s.handlePasskeyLoginBegin)
 	mux.HandleFunc("POST /login/passkey/finish", s.handlePasskeyLoginFinish)
+	mux.HandleFunc("POST "+pathHeadlessStart, s.handleHeadlessStart)
+	mux.HandleFunc("POST "+pathHeadlessSubmit, s.handleHeadlessSubmit)
 	return mux.ServeMux
 }
 
 func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
-	s.renderLogin(w, r, r.URL.Query().Get("authz"), "")
+	s.renderLogin(w, r.WithContext(withLoginOrgMemo(r.Context())), r.URL.Query().Get("authz"), "")
 }
 
 // rateLimitedLogin rejects forged submissions and caps attempts before any
 // hashing happens.
 func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withLoginOrgMemo(r.Context()))
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "malformed form", http.StatusBadRequest)
 		return
@@ -647,6 +922,9 @@ func (s *Server) rateLimitedLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSignInAttempt(w, r) {
 		return
 	}
+	// "Stay signed in", kept for a second factor that completes the sign-in
+	// in a later request (5.11).
+	s.noteRemember(w, r)
 	s.handleLoginPost(w, r)
 }
 
@@ -690,16 +968,19 @@ const (
 func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
 
-	// The address comes from the socket, never from a header. X-Forwarded-For is
-	// set by whoever sends it, so honouring it here would let an attacker spend
-	// somebody else's budget and keep their own.
+	// The address withClientIP resolved, never a header read here.
+	// X-Forwarded-For is set by whoever sends it, so honouring it from anyone but
+	// a named proxy would let an attacker spend somebody else's budget and keep
+	// their own.
 	ip := clientIP(r)
 	if ip == "" {
 		ip = "unknown"
 	}
 
 	// Only failure budgets, READ here and charged only when the credential turns
-	// out to be wrong -- see recordSignInFailure.
+	// out to be wrong -- see recordSignInFailure. A burst of guesses at one account
+	// is not what these bound: store.ReserveLoginAttempt spends a guess in one
+	// statement before each hash.
 	//
 	// There is deliberately no per-address ceiling on attempts. One was written
 	// and removed: it duplicated the global bucket that already protects CPU,
@@ -708,36 +989,29 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 	// 20 per five minutes, then capping at exactly the generous ceiling that
 	// replaced it. The flood protection belongs where it already was, and this
 	// belongs to guessing.
-	byIP, err := store.CountRate(ctx, s.db, "signin:fail:ip:"+ip, signInPerIPWindow)
+	budgets := []store.RateWindow{{Key: "signin:fail:ip:" + budgetIP(ip), Window: signInPerIPWindow}}
+	// The identifier is lowercased so that Alice@example.com and
+	// alice@example.com share one budget rather than giving an attacker a fresh
+	// one per spelling.
+	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
+	if identifier != "" {
+		budgets = append(budgets, store.RateWindow{Key: "signin:fail:user:" + identifier, Window: signInPerAccountWindow})
+	}
+	spent, err := store.CountRates(ctx, s.db, budgets...)
 	if err != nil {
 		// Refused, not waved through. Signing in needs the database anyway -- the
 		// credential lookup is one query later -- so failing closed here costs
 		// nothing that was going to work, and failing open would turn a database
 		// blip into an unlimited guessing window.
-		s.log.Error("checking the sign-in rate limit", "err", err)
+		s.log.ErrorContext(ctx, "checking the sign-in rate limit", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
 		return false
 	}
-	if byIP >= signInPerIPLimit {
+	if spent[0] >= signInPerIPLimit {
 		s.tooManyAttempts(w, signInPerIPWindow)
 		return false
 	}
-
-	// The identifier is lowercased so that Alice@example.com and
-	// alice@example.com share one budget rather than giving an attacker a fresh
-	// one per spelling.
-	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
-	if identifier == "" {
-		return true
-	}
-	byAccount, err := store.CountRate(ctx, s.db, "signin:fail:user:"+identifier,
-		signInPerAccountWindow)
-	if err != nil {
-		s.log.Error("checking the per-account sign-in rate limit", "err", err)
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
-		return false
-	}
-	if byAccount >= signInPerAccountLimit {
+	if identifier != "" && spent[1] >= signInPerAccountLimit {
 		s.tooManyAttempts(w, signInPerAccountWindow)
 		return false
 	}
@@ -750,14 +1024,18 @@ func (s *Server) allowSignInAttempt(w http.ResponseWriter, r *http.Request) bool
 // one address work: a successful sign-in spends nothing, so two hundred people
 // arriving at nine o'clock are indistinguishable from one, while an address
 // working through a password list is bounded exactly as before.
+//
+// On a context of its own, or a guess whose sender hung up at the right moment would
+// go uncharged.
 func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
+	ctx = context.WithoutCancel(ctx)
 	ip := clientIP(r)
 	if ip == "" {
 		ip = "unknown"
 	}
-	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+ip,
+	if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
 		signInPerIPLimit, signInPerIPWindow); err != nil {
-		s.log.Error("recording a sign-in failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a sign-in failure", "err", err)
 	}
 
 	identifier := strings.ToLower(strings.TrimSpace(r.PostForm.Get("username")))
@@ -766,7 +1044,7 @@ func (s *Server) recordSignInFailure(ctx context.Context, r *http.Request) {
 	}
 	if _, err := store.AllowRate(ctx, s.db, "signin:fail:user:"+identifier,
 		signInPerAccountLimit, signInPerAccountWindow); err != nil {
-		s.log.Error("recording a sign-in failure", "err", err)
+		s.log.ErrorContext(ctx, "recording a sign-in failure", "err", err)
 	}
 }
 
@@ -796,11 +1074,18 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, authzQuery,
 }
 
 func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authzQuery, msg string, status int) {
+	// One answer to whose page this is for the whole render, as the login page's own
+	// handlers have had. The authorization endpoint renders the page too, with no
+	// answer kept, and its render asked six times over, a read of the client each: 8 of
+	// the 18 statements an authorization request without a session made (E.34).
+	if _, kept := r.Context().Value(loginOrgKey{}).(*loginOrgMemo); !kept {
+		r = r.WithContext(withLoginOrgMemo(r.Context()))
+	}
 	// Minted before any header is written: Set-Cookie after WriteHeader is
 	// silently dropped, which would produce a form whose token can never match.
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("minting csrf token", "err", err)
+		s.log.ErrorContext(r.Context(), "minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
 		return
 	}
@@ -821,13 +1106,28 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	// deployment, including the ones that never turn this on.
 	script, frame, connect := "'self'", "'none'", "'self'"
 	if s.captcha.Enabled() {
-		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
+		if origins := captchaOrigins(s.captcha); origins != "" {
 			script += " " + origins
 			frame = origins
 			connect += " " + origins
 		}
 	}
-	b := s.brandNow(r.Context())
+	pageOrg := s.loginOrg(r.Context(), authzQuery)
+	// What the page decides from, in one round trip; asked one by one as before when that
+	// could not be read.
+	page, read := s.readSignInPage(r.Context(), pageOrg, authzQuery, kerberosHost(r))
+	if !read {
+		page = signInPage{
+			brand:        s.brandOf(r.Context(), pageOrg),
+			providers:    s.externalProviders(r.Context(), pageOrg, authzQuery),
+			signup:       s.signupOffered(r.Context()),
+			persistent:   s.persistentOffered(r.Context(), pageOrg),
+			singleSignOn: s.singleSignOnOffered(r.Context(), pageOrg),
+			passkeys:     s.passkeysOffered(r.Context(), pageOrg),
+			kerberos:     s.kerberosLink(r, pageOrg, authzQuery),
+		}
+	}
+	b := page.brand
 	setCSP(w, `default-src 'none'; script-src `+script+`; connect-src `+connect+`; `+
 		`frame-src `+frame+`; style-src 'unsafe-inline';`+brandImgSrc(b)+
 		` form-action 'self'; frame-ancestors 'none'`)
@@ -842,24 +1142,45 @@ func (s *Server) renderLoginStatus(w http.ResponseWriter, r *http.Request, authz
 	}
 	data := map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf, "CSRFField": csrfFormField,
-		"Reference": ref,
+		"Reference": ref, "LoginHint": loginHint(authzQuery),
 		// The external providers are read per render rather than cached at
 		// startup: adding one should take effect immediately, and an operator who
 		// has to restart the engine to see their new sign-in button will assume it
 		// is broken.
-		"Providers": s.externalProviders(r.Context()),
+		"Providers": page.providers,
+		// The ways off this page a person may need, offered only where the
+		// deployment would let them through. Neither was linked at all, so
+		// recovery and sign-up existed and nobody signing in could find them,
+		// while the sign-up page told people to use a link this page lacked.
+		"Recover": s.recoveryOffered(r.Context()),
+		"Signup":  page.signup,
+		// "Stay signed in on this device", where the organisation offers it.
+		"StaySignedIn": page.persistent,
+		// An emailed code in place of the password, where the sign-in flow takes one.
+		"EmailCode": s.emailSignInOffered(r.Context(), pageOrg),
+		// Single sign-on by address, where a provider signs in a domain.
+		"SingleSignOn": page.singleSignOn,
+		// Other accounts this browser is signed in with, to choose instead.
+		"Accounts": s.holdsAccounts(r, pageOrg),
+		// The passkey button and the ceremony behind it, where they can work.
+		"Passkeys": page.passkeys,
+		// A Kerberos ticket, where this host has a keytab for the organisation and its
+		// flow admits one. Nothing else linked the Negotiate exchange (8.22).
+		"Kerberos": page.kerberos,
 		// Only when this request actually needs one. In adaptive mode a person
 		// signing in normally never sees a widget at all.
 		"Captcha":         s.captcha.Enabled() && s.captcha.Required(r.Context(), r.RemoteAddr),
 		"CaptchaProvider": string(s.captcha.Provider()),
 		"CaptchaSiteKey":  s.captcha.SiteKey(),
+		"CaptchaClass":    s.captcha.Widget().Class,
+		"CaptchaScript":   s.captcha.Widget().ScriptURL,
 	}
 	if b != nil {
 		data["BrandName"] = b.ProductName
 		data["BrandLogo"] = b.LogoURL
 		data["BrandSupport"] = b.SupportURL
 	}
-	s.writeBranded(w, s.langFor(r), "login", data, b)
+	s.writeBranded(w, r, pageOrg, "login", data, b)
 }
 
 // loginPage is deliberately minimal and server-rendered: no JavaScript, so it
@@ -912,6 +1233,8 @@ func (s *Server) captchaWidget(data map[string]any) map[string]any {
 		data["Captcha"] = true
 		data["CaptchaProvider"] = string(s.captcha.Provider())
 		data["CaptchaSiteKey"] = s.captcha.SiteKey()
+		data["CaptchaClass"] = s.captcha.Widget().Class
+		data["CaptchaScript"] = s.captcha.Widget().ScriptURL
 	}
 	return data
 }
@@ -931,33 +1254,99 @@ func (s *Server) captchaWidget(data map[string]any) map[string]any {
 // per-tenant discovery needs per-tenant issuers, which is a larger decision than
 // this function.
 func (s *Server) firstOrgID(ctx context.Context) string {
-	var id string
-	if err := s.db.QueryRow(ctx, `
-		SELECT o.id::text FROM core.organizations o
-		JOIN core.instances i ON i.id = o.instance_id
-		WHERE i.issuer = $1
-		ORDER BY o.created_at LIMIT 1`, s.cfg.Issuer).Scan(&id); err != nil {
+	id, err := s.defaultOrg(ctx)
+	if err != nil {
 		return ""
 	}
 	return id
 }
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
-	md, err := oidc.Build(s.cfg)
+	body, etag, err := s.discoveryDocument(r.Context())
 	if err != nil {
-		s.log.Error("building discovery metadata", "err", err)
+		s.log.ErrorContext(r.Context(), "building discovery metadata", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "metadata unavailable")
 		return
+	}
+	body, etag, gzipped := negotiate(w, r, &s.discoveryGzip, body, etag)
+	// Discovery is public, stable, and polled. Let it be cached, but not so long
+	// that adding a signing algorithm takes a day to become visible.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encodedAs(w, gzipped)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// discoveryDocument is the document and its ETag, built again only when something it
+// says could have changed: the configuration version, read on every request, so a change
+// shows on commit as it does everywhere else (ADR-008), and the keys this process holds,
+// which a rotation reaches on its own schedule and the version does not describe. What
+// remains per request is one read. It was four, on a document that is polled.
+func (s *Server) discoveryDocument(ctx context.Context) ([]byte, string, error) {
+	version, verr := store.CurrentConfigVersion(ctx, s.db)
+	if verr != nil {
+		s.log.ErrorContext(ctx, "reading the configuration version for discovery", "err", verr)
+	}
+	held := fmt.Sprint(s.cfg.Keys.Algorithms())
+	if verr == nil {
+		s.discoveryMu.Lock()
+		if s.discoveryCache != nil && s.discoveryVersion == version && s.discoveryKeys == held {
+			defer s.discoveryMu.Unlock()
+			return s.discoveryCache, s.discoveryETag, nil
+		}
+		s.discoveryMu.Unlock()
+	}
+	md, err := s.buildDiscovery(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	body, err := json.Marshal(md)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(body)
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:16]) + `"`
+	if verr == nil {
+		s.discoveryMu.Lock()
+		defer s.discoveryMu.Unlock()
+		s.discoveryCache, s.discoveryETag, s.discoveryVersion, s.discoveryKeys = body, etag, version, held
+	}
+	return body, etag, nil
+}
+
+func (s *Server) buildDiscovery(ctx context.Context) (*oidc.Metadata, error) {
+	md, err := oidc.Build(s.cfg)
+	if err != nil {
+		return nil, err
 	}
 	// registration_endpoint is advertised only where dynamic registration is
 	// actually enabled. The endpoint exists either way, but a discovery document
 	// naming one that answers 401 to every possible caller is the "advertised
 	// before it works" mistake this project refuses elsewhere -- and a client
 	// that reads it will try, fail, and blame its own configuration.
-	if on, cerr := store.AnyRegistrationEnabled(r.Context(), s.db); cerr != nil {
-		s.log.Error("checking whether dynamic registration is enabled", "err", cerr)
+	if on, cerr := store.AnyRegistrationEnabled(ctx, s.db, s.instanceID); cerr != nil {
+		s.log.ErrorContext(ctx, "checking whether dynamic registration is enabled", "err", cerr)
 	} else if on {
 		md.RegistrationEndpoint = s.cfg.Issuer + "/oauth2/register"
+	}
+
+	// A client with no registration can try this only where a rule covers it, and a
+	// server with none has nothing to say to one (client ID metadata document §6).
+	if rules, rerr := store.ClientMetadataRules(ctx, s.db, s.instanceID); rerr != nil {
+		s.log.ErrorContext(ctx, "reading the client metadata rules", "err", rerr)
+	} else if len(rules) > 0 {
+		md.ClientIDMetadataDocumentSupported = true
+	}
+	if issues, ierr := store.AnyIDJAGAudience(ctx, s.db, s.instanceID); ierr != nil {
+		s.log.ErrorContext(ctx, "reading the id-jag audiences", "err", ierr)
+	} else if issues {
+		md.IdentityChainingRequestedTokenTypesSupported = []string{oauth.TokenTypeIDJAG}
 	}
 
 	// Operator-declared scopes, for organisations that have any.
@@ -972,24 +1361,20 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	// Failure here is not fatal. Discovery must not become unanswerable because
 	// an optional catalogue could not be read -- AdvertisedScopes returns the
 	// standard set on any error.
-	if orgID := s.firstOrgID(r.Context()); orgID != "" {
-		md.ScopesSupported = store.AdvertisedScopes(r.Context(), s.db, orgID)
+	if orgID := s.firstOrgID(ctx); orgID != "" {
+		md.ScopesSupported = store.AdvertisedScopes(ctx, s.db, orgID)
 	}
 
 	// RFC 9396 §10: advertise the registered authorization details types, and
 	// only those. The same rule this file already applies to
 	// registration_endpoint -- a type named here that no client may request is a
 	// capability advertised before it works.
-	if types, terr := store.AllAuthorizationDetailTypes(r.Context(), s.db); terr != nil {
-		s.log.Error("listing authorization detail types", "err", terr)
+	if types, terr := store.AllAuthorizationDetailTypes(ctx, s.db, s.instanceID); terr != nil {
+		s.log.ErrorContext(ctx, "listing authorization detail types", "err", terr)
 	} else if len(types) > 0 {
 		md.AuthorizationDetailsTypesSupported = types
 	}
-
-	// Discovery is public, stable, and polled. Let it be cached, but not so long
-	// that adding a signing algorithm takes a day to become visible.
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	writeJSON(w, http.StatusOK, md)
+	return md, nil
 }
 
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
@@ -1010,10 +1395,11 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	// limit is an amplification backstop set far above any real estate.
 	body, etag, err := s.jwksBody()
 	if err != nil {
-		s.log.Error("marshalling jwks", "err", err)
+		s.log.ErrorContext(r.Context(), "marshalling jwks", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "key set unavailable")
 		return
 	}
+	body, etag, gzipped := negotiate(w, r, &s.jwksGzip, body, etag)
 	w.Header().Set("ETag", etag)
 	// A conditional request costs nothing and is not counted against the limit:
 	// a client asking "has it changed" is the behaviour we want to encourage.
@@ -1033,6 +1419,7 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control",
 		fmt.Sprintf("public, max-age=%d", int(keys.JWKSMaxAge.Seconds())))
 	w.Header().Set("Content-Type", "application/jwk-set+json")
+	encodedAs(w, gzipped)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
@@ -1110,11 +1497,30 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.db.Ping(ctx); err != nil {
-		s.log.Error("readiness probe failed", "err", err)
+		s.log.ErrorContext(ctx, "readiness probe failed", "err", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
 		return
 	}
+	for _, c := range s.readiness {
+		if err := c.check(); err != nil {
+			s.log.ErrorContext(ctx, "readiness probe failed", "check", c.name, "err", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
+}
+
+type readinessCheck struct {
+	name  string
+	check func() error
+}
+
+// AddReadinessCheck makes /readyz fail while check reports an error: a
+// condition under which this instance should stop taking traffic though its
+// database answers, such as signing keys it can no longer refresh.
+func (s *Server) AddReadinessCheck(name string, check func() error) {
+	s.readiness = append(s.readiness, readinessCheck{name: name, check: check})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -1128,7 +1534,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func writeError(w http.ResponseWriter, code int, err, desc string) {
 	writeJSON(w, code, map[string]string{
 		"error":             err,
-		"error_description": desc,
+		"error_description": oauth.ErrorText(desc),
 	})
 }
 
@@ -1139,15 +1545,22 @@ func writeError(w http.ResponseWriter, code int, err, desc string) {
 //
 // Enumerated rather than derived from the verify URL: the origin that serves a
 // widget is often not the origin that verifies it, and guessing would produce a
-// policy that silently blocks the challenge from rendering.
-func captchaOrigins(p captcha.Provider) string {
-	switch p {
+// policy that silently blocks the challenge from rendering. A Siteverify widget
+// is named by its operator, and the script's origin is the one that is known; a
+// widget that calls anywhere else needs the theme overridden with it.
+func captchaOrigins(v *captcha.Verifier) string {
+	switch v.Provider() {
 	case captcha.Turnstile:
 		return "https://challenges.cloudflare.com"
 	case captcha.HCaptcha:
 		return "https://hcaptcha.com https://*.hcaptcha.com"
 	case captcha.ReCaptcha:
 		return "https://www.google.com https://www.gstatic.com"
+	case captcha.Siteverify:
+		if u, err := url.Parse(v.Widget().ScriptURL); err == nil {
+			return u.Scheme + "://" + u.Host
+		}
+		return ""
 	default:
 		return ""
 	}
@@ -1170,6 +1583,21 @@ func captchaFromEnv() (*captcha.Verifier, error) {
 	provider, err := captcha.ParseProvider(os.Getenv("SIGNARI_CAPTCHA_PROVIDER"))
 	if err != nil {
 		return nil, err
+	}
+	widget := captcha.Widget{
+		VerifyURL:     os.Getenv("SIGNARI_CAPTCHA_VERIFY_URL"),
+		ScriptURL:     os.Getenv("SIGNARI_CAPTCHA_WIDGET_URL"),
+		Class:         os.Getenv("SIGNARI_CAPTCHA_WIDGET_CLASS"),
+		ResponseField: os.Getenv("SIGNARI_CAPTCHA_RESPONSE_FIELD"),
+	}
+	switch {
+	case provider == captcha.Siteverify:
+		if err := widget.Validate(); err != nil {
+			return nil, fmt.Errorf("SIGNARI_CAPTCHA_PROVIDER is siteverify: %w", err)
+		}
+	case widget != captcha.Widget{}:
+		return nil, fmt.Errorf("SIGNARI_CAPTCHA_VERIFY_URL and its neighbours describe a siteverify "+
+			"service, and SIGNARI_CAPTCHA_PROVIDER is %q, which would ignore them", provider)
 	}
 	site := os.Getenv("SIGNARI_CAPTCHA_SITE_KEY")
 	secret := os.Getenv("SIGNARI_CAPTCHA_SECRET")
@@ -1194,6 +1622,7 @@ func captchaFromEnv() (*captcha.Verifier, error) {
 		Provider:                provider,
 		SiteKey:                 site,
 		Secret:                  secret,
+		Widget:                  widget,
 		FailuresBeforeChallenge: threshold,
 		// Opt-in. See captcha.Config for why the default is to stay available.
 		FailClosed: os.Getenv("SIGNARI_CAPTCHA_FAIL_CLOSED") == "1",

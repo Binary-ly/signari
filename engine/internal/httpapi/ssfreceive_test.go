@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/ssf"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // The whole inbound path, against a real database: a transmitter signs, we
@@ -69,6 +70,11 @@ func newTXServer(t *testing.T) *txServer {
 
 func (x *txServer) mint(t *testing.T, issuer, audience, jti, eventType, subject string) string {
 	t.Helper()
+	return x.mintTo(t, issuer, []string{audience}, jti, eventType, subject)
+}
+
+func (x *txServer) mintTo(t *testing.T, issuer string, audiences []string, jti, eventType, subject string) string {
+	t.Helper()
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.ES256, Key: x.key},
 		(&jose.SignerOptions{}).WithType(jose.ContentType(ssf.TypSET)).
@@ -78,7 +84,7 @@ func (x *txServer) mint(t *testing.T, issuer, audience, jti, eventType, subject 
 	}
 	claims, _ := json.Marshal(map[string]any{
 		"iss": issuer, "jti": jti, "iat": time.Now().Unix(),
-		"aud": []string{audience},
+		"aud": audiences,
 		"events": map[string]any{eventType: map[string]any{
 			"subject": map[string]any{
 				"format": "iss_sub", "iss": issuer, "sub": subject,
@@ -122,6 +128,7 @@ func TestASignedSignalEndsRealSessions(t *testing.T) {
 	must(pool.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
 		VALUES ($1,$2,'SSF') RETURNING id::text`,
 		instanceID, fmt.Sprintf("ssf%d", suffix)).Scan(&orgID))
+	storetest.Forget(t, pool, orgID)
 	must(pool.QueryRow(ctx, `
 		INSERT INTO core.users (org_id, user_handle, email)
 		VALUES ($1, sha256($2::bytea)||sha256($3::bytea), $4) RETURNING id::text`,

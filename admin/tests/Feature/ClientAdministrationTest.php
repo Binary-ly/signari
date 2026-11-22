@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,8 @@ use Tests\TestCase;
  */
 class ClientAdministrationTest extends TestCase
 {
+    use SeedsEngineState;
+
     private ?User $operator = null;
 
     private string $orgId = '';
@@ -30,23 +33,20 @@ class ClientAdministrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $org = DB::selectOne('SELECT id::text AS id FROM core_v1.organizations LIMIT 1');
-        if ($org === null) {
-            $this->markTestSkipped('no organisation seeded');
-        }
-        $this->orgId = $org->id;
+        $this->orgId = $this->plantOrganisation();
 
         $this->operator = new User;
         $this->operator->name = 'Operator';
         $this->operator->email = 'op-'.Str::random(8).'@example.test';
         $this->operator->password = bcrypt('irrelevant');
-        $this->operator->org_id = $org->id;
+        $this->operator->org_id = $this->orgId;
         $this->operator->save();
     }
 
     protected function tearDown(): void
     {
         $this->operator?->delete();
+        $this->removePlantedEngineState();
         parent::tearDown();
     }
 
@@ -100,12 +100,9 @@ class ClientAdministrationTest extends TestCase
             ->assertNotified(__('Client created'));
     }
 
-    public function test_rotation_is_offered_only_for_confidential_clients(): void
+    public function test_rotation_is_offered_for_a_confidential_client(): void
     {
-        $client = $this->seededClient();
-        if ($client === null) {
-            $this->markTestSkipped('no seeded client');
-        }
+        $client = $this->plantedClient(confidential: true);
         Http::fake(['*/rotate-secret' => Http::response(
             ['client_id' => $client->client_id, 'client_secret' => 'rotated-1'], 200
         )]);
@@ -113,26 +110,35 @@ class ClientAdministrationTest extends TestCase
 
         DB::transaction(function () use ($client) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
-            $test = Livewire::test(ListEngineClients::class);
-
-            if ($client->client_type === 'confidential') {
-                $test->callAction(TestAction::make('rotateSecret')->table($client))
-                    ->assertNotified(__('Secret rotated'));
-                Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/rotate-secret'));
-            } else {
-                // A public client has no secret; offering the action would hand
-                // the operator a value that authenticates nothing.
-                $test->assertActionHidden(TestAction::make('rotateSecret')->table($client));
-            }
+            Livewire::test(ListEngineClients::class)
+                ->callAction(TestAction::make('rotateSecret')->table($client))
+                ->assertNotified(__('Secret rotated'));
+            Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/rotate-secret'));
         });
     }
 
-    private function seededClient(): ?EngineClient
+    public function test_rotation_is_hidden_for_a_public_client(): void
     {
-        return DB::transaction(function () {
+        $client = $this->plantedClient(confidential: false);
+        $this->actingAs($this->operator);
+
+        DB::transaction(function () use ($client) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
+            // A public client has no secret; offering the action would hand the
+            // operator a value that authenticates nothing.
+            Livewire::test(ListEngineClients::class)
+                ->assertActionHidden(TestAction::make('rotateSecret')->table($client));
+        });
+    }
+
+    private function plantedClient(bool $confidential): EngineClient
+    {
+        $clientId = $this->plantClient($this->orgId, $confidential);
+
+        return DB::transaction(function () use ($clientId) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $this->orgId]);
 
-            return EngineClient::query()->first();
+            return EngineClient::query()->findOrFail($clientId);
         });
     }
 }

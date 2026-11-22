@@ -44,6 +44,29 @@ const (
 	EventCredentialChange  = "https://schemas.openid.net/secevent/caep/event-type/credential-change"
 	EventAssuranceChange   = "https://schemas.openid.net/secevent/caep/event-type/assurance-level-change"
 	EventTokenClaimsChange = "https://schemas.openid.net/secevent/caep/event-type/token-claims-change"
+	EventAccountDisabled   = "https://schemas.openid.net/secevent/risc/event-type/account-disabled"
+	EventAccountEnabled    = "https://schemas.openid.net/secevent/risc/event-type/account-enabled"
+
+	// EventAccountPurged, EventCredentialChangeRequired and EventCredentialCompromise
+	// are the RISC events a receiver acts on besides those two. Received here and not
+	// sent, so they are not in SupportedEvents.
+	EventAccountPurged            = "https://schemas.openid.net/secevent/risc/event-type/account-purged"
+	EventCredentialChangeRequired = "https://schemas.openid.net/secevent/risc/event-type/account-credential-change-required"
+	EventCredentialCompromise     = "https://schemas.openid.net/secevent/risc/event-type/credential-compromise"
+
+	// StreamUpdated is SSF 1.0 §8.1.5's notice that the transmitter changed a
+	// stream's status. Not in SupportedEvents: a receiver does not subscribe to
+	// it, it is sent on every stream ("MAY send a Stream Updated event even if
+	// the event is not present in the events_supported, events_requested and /
+	// or events_delivered fields", specs/ssf-1_0.txt:3387-3389).
+	StreamUpdated = "https://schemas.openid.net/secevent/ssf/event-type/stream-updated"
+
+	// Verification is SSF 1.0 §8.1.4.1's event, sent when a receiver asks whether
+	// its stream works. Not in SupportedEvents for the same reason: "A Transmitter
+	// MAY respond to Verification Event requests even if the event is not present
+	// in the events_supported, events_requested and / or events_delivered fields"
+	// (specs/ssf-1_0.txt:3198-3200).
+	Verification = "https://schemas.openid.net/secevent/ssf/event-type/verification"
 
 	// TypSET is the media type a SET carries (RFC 8417 §2.3). Checked by
 	// receivers, and set here so a SET cannot be confused with an ID token by
@@ -56,8 +79,14 @@ const (
 // Advertised, and deliberately short. A receiver subscribing to an event we
 // never send waits forever for a signal that will not come, and would have been
 // better off knowing that when it subscribed.
+//
+// Credential-change was listed here once with nothing emitting it, so a
+// receiver that subscribed to it waited forever, which is the failure this
+// comment describes. TestEverySupportedEventIsBuilt holds the list to the events
+// an Event literal is actually built with, and httpapi's
+// TestEveryAdvertisedEventReachesAReceiver to the ones something queues.
 func SupportedEvents() []string {
-	return []string{EventSessionRevoked, EventCredentialChange}
+	return []string{EventSessionRevoked, EventCredentialChange, EventAccountDisabled, EventAccountEnabled}
 }
 
 // Subject identifies who an event is about.
@@ -88,6 +117,9 @@ type Event struct {
 	ReasonUser  string
 	// InitiatingEntity: policy, user, admin, or system (CAEP §3.1).
 	InitiatingEntity string
+	// Claims are what the event type says beyond that, such as a credential
+	// change's credential_type.
+	Claims map[string]any
 }
 
 // audience is a JWT `aud` claim, which is a string OR an array of strings.
@@ -216,6 +248,9 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 	if e.InitiatingEntity != "" {
 		payload["initiating_entity"] = e.InitiatingEntity
 	}
+	for k, v := range e.Claims {
+		payload[k] = v
+	}
 	if e.ReasonAdmin != "" || e.ReasonUser != "" {
 		reason := map[string]any{}
 		if e.ReasonAdmin != "" {
@@ -234,6 +269,64 @@ func Mint(s Signer, issuer, audience, jti string, e Event, now time.Time) (strin
 		Audience: []string{audience},
 		SubID:    subject,
 		Events:   map[string]map[string]any{e.Type: payload},
+	}, TypSET)
+}
+
+// MintStreamUpdated builds the §8.1.5 Stream Updated SET: the stream's new
+// status and why. Its subject is the stream itself -- "The value of the sub_id
+// field MUST be of format opaque, and its id value MUST be the unique ID of the
+// stream" (specs/ssf-1_0.txt:3406-3408) -- and, being an SSF event type rather
+// than a CAEP one, it carries no event-level subject (§3.1.2).
+func MintStreamUpdated(s Signer, issuer, audience, jti, streamID, status, reason string,
+	now time.Time) (string, error) {
+	if audience == "" {
+		return "", fmt.Errorf("refusing to mint a security event token with no audience: " +
+			"it could be forwarded to any other receiver")
+	}
+	if streamID == "" {
+		return "", fmt.Errorf("refusing to mint a stream update for no stream")
+	}
+	switch status {
+	case "enabled", "paused", "disabled":
+	default:
+		return "", fmt.Errorf("%q is not a stream status", status)
+	}
+	payload := map[string]any{"status": status}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	return s.SignJSON(setClaims{
+		Issuer:   issuer,
+		JTI:      jti,
+		IssuedAt: now.Unix(),
+		Audience: []string{audience},
+		SubID:    map[string]any{"format": "opaque", "id": streamID},
+		Events:   map[string]map[string]any{StreamUpdated: payload},
+	}, TypSET)
+}
+
+// MintVerification builds the Verification Event: §8.1.4.1 makes its subject the
+// stream itself, "a simple value of type opaque" whose id "MUST be the stream_id of
+// the stream being verified", and the receiver's state comes back as it went in.
+func MintVerification(s Signer, issuer, audience, jti, streamID, state string, now time.Time) (string, error) {
+	if audience == "" {
+		return "", fmt.Errorf("refusing to mint a security event token with no audience: " +
+			"it could be forwarded to any other receiver")
+	}
+	if streamID == "" {
+		return "", fmt.Errorf("refusing to verify no stream")
+	}
+	payload := map[string]any{}
+	if state != "" {
+		payload["state"] = state
+	}
+	return s.SignJSON(setClaims{
+		Issuer:   issuer,
+		JTI:      jti,
+		IssuedAt: now.Unix(),
+		Audience: []string{audience},
+		SubID:    map[string]any{"format": "opaque", "id": streamID},
+		Events:   map[string]map[string]any{Verification: payload},
 	}, TypSET)
 }
 

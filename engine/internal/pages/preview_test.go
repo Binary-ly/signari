@@ -293,7 +293,7 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 
 	return map[string]map[string]any{
 		"login": csrf(map[string]any{
-			"Authz": authz, "Error": "", "Reference": "",
+			"Authz": authz, "Error": "", "Reference": "", "StaySignedIn": true,
 			"Providers": []map[string]any{
 				{"Name": "Okta", "Slug": "okta"},
 				{"Name": "Google Workspace", "Slug": "google"},
@@ -367,6 +367,49 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 			"Ready": true, "Pending": false, "Wait": "", "When": "",
 			"Token": "0a94c1f7-6b2e-4d38-9f05-71c8ea4b2d63", "Error": "",
 		}),
+		"passkeylink": map[string]any{
+			"Ready": true, "Token": "q3Xv8mJb2tYcN0aKfP7sLw9eR4uHdG6iZ1oB5nCxVkE",
+			"Account": "amelia.hart@example.com", "Until": "16:30 UTC on 22 October", "Error": "",
+		},
+		"verifyemail": csrf(map[string]any{
+			"Address": "amelia.hart@example.com", "Closed": false, "Error": "",
+		}),
+		"accountdelete": csrf(map[string]any{
+			"Confirm": "amelia.hart@example.com", "Closed": false, "Deleted": false, "Error": "",
+		}),
+		"accountexport": csrf(map[string]any{}),
+		"emailcode":     csrf(map[string]any{"Error": ""}),
+		// The cross-device wallet page waiting on a scan; its code step is the
+		// emailcode page's shape with the wallet's words.
+		"wallet": {"Mode": "choose", "Provider": "National ID wallet", "QR": qr,
+			"HereURL": "/oid4vp/wallet/start?device=this", "WaitURL": "/oid4vp/wallet/wait?state=s",
+			"NextURL": "/oid4vp/wallet/confirm?state=s", "Notice": ""},
+		"accounts": csrf(map[string]any{
+			"Accounts": []map[string]any{
+				{"SID": "s-1", "Name": "Amelia Hart", "Active": true},
+				{"SID": "s-2", "Name": "amelia@hart.example", "Active": false},
+			},
+			"Authz": "client_id=web-app&response_type=code", "Another": "/login", "Error": "",
+		}),
+		"emailchange": csrf(map[string]any{
+			"Address": "amelia.hart@example.com", "NewAddress": "amelia@hart.example",
+			"Closed": false, "Message": "", "Error": "",
+		}),
+		"profile": csrf(map[string]any{
+			"Fields": []map[string]any{
+				{"Name": "department", "Label": "Department", "Type": "string", "Value": "Platform",
+					"Required": true, "Writable": true},
+				{"Name": "employee_no", "Label": "Employee number", "Type": "string", "Value": "E-1001"},
+				{"Name": "newsletter", "Label": "Product news", "Type": "boolean", "Value": "true", "Writable": true},
+			},
+			"Editable": true, "Message": "", "Error": "",
+		}),
+		"security": csrf(map[string]any{
+			"TOTP": true, "TOTPDisabled": false, "Email": "amelia.hart@example.com", "EmailDisabled": false,
+			"Number": "+44 7700 •••912", "Hashed": false, "Configured": true,
+			"Passkeys": 2, "Recovery": 7, "RecoveryDisabled": false, "HasSecondFactor": true, "Duo": false,
+			"Message": "",
+		}),
 		"sent":       map[string]any{},
 		"done":       map[string]any{},
 		"cancelled":  map[string]any{},
@@ -387,16 +430,42 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 					"Email": "amelia@users.noreply.github.com", "Verified": false},
 				{"Name": "Google Workspace", "Slug": "google", "Linked": false},
 			},
+			"Languages": []map[string]any{
+				{"Tag": "en", "Name": "English", "Selected": true},
+				{"Tag": "ar", "Name": "العربية", "Selected": false},
+			},
+			"LanguageChosen": true,
+		}),
+		"devices": csrf(map[string]any{
+			"Devices": []map[string]any{
+				{"ID": "d-1", "UserAgent": "Safari on macOS", "When": "17 September 2026",
+					"Until": "17 October 2026"},
+				{"ID": "d-2", "UserAgent": "", "When": "2 September 2026", "Until": "2 October 2026"},
+			},
 		}),
 		"connected": map[string]any{
 			"CSRF": "8f2c1d94a7be4e0f", "Message": "",
 			"Apps": []map[string]any{
 				{"Name": "Northwind Analytics", "ClientID": "northwind-analytics",
 					"Scopes":  []string{"openid", "profile", "invoices.read"},
-					"Granted": "14 March 2026", "ActiveTokens": 2},
+					"Granted": "14 March 2026", "ActiveTokens": 2, "OfflineUntil": "13 April 2026"},
 				{"Name": "Contoso Expenses", "ClientID": "contoso-expenses",
 					"Scopes":  []string{"openid", "email"},
 					"Granted": "2 January 2026", "ActiveTokens": 0},
+			},
+		},
+		"resources": map[string]any{
+			"CSRF": "8f2c1d94a7be4e0f", "Message": "shared",
+			"Resources": []map[string]any{
+				{"ID": "kX3A39WEq0", "Name": "Q3 board pack", "Description": "Slides and minutes for the October board.",
+					"Server": "Fabrikam Docs", "Scopes": []string{"read", "comment"},
+					"Shares": []map[string]any{
+						{"Who": "grace@example.com", "Relation": "viewer"},
+						{"Who": "auditors@example.com", "Relation": "commenter"},
+					},
+					"Relations": []string{"commenter", "viewer"}},
+				{"ID": "9UQUdUWW1b", "Name": "Holiday photos", "Description": "", "Server": "Northwind Photos",
+					"Scopes": []string{"read"}, "Shares": []map[string]any{}, "Relations": []string{"viewer"}},
 			},
 		},
 		"portal": map[string]any{
@@ -469,6 +538,11 @@ func previewData(p *i18n.Printer) map[string]map[string]any {
 		"samlerr": map[string]any{
 			"Reason":        "The service provider's certificate expired on 3 August 2026, so the assertion could not be signed for it.",
 			"CorrelationID": "3BX-8M2",
+		},
+		// After a SAML logout chain: two told, one that could not be reached.
+		"signedout": map[string]any{
+			"Notified": []string{"https://wiki.example.com/shibboleth", "https://expenses.example.com/saml"},
+			"Failed":   []string{"https://analytics.example.com/saml"},
 		},
 		"fclogout": map[string]any{
 			"Targets": []map[string]any{

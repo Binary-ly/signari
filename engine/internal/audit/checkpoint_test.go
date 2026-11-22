@@ -48,7 +48,7 @@ func orgFor(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var id string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT id::text FROM core.organizations LIMIT 1`).Scan(&id); err != nil {
+		`SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&id); err != nil {
 		t.Skipf("no organisation: %v", err)
 	}
 	return id

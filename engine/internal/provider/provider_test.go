@@ -2,9 +2,14 @@ package provider
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +57,22 @@ func TestAProviderWithNoFailureModeIsRefused(t *testing.T) {
 // about one that does not.
 //
 // When a hook is wired, this test is what fails and says so.
+// A password nobody could check is not a correct one, so this hook has no failing open:
+// the mode that is a choice for every other hook would sign in anybody who typed anything
+// while the service was down.
+func TestThePasswordHookCannotFailOpen(t *testing.T) {
+	p := Provider{Name: "old-system", Hook: HookPasswordVerify, URL: "https://old-system.example.com/verify",
+		Mode: FailOpen, Timeout: time.Second}
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), string(FailClosed)) {
+		t.Errorf("a fail_open password_verify provider gave %v, want a refusal naming fail_closed", err)
+	}
+	p.Mode = FailClosed
+	if err := p.Validate(); err != nil {
+		t.Errorf("a fail_closed one was refused: %v", err)
+	}
+}
+
 func TestCalledMatchesWhatIsWired(t *testing.T) {
 	// The hooks a decision point actually consults.
 	//
@@ -59,7 +80,18 @@ func TestCalledMatchesWhatIsWired(t *testing.T) {
 	//     evaluation path.
 	//   - HookTokenIssue: httpapi.handleToken, on the authorization_code grant,
 	//     after every local check has passed and before mintTokens.
-	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true}
+	//   - HookPasswordVerify: httpapi.tryDelegated, for somebody still to be
+	//     migrated from a source of kind hook.
+	//   - HookAuthenticate: httpapi.completeSignIn, for every way in.
+	//   - HookUserCreate: httpapi.createAccount and completeFederation.
+	//   - HookClientAccess: httpapi.clientAccessRefused, from handleAuthorize and
+	//     the device and CIBA approvals.
+	//   - HookUserinfo: httpapi.handleUserinfo.
+	//   - HookSAMLAssertion: httpapi.issueSAMLAssertion.
+	//   - HookFlowCondition: httpapi.signInConditions.
+	wired := map[Hook]bool{HookAuthorize: true, HookTokenIssue: true, HookPasswordVerify: true,
+		HookAuthenticate: true, HookUserCreate: true, HookClientAccess: true, HookUserinfo: true,
+		HookSAMLAssertion: true, HookFlowCondition: true}
 
 	for _, h := range allHooks {
 		if h.Called() != wired[h] {
@@ -124,11 +156,34 @@ type answer struct {
 	Decision bool `json:"decision"`
 }
 
-// The ordinary case: the provider answers and the answer is decoded.
+// The ordinary case: the provider answers and the answer is decoded. And it can
+// tell the call came from this engine: Signari-Signature carries an HMAC of
+// "<t>.<body>" under the secret it was given (2.04), checked here the way a
+// provider would, with its own code rather than the engine's. The secret itself
+// is never sent.
 func TestCallDecodesAnAnswer(t *testing.T) {
+	const secret = "s3cret-shared-with-the-provider"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer s3cret" {
-			t.Errorf("Authorization = %q, want the bearer token", got)
+		body, _ := io.ReadAll(r.Body)
+		sig := r.Header.Get("Signari-Signature")
+		var ts, v1 string
+		for _, part := range strings.Split(sig, ",") {
+			if k, v, ok := strings.Cut(part, "="); ok && k == "t" {
+				ts = v
+			} else if ok && k == "v1" {
+				v1 = v
+			}
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(ts + "." + string(body)))
+		if want := hex.EncodeToString(mac.Sum(nil)); ts == "" || !hmac.Equal([]byte(v1), []byte(want)) {
+			t.Errorf("Signari-Signature %q does not verify over the body under the secret", sig)
+		}
+		if n, err := strconv.ParseInt(ts, 10, 64); err != nil || time.Since(time.Unix(n, 0)) > time.Minute {
+			t.Errorf("the signature's t=%q is not the time of the call", ts)
+		}
+		if strings.Contains(r.Header.Get("Authorization")+sig, secret) {
+			t.Error("the secret itself was sent")
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("Content-Type = %q", got)
@@ -139,7 +194,7 @@ func TestCallDecodesAnAnswer(t *testing.T) {
 	defer srv.Close()
 
 	p := good()
-	p.URL, p.Token = srv.URL, "s3cret"
+	p.URL, p.Secret = srv.URL, secret
 
 	var out answer
 	if err := p.Call(context.Background(), srv.Client(), map[string]any{"subject": "alice"}, &out); err != nil {

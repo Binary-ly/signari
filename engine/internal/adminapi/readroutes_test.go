@@ -1,0 +1,193 @@
+package adminapi
+
+import (
+	"context"
+	"net/url"
+	"testing"
+
+	"signari.dev/engine/internal/store"
+)
+
+// readRoute is a GET with a path that answers 200, for the schema drift test:
+// the counterpart of allMutatingRoutes for reads.
+type readRoute struct {
+	name string
+	path func(t *testing.T, s *Server) string
+}
+
+func allReadRoutes() []readRoute {
+	org := func(rest string) func(t *testing.T, s *Server) string {
+		return func(t *testing.T, s *Server) string { return "/admin/organizations/" + anyOrgID(t, s) + rest }
+	}
+	return []readRoute{
+		{"GET /admin/audit-events", func(*testing.T, *Server) string { return "/admin/audit-events?limit=5" }},
+		{"GET /admin/clients", func(*testing.T, *Server) string { return "/admin/clients?limit=5" }},
+		{"GET /admin/clients/{clientID}", func(t *testing.T, s *Server) string {
+			return "/admin/clients/" + url.PathEscape(newPreconditionClient(t, s))
+		}},
+		{"GET /admin/clients/{clientID}/id-jag-audiences", func(t *testing.T, s *Server) string {
+			return "/admin/clients/" + url.PathEscape(newPreconditionClient(t, s)) + "/id-jag-audiences"
+		}},
+		{"GET /admin/clients/{clientID}/group-release", func(t *testing.T, s *Server) string {
+			return "/admin/clients/" + url.PathEscape(newPreconditionClient(t, s)) + "/group-release"
+		}},
+		{"GET /admin/instances", func(*testing.T, *Server) string { return "/admin/instances" }},
+		{"GET /admin/instances/{instanceID}/brand", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/brand"
+		}},
+		{"GET /admin/organizations/{orgID}/brand", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftOrg(t, s) + "/brand"
+		}},
+		{"GET /admin/organizations/{orgID}/messages", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftOrg(t, s) + "/messages"
+		}},
+		{"GET /admin/organizations/{orgID}/sign-in-flow/paths", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftOrg(t, s) + "/sign-in-flow/paths"
+		}},
+		{"GET /admin/organizations/{orgID}/relation-delegations", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftOrg(t, s) + "/relation-delegations"
+		}},
+		{"GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", func(t *testing.T, s *Server) string {
+			d := newDriftDelegation(t, s)
+			return "/admin/organizations/" + d.OrgID + "/relation-delegations/" + d.ID + "/relations"
+		}},
+		{"GET /admin/instances/{instanceID}/keys", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftKeyedInstance(t, s) + "/keys"
+		}},
+		{"GET /admin/instances/{instanceID}/federation", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation"
+		}},
+		{"GET /admin/instances/{instanceID}/client-metadata-rules", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/client-metadata-rules"
+		}},
+		{"GET /admin/instances/{instanceID}/federation/anchors", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/anchors"
+		}},
+		{"GET /admin/instances/{instanceID}/federation/subordinates", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/federation/subordinates"
+		}},
+		{"GET /admin/instances/{instanceID}/trust-marks", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftFederatedInstance(t, s) + "/trust-marks"
+		}},
+		{"GET /admin/instances/{instanceID}/webauthn", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/webauthn"
+		}},
+		{"GET /admin/instances/{instanceID}/issuer-aliases", func(t *testing.T, s *Server) string {
+			return "/admin/instances/" + newDriftInstance(t, s) + "/issuer-aliases"
+		}},
+		{"GET /admin/config-version", func(*testing.T, *Server) string { return "/admin/config-version" }},
+		{"GET /admin/groups", func(*testing.T, *Server) string { return "/admin/groups?limit=5" }},
+		{"GET /admin/groups/{groupID}", func(t *testing.T, s *Server) string { return "/admin/groups/" + newDriftGroup(t, s) }},
+		{"GET /admin/groups/{groupID}/members", func(t *testing.T, s *Server) string {
+			return "/admin/groups/" + newDriftGroup(t, s) + "/members"
+		}},
+		// With one group inside it, so the item's schema is held to something.
+		{"GET /admin/groups/{groupID}/member-groups", func(t *testing.T, s *Server) string {
+			parent, child := newDriftGroup(t, s), newDriftGroup(t, s)
+			if _, err := s.db.Exec(context.Background(), `INSERT INTO core.group_parents (group_id, parent_id, org_id)
+				SELECT $1::uuid, $2::uuid, org_id FROM core.groups WHERE id = $2::uuid`, child, parent); err != nil {
+				t.Fatal(err)
+			}
+			return "/admin/groups/" + parent + "/member-groups"
+		}},
+		{"GET /admin/invitations", func(*testing.T, *Server) string { return "/admin/invitations" }},
+		{"GET /admin/me", func(*testing.T, *Server) string { return "/admin/me" }},
+		{"GET /admin/organizations", func(*testing.T, *Server) string { return "/admin/organizations" }},
+		{"GET /admin/organizations/{orgID}", org("")},
+		{"GET /admin/organizations/{orgID}/attributes", org("/attributes")},
+		{"GET /admin/organizations/{orgID}/budgets", org("/budgets")},
+		{"GET /admin/organizations/{orgID}/settings", org("/settings")},
+		{"GET /admin/organizations/{orgID}/signup", org("/signup")},
+		{"GET /admin/organizations/{orgID}/registration", org("/registration")},
+		{"GET /admin/organizations/{orgID}/prompts", org("/prompts")},
+		{"GET /admin/organizations/{orgID}/authorization-detail-types", org("/authorization-detail-types")},
+		{"GET /admin/organizations/{orgID}/attesters", org("/attesters")},
+		{"GET /admin/organizations/{orgID}/external-factors", org("/external-factors")},
+		{"GET /admin/organizations/{orgID}/credential-requests", org("/credential-requests")},
+		{"GET /admin/organizations/{orgID}/issued-credentials", org("/issued-credentials")},
+		{"GET /admin/organizations/{orgID}/credential-configurations", func(t *testing.T, s *Server) string {
+			o, _, _, _ := newDriftWallet(t, s)
+			return "/admin/organizations/" + o + "/credential-configurations"
+		}},
+		{"GET /admin/organizations/{orgID}/credential-proof-roots", func(t *testing.T, s *Server) string {
+			o, _, _, _ := newDriftWallet(t, s)
+			ca, _ := testCertPEM(t, true)
+			der, err := store.ParseProofRootPEM([]byte(ca))
+			if err == nil {
+				err = store.SetCredentialProofRoot(context.Background(), s.db, o, "drift", der)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return "/admin/organizations/" + o + "/credential-proof-roots"
+		}},
+		{"GET /admin/organizations/{orgID}/uma", org("/uma")},
+		{"GET /admin/organizations/{orgID}/duo", org("/duo")},
+		{"GET /admin/organizations/{orgID}/event-subscriptions", org("/event-subscriptions")},
+		{"GET /admin/organizations/{orgID}/providers", org("/providers")},
+		{"GET /admin/organizations/{orgID}/outposts", org("/outposts")},
+		{"GET /admin/organizations/{orgID}/relations", org("/relations")},
+		{"GET /admin/organizations/{orgID}/radius-clients", org("/radius-clients")},
+		{"GET /admin/organizations/{orgID}/rac-connections", org("/rac-connections")},
+		{"GET /admin/organizations/{orgID}/access-policy", org("/access-policy")},
+		{"GET /admin/organizations/{orgID}/authorization-model", org("/authorization-model")},
+		{"GET /admin/organizations/{orgID}/authorization/explain", func(t *testing.T, s *Server) string {
+			o := newExplainOrg(t, s)
+			return "/admin/organizations/" + o + "/authorization/explain?subject=user:a&action=read&object=document:1"
+		}},
+		{"GET /admin/organizations/{orgID}/ssf-streams", org("/ssf-streams")},
+		{"GET /admin/organizations/{orgID}/scim-targets", org("/scim-targets")},
+		{"GET /admin/organizations/{orgID}/scim-sources", org("/scim-sources")},
+		{"GET /admin/organizations/{orgID}/directories", org("/directories")},
+		{"GET /admin/organizations/{orgID}/saml-providers", org("/saml-providers")},
+		{"GET /admin/organizations/{orgID}/identity-providers", org("/identity-providers")},
+		{"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", org("/identity-providers/none/saml-keys")},
+		{"GET /admin/organizations/{orgID}/kerberos-realms", org("/kerberos-realms")},
+		{"GET /admin/organizations/{orgID}/ssf-sources", org("/ssf-sources")},
+		{"GET /admin/organizations/{orgID}/sign-in-flow", org("/sign-in-flow")},
+		{"GET /admin/organizations/{orgID}/radius-authorizations", org("/radius-authorizations")},
+		{"GET /admin/organizations/{orgID}/uma/requests", org("/uma/requests")},
+		{"GET /admin/organizations/{orgID}/registration-tokens", org("/registration-tokens")},
+		{"GET /admin/organizations/{orgID}/claim-mappers", org("/claim-mappers")},
+		{"GET /admin/organizations/{orgID}/migration-source", func(t *testing.T, s *Server) string {
+			return "/admin/organizations/" + newDriftMigrationOrg(t, s, true) + "/migration-source"
+		}},
+		{"GET /admin/organizations/{orgID}/proxy-hosts", org("/proxy-hosts")},
+		{"GET /admin/organizations/{orgID}/resource-servers", org("/resource-servers")},
+		{"GET /admin/organizations/{orgID}/role-bindings", func(t *testing.T, s *Server) string {
+			newDriftBinding(t, s, "auditor")
+			return "/admin/organizations/" + anyOrgID(t, s) + "/role-bindings"
+		}},
+		{"GET /admin/organizations/{orgID}/approvals", func(t *testing.T, s *Server) string {
+			newPendingApproval(t, s)
+			return "/admin/organizations/" + anyOrgID(t, s) + "/approvals"
+		}},
+		{"GET /admin/organizations/{orgID}/scopes", org("/scopes")},
+		{"GET /admin/organizations/{orgID}/webauthn-policy", org("/webauthn-policy")},
+		{"GET /admin/subjects/{subjectID}/export", func(t *testing.T, s *Server) string {
+			return "/admin/subjects/" + newDriftUser(t, s) + "/export"
+		}},
+		{"GET /admin/system", func(*testing.T, *Server) string { return "/admin/system" }},
+		{"GET /admin/tokens", func(*testing.T, *Server) string { return "/admin/tokens" }},
+		{"GET /admin/users", func(*testing.T, *Server) string { return "/admin/users?limit=5" }},
+		{"GET /admin/users/{userID}", func(t *testing.T, s *Server) string { return "/admin/users/" + newDriftUser(t, s) }},
+		{"GET /admin/users/{userID}/attributes", func(t *testing.T, s *Server) string {
+			return "/admin/users/" + newDriftUserWithAttribute(t, s) + "/attributes"
+		}},
+		{"GET /admin/users/{userID}/factors", func(t *testing.T, s *Server) string {
+			return "/admin/users/" + newDriftUserWithTOTP(t, s) + "/factors"
+		}},
+		{"GET /admin/users/{userID}/identity-links", func(t *testing.T, s *Server) string {
+			u, _, _ := newDriftLinkedUser(t, s, true)
+			return "/admin/users/" + u + "/identity-links"
+		}},
+		{"GET /admin/users/{userID}/consents", func(t *testing.T, s *Server) string {
+			return "/admin/users/" + newDriftUser(t, s) + "/consents"
+		}},
+		{"GET /admin/users/{userID}/sessions", func(t *testing.T, s *Server) string {
+			u := newDriftUser(t, s)
+			newDriftSession(t, s, u)
+			return "/admin/users/" + u + "/sessions"
+		}},
+	}
+}

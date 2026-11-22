@@ -238,6 +238,12 @@ func (p *Packet) withZeroedMessageAuthenticator() []byte {
 // exactly why the shared secret has a length floor and why the documentation
 // pushes RADIUS over TLS.
 func (p *Packet) DecodePassword(secret []byte) (string, error) {
+	// One password, as one user name: with two, the first was checked and the
+	// second ignored, so what a request asserted depended on which a reader
+	// took (7.17).
+	if p.Count(AttrUserPassword) > 1 {
+		return "", fmt.Errorf("more than one User-Password attribute")
+	}
 	ct, ok := p.Attr(AttrUserPassword)
 	if !ok {
 		return "", fmt.Errorf("no User-Password attribute")

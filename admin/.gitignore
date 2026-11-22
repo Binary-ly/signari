@@ -1,5 +1,4 @@
-vendor/
-composer.lock
+/vendor/
 .env
 .env.*
 !.env.example

@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"signari.dev/engine/internal/mail"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/brand"
@@ -42,35 +45,91 @@ import (
 
 // currentSession resolves the signed-in user for an account-management request.
 func (s *Server) currentSession(r *http.Request) (sid, userID, orgID string, ok bool) {
+	found, ok := s.browserSession(r)
+	return found.SID, found.UserID, found.OrgID, ok
+}
+
+// browserSession is currentSession for a page that goes on to ask more of it.
+func (s *Server) browserSession(r *http.Request) (store.BrowserSession, bool) {
 	cookie := sessionCookie(r)
 	if cookie == "" {
-		return "", "", "", false
+		return store.BrowserSession{}, false
 	}
+	found, err := store.ResolveBrowserSession(r.Context(), s.db, store.HashToken(cookie), s.instanceID)
+	if err != nil || !found.Live {
+		return store.BrowserSession{}, false
+	}
+	return found, true
+}
+
+// handleTOTPPage shows the enrolment introduction. It changes nothing.
+//
+// It used to generate and store the secret, and storing it overwrote a
+// confirmed credential with an unconfirmed one. The session cookie is
+// SameSite=Lax, which travels on any top-level navigation from another site, so
+// a single link turned a signed-in user's second factor off. A GET may not
+// write: generating the secret now takes a POST carrying the CSRF token, and
+// replacing the credential takes proof that the new secret was scanned.
+func (s *Server) handleTOTPPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sid, live, err := store.ResolveSessionCookie(ctx, s.db, store.HashToken(cookie))
-	if err != nil || !live || sid == "" {
-		return "", "", "", false
+	_, userID, _, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(w, r, parkLogin("/account/mfa/totp"), http.StatusSeeOther)
+		return
 	}
-	if err := s.db.QueryRow(ctx,
-		`SELECT user_id::text, org_id::text FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&userID, &orgID); err != nil {
-		return "", "", "", false
+	var hasCurrent bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials
+		                WHERE user_id = $1::uuid AND confirmed_at IS NOT NULL)`,
+		userID).Scan(&hasCurrent); err != nil {
+		s.log.ErrorContext(ctx, "reading the TOTP credential", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
-	return sid, userID, orgID, true
+	csrf, err := s.csrfToken(w, r)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	htmlPageHeaders(w)
+	s.renderPage(w, r, "enrol", map[string]any{
+		"Begin": true, "HasCurrent": hasCurrent,
+		"CSRF": csrf, "CSRFField": csrfFormField,
+	})
 }
 
 // handleTOTPStart generates a secret and shows it for enrolment.
+//
+// The secret is stored as an enrolment in progress, apart from any credential
+// the user already has: their current authenticator keeps working until the
+// new one is confirmed, so abandoning this page -- or being sent here by
+// somebody else -- costs them nothing.
 func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed form", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		http.Redirect(w, r, parkLogin("/account/mfa/totp"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/totp", false) {
 		return
 	}
 
-	secret, encoded, err := mfa.GenerateSecret()
+	params := s.enrolmentParams(ctx, orgID)
+	if s.enrolmentRefusedUnderFIPS(w, r, params, false) {
+		return
+	}
+	secret, encoded, err := mfa.GenerateSecret(params.Algorithm)
 	if err != nil {
-		s.log.Error("generating a TOTP secret", "err", err)
+		s.log.ErrorContext(ctx, "generating a TOTP secret", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -82,9 +141,9 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := store.EnrollTOTP(ctx, tx, userID, orgID, secret,
-		mfa.DefaultDigits, mfa.DefaultPeriod, s.cfg.Root); err != nil {
-		s.log.Error("enrolling TOTP", "err", err)
+	if err := store.StartTOTPEnrolment(ctx, tx, userID, orgID, secret,
+		string(params.Algorithm), params.Digits, params.Period, s.cfg.Root); err != nil {
+		s.log.ErrorContext(ctx, "starting a TOTP enrolment", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -99,7 +158,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	label := s.orgLabel(ctx, orgID)
 	account := s.accountLabel(ctx, userID)
 
-	uri := mfa.ProvisioningURI(label, account, encoded, mfa.DefaultDigits, mfa.DefaultPeriod)
+	uri := mfa.ProvisioningURI(label, account, encoded, params)
 
 	// The QR code is a convenience, not the credential. If it fails to build, the
 	// page still shows the key for manual entry rather than failing enrolment --
@@ -109,7 +168,7 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request) {
 	if code, qerr := qr.Encode([]byte(uri)); qerr == nil {
 		qrSVG = code.SVG(4, 4)
 	} else {
-		s.log.Warn("rendering the TOTP QR code", "err", qerr)
+		s.log.WarnContext(ctx, "rendering the TOTP QR code", "err", qerr)
 	}
 
 	csrf, err := s.csrfToken(w, r)
@@ -145,9 +204,14 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	// Here as well as at the start: confirming is the step that replaces the
+	// credential and deletes the recovery codes.
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/totp", false) {
 		return
 	}
 
@@ -158,19 +222,26 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
-	if err != nil {
-		s.log.Info("confirming TOTP without a pending enrolment", "err", err)
+	outcome, codes, replaced, err := s.confirmTOTP(ctx, tx, userID, orgID, r.PostForm.Get("code"))
+	switch {
+	case err != nil:
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	case outcome == totpExpired:
+		// Released before rendering, which takes a connection of its own.
+		_ = tx.Rollback(ctx)
+		csrf, _ := s.csrfToken(w, r)
+		htmlPageHeaders(w)
+		s.renderPage(w, r, "enrol", map[string]any{
+			"Begin": true, "CSRF": csrf, "CSRFField": csrfFormField,
+			"Error": s.tr(r).T("error.totp.expired"),
+		})
+		return
+	case outcome == totpNone:
 		http.Redirect(w, r, "/account/mfa/totp", http.StatusSeeOther)
 		return
-	}
-
-	counter, verr := mfa.Verify(cred.Secret, r.PostForm.Get("code"), time.Now(),
-		cred.Digits, cred.Period, mfa.DefaultSkew, cred.LastCounter)
-	if verr != nil {
-		// Not a lockout path: a failed CONFIRMATION means the app was scanned
-		// wrong, and locking someone out of enrolment for mistyping would be a
-		// self-inflicted denial of service.
+	case outcome == totpMismatch:
+		_ = tx.Rollback(ctx)
 		csrf, _ := s.csrfToken(w, r)
 		s.renderPage(w, r, "enrol", map[string]any{
 			"Secret": "", "URI": "", "CSRF": csrf, "CSRFField": csrfFormField,
@@ -178,42 +249,126 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	if err := store.RecordTOTPSuccess(ctx, tx, userID, counter); err != nil {
-		s.log.Error("confirming TOTP", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	// Recovery codes are generated WITH the factor, not offered afterwards.
-	// Enrolment that leaves them to a later optional step is how a lost phone
-	// becomes an unrecoverable account -- and the pressure that creates is what
-	// turns a help desk into the weakest authentication path in the system.
-	codes, err := store.GenerateRecoveryCodes(ctx, tx, userID, orgID, 10)
-	if err != nil {
-		s.log.Error("generating recovery codes", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := audit.Write(ctx, tx, audit.Event{
-		Type: "mfa.totp_enrolled", OrgID: orgID, SubjectID: userID,
-		CorrelationID: correlationID(ctx),
-		Detail:        map[string]any{"recovery_codes_issued": len(codes)},
-	}); err != nil {
-		s.log.Error("auditing TOTP enrolment", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
 	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	s.announceTOTP(ctx, userID, replaced)
 
 	// Shown ONCE. Only hashes are stored, so this page cannot be reproduced --
 	// which is the point: a system that can show a user their recovery codes
 	// again can show them to whoever reads the database.
 	s.renderPage(w, r, "recovery", map[string]any{"Codes": codes})
+}
+
+// What a TOTP confirmation found.
+// enrolmentParams is what the organisation enrols new authenticator apps
+// with (`signari instance totp-policy`). One it cannot read is the default,
+// which every app can scan: the choice is about which apps work, not about
+// who gets in.
+func (s *Server) enrolmentParams(ctx context.Context, orgID string) mfa.Params {
+	p, err := store.LoadTOTPPolicy(ctx, s.db, orgID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "loading the TOTP policy", "org_id", orgID, "err", err)
+	}
+	return mfa.Params{Algorithm: mfa.Algorithm(p.Algorithm), Digits: p.Digits, Period: p.Period}
+}
+
+// otpParams is a stored authenticator's own, whatever the organisation now
+// enrols with, so changing the choice never breaks a phone that works.
+func otpParams(c *store.TOTPCredential) mfa.Params {
+	return mfa.Params{Algorithm: mfa.Algorithm(c.Algorithm), Digits: c.Digits, Period: c.Period}
+}
+
+// enrolmentRefusedUnderFIPS shows the enrolment page's reason, when the
+// organisation enrols SHA-1 apps and FIPS 140-only mode refuses HMAC-SHA1: a
+// secret shown then is one no code could ever confirm.
+func (s *Server) enrolmentRefusedUnderFIPS(w http.ResponseWriter, r *http.Request, p mfa.Params, signIn bool) bool {
+	if mfa.Available(p.Algorithm) {
+		return false
+	}
+	csrf, _ := s.csrfToken(w, r)
+	s.renderPageStatus(w, r, http.StatusConflict, "enrol", map[string]any{
+		"Begin": true, "SignIn": signIn, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Error": s.tr(r).T("error.totp.fips"),
+	})
+	return true
+}
+
+type totpOutcome int
+
+const (
+	totpConfirmed totpOutcome = iota
+	// totpNone is no enrolment in progress.
+	totpNone
+	// totpExpired is an enrolment begun too long ago.
+	totpExpired
+	// totpMismatch is a code the shown secret did not produce. Not a lockout
+	// path: a failed CONFIRMATION means the app was scanned wrong, and locking
+	// someone out of enrolment for mistyping would be a self-inflicted denial
+	// of service. Nothing about the user's current factor has changed.
+	totpMismatch
+)
+
+// confirmTOTP checks the first code from a scanned secret and, when it
+// matches, makes the enrolment the person's authenticator, issues recovery
+// codes and audits it, in tx. The caller commits and then announces it. Shared
+// by the account page and the enrolment a sign-in flow requires, so the two
+// cannot differ in what they make.
+func (s *Server) confirmTOTP(ctx context.Context, tx pgx.Tx, userID, orgID, code string) (
+	outcome totpOutcome, codes []string, replaced bool, err error) {
+
+	pending, err := store.LoadTOTPEnrolment(ctx, tx, userID, s.cfg.Root)
+	if errors.Is(err, store.ErrTOTPEnrolmentOld) {
+		return totpExpired, nil, false, nil
+	}
+	if err != nil {
+		s.log.InfoContext(ctx, "confirming TOTP without an enrolment in progress", "err", err)
+		return totpNone, nil, false, nil
+	}
+	counter, verr := otpParams(pending).Verify(pending.Secret, code, time.Now(), mfa.DefaultSkew, 0)
+	if verr != nil {
+		return totpMismatch, nil, false, nil
+	}
+
+	replaced, err = store.CompleteTOTPEnrolment(ctx, tx, userID, counter)
+	if err != nil {
+		s.log.ErrorContext(ctx, "confirming TOTP", "err", err)
+		return totpNone, nil, false, err
+	}
+	// Recovery codes are generated WITH the factor, not offered afterwards.
+	// Enrolment that leaves them to a later optional step is how a lost phone
+	// becomes an unrecoverable account -- and the pressure that creates is what
+	// turns a help desk into the weakest authentication path in the system.
+	codes, err = store.GenerateRecoveryCodes(ctx, tx, userID, orgID, 10)
+	if err != nil {
+		s.log.ErrorContext(ctx, "generating recovery codes", "err", err)
+		return totpNone, nil, false, err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "mfa.totp_enrolled", OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx),
+		Detail:        map[string]any{"recovery_codes_issued": len(codes), "replaced": replaced},
+	}); err != nil {
+		s.log.ErrorContext(ctx, "auditing TOTP enrolment", "err", err)
+		return totpNone, nil, false, err
+	}
+	return totpConfirmed, codes, replaced, nil
+}
+
+// announceTOTP tells the account holder an authenticator was added or
+// replaced. A second factor changing is exactly what they must hear about on
+// an independent channel. Best-effort, after the commit: the credential is
+// already in place, so a notice that fails must not undo it.
+func (s *Server) announceTOTP(ctx context.Context, userID string, replaced bool) {
+	tr := s.notifierFor(ctx, userID)
+	if replaced {
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.replaced.subject"),
+			tr.Text("mail.totp.replaced.body"), tr.Text("sms.totp.replaced"))
+	} else {
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.totp.enrolled.subject"),
+			tr.Text("mail.totp.enrolled.body"), tr.Text("sms.totp.enrolled"))
+	}
 }
 
 func (s *Server) orgLabel(ctx context.Context, orgID string) string {
@@ -267,8 +422,21 @@ func grouped(s string) string {
 // or care which.
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	name string, data map[string]any) {
+	s.renderPageStatus(w, r, 0, name, data)
+}
 
-	b := s.brandNow(r.Context())
+// renderPageStatus is renderPage answering with status rather than 200.
+//
+// The status has to be written HERE, after the headers below. A caller that
+// wrote it first and then called renderPage sent the headers it had set before,
+// and every one renderPage set was dropped: the second-factor page went out
+// with a policy of its own that had no img-src, so a configured logo was
+// blocked on it.
+func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status int,
+	name string, data map[string]any) {
+
+	orgID := s.pageOrg(r)
+	b := s.brandOf(r.Context(), orgID)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -281,11 +449,28 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 	// so a page cannot render a widget that its own policy then blocks.
 	policy := `default-src 'none'; style-src 'unsafe-inline';` + brandImgSrc(b) +
 		` form-action 'self'; frame-ancestors 'none'`
+	var script, connect []string
+	// The same rule for this server's own script: /passkey.js and the
+	// ceremony's requests, same-origin and never inline, only on a page that
+	// says it loads them.
+	if on, _ := data["PasskeyScript"].(bool); on {
+		script, connect = append(script, "'self'"), append(connect, "'self'")
+	}
+	// The cross-device wallet page's /static/wallet-wait.js, and the wait address it asks.
+	if on, _ := data["WalletScript"].(bool); on && !slices.Contains(script, "'self'") {
+		script, connect = append(script, "'self'"), append(connect, "'self'")
+	}
 	if on, _ := data["Captcha"].(bool); on {
-		if origins := captchaOrigins(s.captcha.Provider()); origins != "" {
-			policy += `; script-src ` + origins + `; frame-src ` + origins +
-				`; connect-src ` + origins
+		if origins := captchaOrigins(s.captcha); origins != "" {
+			script, connect = append(script, origins), append(connect, origins)
+			policy += `; frame-src ` + origins
 		}
+	}
+	if len(script) > 0 {
+		policy += `; script-src ` + strings.Join(script, " ")
+	}
+	if len(connect) > 0 {
+		policy += `; connect-src ` + strings.Join(connect, " ")
 	}
 	setCSP(w, policy)
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -299,7 +484,10 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request,
 		data["BrandSupport"] = b.SupportURL
 	}
 
-	s.writeBranded(w, s.langFor(r), name, data, b)
+	if status != 0 {
+		w.WriteHeader(status)
+	}
+	s.writeBranded(w, r, orgID, name, data, b)
 }
 
 // langFor decides which language a request is answered in.
@@ -315,7 +503,21 @@ func (s *Server) langFor(r *http.Request) string {
 	if bundle == nil || r == nil {
 		return i18n.Default
 	}
-	return bundle.Negotiate(uiLocalesFrom(r), r.Header.Get("Accept-Language")).Lang()
+	// An organisation's theme may speak a language the deployment's does not.
+	if len(s.pageSet().OrgThemes()) > 0 {
+		bundle = s.pagesFor(r.Context(), s.pageOrg(r)).Bundle()
+	}
+	ui := uiLocalesFrom(r)
+	// The language the person chose (language.go), after what an application
+	// asks for and before what the browser says: Accept-Language is a
+	// browser's setting, and a shared or borrowed one says nothing of who is
+	// reading.
+	if ui == "" {
+		if lang := chosenLanguage(r); lang != "" && bundle.Has(lang) {
+			return lang
+		}
+	}
+	return bundle.Negotiate(ui, r.Header.Get("Accept-Language")).Lang()
 }
 
 // tr is a message printer for the language this request is being answered in.
@@ -326,7 +528,44 @@ func (s *Server) langFor(r *http.Request) string {
 // the reader's language right up until something goes wrong, which is the
 // moment it matters most.
 func (s *Server) tr(r *http.Request) *i18n.Printer {
-	return s.pageSet().Bundle().For(s.langFor(r))
+	return s.printerFor(r.Context(), s.pageOrg(r), s.langFor(r))
+}
+
+// printerFor is a printer in a language, saying what an organisation has
+// reworded. orgID may be empty, for a page that is nobody's yet.
+func (s *Server) printerFor(ctx context.Context, orgID, lang string) *i18n.Printer {
+	p := s.pagesFor(ctx, orgID).Bundle().For(lang)
+	if orgID == "" {
+		return p
+	}
+	words, err := store.OrgWords(ctx, s.db, orgID, p.Lang())
+	if err != nil {
+		// The catalogue's wording beats no page.
+		s.log.WarnContext(ctx, "reading an organisation's words", "org_id", orgID, "err", err)
+		return p
+	}
+	return p.With(words)
+}
+
+// pagesFor is the pages an organisation's people read: its theme, when
+// SIGNARI_THEME_DIR has one for it, and otherwise everybody's.
+func (s *Server) pagesFor(ctx context.Context, orgID string) *pages.Set {
+	set := s.pageSet()
+	if orgID == "" || len(set.OrgThemes()) == 0 {
+		return set
+	}
+	slug, err := store.OrgSlug(ctx, s.db, orgID)
+	if err != nil {
+		s.log.WarnContext(ctx, "reading an organisation's slug", "org_id", orgID, "err", err)
+		return set
+	}
+	return set.For(slug)
+}
+
+// writePage renders a page in its organisation's theme and words.
+func (s *Server) writePage(w io.Writer, r *http.Request, orgID, name string, data map[string]any) error {
+	ctx := r.Context()
+	return s.pagesFor(ctx, orgID).ExecuteWith(w, s.printerFor(ctx, orgID, s.langFor(r)), name, data)
 }
 
 // uiLocalesFrom digs the OIDC ui_locales parameter out of a request.
@@ -402,14 +641,28 @@ func (s *Server) pageSet() *pages.Set {
 // and a stylesheet on it is one more thing that can fail to load and stall a
 // redirect.
 //
-// They still get the security headers -- htmlPageHeaders -- because they still
-// carry an assertion and an error message.
+// They still get every header a page does, because they carry an assertion, and
+// the policy is the caller's by parameter because each exists to do what the
+// ordinary policy forbids: run a script, post to another origin, frame one. This
+// used to call htmlPageHeaders, after each caller had set its own policy, and so
+// replaced all four. Every one of those pages then rendered a form no browser would
+// submit, or frames none would load, for as long as nobody tried one in a browser.
+// A parameter leaves nothing to overwrite.
 func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
-	name string, data map[string]any) {
+	name, policy string, data map[string]any) {
 
-	htmlPageHeaders(w)
-	if err := s.pageSet().ExecuteIn(w, s.langFor(r), name, data); err != nil {
-		s.log.Error("rendering a bridge page", "page", name, "err", err)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Options", "DENY")
+	setCSP(w, policy)
+	// A theme where there are any, and not an organisation's words: nobody reads
+	// these, and each statement here is on the path that signs a person in.
+	orgID := ""
+	if len(s.pageSet().OrgThemes()) > 0 {
+		orgID = s.pageOrg(r)
+	}
+	if err := s.pagesFor(r.Context(), orgID).ExecuteIn(w, s.langFor(r), name, data); err != nil {
+		s.log.ErrorContext(r.Context(), "rendering a bridge page", "page", name, "err", err)
 	}
 }
 
@@ -420,20 +673,23 @@ func (s *Server) renderBare(w http.ResponseWriter, r *http.Request,
 // followed by a consent page in the customer's colours does not read as a
 // missing feature -- it reads as though one of the two pages is not really
 // ours, which is the opposite of what branding is for.
-func (s *Server) writeBranded(w io.Writer, lang, name string, data map[string]any, b *brand.Brand) {
+func (s *Server) writeBranded(w io.Writer, r *http.Request, orgID, name string, data map[string]any, b *brand.Brand) {
+	if note := headlessFrom(r.Context()); note != nil {
+		note.page, note.data = name, data
+	}
 	css := ""
 	if b != nil {
 		css = b.CSS()
 	}
 	if css == "" {
-		if err := s.pageSet().ExecuteIn(w, lang, name, data); err != nil {
-			s.log.Error("rendering a page", "page", name, "err", err)
+		if err := s.writePage(w, r, orgID, name, data); err != nil {
+			s.log.ErrorContext(r.Context(), "rendering a page", "page", name, "err", err)
 		}
 		return
 	}
 	var buf bytes.Buffer
-	if err := s.pageSet().ExecuteIn(&buf, lang, name, data); err != nil {
-		s.log.Error("rendering a page", "page", name, "err", err)
+	if err := s.writePage(&buf, r, orgID, name, data); err != nil {
+		s.log.ErrorContext(r.Context(), "rendering a page", "page", name, "err", err)
 		return
 	}
 	page := buf.Bytes()
@@ -461,22 +717,31 @@ func brandImgSrc(b *brand.Brand) string {
 	return ""
 }
 
-// brandNow reads the instance's brand.
+// brandOf reads what an organisation's pages and mail wear: its own appearance
+// over its instance's. orgID may be empty, for a page that is nobody's yet.
 //
 // Read per render rather than cached at startup, so `signari brand set` takes
-// effect immediately. These are sign-in pages, not a hot path, and one indexed
-// row by primary key is cheaper than the class of bug where an operator changes
+// effect immediately. These are sign-in pages, not a hot path, and two indexed
+// rows by primary key are cheaper than the class of bug where an operator changes
 // a colour and cannot tell whether it worked.
-func (s *Server) brandNow(ctx context.Context) *brand.Brand {
+func (s *Server) brandOf(ctx context.Context, orgID string) *brand.Brand {
 	if s.cfg.Issuer == "" {
 		return nil
 	}
 	b, err := store.LoadBrandByIssuer(ctx, s.db, s.cfg.Issuer)
 	if err != nil {
-		s.log.Error("reading the brand", "err", err)
+		s.log.ErrorContext(ctx, "reading the brand", "err", err)
 		return nil
 	}
-	return b
+	if orgID == "" {
+		return b
+	}
+	own, err := store.OrgBrandOf(ctx, s.db, orgID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading an organisation's brand", "org_id", orgID, "err", err)
+		return b
+	}
+	return own.Over(b)
 }
 
 // handleEmailOTPEnrol turns on email as a second factor.
@@ -488,7 +753,7 @@ func (s *Server) brandNow(ctx context.Context) *brand.Brand {
 // out rather than a way of protecting them.
 func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/mfa/email"), http.StatusSeeOther)
 		return
@@ -499,9 +764,10 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	render := func(stage, addr, msg string) {
+	// key names the message the page shows, in the reader's language; "" shows none.
+	render := func(stage, addr, key string) {
 		s.renderPage(w, r, "emailotp", map[string]any{
-			"Stage": stage, "Address": addr, "Error": msg,
+			"Stage": stage, "Address": addr, "Error": s.pageMessage(r, key),
 			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 	}
@@ -511,14 +777,17 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.QueryRow(ctx,
 			`SELECT COALESCE(email,'') FROM core.users WHERE id = $1::uuid`,
 			userID).Scan(&current); err != nil {
-			s.log.Error("reading the account address", "err", err)
+			s.log.ErrorContext(ctx, "reading the account address", "err", err)
 		}
 		render("start", current, "")
 		return
 	}
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
-		render("start", "", "That form expired. Try again.")
+		render("start", "", "enrol.formexpired")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/email", false) {
 		return
 	}
 
@@ -526,69 +795,95 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	case "verify":
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		okCode, verr := store.VerifyEmailOTP(ctx, tx, userID,
+		okCode, replaced, verr := store.ConfirmEmailOTPEnrolment(ctx, tx, userID,
 			strings.TrimSpace(r.PostForm.Get("code")))
 		if verr != nil {
-			s.log.Error("verifying an enrolment code", "err", verr)
-			render("start", "", "Something went wrong. Try again.")
+			s.log.ErrorContext(ctx, "verifying an enrolment code", "err", verr)
+			render("start", "", "enrol.generic")
 			return
 		}
 		if !okCode {
-			render("code", r.PostForm.Get("address"),
-				"That code did not match, or it has expired.")
+			render("code", r.PostForm.Get("address"), "enrol.codemismatch")
+			return
+		}
+		if err := audit.Write(ctx, tx, audit.Event{
+			Type: "mfa.email_otp_enrolled", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"replaced": replaced != ""},
+		}); err != nil {
+			s.log.ErrorContext(ctx, "auditing the email factor enrolment", "err", err)
+			render("start", "", "enrol.generic")
 			return
 		}
 		if err := tx.Commit(ctx); err != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
-		s.log.Info("email second factor enrolled", "user_id", userID,
-			"correlation_id", correlationID(ctx))
+
+		// A second factor that has just started or moved is what the account
+		// holder must hear about. And when it moved, the address that stops
+		// getting codes is told directly: it is the one channel an intruder who
+		// redirected the factor to themselves cannot also control.
+		// Best-effort, after the commit.
+		tr := s.notifierFor(ctx, userID)
+		_ = s.notifyAccount(ctx, userID, tr.Text("mail.emailotp.enrolled.subject"),
+			tr.Text("mail.emailotp.enrolled.body"), tr.Text("sms.emailotp.enrolled"))
+		if replaced != "" {
+			if err := s.sendMail(ctx, orgID, mail.Message{
+				To:      replaced,
+				Subject: tr.Text("mail.emailotp.moved.subject"),
+				Body:    tr.Text("mail.emailotp.moved.body"),
+			}); err != nil {
+				s.log.WarnContext(ctx, "telling the previous address its codes have moved", "err", err)
+			}
+		}
 		render("done", "", "")
 
 	default: // send a code to the address being enrolled
 		address := strings.TrimSpace(r.PostForm.Get("address"))
 		if !strings.Contains(address, "@") || len(address) > 320 {
-			render("start", address, "That does not look like an email address.")
+			render("start", address, "enrol.notemail")
 			return
 		}
 
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		if err := store.EnrollEmailOTP(ctx, tx, userID, orgID, address); err != nil {
-			s.log.Error("enrolling the email factor", "err", err)
-			render("start", address, "Something went wrong. Try again.")
+		// Pending only: the address that already works -- if any -- stays the
+		// factor until a code sent to this one comes back.
+		if err := store.StartEmailOTPEnrolment(ctx, tx, userID, orgID, address); err != nil {
+			s.log.ErrorContext(ctx, "enrolling the email factor", "err", err)
+			render("start", address, "enrol.generic")
 			return
 		}
-		code, addr, ierr := store.IssueEmailOTP(ctx, tx, userID)
+		code, addr, ierr := store.IssueEmailOTPEnrolment(ctx, tx, userID)
 		if errors.Is(ierr, store.ErrEmailOTPTooSoon) {
-			render("code", address, "A code was just sent. Check your inbox.")
+			render("code", address, "enrol.codesent")
 			return
 		}
 		if ierr != nil {
-			s.log.Error("issuing an enrolment code", "err", ierr)
-			render("start", address, "Something went wrong. Try again.")
+			s.log.ErrorContext(ctx, "issuing an enrolment code", "err", ierr)
+			render("start", address, "enrol.generic")
 			return
 		}
 		if err := tx.Commit(ctx); err != nil {
-			render("start", address, "Something went wrong. Try again.")
+			render("start", address, "enrol.generic")
 			return
 		}
 
 		// The request's language: this person is enrolling right now, on this
 		// form, and will read the mail in a moment.
 		tr := s.tr(r)
-		if err := s.mailer.Send(ctx, mail.Message{
+		if err := s.sendMail(ctx, orgID, mail.Message{
 			To:      addr,
 			Subject: tr.Text("mail.confirmaddress.subject"),
 			Body: tr.Text("mail.confirmaddress.body", map[string]any{
@@ -596,12 +891,11 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 				"Minutes": int(store.EmailOTPLifetime.Minutes()),
 			}),
 		}); err != nil {
-			s.log.Error("sending an enrolment code", "err", err)
+			s.log.ErrorContext(ctx, "sending an enrolment code", "err", err)
 			// Said out loud HERE, unlike at sign-in: this person is already
 			// authenticated, so there is nothing to disclose, and silently
 			// showing a code entry form for mail that never left is cruel.
-			render("code", address,
-				"We could not send that code. Check the address, or try again shortly.")
+			render("code", address, "enrol.emailunsent")
 			return
 		}
 		render("code", address, "")
@@ -617,7 +911,7 @@ func (s *Server) handleEmailOTPEnrol(w http.ResponseWriter, r *http.Request) {
 // they are already locked out.
 func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/mfa/sms"), http.StatusSeeOther)
 		return
@@ -628,24 +922,28 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	render := func(stage, number, msg string) {
+	// key names the message the page shows, in the reader's language; "" shows none.
+	render := func(stage, number, key string) {
 		s.renderPage(w, r, "smsotp", map[string]any{
-			"Stage": stage, "Number": number, "Error": msg,
+			"Stage": stage, "Number": number, "Error": s.pageMessage(r, key),
 			"CSRF": csrf, "CSRFField": csrfFormField,
-			"Configured": s.texter != nil,
+			"Configured": s.smsAvailable(),
 		})
 	}
 
 	if r.Method == http.MethodGet {
 		cred, lerr := store.LoadSMSOTP(ctx, s.db, userID)
 		switch {
+		case lerr == nil && (cred.Pending != "" || cred.PendingHashed):
+			// A number being enrolled and not yet proven. Resume where they left
+			// off rather than starting again: the number is already stored and
+			// re-typing it is another chance to mistype it. A proved number, if
+			// there is one, keeps receiving sign-in codes meanwhile.
+			render("verify", sms.RedactNumber(cred.Pending), "")
+		case lerr == nil && cred.Verified && cred.Hashed:
+			render("enrolled", string(s.tr(r).T("smsotp.hashed")), "")
 		case lerr == nil && cred.Verified:
 			render("enrolled", sms.RedactNumber(cred.Number), "")
-		case lerr == nil:
-			// Enrolled but never proven. Resume where they left off rather than
-			// starting again: the number is already stored and re-typing it is
-			// another chance to mistype it.
-			render("verify", sms.RedactNumber(cred.Number), "")
 		default:
 			render("start", "", "")
 		}
@@ -653,16 +951,17 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
-		render("start", "", "That form expired. Try again.")
+		render("start", "", "enrol.formexpired")
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/mfa/sms", false) {
 		return
 	}
 
 	// Refused up front when no gateway is configured. Accepting an enrolment
 	// that can never deliver a code would be building somebody a lockout.
-	if s.texter == nil {
-		render("start", "",
-			"Text messages are not available on this server. Ask an administrator, "+
-				"or use an authenticator app instead.")
+	if !s.smsAvailable() {
+		render("start", "", "enrol.smsunavailable")
 		return
 	}
 
@@ -670,87 +969,129 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 	case "verify":
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		okCode, verr := store.VerifySMSOTP(ctx, tx, userID,
-			strings.TrimSpace(r.PostForm.Get("code")))
+		okCode, replaced, verr := store.ConfirmSMSOTPEnrolment(ctx, tx, userID,
+			strings.TrimSpace(r.PostForm.Get("code")), s.smsDelegate())
 		if verr != nil {
-			s.log.Error("verifying an SMS enrolment code", "err", verr)
-			render("verify", "", "Something went wrong. Try again.")
+			s.log.ErrorContext(ctx, "verifying an SMS enrolment code", "err", verr)
+			render("verify", "", "enrol.generic")
 			return
 		}
 		if !okCode {
-			render("verify", "", "That code is not right, or it has expired.")
-			return
-		}
-		if merr := store.MarkSMSOTPVerified(ctx, tx, userID); merr != nil {
-			s.log.Error("marking the SMS factor verified", "err", merr)
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "error.verifyemail.mismatch")
 			return
 		}
 		if aerr := audit.Write(ctx, tx, audit.Event{
 			Type: "mfa.sms_enrolled", OrgID: orgID, SubjectID: userID,
 			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"replaced": replaced != ""},
 		}); aerr != nil {
-			s.log.Error("recording the SMS enrolment", "err", aerr)
+			s.log.ErrorContext(ctx, "recording the SMS enrolment", "err", aerr)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			render("verify", "", "Something went wrong. Try again.")
+			render("verify", "", "enrol.generic")
 			return
 		}
+		// The number codes used to go to hears that they no longer will -- the
+		// one notice somebody who moved the factor cannot suppress.
+		if replaced != "" {
+			if serr := s.sendSMS(ctx, userID, smsNotice, sms.Message{
+				To: replaced, Body: s.notifierFor(ctx, userID).Text("sms.smsotp.moved"),
+			}); serr != nil {
+				s.log.WarnContext(ctx, "telling the previous number its codes have moved", "err", serr)
+			}
+		}
+		// Every channel the account has, as an app or an address being added
+		// is told: a number somebody else added in this session is a second
+		// factor in their hands.
+		trE := s.notifierFor(ctx, userID)
+		_ = s.notifyAccount(ctx, userID, trE.Text("mail.smsotp.enrolled.subject"),
+			trE.Text("mail.smsotp.enrolled.body"), trE.Text("sms.smsotp.enrolled"))
 		cred, _ := store.LoadSMSOTP(ctx, s.db, userID)
 		number := ""
-		if cred != nil {
+		switch {
+		case cred != nil && cred.Hashed:
+			number = string(s.tr(r).T("smsotp.hashed"))
+		case cred != nil:
 			number = sms.RedactNumber(cred.Number)
 		}
 		render("enrolled", number, "")
 
 	case "remove":
-		tx, terr := s.db.Begin(ctx)
-		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
-			return
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if rerr := store.RemoveSMSOTP(ctx, tx, userID); rerr != nil {
-			s.log.Error("removing the SMS factor", "err", rerr)
-			render("start", "", "Something went wrong. Try again.")
-			return
-		}
-		if aerr := audit.Write(ctx, tx, audit.Event{
-			Type: "mfa.sms_removed", OrgID: orgID, SubjectID: userID,
-			CorrelationID: correlationID(ctx),
-		}); aerr != nil {
-			s.log.Error("recording the SMS removal", "err", aerr)
-		}
-		if cerr := tx.Commit(ctx); cerr != nil {
-			render("start", "", "Something went wrong. Try again.")
+		// The same removal as the security page's: audited, the holder told,
+		// and the recovery codes gone with the last second factor.
+		if _, rerr := s.removeOwnFactor(ctx, userID, orgID, "sms_otp"); rerr != nil &&
+			!errors.Is(rerr, store.ErrFactorNotFound) {
+			s.log.ErrorContext(ctx, "removing the SMS factor", "err", rerr)
+			render("start", "", "enrol.generic")
 			return
 		}
 		render("start", "", "")
 
 	default: // "send"
+		// Outside the deployment's countries, refused before the number is
+		// stored. Accepting it and refusing every message later would build the
+		// person a factor that can never deliver a code.
+		if n, nerr := sms.NormaliseNumber(r.PostForm.Get("number")); nerr == nil && !s.smsPolicy.Permits(n) {
+			_ = s.refuseSMS(ctx, userID, "refused_country", "enrolment of a number outside "+
+				"SIGNARI_SMS_ALLOWED_PREFIXES")
+			render("start", r.PostForm.Get("number"), "enrol.smscountry")
+			return
+		}
+
+		// Read before the transaction, which a second connection must not
+		// overlap. An organisation that keeps only hashes stores the number's
+		// keyed hash, and the code that proves it goes to the number typed here.
+		hashed, herr := store.SMSNumbersHashed(ctx, s.db, orgID)
+		if herr != nil {
+			s.log.ErrorContext(ctx, "reading how SMS numbers are kept", "err", herr)
+			render("start", "", "enrol.generic")
+			return
+		}
 		tx, terr := s.db.Begin(ctx)
 		if terr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID,
-			r.PostForm.Get("number"))
+		var hash []byte
+		typed, nerr := sms.NormaliseNumber(r.PostForm.Get("number"))
+		if nerr == nil && hashed {
+			if hash, nerr = s.smsNumberHash(ctx, tx, userID, typed); nerr != nil {
+				s.log.ErrorContext(ctx, "hashing an SMS number", "err", nerr)
+				render("start", "", "enrol.generic")
+				return
+			}
+		}
+		number, nerr := store.EnrollSMSOTP(ctx, tx, userID, orgID, r.PostForm.Get("number"), hash)
 		if nerr != nil {
 			// The number errors are written for the person typing them and are
-			// shown as-is: "give the number in international form" is actionable
-			// and reveals nothing.
-			render("start", r.PostForm.Get("number"), nerr.Error())
+			// said in their language: "give the number in international form" is
+			// actionable and reveals nothing. Anything else enrolment can fail with
+			// is not for them, and is said as a failure.
+			key := "enrol.generic"
+			var refused *sms.NumberRefusal
+			if errors.As(nerr, &refused) {
+				key = refused.Key
+			} else {
+				s.log.ErrorContext(ctx, "enrolling a number", "err", nerr)
+			}
+			render("start", r.PostForm.Get("number"), key)
 			return
 		}
 
-		code, to, ierr := store.IssueSMSOTP(ctx, tx, userID)
+		var code, to string
+		var ierr error
+		if hashed {
+			code, to, ierr = store.IssueSMSOTPEnrolmentTo(ctx, tx, userID, number, hash, s.smsVerifier != nil)
+		} else {
+			code, to, ierr = store.IssueSMSOTPEnrolment(ctx, tx, userID, s.smsVerifier != nil)
+		}
 		switch {
 		case errors.Is(ierr, store.ErrSMSOTPTooSoon):
 			// A live code is already on its way. Moving to the verify step is
@@ -758,16 +1099,16 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			render("verify", sms.RedactNumber(number), "")
 			return
 		case ierr != nil:
-			s.log.Error("issuing an SMS enrolment code", "err", ierr)
-			render("start", "", "Something went wrong. Try again.")
+			s.log.ErrorContext(ctx, "issuing an SMS enrolment code", "err", ierr)
+			render("start", "", "enrol.generic")
 			return
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
-			render("start", "", "Something went wrong. Try again.")
+			render("start", "", "enrol.generic")
 			return
 		}
 
-		if serr := s.texter.Send(ctx, sms.Message{
+		if serr := s.sendSMS(ctx, userID, smsCode, sms.Message{
 			To: to,
 			Body: fmt.Sprintf("%s: your verification code is %s. It expires in %d minutes.",
 				s.cfg.Issuer, code, int(store.SMSOTPLifetime.Minutes())),
@@ -775,10 +1116,9 @@ func (s *Server) handleSMSOTPEnrol(w http.ResponseWriter, r *http.Request) {
 			// Surfaced, unlike a sign-in send. Here the person is setting the
 			// factor up and can fix a wrong number; telling them nothing would
 			// leave them waiting for a message that is never coming.
-			s.log.Error("sending an SMS enrolment code", "err", serr,
+			s.log.ErrorContext(ctx, "sending an SMS enrolment code", "err", serr,
 				"to", sms.RedactNumber(to))
-			render("start", number,
-				"That message could not be sent. Check the number and try again.")
+			render("start", number, "enrol.smsunsent")
 			return
 		}
 		render("verify", sms.RedactNumber(number), "")

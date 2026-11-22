@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 )
 
@@ -68,7 +70,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 	data := s.captchaFields(r, map[string]any{"CSRF": csrf, "CSRFField": csrfFormField})
 
 	if token := r.URL.Query().Get("invite"); token != "" {
-		inv, err := store.PeekInvitation(ctx, s.db, token)
+		inv, err := s.peekInvitation(ctx, token)
 		if err != nil {
 			// Said now rather than after a password has been chosen. Refusing on
 			// submission means filling in a form to be told the link was dead
@@ -83,6 +85,7 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		// A bound invitation fixes the address; showing it editable invites
 		// someone to change it and then be refused for no visible reason.
 		data["EmailFixed"] = inv.Email != ""
+		data["Fields"] = s.signupFields(ctx, inv.OrgID, nil)
 		s.renderPage(w, r, "signup", data)
 		return
 	}
@@ -95,10 +98,69 @@ func (s *Server) handleSignupGet(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The authorization request that sent somebody here with prompt=create,
+	// carried through to the sign-in that completes it.
+	data["Authz"] = r.URL.Query().Get("authz")
 	if len(rule.AllowedDomains) > 0 {
 		data["Domains"] = strings.Join(rule.AllowedDomains, ", ")
 	}
+	data["Fields"] = s.signupFields(ctx, rule.OrgID, nil)
 	s.renderPage(w, r, "signup", data)
+}
+
+// signupFields are the attributes a new account may set for itself, the
+// required ones marked (5.05). A failure to read them shows none: the account
+// can still be made, and a required one is then refused at submission with its
+// name, rather than the form refusing to load.
+func (s *Server) signupFields(ctx context.Context, orgID string, posted map[string]string) []profileField {
+	if orgID == "" {
+		return nil
+	}
+	fields, err := s.profileFields(ctx, "", orgID, true, posted)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the attributes a sign-up may set", "err", err)
+		return nil
+	}
+	return fields
+}
+
+// signupOrg is the organisation a sign-up form is for: the invitation's, or the
+// signup rule's.
+func (s *Server) signupOrg(ctx context.Context, token string) string {
+	if token != "" {
+		if inv, err := s.peekInvitation(ctx, token); err == nil {
+			return inv.OrgID
+		}
+		return ""
+	}
+	if rule, err := s.signupRule(ctx); err == nil && rule != nil {
+		return rule.OrgID
+	}
+	return ""
+}
+
+// enrolmentFacts answers the conditions an enrolment flow may branch on:
+// flow.Answered(flow.Enrolment), which TestEveryConditionAFlowCanUseIsAnswered
+// holds this to.
+func (s *Server) enrolmentFacts(ctx context.Context, remoteAddr, invite string) flow.State {
+	// invited: a token that would still open its invitation, read without
+	// spending it (create_user claims it, or the invitation stage refuses).
+	invited := false
+	if invite != "" && s.db != nil {
+		_, err := s.peekInvitation(ctx, invite)
+		invited = err == nil
+	}
+	return flow.State{
+		string(flow.CondInvited): invited,
+		// Presence of the captcha stage in the plan already encodes "a challenge is
+		// required": the default stage is `{stage: captcha, when: captcha_required}`,
+		// so Plan includes it exactly when it would have run before.
+		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, remoteAddr),
+		// No account exists yet, so no subject has a pending prompt. An enrolment
+		// `prompt` stage is visited and passes, as the sign-in walker does when
+		// nothing is outstanding.
+		string(flow.CondPromptsPending): false,
+	}
 }
 
 // handleSignupPost creates the account.
@@ -113,8 +175,17 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// mail. Without it, one script fills the users table and the mail queue. This
 	// is a gate on the endpoint, not a stage of the flow -- it runs whatever the
 	// operator's enrolment sequence is.
-	if res, err := store.AllowRate(ctx, s.db, "signup:ip:"+clientIP(r),
-		signupsPerWindow, signupWindow); err == nil && !res.Allowed {
+	//
+	// A database error refuses. It used to wave the request through, which
+	// turned a fault in the limiter into an unlimited window for exactly the
+	// flood it exists to stop.
+	res, err := store.AllowRate(ctx, s.db, "signup:ip:"+budgetIP(clientIP(r)), signupsPerWindow, signupWindow)
+	if err != nil {
+		s.log.ErrorContext(ctx, "checking the signup rate limit", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again shortly")
+		return
+	}
+	if !res.Allowed {
 		writeError(w, http.StatusTooManyRequests, "slow_down",
 			"too many attempts from this address; wait a few minutes")
 		return
@@ -132,24 +203,18 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 	// falls back to the built-in flow, and if even that is unavailable the fixed
 	// sequence below runs so a configuration read cannot stop anyone signing up.
 	orgID, _ := s.defaultOrg(ctx)
-	fl := s.flowFor(ctx, orgID, flow.Enrolment)
-	state := flow.State{
-		// Presence of the captcha stage in the plan already encodes "a challenge is
-		// required": the default stage is `{stage: captcha, when: captcha_required}`,
-		// so Plan includes it exactly when it would have run before.
-		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
-		// No account exists yet, so no subject has a pending prompt. An enrolment
-		// `prompt` stage is visited and passes, as the sign-in walker does when
-		// nothing is outstanding.
-		string(flow.CondPromptsPending): false,
-	}
+	fl := s.flowFor(ctx, s.db, orgID, flow.Enrolment)
+	state := s.enrolmentFacts(ctx, r.RemoteAddr, r.PostFormValue("invite"))
 
 	plan := []flow.StageName{flow.StageCaptcha, flow.StageCreateUser, flow.StageDone}
 	if fl != nil {
 		plan = fl.Plan(state)
 	}
 
-	created := false
+	// done is the finished page create_user leaves for the terminal to show;
+	// nil until an account is made. The terminal writes the response, so a
+	// flow can end a sign-up somewhere other than that page (5.24).
+	var done map[string]any
 	for _, stage := range plan {
 		switch stage {
 		case flow.StageCaptcha:
@@ -163,17 +228,38 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 			// Nothing to put to a subject who does not exist yet. Passing is honest:
 			// the walk visited the stage and found nothing outstanding.
 			continue
+		case flow.StageInvitation:
+			// Sign-up by invitation only (5.24): a good invitation, or no further.
+			// What the stage reads is what enrolmentFacts answered `invited` from.
+			if !state.Holds(string(flow.CondInvited)) {
+				csrf, _ := s.csrfToken(w, r)
+				s.renderPageStatus(w, r, http.StatusForbidden, "signup", s.captchaFields(r, map[string]any{
+					"Error": s.tr(r).T("signup.invitationonly"), "CSRF": csrf, "CSRFField": csrfFormField,
+				}))
+				return
+			}
 		case flow.StageCreateUser:
-			s.enrolCreateUser(w, r) // writes the terminal response, success or failure
-			created = true
+			var ok bool
+			if done, ok = s.enrolCreateUser(w, r); !ok {
+				return // refused, and the form re-rendered saying why
+			}
 		case flow.StageDeny:
 			// An operator closing sign-up through their flow. Refused plainly.
 			writeError(w, http.StatusForbidden, "signup_closed",
 				"sign-up is not open here")
 			return
-		case flow.StageDone:
-			// The ordinary terminal. When it follows create_user the response is
-			// already written; reaching it with nothing created is caught below.
+		case flow.StageDone, flow.StageRedirect:
+			if done == nil {
+				break // nothing created: caught below
+			}
+			// A sign-up an application asked for (prompt=create) still ends on
+			// the page that leads back to it: the application is owed its answer.
+			if target := fl.RedirectTarget(); stage == flow.StageRedirect && done["SignIn"] == nil {
+				http.Redirect(w, r, target, http.StatusSeeOther)
+				return
+			}
+			s.renderPage(w, r, "signupdone", done)
+			return
 		default:
 			// A stage this engine cannot execute at enrolment. enrol_mfa -- forced
 			// second-factor enrolment, 9q option 3 -- is the realistic one. Refusing
@@ -181,21 +267,18 @@ func (s *Server) handleSignupPost(w http.ResponseWriter, r *http.Request) {
 			// operator put there on purpose is the "a written flow governs nothing"
 			// bug wearing a driver, and for enrol_mfa specifically it would make an
 			// account WITHOUT the second factor the operator required. Fail closed.
-			s.log.Error("the enrolment flow requires a stage this engine does not drive",
+			s.log.ErrorContext(ctx, "the enrolment flow requires a stage this engine does not drive",
 				"stage", stage, "flow", flowNameOf(fl), "correlation_id", correlationID(ctx))
 			writeError(w, http.StatusNotImplemented, "not_implemented",
 				"sign-up is unavailable: the configured enrolment flow uses a step this "+
 					"engine cannot yet run")
 			return
 		}
-		if created {
-			return
-		}
 	}
-	if !created {
+	if done == nil {
 		// A flow that never reaches create_user makes no account. Safety permits it,
 		// but it is not a sign-up, and silently returning the form would loop.
-		s.log.Error("the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
+		s.log.ErrorContext(ctx, "the enrolment flow has no create_user stage", "flow", flowNameOf(fl),
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error",
 			"sign-up is misconfigured: the enrolment flow creates no account")
@@ -217,9 +300,9 @@ func flowNameOf(fl *flow.Flow) string {
 // than being held still by a stream of blank submissions.
 func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
-	if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
-		s.log.Info("captcha refused at sign-up", "err", cerr,
+		s.log.InfoContext(ctx, "captcha refused at sign-up", "err", cerr,
 			"correlation_id", correlationID(ctx))
 		csrf, _ := s.csrfToken(w, r)
 		// captchaWidget, not captchaFields, for the same reason as the recovery
@@ -230,8 +313,8 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 		s.renderPage(w, r, "signup", s.captchaWidget(map[string]any{
 			"Error":  s.tr(r).T("error.captcha.incomplete"),
 			"Email":  strings.ToLower(strings.TrimSpace(r.PostFormValue("email"))),
-			"Invite": r.PostFormValue("invite"),
-			"CSRF":   csrf, "CSRFField": csrfFormField,
+			"Invite": r.PostFormValue("invite"), "Authz": r.PostFormValue("authz"),
+			"CSRF": csrf, "CSRFField": csrfFormField,
 		}))
 		return false
 	}
@@ -239,58 +322,76 @@ func (s *Server) enrolCaptcha(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // enrolCreateUser runs the create_user stage: it validates the submission,
-// resolves the invitation or signup rule, creates the account, and writes the
-// terminal response.
-func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
+// resolves the invitation or signup rule, and creates the account. Made, it
+// returns the finished page's data for the flow's terminal to show or go past
+// (5.24); refused, it has written the form back with why, and ok is false.
+func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) (done map[string]any, ok bool) {
 	ctx := r.Context()
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	password := r.PostFormValue("password")
 	token := r.PostFormValue("invite")
+	attrs := postedAttributes(r.PostForm)
 
 	fail := func(msg string) {
 		csrf, _ := s.csrfToken(w, r)
 		// The widget is re-rendered on failure. Without it the form comes back
 		// with no challenge, the next submission has nothing to send, and the
-		// person is refused for a reason the page does not show them.
+		// person is refused for a reason the page does not show them. So are
+		// the attributes, with what was typed.
 		s.renderPage(w, r, "signup", s.captchaFields(r, map[string]any{
-			"Error": msg, "Email": email, "Invite": token,
-			"CSRF": csrf, "CSRFField": csrfFormField,
+			"Error": msg, "Email": email, "Invite": token, "Authz": r.PostFormValue("authz"),
+			"Fields": s.signupFields(ctx, s.signupOrg(ctx, token), attrs),
+			"CSRF":   csrf, "CSRFField": csrfFormField,
 		}))
 	}
 
+	tr := s.tr(r)
 	if email == "" || !strings.Contains(email, "@") {
-		fail("Enter the email address this account should use.")
+		fail(tr.Text("error.signup.email"))
 		return
 	}
 	// The shared gate: length, context, reuse and the breach corpus. Not a
 	// local length check, because a second place to decide what a password may
 	// be is a second place for it to be weaker.
 	if res, perr := s.pwPolicy.Check(ctx, password, email, nil, s.hasher); perr != nil {
-		fail(perr.Error())
+		fail(s.passwordRefusalText(r, perr))
 		return
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
 		// The check was configured and could not run. Logged loudly: a control
 		// that quietly stopped running is worse than one never configured.
-		s.log.Warn("the breach check did not run for a new password",
+		s.log.WarnContext(ctx, "the breach check did not run for a new password",
 			"correlation_id", correlationID(ctx))
 	}
 
 	var orgID string
 	var groups []string
 	var invitationID string
+	// Self-sign-up under a rule that requires a proved address: the account
+	// is made with its address still to prove, and the sign-in flow's
+	// verify_email stage holds its first sign-in until a code comes back.
+	// Nothing consulted the rule's flag before, so its default of true
+	// meant nothing.
+	var verify bool
+	// And under a rule that wants an administrator to look first, pending:
+	// made, and signing nobody in until activated (5.19).
+	var pending bool
 
 	if token != "" {
-		inv, err := store.ClaimInvitation(ctx, s.db, token)
+		// Another instance's invitation is refused before it is spent (6.12).
+		_, err := s.peekInvitation(ctx, token)
+		var inv *store.Invitation
+		if err == nil {
+			inv, err = store.ClaimInvitation(ctx, s.db, token)
+		}
 		if err != nil {
 			// A link that is genuinely spent and a database that refused the
 			// write are the same message to the user and must not be the same
 			// to us: the first is normal, the second is a bug, and treating
 			// them alike is how a broken claim looks like a stale link.
 			if !errors.Is(err, store.ErrInvitationNotUsable) {
-				s.log.Error("claiming an invitation failed unexpectedly", "err", err)
+				s.log.ErrorContext(ctx, "claiming an invitation failed unexpectedly", "err", err)
 			}
-			fail("That invitation link is not valid. It may have been used " +
-				"already, or expired.")
+			fail(tr.Text("error.invite.invalid"))
 			return
 		}
 		invitationID, orgID, groups = inv.ID, inv.OrgID, inv.Groups
@@ -299,7 +400,7 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		// address the finder chooses.
 		if inv.Email != "" && !strings.EqualFold(inv.Email, email) {
 			_ = store.ReleaseInvitation(ctx, s.db, inv.ID)
-			fail("This invitation is for " + inv.Email + ". Sign up with that address.")
+			fail(tr.Text("error.signup.invitefor", map[string]any{"Email": inv.Email}))
 			return
 		}
 	} else {
@@ -309,14 +410,32 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !rule.Permits(email) {
-			fail("That address cannot create an account here. Allowed: " +
-				strings.Join(rule.AllowedDomains, ", "))
+			fail(tr.Text("error.signup.domain", map[string]any{"Domains": strings.Join(rule.AllowedDomains, ", ")}))
 			return
 		}
-		orgID, groups = rule.OrgID, rule.DefaultGroups
+		orgID, groups, verify, pending = rule.OrgID, rule.DefaultGroups, rule.RequireVerify, rule.RequireApproval
 	}
 
-	userID, err := s.createAccount(ctx, orgID, email, password, groups)
+	// Nobody joins a suspended organisation (6.09), by invitation or rule.
+	if serving, err := store.OrgServing(ctx, s.db, orgID); err != nil || !serving {
+		if invitationID != "" {
+			_ = store.ReleaseInvitation(ctx, s.db, invitationID)
+		}
+		if err != nil {
+			s.log.ErrorContext(ctx, "reading whether the organisation is in service", "err", err)
+		}
+		fail(s.tr(r).Text("signup.suspended"))
+		return
+	}
+
+	// Every attribute the person may set is written, so a required one left
+	// off the form is refused by name rather than skipped.
+	for _, f := range s.signupFields(ctx, orgID, nil) {
+		if _, posted := attrs[f.Name]; !posted {
+			attrs[f.Name] = ""
+		}
+	}
+	userID, groups, err := s.createAccount(ctx, orgID, email, password, groups, invitationID == "", verify, pending, attrs)
 	if err != nil {
 		if invitationID != "" {
 			// Give it back. A duplicate address or a refused password should not
@@ -324,18 +443,25 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 			_ = store.ReleaseInvitation(ctx, s.db, invitationID)
 		}
 		if errors.Is(err, errAddressTaken) {
-			fail("There is already an account with that address. Try signing in, " +
-				"or use the forgotten-password link.")
+			fail(tr.Text("error.signup.taken"))
 			return
 		}
-		s.log.Error("creating an account", "err", err)
-		fail("The account could not be created. Reference: " +
-			shortCode(correlationID(ctx)))
+		if errors.Is(err, store.ErrAttributeRequired) || errors.Is(err, store.ErrInvalidAttributeValue) ||
+			errors.Is(err, store.ErrNoSuchAttribute) {
+			fail(s.attributeRefusalText(r, err, ""))
+			return
+		}
+		if errors.Is(err, errAccountRefused) {
+			fail(tr.Text("error.signup.refused"))
+			return
+		}
+		s.log.ErrorContext(ctx, "creating an account", "err", err)
+		fail(tr.Text("error.signup.failed", map[string]any{"Reference": shortCode(correlationID(ctx))}))
 		return
 	}
 	if invitationID != "" {
 		if err := store.MarkInvitationUser(ctx, s.db, invitationID, userID); err != nil {
-			s.log.Error("recording who used an invitation", "err", err)
+			s.log.ErrorContext(ctx, "recording who used an invitation", "err", err)
 		}
 	}
 
@@ -343,12 +469,21 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 		Type: "user.created", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 		Detail: map[string]any{
-			"route":  map[bool]string{true: "invitation", false: "self-signup"}[invitationID != ""],
-			"groups": groups,
+			"route":   map[bool]string{true: "invitation", false: "self-signup"}[invitationID != ""],
+			"groups":  groups,
+			"verify":  verify,
+			"pending": pending,
 		},
 	})
 
-	s.renderPage(w, r, "signupdone", map[string]any{"Email": email})
+	done = map[string]any{"Email": email, "Verify": verify, "Pending": pending}
+	if authz := r.PostFormValue("authz"); authz != "" {
+		// Signed in from here, the application that asked for the account gets
+		// its answer: the prompt-create spec's §4.1 has the flow succeed only
+		// with an id_token, so creating the account is not the end of it.
+		done["SignIn"] = "/login?authz=" + url.QueryEscape(authz)
+	}
+	return done, true
 }
 
 // createAccount makes the user, the password credential and the memberships.
@@ -356,70 +491,125 @@ func (s *Server) enrolCreateUser(w http.ResponseWriter, r *http.Request) {
 // One transaction. A user with no credential cannot sign in and cannot recover
 // -- there is nothing to send a reset to that proves anything -- so a partial
 // success here is an account that has to be deleted by hand.
+//
+// It returns the groups actually joined. selfSignup is true when no invitation
+// was involved, and then a group whose members may impersonate is never
+// joined. The rule's default groups are given to anyone at an allowed domain,
+// so such a group in that list would give impersonation to whoever signs up.
+// That is the same reason directory and SCIM sync may not reach such a group.
+// An invitation names one person and comes from the operator, so it is left to
+// the operator. verify records that the address must be proved before the
+// account is signed in (store.RequireEmailVerification). pending makes it wait
+// for an administrator to activate it (5.19). attrs are the attributes the
+// person set on the form (store.SetOwnAttributes).
 func (s *Server) createAccount(ctx context.Context, orgID, email, password string,
-	groups []string) (string, error) {
+	groups []string, selfSignup, verify, pending bool, attrs map[string]string) (string, []string, error) {
+
+	// The operator's provider, about somebody signing themselves up. An invitation
+	// came from the operator, so it is not asked of again.
+	if selfSignup {
+		if reason, refused := s.userCreateRefused(ctx, s.db, orgID, email, "signup"); refused {
+			s.recordHookRefusal(ctx, provider.HookUserCreate, orgID, "", "", reason)
+			return "", nil, errAccountRefused
+		}
+	}
 
 	handle := make([]byte, 64)
 	if _, err := io.ReadFull(rand.Reader, handle); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	hasher := passwords.NewHasher(passwords.MemoryBudgetMiB)
+	hasher := passwords.Shared()
 	hash, err := hasher.Hash(ctx, password)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var userID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO core.users (org_id, user_handle, email)
-		VALUES ($1::uuid, $2, $3) RETURNING id::text`, orgID, handle, email).Scan(&userID)
+		INSERT INTO core.users (org_id, user_handle, email, status)
+		VALUES ($1::uuid, $2, $3, CASE WHEN $4 THEN 'pending' ELSE 'active' END) RETURNING id::text`,
+		orgID, handle, email, pending).Scan(&userID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			return "", errAddressTaken
+			return "", nil, errAddressTaken
 		}
-		return "", err
+		return "", nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.password_credentials (user_id, org_id, hash, algorithm)
-		VALUES ($1::uuid, $2::uuid, $3, 'argon2id')`, userID, orgID, hash); err != nil {
-		return "", err
+		VALUES ($1::uuid, $2::uuid, $3, $4)`, userID, orgID, hash, passwords.AlgorithmOf(hash)); err != nil {
+		return "", nil, err
 	}
+	if verify {
+		if err := store.RequireEmailVerification(ctx, tx, userID, orgID); err != nil {
+			return "", nil, err
+		}
+	}
+	if len(attrs) > 0 {
+		if _, err := store.SetOwnAttributes(ctx, tx, userID, orgID, attrs, s.cfg.Root); err != nil {
+			return "", nil, err
+		}
+	}
+	joined := []string{}
 	for _, g := range groups {
 		// The group must already exist. Creating one here would let an
 		// invitation invent a group name, and group names are what policies are
 		// written against.
 		var groupID string
+		var mayImpersonate bool
+		// Impersonation by its own flag or a group above it (11.09): a sign-up
+		// default inside a group that may impersonate would grant it to strangers.
 		err := tx.QueryRow(ctx,
-			`SELECT id::text FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
-			orgID, g).Scan(&groupID)
+			`SELECT id::text, core.group_may_impersonate(id) FROM core.groups WHERE org_id = $1::uuid AND name = $2`,
+			orgID, g).Scan(&groupID, &mayImpersonate)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				s.log.Warn("an invitation named a group that does not exist",
+				s.log.WarnContext(ctx, "an invitation named a group that does not exist",
 					"group", g, "org", orgID)
 				continue
 			}
-			return "", err
+			return "", nil, err
+		}
+		if selfSignup && mayImpersonate {
+			s.log.ErrorContext(ctx, "the signup rule names a group whose members may impersonate; "+
+				"the new account was not added to it", "group", g, "org", orgID)
+			continue
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO core.group_members (group_id, user_id, org_id)
 			VALUES ($1::uuid, $2::uuid, $3::uuid)
 			ON CONFLICT DO NOTHING`, groupID, userID, orgID); err != nil {
-			return "", err
+			return "", nil, err
 		}
+		joined = append(joined, g)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return userID, nil
+	return userID, joined, nil
 }
 
 var errAddressTaken = errors.New("an account with that address already exists")
+
+// errAccountRefused is the user_create provider saying no.
+var errAccountRefused = errors.New("the account was refused")
+
+// signupOffered reports whether the sign-in page should link to sign-up: only
+// when self-service sign-up is open. An invitation carries its own link, and a
+// sign-up page that refuses everybody without one is not a way in.
+func (s *Server) signupOffered(ctx context.Context) bool {
+	if s.db == nil {
+		return false
+	}
+	rule, err := s.signupRule(ctx)
+	return err == nil && rule != nil
+}
 
 // signupRule reads the rule for the organisation this instance serves.
 func (s *Server) signupRule(ctx context.Context) (*store.SignupRule, error) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,7 +40,9 @@ type RegistrationPolicy struct {
 //
 // Absent means closed, never open. A deployment that has never thought about
 // dynamic registration must not have it switched on by a missing row.
-func LoadRegistrationPolicy(ctx context.Context, db *pgxpool.Pool, orgID string) (*RegistrationPolicy, error) {
+func LoadRegistrationPolicy(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (*RegistrationPolicy, error) {
 	p := &RegistrationPolicy{}
 	err := db.QueryRow(ctx, `
 		SELECT enabled, open, max_clients, allowed_scopes, allow_confidential
@@ -58,20 +61,25 @@ func LoadRegistrationPolicy(ctx context.Context, db *pgxpool.Pool, orgID string)
 //
 // Exactly one, or nothing. With several, a request carrying no token names no
 // organisation, and picking one would put a stranger's client in somebody's
-// tenant on the strength of a guess.
-func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, error) {
+// tenant on the strength of a guess. Among instanceID's organisations (6.12):
+// another instance's open registration is that issuer's.
+func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool, instanceID string) (string, error) {
+	// Counted whether or not each is in service, so suspending one of two does
+	// not quietly send the strangers to the other; the one found must be in
+	// service (6.09).
 	rows, err := db.Query(ctx, `
-		SELECT org_id::text FROM core.registration_policies
-		WHERE enabled AND open LIMIT 2`)
+		SELECT org_id::text, `+OrgInService("org_id")+` FROM core.registration_policies
+		WHERE enabled AND open AND `+InInstance("org_id", "$1")+` LIMIT 2`, instanceID)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
 
 	var found []string
+	var serving bool
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		if err := rows.Scan(&id, &serving); err != nil {
 			return "", err
 		}
 		found = append(found, id)
@@ -79,14 +87,15 @@ func SingleOpenRegistrationOrg(ctx context.Context, db *pgxpool.Pool) (string, e
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	if len(found) != 1 {
+	if len(found) != 1 || !serving {
 		return "", ErrRegistrationClosed
 	}
 	return found[0], nil
 }
 
-// RedeemRegistrationToken checks an initial access token and spends one use.
-func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (orgID, tokenID string, err error) {
+// RedeemRegistrationToken checks an initial access token of one of
+// instanceID's organisations and spends one use.
+func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte, instanceID string) (orgID, tokenID string, err error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return "", "", err
@@ -102,7 +111,9 @@ func RedeemRegistrationToken(ctx context.Context, db *pgxpool.Pool, hash []byte)
 		  AND t.revoked_at IS NULL
 		  AND (t.expires_at IS NULL OR t.expires_at > now())
 		  AND p.enabled
-		FOR UPDATE OF t`, hash).Scan(&tokenID, &orgID, &remaining)
+		  AND `+OrgInService("t.org_id")+`
+		  AND `+InInstance("t.org_id", "$2")+`
+		FOR UPDATE OF t`, hash, instanceID).Scan(&tokenID, &orgID, &remaining)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", ErrRegistrationClosed
@@ -148,11 +159,32 @@ type NewClientRegistration struct {
 	// ever set this on itself, and setting it can only cause its own requests to
 	// be refused, so it is safe to honour from open registration.
 	DPoPBound bool
+
+	// Logout is the sign-out registration, written in the same transaction by
+	// SetClientLogout.
+	Logout ClientLogout
+
+	// Settings are what a registrant may set on itself and only itself: the
+	// algorithm its tokens are signed with, and that it must push its
+	// authorization requests. Written by SetClientSettings in the same
+	// transaction. Never the lifetimes or first-party: how long a stranger's
+	// tokens outlive their revocation, and whether it skips consent, are the
+	// operator's decisions.
+	Settings ClientSettings
+
+	// JWKS is the registrant's public keys, nil for none: what it signs requests with
+	// and has responses encrypted to. How it authenticates is another matter.
+	JWKS []byte
+
+	// LocalizedNames is RFC 7591 section 2.2's client_name#<tag> members, by tag as
+	// sent. Written by SetClientNames in the same transaction.
+	LocalizedNames map[string]string
 }
 
 // RegisteredClient is what came back.
 type RegisteredClient struct {
 	ClientID          string
+	OrgID             string
 	DisplayName       string
 	ClientSecret      string
 	RegistrationToken string
@@ -194,7 +226,7 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		// which is an inconsistency nobody would predict from the outside.
 		hashed, ok := clients.HashSecret(secret)
 		if !ok {
-			h := passwords.NewHasher(passwords.MemoryBudgetMiB)
+			h := passwords.Shared()
 			var herr error
 			hashed, herr = h.Hash(ctx, secret)
 			if herr != nil {
@@ -216,8 +248,11 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 		INSERT INTO core.clients
 			(client_id, org_id, display_name, client_type, client_secret_hash,
 			 scopes, backchannel_logout_uri, dynamically_registered,
-			 registration_token_hash, registered_at, dpop_bound_access_tokens)
-		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now(), $9)`,
+			 registration_token_hash, registered_at, dpop_bound_access_tokens,
+			 token_endpoint_auth_method)
+		VALUES ($1, $2::uuid, $3, $4, $5, $6, NULLIF($7,''), true, $8, now(), $9,
+		        -- What the registration response tells the registrant (register.go).
+		        CASE WHEN $4 = 'public' THEN 'none' ELSE 'client_secret_basic' END)`,
 		out.ClientID, in.OrgID, in.DisplayName, kind, secretHash, in.Scopes,
 		in.LogoutURI, regHash[:], in.DPoPBound); err != nil {
 		return nil, fmt.Errorf("creating the client: %w", err)
@@ -236,6 +271,25 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 			return nil, fmt.Errorf("registering redirect_uri %q: %w", u, err)
 		}
 	}
+	if err := SetClientLogout(ctx, tx, out.ClientID, in.Logout); err != nil {
+		return nil, err
+	}
+	if in.Settings.AccessTokenTTL != nil || in.Settings.RefreshTokenTTL != nil || in.Settings.FirstParty != nil ||
+		in.Settings.IssuerAlias != nil {
+		return nil, fmt.Errorf("%w: token lifetimes, consent skipping and issuer aliases are not "+
+			"dynamic registration metadata", ErrInvalidClientSetting)
+	}
+	if in.JWKS != nil {
+		if _, err := SetClientMessageKeys(ctx, tx, out.ClientID, in.JWKS); err != nil {
+			return nil, err
+		}
+	}
+	if err := SetClientSettings(ctx, tx, out.ClientID, in.Settings); err != nil {
+		return nil, err
+	}
+	if err := SetClientNames(ctx, tx, in.OrgID, out.ClientID, in.LocalizedNames); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -248,15 +302,18 @@ func RegisterClient(ctx context.Context, db *pgxpool.Pool, in NewClientRegistrat
 //
 // Both conditions matter: the token must match AND the client must be
 // dynamically registered. Without the second, a leaked registration token could
-// be pointed at an operator-created client id and read it back.
-func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string, tokenHash []byte) (*RegisteredClient, error) {
+// be pointed at an operator-created client id and read it back. And the client
+// must be one of instanceID's (6.12).
+func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string, tokenHash []byte,
+	instanceID string) (*RegisteredClient, error) {
 	c := &RegisteredClient{}
 	err := db.QueryRow(ctx, `
-		SELECT client_id, display_name, scopes
+		SELECT client_id, org_id::text, display_name, scopes
 		FROM core.clients
 		WHERE client_id = $1 AND dynamically_registered
-		  AND registration_token_hash = $2`, clientID, tokenHash).
-		Scan(&c.ClientID, &c.DisplayName, &c.Scopes)
+		  AND registration_token_hash = $2
+		  AND `+InInstance("org_id", "$3"), clientID, tokenHash, instanceID).
+		Scan(&c.ClientID, &c.OrgID, &c.DisplayName, &c.Scopes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrRegistrationClosed
@@ -269,6 +326,83 @@ func LoadRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID string
 		return nil, err
 	}
 	return c, nil
+}
+
+// RegisteredSubject is how a registrant's update names people. Type "" keeps the one
+// the client has. Sector is the host of a sector_identifier_uri the new redirect URIs
+// were found in, "" for none.
+type RegisteredSubject struct{ Type, Sector string }
+
+// UpdateRegisteredClient replaces what a registrant may change of their own client:
+// its name, in each language it gives one in, where it may be redirected, what it may
+// ask for and how it names people. In one transaction, since a client caught between
+// the statements would have no redirect at all. RFC 7592 section 2.2's update replaces
+// the metadata, so names it leaves out are gone.
+func UpdateRegisteredClient(ctx context.Context, db *pgxpool.Pool, clientID, name string, names map[string]string,
+	redirectURIs, scopes []string, subject RegisteredSubject) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var orgID string
+	if err := tx.QueryRow(ctx, `UPDATE core.clients SET display_name = $2, scopes = $3, updated_at = now()
+		WHERE client_id = $1 AND dynamically_registered RETURNING org_id::text`, clientID, name, scopes).Scan(&orgID); err != nil {
+		return fmt.Errorf("updating a registered client: %w", err)
+	}
+	if err := SetClientNames(ctx, tx, orgID, clientID, names); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core.client_redirect_uris WHERE client_id = $1`, clientID); err != nil {
+		return fmt.Errorf("replacing a registered client's redirects: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core.client_redirect_uris (client_id, redirect_uri)
+		SELECT $1, unnest($2::text[])`, clientID, redirectURIs); err != nil {
+		return fmt.Errorf("replacing a registered client's redirects: %w", err)
+	}
+	if err := keepRegisteredSector(ctx, tx, clientID, redirectURIs, subject); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// keepRegisteredSector holds an update to the sector the client has. A pairwise
+// client's redirect URIs are where its sector's subjects are sent, so new ones must be
+// vouched for by that sector: by a sector_identifier_uri on it that lists them, or by
+// having it as their one host (specs/oidc-core.txt:5229-5258). Left as it was beside
+// redirects it does not cover, the sector's subjects would go to an address it never
+// named; moved, it would change what the client calls everybody.
+func keepRegisteredSector(ctx context.Context, tx pgx.Tx, clientID string, redirectURIs []string,
+	subject RegisteredSubject) error {
+	var kind, sector string
+	if err := tx.QueryRow(ctx, `SELECT subject_type, sector FROM core.clients WHERE client_id = $1 FOR UPDATE`,
+		clientID).Scan(&kind, &sector); err != nil {
+		return err
+	}
+	if subject.Type != "" {
+		kind = subject.Type
+	}
+	want := strings.ToLower(subject.Sector)
+	if kind == "pairwise" && want == "" {
+		var why string
+		if want, why = RedirectSector(redirectURIs); why != "" {
+			return fmt.Errorf("%w: %s; a pairwise client names it with a sector_identifier_uri",
+				ErrInvalidClientSetting, why)
+		}
+	}
+	switch {
+	case want == "":
+		want = sector
+	case sector != "" && want != sector:
+		return fmt.Errorf("%w: this client's subjects belong to the sector %s, not %s; a sector_identifier_uri on %s "+
+			"that lists these redirect URIs keeps everybody's subject as it is",
+			ErrInvalidClientSetting, sector, want, sector)
+	case !sectorShape.MatchString(want):
+		return fmt.Errorf("%w: a sector is a host name, not %q", ErrInvalidClientSetting, want)
+	}
+	_, err := tx.Exec(ctx, `UPDATE core.clients SET subject_type = $2, sector = $3, updated_at = now()
+		WHERE client_id = $1`, clientID, kind, want)
+	return err
 }
 
 // DeleteRegisteredClient removes a self-registered client.
@@ -286,14 +420,16 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// AnyRegistrationEnabled reports whether dynamic registration is on anywhere.
+// AnyRegistrationEnabled reports whether dynamic registration is on anywhere
+// in instanceID.
 //
 // Discovery uses it to decide whether to advertise registration_endpoint. A
 // document naming an endpoint that answers 401 to every possible caller is
 // worse than one that omits it: the client tries, fails, and blames itself.
-func AnyRegistrationEnabled(ctx context.Context, db *pgxpool.Pool) (bool, error) {
+func AnyRegistrationEnabled(ctx context.Context, db *pgxpool.Pool, instanceID string) (bool, error) {
 	var on bool
 	err := db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM core.registration_policies WHERE enabled)`).Scan(&on)
+		`SELECT EXISTS (SELECT 1 FROM core.registration_policies
+		  WHERE enabled AND `+InInstance("org_id", "$1")+`)`, instanceID).Scan(&on)
 	return on, err
 }

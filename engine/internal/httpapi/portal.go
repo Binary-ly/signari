@@ -42,7 +42,7 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 
 	candidates, err := store.ListPortalCandidates(ctx, s.db, orgID)
 	if err != nil {
-		s.log.Error("listing portal applications", "err", err)
+		s.log.ErrorContext(ctx, "listing portal applications", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -60,8 +60,20 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 	}
 	var open, blocked []tile
 
+	// Each application in the reader's language when it has a name in it (10.12),
+	// every one's names read at once.
+	ids := make([]string, 0, len(candidates))
 	for _, a := range candidates {
-		name := a.DisplayName
+		ids = append(ids, a.ClientID)
+	}
+	names, err := store.ClientNamesOf(ctx, s.db, ids)
+	if err != nil {
+		s.log.WarnContext(ctx, "reading applications' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
+
+	for _, a := range candidates {
+		name := pickClientName(names[a.ClientID], prefs, a.DisplayName)
 		if name == "" {
 			name = a.ClientID
 		}
@@ -75,6 +87,22 @@ func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
 			// a configuration mistake, and omitting it is how it stays one.
 			Unlaunchable: a.LaunchURL == "",
 		})
+	}
+
+	// A service provider that takes a sign-in started here, asked of the policy by
+	// its entity id as the assertion will be.
+	providers, err := store.ListPortalSAML(ctx, s.db, orgID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "listing portal SAML applications", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	for _, a := range providers {
+		if d := s.checkAccessPolicy(ctx, r, orgID, a.EntityID, userID, "openid", mfa, amr); d != nil {
+			blocked = append(blocked, tile{Name: a.DisplayName, Blocked: true, Reason: d.Message})
+			continue
+		}
+		open = append(open, tile{Name: a.DisplayName, LaunchURL: pathSAMLInit + a.ID})
 	}
 
 	s.renderPage(w, r, "portal", map[string]any{

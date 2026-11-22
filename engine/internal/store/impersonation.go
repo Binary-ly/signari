@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,6 +54,15 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 	reason, correlationID string, ttl time.Duration) (Impersonation, error) {
 
 	var im Impersonation
+	// The id as the database writes it. PostgreSQL accepts several spellings of
+	// one uuid ({…}, a hyphen every four digits), and a spelling the checks below
+	// did not recognise passed them as "nobody" while the episode was written
+	// for the real person. Every comparison from here on uses this one.
+	canonical, ok := CanonicalUUID(subjectID)
+	if !ok {
+		return im, fmt.Errorf("%w: no such user", ErrImpersonationRefused)
+	}
+	subjectID = canonical
 	if actorID == subjectID {
 		// Not a quirk. Impersonating yourself launders an action into one that
 		// cannot be attributed to the person who took it.
@@ -82,6 +92,18 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 			ErrImpersonationRefused)
 	}
 
+	// Nor someone who may impersonate. Acting as another administrator gives the
+	// actor that administrator's reach as well as their name, and the episode
+	// would record a support visit when what happened was a takeover.
+	_, privileged, _, err := PrivilegedUser(ctx, tx, subjectID)
+	if err != nil {
+		return im, err
+	}
+	if privileged {
+		return im, fmt.Errorf("%w: that user may impersonate others, and nobody who "+
+			"can is impersonated", ErrImpersonationRefused)
+	}
+
 	// An impersonated session cannot start another. Otherwise the actor recorded
 	// on the second episode is the person being impersonated on the first, and
 	// the chain back to a real administrator is broken at exactly the point
@@ -99,7 +121,7 @@ func BeginImpersonation(ctx context.Context, tx pgx.Tx, orgID, actorID, subjectI
 			"impersonation cannot be chained", ErrImpersonationRefused)
 	}
 
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO core.impersonations
 			(org_id, actor_id, subject_id, reason, expires_at, correlation_id)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, now() + $5::interval, $6)
@@ -198,10 +220,8 @@ func ExpireImpersonations(ctx context.Context, tx pgx.Tx) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	for _, sid := range sids {
-		if _, err := TerminateSessions(ctx, tx, sid, "", ReasonImpersonationEnded); err != nil {
-			return len(sids), err
-		}
+	if _, err := TerminateEachSession(ctx, tx, sids, ReasonImpersonationEnded); err != nil {
+		return len(sids), err
 	}
 	return len(sids), nil
 }
@@ -228,9 +248,9 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 	rows, err := q.Query(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			  FROM core.group_members m
+			  FROM core.groups_of($1::uuid) m
 			  JOIN core.groups g ON g.id = m.group_id
-			 WHERE m.user_id = $1::uuid AND g.org_id = $2::uuid AND g.may_impersonate)`,
+			 WHERE g.org_id = $2::uuid AND g.may_impersonate)`,
 		userID, orgID)
 	if err != nil {
 		return false, err
@@ -244,4 +264,109 @@ func MayImpersonate(ctx context.Context, q Querier, orgID, userID string) (bool,
 		return may, nil
 	}
 	return false, rows.Err()
+}
+
+// PrivilegedUser reports whether a user can act as other people, and which
+// organisation they belong to. found is false when there is no such user.
+//
+// Privileged means a member of a group that may impersonate, or the holder of
+// an administrative role (0191, 6.01). This is the one definition. The Admin
+// API uses it to decide which writes need privileged-users:write, and
+// BeginImpersonation uses it to refuse impersonating such a person, so the two
+// cannot disagree about who is protected. A role holder is privileged because
+// otherwise a user manager could reset an owner's password, and an impersonator
+// act as one, and either would hold the owner's role.
+//
+// The id is read as PostgreSQL reads it (CanonicalUUID), so the guard and the
+// write it guards cannot disagree about which row an id names. It was checked
+// with a stricter parser, which refused spellings PostgreSQL accepts: such an
+// id was "nobody" to the guard and the real person to the write that followed,
+// and a users:write token took over an administrator.
+func PrivilegedUser(ctx context.Context, q rowQuerier, userID string) (orgID string, privileged, found bool, err error) {
+	userID, ok := CanonicalUUID(userID)
+	if !ok {
+		return "", false, false, nil
+	}
+	err = q.QueryRow(ctx, `SELECT u.org_id::text, `+privilegedPerson+`
+		  FROM core.users u
+		 WHERE u.id = $1::uuid`, userID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
+}
+
+// privilegedPerson is the one definition, for the person u. A group that may
+// impersonate grants it to everybody in the groups inside it too (11.09), so the
+// person is privileged by any group above them.
+const privilegedPerson = `(EXISTS (
+			SELECT 1
+			  FROM core.groups_of(u.id) m
+			  JOIN core.groups g ON g.id = m.group_id
+			 WHERE g.org_id = u.org_id AND g.may_impersonate)
+		    OR EXISTS (SELECT 1 FROM core.admin_role_bindings b WHERE b.user_id = u.id))`
+
+// PrivilegedUsers is PrivilegedUser for many people in one query: which of
+// userIDs, each an id read from the database, may act as other people.
+func PrivilegedUsers(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, userIDs []string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `SELECT u.id::text FROM core.users u
+		 WHERE u.id = ANY($1::uuid[]) AND `+privilegedPerson, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// PrivilegedClient reports whether a client is designated for the Admin API
+// (0192, 6.01), and which organisation it belongs to. Such a client is where an
+// administrator signs in to administer, so whoever could change its redirect
+// URIs or secret could take that sign-in, and with it the administrator's role.
+func PrivilegedClient(ctx context.Context, q rowQuerier, clientID string) (orgID string, privileged, found bool, err error) {
+	err = q.QueryRow(ctx,
+		`SELECT org_id::text, admin_api FROM core.clients WHERE client_id = $1`,
+		clientID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
+}
+
+// PrivilegedGroup reports whether membership of a group makes a person
+// privileged (see PrivilegedUser), and which organisation the group belongs to.
+func PrivilegedGroup(ctx context.Context, q rowQuerier, groupID string) (orgID string, privileged, found bool, err error) {
+	groupID, ok := CanonicalUUID(groupID)
+	if !ok {
+		return "", false, false, nil
+	}
+	// The group, or any group it is inside (11.09): a member added to it is a
+	// member of every group above, so a group inside one that may impersonate is as
+	// privileged as that one. Its own flag alone let groups:write grant impersonation
+	// by adding somebody to the group below.
+	err = q.QueryRow(ctx,
+		`SELECT org_id::text, core.group_may_impersonate(id) FROM core.groups WHERE id = $1::uuid`,
+		groupID).Scan(&orgID, &privileged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	return orgID, privileged, true, nil
 }

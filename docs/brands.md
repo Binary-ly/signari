@@ -1,7 +1,8 @@
 # Brands
 
-An instance's appearance on the pages a user sees: a product name, a logo, a
-support link, and four colours.
+An appearance on the pages a user sees: a product name, a logo, a support link,
+and four colours. An instance has one, and each organisation on it may have its
+own over it.
 
 ```sh
 signari brand check \
@@ -72,15 +73,99 @@ A partial palette is refused. A custom background against a default text colour
 is the most common way a page becomes unreadable, and it happens because setting
 one colour feels like a small change.
 
-## Why this is per instance
+## An organisation's own
 
-An instance is one issuer on one hostname, which is the same unit other products
-key branding on when they key it on domain. Serving two brands from one hostname
-means guessing which one a visitor should see before they have identified
-themselves — and guessing wrong shows one customer another customer's logo.
+```sh
+signari brand set -org <uuid> -brand-name "Bravo" -brand-logo https://bravo.example/logo.svg
+signari brand show -org <uuid>
+signari brand remove -org <uuid>
+```
 
-To brand separately, run an instance per hostname. That is what the instance
-model is for.
+The same through `PUT /admin/organizations/{orgID}/brand`, which a token of that
+organisation may call, under `brand:` in a [configuration file](config-as-code.md),
+and on the console's Brand screen. Contrast is checked the same way on all of them.
+
+What an organisation leaves out falls through to its instance: the name, the logo
+and the support link one at a time, the four colours together, because a background
+of one brand under the text of another is a pair nobody checked. Above, Bravo keeps
+the instance's colours.
+
+A page takes the organisation of what it is answering, in this order:
+
+1. the client of the authorization request it is part of, so a person signed in at
+   one organisation who follows another's application reads that other one's page;
+2. the sign-in it is part way through, which is how the second-factor page knows;
+3. the session it came with;
+4. the instance's organisation, when it has only one.
+
+A bare `/login` on a deployment of several matches none of these and wears the
+instance's appearance. It does not guess: a wrong guess shows one customer another
+customer's logo. Mail wears the look of the organisation it is sent for.
+
+A separate hostname still needs [a separate instance](configuration.md#several-instances-in-one-process):
+this changes what a page looks like, not whose address it is at.
+
+## An organisation's words
+
+```sh
+signari message set -org <uuid> -locale en -message-key login.heading -message-text "Sign in to Bravo"
+signari message list -org <uuid>
+signari message remove -org <uuid> -locale en -message-key login.heading
+```
+
+`signari i18n keys` prints every key. The same through
+`PUT /admin/organizations/{orgID}/messages/{locale}/{key}`, a token of that
+organisation may call it, under `messages:` in a [configuration file](config-as-code.md),
+and on the console's Messages screen. It takes effect on the next render, on the
+pages and in the mail of that organisation alone.
+
+These are a tenant's, so they are not trusted the way the catalogue is: a message
+in the catalogue may carry a link, and one of these is plain text, escaped on the
+way to the page, so whoever may set it can change what a page says and not what it
+does. It may use the placeholders the message it replaces is given, as
+`{Client}` in `consent.title`. These are refused rather than stored: a key nothing
+renders, a language with no catalogue, a placeholder the message is never given, and
+a message that counts something, as it has a form for each number and this is one
+line. Reword those, and add a language, in a theme instead.
+
+The pages a browser reads rather than a person do not say them: the SAML POST form,
+`form_post`, WS-Federation and front-channel logout. Each is on the path that signs
+somebody in to an application, and a theme can still reword them.
+
+## An organisation's pages
+
+A theme directory (see [theming](theming.md)) may hold a directory per organisation,
+named by its slug, laid over the deployment's theme page by page and message by
+message:
+
+```
+theme/
+  layout.html               everybody's
+  locales/en.json
+  orgs/
+    bravo/
+      layout.html           Bravo's people, and nobody else's
+      locales/en.json
+      locales/de.json       a language only Bravo's readers are offered
+```
+
+```sh
+signari theme eject -theme-dir ./theme/orgs/bravo -theme-page layout
+signari theme check -theme-dir ./theme        # checks every organisation's too
+```
+
+It is the operator's disk rather than a tenant's token, read once at startup, and
+it follows every rule of a theme. A file that fails validation is refused for that
+page, and the deployment's page is served in its place. A directory that fails
+altogether costs that organisation its theme and nobody else anything. A directory
+naming no organisation is logged at startup. Two instances served by one process
+read one theme directory, so organisations of theirs that share a slug share a
+directory.
+
+On a page, an organisation's stored words are said over its theme's. Rendering them
+parses that page for the render, because a template's `T` is bound when it is parsed
+and the parsed pages are shared: a page's worth of parsing, on pages people read, and
+only for an organisation that has reworded something.
 
 ## What it touches
 

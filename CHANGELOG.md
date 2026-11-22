@@ -1,0 +1,57 @@
+# Changelog
+
+Each release, what it changes and what an operator should know before upgrading to it.
+Versions are `vMAJOR.MINOR.PATCH`; before 1.0, a minor version may change behaviour,
+and its entry says how.
+
+## v0.1.0 — not yet released
+
+The first public release.
+
+### What is in it
+
+- **One Go binary and one PostgreSQL database.** The engine serves the protocols, the
+  sign-in pages and the Admin API, and carries the `signari` operator CLI. The console
+  (`admin/`, Laravel) reads the engine's data through versioned views and writes only
+  through the Admin API; the database's own grants keep the two apart.
+- **OAuth 2.0 and OpenID Connect:** authorization code with PKCE, refresh token
+  rotation, client credentials, the device grant (RFC 8628), CIBA, token exchange
+  (RFC 8693), JWT bearer (RFC 7523), PAR (RFC 9126), DPoP (RFC 9449), rich
+  authorization requests (RFC 9396), mutual TLS (RFC 8705), dynamic registration
+  (RFC 7591), introspection, revocation, and RP-initiated, front-channel and
+  back-channel logout.
+- **The rest of an estate:** SAML 2.0 in both directions, WS-Federation, LDAP as a
+  server and as a source, RADIUS with EAP-TLS, Kerberos/SPNEGO, SCIM in both
+  directions, OID4VCI credential issuance, OpenID Federation, UMA 2.0, AuthZEN and
+  Shared Signals/CAEP.
+- **Configuration as files:** sign-in flows, access policy and configuration are files
+  with their own tests (`signari flow test`, `signari policy test`), planned before they
+  are applied (`signari plan`).
+- **Integrations:** a Terraform provider, a Kubernetes operator, Go and TypeScript
+  clients of the Admin API, and a Helm chart.
+
+### Conformance
+
+Every OpenID Foundation conformance plan this release targets was run whole, from a
+fresh clone, with no failed condition: Config, Basic and Form Post OP; RP-Initiated,
+Front-Channel and Back-Channel Logout; FAPI 2.0 Security Profile (private_key_jwt with
+DPoP, and both mutual-TLS variants) and Message Signing; the OID4VCI issuer plans; and
+four OID4VP verifier plans. The results are in
+[deploy/conformance/README.md](deploy/conformance/README.md). Two plans cannot pass by
+design: Hybrid's `code token` and `code id_token token` and the Dynamic OP plan, since
+the provider never puts an access token in the front channel.
+
+### Security
+
+- No publicly known vulnerability is fixed in this release; there are no earlier
+  releases to have had one.
+- Report vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes.
+- Release builds are reproducible (built twice and compared byte for byte) and come with
+  CycloneDX SBOMs for the binary and the image. Release artefacts are not yet signed.
+- Not yet independently audited.
+
+### Requirements
+
+PostgreSQL 17, the version the compose file, the Helm chart and the test suite use, and
+Go 1.26.11 or later to build from source. The README's quick start runs it;
+[docs/upgrading.md](docs/upgrading.md) covers moving to later releases.

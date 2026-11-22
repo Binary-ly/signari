@@ -20,6 +20,7 @@ type fakeLDAP struct {
 	bindErr   error
 	boundAs   string
 	pageSize  uint32
+	searched  *ldap.SearchRequest
 }
 
 func (f *fakeLDAP) Bind(u, p string) error { f.boundAs = u; return f.bindErr }
@@ -32,6 +33,21 @@ func (f *fakeLDAP) UnauthenticatedBind(u string) error {
 	return f.bindErr
 }
 func (f *fakeLDAP) Close() error { return nil }
+
+// Search answers at most the size limit, with the error a server gives for
+// stopping there, as a real one does.
+func (f *fakeLDAP) Search(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+	f.searched = req
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if req.SizeLimit > 0 && len(f.entries) > req.SizeLimit {
+		return &ldap.SearchResult{Entries: f.entries[:req.SizeLimit]},
+			ldap.NewError(ldap.LDAPResultSizeLimitExceeded, errors.New("size limit exceeded"))
+	}
+	return &ldap.SearchResult{Entries: f.entries}, nil
+}
+
 func (f *fakeLDAP) SearchWithPaging(_ *ldap.SearchRequest, pageSize uint32) (*ldap.SearchResult, error) {
 	f.pageSize = pageSize
 	if f.searchErr != nil {

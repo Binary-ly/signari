@@ -3,9 +3,12 @@
 namespace App\Filament\Resources\EngineUsers\Tables;
 
 use App\Services\EngineAdminApi;
+use App\Services\SignariSignIn;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Carbon;
 use RuntimeException;
 
 use Filament\Tables\Columns\IconColumn;
@@ -30,11 +33,13 @@ class EngineUsersTable
                 TextColumn::make('status')
                     ->label(__('Status'))
                     ->badge()
-                    ->formatStateUsing(fn (string $state): string => __($state))
+                    ->formatStateUsing(fn (string $state): string => $state === 'pending'
+                        ? __('Waiting for approval') : __($state))
                     ->color(fn (string $state): string => match ($state) {
                         'active'      => 'success',
                         'deactivated' => 'danger',
                         'locked'      => 'warning',
+                        'pending'     => 'warning',
                         default       => 'gray',
                     })
                     ->sortable(),
@@ -79,6 +84,8 @@ class EngineUsersTable
                     'active'      => __('Active'),
                     'deactivated' => __('Deactivated'),
                     'locked'      => __('Locked'),
+                    // A self-sign-up under a rule that requires approval.
+                    'pending'     => __('Waiting for approval'),
                 ]),
 
                 Filter::make('needs_rehash')
@@ -98,6 +105,10 @@ class EngineUsersTable
             ->recordActions([
                 self::toggleActiveAction(),
                 self::setPasswordAction(),
+                self::removeFactorAction(),
+                self::sendPasskeyLinkAction(),
+                self::exportAction(),
+                self::eraseAction(),
             ])
             ->toolbarActions([])
             ->defaultSort('created_at', 'desc')
@@ -128,7 +139,7 @@ class EngineUsersTable
                     ->label(__('Password (optional)'))
                     ->helperText(__('Leave blank to invite them: they set their own via recovery.')),
             ])
-            ->action(function (array $data): void {
+            ->action(function (array $data, $livewire): void {
                 // The organisation comes from the OPERATOR's own record, never
                 // from the form. A tenant selector the caller can set is not a
                 // tenant boundary -- the same rule ScopeToOrganisation enforces.
@@ -141,7 +152,7 @@ class EngineUsersTable
                     return;
                 }
                 try {
-                    EngineAdminApi::fromConfig()->createUser(
+                    EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)->createUser(
                         $orgId, $data['email'] ?? null, $data['username'] ?? null,
                         filled($data['password'] ?? null) ? $data['password'] : null
                     );
@@ -162,18 +173,29 @@ class EngineUsersTable
      */
     private static function toggleActiveAction(): Action
     {
+        // A pending account is a self-sign-up waiting for approval: activating
+        // it approves it, and the engine emails the person that they can sign in.
         return Action::make('toggleActive')
-            ->label(fn ($record): string => $record->status === 'active' ? __('Deactivate') : __('Reactivate'))
+            ->label(fn ($record): string => match ($record->status) {
+                'active'  => __('Deactivate'),
+                'pending' => __('Approve'),
+                default   => __('Reactivate'),
+            })
             ->icon(fn ($record): string => $record->status === 'active'
                 ? 'heroicon-m-no-symbol' : 'heroicon-m-check-circle')
             ->color(fn ($record): string => $record->status === 'active' ? 'danger' : 'success')
             ->requiresConfirmation()
-            ->modalDescription(fn ($record): string => $record->status === 'active'
-                ? __('They will be signed out of every application immediately, not just prevented from signing in again.')
-                : __('They will be able to sign in again. Existing sessions were already ended and do not come back.'))
-            ->action(function ($record): void {
+            ->modalDescription(fn ($record): string => match ($record->status) {
+                'active'  => __('They will be signed out of every application immediately, not just prevented from signing in again.'),
+                'pending' => __('They signed up themselves. Approved, they can sign in, and they are told so by email.'),
+                default   => __('They will be able to sign in again. Existing sessions were already ended and do not come back.'),
+            })
+            ->action(function ($record, $livewire): void {
                 try {
+                    // Held to the page the operator confirmed from: a person
+                    // somebody else deactivated since is not reactivated unseen.
                     $r = EngineAdminApi::fromConfig()
+                        ->asOf($livewire->renderedConfigVersion ?? null)
                         ->setUserActive($record->id, $record->status !== 'active');
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Nothing was changed'))->body($e->getMessage())
@@ -183,12 +205,196 @@ class EngineUsersTable
                 }
                 $ended = (int) ($r['sessions_ended'] ?? 0);
                 Notification::make()
-                    ->title($record->status === 'active' ? __('User deactivated') : __('User reactivated'))
+                    ->title(match ($record->status) {
+                        'active'  => __('User deactivated'),
+                        'pending' => __('User approved'),
+                        default   => __('User reactivated'),
+                    })
                     // trans_choice, not "session(s)": the same defect the
                     // front-channel logout page had, and wrong in English at one.
                     ->body($ended > 0 ? self::endedSessions($ended) : __('No sessions were open.'))
                     ->success()->send();
             });
+    }
+
+    /**
+     * Remove a sign-in method, for somebody whose phone or key is lost.
+     *
+     * The choices are the engine's own listing, read when the form opens: what
+     * each method IS, never what it holds. A passkey is chosen by its id, since
+     * a person may hold several. The engine ends every session they hold and
+     * tells them by email and a verified number; their next sign-in enrols a new
+     * method where a flow requires one.
+     */
+    private static function removeFactorAction(): Action
+    {
+        return Action::make('removeFactor')
+            ->label(__('Remove a sign-in method'))
+            ->icon('heroicon-m-shield-exclamation')
+            ->color('danger')
+            ->requiresConfirmation()
+            ->modalDescription(__('Every session they hold is ended, and they are told by email and a verified number.'))
+            ->schema([
+                Select::make('factor')->label(__('Sign-in method'))->required()
+                    ->options(fn ($record): array => self::factorOptions($record->id)),
+            ])
+            ->action(function ($record, array $data, $livewire): void {
+                [$kind, $id] = array_pad(explode(':', (string) $data['factor'], 2), 2, null);
+                try {
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->removeUserFactor($record->id, $kind, $id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was removed'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Sign-in method removed'))
+                    ->body(self::endedSessions((int) ($r['sessions_ended'] ?? 0)))
+                    ->success()->send();
+            });
+    }
+
+    /**
+     * Email a link that registers one passkey with no session: for somebody
+     * invited without a password, or whose only way in is lost. Offered only
+     * where the engine would send it, an active account with an address. The
+     * link's token never reaches the console; the engine mints it as it sends
+     * the email.
+     */
+    /**
+     * Erasure cannot be undone, so it asks for the address as well as a yes, and it
+     * has a scope of its own: somebody who may manage people may not thereby erase
+     * them.
+     */
+    private static function eraseAction(): Action
+    {
+        return Action::make('erase')
+            ->label(__('Erase'))
+            ->icon('heroicon-m-trash')
+            ->color('danger')
+            ->visible(fn (): bool => SignariSignIn::may('subjects:erase'))
+            ->modalDescription(__('Their key is destroyed, their sessions end and their account goes. This cannot be undone. The audit trail stays, naming them only by id.'))
+            ->schema([TextInput::make('confirm')->label(__('Type their email to confirm'))->required()])
+            ->action(function (array $data, $record, $livewire): void {
+                if ($data['confirm'] !== (string) $record->email) {
+                    Notification::make()->title(__('Nothing was changed'))->body(__('That is not their address.'))
+                        ->danger()->send();
+
+                    return;
+                }
+                try {
+                    EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)->eraseSubject($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was changed'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Person erased'))->success()->send();
+            });
+    }
+
+    /**
+     * Everything kept about the person, for a request to see their data or take it
+     * elsewhere: the engine's export document, downloaded as it was sent. It has a scope
+     * of its own, since somebody who may manage people may not thereby carry their data
+     * off, and the engine records the export against the token and the operator. The
+     * file is named by the person's id, not their address, since it lands in a folder of
+     * downloads.
+     */
+    private static function exportAction(): Action
+    {
+        return Action::make('export')
+            ->label(__('Export their data'))
+            ->icon('heroicon-m-arrow-down-tray')
+            ->visible(fn (): bool => SignariSignIn::may('subjects:export'))
+            ->requiresConfirmation()
+            ->modalDescription(__('A file of everything kept about them is downloaded to this computer, every password and secret left out. The engine records that you took it.'))
+            ->action(function ($record) {
+                try {
+                    $document = EngineAdminApi::fromConfig()->exportSubject($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('Nothing was exported'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return null;
+                }
+
+                return response()->streamDownload(function () use ($document): void {
+                    echo $document;
+                }, 'subject-'.$record->id.'.json', [
+                    'Content-Type' => 'application/json',
+                    'Cache-Control' => 'no-store',
+                ]);
+            });
+    }
+
+    private static function sendPasskeyLinkAction(): Action
+    {
+        return Action::make('sendPasskeyLink')
+            ->label(__('Email a passkey link'))
+            ->icon('heroicon-m-envelope')
+            ->visible(fn ($record): bool => $record->status === 'active' && filled($record->email))
+            ->requiresConfirmation()
+            ->modalDescription(__('They are emailed a link that adds one passkey to their account. It works once, for a day, and any earlier link stops working.'))
+            ->action(function ($record, $livewire): void {
+                try {
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->sendPasskeyLink($record->id);
+                } catch (RuntimeException $e) {
+                    Notification::make()->title(__('No link was sent'))->body($e->getMessage())
+                        ->danger()->persistent()->send();
+
+                    return;
+                }
+                Notification::make()->title(__('Passkey link on its way'))
+                    ->body(__('It works until :when UTC.', [
+                        'when' => Carbon::parse((string) ($r['expires_at'] ?? 'now'))->utc()->format('j F Y, H:i'),
+                    ]))
+                    ->success()->send();
+            });
+    }
+
+    /**
+     * The methods to choose from, keyed `kind` or `kind:id`. Empty when the
+     * engine cannot be read, which the form shows as nothing to pick rather
+     * than a guess.
+     *
+     * @return array<string, string>
+     */
+    private static function factorOptions(string $userId): array
+    {
+        try {
+            $listing = EngineAdminApi::fromConfig()->userFactors($userId);
+        } catch (RuntimeException) {
+            return [];
+        }
+        $names = [
+            'totp' => __('Authenticator app'),
+            'email_otp' => __('Email codes'),
+            'sms_otp' => __('Text message codes'),
+            'duo' => __('Duo'),
+            'webauthn' => __('Passkey or security key'),
+        ];
+        $out = [];
+        foreach ($listing['factors'] ?? [] as $f) {
+            $type = (string) ($f['type'] ?? '');
+            if (! isset($names[$type])) {
+                continue;
+            }
+            $id = (string) ($f['id'] ?? '');
+            $label = $names[$type].(($f['label'] ?? '') !== '' ? ' — '.$f['label'] : '');
+            if (! empty($f['disabled'])) {
+                $label .= ' ('.__('switched off').')';
+            }
+            $out[$id !== '' ? $type.':'.$id : $type] = $label;
+        }
+        if ((int) ($listing['recovery_codes_unused'] ?? 0) > 0 || ! empty($listing['recovery_codes_disabled'])) {
+            $out['recovery'] = __('Recovery codes');
+        }
+
+        return $out;
     }
 
     private static function setPasswordAction(): Action
@@ -202,9 +408,10 @@ class EngineUsersTable
                 TextInput::make('password')->label(__('Password'))
                     ->password()->revealable()->required()->minLength(8),
             ])
-            ->action(function ($record, array $data): void {
+            ->action(function ($record, array $data, $livewire): void {
                 try {
-                    $r = EngineAdminApi::fromConfig()->setUserPassword($record->id, $data['password']);
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->setUserPassword($record->id, $data['password']);
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Password not changed'))->body($e->getMessage())
                         ->danger()->persistent()->send();

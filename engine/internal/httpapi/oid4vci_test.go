@@ -74,6 +74,41 @@ func preAuthForm(code, txCode string) url.Values {
 	return v
 }
 
+// The token the grant hands out is the one the credential endpoint honours,
+// for what the offer named: the redemption records it (migration 0133), and
+// without that record the endpoint refuses every token it is shown.
+func TestARedeemedOffersTokenMintsTheOfferedCredential(t *testing.T) {
+	f := newTokenFixture(t)
+	f.allowPreAuthGrant(t)
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO core.credential_configurations
+			(org_id, config_id, vct, always_claims, selective_claims, lifetime, display_name)
+		VALUES ($1::uuid, 'TestCredential', 'https://signari.test/test',
+		        ARRAY['sub'], ARRAY['email'], interval '30 days', 'Test')`, f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(),
+			`DELETE FROM core.credential_configurations WHERE org_id = $1::uuid`, f.orgID)
+	})
+
+	status, body := f.post(t, preAuthForm(f.preAuth(t, "", 5*time.Minute), ""))
+	if status != http.StatusOK {
+		t.Fatalf("redemption gave %d: %v", status, body)
+	}
+	token := asString(body["access_token"])
+
+	wa := newWallet(t)
+	_, nb := f.postJSON(t, "/oid4vci/nonce", "", "")
+	nonce, _ := nb["c_nonce"].(string)
+	status, resp := f.postJSON(t, "/oid4vci/credential", token,
+		`{"credential_configuration_id":"TestCredential","proofs":{"jwt":[`+
+			mustJSONString(t, wa.proof(t, f.srv.cfg.Issuer, nonce))+`]}}`)
+	if status != http.StatusOK {
+		t.Fatalf("the redeemed token could not mint the offered credential: %d %v", status, resp)
+	}
+}
+
 // THE case §6.1 describes: a wallet redeems sending no client_id.
 //
 // "the client_id parameter is only needed when a form of Client Authentication
@@ -95,15 +130,19 @@ func TestAWalletRedeemsWithoutSendingAnyClientID(t *testing.T) {
 		t.Fatalf("no access token in the response: %v", body)
 	}
 
-	// The token is about the HOLDER and for the client the OFFER named, since
-	// the request named nobody. A `sub` of anything else means the subject was
-	// invented; an `aud` of anything else means the audience was.
+	// The token is about the HOLDER and was issued to the client the OFFER
+	// named, since the request named nobody, and it is for the credential
+	// endpoint alone. A `sub` of anything else means the subject was invented; an
+	// `aud` of anything else means the token works wherever the client's do.
 	claims := claimsOfJWT(t, at)
 	if claims["sub"] != f.userID {
 		t.Errorf("sub is %v, want the credential subject %s", claims["sub"], f.userID)
 	}
-	if aud, _ := claims["aud"].([]any); len(aud) != 1 || aud[0] != f.clientID {
-		t.Errorf("aud is %v, want [%s] from the offer", claims["aud"], f.clientID)
+	if claims["client_id"] != f.clientID {
+		t.Errorf("client_id is %v, want %s from the offer", claims["client_id"], f.clientID)
+	}
+	if aud, _ := claims["aud"].([]any); len(aud) != 1 || aud[0] != f.srv.credentialAudience() {
+		t.Errorf("aud is %v, want the credential endpoint alone", claims["aud"])
 	}
 
 	// No id_token: nothing here authenticated anybody. The operator vouched for

@@ -1,0 +1,25 @@
+{{define "title"}}{{if .Incomplete}}{{T "signedout.incomplete.title"}}{{else}}{{T "signedout.title"}}{{end}}{{end}}
+{{define "content"}}
+{{/* Where a sign-out ends when nobody asked to be sent anywhere after it (0.93). It was a
+     JSON body, read in a browser. */}}
+{{if .Incomplete}}
+{{/* The cookies were cleared before this page, so signing out again from here would
+     find no session and say it was done. The session may still be live; the sessions
+     page signs the person in and lets them end it. */}}
+<h1>{{T "signedout.incomplete.title"}}</h1>
+<p>{{T "signedout.incomplete.body"}}</p>
+<p><a href="/account/sessions">{{T "signedout.endsession"}}</a></p>
+{{else}}
+<h1>{{T "signedout.heading"}}</h1>
+<p>{{T "signedout.body"}}</p>
+{{/* Which applications were told, and which may still hold a session: the one thing
+     somebody signing out of a shared computer needs to know is what is still open. */}}
+{{/* Each address isolated: in a right-to-left page a URL ending in a slash or a
+     punctuation mark is otherwise drawn with it on the wrong side. */}}
+{{if .Notified}}<p>{{N "signedout.notified" (len .Notified)}}</p>
+<ul>{{range .Notified}}<li><bdi>{{.}}</bdi></li>{{end}}</ul>{{end}}
+{{if .Failed}}<p>{{N "signedout.failed" (len .Failed)}}</p>
+<ul>{{range .Failed}}<li><bdi>{{.}}</bdi></li>{{end}}</ul>{{end}}
+<p><a href="/login">{{T "signedout.signin"}}</a></p>
+{{end}}
+{{end}}

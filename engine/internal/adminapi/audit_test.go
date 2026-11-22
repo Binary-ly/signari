@@ -6,8 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
 )
@@ -58,6 +63,63 @@ func getAuditPage(t *testing.T, s *Server, query string) auditPage {
 // id is. This test writes several events with an identical timestamp and pages
 // through them one at a time, which is the smallest page size that can expose
 // the bug.
+// countingTracer counts the statements a pool is asked for.
+type countingTracer struct{ asked atomic.Int32 }
+
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.asked.Add(1)
+	return ctx
+}
+
+func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// The trail reads from a replica where one is set, nothing else does, and a replica
+// that is not there does not stop somebody reading it.
+func TestTheAuditTrailAloneReadsFromTheReplica(t *testing.T) {
+	s, _ := newTestServer(t)
+	cfg, err := pgxpool.ParseConfig(os.Getenv("SIGNARI_TEST_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &countingTracer{}
+	cfg.ConnConfig.Tracer = tracer
+	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
+		return err
+	}
+	replica, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(replica.Close)
+	s.SetReadReplica(replica)
+
+	if rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=1", testToken, nil); rec.Code != http.StatusOK {
+		t.Fatalf("reading the trail: %d %s", rec.Code, rec.Body.String())
+	}
+	if tracer.asked.Load() == 0 {
+		t.Error("the replica was never asked")
+	}
+
+	tracer.asked.Store(0)
+	for _, path := range []string{"/admin/clients", "/admin/users", "/admin/organizations"} {
+		call(t, s, http.MethodGet, path, testToken, nil)
+	}
+	if n := tracer.asked.Load(); n != 0 {
+		t.Errorf("%d statements of a list that carries an ETag went to the replica", n)
+	}
+
+	gone, err := pgxpool.New(context.Background(), "postgres://nobody@127.0.0.1:1/nothing?connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(gone.Close)
+	s.SetReadReplica(gone)
+	if rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=1", testToken, nil); rec.Code != http.StatusOK {
+		t.Errorf("with the replica gone the trail answered %d", rec.Code)
+	}
+}
+
 func TestPagingTheAuditTrailDoesNotSkipRowsSharingATimestamp(t *testing.T) {
 	s, _ := newTestServer(t)
 	userID := newDriftUser(t, s)
@@ -152,6 +214,27 @@ func TestTheAuditReadDeclaresThatItDoesNotVerifyTheChain(t *testing.T) {
 	}
 }
 
+// A deployment-wide event -- one with no organisation -- must not break the read.
+//
+// The handler scanned org_id into a plain string, and SQL NULL into a Go string
+// is an error, so any page that included such an event answered 500. With
+// `limit=1` that meant the read failed whenever the newest event in the
+// deployment happened to have no organisation, which is why it surfaced as an
+// intermittent failure in an unrelated test rather than as a bug.
+func TestADeploymentWideEventDoesNotBreakTheAuditRead(t *testing.T) {
+	s, _ := newTestServer(t)
+	marker := fmt.Sprintf("deploymentwide-%d", time.Now().UnixNano())
+	writeFixtureEvents(t, s, "", "", marker, 1)
+
+	page := getAuditPage(t, s, "?event_type="+marker)
+	if len(page.Events) != 1 {
+		t.Fatalf("got %d events, want the 1 deployment-wide event", len(page.Events))
+	}
+	if page.Events[0].OrgID != "" {
+		t.Errorf("a deployment-wide event reported org_id %q, want null", page.Events[0].OrgID)
+	}
+}
+
 // A malformed cursor or timestamp is a 400, not a 500.
 func TestMalformedAuditQueriesAreRefusedClearly(t *testing.T) {
 	s, _ := newTestServer(t)
@@ -175,16 +258,19 @@ func TestAuditTimeFiltersApply(t *testing.T) {
 	orgID := anyOrgID(t, s)
 	marker := fmt.Sprintf("timed-%d", time.Now().UnixNano())
 
-	// Written properly, then BACKDATED with an UPDATE of occurred_at only.
-	//
-	// occurred_at is not part of the chain hash, so moving it leaves every link
-	// intact -- which is the only way to age a row without forging one. An
-	// INSERT with hand-made hashes would break the chain, and a DELETE
-	// afterwards would break it again.
-	writeFixtureEvents(t, s, orgID, "", marker, 1)
-	if _, err := s.db.Exec(ctx, `
-		UPDATE core.audit_events SET occurred_at = now() - interval '72 hours'
-		WHERE event_type = $1`, marker); err != nil {
+	// Written as having happened 72 hours ago, through audit.Write. It was
+	// written now and moved with an UPDATE of occurred_at, which was not in the
+	// chain hash; since 3.19 it is, and that UPDATE breaks the chain.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Write(ctx, tx, audit.Event{Type: marker, OrgID: orgID,
+		OccurredAt: time.Now().Add(-72 * time.Hour)}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -239,5 +325,86 @@ func writeFixtureEvents(t *testing.T, s *Server, orgID, subjectID, eventType str
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("committing the fixture events: %v", err)
+	}
+}
+
+// A token restricted to named clients or groups reads only the events about
+// them. It read the whole organisation's trail -- every other client's events
+// and every person's -- while docs/admin-tokens.md said reads are narrowed as
+// writes are.
+func TestARestrictedTokenReadsOnlyItsOwnObjectsAuditEvents(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	org := anyOrgID(t, s)
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	marker := "restricted-read-" + suffix
+	clientA, clientB := "audit-a-"+suffix, "audit-b-"+suffix
+	group := "6d3c1a7e-0000-4000-8000-" + fmt.Sprintf("%012d", time.Now().UnixNano()%1_000_000_000_000)
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []audit.Event{
+		{Type: marker, OrgID: org, ClientID: clientA},
+		{Type: marker, OrgID: org, ClientID: clientA},
+		{Type: marker, OrgID: org, ClientID: clientB},
+		{Type: marker, OrgID: org, Detail: map[string]any{"group_id": group}},
+		{Type: marker, OrgID: org},
+	} {
+		if err := audit.Write(ctx, tx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// nil is unrestricted for that kind and an empty list is none, as for
+	// writes. NewToken stores an unnamed list as NULL, so "none" is set on the
+	// row directly.
+	read := func(clients, groups []string) int {
+		t.Helper()
+		secret, _, err := NewToken(ctx, s.db, "audit read "+suffix, org, []string{ScopeAuditRead}, nil,
+			clients, groups)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.db.Exec(context.Background(), `DELETE FROM core.admin_tokens WHERE token_hash = $1`, sha256Of(secret))
+		})
+		for col, list := range map[string][]string{"client_ids": clients, "group_ids": groups} {
+			if list != nil && len(list) == 0 {
+				if _, err := s.db.Exec(ctx, `UPDATE core.admin_tokens SET `+col+` = '{}' WHERE token_hash = $1`,
+					sha256Of(secret)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		rec := call(t, s, http.MethodGet, "/admin/audit-events?limit=100&event_type="+marker, secret, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("the audit read answered %d: %s", rec.Code, rec.Body.String())
+		}
+		var page auditPage
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		return len(page.Events)
+	}
+
+	if n := read(nil, nil); n != 5 {
+		t.Errorf("an unrestricted token read %d of the 5 events", n)
+	}
+	if n := read([]string{clientA}, nil); n != 3 {
+		t.Errorf("a token for %s read %d events, want its 2 plus the group's (groups unrestricted)", clientA, n)
+	}
+	if n := read([]string{clientA}, []string{}); n != 2 {
+		t.Errorf("a token for %s and no groups read %d events, want its 2", clientA, n)
+	}
+	if n := read([]string{}, []string{group}); n != 1 {
+		t.Errorf("a token for the group and no clients read %d events, want 1", n)
+	}
+	if n := read(nil, []string{group}); n != 4 {
+		t.Errorf("a token for the group, clients unrestricted, read %d events, want every client's 3 and the group's", n)
 	}
 }

@@ -78,15 +78,27 @@ function encodeAssertion(cred) {
 }
 
 async function postJSON(url, body) {
-  const r = await fetch(url, {
+  return answered(await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // Ceremony state lives in a __Host- cookie; without this the second half of
     // the ceremony arrives with no challenge and fails as "nothing in progress".
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error_description || r.statusText);
+  }));
+}
+
+// answered reads a JSON answer, or throws its error_description.
+async function answered(r) {
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    // Changing how the account signs in needs a recent sign-in; the server
+    // says where to go, and the person comes back here afterwards.
+    if (e.error === "reauthentication_required" && e.location && e.location.startsWith("/")) {
+      window.location.assign(e.location);
+    }
+    throw new Error(e.error_description || r.statusText);
+  }
   return r.json();
 }
 
@@ -97,6 +109,106 @@ window.signariRegisterPasskey = async function (name) {
   const q = name ? "?name=" + encodeURIComponent(name) : "";
   return postJSON("/account/passkeys/finish" + q, encodeAttestation(cred));
 };
+
+// Registration from an emailed link, with no session: the link's token begins
+// the ceremony, which then carries it to the finish.
+window.signariRegisterPasskeyByLink = async function (token, name) {
+  const options = decodeCreation((await postJSON("/enrol/passkey/begin", { token: token })).publicKey);
+  const cred = await navigator.credentials.create({ publicKey: options });
+  const q = name ? "?name=" + encodeURIComponent(name) : "";
+  return postJSON("/enrol/passkey/finish" + q, encodeAttestation(cred));
+};
+
+document.addEventListener("DOMContentLoaded", function () {
+  const box = document.getElementById("passkey-link");
+  if (!box || !window.PublicKeyCredential) return;
+  box.hidden = false;
+  document.getElementById("passkey-link-needs").hidden = true;
+  const status = document.getElementById("passkey-status");
+  document.getElementById("passkey-link-register").addEventListener("click", async function () {
+    try {
+      await window.signariRegisterPasskeyByLink(box.dataset.token,
+        document.getElementById("passkey-name").value.trim());
+      box.hidden = true;
+      if (status) status.textContent = "";
+      document.getElementById("passkey-link-done").hidden = false;
+    } catch (e) {
+      if (e && e.name === "NotAllowedError") return;
+      if (status) status.textContent = e.message;
+    }
+  });
+});
+
+// Removal. A form post, with the page's CSRF token, because the endpoint
+// checks one: taking a factor away is the change another origin would want.
+window.signariRemovePasskey = async function (id, csrfField) {
+  const body = new URLSearchParams();
+  body.set("id", id);
+  if (csrfField) body.set(csrfField.name, csrfField.value);
+  return answered(await fetch("/account/passkeys/delete", {
+    method: "POST", credentials: "same-origin", body: body
+  }));
+};
+
+// The account page's passkey controls, wired here for the reason the sign-in
+// button below is: an inline handler would be blocked by script-src 'self'.
+// Adding needs WebAuthn and is revealed only where it exists; removing needs
+// only this script, so its buttons are revealed whenever it runs.
+document.addEventListener("DOMContentLoaded", function () {
+  const status = document.getElementById("passkey-status");
+  const say = (m) => { if (status) status.textContent = m; };
+  const csrf = document.getElementById("passkey-csrf");
+  document.querySelectorAll(".passkey-remove").forEach(function (b) {
+    b.hidden = false;
+    b.addEventListener("click", async function () {
+      try {
+        await window.signariRemovePasskey(b.dataset.id, csrf);
+        window.location.reload();
+      } catch (e) { say(e.message); }
+    });
+  });
+  const add = document.getElementById("passkey-add");
+  if (!add || !window.PublicKeyCredential) return;
+  add.hidden = false;
+  document.getElementById("passkey-register").addEventListener("click", async function () {
+    try {
+      await window.signariRegisterPasskey(document.getElementById("passkey-name").value.trim());
+      window.location.reload();
+    } catch (e) { say(e.message); }
+  });
+});
+
+// A key as the second factor, on the code page after a password.
+//
+// The answer is submitted as a FORM to /login/mfa rather than fetched.
+// Finishing a sign-in may redirect to the application or show a prompt, and a
+// fetch can follow neither: the redirect to the application's origin fails as
+// a CORS error, and a prompt arrives as a page the script would have to throw
+// away. Revealed only where WebAuthn exists, for the reason the sign-in button
+// below is; the code form above it needs no script.
+document.addEventListener("DOMContentLoaded", function () {
+  const form = document.getElementById("mfa-key");
+  if (!form || !window.PublicKeyCredential) return;
+  form.hidden = false;
+  const status = document.getElementById("mfa-key-status");
+  document.getElementById("mfa-key-use").addEventListener("click", async function () {
+    try {
+      const options = decodeRequest((await postJSON("/login/mfa/webauthn/begin")).publicKey);
+      const cred = await navigator.credentials.get({ publicKey: options });
+      if (!cred) return;
+      document.getElementById("mfa-assertion").value = JSON.stringify(encodeAssertion(cred));
+      // The code form's "remember this device" box, carried to this one.
+      const box = document.getElementById("mfa-remember");
+      const carried = document.getElementById("mfa-key-remember");
+      if (box && carried) carried.value = box.checked ? "1" : "";
+      form.submit();
+    } catch (e) {
+      // Cancelling is not an error; see signariSignInWithPasskey.
+      if (e && e.name === "NotAllowedError") return;
+      if (status) status.textContent = e.message;
+    }
+  });
+});
 
 // ONE ceremony at a time, shared between conditional UI and the button.
 //
@@ -142,7 +254,10 @@ async function passkeySignIn(mediation) {
   ceremony = null;
 
   const authz = document.querySelector('input[name="authz"]');
-  const q = authz && authz.value ? "?authz=" + encodeURIComponent(authz.value) : "";
+  const params = new URLSearchParams();
+  if (authz && authz.value) params.set("authz", authz.value);
+  if (staySignedIn()) params.set("stay_signed_in", "1");
+  const q = params.toString() ? "?" + params.toString() : "";
   await postJSON("/login/passkey/finish" + q, encodeAssertion(cred));
   window.location.reload();
 }
@@ -161,6 +276,30 @@ window.signariSignInWithPasskey = function () {
 // <script> -- they would need 'unsafe-inline', which is the thing this file
 // exists to avoid. An onclick would have left a button that silently does
 // nothing, with the reason visible only in the browser console.
+// "Stay signed in on this device" (5.11) is a field of the password form, which
+// needs no JavaScript. A passkey and a provider's link leave the page without
+// submitting it, so the choice rides on their request: the finish URL above,
+// and each provider link, kept in step as the box is ticked.
+function staySignedIn() {
+  const box = document.getElementById("stay-signed-in");
+  return !!(box && box.checked);
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  const box = document.getElementById("stay-signed-in");
+  if (!box) return;
+  const follow = function () {
+    document.querySelectorAll("a.ext").forEach(function (a) {
+      const u = new URL(a.getAttribute("href"), window.location.href);
+      if (box.checked) u.searchParams.set("stay_signed_in", "1");
+      else u.searchParams.delete("stay_signed_in");
+      a.setAttribute("href", u.pathname + u.search);
+    });
+  };
+  box.addEventListener("change", follow);
+  follow();
+});
+
 document.addEventListener("DOMContentLoaded", function () {
   const b = document.getElementById("passkey-signin");
   if (!b) return;
@@ -189,7 +328,13 @@ document.addEventListener("DOMContentLoaded", function () {
 // Guarded on isConditionalMediationAvailable because calling get() with
 // mediation:"conditional" on a browser that lacks it throws, and the whole page
 // then looks broken to users on older browsers.
+//
+// Only where a field asks for it (autocomplete "webauthn"). The account page
+// loads this script too, and a conditional get() started there stays pending:
+// the API permits one ceremony at a time, so it would refuse the create() the
+// "Add a passkey" button starts.
 (async function () {
+  if (!document.querySelector('input[autocomplete~="webauthn"]')) return;
   if (!window.PublicKeyCredential ||
       !PublicKeyCredential.isConditionalMediationAvailable) return;
   try {

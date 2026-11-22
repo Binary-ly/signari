@@ -2,6 +2,8 @@ package flow
 
 import (
 	"fmt"
+	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -58,26 +60,19 @@ const (
 // being warned about a file that does not run; left behind after one is added,
 // they are warned about a file that does.
 //
-// # The three that are driven
+// # All four are driven
 //
 //	authentication  the sign-in journey, driven since the package existed
 //	enrolment       /signup walks the flow (9q option 2)
 //	recovery        /recover and /recover/reset walk it (9q option 3)
+//	unenrolment     /account/delete walks it (5.07): a person deleting their
+//	                own account, proved by the sign-in that reached the page
 //
-// # Why unenrolment is not, and why that is not the same kind of gap
-//
-// Because there is no unenrolment journey to drive. This engine has no
-// self-service account-deletion endpoint at all: deletion is `signari erase
-// subject` and the admin API, both of which are operator actions rather than
-// journeys a subject walks. The designation is defined, parsed and safety-checked
-// so that a file declaring one is understood rather than rejected, and so the
-// language does not have to change on the day such an endpoint is built.
-//
-// So the other three were "the file is ignored". This one is "there is nothing
-// for the file to be about", which is why the two must not be reported the same
-// way.
+// Until 5.07 unenrolment had no journey at all -- deletion was `signari erase
+// subject` and the Admin API, operator actions rather than something a subject
+// walks -- so it was defined, parsed and safety-checked and reported as not run.
 func (d Designation) Driven() bool {
-	return d == Authentication || d == Enrolment || d == Recovery
+	return d == Authentication || d == Enrolment || d == Recovery || d == Unenrolment
 }
 
 // Undriven returns the designations this engine parses and does not execute.
@@ -102,6 +97,10 @@ type Flow struct {
 	Stages []Step `yaml:"stages"`
 	// Tests are run by Parse. Required.
 	Tests []TestCase `yaml:"tests"`
+
+	// proofs keeps AdmitsProof's answers, given by Parse; nil for a flow built
+	// some other way, which works each answer out every time it is asked.
+	proofs *proofAnswers
 }
 
 // Step is one position in a flow.
@@ -115,6 +114,16 @@ type Flow struct {
 type Step struct {
 	Stage StageName `yaml:"stage,omitempty"`
 	When  string    `yaml:"when,omitempty"`
+	// To is where a redirect stage sends the browser, and only a redirect
+	// takes one: an https URL with no user information, or a path on this
+	// server. Read from the operator's file, never from a request.
+	To string `yaml:"to,omitempty"`
+	// Provider pins a federated stage to one identity provider, by slug. See
+	// PinnedProviders.
+	Provider string `yaml:"provider,omitempty"`
+	// Factor names the registered service an external_factor stage asks, and
+	// only that stage takes one.
+	Factor string `yaml:"factor,omitempty"`
 	// OneOf is a set of branches of which exactly one runs. The engine takes the
 	// first whose condition holds; the last branch must be unconditional, so
 	// that "exactly one" is a fact rather than a hope.
@@ -140,6 +149,10 @@ type Branch struct {
 	// When empty, this is the default branch: it runs when no earlier branch
 	// matched. Exactly one branch must have an empty When, and it must be last.
 	When string `yaml:"when,omitempty"`
+	// Provider pins a federated branch, as on Step.
+	Provider string `yaml:"provider,omitempty"`
+	// Factor names an external_factor branch's service, as on Step.
+	Factor string `yaml:"factor,omitempty"`
 }
 
 // TestCase is a case the file makes about itself.
@@ -170,7 +183,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 		s.Stage = StageName(name)
 		return nil
 	}
-	if err := checkKeys(n, "stage", "when", "one_of"); err != nil {
+	if err := checkKeys(n, "stage", "when", "one_of", "to", "provider", "factor"); err != nil {
 		return err
 	}
 	// A named type, so decoding the mapping does not re-enter this method.
@@ -185,7 +198,7 @@ func (s *Step) UnmarshalYAML(n *yaml.Node) error {
 
 // UnmarshalYAML exists on Branch only to reject unknown keys. See checkKeys.
 func (b *Branch) UnmarshalYAML(n *yaml.Node) error {
-	if err := checkKeys(n, "stage", "when"); err != nil {
+	if err := checkKeys(n, "stage", "when", "provider", "factor"); err != nil {
 		return err
 	}
 	type raw Branch
@@ -254,6 +267,9 @@ func Parse(data []byte) (*File, error) {
 	if err := f.RunTests(); err != nil {
 		return nil, err
 	}
+	for i := range f.Flows {
+		f.Flows[i].proofs = &proofAnswers{}
+	}
 	return &f, nil
 }
 
@@ -294,16 +310,41 @@ func (fl *Flow) validate() error {
 			return fmt.Errorf("step %d sets both `stage` and `one_of`; it can be one or the other", i+1)
 		case st.Stage == "" && len(st.OneOf) == 0:
 			return fmt.Errorf("step %d names no stage", i+1)
+		case st.Stage == "" && st.To != "":
+			return fmt.Errorf("step %d gives `to` to a one_of; only a redirect stage takes one", i+1)
 		case st.Stage != "":
 			if !st.Stage.known() {
 				return fmt.Errorf("step %d: %q is not a stage (%s)", i+1, st.Stage, knownStages())
 			}
+			if err := checkRedirectTarget(st); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
+			if err := checkPin(st.Stage, st.Provider); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
+			if err := checkFactor(st.Stage, st.Factor); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
 			if err := checkCondition(st.When); err != nil {
+				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
+			}
+			if err := checkAnswered(fl.On, st.Stage, st.When); err != nil {
 				return fmt.Errorf("step %d (%s): %w", i+1, st.Stage, err)
 			}
 		default:
 			if err := validateGroup(st.OneOf); err != nil {
 				return fmt.Errorf("step %d: %w", i+1, err)
+			}
+			for j, b := range st.OneOf {
+				if err := checkPin(b.Stage, b.Provider); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
+				if err := checkFactor(b.Stage, b.Factor); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
+				if err := checkAnswered(fl.On, b.Stage, b.When); err != nil {
+					return fmt.Errorf("step %d, one_of branch %d (%s): %w", i+1, j+1, b.Stage, err)
+				}
 			}
 		}
 	}
@@ -330,8 +371,8 @@ func (fl *Flow) validate() error {
 	for _, name := range last.stageNames() {
 		if !name.terminal() {
 			return fmt.Errorf("ends with %s, which is not a terminal stage; a flow must "+
-				"end in %s, %s or %s so that every path has a stated outcome",
-				name, StageSession, StageDone, StageDeny)
+				"end in %s, %s, %s or %s so that every path has a stated outcome",
+				name, StageSession, StageDone, StageRedirect, StageDeny)
 		}
 	}
 
@@ -340,7 +381,157 @@ func (fl *Flow) validate() error {
 			"should run -- they run every time this file is loaded, so a flow that stops " +
 			"doing what you meant cannot deploy")
 	}
-	return fl.checkSafety()
+	// Safety first, so a flow that is both unsafe and undriven is told the
+	// graver thing.
+	if err := fl.checkSafety(); err != nil {
+		return err
+	}
+	if err := fl.checkDriven(); err != nil {
+		return err
+	}
+	return fl.checkOneProof()
+}
+
+// checkRedirectTarget holds a redirect to a `to` the browser can be sent to
+// safely, and every other stage to none. Https only, so the person is not sent
+// to a page anybody on the path can rewrite; no user information, which is
+// how a link reads as one site and goes to another; or a path on this server,
+// starting with one slash, since two are another host.
+func checkRedirectTarget(st Step) error {
+	if st.Stage != StageRedirect {
+		if st.To != "" {
+			return fmt.Errorf("`to` is for a redirect stage, and %s takes none", st.Stage)
+		}
+		return nil
+	}
+	to := strings.TrimSpace(st.To)
+	if to == "" {
+		return fmt.Errorf("a redirect needs `to`, the https URL or path to send the browser to")
+	}
+	if strings.HasPrefix(to, "/") {
+		if strings.HasPrefix(to, "//") || strings.HasPrefix(to, "/\\") || strings.ContainsAny(to, "\r\n") {
+			return fmt.Errorf("`to: %s` would leave this server; a path starts with a single slash", to)
+		}
+		return nil
+	}
+	u, err := url.Parse(to)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return fmt.Errorf("`to: %s` must be an https URL with no user information, or a path on "+
+			"this server", to)
+	}
+	return nil
+}
+
+// checkPin holds `provider` to a federated stage: on any other it would read as a
+// restriction and restrict nothing.
+func checkPin(stage StageName, provider string) error {
+	if provider != "" && stage != StageFederated {
+		return fmt.Errorf("`provider` is for a federated stage, and %s takes none", stage)
+	}
+	return nil
+}
+
+// checkFactor is checkPin for a factor, except that the stage cannot go without
+// one: there is no "any service" to ask.
+func checkFactor(stage StageName, factor string) error {
+	switch {
+	case stage == StageExternalFactor && factor == "":
+		return fmt.Errorf("`factor` names the registered service this stage asks, and it has none")
+	case stage != StageExternalFactor && factor != "":
+		return fmt.Errorf("`factor` is for an external_factor stage, and %s takes none", stage)
+	}
+	return nil
+}
+
+// Factors are the registered services this flow can ask.
+func (fl *Flow) Factors() []string {
+	var names []string
+	add := func(stage StageName, factor string) {
+		if stage == StageExternalFactor && !slices.Contains(names, factor) {
+			names = append(names, factor)
+		}
+	}
+	for _, st := range fl.Stages {
+		add(st.Stage, st.Factor)
+		for _, b := range st.OneOf {
+			add(b.Stage, b.Factor)
+		}
+	}
+	return names
+}
+
+// PinnedProviders are the providers a federated sign-in under this flow must come
+// through, nil when any will do: one federated stage with no `provider` admits
+// them all, so a flow is pinned only when all of them name one.
+func (fl *Flow) PinnedProviders() []string {
+	var pins []string
+	for _, st := range fl.Stages {
+		branches := st.OneOf
+		if st.Stage != "" {
+			branches = []Branch{{Stage: st.Stage, Provider: st.Provider}}
+		}
+		for _, b := range branches {
+			if b.Stage != StageFederated {
+				continue
+			}
+			if b.Provider == "" {
+				return nil
+			}
+			if !slices.Contains(pins, b.Provider) {
+				pins = append(pins, b.Provider)
+			}
+		}
+	}
+	return pins
+}
+
+// AdmitsProvider reports whether a federated sign-in through slug passes this flow.
+func (fl *Flow) AdmitsProvider(slug string) bool {
+	pins := fl.PinnedProviders()
+	return pins == nil || slices.Contains(pins, slug)
+}
+
+// OnlyProvider is the one provider everybody under this flow signs in through, "" when
+// there is any other way in. A flow like that has no use for the sign-in page.
+func (fl *Flow) OnlyProvider() string {
+	pins := fl.PinnedProviders()
+	if len(pins) != 1 {
+		return ""
+	}
+	for stage := range signInProofs {
+		if stage != StageFederated && fl.AdmitsProof(stage) {
+			return ""
+		}
+	}
+	return pins[0]
+}
+
+// OnlyKerberos reports whether a ticket is the only way the flow signs anybody in: it
+// admits the kerberos proof and no other, so the sign-in page could offer nothing that
+// succeeds. A flow with too many conditions to enumerate admits every proof, and so
+// shows the page.
+func (fl *Flow) OnlyKerberos() bool {
+	if fl == nil || !fl.AdmitsProof(StageKerberos) {
+		return false
+	}
+	for stage := range signInProofs {
+		if stage != StageKerberos && fl.AdmitsProof(stage) {
+			return false
+		}
+	}
+	return true
+}
+
+// RedirectTarget is where the flow's redirect sends the browser, or "" when it
+// ends otherwise.
+func (fl *Flow) RedirectTarget() string {
+	if fl == nil || len(fl.Stages) == 0 {
+		return ""
+	}
+	if last := fl.Stages[len(fl.Stages)-1]; last.Stage == StageRedirect {
+		return strings.TrimSpace(last.To)
+	}
+	return ""
 }
 
 func validateGroup(bs []Branch) error {

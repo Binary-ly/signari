@@ -48,7 +48,16 @@ func newUpstream(t *testing.T) *upstream {
 	}
 }
 
+// confirmation is one SubjectConfirmation of a test response.
+type confirmation struct {
+	method, recipient string
+	noData, noExpiry  bool
+}
+
 type respOpts struct {
+	// confirmations replaces the one bearer confirmation a response has, for
+	// destination, when set.
+	confirmations  []confirmation
 	inResponseTo   string
 	audience       string
 	destination    string
@@ -62,6 +71,10 @@ type respOpts struct {
 	omitConditions bool
 	omitAudience   bool
 	email          string
+	// sealNameID stands something else in for the NameID, before anything is signed.
+	sealNameID func(*etree.Element) *etree.Element
+	// sealAttribute does the same for the email attribute.
+	sealAttribute func(*etree.Element) *etree.Element
 }
 
 func (u *upstream) response(t *testing.T, o respOpts) []byte {
@@ -115,15 +128,31 @@ func (u *upstream) response(t *testing.T, o respOpts) []byte {
 	nid := sub.CreateElement("saml:NameID")
 	nid.CreateAttr("Format", o.nameIDFormat)
 	nid.SetText(o.nameID)
-	sc := sub.CreateElement("saml:SubjectConfirmation")
-	sc.CreateAttr("Method", "urn:oasis:names:tc:SAML:2.0:cm:bearer")
-	scd := sc.CreateElement("saml:SubjectConfirmationData")
-	scd.CreateAttr("NotOnOrAfter", o.notOnOrAfter.UTC().Format(time.RFC3339))
-	if o.inResponseTo != "" {
-		scd.CreateAttr("InResponseTo", o.inResponseTo)
+	if o.sealNameID != nil {
+		sealed := o.sealNameID(nid)
+		sub.RemoveChild(nid)
+		sub.AddChild(sealed)
 	}
-	if o.destination != "" {
-		scd.CreateAttr("Recipient", o.destination)
+	confirmations := o.confirmations
+	if confirmations == nil {
+		confirmations = []confirmation{{method: bearerMethod, recipient: o.destination}}
+	}
+	for _, c := range confirmations {
+		sc := sub.CreateElement("saml:SubjectConfirmation")
+		sc.CreateAttr("Method", c.method)
+		if c.noData {
+			continue
+		}
+		scd := sc.CreateElement("saml:SubjectConfirmationData")
+		if !c.noExpiry {
+			scd.CreateAttr("NotOnOrAfter", o.notOnOrAfter.UTC().Format(time.RFC3339))
+		}
+		if o.inResponseTo != "" {
+			scd.CreateAttr("InResponseTo", o.inResponseTo)
+		}
+		if c.recipient != "" {
+			scd.CreateAttr("Recipient", c.recipient)
+		}
 	}
 
 	if !o.omitConditions {
@@ -149,6 +178,11 @@ func (u *upstream) response(t *testing.T, o respOpts) []byte {
 		at := stmt.CreateElement("saml:Attribute")
 		at.CreateAttr("Name", "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress")
 		at.CreateElement("saml:AttributeValue").SetText(o.email)
+		if o.sealAttribute != nil {
+			sealed := o.sealAttribute(at)
+			stmt.RemoveChild(at)
+			stmt.AddChild(sealed)
+		}
 	}
 
 	// Sign whichever element the case calls for, using the same signer the
@@ -390,6 +424,63 @@ func TestResponseLevelSignatureAccepted(t *testing.T) {
 		ExpectedInResponseTo: "_req-1", Destination: p.ACSURL, Now: time.Now(),
 	}); err != nil {
 		t.Fatalf("a response-level signature was refused: %v", err)
+	}
+}
+
+// An identity provider may sign the response and the assertion both, and many do
+// when told to "sign the response and the assertion"; a live run against a public
+// test provider found every such response refused, two signatures being counted
+// in the document where only one was allowed. Both are accepted now, each in its
+// one position and each verified; a signature anywhere else is still refused.
+func TestBothSignaturesAccepted(t *testing.T) {
+	u := newUpstream(t)
+	p := inboundProvider(u)
+	opts := ConsumeOptions{ExpectedInResponseTo: "_req-1", Destination: p.ACSURL, Now: time.Now()}
+
+	raw := u.response(t, respOpts{
+		inResponseTo: "_req-1", destination: p.ACSURL, signAssertion: true, signResponse: true,
+	})
+	if _, err := ConsumeResponse(raw, p, opts); err != nil {
+		t.Fatalf("a response signed at both levels was refused: %v", err)
+	}
+
+	// The assertion signed by somebody else and the response by the provider: the
+	// response's signature verifies, and the assertion's must as well.
+	stranger := newUpstream(t)
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(stranger.response(t, respOpts{
+		inResponseTo: "_req-1", destination: p.ACSURL, signAssertion: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signElement(doc.Root(), u.key, u.certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.SetRoot(signed)
+	mixed, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConsumeResponse(mixed, p, opts); err == nil {
+		t.Error("a response signed by the provider around an assertion signed by a stranger was accepted")
+	}
+
+	// A third signature, somewhere neither signer puts one: refused, as before. It is
+	// put where no digest covers it, inside the response's own Signature beside its
+	// SignedInfo, so the refusal is the placement rule's and not a broken digest's.
+	doc = etree.NewDocument()
+	if err := doc.ReadFromBytes(raw); err != nil {
+		t.Fatal(err)
+	}
+	extra := doc.Root().FindElement("./Assertion/Signature").Copy()
+	doc.Root().SelectElement("Signature").AddChild(extra)
+	third, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ConsumeResponse(third, p, opts); err == nil {
+		t.Error("a response carrying a third signature was accepted")
 	}
 }
 

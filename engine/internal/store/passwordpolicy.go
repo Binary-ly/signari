@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgconn"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"signari.dev/engine/internal/passwords"
 )
 
 // Previous passwords, for the reuse check.
@@ -180,11 +183,13 @@ func CurrentPasswordHash(ctx context.Context, q Querier, userID string) (string,
 // attaches a previous password's history to a new one -- most visibly as a user
 // who changes their password as instructed and is asked to do it again.
 func SetPassword(ctx context.Context, e Execer, userID, newHash string) error {
-	_, err := e.Exec(ctx, `
+	if _, err := e.Exec(ctx, `
 		UPDATE core.password_credentials
-		   SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now(),
+		   SET hash = $2, algorithm = $3, is_current = true, updated_at = now(),
 		       failed_attempts = 0, throttled_until = NULL, last_failure_at = NULL,
 		       must_change = false, must_change_reason = NULL, last_breach_check = NULL
-		 WHERE user_id = $1::uuid`, userID, newHash)
-	return err
+		 WHERE user_id = $1::uuid`, userID, newHash, passwords.AlgorithmOf(newHash)); err != nil {
+		return err
+	}
+	return QueueCredentialChange(ctx, e, userID, CredentialPassword, ChangeUpdate, "user")
 }

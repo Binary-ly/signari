@@ -25,7 +25,7 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 	rows, err := db.Query(ctx, `
 		SELECT config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(EXTRACT(EPOCH FROM lifetime), 0)::bigint,
-		       COALESCE(display_name, '')
+		       COALESCE(display_name, ''), require_key_attestation, deferred, wallet_initiated, revocable
 		FROM core.credential_configurations
 		WHERE org_id = $1::uuid
 		ORDER BY config_id`, orgID)
@@ -39,7 +39,8 @@ func CredentialConfigurations(ctx context.Context, db Querier, orgID string) (ma
 		var c oid4vci.Configuration
 		var seconds int64
 		if err := rows.Scan(&c.ID, &c.Format, &c.VCT, &c.AlwaysClaims,
-			&c.SelectiveClaims, &seconds, &c.DisplayName); err != nil {
+			&c.SelectiveClaims, &seconds, &c.DisplayName, &c.RequireKeyAttestation, &c.Deferred,
+			&c.WalletInitiated, &c.Revocable); err != nil {
 			return nil, err
 		}
 		c.Lifetime = time.Duration(seconds) * time.Second
@@ -125,17 +126,26 @@ func CredentialSubject(ctx context.Context, db *pgxpool.Pool, userID string) (ma
 //
 // Not scoped to an organisation, for the same reason the discovery document's
 // `authorization_details_types_supported` is not: metadata is published per
-// ISSUER, and a deployment serves one. Scoping it would mean the unauthenticated
-// metadata endpoint guessing which tenant is asking, and a wallet reading a
-// document that describes only some of what the issuer offers.
-func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oid4vci.Configuration, error) {
+// ISSUER. Scoping it would mean the unauthenticated metadata endpoint guessing
+// which tenant is asking, and a wallet reading a document that describes only
+// some of what the issuer offers. So it is scoped to the issuer's instance,
+// instanceID, and no further (6.12).
+func AllCredentialConfigurations(ctx context.Context, db Querier, instanceID string) (map[string]oid4vci.Configuration, error) {
 	rows, err := db.Query(ctx, `
 		SELECT DISTINCT ON (config_id)
 		       config_id, format, vct, always_claims, selective_claims,
 		       COALESCE(EXTRACT(EPOCH FROM lifetime), 0)::bigint,
-		       COALESCE(display_name, '')
-		FROM core.credential_configurations
-		ORDER BY config_id`)
+		       COALESCE(display_name, ''),
+		       -- Required if any organisation's configuration of this id
+		       -- requires it: a wallet told so sends an attestation every
+		       -- tenant accepts, and one told otherwise is refused by the
+		       -- tenant that does.
+		       EXISTS (SELECT 1 FROM core.credential_configurations r
+		               WHERE r.config_id = c.config_id AND r.require_key_attestation
+		                 AND `+InInstance("r.org_id", "$1")+`)
+		FROM core.credential_configurations c
+		WHERE `+InInstance("c.org_id", "$1")+`
+		ORDER BY config_id`, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("listing credential configurations: %w", err)
 	}
@@ -146,7 +156,7 @@ func AllCredentialConfigurations(ctx context.Context, db Querier) (map[string]oi
 		var c oid4vci.Configuration
 		var seconds int64
 		if err := rows.Scan(&c.ID, &c.Format, &c.VCT, &c.AlwaysClaims,
-			&c.SelectiveClaims, &seconds, &c.DisplayName); err != nil {
+			&c.SelectiveClaims, &seconds, &c.DisplayName, &c.RequireKeyAttestation); err != nil {
 			return nil, err
 		}
 		c.Lifetime = time.Duration(seconds) * time.Second

@@ -1,28 +1,63 @@
 # FIPS 140-3
 
-Signari builds and runs against Go's FIPS 140-3 validated cryptographic module.
-This page says exactly which features survive that and which cannot, because the
-answer is not "all of them" and nobody can tell you which without running it.
+Signari builds and runs against Go's FIPS 140-3 cryptographic module. This page
+says exactly which features survive that and which cannot, because the answer is
+not "all of them" and nobody can tell you which without running it.
 
 ## The short version
 
 ```sh
-GOFIPS140=latest go build ./cmd/signari
+GOFIPS140=certified go build ./cmd/signari   # the validated snapshot
 GODEBUG=fips140=only ./signari serve
+scripts/build-release.sh -fips -image REPO:TAG   # a pinned release and a REPO:TAG-fips image
 ```
 
-**31 of 36 packages pass their tests under `fips140=only`.** (That count is blunter than
-the truth: of the five failures, one is only test fixtures and one is only the
-non-FIPS default being covered. See below.) Core OIDC — the
-authorization code flow, token issue and verification, JWKS, sessions, refresh,
-introspection, revocation, DPoP, mTLS, PAR, device flow — is unaffected.
+`signari version` says which module a binary was built against
+(`fips140  enabled, module v1.0.0-c2097c7c`); `module none` means it was not
+built against a snapshot at all, whatever `GODEBUG` says. The release script's
+`-fips` refuses a binary or image that does not report the snapshot.
 
-Five packages do not. Four of them cannot be fixed. The fifth, SAML, can be
-configured to work and fails its tests only because they also exercise the
-interoperable default. The reason is the same
-in every case: a protocol or a stored format mandates an algorithm the module
-refuses, and no amount of care on our side changes what the specification says
-or what another vendor's database already contains.
+`certified` selects the snapshot Go lists as certified (`v1.0.0-c2097c7c`, in
+`$GOROOT/lib/fips140/certified.txt` of the go1.26 toolchains), and the engine
+builds against it. This page used to give `GOFIPS140=latest`, which is the
+module's code as it stands rather than a validated snapshot, while calling the
+result a validated module. The package counts below were measured with `latest`
+and have not been repeated against `certified`.
+
+`internal/passwords` and `internal/mfa` were re-run in October 2026 and now pass
+under `fips140=only`. Their tests of what is refused in that mode run there, and
+the tests whose fixtures need SHA-1 skip. `signari doctor` reports the mode and
+what it would refuse.
+
+**Until October 2026 `serve` could not start under `fips140=only` at all.** The
+root key and each subject key gave AES-GCM a nonce of their own, which the module
+refuses ("use of GCM with arbitrary IVs is not allowed"), so the engine died
+unwrapping its first signing key. The package tests passed because none of them
+unwrapped a real key in that mode. Both keys now let the module make the nonce
+(`NewGCMWithRandomNonce`), in the same stored layout, so every sealed value opens,
+and a test re-runs itself under `fips140=only` to seal and open with both. On a
+copy of a working deployment, under `fips140=only` with the certified module,
+`serve` starts and a password sign-in works, the stored hash moving from Argon2id
+to PBKDF2 on the first sign-in.
+
+**60 of 67 packages pass their tests under `fips140=only`**, measured in October
+2026 against a database, with the certified module. (This page said 31 of 36,
+counted when there were fewer packages.) None of the seven failures is a request
+path panicking: each was traced to its frame. Five fail only in test fixtures
+that build with an algorithm the module refuses: `clientauth` makes RSA keys
+under 2048 bits to prove they are refused, `httpapi` and `store` compute TOTP
+codes, `importer` builds a short-salted PBKDF2 hash, and `outbox` signs with an
+HMAC key shorter than the 112 bits the module allows. The engine's own webhook
+and provider secrets are 32 random bytes. Two fail by design, below: `radius`,
+and `saml`, whose tests cover the interoperable default as well as the FIPS
+configuration. Core OIDC — the authorization code flow, token issue and
+verification, JWKS, sessions, refresh, introspection, revocation, DPoP, mTLS,
+PAR, device flow — is unaffected.
+
+Where a feature cannot work, the reason is the same every time: a protocol or a
+stored format mandates an algorithm the module refuses, and no amount of care on
+our side changes what the specification says or what another vendor's database
+already contains.
 
 ## The two modes are not the same thing
 
@@ -38,20 +73,43 @@ find out which of these two the requirement means before planning anything.
 
 ## What cannot work under `fips140=only`
 
-### TOTP — `internal/mfa`
+### SHA-1 one-time codes — `internal/mfa`
 
-RFC 6238 specifies HMAC-SHA1, and effectively every authenticator app implements
-only that. SHA-1 in HMAC is not a collision-resistance claim and is not broken in
+One-time codes default to HMAC-SHA1, the variant every authenticator app
+computes. SHA-1 in HMAC is not a collision-resistance claim and is not broken in
 the way SHA-1 signatures are, but the module does not evaluate the argument: it
-refuses HMAC with anything outside SHA-2 and SHA-3.
+refuses HMAC with anything outside SHA-2 and SHA-3, and with a key shorter than
+112 bits.
 
-RFC 6238 does define SHA-256 and SHA-512 variants. Google Authenticator, Authy
-and Microsoft Authenticator do not implement them, so enabling one enrols users
-into codes their phone cannot produce.
+RFC 6238 also defines SHA-256 and SHA-512 variants, and those run inside the
+module. An organisation that sets `signari instance totp-policy -totp-algorithm
+SHA256` enrols new authenticator apps with SHA-256, and `signari user assign-otp
+-totp-algorithm SHA256` assigns a hardware token that computes it. Not every app
+computes SHA-256: one that does not shows codes that never match, so choose apps
+or tokens that state it. Each credential keeps the algorithm it was enrolled with.
 
-**Consequence: no TOTP.** Use WebAuthn instead, which is unaffected — passkeys
-are ECDSA P-256 or RSA with SHA-256 and pass cleanly. This is not a bad trade;
-it is the direction to move anyway.
+**Consequence: no SHA-1 codes.** Use SHA-256 apps or tokens, or WebAuthn, which
+is unaffected — passkeys are ECDSA P-256 or RSA with SHA-256 and pass cleanly. A
+YubiKey's Yubico OTP (`user assign-otp -yubico`) is unaffected too: each OTP is one
+AES-128 block, decrypted inside the module, and it is checked under `fips140=only`
+by test.
+
+`serve` refuses to start under `fips140=only` while anyone has a SHA-1 code
+authenticator as a second factor, saying how many, because none of them could
+finish signing in. Move them to a SHA-256 authenticator or a passkey and remove
+the factor (`DELETE /admin/users/{id}/factors/totp`) first. While an
+organisation still enrols SHA-1 apps, its enrolment page says why it cannot add
+one rather than showing a secret no code could confirm, and `signari doctor`
+warns. A code checked anyway, or one from a token seed under 112 bits, is
+refused with an error rather than a panic. Until October 2026 the check panicked
+the request, at the moment the person typed a code.
+
+### A vendor's token file — `internal/importer`
+
+RFC 6030 recommends implementing HMAC-SHA1 for a PSKC file, and it is what the RFC's own
+example uses, so `signari import pskc` reads it. Under `fips140=only` such a file is refused
+with a sentence saying so: read it once on a build without that setting, or ask the vendor
+for HMAC-SHA256, which works in either. AES-CBC and the file's plain secrets are unaffected.
 
 ### RADIUS — `internal/radius`
 
@@ -61,7 +119,23 @@ would not be RADIUS, and no network access server would talk to it.
 
 **Consequence: no RADIUS, and therefore no EAP-TLS through it.** 802.1X in a
 FIPS environment needs a RADIUS server built against a module that carries an MD5
-exception for exactly this purpose, which Go's does not.
+exception for exactly this purpose, which Go's does not. `serve` refuses to start
+under `fips140=only` with `SIGNARI_RADIUS_ADDR` set.
+
+### The breached-password check — `internal/passwords`
+
+The corpus is indexed by SHA-1, and the range API takes a SHA-1 prefix, so the
+check cannot run under `fips140=only`. `serve` refuses to start with
+`SIGNARI_PASSWORD_BREACH_CHECK` or `SIGNARI_PASSWORD_BREACH_LIST` set, and a check
+reached anyway reports itself unavailable instead of panicking.
+
+### A certificate's thumbprint in a client assertion — `internal/federation`
+
+`signari idp auth -method private_key_jwt` with a certificate names it in the
+assertion's header by `x5t`, which is defined over SHA-1, as well as `x5t#S256`.
+It is a name and protects nothing, but SHA-1 is not available under
+`fips140=only`, so there only `x5t#S256` is sent. A provider that looks a key up
+by `x5t` alone will not find it.
 
 ### Verifying passwords from another IdP — `internal/passwords`
 
@@ -72,14 +146,58 @@ authentication path is unaffected — it proxies the credential to the old IdP a
 stores a local Argon2id hash — so a migration that uses shadow authentication
 rather than hash import works.
 
-Note also that Argon2id, bcrypt and scrypt live outside the validated module
-entirely. They are not *refused*; they simply are not covered, so a strict
-reading gives you no validated password hash at all. PBKDF2 with a long salt and
-SHA-256 is the approved option, and it is a considerably worse password hash. If
-a FIPS boundary is genuinely required around password storage, that trade needs
-stating explicitly to whoever is asking for it.
+Imported hashes the module refuses fail with an error that says to reset the
+password: phpass and WordPress (MD5), MD5-crypt and Apache's apr1, yescrypt, the
+LDAP `{SSHA}`, `{SHA}`, `{SMD5}` and `{MD5}` schemes, and PBKDF2 imports with SHA-1
+or a salt shorter than 128 bits, as many Django salts are. Each used to panic
+the sign-in under `fips140=only`. SHA-crypt (`$5$`, `$6$`) and the SHA-2 LDAP
+schemes are SHA-2 throughout and verify.
+
+### Passwords hashed here
+
+Argon2id, bcrypt, scrypt and yescrypt live outside the validated module. They are
+not *refused*; they simply are not covered. So with FIPS enabled (`on` or `only`) a
+new password is hashed with PBKDF2-HMAC-SHA256 through `crypto/pbkdf2`, which is
+inside the module: 600,000 iterations, which took 66 ms where this was measured
+(Argon2id here took 25 ms), a 128-bit salt and a 256-bit key, written
+`$pbkdf2-sha256$i=600000$<salt>$<key>`. An Argon2id password is checked once
+more at its next sign-in, outside the module, and rehashed to PBKDF2 in the same
+transaction. A password nobody signs in with stays Argon2id, and `signari doctor`
+reports how many are left. With FIPS off again, a PBKDF2 password moves back to
+Argon2id at its next sign-in.
+
+PBKDF2 has no memory hardness, so it is a considerably worse password hash: its
+cost is all CPU, which is what guessing hardware is best at. If a FIPS boundary
+around password storage is the requirement, that trade needs stating explicitly
+to whoever is asking for it.
+
+### AES-GCM in an encrypted response
+
+[Encrypting a response to a client](response-encryption.md) goes through the JOSE
+library, which chooses GCM's nonce itself, and the module refuses a nonce the caller
+chose. So under `fips140=only` the content encryptions on offer are `A128CBC-HS256` and
+`A256CBC-HS512`, in discovery and in the setting alike. `RSA-OAEP-256` and `ECDH-ES` work
+with both, and the encryption tests pass in that mode. A client set to a GCM value before
+the move answers a 500 rather than send anything in the clear. A wallet's
+[credential request](oid4vci.md#a-credential-only-the-wallet-can-read) is the same in the
+other direction: the metadata offers the CBC values, and those are what open.
+
+A [wallet sign-in](wallet-sign-in.md) set to `direct_post.jwt` cannot work in this mode:
+the wallet's answer is encrypted with A128GCM or A256GCM, which the JOSE library cannot
+open there, and it offers no other. `direct_post` works.
 
 ## What was fixed rather than documented
+
+### Four seals that chose their own nonce
+
+**Until November 2026 four more seals did what the root key did before October**: gave
+AES-GCM a nonce of their own, so each failed under `fips140=only`. They were an opaque
+access token's handle, a refresh token's successor kept for a client with a retry window,
+a wallet presentation waiting for the browser, and the AES-GCM step of reading an encrypted
+assertion from an upstream SAML provider. All four were added after the measurement below,
+and each was opt-in, so it did not show. They now let the module make the nonce, in the
+same stored layout, and tests re-run themselves under `fips140=only` to seal and open
+them.
 
 ### SAML assertion encryption — `internal/saml`
 

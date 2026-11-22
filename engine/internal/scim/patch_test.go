@@ -248,6 +248,11 @@ func TestUserPatchHoldsNoMultiValuedAttribute(t *testing.T) {
 			// Diagnostics, not a patchable attribute.
 			continue
 		}
+		if f.Name == "Enterprise" {
+			// Six attributes by name, each single-valued: a key is an attribute,
+			// and `add` replaces its one value as `replace` does.
+			continue
+		}
 		k := f.Type.Kind()
 		if k == reflect.Ptr {
 			k = f.Type.Elem().Kind()

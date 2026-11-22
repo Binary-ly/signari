@@ -25,11 +25,51 @@ td:last-child{text-align:right;white-space:nowrap}
 {{else}}
 <p class="muted">{{T "account.none"}}</p>
 {{end}}
+<h2 style="margin-top:1.5rem">{{T "account.passkeys"}}</h2>
+{{if .Passkeys}}
+<table>
+<tr><th>{{T "account.passkey.name"}}</th><th>{{T "account.passkey.added"}}</th><th></th></tr>
+{{range .Passkeys}}
+<tr>
+<td>{{.Name}}</td>
+<td>{{.Added}}</td>
+<td><button type="button" class="passkey-remove" data-id="{{.ID}}" hidden>{{T "account.remove"}}</button></td>
+</tr>
+{{end}}
+</table>
+{{else}}
+<p class="muted">{{T "account.passkeys.none"}}</p>
+{{end}}
+<div id="passkey-add" hidden>
+<input type="hidden" id="passkey-csrf" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="passkey-name">{{T "account.passkey.namelabel"}}</label>
+<input id="passkey-name" maxlength="64" autocomplete="off">
+<button type="button" id="passkey-register">{{T "account.passkey.add"}}</button>
+</div>
+<p id="passkey-status" class="muted" role="status"></p>
+<script src="/passkey.js"></script>
+{{if .Languages}}<h2 style="margin-top:1.5rem">{{T "account.language"}}</h2>
+<form method="POST" action="/account/language">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+<label for="language">{{T "account.language.label"}}</label>
+<select id="language" name="language">
+<option value=""{{if not .LanguageChosen}} selected{{end}}>{{T "account.language.browser"}}</option>
+{{range .Languages}}<option value="{{.Tag}}" lang="{{.Tag}}"{{if .Selected}} selected{{end}}>{{.Name}}</option>
+{{end}}</select>
+<button type="submit">{{T "account.language.save"}}</button>
+</form>{{end}}
 <h2 style="margin-top:1.5rem">{{T "account.manage"}}</h2>
 <ul class="links">
+<li><a href="/account/profile">{{T "profile.title"}}</a></li>
+<li><a href="/account/email">{{T "emailchange.title"}}</a></li>
+<li><a href="/account/security">{{T "security.title"}}</a></li>
 <li><a href="/account/password">{{T "accountpw.title"}}</a></li>
 <li><a href="/account/sessions">{{T "sessions.title"}}</a></li>
+<li><a href="/account/devices">{{T "devices.title"}}</a></li>
 <li><a href="/account/recovery">{{T "reccodes.title"}}</a></li>
 <li><a href="/account/connected">{{T "connected.title"}}</a></li>
+<li><a href="/account/resources">{{T "resources.title"}}</a></li>
+<li><a href="/account/export">{{T "accountexport.title"}}</a></li>
+<li><a href="/account/delete">{{T "accountdelete.title"}}</a></li>
 </ul>
 {{end}}

@@ -22,6 +22,7 @@ package jsonstrict
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -40,13 +41,24 @@ func NoDuplicateKeys(body []byte) error {
 	// Numbers are never inspected, so precision does not matter; UseNumber only
 	// avoids the float conversion on the way past.
 	dec.UseNumber()
-	return walk(dec, nil)
+	if err := walk(dec, nil); err != nil && !errors.Is(err, errMalformed) {
+		return err
+	}
+	return nil // malformed: the caller's decode will say so, and say it better
 }
+
+// errMalformed ends the walk at the first token the decoder cannot read, all the way up.
+// Answered as nil by each level instead, the loop of the array or object around it
+// asked dec.More() again, which only peeks at the next byte and said yes to it, and
+// dec.Token() failed again without consuming it: `{"a":[{}R}` spun forever. Found by
+// FuzzDecode in internal/authzen, which reads its body through here, as rar, ssf and uma
+// do.
+var errMalformed = errors.New("malformed JSON")
 
 func walk(dec *json.Decoder, path []string) error {
 	tok, err := dec.Token()
 	if err != nil {
-		return nil // malformed: the caller's decode will say so, and say it better
+		return errMalformed
 	}
 	delim, ok := tok.(json.Delim)
 	if !ok {
@@ -58,7 +70,7 @@ func walk(dec *json.Decoder, path []string) error {
 		for dec.More() {
 			keyTok, kerr := dec.Token()
 			if kerr != nil {
-				return nil
+				return errMalformed
 			}
 			key, _ := keyTok.(string)
 			if seen[key] {

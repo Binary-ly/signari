@@ -1,0 +1,22 @@
+-- 0132_drop_ciba_notification_token.sql
+--
+-- The CIBA client notification token no longer sits in a request row.
+--
+-- # The defect
+--
+-- 0095 added device_authorizations.client_notification_token and the request
+-- handler wrote every ping and push client's token into it, in plaintext. Nothing
+-- ever read it: delivery takes the token from the outbox row parked beside the
+-- request. The column was a copy of the client's bearer credential, kept for the
+-- life of the request row and for as long as any backup of it, serving nothing.
+--
+-- # Why it is dropped rather than sealed
+--
+-- Sealing would keep a credential nobody needs. The copy delivery does need is
+-- in the outbox payload, and is now sealed there under the root key
+-- (store.SealContextCIBACredentials), which this database does not hold.
+--
+-- Requests already pending lose nothing: their deliveries were parked with the
+-- token at creation.
+
+ALTER TABLE core.device_authorizations DROP COLUMN client_notification_token;

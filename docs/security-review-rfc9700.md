@@ -54,12 +54,12 @@ are different addresses), and path, query and fragment must match exactly.
 | Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — see `protocol-review-oauth.md` |
 | Provide a way to detect PKCE support | MUST | `code_challenge_methods_supported` in metadata |
 | Prefer challenge methods that do not expose the verifier | SHOULD | S256 only; `plain` refused outright |
-| Detect constant PKCE challenge / nonce values | encouraged | **not implemented** — see below |
+| Detect constant PKCE challenge / nonce values | encouraged | challenges, yes; nonces, no — see below |
 
-The one §2.1.1 item not covered is the encouragement to detect constant
-challenge values. It is not a MUST and it is genuinely awkward — distinguishing
-a client that reuses a challenge from one that legitimately retries needs state
-per client over time. Recorded as a gap rather than quietly omitted.
+A client sending a code challenge it sent in the last day is recorded as
+`oauth.pkce_challenge_reused`. It is a signal and not a refusal, because a person
+reloading a page can repeat one honestly, and telling that from a hard-coded pair
+needs a human looking at how often it happens. A repeated `nonce` is not tracked.
 
 ## §2.2 Token replay prevention
 
@@ -72,7 +72,7 @@ per client over time. Recorded as a gap rather than quietly omitted.
 
 | Requirement | Level | Signari |
 |---|---|---|
-| Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values |
+| Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values, each one a resource server the client's organisation registered ([resource indicators](resource-indicators.md)); until October 2026 any http(s) URI was accepted |
 | **Resource server MUST refuse a token not meant for it** | **MUST** | **was missing — now enforced** |
 
 ### The second defect: we did not enforce audience against ourselves
@@ -286,15 +286,14 @@ Requirement sweeps find what a checklist thought to ask about. These three were
 re-derived from the code instead, because each closes off a whole family of
 published attacks by construction rather than by a check that could be forgotten.
 
-- **No request objects are accepted, at all.** `request_parameter_supported` is
-  false and nothing parses an inline `request` JWT.
-  `request_uri_parameter_supported` is also false, because we fetch no remote
-  request object — an SSRF surface we decline to open. The only `request_uri`
-  accepted is a PAR handle, which is an opaque database reference and not a URL.
-  RFC 9126 §5 confirms `false` is the correct advertisement for a PAR-supporting
-  server; the metadata comment now says so, rather than misattributing the flag
-  to JAR. With no request object there is no signing-algorithm enforcement left
-  to bypass.
+- **No request object is fetched from a URL.** `request_uri_parameter_supported`
+  is false, because we fetch no remote request object — an SSRF surface we
+  decline to open. The only `request_uri` accepted is a PAR handle, which is an
+  opaque database reference and not a URL. RFC 9126 §5 confirms `false` is the
+  correct advertisement for a PAR-supporting server; the metadata comment says
+  so. Since November 2026 an inline `request` JWT is taken, signed by a key the
+  client registered and never by a shared secret or `none`: see
+  [jar.md](jar.md).
 - **Authorization compares relation tuples for exact identity**
   (`internal/authzen`), never URI paths by prefix. There is no path to normalize,
   so trailing-slash and matrix-parameter normalisation bypasses have nothing to

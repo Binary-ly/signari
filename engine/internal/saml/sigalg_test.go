@@ -12,13 +12,14 @@ import (
 
 // signElementSHA1 is signElement with SHA-1, for probing what we ACCEPT.
 func signElementSHA1(el *etree.Element, key *rsa.PrivateKey, certDER []byte) (*etree.Element, error) {
-	ctx := &dsig.SigningContext{
-		Hash:          crypto.SHA1,
-		KeyStore:      staticKeyStore{key: key, cert: certDER},
-		IdAttribute:   "ID",
-		Prefix:        "ds",
-		Canonicalizer: dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList(""),
+	ctx, err := dsig.NewSigningContext(key, [][]byte{certDER})
+	if err != nil {
+		return nil, err
 	}
+	ctx.Hash = crypto.SHA1
+	ctx.IdAttribute = "ID"
+	ctx.Prefix = "ds"
+	ctx.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")
 	if err := ctx.SetSignatureMethod(dsig.RSASHA1SignatureMethod); err != nil {
 		return nil, err
 	}

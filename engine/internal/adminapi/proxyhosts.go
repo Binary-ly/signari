@@ -1,0 +1,211 @@
+package adminapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/proxyrules"
+	"signari.dev/engine/internal/store"
+)
+
+// The applications forward authentication protects.
+//
+// /proxy/start sends a signed-in person back to the application only when its
+// host is registered here, and until these routes and their CLI twin existed
+// nothing could register one: every forward-auth deployment stopped at the
+// sign-in page, telling the person their application was "not a registered
+// protected host".
+
+type proxyHostRequest struct {
+	Host string `json:"host"`
+	// Enabled defaults to TRUE when absent, which is why it is a pointer: the
+	// common case is registering a host to use it.
+	Enabled *bool `json:"enabled"`
+	// ReleaseGroups and SignedIdentity keep what the host has when absent.
+	ReleaseGroups  *[]string `json:"release_groups"`
+	SignedIdentity *bool     `json:"signed_identity"`
+	// Rules, when given, replace the host's, in order; an empty list clears them.
+	Rules *[]proxyrules.Rule `json:"rules"`
+	// CookieDomain and OwnCookie say where its proxy cookie lives, kept when absent.
+	CookieDomain *string `json:"cookie_domain"`
+	OwnCookie    *bool   `json:"own_cookie"`
+}
+
+func (s *Server) listProxyHosts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	if err := requireOrg(ctx, orgID); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	hosts, err := store.ProxyHosts(ctx, s.db, orgID)
+	if err != nil {
+		s.log.Error("listing protected hosts", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy_hosts": hosts})
+}
+
+// putProxyHost registers a protected host, or changes whether it is enabled.
+func (s *Server) putProxyHost(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+
+	var req proxyHostRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	host, err := store.NormaliseProxyHost(req.Host)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	var release any
+	if req.ReleaseGroups != nil {
+		if err := store.CheckReleaseGroups(*req.ReleaseGroups); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+			return
+		}
+		release = append([]string{}, *req.ReleaseGroups...)
+	}
+	var rules any
+	if req.Rules != nil {
+		if err := proxyrules.Check(*req.Rules); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rules", "detail": err.Error()})
+			return
+		}
+		held, err := json.Marshal(append([]proxyrules.Rule{}, *req.Rules...))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_rules", "detail": err.Error()})
+			return
+		}
+		rules = string(held)
+	}
+	if req.CookieDomain != nil || req.OwnCookie != nil {
+		domain, own := "", false
+		if req.CookieDomain != nil {
+			domain = *req.CookieDomain
+		}
+		if req.OwnCookie != nil {
+			own = *req.OwnCookie
+		}
+		if err := store.CheckProxyCookie(domain, own); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+			return
+		}
+	}
+
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireNamedOrg(ctx, tx, orgID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.proxy_hosts (org_id, host, enabled, release_groups, signed_identity, rules, cookie_domain, own_cookie)
+			VALUES ($1::uuid, $2, $3, COALESCE($4::text[], '{}'), COALESCE($5::boolean, false), COALESCE($6::jsonb, '[]'),
+			        COALESCE($7::text, ''), COALESCE($8::boolean, false))
+			ON CONFLICT (org_id, host) DO UPDATE SET enabled = EXCLUDED.enabled,
+				release_groups = COALESCE($4::text[], core.proxy_hosts.release_groups),
+				signed_identity = COALESCE($5::boolean, core.proxy_hosts.signed_identity),
+				rules = COALESCE($6::jsonb, core.proxy_hosts.rules),
+				cookie_domain = COALESCE($7::text, CASE WHEN $8::boolean THEN '' ELSE core.proxy_hosts.cookie_domain END),
+				own_cookie = COALESCE($8::boolean, CASE WHEN $7::text <> '' THEN false ELSE core.proxy_hosts.own_cookie END)`,
+			orgID, host, enabled, release, req.SignedIdentity, rules, req.CookieDomain, req.OwnCookie); err != nil {
+			return err
+		}
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.proxy_host_set", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"host": host, "enabled": enabled, "releases_groups": req.ReleaseGroups != nil,
+				"signed_identity": req.SignedIdentity, "rules": req.Rules, "cookie_domain": req.CookieDomain,
+				"own_cookie": req.OwnCookie},
+		})
+	})
+	var pg *pgconn.PgError
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case writeOrgRefusal(w, err):
+		return
+	case errors.As(err, &pg) && pg.ConstraintName == "proxy_hosts_host_key":
+		// Held by another organisation (or by this one in other letters). A
+		// host is unique across the deployment: verify admits whoever's
+		// organisation registered it.
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "host_taken",
+			"detail": "this host is already registered as a protected host",
+		})
+		return
+	case err != nil:
+		s.log.Error("setting a protected host", "org_id", orgID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host": host, "enabled": enabled, "config_version": version,
+	})
+}
+
+func (s *Server) deleteProxyHost(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	orgID := r.PathValue("orgID")
+	host, err := store.NormaliseProxyHost(r.PathValue("host"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_host", "detail": err.Error()})
+		return
+	}
+
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := requireOrg(ctx, orgID); err != nil {
+			return err
+		}
+		// org_id in the WHERE as well as the host, so one tenant cannot remove
+		// another's protection by naming its host.
+		tag, err := tx.Exec(ctx,
+			`DELETE FROM core.proxy_hosts WHERE org_id = $1::uuid AND host = $2`, orgID, host)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errNotFound
+		}
+		return audit.Write(ctx, tx, audit.Event{
+			Type: "admin.proxy_host_removed", AdminTokenID: TokenIDFrom(ctx), OrgID: orgID,
+			Detail: map[string]any{"host": host},
+		})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+		return
+	case errors.Is(err, errNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "proxy_host_not_found"})
+		return
+	case err != nil:
+		s.log.Error("removing a protected host", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"host": host, "config_version": version})
+}

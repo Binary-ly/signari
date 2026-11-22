@@ -2,11 +2,11 @@ package oauth
 
 import (
 	"errors"
-	"net/url"
 	"strings"
 	"testing"
 
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/tokens"
 )
 
 const goodChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -20,7 +20,6 @@ func testClient() *clients.Client {
 		ResponseTypes: []string{"code"},
 		Scopes:        []string{"openid", "profile", "email"},
 		RequirePKCE:   true,
-		PKCEMethods:   []string{"S256"},
 		RedirectURIs:  []string{"https://app.example.com/cb"},
 	}
 }
@@ -232,37 +231,96 @@ func TestResponseTypeAndScope(t *testing.T) {
 	}
 }
 
-// The disposition is load-bearing, so the builder must enforce it rather than
-// relying on every caller to remember.
-func TestErrorRedirectRefusesDirectErrors(t *testing.T) {
-	e := direct("invalid_client", "unknown client")
-	if _, err := ErrorRedirect("https://evil.example.com/cb", "https://id.test", "s", e); err == nil {
-		t.Fatal("ErrorRedirect built a URL for a direct-only error")
+// How a response travels decides what a person's browser, and a log, gets to see.
+func TestEachResponseModeSaysHowItTravels(t *testing.T) {
+	for _, tc := range []struct {
+		mode, responseType string
+		encoding           string
+		signed             bool
+	}{
+		{"", "code", "query", false},
+		{"", "code id_token", "fragment", false},
+		{"", "id_token code", "fragment", false},
+		// Refused here, and refused where the client that asked is listening.
+		{"", "code token", "fragment", false},
+		{"", "code id_token token", "fragment", false},
+		{"", "token", "fragment", false},
+		{"", "id_token", "fragment", false},
+		{"", "", "query", false},
+		{"", "banana", "query", false},
+		{"query", "code", "query", false},
+		{"fragment", "code", "fragment", false},
+		{"form_post", "code id_token", "form_post", false},
+		{"query.jwt", "code", "query", true},
+		{"fragment.jwt", "code", "fragment", true},
+		{"form_post.jwt", "code", "form_post", true},
+		// JARM §2.3.4: the default encoding for the requested response type.
+		{"jwt", "code", "query", true},
+		{"jwt", "code id_token", "fragment", true},
+		// Its refusal has to get there, and the mode it named means nothing.
+		{"carrier-pigeon", "code", "query", false},
+		{"carrier-pigeon.jwt", "code", "query", false},
+	} {
+		req := AuthzRequest{ResponseMode: tc.mode, ResponseType: tc.responseType}
+		encoding, signed := req.ResponseEncoding()
+		if encoding != tc.encoding || signed != tc.signed {
+			t.Errorf("mode %q, type %q: got %s signed=%v, want %s signed=%v",
+				tc.mode, tc.responseType, encoding, signed, tc.encoding, tc.signed)
+		}
 	}
 }
 
-func TestErrorRedirectShape(t *testing.T) {
-	e := redirectErr("invalid_scope", "the openid scope is required")
-	got, err := ErrorRedirect("https://app.example.com/cb?keep=1", "https://id.test", "st4te", e)
-	if err != nil {
-		t.Fatal(err)
+// A signature does not make a query string a safe place for an assertion.
+func TestAnIDTokenCannotGoInASignedQuery(t *testing.T) {
+	req := goodRequest()
+	req.ResponseType, req.ResponseMode, req.Nonce = "code id_token", "query.jwt", "n-0S6_WzA2Mj"
+	c := testClient()
+	c.AllowHybrid = true
+	c.ResponseTypes = []string{"code", "code id_token"}
+	err := ValidateAuthz(req, c, nil)
+	if err == nil || err.Code != "invalid_request" || !strings.Contains(err.Description, "query.jwt") {
+		t.Fatalf("query.jwt with an id_token: %+v, want it refused by name", err)
 	}
-	u, _ := url.Parse(got)
-	q := u.Query()
+	req.ResponseMode = "jwt"
+	if err := ValidateAuthz(req, c, nil); err != nil {
+		t.Errorf("jwt with an id_token is a fragment and should pass: %+v", err)
+	}
+}
 
-	if q.Get("error") != "invalid_scope" {
-		t.Errorf("error = %q", q.Get("error"))
+// An encrypted response is signed first, so a client that asked for one alone has asked
+// for both, and a plain mode would give it neither.
+func TestAskingForAnEncryptedResponseHoldsAClientToo(t *testing.T) {
+	c := testClient()
+	c.AuthorizationEncryption = tokens.Encryption{Alg: "ECDH-ES", Enc: "A256GCM"}
+	if err := ValidateAuthz(goodRequest(), c, nil); err == nil || err.Code != "invalid_request" {
+		t.Errorf("no mode at all for a client that encrypts: %+v", err)
 	}
-	if q.Get("state") != "st4te" {
-		t.Errorf("state must be echoed exactly, got %q", q.Get("state"))
+	req := goodRequest()
+	req.ResponseMode = "jwt"
+	if err := ValidateAuthz(req, c, nil); err != nil {
+		t.Errorf("jwt for a client that encrypts: %+v", err)
 	}
-	// RFC 9207: the issuer identifies which provider answered, closing the
-	// mix-up attack.
-	if q.Get("iss") != "https://id.test" {
-		t.Errorf("iss = %q, want the issuer", q.Get("iss"))
+}
+
+// With an algorithm set, an unsigned response is what a changed URL would get, so
+// one is refused however it is asked for, by the mode or by leaving the mode out.
+func TestAClientWithAResponseAlgorithmTakesOnlySignedResponses(t *testing.T) {
+	c := testClient()
+	c.AuthorizationResponseAlg = "ES256"
+	for _, mode := range []string{"", "query", "fragment", "form_post"} {
+		req := goodRequest()
+		req.ResponseMode = mode
+		err := ValidateAuthz(req, c, nil)
+		if err == nil || err.Disposition != DispositionRedirect || err.Code != "invalid_request" {
+			t.Errorf("mode %q for a client held to signing: %+v, want invalid_request back to it", mode, err)
+		}
 	}
-	if q.Get("keep") != "1" {
-		t.Error("pre-existing query parameters on the registered URI were dropped")
+	for _, mode := range []string{"jwt", "query.jwt", "fragment.jwt", "form_post.jwt"} {
+		req := goodRequest()
+		req.ResponseMode = mode
+		if err := ValidateAuthz(req, c, nil); err != nil {
+			t.Errorf("mode %q for a client held to signing: %+v", mode, err)
+		}
 	}
 }
 

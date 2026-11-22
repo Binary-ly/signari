@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/passwords"
 )
 
 // Account recovery. See migration 0012 for why this is delay-and-notify.
@@ -16,7 +18,8 @@ const (
 	// did not ask for. Long enough that a notification sent at 3am is seen before
 	// it matters; short enough that a locked-out user is not stuck for a day.
 	//
-	// Waived entirely by proving a second factor -- see 0012.
+	// CreateRecoveryRequest can waive it for a proven second factor (0012), and
+	// no path proves one before recovery yet (5.12), so every reset waits it out.
 	RecoveryDelay = 30 * time.Minute
 
 	// RecoveryLifetime is how long the whole request stays usable. A reset link
@@ -67,10 +70,13 @@ func CreateRecoveryRequest(ctx context.Context, tx pgx.Tx, userID, orgID string,
 
 	r := &RecoveryRequest{UserID: userID, OrgID: orgID, EffectiveAt: effective,
 		ExpiresAt: now.Add(RecoveryLifetime), WaivedBy: waivedBy}
+	// sent_to is the address the link is about to go to (notifyAccount sends it
+	// to users.email), which a completed reset then proves.
 	err := tx.QueryRow(ctx, `
 		INSERT INTO core.recovery_requests
-			(user_id, org_id, token_hash, cancel_hash, effective_at, expires_at, waived_by)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
+			(user_id, org_id, token_hash, cancel_hash, effective_at, expires_at, waived_by, sent_to)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7,
+		        (SELECT email FROM core.users WHERE id = $1::uuid))
 		RETURNING id::text`,
 		userID, orgID, tokenHash, cancelHash, effective, r.ExpiresAt,
 		nullIfEmpty(waivedBy)).Scan(&r.ID)
@@ -119,6 +125,51 @@ func LookupRecovery(ctx context.Context, tx pgx.Tx, tokenHash []byte, now time.T
 	return &r, nil
 }
 
+// WaiveRecoveryDelay records that whoever holds the link proved a second factor
+// (5.12), naming it: the request is usable at once, as one made with a proven
+// factor always was -- the delay defends against a mailbox thief, who does not
+// have the factor -- and a flow's mfa stage before the reset is satisfied.
+func WaiveRecoveryDelay(ctx context.Context, tx pgx.Tx, requestID, factor string) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE core.recovery_requests SET effective_at = least(effective_at, now()), waived_by = $2
+		 WHERE id = $1::uuid AND cancelled_at IS NULL AND consumed_at IS NULL AND expires_at > now()`,
+		requestID, factor)
+	if err != nil {
+		return fmt.Errorf("waiving the recovery delay: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrRecoveryNotFound
+	}
+	return nil
+}
+
+// RecoveryFactors are the second factors a person can prove during a recovery:
+// never email, which is what the link itself arrived by.
+type RecoveryFactors struct {
+	TOTP, SMS, RecoveryCodes bool
+}
+
+// Any reports whether there is one.
+func (f RecoveryFactors) Any() bool { return f.TOTP || f.SMS || f.RecoveryCodes }
+
+// RecoveryFactorsOf reads which a person holds.
+func RecoveryFactorsOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string) (RecoveryFactors, error) {
+	var f RecoveryFactors
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.totp_credentials WHERE user_id = $1::uuid
+		                  AND confirmed_at IS NOT NULL AND disabled_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.sms_otp_credentials WHERE user_id = $1::uuid
+		                  AND verified_at IS NOT NULL AND disabled_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.recovery_codes WHERE user_id = $1::uuid AND used_at IS NULL)`,
+		userID).Scan(&f.TOTP, &f.SMS, &f.RecoveryCodes)
+	if err != nil {
+		return f, fmt.Errorf("reading a person's second factors: %w", err)
+	}
+	return f, nil
+}
+
 // CancelRecovery kills a pending request by its cancel token.
 //
 // Idempotent and deliberately quiet: the link is clicked from an email, possibly
@@ -158,14 +209,17 @@ func ConsumeRecovery(ctx context.Context, tx pgx.Tx, requestID, userID, newHash 
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.password_credentials
-		SET hash = $2, algorithm = 'argon2id', is_current = true, updated_at = now(),
+		SET hash = $2, algorithm = $3, is_current = true, updated_at = now(),
 		    failed_attempts = 0, throttled_until = NULL, last_failure_at = NULL,
 		    -- A recovery reset satisfies a required change: the new password went
 		    -- through the same policy. Leaving the flag set would demand a second
 		    -- change immediately after the first.
 		    must_change = false, must_change_reason = NULL, last_breach_check = NULL
-		WHERE user_id = $1::uuid`, userID, newHash); err != nil {
+		WHERE user_id = $1::uuid`, userID, newHash, passwords.AlgorithmOf(newHash)); err != nil {
 		return fmt.Errorf("setting the new password: %w", err)
+	}
+	if err := QueueCredentialChange(ctx, tx, userID, CredentialPassword, ChangeUpdate, "user"); err != nil {
+		return fmt.Errorf("queueing the credential change: %w", err)
 	}
 
 	// Every session, through the one termination path, so relying parties are
@@ -177,8 +231,10 @@ func ConsumeRecovery(ctx context.Context, tx pgx.Tx, requestID, userID, newHash 
 }
 
 // PurgeExpiredRecoveries drops requests nobody can use any more.
-func PurgeExpiredRecoveries(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM core.recovery_requests WHERE expires_at < now()`)
+func PurgeExpiredRecoveries(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.recovery_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.recovery_requests WHERE expires_at < now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

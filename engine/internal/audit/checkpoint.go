@@ -189,7 +189,7 @@ func VerifyFrom(ctx context.Context, tx pgx.Tx, startID int64) (
 		       COALESCE(actor_id::text,''), COALESCE(client_id,''),
 		       COALESCE(correlation_id::text,''), retention_class,
 		       detail::text, prev_hash, entry_hash,
-		       COALESCE(admin_token_id::text,'')
+		       COALESCE(admin_token_id::text,''), occurred_at, hash_version
 		FROM core.audit_events WHERE id >= $1 ORDER BY id`, startID)
 	if err != nil {
 		return 0, 0, err
@@ -203,9 +203,10 @@ func VerifyFrom(ctx context.Context, tx pgx.Tx, startID int64) (
 		var e Event
 		var detail string
 		var prev, entry []byte
+		var version int
 		if err := rows.Scan(&id, &e.Type, &e.OrgID, &e.SubjectID, &e.ActorID,
 			&e.ClientID, &e.CorrelationID, &e.Retention, &detail, &prev, &entry,
-			&e.AdminTokenID); err != nil {
+			&e.AdminTokenID, &e.OccurredAt, &version); err != nil {
 			return 0, checked, err
 		}
 		checked++
@@ -220,7 +221,7 @@ func VerifyFrom(ctx context.Context, tx pgx.Tx, startID int64) (
 		if !equalBytes(prev, expectedPrev) {
 			return id, checked, nil
 		}
-		if !equalBytes(chainHash(prev, e, detail), entry) {
+		if !equalBytes(hashFor(version, prev, e, detail), entry) {
 			return id, checked, nil
 		}
 		expectedPrev = entry

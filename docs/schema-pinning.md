@@ -1,36 +1,113 @@
 # Pinning a build to its schema
 
 ```sh
-scripts/build-release.sh                 # builds ./engine/signari, pinned
-docker build --build-arg \
-    SIGNARI_SCHEMA_FINGERPRINT="$(scripts/schema-fingerprint.sh)" engine/
+scripts/build-release.sh                                 # ./engine/signari, pinned
+scripts/build-release.sh -image signari:1.2.0 -tag v1.2.0  # and the image, then the tag
+signari version                                          # what a binary is pinned to
+```
+
+`build-release.sh` reads the pin back from `signari version` in the binary, and
+in the image when it builds one, and stops if either does not report it. With
+`-tag` it refuses a working tree with uncommitted changes, since the tag would
+name a commit the release was not built from, and records the fingerprint in
+the tag's message. It does not push. Until October 2026 it built only the
+binary, nothing built a pinned image, and nothing refused to tag an unpinned
+one.
+
+```
+$ signari version
+version  v1.2.0
+commit   59b4d89cd35531244004f398333b35fa9e699b0e
+go       go1.26.9
+fips140  disabled, module none
+schema   159
+pinned   5ed071dc8c1beaf5f9d11a3571ec652820be36d786ca3b48124156982f5987d5
 ```
 
 Signari gates its own startup twice: on the schema **version**, always, and on the
-schema **fingerprint** — a digest of every column and every constraint in `core` —
-when the binary was built with one.
+schema **fingerprint**. A pinned binary compares the fingerprint with the one it
+was built with, and an unpinned one with the one the ledger recorded when the
+latest migration was applied.
 
 The version counter catches the ordinary case: a binary ahead of its database.
 The fingerprint catches the case a counter cannot see, which the package comment
 states plainly: *"two databases can both claim version 7 and disagree, if someone
 hand-patched one of them."*
 
-## An unpinned binary does not perform the second check
+## What the fingerprint covers
 
-`migrate.Verify` returns before it ever reads the live schema when
-`ExpectedFingerprint` is empty. The check exists, is tested, and does nothing.
+Every column, constraint and unique index in `core`, and the tenant boundary
+those tables rest on:
 
-Nothing about that is visible from outside — the engine starts normally, no
-endpoint reports it, and the only symptom is that a drifted database is accepted,
-which is exactly the situation the fingerprint exists to catch and the one where
-nobody is watching.
+- whether each table has row-level security, and whether it is forced
+- every policy, with its roles and expressions
+- every view in `core_v1`, its options and its owner, since a view runs with its
+  owner's privileges
+- the owner of every table, view and sequence, and every grant on them, on
+  their columns and on the two schemas
+- every function, `core.is_engine()` among them, which every policy calls, and
+  every trigger, with whether it is enabled
+- the attributes of `signari_engine`, `signari_admin` and `signari_maintenance`,
+  BYPASSRLS among them, and the roles each is a member of
 
-So `signari doctor` now says which of the two checks a binary performs:
+Until October 2026 it covered only columns and constraints, so a policy dropped
+by hand, FORCE ROW LEVEL SECURITY turned off, a view given to a role that
+bypasses it, or a table granted to the console all left the digest as it was:
+every hand change that opens one tenant's rows to another passed the check that
+exists to notice hand changes. An index added for speed is left out on purpose,
+because refusing to start over one would punish an operator for tuning.
+
+Names are read with only `pg_catalog` on the search path, so they render
+schema-qualified whatever the session's search path is. The migrations set
+`search_path = core, public` for their session, and until October 2026 the
+fingerprint the ledger recorded under it never matched a read made anywhere
+else.
+
+A table owner's own `MAINTAIN` is left out. PostgreSQL 17 added the privilege
+and lists it among what an owner holds, and 16 has none, so until November 2026
+the same schema fingerprinted differently on the two, and a release pinned on 17
+would have refused a 16 database. `MAINTAIN` granted to anybody else still
+counts, since it would let them lock and vacuum the engine's tables. 15 renders
+view definitions differently again, and is below the supported range
+([upgrading](upgrading.md#which-postgresql)). The change is fingerprint scheme
+3. A ledger row computed by scheme 2 is not compared until the next migration
+records one, as for an upgrade of PostgreSQL.
+
+## An unpinned binary compares with the ledger
+
+The ledger, `core.schema_migrations`, records the fingerprint after each
+migration. From migration 0159 it also records the PostgreSQL version that
+computed it. An unpinned binary refuses to start when the live schema is not
+what the latest row recorded:
 
 ```
-[warning ] schema   this binary has no pinned schema fingerprint, so it accepts
-                    any database at the right version, including one that has
-                    been hand-patched
+signari: schema drift: the live schema (972190dfe14c) is not what migration 159
+         recorded (5ed071dc8c1b) -- it has been changed by hand since
+```
+
+That catches a hand change, and not one made together with a rewrite of the
+ledger row, which the database being checked cannot be trusted to report. Only a
+pinned binary refuses that. Until October 2026 an unpinned binary compared
+nothing.
+
+A row recorded under another PostgreSQL major version is not compared, because
+the catalogue may render the same schema differently, and refusing to start
+after a PostgreSQL upgrade would be wrong. The comparison resumes with the next
+migration. Rows recorded before 0159 are never compared.
+`signari migrate status` says which of these applies:
+
+```
+ledger           : matches what migration 159 recorded
+```
+
+`signari doctor` reports drift as critical, and says which check a binary
+performs:
+
+```
+[warning ] schema   this binary has no pinned schema fingerprint, so it compares
+                    the schema only with the ledger in the same database, and
+                    accepts a hand-patched database whose ledger row was
+                    rewritten along with it
 ```
 
 ## What the difference actually looks like
@@ -46,6 +123,9 @@ signari: schema fingerprint mismatch: live 3bee84def117, expected c42946694e7a
 $ signari-unpinned serve
 (serves)
 ```
+
+That was before the ledger comparison. An unpinned binary now refuses with
+`schema drift` instead, unless the ledger row was rewritten too.
 
 ## Why the build needs a PostgreSQL
 

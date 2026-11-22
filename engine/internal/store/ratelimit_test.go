@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// The purge keeps every row that could still be a live window. It deleted
+// whatever started over an hour ago, and a daily SMS ceiling starts at
+// midnight UTC, so from 01:00 the janitor reset it every minute.
+func TestThePurgeKeepsADailyWindowThatIsStillOpen(t *testing.T) {
+	pool := rateTestPool(t)
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	key := fmt.Sprintf("purge-test:%d", time.Now().UnixNano())
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.rate_limits (bucket_key, window_start, count) VALUES
+		    ($1 || ':open', now() - interval '23 hours', 7),
+		    ($1 || ':over', now() - interval '25 hours', 7)`, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PurgeRateLimits(ctx, tx, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	var open, over int
+	if err := tx.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE bucket_key = $1 || ':open'),
+		count(*) FILTER (WHERE bucket_key = $1 || ':over')
+		FROM core.rate_limits WHERE bucket_key LIKE $1 || ':%'`, key).Scan(&open, &over); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Error("a 24-hour window that started 23 hours ago was purged while still counting")
+	}
+	if over != 0 {
+		t.Error("a window older than the longest one any limit uses was kept")
+	}
+
+	// And a limit cannot ask for a window the purge would cut short.
+	if _, err := AllowRate(ctx, tx, key, 1, MaxRateWindow+time.Hour); err == nil {
+		t.Error("a window longer than the purge keeps was accepted")
+	}
+}
+
 func rateTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
@@ -126,10 +168,28 @@ func TestAllowRateUnderConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 
-	if allowed != limit {
-		t.Fatalf("%d of %d concurrent requests were allowed against a limit of %d. "+
-			"A limiter that leaks under concurrency leaks under exactly the load it "+
-			"exists for.", allowed, attempts, limit)
+	// The window is the clock's minute, so a run that straddles one counts
+	// into two windows, each allowing the limit. What must hold is per window:
+	// exactly min(count, limit) allowed in each. The test compared the total
+	// with one limit and failed whenever the requests crossed a minute (4.20).
+	rows, err := pool.Query(ctx, `SELECT count FROM core.rate_limits WHERE bucket_key = $1`, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, windows := 0, 0
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		windows++
+		want += min(n, limit)
+	}
+	rows.Close()
+	if windows == 0 || allowed != want {
+		t.Fatalf("%d of %d concurrent requests were allowed against a limit of %d over %d "+
+			"window(s), which allow %d. A limiter that leaks under concurrency leaks under "+
+			"exactly the load it exists for.", allowed, attempts, limit, windows, want)
 	}
 }
 

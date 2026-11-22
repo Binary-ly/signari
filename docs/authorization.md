@@ -61,13 +61,15 @@ tests:
 ```
 
 ```sh
+signari authz test -model-file model.yaml               # no database, for CI
 signari authz set-model -org <uuid> -model-file model.yaml
 ```
 
 **Parsing runs the tests.** A model whose own examples fail does not load, so it
 cannot be stored and discovered wrong in production. Same rule as the access
 policy: a security control nobody can check is a security control nobody has
-checked.
+checked. `authz test` is that parse with nothing behind it, so passing it and
+loading are the same statement.
 
 Refused at parse time, each because it would otherwise load and be quietly wrong:
 
@@ -77,7 +79,82 @@ Refused at parse time, each because it would otherwise load and be quietly wrong
 | A permission granted to a relation that does not exist | Grants to nobody, reads like it grants to somebody |
 | A condition on an action that does not exist | Never runs, reads as a restriction that is in force |
 | A relation cycle | Refused rather than bounded: a bound turns a broken model into a slow one instead of a rejected one |
+| `parent->viewer` through a relation the type does not have, or to one no type has | Would read as an inheritance and carry nothing |
+| `also` or `except` on an action that does not exist, or naming a relation that does not | Same as a condition: never runs, reads as in force |
 | A misspelled key | `permisions:` silently dropped leaves a type granting nothing, which at a glance looks exactly like one granting everything |
+
+## Relations held through something else
+
+A relation does not have to name the person. Four things the model and the rows can
+say, which a document in a folder, a team and a deny list all need:
+
+```yaml
+types:
+  folder:
+    relations:
+      owner: []
+      viewer: [owner]
+  document:
+    relations:
+      parent: []                      # its subject is the folder
+      owner: []
+      banned: []
+      viewer: [owner, parent->viewer] # a viewer of the parent is a viewer here
+      cleared: []
+    permissions:
+      read:   [viewer]
+      delete: [owner]
+    except:
+      read: [banned]                  # whatever else they hold
+    also:
+      delete: [cleared]               # on top of the permission
+  team:
+    relations:
+      member: []
+```
+
+```sh
+signari authz grant -org <uuid> -principal folder:reports -relation parent -object document:42
+signari authz grant -org <uuid> -principal team:eng#member -relation viewer -object document:42
+signari authz check -org <uuid> -principal user:alice@example.com -action read -object document:42
+```
+
+**`parent->viewer`** means whoever holds `viewer` on the document's parent holds it
+here. The row with relation `parent` names the folder as its subject, and `viewer` is
+looked for on the folder's own type, so a hierarchy is rows and not model.
+
+**`team:eng#member`** as a subject is everybody who holds `member` on `team:eng`.
+`group:finance#member` is a directory group's members, read from the groups the person
+is in, as `group:finance` always was.
+
+**`also`** asks for one of its relations on top of the permission, and **`except`**
+refuses anybody holding one of its, whatever else they hold. Either can be reached
+through something else in the same way, and a model's own tests see them both.
+
+A direct grant is answered as it always was, in one read, and a batch of a hundred is
+still five statements. Only somebody with no row of their own costs a walk, and only
+where the model has a rewrite or the object has a set on it. The walk reads one
+statement a level with the whole level in it, so its cost is the depth of the graph
+and not the number of paths through it, and it visits nothing twice, which makes a
+folder that is its own parent an answer rather than a hang: only the data can make
+that loop, so the model cannot refuse one. An expired link carries nothing, at any
+depth.
+
+**Past sixteen levels, or two thousand rows in one, is an error and not a no.** The
+question was not answered, so the caller is told the decision could not be made, as
+for any other failure, rather than told something false about the graph.
+
+A search has to agree with a decision, and a document held through its folder has no
+row naming the person. So where a model walks, or an organisation has any set at all,
+a search takes every candidate and decides each. It is the same answer and slower,
+bounded per page as every search is. `authz check` and `authorization/explain` show
+the way a relation was reached:
+
+```
+ALLOWED user:bo may read document:42
+  via relation: viewer, held by folder:a#owner
+  through: document:42#viewer <- folder:reports#viewer <- folder:a#owner
+```
 
 ## Conformance review against the Final spec, August 2026
 
@@ -141,7 +218,8 @@ require:
     subject_active: true
     email_verified: true
     any_group: [finance]
-    max_risk: 30
+    user_attributes:           # declared and not personal, as policy.md says
+      cost_centre: ["4100", "4200"]
     time:
       days: [mon, tue, wed, thu, fri]
       from: "09:00"
@@ -189,15 +267,84 @@ requirement allowing no values. At evaluation time the only safe response to a
 broken condition is to refuse — and a typo that silently denies everything is
 worse than one that refuses to deploy.
 
+### What the session showed
+
+```yaml
+types:
+  document:
+    require:
+      read: {max_risk: 10}
+      edit: {device_managed: true}
+```
+
+`device_managed`, `device_compliant` and `max_risk` read what a sign-in showed, kept
+with the session it made: a decision comes from a relying party, with no browser
+behind it to ask. Pass the session in the request, as for `mfa`:
+
+```json
+{"subject": {...}, "action": {...}, "resource": {...}, "context": {"sid": "<sid>"}}
+```
+
+With no live session of that subject named, all three refuse: no score is not a low
+one, and no device is not a managed one.
+
+The score runs from 0 to 100 and has two rungs today. **50** is the first sign-in from
+a country this person has history elsewhere than, and **80** is a sign-in that could
+not have followed the last one in time. Both need a GeoIP source (see
+[configuration.md](configuration.md)). Without one, or with no history, it is 0. A
+cap below 50 refuses both and a cap from 50 to 79 refuses only the second.
+
+These are what was true **at sign-in**. A session does not get riskier, and a device
+that falls out of compliance afterwards is not noticed until the next sign-in. For a
+check on each request, the [access policy](device-posture.md) asks the device itself.
+
 ## Relations, not roles
 
 ```sh
 signari authz grant  -org <uuid> -principal user:alice@example.com -relation owner -object document:42
 signari authz grant  -org <uuid> -principal group:finance -relation viewer -object document:99
+signari authz grant  -org <uuid> -principal user:bob@example.com -relation viewer -object document:42 -expires-in 72h
 signari authz check  -org <uuid> -principal user:alice@example.com -action read -object document:42
 signari authz revoke -org <uuid> -principal user:alice@example.com -relation owner -object document:42
 signari authz show-model -org <uuid>
+signari authz list   -org <uuid> -principal user:alice@example.com
+signari authz list   -org <uuid> -object document:42
+signari authz expand -org <uuid> -action read -object document:42
 ```
+
+`check`, `list`, `expand` and the Admin API's `authorization/explain` answer from
+relations, the same way a decision walks them: the subject as asked about, the
+person that resolves to, then their groups. They name what a session would also
+have to show rather than guess at it, and they do not call a provider.
+
+A grant with `-expires-in` stops counting at that moment, checked in the query
+that reads it rather than swept up later, so temporary access is temporary
+without anyone having to remember it. Granting the same tuple again replaces the
+expiry, and without `-expires-in` removes it.
+
+A grant to an address or a username means the person who held it. When they
+change it, the grant moves to their id, so the access stays with them and whoever
+takes the old name up next starts with nothing. Deleting a person, or a group,
+takes their grants with them.
+
+The Admin API stores the model and grants, revokes and lists relations the same
+way, under `/admin/organizations/{orgID}/authorization-model` and
+`/admin/organizations/{orgID}/relations`; see [admin-api.md](admin-api.md).
+
+An application that keeps its own relations, writing an owner when somebody creates
+a document, needs a token and nothing else from an operator:
+
+```sh
+signari admin-token create -name documents -org <uuid> -scopes relations:write
+
+curl -X PUT https://auth.example.com/admin/organizations/<uuid>/relations \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"subject": "user:alice@example.com", "relation": "owner", "object": "document:42"}'
+```
+
+The next decision sees it. `relations:write` reaches nothing else about the
+organisation, and several writes that must stand or fall together go through
+[`POST /admin/batch`](admin-api.md).
 
 A relation is `(subject, relation, object)`. Roles are the special case where the
 object is the whole application, and they collapse the moment somebody asks "who
@@ -212,10 +359,108 @@ Grants can expire (`expires_at`), and an expired grant stops working **at the
 moment it expires**, because the check is in the query rather than in a sweep. A
 janitor-swept expiry means temporary access lasts until the next pass.
 
+**Deleting a person or a group deletes their grants**, in the same statement,
+however the deletion happens: the Admin API, `signari apply`, an LDAP write, a
+directory or SCIM source, or erasure. A person's grants go whether they were made
+to their id, their address or their username, and so do grants made *on* them as
+an object. A grant names its subject by text, so nothing else would remove it.
+Until October 2026 nothing did, and a group created later under a deleted group's
+name held every grant the old one had. A grant made to a group that does not
+exist yet is kept, because that is also how access is granted ahead of the sync
+that creates the group. `signari doctor` warns about each one, since a group
+created under that name receives it.
+
 Group grants are resolved by us: the caller does not say which groups the subject
 is in. `search/subject` expands a group grant to its **members**, because "who can
 read this" is a question about people and answering `group:finance` is true and
 useless.
+
+**Every search result is one an evaluation of the same question allows.** Each
+candidate the relation graph finds is evaluated in full: the action's `require`
+condition, `subject_active`, the operator's provider veto, everything
+`/access/v1/evaluation` checks, all through the same function. Until October 2026
+resource and subject search answered from the relation graph alone. A document
+whose `can_edit` required MFA was therefore listed for a subject with no second
+factor, and a deactivated account was listed under an action requiring an active
+one. A PEP renders the list it gets and then acts on it.
+
+One page evaluates **at most 200 candidates**, because each costs what an
+evaluation costs and a provider veto is a network call. A page can therefore come
+back short, or empty, with a `next_token`. The token resumes after the last
+candidate *evaluated*, not the last one returned, so following tokens to the end
+visits every candidate exactly once.
+
+## Roles in an application
+
+A role in an application is a relation on `application:<client_id>`, granted like any
+other, to a person or a group, with an expiry if it wants one:
+
+```sh
+signari authz grant -org <uuid> -principal user:alice@example.com -relation admin -object application:web-app
+signari authz grant -org <uuid> -principal group:finance -relation auditor -object application:web-app
+
+signari client set-roles-claim -client-id web-app -claim roles
+```
+
+The client's ID tokens, access tokens and userinfo then carry `"roles": ["admin"]`, read
+for each token, so a role taken away is gone from the next one. Somebody with no role
+gets no claim, not an empty one. The name is yours, and refused if it is one a relying
+party reads for something else (`sub`, `acr` and the like). A claim mapper that took the
+same name for this client keeps it.
+
+To refuse a sign-in without one, say so in the [access policy](policy.md):
+
+```yaml
+- name: staff-only
+  when: {client: web-app}
+  require:
+    application_roles: [admin, auditor]   # any of these
+```
+
+That holds at every grant the policy is asked about, so a role taken away stops a refresh
+too.
+
+## Relations another organisation hands out
+
+A company whose application its customers use owns the objects and does not know the
+customers' people. A delegation lets a customer decide who holds what, for its own people,
+on what the company owns:
+
+```sh
+signari authz delegate -org <owner> -grantee-org <customer> -object application:wiki -relations viewer,editor
+signari authz delegations -org <owner>
+signari authz undelegate -org <owner> -delegation <id>
+```
+
+`-object application:*` covers every object of the type. Only a deployment-wide caller
+makes or removes one, through these commands or
+`POST /admin/organizations/{orgID}/relation-delegations`: no tenant reaches another on its
+own say, the owner included. Under it, a token of the customer with `relations:write`
+writes through the Admin API:
+
+```sh
+curl -X PUT $ADMIN/admin/organizations/$CUSTOMER/relation-delegations/$ID/relations \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"subject": "user:<their user id>", "relation": "viewer", "object": "application:wiki"}'
+```
+
+The relation is stored in the owner's relations and nowhere else, so the owner's decisions
+read what they always read, and nothing about a decision crosses a tenant. Everything else
+is held to what the delegation says. The relation and the object have to be ones it names.
+The subject has to be a person of the customer, by id: a person of the owner, of a third
+organisation, or an address is refused with `403 outside_delegation`, and so is a group,
+because a group is resolved in the organisation that holds the relation. The customer reads
+back what it handed out and nothing else of the owner's. A relation the owner gave the same
+person itself stays the owner's, and neither a revocation nor removing the delegation takes
+it away.
+
+Removing the delegation removes everything handed out under it, and a person who is deleted
+loses what they held. A person who is deactivated in their own organisation still has a row
+in the owner's, as anybody does: what stops them is their sign-in. They hold a relation
+rather than an account, so a decision about them has no session facts and a condition that
+wants one fails, and these relations go into no token: a person signs in to their own
+organisation's applications, and an application's `roles` claim is read from the
+organisation it belongs to.
 
 ## Things the wire format gets wrong elsewhere
 
@@ -278,6 +523,36 @@ batch is a denial of service with a JSON array in front of it.
 
 One malformed entry does not fail the batch — the others are answerable, and
 refusing all of them hides which one was wrong.
+
+A batch reads the model, each subject and the relations it could turn on once,
+so a hundred questions about one person cost five statements rather than six
+hundred. Walks are shared the same way: what one question's walk settles, a
+relation held along the path it found or not held anywhere it looked, answers the
+next question of the same subjects, so a hundred documents in one folder walk the
+folders above it once and not a hundred times. And the questions a batch has to
+walk take their first step together, in one statement: a question with nothing
+behind it at all, no row of its own and nothing a rewrite goes through, is settled
+there and walks no further, so a hundred questions under a model with a rewrite,
+half of them about documents nobody asking holds, no longer cost a statement each
+for that half. Nothing read for a request outlives it, so a grant revoked is
+refused on the next one. A provider veto is still one call per allowed entry.
+
+## Recording decisions
+
+Changes are always recorded: `admin.relation_granted`, `admin.relation_revoked`,
+and `admin.cli_command` for the same thing from the command line. A decision is a
+different matter, because one can be asked for thousands of times a second and
+each recorded one is a link in the audit chain. So `SIGNARI_AUTHZ_DECISION_LOG`
+sets the share of evaluations recorded, as `authz.decision` events that reach the
+trail and any sink streaming it. `0.01` records one in a hundred; absent or `0`
+records none. Searches are left out, since a search is a walk over candidates.
+
+Each record has the decision, the action, the resource and the subject's type.
+The trail outlives an erasure, so a person appears only as their id in
+`subject_id`, never as the address the caller may have asked about them with, and
+an address nobody here holds is left out altogether. A subject of another type,
+such as `service:billing`, is named. A resource of type `user` is left out of a
+decision the same way, and a relation's own records follow the same rule.
 
 ## No model means nothing is permitted
 

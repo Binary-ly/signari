@@ -49,9 +49,95 @@ service:
 
 # The admin API listens on its own address and is off unless enabled. It is the
 # write surface for the whole IdP; never expose it on the public service.
+#
+# It serves TLS, from tls.certSecretName below, and the engine refuses to start
+# it in plaintext unless told to by name. So does this chart: enabling it with no
+# certificate fails to render, instead of deploying pods that crash-loop.
 adminApi:
   enabled: false
   port: 8090
+  # Plaintext, inside a network you trust: sets SIGNARI_ADMIN_INSECURE=1.
+  insecure: false
+
+# The console (3.25): Laravel under php-fpm with nginx beside it in one pod. It reads
+# the engine as signari_admin through core_v1 and writes through the Admin API, and
+# its database user is never anything wider (ADR-004). Off unless enabled. Images
+# built from admin/Dockerfile: the default target, and `--target web`.
+console:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/binary-ly/signari-console
+    webRepository: ghcr.io/binary-ly/signari-console-web
+    tag: ""            # defaults to .Chart.AppVersion when empty
+    pullPolicy: IfNotPresent
+  url: ""              # the address operators open it at, APP_URL (REQUIRED)
+  database:
+    host: ""           # REQUIRED
+    port: 5432
+    name: signari
+    sslmode: require
+  # The Admin API as the console reaches it. Empty, the chart's own admin service.
+  adminUrl: ""
+  secret:
+    # Keys: APP_KEY, DB_PASSWORD, SIGNARI_ADMIN_TOKEN. Preferred over the inline
+    # values, which sit in a values file and a release.
+    existingSecret: ""
+    appKey: ""         # base64: followed by 32 random bytes, base64
+    dbPassword: ""     # signari_admin's
+    adminToken: ""     # from `signari admin-token create`, with the console's scopes
+  service:
+    port: 8080
+
+# Prometheus metrics, on their own port and never on the public service (the
+# request and failure rates of an identity provider are a map of its weak
+# moments). docs/configuration.md lists every series.
+metrics:
+  enabled: false
+  port: 9090
+  # A prometheus-operator ServiceMonitor for the metrics service.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}       # e.g. release: kube-prometheus-stack, to be selected
+
+# A NetworkPolicy admitting traffic to each port from named peers only. Off by
+# default because the right peers are the cluster's to name. Each list is
+# NetworkPolicyPeer objects (podSelector, namespaceSelector, ipBlock).
+networkPolicy:
+  enabled: false
+  httpFrom: []       # empty admits the public port from anywhere
+  metricsFrom: []    # who may scrape; empty admits nobody
+  adminFrom: []      # who may call the admin API; empty admits nobody
+
+# Scheduled commands, each a CronJob running the engine image with the same
+# Secret. For example, verifying the audit chain every night:
+#   cronJobs:
+#     - name: audit-verify
+#       schedule: "0 3 * * *"
+#       args: ["audit", "verify"]
+cronJobs: []
+
+# A scheduled database backup, the runbook's (docs/runbook-backup-restore.md): pg_dump in
+# custom format, with the root key written beside each dump with the same retention,
+# since either without the other restores nothing. Off by default: where backups go, how
+# often and for how long are yours to decide. Keep a second copy of the root key
+# somewhere a compromise of this volume cannot reach.
+backup:
+  enabled: false
+  schedule: "0 2 * * *"
+  retentionDays: 14
+  # pg_dump of the server's major version or later. Runs as its postgres user (999).
+  image: postgres:17
+  # The key in the chart's Secret holding a DSN that can read every row: a superuser
+  # or a BYPASSRLS role. signari_engine cannot: every core table forces row-level
+  # security on its owner, and pg_dump as the engine stops at the first one.
+  dsnSecretKey: ""
+  persistence:
+    # A PersistentVolumeClaim of yours for the dumps (required). Not made here: a claim
+    # this chart made would hold `helm install --wait` until it bound, and a storage class
+    # that binds on first use binds it only when the first backup runs.
+    existingClaim: ""
 
 ingress:
   enabled: false
@@ -75,6 +161,30 @@ tls:
 extraEnv: {}
   # SIGNARI_SMTP_HOST: smtp.example.com
   # SIGNARI_AUDIT_WEBHOOK_URL: https://siem.example.com/ingest
+  #
+  # Behind an ingress, name it, or every client shares the ingress's address
+  # for rate limits, captcha and network policy (docs/configuration.md,
+  # "Behind a reverse proxy"). The engine logs a warning when this is missing.
+  #
+  # Name the addresses the ingress controller connects from, and nothing
+  # wider. A trusted address may say who the client is, so trusting the whole
+  # pod network (10.42.0.0/16 on k3s) lets every pod in the cluster set
+  # X-Forwarded-For, spend another client's sign-in budget, and pass a
+  # network rule. If the controller has no stable address, give it one
+  # (hostNetwork, or a node pool of its own and that pool's range), or admit
+  # only the controller to this port with a NetworkPolicy before trusting a
+  # range.
+  # SIGNARI_TRUSTED_PROXIES: 10.42.0.17,10.42.1.23   # the ingress controller's pods
+  # SIGNARI_CLIENT_IP_SOURCE: x-forwarded-for
+
+# On SIGTERM the engine reports unready for drainSeconds while it keeps
+# serving, so the endpoint is withdrawn before the socket closes, then gives
+# in-flight requests timeoutSeconds to finish. The pod's grace period is
+# derived from both, plus five seconds, so the kubelet cannot SIGKILL a request
+# the engine is still finishing. Set them here, not in extraEnv.
+shutdown:
+  drainSeconds: 5
+  timeoutSeconds: 20
 
 resources:
   requests:

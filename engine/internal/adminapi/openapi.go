@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -30,13 +31,13 @@ import (
 // integrator most needs, since a 403 naming a scope is only useful if you can
 // find out which scope an operation wanted before you call it.
 //
-// Not derived: request and response schemas. Those live in Go structs, and
-// reflecting over them would produce a document that describes the JSON tags
-// rather than the meaning — `{"active": true}` with no hint that omitting the
-// field is different from sending false. The descriptions here are written, and
-// `TestEveryAdminAPIRouteIsDocumented` keeps the prose in `docs/admin-api.md`
-// aligned with the same route table. Two derivations from one source beats one
-// derivation and one memory.
+// Request and response schemas come from openapischema.go (6.02): requests
+// reflected from the type each handler decodes, responses declared and held to
+// what the handlers send by TestEveryResponseMatchesItsSchema. This said they
+// were not derived, since reflection describes JSON tags rather than meaning;
+// the meaning stays in the summaries here and in `docs/admin-api.md`, which
+// `TestEveryAdminAPIRouteIsDocumented` keeps aligned with the same route table,
+// and the schemas give a generated client the shapes, which it had none of.
 
 // operation is one method on one path.
 type operation struct {
@@ -44,6 +45,9 @@ type operation struct {
 	path    string
 	scope   string
 	summary string
+	// privileged marks a write that also needs privileged-users:write when
+	// its target may impersonate (see privileged.go).
+	privileged bool
 }
 
 // recordOperation notes a route as Routes() registers it.
@@ -64,35 +68,345 @@ func (s *Server) recordOperation(pattern, scope string) {
 // gets an empty summary and `TestEveryOperationHasASummary` fails. That is
 // deliberately noisier than defaulting to the path, which would look complete.
 var summaries = map[string]string{
-	"GET /admin/config-version":                              "The current configuration version, for conditional writes.",
-	"GET /admin/clients":                                     "List clients.",
-	"GET /admin/clients/{clientID}":                          "One client.",
-	"POST /admin/clients":                                    "Register a client.",
-	"PATCH /admin/clients/{clientID}":                        "Enable or disable a client.",
-	"DELETE /admin/clients/{clientID}":                       "Remove a client and everything issued under it.",
-	"POST /admin/clients/{clientID}/rotate-secret":           "Issue a new client secret, shown once.",
-	"GET /admin/users":                                       "List users.",
-	"GET /admin/users/{userID}":                              "One user.",
-	"POST /admin/users":                                      "Create a user.",
-	"PATCH /admin/users/{userID}":                            "Update a user's status, password or identity fields.",
-	"DELETE /admin/users/{userID}":                           "Remove a user, ending their sessions first.",
-	"GET /admin/users/{userID}/factors":                      "What the user can authenticate with. No secret material.",
-	"DELETE /admin/users/{userID}/factors/{kind}":            "Remove a factor the user holds one of.",
-	"DELETE /admin/users/{userID}/factors/{kind}/{factorID}": "Remove one of several factors.",
-	"GET /admin/users/{userID}/sessions":                     "A user's live sessions.",
-	"DELETE /admin/users/{userID}/sessions":                  "End all of a user's sessions.",
-	"DELETE /admin/sessions/{sid}":                           "End one session.",
-	"GET /admin/groups":                                      "List groups.",
-	"GET /admin/groups/{groupID}":                            "One group.",
-	"POST /admin/groups":                                     "Create a group.",
-	"PATCH /admin/groups/{groupID}":                          "Rename a group or change its description.",
-	"DELETE /admin/groups/{groupID}":                         "Delete a group and its memberships.",
-	"GET /admin/groups/{groupID}/members":                    "List a group's members.",
-	"PUT /admin/groups/{groupID}/members/{userID}":           "Add a member.",
-	"DELETE /admin/groups/{groupID}/members/{userID}":        "Remove a member.",
-	"POST /admin/organizations":                              "Provision a tenant. Requires an unscoped token.",
-	"POST /admin/subjects/{subjectID}/erase":                 "Crypto-shred a subject. Permanent.",
-	"GET /admin/audit-events":                                "Read the audit trail. Does not verify the hash chain.",
+	"GET /admin/config-version":                                    "The current configuration version, for conditional writes.",
+	"GET /admin/clients":                                           "List clients.",
+	"GET /admin/clients/{clientID}":                                "One client.",
+	"POST /admin/clients":                                          "Register a client.",
+	"PATCH /admin/clients/{clientID}":                              "Enable or disable a client, or opt it out of PKCE.",
+	"DELETE /admin/clients/{clientID}":                             "Remove a client and everything issued under it.",
+	"POST /admin/clients/{clientID}/rotate-secret":                 "Issue a new client secret, shown once.",
+	"GET /admin/users":                                             "List users.",
+	"GET /admin/users/{userID}":                                    "One user.",
+	"POST /admin/users":                                            "Create a user.",
+	"PATCH /admin/users/{userID}":                                  "Update a user's status, password or identity fields.",
+	"DELETE /admin/users/{userID}":                                 "Remove a user, ending their sessions first.",
+	"GET /admin/users/{userID}/factors":                            "What the user can authenticate with. No secret material.",
+	"DELETE /admin/users/{userID}/factors/{kind}":                  "Remove a factor the user holds one of.",
+	"DELETE /admin/users/{userID}/factors/{kind}/{factorID}":       "Remove one of several factors.",
+	"DELETE /admin/users/{userID}/throttle":                        "Clear the sign-in delay and the budgets wrong guesses charged to the user.",
+	"POST /admin/users/{userID}/passkey-link":                      "Email the user a single-use link to register a passkey. The token is never returned.",
+	"GET /admin/invitations":                                       "Invitations, with whether each is open, used, revoked or expired.",
+	"POST /admin/invitations":                                      "Invite somebody to create an account: the link once, or mailed to the bound address with send.",
+	"DELETE /admin/invitations/{invitationID}":                     "Revoke an open invitation.",
+	"GET /admin/users/{userID}/sessions":                           "A user's live sessions.",
+	"DELETE /admin/users/{userID}/sessions":                        "End all of a user's sessions.",
+	"DELETE /admin/sessions/{sid}":                                 "End one session.",
+	"GET /admin/groups":                                            "List groups.",
+	"GET /admin/groups/{groupID}":                                  "One group.",
+	"POST /admin/groups":                                           "Create a group.",
+	"PATCH /admin/groups/{groupID}":                                "Rename a group or change its description.",
+	"DELETE /admin/groups/{groupID}":                               "Delete a group and its memberships.",
+	"GET /admin/groups/{groupID}/members":                          "List a group's members.",
+	"PUT /admin/groups/{groupID}/members/{userID}":                 "Add a member.",
+	"DELETE /admin/groups/{groupID}/members/{userID}":              "Remove a member.",
+	"GET /admin/groups/{groupID}/member-groups":                    "List the groups directly inside a group.",
+	"PUT /admin/groups/{groupID}/member-groups/{memberGroupID}":    "Put a group inside this one, so its members are in this one too.",
+	"DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}": "Take a group out of this one.",
+	"GET /admin/system":                                            "The release, schema and size of the deployment. Requires an unscoped token.",
+	"POST /admin/batch":                                            "Up to 100 writes in one transaction, all or none, one version bump.",
+	"GET /admin/users/{userID}/consents":                           "The applications a person consented to or that hold a grant.",
+	"DELETE /admin/users/{userID}/consents/{clientID}":             "Withdraw a consent and revoke the application's refresh grants.",
+	"GET /admin/tokens":                                            "The admin tokens this token may see; never a secret or hash.",
+	"POST /admin/tokens":                                           "Mint an admin token no wider than the caller. The secret is returned once.",
+	"POST /admin/tokens/{tokenID}/rotate":                          "Replace a token's secret, the old one working for a grace period.",
+	"DELETE /admin/tokens/{tokenID}":                               "Revoke an admin token no wider than the caller.",
+	"POST /admin/organizations":                                    "Provision a tenant. Requires an unscoped token.",
+	"GET /admin/organizations":                                     "The organisations this token may see, with their status.",
+	"GET /admin/organizations/{orgID}":                             "One organisation and its status.",
+	"PATCH /admin/organizations/{orgID}":                           "Suspend or reactivate a tenant. Requires an unscoped token.",
+	"POST /admin/subjects/{subjectID}/erase":                       "Crypto-shred a subject. Permanent.",
+	"GET /admin/subjects/{subjectID}/export":                       "Everything kept about a person, credentials withheld.",
+	"GET /admin/audit-events":                                      "Read the audit trail. Does not verify the hash chain.",
+
+	// Thirteen operations shipped with no line here and the document said
+	// nothing about them, because the test that requires one never built the
+	// router it was reading.
+	"GET /admin/organizations/{orgID}/scopes":                      "The organisation's declared scopes, plus the standard set.",
+	"PUT /admin/organizations/{orgID}/scopes":                      "Declare or update a scope.",
+	"GET /admin/organizations/{orgID}/webauthn-policy":             "Read the organisation's authenticator policy.",
+	"PUT /admin/organizations/{orgID}/webauthn-policy":             "Set attestation, approved models and cloned-authenticator refusal.",
+	"DELETE /admin/organizations/{orgID}/scopes/{scope}":           "Remove a scope declaration.",
+	"GET /admin/organizations/{orgID}/proxy-hosts":                 "The applications forward auth protects.",
+	"PUT /admin/organizations/{orgID}/proxy-hosts":                 "Register a protected host, or enable or disable one.",
+	"DELETE /admin/organizations/{orgID}/proxy-hosts/{host}":       "Remove a protected host.",
+	"GET /admin/organizations/{orgID}/migration-source":            "The provider this organisation is migrating off, and how the cutover is going.",
+	"PUT /admin/organizations/{orgID}/migration-source":            "Configure the old directory or provider that verifies a migrating person's password.",
+	"DELETE /admin/organizations/{orgID}/migration-source":         "Remove the migration source.",
+	"POST /admin/organizations/{orgID}/migration-source/test":      "Ask the migration source about a credential, as a first sign-in would, and name the step that failed.",
+	"GET /admin/organizations/{orgID}/resource-servers":            "The RFC 8707 resources this organisation's tokens may be audienced to.",
+	"PUT /admin/organizations/{orgID}/resource-servers":            "Register a resource server, or rename one.",
+	"DELETE /admin/organizations/{orgID}/resource-servers":         "Withdraw a resource server; tokens for it are refused from the next request.",
+	"GET /admin/organizations/{orgID}/attributes":                  "The organisation's user attribute declarations.",
+	"PUT /admin/organizations/{orgID}/attributes":                  "Declare or update a user attribute.",
+	"GET /admin/users/{userID}/attributes":                         "One user's attribute values.",
+	"PUT /admin/users/{userID}/attributes":                         "Set a user's attribute values.",
+	"DELETE /admin/users/{userID}/attributes/{name}":               "Clear one of a user's attribute values.",
+	"GET /admin/organizations/{orgID}/claim-mappers":               "Every attribute this organisation releases as a claim.",
+	"POST /admin/organizations/{orgID}/claim-mappers":              "Release an attribute as a claim.",
+	"DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}": "Stop releasing an attribute as a claim.",
+
+	"GET /admin/me": "Who the caller is, as this request was authenticated: kind, organisation, scopes and any delegation.",
+	"GET /admin/organizations/{orgID}/budgets": "The tokens and sign-ins the organisation may take a minute.",
+	"PUT /admin/organizations/{orgID}/budgets": "Set the organisation's budgets; deployment-wide tokens only.",
+
+	// Self-sign-up (6.07).
+	"GET /admin/organizations/{orgID}/signup":    "Whether people may make their own accounts, from which addresses, and into which groups.",
+	"PUT /admin/organizations/{orgID}/signup":    "Open self-sign-up or replace its rule.",
+	"DELETE /admin/organizations/{orgID}/signup": "Close self-sign-up; invitations and administrators still make accounts.",
+
+	// Instances and their appearance (6.07).
+	"GET /admin/instances":                       "The issuers this deployment has; deployment-wide tokens only.",
+	"GET /admin/instances/{instanceID}/brand":    "The instance's name, logo, support link and colours.",
+	"PUT /admin/instances/{instanceID}/brand":    "Brand the instance's pages, checked for contrast.",
+	"DELETE /admin/instances/{instanceID}/brand": "Return the instance's pages to the built-in appearance.",
+
+	"GET /admin/organizations/{orgID}/brand":    "The organisation's own name, logo, support link and colours.",
+	"PUT /admin/organizations/{orgID}/brand":    "Brand the organisation's pages and mail over its instance's, checked for contrast.",
+	"DELETE /admin/organizations/{orgID}/brand": "Return the organisation to its instance's appearance.",
+
+	"GET /admin/organizations/{orgID}/messages":                   "The messages the organisation has reworded.",
+	"PUT /admin/organizations/{orgID}/messages/{locale}/{key}":    "Reword one message in one language, as plain text.",
+	"DELETE /admin/organizations/{orgID}/messages/{locale}/{key}": "Return one message to the catalogue's wording.",
+
+	"GET /admin/instances/{instanceID}/webauthn":         "The Relying Party ID the instance's passkeys are bound to, and its related origins.",
+	"PUT /admin/instances/{instanceID}/webauthn":         "Set the RP ID, its name and related origins; changing a set RP ID must be confirmed.",
+	"GET /admin/instances/{instanceID}/issuer-aliases":   "Legacy issuers the instance also claims, and who is pinned to each.",
+	"POST /admin/instances/{instanceID}/issuer-aliases":  "Claim a legacy issuer while relying parties move across.",
+	"PATCH /admin/instances/{instanceID}/issuer-aliases": "Retire an alias, now unless told when.",
+
+	// Event subscriptions (6.07).
+	"GET /admin/organizations/{orgID}/event-subscriptions":                       "Where the organisation's events are delivered, and how the deliveries are going.",
+	"POST /admin/organizations/{orgID}/event-subscriptions":                      "Subscribe a URL to events; its signing secret is shown once.",
+	"DELETE /admin/organizations/{orgID}/event-subscriptions/{name}":             "Remove a subscription; nothing more is delivered to it.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret": "Replace a subscription's signing secret, shown once.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable":        "Switch a subscription back on after it was given up on.",
+	"POST /admin/organizations/{orgID}/event-subscriptions/{name}/test":          "Queue one signed test delivery to a subscription.",
+
+	// Extension providers (6.07).
+	"GET /admin/organizations/{orgID}/providers":                       "The services the organisation's hooks call, and whether anything consults them.",
+	"PUT /admin/organizations/{orgID}/providers/{hook}":                "Register or replace a hook's provider; a first registration's secret is shown once.",
+	"DELETE /admin/organizations/{orgID}/providers/{hook}":             "Remove a hook's provider; the decision is made locally only.",
+	"POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret": "Replace a provider's signing secret, shown once.",
+	"PUT /admin/organizations/{orgID}/providers/{hook}/claims":         "The claims a token hook may add; empty lets it add none.",
+
+	// An instance's signing keys (6.07).
+	"GET /admin/instances/{instanceID}/keys":         "The instance's signing keys by id, algorithm and state; never a private half.",
+	"POST /admin/instances/{instanceID}/keys/rotate": "Take the next safe step of rotation for each algorithm in use.",
+	"POST /admin/instances/{instanceID}/keys/retire": "Retire the passive keys whose dwell is over.",
+
+	// What a wallet encrypts to.
+	"POST /admin/instances/{instanceID}/credential-encryption-key": "Make a new key for wallets to encrypt to.",
+
+	// Which authorization servers a client may have an ID-JAG for.
+	"GET /admin/clients/{clientID}/id-jag-audiences":    "The authorization servers a client may have a grant for.",
+	"PUT /admin/clients/{clientID}/id-jag-audiences":    "Let a client have a grant for an authorization server.",
+	"DELETE /admin/clients/{clientID}/id-jag-audiences": "Stop issuing grants for an authorization server.",
+
+	// Whose client_id URLs to fetch a metadata document from.
+	"GET /admin/instances/{instanceID}/client-metadata-rules":    "Whose client_id URLs the instance will fetch.",
+	"PUT /admin/instances/{instanceID}/client-metadata-rules":    "Allow client_id URLs under a prefix.",
+	"DELETE /admin/instances/{instanceID}/client-metadata-rules": "Stop, and delete the clients the rule admitted.",
+
+	// Duo as a second factor (6.07).
+	"GET /admin/organizations/{orgID}/duo": "The organisation's Duo application, without its secret, and how many people are enrolled.",
+	"PUT /admin/organizations/{orgID}/duo": "Configure Duo, checked against Duo before anything is stored.",
+	"PUT /admin/users/{userID}/duo":        "Enrol a person in Duo by the username they have there.",
+
+	// UMA resource-owner intervention (6.07).
+	"GET /admin/organizations/{orgID}/uma":                               "Whether refused UMA requests wait for a resource owner, and how often clients poll.",
+	"PUT /admin/organizations/{orgID}/uma":                               "Offer or stop offering resource-owner intervention.",
+	"GET /admin/organizations/{orgID}/uma/requests":                      "The UMA requests waiting for a decision, with the relations that would let each through.",
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve": "Grant a relation that lets the whole request through, and approve it.",
+	"POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny":    "Close the request, granting nothing.",
+
+	// Trusted Client Attesters (6.07).
+	"GET /admin/organizations/{orgID}/attesters":           "The attesters whose client attestations the organisation accepts.",
+	"PUT /admin/organizations/{orgID}/attesters/{name}":    "Trust an attester's public keys, or replace them.",
+	"DELETE /admin/organizations/{orgID}/attesters/{name}": "Stop trusting an attester.",
+
+	// The services an external_factor stage asks (10.03).
+	"GET /admin/organizations/{orgID}/external-factors":           "The services an external_factor stage may ask.",
+	"PUT /admin/organizations/{orgID}/external-factors/{name}":    "Register a service, or replace what is registered under its name.",
+	"DELETE /admin/organizations/{orgID}/external-factors/{name}": "Forget a service, refused while the sign-in flow names it.",
+
+	// OID4VCI issuance (6.07).
+	"GET /admin/organizations/{orgID}/credential-configurations":            "The credentials the organisation issues.",
+	"PUT /admin/organizations/{orgID}/credential-configurations/{configID}": "Define a credential, or redefine it.",
+	"GET /admin/organizations/{orgID}/credential-requests":                  "What wallets have asked for and is waiting on a decision.",
+	"PUT /admin/organizations/{orgID}/credential-requests/{requestID}":      "Approve or deny a waiting request.",
+	"GET /admin/organizations/{orgID}/issued-credentials":                   "What has been issued and can be revoked.",
+	"POST /admin/organizations/{orgID}/credential-revocations":              "Take back a credential, or all a person holds.",
+	"GET /admin/organizations/{orgID}/credential-proof-roots":               "The roots an x5c key proof may verify to.",
+	"PUT /admin/organizations/{orgID}/credential-proof-roots/{name}":        "Trust a CA for x5c key proofs.",
+	"DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}":     "Stop trusting a CA for x5c key proofs.",
+	"POST /admin/users/{userID}/credential-offers":                          "Mint a Credential Offer for the person.",
+
+	// RFC 9396 authorization details types (6.07).
+	"GET /admin/organizations/{orgID}/authorization-detail-types":    "The authorization details types the organisation accepts, and which clients may ask for each.",
+	"PUT /admin/organizations/{orgID}/authorization-detail-types":    "Register a type, or replace its fields.",
+	"DELETE /admin/organizations/{orgID}/authorization-detail-types": "Forget a type, named by ?type=, and every client's leave to ask for it.",
+
+	// Interstitial prompts (6.07).
+	"GET /admin/organizations/{orgID}/prompts":          "The prompts asked between sign-in and the session, in order.",
+	"PUT /admin/organizations/{orgID}/prompts/{slug}":   "Define or replace a prompt; a change to its wording asks everyone again.",
+	"PATCH /admin/organizations/{orgID}/prompts/{slug}": "Enable or disable a prompt, keeping its answers.",
+
+	// Dynamic client registration (6.07).
+	"GET /admin/organizations/{orgID}/registration":                     "Whether /oauth2/register is on, open, and what it allows.",
+	"PUT /admin/organizations/{orgID}/registration":                     "Turn dynamic registration on with this policy.",
+	"DELETE /admin/organizations/{orgID}/registration":                  "Turn dynamic registration off, keeping its policy and tokens.",
+	"GET /admin/organizations/{orgID}/registration-tokens":              "The organisation's initial access tokens, never their secrets.",
+	"POST /admin/organizations/{orgID}/registration-tokens":             "Mint an initial access token, shown once.",
+	"DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}": "Revoke an initial access token.",
+
+	// RADIUS (6.07).
+	"GET /admin/organizations/{orgID}/radius-clients":              "The network devices that may send Access-Requests; never a secret.",
+	"POST /admin/organizations/{orgID}/radius-clients":             "Register a device by the range it sends from and its shared secret.",
+	"PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}": "Revoke or restore a device's access.",
+	"GET /admin/organizations/{orgID}/radius-authorizations":       "The VLAN and Filter-Id each authorised group's members are given.",
+	"PUT /admin/groups/{groupID}/radius":                           "Place a group's members on a VLAN, a Filter-Id or both.",
+	"DELETE /admin/groups/{groupID}/radius":                        "Take a group's VLAN and Filter-Id away.",
+
+	// The access policy and sign-in flows (6.07).
+	"GET /admin/organizations/{orgID}/access-policy": "The access policy in force, as applied; none allows everything.",
+	"PUT /admin/organizations/{orgID}/access-policy": "Put a policy document in force once it loads and its tests pass.",
+	"GET /admin/organizations/{orgID}/sign-in-flow":  "The sign-in flows applied; none runs the built-in flows.",
+	"PUT /admin/organizations/{orgID}/sign-in-flow":  "Apply a flow document once it loads and its tests pass.",
+
+	// OpenID Federation and Trust Marks (6.07).
+	"GET /admin/instances/{instanceID}/federation/subordinates":    "The entities the instance speaks for in its federation.",
+	"PUT /admin/instances/{instanceID}/federation/subordinates":    "Speak for an entity, with the keys it gave you.",
+	"DELETE /admin/instances/{instanceID}/federation/subordinates": "Stop speaking for an entity.",
+	"GET /admin/instances/{instanceID}/federation/anchors":         "The Trust Anchors whose relying parties are admitted.",
+	"PUT /admin/instances/{instanceID}/federation/anchors":         "Accept a Trust Anchor's word for relying parties.",
+	"DELETE /admin/instances/{instanceID}/federation/anchors":      "Stop accepting a Trust Anchor, deleting the clients it admitted.",
+
+	"GET /admin/instances/{instanceID}/federation":              "Whether the instance is a federation entity, and whatit publishes.",
+	"PUT /admin/instances/{instanceID}/federation":              "Make the instance a federation entity, or change what it publishes.",
+	"GET /admin/instances/{instanceID}/trust-marks":             "The Trust Marks the instance issued and the ones it holds.",
+	"POST /admin/instances/{instanceID}/trust-marks":            "Issue a Trust Mark, signed with the federation key.",
+	"POST /admin/instances/{instanceID}/trust-marks/revoke":     "Revoke a Trust Mark the instance issued.",
+	"PUT /admin/instances/{instanceID}/held-trust-marks":        "Publish a Trust Mark another issuer granted the instance.",
+	"DELETE /admin/instances/{instanceID}/held-trust-marks":     "Stop publishing a Trust Mark the instance holds.",
+	"POST /admin/instances/{instanceID}/trust-mark-delegations": "Authorise another entity to issue a type of Trust Mark the instance owns.",
+
+	// This deployment's own keys toward a SAML upstream (8.04).
+	"GET /admin/organizations/{orgID}/kerberos-realms":                                "An organisation's Kerberos realms, without their keytabs",
+	"POST /admin/organizations/{orgID}/kerberos-realms":                               "Register a Kerberos realm and its keytab",
+	"DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}":                     "Forget a Kerberos realm and its keytab",
+	"GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":            "A SAML upstream's keys in this deployment, with their certificates.",
+	"POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys":           "Make a key toward a SAML upstream, to sign requests or to be encrypted to.",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}": "Retire a key toward a SAML upstream.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use":         "Say whether a SAML upstream is sent signed requests and must encrypt its assertions.",
+
+	// Upstream identity providers (6.07).
+	"GET /admin/organizations/{orgID}/identity-providers":                         "The providers people sign in through and the issuers assertions come from.",
+	"POST /admin/organizations/{orgID}/identity-providers":                        "Register a provider to sign in through, or an issuer whose assertions may be accepted.",
+	"PATCH /admin/organizations/{orgID}/identity-providers/{slug}":                "Take a provider out of service, allow its assertions, or say what of it is trusted.",
+	"POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata":        "Read a SAML upstream's metadata again, or see what that would change.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth":       "Say how this engine proves itself at the provider's token endpoint.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map":    "Route a provider's claim into a declared attribute.",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map":        "Say a provider's group grants a local one",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map":     "Stop a provider's group granting a local one",
+	"PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers":       "Believe an issuer for a wallet sign-in, with its keys",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers":    "Stop believing an issuer for a wallet sign-in",
+	"DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map": "Stop a provider's claim reaching an attribute.",
+	"GET /admin/users/{userID}/identity-links":                                    "The upstream subjects a person is linked to.",
+	"PUT /admin/users/{userID}/identity-links/{slug}":                             "Make a provider's subject act as the person, so its assertions mint for them.",
+	"DELETE /admin/users/{userID}/identity-links/{slug}":                          "Detach the person from a provider.",
+
+	// SAML service providers (6.07).
+	"GET /admin/organizations/{orgID}/saml-providers":                                   "The organisation's SAML service providers and what each is told.",
+	"POST /admin/organizations/{orgID}/saml-providers":                                  "Register a service provider by entity id and ACS URL.",
+	"PATCH /admin/organizations/{orgID}/saml-providers/{providerID}":                    "Choose what is signed, with which algorithm, and an assertion's lifetime.",
+	"POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata":            "Read a service provider's metadata again, or see what that would change.",
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release":    "Release a local attribute under a SAML attribute name.",
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release": "Stop releasing a SAML attribute.",
+	"PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release":        "Say which groups the provider is told of.",
+	"DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release":     "Stop telling the provider of group membership.",
+
+	// Directory sources (6.07).
+	"GET /admin/organizations/{orgID}/directories":                     "The directories the organisation's accounts follow, and what each last sync did.",
+	"POST /admin/organizations/{orgID}/directories":                    "Register a Google, Entra or LDAP source; it starts in dry run.",
+	"PATCH /admin/organizations/{orgID}/directories/{slug}":            "Change how a source syncs; what is not given is kept.",
+	"PUT /admin/organizations/{orgID}/directories/{slug}/group-map":    "Say which local group a directory group grants.",
+	"DELETE /admin/organizations/{orgID}/directories/{slug}/group-map": "Stop a directory group granting a local group.",
+	"POST /admin/organizations/{orgID}/directories/{slug}/sync":        "Reconcile the organisation with a directory, or preview it.",
+	"POST /admin/organizations/{orgID}/directories/{slug}/test":        "Read a directory as a sync would and say where it stopped.",
+
+	// Inbound SCIM sources (6.07).
+	"GET /admin/organizations/{orgID}/scim-sources":          "The upstreams that provision people into the organisation; never a token.",
+	"POST /admin/organizations/{orgID}/scim-sources":         "Register an upstream; its bearer token is shown once.",
+	"PATCH /admin/organizations/{orgID}/scim-sources/{slug}": "Take an upstream out of service or back.",
+
+	// Provisioning targets (6.07).
+	"GET /admin/organizations/{orgID}/scim-targets":                          "The systems the organisation's people are written out to; never a token.",
+	"POST /admin/organizations/{orgID}/scim-targets":                         "Register a SCIM, Google or Entra target; nothing is sent until it is synced.",
+	"PATCH /admin/organizations/{orgID}/scim-targets/{slug}":                 "Take a target out of service or back, or scope it to a group.",
+	"PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}":    "Create a group at a SCIM target and own it there.",
+	"DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}": "Delete a group this deployment created at a target.",
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/sync":             "Converge a target on who should have an account there, or preview it.",
+
+	// A target that takes the authorization code grant (7.14).
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization":      "Start signing somebody in at a target that takes the authorization code grant.",
+	"POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code": "Redeem the code that sign-in sent back, and keep the refresh token it issues.",
+
+	// Shared Signals (6.07).
+	"GET /admin/organizations/{orgID}/ssf-streams":  "The relying parties' Shared Signals streams; never a receiver token.",
+	"POST /admin/organizations/{orgID}/ssf-streams": "Register a client's stream, pushed or polled.",
+	"PATCH /admin/clients/{clientID}/ssf-stream":    "Pause, disable or re-enable a client's stream, telling its receiver.",
+	"GET /admin/organizations/{orgID}/ssf-sources":  "The transmitters whose events the organisation acts on.",
+	"PUT /admin/organizations/{orgID}/ssf-sources":  "Accept events from a transmitter, or replace what it may send.",
+
+	"PUT /admin/organizations/{orgID}/ssf-sources/poll": "Pull a transmitter's events rather than wait for them, or stop.",
+
+	// Fine-grained authorization (6.07).
+	"GET /admin/organizations/{orgID}/authorization-model":   "The organisation's authorization model as written; none permits nothing.",
+	"PUT /admin/organizations/{orgID}/authorization-model":   "Store a model once its own tests pass.",
+	"GET /admin/organizations/{orgID}/authorization/explain": "How a question would come out on relations, and whose grant answers it.",
+	"GET /admin/organizations/{orgID}/relations":             "The live relations, paged by id, by subject, object or relation when given.",
+	"PUT /admin/organizations/{orgID}/relations":             "Grant a subject a relation on an object.",
+	"DELETE /admin/organizations/{orgID}/relations":          "Revoke a relation named by subject, relation and object.",
+
+	"GET /admin/organizations/{orgID}/sign-in-flow/paths":                               "Every journey the flows in force can take, and the situation that takes it.",
+	"GET /admin/organizations/{orgID}/relation-delegations":                             "The delegations the organisation is either side of.",
+	"POST /admin/organizations/{orgID}/relation-delegations":                            "Let another organisation hand out relations on this one's objects; deployment-wide tokens only.",
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}":           "Take a delegation away, and all that was handed out under it; deployment-wide tokens only.",
+	"GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations":    "What a delegation has handed out.",
+	"PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations":    "As the grantee, hand a delegated relation to one of its own people.",
+	"DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations": "As the grantee, take a delegated relation back.",
+
+	// Configuration as code (6.07).
+	"POST /admin/organizations/{orgID}/config": "Plan a configuration file, or apply it in one transaction.",
+
+	// Remote-access connections (6.07).
+	"GET /admin/organizations/{orgID}/rac-connections":          "The machines people reach through the browser; never a credential.",
+	"POST /admin/organizations/{orgID}/rac-connections":         "Register a machine, sealing its credentials.",
+	"PATCH /admin/organizations/{orgID}/rac-connections/{slug}": "Take a connection out of service or back, or replace its guacd parameters.",
+
+	// Outposts (6.07).
+	"GET /admin/organizations/{orgID}/outposts":                "The organisation's outposts, when each was last heard from, never a token.",
+	"POST /admin/organizations/{orgID}/outposts":               "Register an outpost; its token is shown once.",
+	"PATCH /admin/organizations/{orgID}/outposts/{name}":       "Take an outpost out of service or back, or set who may search through it.",
+	"DELETE /admin/organizations/{orgID}/outposts/{name}":      "Remove an outpost and its token.",
+	"POST /admin/organizations/{orgID}/outposts/{name}/rotate": "Replace an outpost's token; the new one is shown once and the old one stops at once.",
+
+	// Which groups an application is told of (6.07).
+	"GET /admin/clients/{clientID}/group-release":    "Which groups the application is told of in the groups claim.",
+	"PUT /admin/clients/{clientID}/group-release":    "Tell the application of these groups, or every group when none is named.",
+	"DELETE /admin/clients/{clientID}/group-release": "Tell the application of no group.",
+
+	// Its settings, the `instance` commands' (6.07).
+	"GET /admin/organizations/{orgID}/settings":   "The organisation's sign-in and session policy.",
+	"PATCH /admin/organizations/{orgID}/settings": "Change the settings named; the rest are left as they are.",
+
+	// Administrative roles (6.01).
+	"GET /admin/organizations/{orgID}/approvals":                    "Changes waiting for a second person, and how recent ones were decided.",
+	"POST /admin/approvals/{approvalID}/approve":                    "Approve a change somebody else asked for: it is made now, as the approver.",
+	"POST /admin/approvals/{approvalID}/reject":                     "Turn down, or withdraw, a change waiting for a second person.",
+	"GET /admin/organizations/{orgID}/role-bindings":                "Who holds which administrative role in the organisation.",
+	"POST /admin/organizations/{orgID}/role-bindings":               "Give a person or an application a role, a user manager optionally over one group's members.",
+	"DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}": "Take a role away; the holder's next request is refused what it gave.",
 }
 
 // OpenAPI renders the document.
@@ -117,15 +431,38 @@ func (s *Server) openAPI() map[string]any {
 			})
 		}
 
+		refusal := func(desc string) map[string]any {
+			return map[string]any{"description": desc, "content": map[string]any{
+				"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Error"}}}}
+		}
+		sc := opSchemas[strings.ToUpper(op.method)+" "+op.path]
+		status := sc.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		success := map[string]any{"description": "Success."}
+		if sc.Response != nil {
+			success["content"] = map[string]any{"application/json": map[string]any{"schema": sc.Response}}
+		}
+		scopes, lacks := []any{op.scope}, "The token lacks "+op.scope+", or is scoped to another organisation."
+		if op.scope == "" {
+			// The batch: any token, each operation held to its own scope.
+			scopes, lacks = []any{}, "An operation was refused; `failed_index` names which, and nothing was written."
+		}
 		entry := map[string]any{
 			"summary":     op.summary,
 			"operationId": operationID(op),
-			"security":    []any{map[string]any{"bearerAuth": []any{op.scope}}},
+			"security":    []any{map[string]any{"bearerAuth": scopes}},
 			"responses": map[string]any{
-				"200": map[string]any{"description": "Success."},
-				"401": map[string]any{"description": "No usable bearer token."},
-				"403": map[string]any{"description": "The token lacks " + op.scope + ", or is scoped to another organisation."},
+				strconv.Itoa(status): success,
+				"400":                refusal("The request was refused; `error` names why."),
+				"401":                refusal("No usable bearer token."),
+				"403":                refusal(lacks),
 			},
+		}
+		if sc.Request != nil {
+			entry["requestBody"] = map[string]any{"required": true, "content": map[string]any{
+				"application/json": map[string]any{"schema": requestSchema(sc.Request)}}}
 		}
 		if len(params) > 0 {
 			entry["parameters"] = params
@@ -142,9 +479,17 @@ func (s *Server) openAPI() map[string]any {
 				"schema": map[string]any{"type": "string"},
 			})
 			resp := entry["responses"].(map[string]any)
-			resp["412"] = map[string]any{
-				"description": "The configuration version moved; nothing was written.",
-			}
+			resp["412"] = refusal("The configuration version moved; nothing was written. " +
+				"`expected_version` and `current_version` name both.")
+		}
+		// The second scope is conditional on the target, so it cannot go in
+		// `security`: listing it there would claim every call needs it.
+		if op.privileged {
+			entry["x-privileged-scope"] = ScopePrivilegedUsersWrite
+			resp := entry["responses"].(map[string]any)
+			resp["403"] = refusal("The token lacks " + op.scope +
+				", or is scoped to another organisation, or the target may impersonate " +
+				"others and the token lacks " + ScopePrivilegedUsersWrite + ".")
 		}
 		item[op.method] = entry
 	}
@@ -159,6 +504,7 @@ func (s *Server) openAPI() map[string]any {
 			"version": "1",
 		},
 		"components": map[string]any{
+			"schemas": map[string]any{"Error": errorSchema},
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]any{
 					"type": "http", "scheme": "bearer",

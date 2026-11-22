@@ -26,6 +26,31 @@ import (
 // and the sweep that suggested otherwise was searching function-scoped while the
 // header is set in a different function — a false positive that the test caught
 // before it became a redundant change.
+// A pushed request is bounded (2.58): maxPARBody was declared and applied to
+// nothing, so a push parsed up to net/http's 10 MB form ceiling.
+func TestAnOversizedPushIsRefused(t *testing.T) {
+	f := newTokenFixture(t)
+	push := func(state string) int {
+		t.Helper()
+		form := url.Values{"client_id": {f.clientID}, "redirect_uri": {"https://rp.test/cb"},
+			"response_type": {"code"}, "scope": {"openid"}, "state": {state},
+			"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+			"code_challenge_method": {"S256"}}
+		req := httptest.NewRequest(http.MethodPost, "/oauth2/par", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "198.51.100.58:1234"
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := push(strings.Repeat("s", maxPARBody)); code != http.StatusRequestEntityTooLarge {
+		t.Errorf("a push past the cap answered %d, want 413", code)
+	}
+	if code := push("s"); code != http.StatusCreated {
+		t.Errorf("an ordinary push answered %d, want 201", code)
+	}
+}
+
 func TestPARAnswersAFailedClientAuthWithAChallenge(t *testing.T) {
 	f := newTokenFixture(t)
 

@@ -1,9 +1,12 @@
 package rac
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -68,10 +71,23 @@ type Session struct {
 // should not be reachable from anywhere else: guacd will connect wherever it is
 // asked, so anything that can talk to it can reach every host it can.
 func Dial(addr string, c Connection, timeout time.Duration) (*Session, error) {
+	return DialTLS(addr, c, timeout, nil)
+}
+
+// DialTLS is Dial over TLS. The protocol carries a target's credentials in the
+// clear, so a guacd on another machine is reached this way: guacd -C and -K serve
+// it, and tlsConfig is what this side trusts. nil is plaintext, for loopback.
+func DialTLS(addr string, c Connection, timeout time.Duration, tlsConfig *tls.Config) (*Session, error) {
 	if c.Protocol == "" {
 		return nil, fmt.Errorf("no protocol given")
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	var conn net.Conn
+	var err error
+	if tlsConfig != nil {
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("connecting to guacd at %s: %w", addr, err)
 	}
@@ -82,6 +98,34 @@ func Dial(addr string, c Connection, timeout time.Duration) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// clientVersion is the newest protocol the vendored browser client speaks, from
+// static/PROVENANCE.md.
+var clientVersion = [3]int{1, 5, 0}
+
+// agreedVersion answers the version guacd offers as its first argument with the
+// older of that and clientVersion, and reports false for a first argument that is
+// no version. Left empty, guacd is told nothing about the browser behind this side,
+// and never sends `required`, the instruction that asks the viewer for what a
+// connection does not hold.
+func agreedVersion(offered string) (string, bool) {
+	parts := strings.Split(offered, "_")
+	if len(parts) != 4 || parts[0] != "VERSION" {
+		return "", false
+	}
+	var version [3]int
+	for i, part := range parts[1:] {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return "", false
+		}
+		version[i] = n
+	}
+	if slices.Compare(version[:], clientVersion[:]) > 0 {
+		version = clientVersion
+	}
+	return fmt.Sprintf("VERSION_%d_%d_%d", version[0], version[1], version[2]), true
 }
 
 func (s *Session) handshake(c Connection, timeout time.Duration) error {
@@ -134,7 +178,11 @@ func (s *Session) handshake(c Connection, timeout time.Duration) error {
 	// that changes between versions cannot shift a password into the hostname.
 	values := make([]string, 0, len(args.Args))
 	var unknown []string
-	for _, name := range args.Args {
+	for i, name := range args.Args {
+		if version, ok := agreedVersion(name); i == 0 && ok {
+			values = append(values, version)
+			continue
+		}
 		if v, ok := c.Parameters[name]; ok {
 			values = append(values, v)
 			continue

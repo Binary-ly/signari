@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +65,19 @@ func registrationToken(t *testing.T, f *tokenFixture) string {
 	return tok
 }
 
+// freshAddress is an address no earlier request used. Registration is limited
+// per address per hour, and httptest's default 192.0.2.1 would carry every
+// run's registrations into the same bucket until a later run is refused.
+func freshAddress() string {
+	// Random, not clock-derived. The clock on macOS counts in microseconds, so
+	// UnixNano()%250 was always 0 and every address ended in .1: 250 addresses
+	// shared across every run in the hour, and the 21st registration from one
+	// of them was refused as a burst.
+	var b [2]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("198.51.%d.%d", int(b[0])%250+1, int(b[1])%250+1)
+}
+
 func registerWithMode(t *testing.T, f *tokenFixture, mode string) (int, string) {
 	t.Helper()
 	body := `{"redirect_uris":["https://rp.test/cb"],"client_name":"m"`
@@ -73,6 +87,7 @@ func registerWithMode(t *testing.T, f *tokenFixture, mode string) (int, string) 
 	body += `}`
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/register", strings.NewReader(body))
+	req.RemoteAddr = freshAddress() + ":443"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+registrationToken(t, f))
 	rec := httptest.NewRecorder()

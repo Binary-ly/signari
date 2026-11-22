@@ -97,15 +97,27 @@ type Set struct {
 	order []string
 	// bundle is what T and N resolve against, and what discovery advertises.
 	bundle *i18n.Bundle
+	// src is every page's text, for rendering one with an organisation's words
+	// (ExecuteWith): the trees above are bound to a language when they are parsed.
+	src map[string]string
+	// orgs is each organisation's theme, by its slug, built over this set.
+	orgs map[string]*Set
 }
 
+// OrgThemesDir is the subdirectory of a theme directory that holds organisations'
+// themes, one directory each, named by the organisation's slug.
+const OrgThemesDir = "orgs"
+
 // Load reads the built-in pages and, when overrideDir is not empty, replaces any
-// page or partial that directory names.
+// page or partial that directory names, then builds each organisation's theme
+// under it over the result.
 //
 // A page whose override fails Validate is reported in the returned []error and
 // the built-in is kept. Load itself only fails for something that makes the
 // whole set unusable — a built-in that will not parse, or an override directory
-// that cannot be read at all.
+// that cannot be read at all. An organisation's directory is the same, except
+// that one which cannot be read costs only that organisation its theme: its
+// neighbours' pages have nothing to do with it.
 func Load(overrideDir string) (*Set, []error, error) {
 	src, err := builtinSources()
 	if err != nil {
@@ -116,39 +128,13 @@ func Load(overrideDir string) (*Set, []error, error) {
 		origin[name] = "built-in"
 	}
 
-	// Overrides are parsed into a COPY and validated before they are allowed to
-	// replace anything, so a set is never briefly holding a page that failed.
 	var problems []error
 	if overrideDir != "" {
-		over, err := overrideSources(overrideDir)
+		refused, err := layer(src, origin, overrideDir, "the built-in page")
 		if err != nil {
 			return nil, nil, err
 		}
-		for name, body := range over {
-			// A file naming nothing is a typo, and accepting it is worse than
-			// refusing it: `logn.html` would otherwise become a thirty-fourth page
-			// that no route renders, while `theme list` and `doctor` both counted it
-			// as an override and reported success. `theme check` has always refused
-			// this; Load must agree with it, or the check passing in CI and the
-			// server accepting it mean different things.
-			if _, known := src[name]; !known && !partials[name] {
-				problems = append(problems, fmt.Errorf(
-					"%s does not correspond to any page this server renders, so it "+
-						"is being ignored; `signari theme list` prints every name",
-					filepath.Join(overrideDir, name+".html")))
-				continue
-			}
-			candidate := clone(src)
-			candidate[name] = body
-			if err := validateOne(candidate, name); err != nil {
-				problems = append(problems, fmt.Errorf(
-					"%s: the override was refused and the built-in page is being "+
-						"used instead: %w", filepath.Join(overrideDir, name+".html"), err))
-				continue
-			}
-			src[name] = body
-			origin[name] = filepath.Join(overrideDir, name+".html")
-		}
+		problems = refused
 	}
 
 	// The catalogue lives in the SAME directory as the pages, under locales/.
@@ -172,7 +158,113 @@ func Load(overrideDir string) (*Set, []error, error) {
 		return nil, problems, err
 	}
 	set.origin = origin
+	if overrideDir != "" {
+		problems = append(problems, set.loadOrgs(overrideDir, localeDir)...)
+	}
 	return set, problems, nil
+}
+
+// layer replaces the pages dir names in src, each only if it validates.
+//
+// Overrides are parsed into a COPY and validated before they are allowed to
+// replace anything, so a set is never briefly holding a page that failed.
+func layer(src, origin map[string]string, dir, fallback string) ([]error, error) {
+	over, err := overrideSources(dir)
+	if err != nil {
+		return nil, err
+	}
+	var problems []error
+	for name, body := range over {
+		// A file naming nothing is a typo, and accepting it is worse than
+		// refusing it: `logn.html` would otherwise become a thirty-fourth page
+		// that no route renders, while `theme list` and `doctor` both counted it
+		// as an override and reported success. `theme check` has always refused
+		// this; Load must agree with it, or the check passing in CI and the
+		// server accepting it mean different things.
+		if _, known := src[name]; !known && !partials[name] {
+			problems = append(problems, fmt.Errorf(
+				"%s does not correspond to any page this server renders, so it "+
+					"is being ignored; `signari theme list` prints every name",
+				filepath.Join(dir, name+".html")))
+			continue
+		}
+		candidate := clone(src)
+		candidate[name] = body
+		if err := validateOne(candidate, name); err != nil {
+			problems = append(problems, fmt.Errorf(
+				"%s: the override was refused and %s is being "+
+					"used instead: %w", filepath.Join(dir, name+".html"), fallback, err))
+			continue
+		}
+		src[name] = body
+		origin[name] = filepath.Join(dir, name+".html")
+	}
+	return problems, nil
+}
+
+// loadOrgs builds a set per directory under dir/orgs, each over this one.
+func (s *Set) loadOrgs(dir, localeDir string) []error {
+	root := filepath.Join(dir, OrgThemesDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return []error{fmt.Errorf("reading %s: %w", root, err)}
+	}
+	var problems []error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		orgDir := filepath.Join(root, slug)
+		src, origin := clone(s.src), clone(s.origin)
+		refused, err := layer(src, origin, orgDir, "the deployment's page")
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: the organisation's theme is not being used: %w", orgDir, err))
+			continue
+		}
+		problems = append(problems, refused...)
+		bundle, langProblems, err := i18n.Load(localeDir, filepath.Join(orgDir, "locales"))
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: the organisation's theme is not being used: %w", orgDir, err))
+			continue
+		}
+		problems = append(problems, langProblems...)
+		set, err := build(src, bundle)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: the organisation's theme is not being used: %w", orgDir, err))
+			continue
+		}
+		set.origin = origin
+		if s.orgs == nil {
+			s.orgs = map[string]*Set{}
+		}
+		s.orgs[slug] = set
+	}
+	return problems
+}
+
+// For is the pages an organisation's people read: its theme, or this set.
+func (s *Set) For(slug string) *Set {
+	if own, ok := s.orgs[slug]; ok {
+		return own
+	}
+	return s
+}
+
+// OrgThemes lists the slugs that have a theme, sorted.
+func (s *Set) OrgThemes() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.orgs))
+	for slug := range s.orgs {
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Bundle is the message catalogue these pages render against.
@@ -260,19 +352,13 @@ func build(src map[string]string, bundle *i18n.Bundle) (*Set, error) {
 	set := &Set{
 		tmpl:   map[string]map[string]*template.Template{},
 		bundle: bundle,
+		src:    src,
 	}
 
 	for _, lang := range bundle.Languages() {
-		printer := bundle.For(lang)
-
-		base := template.New("base").Funcs(funcsFor(printer))
-		for name, body := range src {
-			if !partials[name] {
-				continue
-			}
-			if _, err := base.Parse(body); err != nil {
-				return nil, fmt.Errorf("the %s partial does not parse: %w", name, err)
-			}
+		base, err := parsePartials(src, bundle.For(lang))
+		if err != nil {
+			return nil, err
 		}
 
 		set.tmpl[lang] = map[string]*template.Template{}
@@ -298,6 +384,20 @@ func build(src map[string]string, bundle *i18n.Bundle) (*Set, error) {
 	}
 	sort.Strings(set.order)
 	return set, nil
+}
+
+// parsePartials is the shared fragments, parsed for one printer.
+func parsePartials(src map[string]string, p *i18n.Printer) (*template.Template, error) {
+	base := template.New("base").Funcs(funcsFor(p))
+	for name, body := range src {
+		if !partials[name] {
+			continue
+		}
+		if _, err := base.Parse(body); err != nil {
+			return nil, fmt.Errorf("the %s partial does not parse: %w", name, err)
+		}
+	}
+	return base, nil
 }
 
 // funcsFor is what a page may call, bound to one language.
@@ -350,10 +450,43 @@ func (s *Set) ExecuteIn(w io.Writer, lang, name string, data any) error {
 	if !ok {
 		return fmt.Errorf("there is no page named %q", name)
 	}
-	// A page that defines "content" is filling a layout; anything else renders
-	// itself. Looking rather than recording it means a page and its override can
-	// disagree about which style they are, which is what lets an operator replace
-	// a laid-out page with a self-contained one.
+	return run(t, w, name, data)
+}
+
+// ExecuteWith renders a page through a printer, which may carry an organisation's
+// own words.
+//
+// T is bound to a printer when a page is parsed, so a printer that is not one of
+// the catalogue's own means parsing the page for this render: the shared trees
+// serve every request at once and cannot be rebound. That is a page's worth of
+// parsing on a page a person reads, and only for an organisation that has
+// reworded something, against a cache of trees per organisation and a question
+// of what would empty it.
+func (s *Set) ExecuteWith(w io.Writer, p *i18n.Printer, name string, data any) error {
+	if s == nil || !p.Worded() {
+		return s.ExecuteIn(w, p.Lang(), name, data)
+	}
+	body, ok := s.src[name]
+	if !ok || partials[name] {
+		return fmt.Errorf("there is no page named %q", name)
+	}
+	t, err := parsePartials(s.src, p)
+	if err != nil {
+		return err
+	}
+	if _, err := t.New(name).Parse(body); err != nil {
+		return fmt.Errorf("the %s page does not parse: %w", name, err)
+	}
+	return run(t, w, name, data)
+}
+
+// run executes a parsed page.
+//
+// A page that defines "content" is filling a layout; anything else renders
+// itself. Looking rather than recording it means a page and its override can
+// disagree about which style they are, which is what lets an operator replace
+// a laid-out page with a self-contained one.
+func run(t *template.Template, w io.Writer, name string, data any) error {
 	root := name
 	if t.Lookup("content") != nil {
 		root = layoutFor(t)

@@ -3,10 +3,18 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
@@ -18,7 +26,13 @@ import (
 // Both endpoints are client-authenticated for the same reason: without it,
 // /introspect is a free oracle for validating stolen tokens and /revoke is a
 // denial-of-service primitive against anyone whose token you can guess.
-func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.Request) (*clients.Client, bool) {
+//
+// alsoAsk, when given, queues a read on the round trip that finds the client (E.23). It
+// is called only once the form has been read under its cap and found whole, and the
+// request parsed: a hook that read the form itself read it past the cap, and the
+// refusal was lost.
+func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.Request,
+	alsoAsk func(form url.Values, b *pgx.Batch)) (*clients.Client, bool) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -50,7 +64,12 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 		return nil, false
 	}
 
-	c, err := s.lookupClient(ctx, req.ClientID)
+	// With the failure counters, in one round trip (E.23).
+	if alsoAsk != nil {
+		form := r.PostForm
+		ctx = withAlsoInBatch(ctx, func(b *pgx.Batch) { alsoAsk(form, b) })
+	}
+	ctx, c, err := s.lookupClientToAuthenticate(ctx, r, req.ClientID)
 	if err != nil || c == nil {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 			Description: "unknown client", Status: http.StatusUnauthorized})
@@ -60,9 +79,19 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 		writeTokenError(w, aerr)
 		return nil, false
 	}
+	// Through the one place a confidential client proves itself, as /token does.
+	// This compared the secret directly, so introspection and revocation
+	// consulted no failure budget, which made them an unmetered place to guess a
+	// secret. It also refused every client registered for private_key_jwt,
+	// mutual TLS or attestation, which hold no secret to compare.
 	if c.Type == "confidential" {
-		ok, err := s.verifyClientSecret(ctx, c, req.ClientSecret)
-		if err != nil || !ok {
+		if err := s.authenticateConfidentialClient(ctx, r, c, req.ClientSecret); err != nil {
+			s.log.InfoContext(ctx, "client authentication failed", "client_id", c.ClientID, "err", err,
+				"correlation_id", correlationID(ctx))
+			if isAttestationFailure(c, err) {
+				s.writeAttestationError(w, r, c, err)
+				return nil, false
+			}
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
 				Description: "client authentication failed", Status: http.StatusUnauthorized})
 			return nil, false
@@ -89,7 +118,7 @@ func (s *Server) authenticateTokenEndpointClient(w http.ResponseWriter, r *http.
 //     accepting it until it expires -- five minutes -- and no issuer of stateless
 //     tokens can do better than that.
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.authenticateTokenEndpointClient(w, r)
+	c, ok := s.authenticateTokenEndpointClient(w, r, nil)
 	if !ok {
 		return
 	}
@@ -104,6 +133,28 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The client's own access token, minted under this instance's issuer, is the common
+	// case, and the one statement that puts its jti on the denylist revokes it (E.23). It
+	// was a transaction of five round trips behind a read of the issuer aliases, the first
+	// asking whether a signed token of ours was a refresh token. Anything else goes the
+	// whole way below, the aliases read only for a token naming an issuer not ours.
+	own, ownErr := s.verifyPresented(ctx, []string{s.cfg.Issuer}, raw)
+	if ownErr == nil && own.ClientID == c.ClientID && own.JTI != "" {
+		if err := store.RevokeJTI(ctx, s.db, own.JTI, c.ClientID, time.Unix(own.Expiry, 0)); err != nil {
+			s.log.ErrorContext(ctx, "denylisting access token", "client_id", c.ClientID, "err", err)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		s.answerRevocation(ctx, w, c, true, "access_token", personNamed(own.Subject))
+		return
+	}
+	// Read before the transaction opens: it takes a connection of its own, and
+	// one taken while a transaction is held is how the pool deadlocks.
+	issuers := []string{s.cfg.Issuer}
+	if errors.Is(ownErr, tokens.ErrWrongIssuer) {
+		issuers = s.acceptedIssuers(ctx)
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
@@ -116,25 +167,33 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	// hint is how a client's revocation silently does nothing.
 	revoked, err := store.RevokeRefreshToken(ctx, tx, store.HashToken(raw), c.ClientID)
 	if err != nil {
-		s.log.Error("revoking refresh token", "client_id", c.ClientID, "err", err)
+		s.log.ErrorContext(ctx, "revoking refresh token", "client_id", c.ClientID, "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
+	}
+	// What was revoked and whose, for the record written after the commit.
+	var revokedKind, revokedSubject string
+	if revoked {
+		revokedKind = "refresh_token"
+		if _, holder, herr := store.RefreshTokenHolder(ctx, tx, store.HashToken(raw)); herr == nil {
+			revokedSubject = holder
+		}
 	}
 
 	if !revoked {
 		// Not a refresh token of ours. Try it as an access token.
-		if claims, verr := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw); verr == nil {
+		if claims, verr := s.verifyPresentedIn(ctx, tx, issuers, raw); verr == nil {
 			// Only the client's own tokens. A valid token presented by a
 			// different client is somebody else's credential, and revoking it
 			// would be a cross-client denial of service.
 			if claims.ClientID == c.ClientID && claims.JTI != "" {
 				if err := store.RevokeJTI(ctx, tx, claims.JTI, c.ClientID,
 					time.Unix(claims.Expiry, 0)); err != nil {
-					s.log.Error("denylisting access token", "client_id", c.ClientID, "err", err)
+					s.log.ErrorContext(ctx, "denylisting access token", "client_id", c.ClientID, "err", err)
 					writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 					return
 				}
-				revoked = true
+				revoked, revokedKind, revokedSubject = true, "access_token", personNamed(claims.Subject)
 			} else if claims.ClientID != "" && claims.ClientID != c.ClientID {
 				// §2.1: "verifies whether the token was issued to the client
 				// making the revocation request. If this validation fails, the
@@ -145,7 +204,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				// answering 200 would tell them it had been revoked when it had
 				// not -- the same silent-success failure this endpoint's review
 				// criticises elsewhere.
-				s.log.Info("revocation refused: token belongs to another client",
+				s.log.InfoContext(ctx, "revocation refused: token belongs to another client",
 					"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
 				writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 					Description: "this token was issued to a different client",
@@ -156,17 +215,31 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !revoked {
+		// UMA §3.7 has this endpoint take a PCT, and for this client alone. Whose
+		// else it might be is not reported: it holds no identity worth confirming.
+		holder, perr := store.RevokePersistedClaims(ctx, tx, raw, c.ClientID)
+		if perr != nil {
+			s.log.ErrorContext(ctx, "revoking a persisted claims token", "client_id", c.ClientID, "err", perr)
+			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
+			return
+		}
+		if holder != "" {
+			revoked, revokedKind, revokedSubject = true, "pct", holder
+		}
+	}
+
+	if !revoked {
 		// The same §2.1 check for refresh tokens, which RevokeRefreshToken
 		// cannot report on its own: it returns false for unknown, foreign and
 		// already-revoked alike, and only the middle one is an error.
 		owner, oerr := store.RefreshTokenOwner(ctx, tx, store.HashToken(raw))
 		if oerr != nil {
-			s.log.Error("looking up refresh token owner", "err", oerr)
+			s.log.ErrorContext(ctx, "looking up refresh token owner", "err", oerr)
 			writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 			return
 		}
 		if owner != "" && owner != c.ClientID {
-			s.log.Info("revocation refused: refresh token belongs to another client",
+			s.log.InfoContext(ctx, "revocation refused: refresh token belongs to another client",
 				"presented_by", c.ClientID, "correlation_id", correlationID(ctx))
 			writeTokenError(w, &oauth.TokenError{Code: "invalid_grant",
 				Description: "this token was issued to a different client",
@@ -176,15 +249,36 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing revocation", "err", err)
+		s.log.ErrorContext(ctx, "committing revocation", "err", err)
 		writeTokenError(w, &oauth.TokenError{Code: "server_error", Status: http.StatusInternalServerError})
 		return
 	}
+	s.answerRevocation(ctx, w, c, revoked, revokedKind, revokedSubject)
+}
 
+// answerRevocation logs, records and answers a revocation that has committed. The record
+// is written apart from it, so a record that cannot be written never undoes a revocation.
+func (s *Server) answerRevocation(ctx context.Context, w http.ResponseWriter, c *clients.Client,
+	revoked bool, kind, subject string) {
 	// Logged either way, because "the client called revoke and nothing matched"
 	// is the shape of both a retry and a misconfigured integration.
-	s.log.Info("token revocation", "client_id", c.ClientID, "matched", revoked)
+	s.log.InfoContext(ctx, "token revocation", "client_id", c.ClientID, "matched", revoked)
+	// Recorded when something was revoked, which nothing did before 2.52.
+	if revoked {
+		s.auditDetached(ctx, audit.Event{Type: audit.EventTokenRevoked, OrgID: c.OrgID,
+			SubjectID: subject, ClientID: c.ClientID, CorrelationID: correlationID(ctx),
+			Detail: map[string]any{"token_type": kind}})
+	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// personNamed is a token's subject when it names a person; a client's own token names the
+// client, which the record carries as its client already.
+func personNamed(subject string) string {
+	if _, err := uuid.Parse(subject); err == nil {
+		return subject
+	}
+	return ""
 }
 
 // introspectionResponse is RFC 7662 §2.2. Every field but `active` is omitted
@@ -271,10 +365,38 @@ func (a audienceValue) MarshalJSON() ([]byte, error) {
 // could use this endpoint to validate tokens it stole from another, which turns
 // a debugging aid into an attack tool.
 func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.authenticateTokenEndpointClient(w, r)
+	// RFC 9701 §4: a resource server asks for a JWT with its Accept header.
+	asJWT := strings.Contains(r.Header.Get("Accept"), introspectionJWT)
+	if asJWT {
+		w = unauthenticatedIs400{w}
+	}
+	// The token's standing is asked in the round trip that finds the client (E.23): what
+	// it asks depends on the token alone, it changes nothing, and nothing is answered
+	// until the client has authenticated. Before then the token costs no round trip of its
+	// own: it is verified against the keys in memory with a reader that refuses, so an
+	// opaque handle, a pairwise subject and another issuer's alias are read after
+	// authentication, as before, and so is a token said to be a refresh token or that is
+	// not one of ours.
+	pre := &prefetchedStanding{}
+	c, ok := s.authenticateTokenEndpointClient(w, r, func(form url.Values, b *pgx.Batch) {
+		if form.Get("token_type_hint") == "refresh_token" {
+			return
+		}
+		raw := form.Get("token")
+		if raw == "" || strings.HasPrefix(raw, store.OpaqueTokenPrefix) {
+			return
+		}
+		claims, err := s.verifyPresentedIn(r.Context(), refusesReads{}, []string{s.cfg.Issuer}, raw)
+		if err != nil {
+			return
+		}
+		pre.raw, pre.claims = raw, claims
+		pre.read = store.QueueTokenStandingOf(b, claims)
+	})
 	if !ok {
 		return
 	}
+	r = r.WithContext(context.WithValue(r.Context(), prefetchedStandingKey{}, pre))
 
 	if c.Type == "public" {
 		writeTokenError(w, &oauth.TokenError{Code: "invalid_client",
@@ -293,64 +415,130 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if resp := s.introspectAccessToken(ctx, c, raw); resp != nil {
+	// RFC 7662 §2.1: a hint is an optimisation, so one that misses still searches
+	// everything (specs/rfc7662.txt:204-212). Told it is a refresh token, the lookup
+	// comes first and no signature is checked against a string that is not a JWT.
+	answer := func(resp *introspectionResponse) {
+		if asJWT {
+			s.writeIntrospectionJWT(w, r, c, resp)
+			return
+		}
 		writeJSON(w, http.StatusOK, resp)
+	}
+	if r.PostForm.Get("token_type_hint") == "refresh_token" {
+		if resp := s.introspectRefreshToken(ctx, c, raw); resp.Active {
+			answer(resp)
+			return
+		}
+	}
+	if resp := s.introspectAccessToken(ctx, c, raw); resp != nil {
+		answer(resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.introspectRefreshToken(ctx, c, raw))
+	answer(s.introspectRefreshToken(ctx, c, raw))
+}
+
+// introspectionJWT is RFC 9701's media type, and the JWT's `typ` less the prefix.
+const introspectionJWT = "application/token-introspection+jwt"
+
+// unauthenticatedIs400 is RFC 9701 §5: "An AS compliant with this specification MUST
+// refuse to serve introspection requests that don't authenticate the caller and return
+// an HTTP status code 400."
+type unauthenticatedIs400 struct{ http.ResponseWriter }
+
+func (w unauthenticatedIs400) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w unauthenticatedIs400) WriteHeader(status int) {
+	if status == http.StatusUnauthorized {
+		w.Header().Del("WWW-Authenticate")
+		status = http.StatusBadRequest
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// writeIntrospectionJWT answers as RFC 9701 §5 has it. What cannot be signed is not sent
+// as JSON instead: a resource server asked for this so as to have proof of the answer.
+func (s *Server) writeIntrospectionJWT(w http.ResponseWriter, r *http.Request, c *clients.Client,
+	resp *introspectionResponse) {
+	ctx := r.Context()
+	body, err := s.introspectionJWT(c, resp)
+	if err != nil {
+		s.log.ErrorContext(ctx, "signing an introspection response", "err", err, "client", c.ClientID)
+		http.Error(w, "the response could not be signed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", introspectionJWT)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(body)); err != nil {
+		s.log.InfoContext(ctx, "writing an introspection response", "err", err)
+	}
+}
+
+func (s *Server) introspectionJWT(c *clients.Client, resp *introspectionResponse) (string, error) {
+	// §6: "The default, if omitted, is RS256." Not for a client held to FAPI, whose
+	// §5.4.1 rules that out, and whose tokens are signed with something it does allow.
+	alg := keys.RS256
+	if c.FAPI2() {
+		alg = keys.Algorithm(c.IDTokenAlg)
+	}
+	if c.IntrospectionSignedAlg != "" {
+		alg = keys.Algorithm(c.IntrospectionSignedAlg)
+	}
+	key, err := s.cfg.Keys.Active(alg)
+	if err != nil {
+		return "", err
+	}
+	// §5: sub and exp are left out, the JWT not being a token, and what it says goes
+	// under its own claim so that nothing reads it as one.
+	signed, err := tokens.NewSigner(key).SignJSON(map[string]any{
+		"iss": s.issuerFor(c), "aud": c.ClientID, "iat": time.Now().Unix(), "token_introspection": resp,
+	}, strings.TrimPrefix(introspectionJWT, "application/"))
+	if err != nil || c.IntrospectionEncryption.Alg == "" {
+		return signed, err
+	}
+	return tokens.EncryptTo([]byte(signed), true, c.EncryptionKeys, c.IntrospectionEncryption)
 }
 
 // introspectAccessToken returns nil when raw is not one of our access tokens, so
 // the caller can try it as a refresh token.
 func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw)
-	if err != nil {
-		return nil
+	pre, _ := ctx.Value(prefetchedStandingKey{}).(*prefetchedStanding)
+	if pre != nil && pre.raw != raw {
+		pre = nil
+	}
+	var claims *tokens.AccessTokenClaims
+	if pre != nil {
+		claims = pre.claims
+	} else {
+		var err error
+		if claims, err = s.verifyAccepted(ctx, raw); err != nil {
+			return nil
+		}
 	}
 
 	if claims.ClientID != c.ClientID && !audienceIncludes(claims.Audience, c.ClientID) {
-		s.log.Info("client introspected a token it is neither the owner nor an audience of",
+		s.log.InfoContext(ctx, "client introspected a token it is neither the owner nor an audience of",
 			"caller", c.ClientID, "token_client", claims.ClientID)
 		return &introspectionResponse{Active: false}
 	}
 
 	inactive := &introspectionResponse{Active: false}
 
-	if time.Now().After(time.Unix(claims.Expiry, 0)) {
-		return inactive
-	}
-	// RFC 7009 §2.1's cascade, checked before the per-jti denylist: revoking the
-	// refresh token invalidates every access token from the same grant, and a
-	// client revokes the refresh token far more often than each access token.
-	if grantRevoked, gerr := store.GrantRevoked(ctx, s.db, claims.GrantID); gerr != nil || grantRevoked {
-		if gerr != nil {
-			s.log.Error("introspection grant revocation check failed", "err", gerr)
-		}
-		return inactive
-	}
-	revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI)
-	if err != nil {
-		// JTIRevoked fails closed and says why. Report inactive rather than
-		// erroring: a resource server that cannot get an answer must not treat
-		// the token as good.
-		s.log.Error("introspection revocation check failed", "err", err)
-		return inactive
-	}
-	if revoked {
+	// specs/rfc7662.txt:649: "If the token can be used only at certain resource
+	// servers, the authorization server MUST determine whether or not the token
+	// can be used at the resource server making the introspection call." This one
+	// can be used at the credential endpoint, which never calls here.
+	if s.issuanceOnly(claims) {
 		return inactive
 	}
 
-	// A token minted from a session is only as live as that session. A token
-	// from client_credentials has no session and is not subject to this.
-	if claims.SessionID != "" {
-		live, err := store.SessionLive(ctx, s.db, claims.SessionID)
-		if err != nil {
-			s.log.Error("introspection session check failed", "err", err)
-			return inactive
-		}
-		if !live {
-			return inactive
-		}
+	if time.Now().After(time.Unix(claims.Expiry, 0)) {
+		return inactive
+	}
+	// Inactive rather than an error when it cannot be read: a resource server that
+	// cannot get an answer must not treat the token as good.
+	if !s.introspectionStanding(ctx, claims, pre).Live() {
+		return inactive
 	}
 
 	return &introspectionResponse{
@@ -360,7 +548,7 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 		TokenType: introspectedTokenType(claims.Cnf),
 		Expiry:    claims.Expiry,
 		IssuedAt:  claims.IssuedAt,
-		Subject:   claims.Subject,
+		Subject:   claims.Presented(),
 		Audience:  claims.Audience,
 		Issuer:    s.cfg.Issuer,
 		JTI:       claims.JTI,
@@ -371,24 +559,67 @@ func (s *Server) introspectAccessToken(ctx context.Context, c *clients.Client, r
 	}
 }
 
+// prefetchedStanding is a token's claims, verified before its introspection's client
+// authenticated, and its standing, read in the client's round trip (E.23).
+type prefetchedStanding struct {
+	raw    string
+	claims *tokens.AccessTokenClaims
+	read   func() (store.TokenStanding, error)
+}
+
+type prefetchedStandingKey struct{}
+
+// refusesReads is a database a token is verified against before its caller has
+// authenticated: a token that needs a read to verify is verified afterwards instead.
+type refusesReads struct{}
+
+var errReadBeforeAuthentication = errors.New("no read is made for a caller that has not authenticated")
+
+func (refusesReads) QueryRow(context.Context, string, ...any) pgx.Row { return refusedRow{} }
+
+type refusedRow struct{}
+
+func (refusedRow) Scan(...any) error { return errReadBeforeAuthentication }
+
+// introspectionStanding is the standing read with the client, when it was, and otherwise
+// read now: the same statement, and the same fail-closed answer when it could not be read.
+func (s *Server) introspectionStanding(ctx context.Context, claims *tokens.AccessTokenClaims,
+	pre *prefetchedStanding) store.TokenStanding {
+	if pre == nil || pre.read == nil {
+		return s.standing(ctx, claims, "introspection")
+	}
+	st, err := pre.read()
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading what has become of a token", "where", "introspection", "err", err,
+			"correlation_id", correlationID(ctx))
+	}
+	return st
+}
+
 func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, raw string) *introspectionResponse {
 	inactive := &introspectionResponse{Active: false}
 
 	st, err := store.LookupRefreshToken(ctx, s.db, store.HashToken(raw))
 	if err != nil {
-		s.log.Error("introspecting refresh token", "err", err)
+		s.log.ErrorContext(ctx, "introspecting refresh token", "err", err)
 		return inactive
 	}
 	if !st.Found || st.ClientID != c.ClientID || !st.Active {
 		return inactive
 	}
-	// A live refresh token whose session has ended is not usable, and saying
-	// otherwise would contradict what the refresh grant itself would do.
+	// A live refresh token whose session has ended is not usable unless it is
+	// an offline grant, and saying otherwise would contradict what the refresh
+	// grant itself would do.
 	if st.SID != "" {
-		live, err := store.SessionLive(ctx, s.db, st.SID)
+		live, err := store.TokenSessionLive(ctx, s.db, st.SID, st.FamilyID)
 		if err != nil || !live {
 			return inactive
 		}
+	}
+	subject, err := subjectFor(ctx, s.db, c, st.UserID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "introspecting refresh token", "err", err)
+		return inactive
 	}
 
 	return &introspectionResponse{
@@ -397,7 +628,7 @@ func (s *Server) introspectRefreshToken(ctx context.Context, c *clients.Client, 
 		ClientID:  st.ClientID,
 		TokenType: "refresh_token",
 		Expiry:    st.ExpiresAt.Unix(),
-		Subject:   st.UserID,
+		Subject:   subject,
 		Issuer:    s.cfg.Issuer,
 		SessionID: st.SID,
 	}

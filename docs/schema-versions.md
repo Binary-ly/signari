@@ -1,0 +1,1790 @@
+# Schema versions
+
+Each release's binary expects one schema version and refuses to start against another, unless
+the migrations between them were each declared compatible with the release before. This page
+is what each version did, in its own words: the first paragraph of each migration's header.
+It is generated from the migrations the binary embeds, by `engine/internal/migrate`'s
+`TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
+"compatible" lets you do during one, is in [upgrading.md](upgrading.md).
+
+## 0306 wsfed_reply_url
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where each WS-Federation application of a session was sent its token, so that a sign-out can send it the clean-up message (8.09). WS-Federation 1.2 §13.2.4 has the identity provider's STS send clean-up messages to every relying party it issued a token to for the session, each a GET with wa=wsignoutcleanup1.0 (§13.2.4.2), and §13.1.2 asks for them in parallel rather than chained. Null for a sign-in through SAML, which single logout reaches instead. An older binary writes and reads none, and the applications of its sessions are not told of a sign-out, as before this.
+
+## 0305 audit_append_many
+
+Compatible with the release before: its binary may still serve this schema.
+
+core.audit_append_many appends several audit records in one statement, under the same lock as core.audit_append and to the same chain (E.32): the lock is taken once, the tail is read once, and each record's hash follows from the one before it, exactly as the same records appended one after another would. The engine writes a record that is not part of another transaction (a revocation's, an exchange's, a backchannel request's) together with the others that arrive while one is being written, so the lock and the commit it is held across are paid once for all of them. One record a transaction let 2,190 a second through at 16 writers; sixteen in one statement let 14,157 through, where sixteen calls of core.audit_append in one round trip let 8,029.
+
+## 0304 client_localized_names
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client's name in other languages (10.12), RFC 7591 section 2.2's "client_name#ja": a BCP 47 tag after the member name, compared without regard to case, which is what a page that names the client shows to a person whose language it is. The untagged display name stays the name used as is everywhere else, as the section says a value without a tag must be. Only the name: it is the one human-readable field this server shows, and storing logo or policy addresses in languages nothing displays would be metadata nothing reads.
+
+## 0303 nested_groups
+
+Compatible with the release before: its binary may still serve this schema.
+
+A group may be a member of another (11.09): whoever is in `oncall-eu` is in `oncall`, and whoever is in `oncall` is in `engineering`, so a person put in one group is in every group above it, for every claim, directory answer and access decision. One edge per nesting, with who made it, as a membership records who granted it.
+
+## 0302 vp_mdoc
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may ask for an ISO mdoc rather than an SD-JWT VC (vp_verifiers.format mso_mdoc): one document type (doctype, OID4VP B.2.3's doctype_value) and the IACA certificates its document signers have to lead to (iaca_roots, PEM), as ISO/IEC 18013-5 9.3.3 has a reader hold them. An mdoc names no vct, and an SD-JWT VC no doctype or IACA, so each format's columns are present exactly when it is the format. Not compatible with the previous release: it would read an mdoc sign-in as an SD-JWT one asking for no type.
+
+## 0301 public_clients_authenticate_by_none
+
+Not compatible with the release before: stop it before migrating.
+
+A client's token_endpoint_auth_method said what the column's default said, not how it authenticates. A public client holds no secret and authenticates by nothing, PKCE its proof, yet five of the ways to make one (the command line's client create, the importer, config-as-code, the Admin API's create and dynamic registration) stored client_secret_post, so the Admin API, the console and Terraform reported every such client as sending a secret. Dynamic registration also told a confidential registrant client_secret_basic and stored client_secret_post. Each now writes what it means, and the rows they wrote are put right. Nothing a client can do changes: a public client is never authenticated by this column, and the confidential path accepts a secret sent either way. Not compatible with the previous release, by the rule for a migration that writes rows.
+
+## 0300 vp_dc_api
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may ask through the browser's Digital Credentials API, when its operator turns that on (vp_verifiers.dc_api, off by default): the request goes to the browser in the page, and the wallet's answer comes back to that page, bound to its origin (specs/oid4vp.txt:2423-2689). Such a request is marked on its pending sign-in, so it is never answered at the response URI or by a response code. Compatible with the previous release, which reads none of it and offers the other ways alone.
+
+## 0299 vp_cross_device
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may offer the wallet on another device, by a code to scan, when its operator turns that on (vp_verifiers.cross_device, off by default). The verifier cannot tell that answer from one an attacker relayed to somebody else's phone (specs/oid4vp.txt:2032-2037), so it signs nobody in until a code emailed to the linked account's own address is typed where the sign-in began. A cross-device request is marked on its pending sign-in, its answer is kept there sealed under the root key, and the code that confirms it is named there too. Compatible with the previous release, which reads none of it and offers the same device alone.
+
+## 0298 vp_issuer_x5c
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may believe an issuer by the X.509 chain its credentials carry in x5c, validated to root certificates the operator holds for that issuer (specs/sdjwtvc.txt:1091-1098): keys_from 'x5c', with roots, and neither jwks nor a metadata lookup. Not compatible with the previous release once an issuer is set this way: that release reads the missing keys as an error and refuses that wallet sign-in, which fails closed.
+
+## 0297 vp_issuer_metadata
+
+Not compatible with the release before: stop it before migrating.
+
+A wallet sign-in may find a believed issuer's keys in its JWT VC Issuer Metadata (specs/sdjwtvc.txt:1085-1089 and section 3), fetched for each presentation, rather than hold them pinned: keys_from is 'pinned', with jwks, or 'metadata', without. Not compatible with the previous release once an issuer is set the second way: that release reads the missing keys as an error and refuses that wallet sign-in, which fails closed.
+
+## 0296 admin_approvals
+
+Compatible with the release before: its binary may still serve this schema.
+
+A second person for the Admin API's highest-value changes (ASVS 5.0.0 V2.3.5): an organisation names which of them need one in approvals_required, and such a request is kept here, pending, until somebody else who may make it approves it, which replays it as theirs, or it is rejected or expires. The kinds are an erasure, which cannot be undone, and granting the org-owner role, which is every other permission at once; relaxing the setting itself needs a second person too, or one token could turn the rule off and then act alone. Compatible with the previous release, which ignores both: there every such request runs at once, as it always did.
+
+## 0295 admin_token_attributes
+
+Compatible with the release before: its binary may still serve this schema.
+
+Narrowing an admin token to named user attributes (ASVS 5.0.0 V8.2.3, field-level access): such a token reads, sets and clears only those attributes' values, releases only those to applications through claim mappers, and is refused what reaches every attribute at once (a person's whole export, a configuration file, an upstream's attribute map). Until now `users:read` read every value a person held, personal ones unsealed, so a help desk's lookup token read what a payroll integration's needed. NULL is every attribute, as for client_ids and group_ids (0120), and an empty array is none. Compatible with the previous release, which ignores the column: a narrowed token is then unnarrowed there.
+
+## 0294 codes_bound_to_the_attempt
+
+Compatible with the release before: its binary may still serve this schema.
+
+An emailed or texted sign-in code is bound to the sign-in that asked for it (ASVS 5.0.0 V6.6.2): the hash of the attempt its pending token names is kept beside the code, and the code is refused to any other attempt, earlier or later. Until now a code was bound only to the person, so one sent for a sign-in in one browser could finish another, and an LDAP bind or a desktop sign-in, neither of which sends a code, took one sent for something else. Compatible with the previous release, which neither writes nor reads the column and so goes on binding a code to the person; a code it sent is refused here, and the person asks again.
+
+## 0293 uma_resources
+
+Compatible with the release before: its binary may still serve this schema.
+
+UMA resource registration (11.12, Federated Authorization §3): a resource server puts a resource under this server's protection with a protection API access token, and a permission may then name it by the id this server gave it alone. Each is the resource server's and, when a person issued the token, that person's: the owner whose policy decides who may reach it, and who shares it from their account page. Its type is a type of the organisation's authorization model, so a registered resource is an object the model already knows how to decide about. Compatible with the previous release, which ignores the table and goes on refusing a permission that names no resource_type, as it always did.
+
+## 0292 scim_target_authorization_code
+
+Compatible with the release before: its binary may still serve this schema.
+
+A SCIM target that takes the authorization code grant (7.14): somebody signs in at the target once, and the refresh token that leaves is how each pass asks for an access token. The refresh token is sealed under the root key as the client secret is, and replaced whenever the token endpoint issues another. An authorization somebody has started waits ten minutes with its PKCE verifier sealed and its state kept only as a hash. Compatible with the previous release, which ignores these columns and asks such a target's token endpoint for a client credentials grant as the same client with the same secret: refused there or not, nothing is sent anywhere it was not sent before.
+
+## 0291 scim_target_client_auth
+
+Compatible with the release before: its binary may still serve this schema.
+
+How a SCIM target's client authenticates at its token endpoint (7.14): HTTP Basic, as before and the default, or the id and secret in the form, for a token endpoint that takes only that. Compatible with the previous release, which ignores the column and goes on sending Basic: a target set to the form is then refused by its token endpoint until that node is upgraded, and nothing is sent anywhere it should not be.
+
+## 0290 yubico_otp
+
+Not compatible with the release before: stop it before migrating.
+
+A YubiKey's own one-time passwords as a person's second factor (4.27): the characters it types when touched, checked against the token's AES key with no validation service asked. A token is a credential of kind 'yubico' and algorithm 'AES128', its public ID kept beside it. Not compatible with the previous release, which reads a credential of a kind it does not know as a time-based one and would check six-digit codes against the token's key.
+
+## 0289 saml_artifact_logout
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider's logout endpoint may take its messages by artifact (8.08, SAML Bindings 2.0 §3.6): the LogoutRequest or LogoutResponse waits here, and the provider fetches it from the artifact resolution service with the artifact the browser brings. Not compatible with the previous release: it changes the check on saml_slo_urls, and the previous release would send a logout message to an artifact endpoint on the redirect binding.
+
+## 0288 saml_artifact_resolution
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider may send its request by artifact (8.08, SAML Bindings 2.0 §3.6.5): the browser brings a reference, and this deployment fetches the request over SOAP from the provider's artifact resolution service, the one the artifact names by its index. A provider with none sends no request that way. What the service answers is believed for coming from the address registered here, so the address is https, as an assertion consumer URL is.
+
+## 0287 saml_ecp
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider may take a response an ECP carries to it (8.08, SAML Profiles 2.0 §4.2): the client brings the provider's AuthnRequest to the sign-on service over SOAP and the response goes back to the provider's PAOS endpoint. An assertion consumer URL may say PAOS. A provider without one takes no ECP sign-in, which is how one opts in: the person's password reaches this deployment from a client that is not a browser, and no page here can ask for anything else. Not compatible with the previous release: it changes the check on saml_acs_urls again.
+
+## 0286 saml_artifact
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider may take its response by artifact (8.08, SAML Bindings 2.0 §3.6): the browser carries a reference, and the provider fetches the response over SOAP from the artifact resolution service. An assertion consumer URL may say HTTP-Artifact again, which 0147 took away until this was built. Not compatible with the previous release: it changes a check on saml_acs_urls, and the previous release would POST to an artifact URL.
+
+## 0285 oid4vp_encrypted_responses
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet sign-in may ask for its answer encrypted (direct_post.jwt, OID4VP 1.0 §8.3.1), so the credential crosses the wallet's network as ciphertext. Each request has a key of its own, a P-256 key for ECDH-ES made when the sign-in starts, kept with the pending sign-in sealed under the root key and gone with it.
+
+## 0284 oid4vp_verifier
+
+Not compatible with the release before: stop it before migrating.
+
+Signing in with a credential from a wallet (12.12): an identity provider of kind oid4vp is this deployment acting as an OpenID4VP verifier. It asks a wallet for one SD-JWT VC of the types it names, believes the issuers it lists with the keys pinned for each, and signs in the person a claim of that credential identifies, read together with the issuer, because a claim is unique only within the issuer that made it (OID4VP 1.0 §14.4).
+
+## 0283 grant_management
+
+Compatible with the release before: its binary may still serve this schema.
+
+Grant Management: a client that asks can hold on to what a person authorized under an identifier, add to it or replace it later, read it back and revoke it. A grant is made when the tokens are claimed, as the draft has it, so a code nobody redeems leaves none.
+
+## 0282 id_jag
+
+Compatible with the release before: its binary may still serve this schema.
+
+Cross-app access: a client that signed somebody in here asks for an Identity Assertion JWT Authorization Grant, and another authorization server gives it an access token for that person on the strength of it, with no redirect and no consent screen. So nothing is issued until an operator writes down which client may ask, for which server, and what the most it may carry there is.
+
+## 0281 client_metadata_documents
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client that is an https URL and describes itself in a document there, so an application nobody registered can be signed in to. Nothing does until an operator writes down whose URLs to fetch: with no rows, nobody is admitted, and nothing is ever fetched. Each rule names the organisation its clients land in and what they may ask for.
+
+## 0280 credential_status
+
+Compatible with the release before: its binary may still serve this schema.
+
+Taking a credential back once it has been issued, with a Token Status List: a configuration asks for it, each credential then carries a place in a list, and the list is signed for anybody to fetch. Until this nothing issued could be revoked, because nothing issued was remembered.
+
+## 0279 encryption_keys
+
+Not compatible with the release before: stop it before migrating.
+
+A key this server decrypts with, which until now it had no need of. OpenID4VCI §8.2: "Credential Request encryption MUST be used if the credential_response_encryption parameter is included, to prevent it being substituted by an attacker". So a wallet asking for its credential encrypted has to encrypt the asking, to a key published here. Kept apart from the signing keys, as federation keys are, and for the same reason: a key does one job. Not compatible with the release before, which has no idea of this purpose.
+
+## 0278 federation_trust_anchors
+
+Compatible with the release before: its binary may still serve this schema.
+
+OpenID Federation Automatic Registration (§12.1), an RP using this OP with no prior step because a federation vouches for it. Nothing does that here until an operator writes down whose word to take: with no rows, nobody is admitted. Each anchor names the organisation the RPs it vouches for land in, since a client has to be somebody's.
+
+## 0277 security_events_skip_removed_subjects
+
+Not compatible with the release before: stop it before migrating.
+
+A subject a receiver removed from its stream stops being queued for it. Apart from that this is the function 0212 made. Replacing it is what the compatibility declaration refuses, so this is apart from 0276: the release before would go on queuing them, which a receiver has to tolerate anyway (SSF 1.0 §9.3).
+
+## 0276 ssf_stream_management
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a receiver may change of its own stream (SSF 1.0 §8.1). A stream here carries events about the people its client has met, so "adding" a subject asks for nothing more than that, and removing one is the row worth keeping: a person this receiver would rather not hear about. A description is the receiver's own note on the stream.
+
+## 0275 message_signing_profile
+
+Not compatible with the release before: stop it before migrating.
+
+FAPI 2.0 Message Signing as a security profile, the Security Profile and signed requests and responses besides. Not compatible with the previous release in the one way that matters: a client set to it is not a profile that release knows.
+
+## 0274 introspection_responses
+
+Compatible with the release before: its binary may still serve this schema.
+
+What signs a client's introspection responses when it asks for a JWT (RFC 9701), and what they are encrypted to it with. A resource server keeps what it was told, and an answer in plain JSON proves nothing to anybody it shows that to afterwards.
+
+## 0273 client_response_encryption
+
+Compatible with the release before: its binary may still serve this schema.
+
+Signed userinfo, and encrypting an ID token, a userinfo response and an authorization response to a key the client registered. Each is the client's own choice and the default stays as it was: a client that asked for encryption gets it or gets nothing.
+
+## 0272 authorization_signed_response_alg
+
+Compatible with the release before: its binary may still serve this schema.
+
+What signs a client's authorization responses (JARM §3), and with one set, a client held to asking for them signed. A response a client only hopes is signed is one anybody between the browser and the client can send it unsigned.
+
+## 0271 require_signed_request_object
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client that may start an authorization only with a signed Request Object (RFC 9101 §10.5). Without it the signature is optional, and anybody who can reach the authorization endpoint simply sends the same request unsigned.
+
+## 0270 admin_read_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the Admin API's reads need to stop at the page (0.83). A page of an organisation's people read and sorted all of them; a deployment-wide read of the audit trail sorted the whole trail, because nothing led with its time; and the list of event subscriptions and a Duo integration each counted through a table with no index for what they counted.
+
+## 0269 console_views
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the console's remaining screens read (6.13): an organisation's scopes, claim mappers, attributes, directories and inbound SCIM sources. Each leaves out what it would not show anyway, so that no credential is a column the admin role can select: a directory's sealed credentials and a source's token hash stay in core, and a screen cannot reach what is not here.
+
+## 0268 login_ui
+
+Compatible with the release before: its binary may still serve this schema.
+
+The page a client draws its own sign-in on (10.11). Set, an authorization request that needs a sign-in is sent there rather than to this server's page, and the application walks the same stages over JSON. A client that names none cannot be signed in that way, because a page of an application's own is one more place a password is typed.
+
+## 0267 relation_delegations
+
+Not compatible with the release before: stop it before migrating.
+
+One organisation letting another hand out a relation on what it owns (11.11): a software company's application, and each customer deciding which of its own people may use it. Every relation stays where the object is, in the owner's core.relations, so the owner's decisions read what they always read and a decision crosses no tenant. What crosses is only who may write the row, and that is the engine alone: a tenant reaches another's rows through nothing but a delegation an operator made, for the people of its own organisation.
+
+## 0266 org_messages
+
+Compatible with the release before: its binary may still serve this schema.
+
+An organisation's own words on its pages and in its mail (10.09), one row a message and a language, over the catalogue. Every other way to reword a page is a file on the operator's disk, read at startup, which a tenant cannot reach. These are stored text rather than a catalogue entry: a catalogue message may carry markup because it is ours, and this one is a tenant's, so it is escaped on the way to a page and can only ever be words.
+
+## 0265 org_brands
+
+Compatible with the release before: its binary may still serve this schema.
+
+An organisation's appearance over its instance's (10.09). Two tenants on one hostname shared one brand, so the second to set a logo replaced the first. This no longer guesses before identity: a page takes the organisation of the client whose request it is answering, or of the session it is answering, and a bare page on a deployment of several wears the instance's.
+
+## 0264 group_members_view
+
+Compatible with the release before: its binary may still serve this schema.
+
+Who is in which group, for the console (0.28). A user manager delegated over some groups was not offered the people screen at all, because it read everybody and nothing in core_v1 said who was in what, so they administered their members through the Admin API alone. Group membership is an organisation's own, and a view of it answers under the same policy as the rest.
+
+## 0263 jwt_vc_json
+
+Not compatible with the release before: stop it before migrating.
+
+A second credential format (12.05): a W3C Verifiable Credential signed as a JWT, which OID4VCI Appendix A.1.1 names `jwt_vc_json`. Nothing else in the row changes, and `vct` holds the credential's type, the second entry of `credential_definition.type`. The check that admitted one format is replaced, so this is not additive: a release before this one reading a `jwt_vc_json` row refuses to issue it and says the format is not implemented.
+
+## 0262 kerberos_trust_and_accounts
+
+Compatible with the release before: its binary may still serve this schema.
+
+Two opt-ins on a Kerberos realm (8.12), both off, so a realm registered before this behaves as it did. Trusted realms are the others whose people may sign in: a ticket from one is refused unless it is named here, whatever trust the KDCs have between them. Creating accounts lets a principal with a good ticket and no account have one, asked of the user_create hook first. An older binary reads neither, and so refuses a trusted realm's tickets and creates nothing, as it always did.
+
+## 0261 external_factors
+
+Compatible with the release before: its binary may still serve this schema.
+
+A sign-in stage an operator plugs a service of their own into (10.03). The service is registered with where to send the browser, the issuer it signs as, its public keys and the amr it may claim, and a challenge is one nonce waiting to come back, spent once. The keys are held by value rather than fetched, so that an answer is believed because of a key an operator put here and a change of keys is a change to the configuration. An older binary reads none of this: it refuses a stored flow naming a stage it does not know and keeps the flow it had.
+
+## 0260 uma_persisted_claims
+
+Compatible with the release before: its binary may still serve this schema.
+
+A persisted claims token (11.12): UMA's way of not asking a person who they are twice. It works as a refresh token works, with no interaction behind the next token, so it is kept the same way: by hash, bound to the client it was issued to, and read on every use, so that somebody deactivated has nothing left to be persisted. It is issued only to a person who ticked the box at the claims interaction, which §6.2 recommends, and that choice travels on the ticket. It holds no claims, only who they were about, because the claims are this server's own records and those are read when the token is used. An older binary refuses `pct`, as it always did.
+
+## 0259 authorization_views
+
+Compatible with the release before: its binary may still serve this schema.
+
+What the console reads of authorization (11.14): who holds what on what, and the model that says what it means. A person asking why somebody can see something had the command line. Only the live relations, because a decision reads no others, so a row here is a row in force. The compiled model stays behind: the source is what an operator wrote and what a review reads.
+
+## 0258 relation_subject_sets
+
+Compatible with the release before: its binary may still serve this schema.
+
+Relations held by a set of subjects (11.02). `team:eng#member` as a subject means everybody who holds `member` on team:eng, and an evaluation has to find those on an object among however many people hold the relation there themselves. Partial, because they are few and an object's own viewers may be a great many, and only a request that has one pays anything for looking. An older binary reads such a row as a subject nobody is.
+
+## 0257 sweeps_have_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a janitor pass and a sign-in stand on at scale (0.74). A million sessions and five million audit events showed retention reading every session on every pass and the audit head reading the trail, and running a real pass past the planner showed five more sweeps with no index, on tables only empty because nothing had been seeded into them. Each only grows, and a pass runs every minute for as long as the deployment lives. The first organisation of an instance was read and sorted twice per sign-in, a cost in the number of tenants. Partial where the sweep only wants rows already finished with, so that a live row costs no write to any of these.
+
+## 0256 credential_wallet_initiated
+
+Compatible with the release before: its binary may still serve this schema.
+
+A wallet can ask for a credential at the authorization endpoint (12.06). Until now issuance began with an operator's offer, so who could have what was decided before anybody asked. A request an authorization server receives is the wallet's own idea, so a configuration says whether anybody signed in here may ask for it, and it is off: the claims come from the person's record, but whether they hold this credential at all is the issuer's to say. An offer for the authorization code grant keeps its issuer_state on core.preauthorized_codes, under a hash no pre-authorized code can match, so a state is never a bearer code. An older binary reads neither.
+
+## 0255 bulk_writes_stay_linear
+
+Not compatible with the release before: stop it before migrating.
+
+Bringing many people in at once took time that grew with the square of how many (0.70), for two reasons. The check that an address is nobody's username makes its plan once for a whole statement, so a plan made on an empty or nearly empty table stays: with no statistics every index starting with org_id cost the same as the identifier's and the planner took one that reads the whole organisation for each row, so 20,000 people took 103 s, and a first directory sync is one such statement. It now compares the organisation in a form no index can serve, which leaves the identifier's, and has a sequential scan off, because a small table with statistics plans one and keeps that too. The second is the operator CLI's version bump: every statement updated the one row of core.config_version, a transaction cannot prune its own versions of a row, and each update walked past all of them, which with the first had a realm import of 16,000 people take 267 s. A transaction now moves the version once, which is all an If-Match compares.
+
+## 0254 federation_subordinates
+
+Compatible with the release before: its binary may still serve this schema.
+
+Entities this one speaks for (12.11). A deployment could join a federation and could not be the thing others join: it had nobody to vouch for and no endpoint to do it at. So an instance keeps its Immediate Subordinates, each with the keys it was told out of band, because a Subordinate Statement's whole worth is that those keys did not come from the subordinate's own say-so at the moment of asking. An older binary ignores the table and publishes nothing from it.
+
+## 0253 credential_deferred
+
+Compatible with the release before: its binary may still serve this schema.
+
+A credential somebody has to look at first (12.08). Some are not issued on the strength of a code alone: a staff card, a licence, whatever a person signs off. So a configuration can defer, and a wallet's request waits here for a decision. What waits is the keys the wallet proved it holds, which are public, so that the proof does not have to be made again, and the hash of the transaction id, which with the token is what fetches the result. An older binary ignores the column and issues at once, so a deferred configuration wants the newer binary everywhere.
+
+## 0252 credential_followup
+
+Compatible with the release before: its binary may still serve this schema.
+
+An offer too big for a QR code, and word of what became of a credential (12.08). An offer by value carries everything in the code a person scans, which is more than a phone will read off a screen across a counter; by reference it is a short address, and the offer waits here, sealed, because it holds a pre-authorized code. A notification is the wallet saying a credential was stored, failed or deleted, the only way an issuer ever learns any of that: the row here is what lets the one token that asked say so, and what it said goes to the audit trail.
+
+## 0251 session_risk
+
+Compatible with the release before: its binary may still serve this schema.
+
+What was known about a sign-in, kept with the session it made (11.07). The authorization model has always had words for device posture and a risk score, and no decision could read either: a PDP call arrives from a relying party with no browser behind it, so what the browser showed has to be written down when it is there. An older binary writes the defaults: no risk and no device shown, so a model asking for a device refuses and a model capping risk passes, as it did.
+
+## 0250 providers_per_hook
+
+Not compatible with the release before: stop it before migrating.
+
+Several providers on a hook, each able to refuse (10.06). One provider per hook was the safe answer to "which wins?", and a veto has no such question: everybody has to agree, so an organisation's fraud check and its compliance check can both stand on a sign-in. Two hooks keep one, because their answer is not a veto: a password has one verdict and a flow condition one value. A claim stays disjoint by the writer, so no two providers can set the same thing. Not compatible with the previous release, whose registration names the constraint dropped here.
+
+## 0249 resource_metadata
+
+Compatible with the release before: its binary may still serve this schema.
+
+A registered resource publishes where to get a token for it (12.15). An MCP server had to publish its own RFC 9728 document to be found; now it can point its 401 at one this deployment serves for it, under a handle that says nothing about the organisation. An older binary ignores both columns.
+
+## 0248 ssf_source_poll
+
+Compatible with the release before: its binary may still serve this schema.
+
+Pulling a transmitter's events rather than waiting to be sent them (12.04). RFC 8936's other half: this deployment has been able to be polled, and could not poll. A receiver behind a firewall, or a transmitter that only offers polling, had no way to meet. The credential is the transmitter's to give, so it is sealed under the root key; a client id means it is sent as Basic and none means a bearer token. An older binary ignores the columns and polls nothing.
+
+## 0247 proxy_host_cookie
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where the proxy cookie of a protected application lives (8.25). One domain for the whole deployment meant every application had to sit under one parent with the issuer, and one on another domain could not be protected at all: a cookie can only be set for a domain the host setting it is under. cookie_domain gives a host a parent of its own. own_cookie gives it a cookie of its own, set on its own address through a path its proxy routes back here. An older binary ignores both, and refuses such a host at sign-in by the check it has always made.
+
+## 0246 proxy_host_rules
+
+Compatible with the release before: its binary may still serve this schema.
+
+What forward authentication does with one path of a protected application (8.26), where the host alone does not say enough. On the host's row because they are the host's, read with it on every request, and replaced together: their order is what they mean. Empty is a host as every host has been, and an older binary ignores the column, which leaves it protecting every path.
+
+## 0245 saml_org_endpoint
+
+Not compatible with the release before: stop it before migrating.
+
+Two organisations holding one service provider (8.34). A SaaS application has one entity ID for all its customers, and 0130 let only one of them register it, because the IdP's endpoints named no organisation. Now a provider answers at one of two places: the deployment's endpoints, where an entity ID is still held once, or endpoints of its organisation, where the path says whose it is and the entity ID need only be held once in that organisation.
+
+## 0244 kerberos_realms
+
+Compatible with the release before: its binary may still serve this schema.
+
+A Kerberos realm of an organisation's own (8.10). One realm from the environment, and every ticket landing in the first organisation, was all a deployment could have: two customers with two domains could not both sign in. A browser gets a ticket for the host it is talking to, so the host says which realm's key opens it and whose organisation the person is in. The keytab is sealed under the root key, being the key to every ticket of that service.
+
+## 0243 wsfed_saml_version
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which SAML a WS-Federation application takes its token in (8.09). SAML 2.0 is what every one has had and stays the default; 1.1 is for the relying parties that were built against ADFS's default and read nothing else. A SAML 2.0 service provider never reads this. An older binary ignores it, and goes on issuing 2.0.
+
+## 0242 migration_source_kerberos
+
+Not compatible with the release before: stop it before migrating.
+
+A Kerberos realm as where a person's password is checked (8.11). The verifier was built and tested and nothing called it, so a person signing in with the password their realm knows was checked locally, where they had none. It joins the sources a password is delegated to, whose throttling and outage handling it needs, and differs in one way: the realm stays the authority, so no hash is taken and a person stays `pending` for as long as the source is there. The realm is held in token_endpoint, the column that says where a source is reached.
+
+## 0241 saml_soap_logout
+
+Not compatible with the release before: stop it before migrating.
+
+A service provider that takes a logout with no browser in it (8.03). The redirect chain reaches a provider only when somebody signs out by hand in a browser that can still be walked through it; a session ended by an administrator, a deactivation or its own expiry has no browser, and the provider went on believing it. A SOAP address is what lets the outbox tell it. Not compatible with the version before: an older binary reading these rows would hand a SOAP address to a browser as a redirect.
+
+## 0240 saml_source_keys
+
+Compatible with the release before: its binary may still serve this schema.
+
+This deployment's own keys toward an upstream SAML identity provider (8.04): one to sign its requests, which some providers insist on, and one the provider encrypts assertions to. Per upstream and apart from the keys that sign tokens, so that one partner's certificate is nobody else's and giving a partner a decryption key gives it nothing else. Several of each may be live, since a rotation has to overlap: the newest signs, and any of them decrypts until it is retired. Sealed under the root key.
+
+## 0239 audit_append
+
+Compatible with the release before: its binary may still serve this schema.
+
+core.audit_append takes the audit chain's lock, reads its tail, works out the entry's hash and appends it in one statement (E.11). The lock is global and held until commit, so what it lets through is one over the round trips made while holding it, and that was four and a half: the lock's answer, the tail, the insert, the subscriptions, the commit. Now it is the answer and the commit, and the engine builds the same bytes it always hashed, so nothing about the chain changes and a version before this one, taking the same lock, appends to the same chain.
+
+## 0238 saml_metadata_origin
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where a SAML partner's details were read from (8.01), so that an operator can ask for them again and be held to the same terms: the URL, the certificate the document has to be signed with, and when it was last read. All three are empty for a partner typed in by hand. A refresh is something an operator does, not something a timer does: a partner's metadata says where assertions go, and that should not change while nobody is looking.
+
+## 0237 org_mail_sender
+
+Compatible with the release before: its binary may still serve this schema.
+
+The address an organisation's mail comes from (10.10), when it is not the deployment's. Both columns are empty until an operator sets them, and an organisation with none keeps sending from SIGNARI_MAIL_FROM. The engine's setter holds the full rule; these hold the shape, since a line break in either would reach a message's headers.
+
+## 0236 federated_tokens
+
+Compatible with the release before: its binary may still serve this schema.
+
+What an upstream provider handed over at sign-in, kept when the operator says to (8.17), for an application that needs to call that provider's own API as the person. Off until a provider says otherwise: these are credentials at somebody else's service, and the safest one to hold is the one not held. Sealed under the root key, one row a person a provider, and gone with the person, the provider or the link.
+
+## 0235 flow_condition_hook
+
+Not compatible with the release before: stop it before migrating.
+
+A sign-in flow that branches on what only the operator's own service knows (10.02). A `when:` is one of a closed list, so a flow can be walked and proved, and that stays true: `provider_condition` is one more name on the list, and what answers it is a hook. It can also say what the language has always named and nothing could answer: whether the device is managed and compliant, whether the network is trusted.
+
+## 0234 more_hooks
+
+Not compatible with the release before: stop it before migrating.
+
+Five more decisions an operator's own service can take part in (10.01): a sign-in about to get a session, an account about to be made, a person about to reach an application, and what userinfo and a SAML assertion say. Each is consulted after this engine has decided yes, so a provider can only take a yes back, and the last two can add what the operator's list lets them. A refresh has no hook of its own: token_issue is asked at every grant, and says so in grant_type.
+
+## 0233 security_profile
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client held to a security profile (9.05). FAPI 2.0 is a set of restrictions a deployment turns on, not behaviour that is wrong by default, and most of what it restricts is already a setting of the client: a client marked fapi2 is refused until its settings meet the profile, and refused at the token endpoint if they stop meeting it. What is not a setting follows from the mark: an assertion addressed only to the issuer, a refresh token that does not rotate, a redirect_uri always pushed.
+
+## 0232 pairwise_subjects
+
+Compatible with the release before: its binary may still serve this schema.
+
+A subject that means nothing outside the application it was given to (9.07). A person's id is the same in every token, so two applications can tell they have the same customer by comparing notes. A client set to pairwise names a person by an identifier of its own sector instead: applications that share a sector share it, and nobody else can link them. The identifiers are random and stored, as a SAML persistent NameID is, so there is no salt to keep, an erased person takes theirs with them, and a token's subject reads back to the person without trying every sector.
+
+## 0231 opaque_access_tokens
+
+Compatible with the release before: its binary may still serve this schema.
+
+Access tokens that say nothing to whoever holds them (9.16). A client set to opaque gets a random handle, which a resource server takes to the introspection endpoint, instead of a JWT anybody can read. The handle is a reference: this table holds the signed token it stands for, sealed under a key only the handle gives, so every path that verifies a token goes on verifying the same one, revocation by jti holds, and a read of the row gives nobody a working token. token_hash is the handle's, which is not stored either.
+
+## 0230 claim_sources
+
+Not compatible with the release before: stop it before migrating.
+
+What a claim can be made from (10.04). A mapper read one attribute, so a token could not say which tenant it belongs to in a name a relying party already expects, or carry somebody's groups under a claim of the application's choosing. source says where the value comes from: attribute as before, a constant, the groups released to the client, a field of the person's own record, or their roles in the application. transform is a short closed list and no language: lower, a prefix, or the first thing an RE2 pattern finds.
+
+## 0229 application_roles
+
+Compatible with the release before: its binary may still serve this schema.
+
+A role in an application (11.10). A role is a relation on application:&lt;client_id&gt;, granted as any other relation is, to a person or a group, with an expiry if it wants one. What was missing is the application hearing about it: roles_claim names the claim a client's tokens carry them in. NULL carries none, as every client did.
+
+## 0228 generic_oauth2
+
+Not compatible with the release before: stop it before migrating.
+
+A sign-in provider that speaks plain OAuth 2.0 (8.15). There is no ID token to verify and no discovery document, so an operator names its three endpoints and says where in its userinfo answer the person is: userinfo_subject is the one that matters, the identifier a person is linked by, and it defaults to `sub`. The other three default to nothing asked of the provider beyond an `email` and a `name`, and an address is not believed verified unless userinfo_email_verified names where the provider says so and the operator has chosen to trust it.
+
+## 0227 signing_algorithms
+
+Not compatible with the release before: stop it before migrating.
+
+The 384 and 512 families (9.04). A relying party or a policy that asks for ES384, ES512, RS384, RS512, PS384 or PS512 can now be given it, with the curve each ES algorithm names pinned in internal/keys. Nothing signs with one until an operator publishes a key for it, and a client is refused one its instance does not hold.
+
+## 0226 relations_page
+
+Compatible with the release before: its binary may still serve this schema.
+
+A page of an organisation's relations (11.01). An application that keeps its own relations reads them back through the Admin API, by id, so a page holds still while it goes on writing. Both existing indexes lead with a subject or an object, so a page with neither would have walked the primary key past every other organisation's rows. Built concurrently, outside a transaction, as 0196's were, so decisions go on being answered.
+
+## 0225 outpost_version
+
+Compatible with the release before: its binary may still serve this schema.
+
+What an outpost is running (8.31). last_seen_at said it had called and nothing said what called, while an outpost older than its core loses what it does not know to ask for without saying so: one that predates bind proofs binds and cannot search. Each call now says, and last_seen_version keeps the latest. NULL is an outpost that never has.
+
+## 0224 password_verify_hook
+
+Not compatible with the release before: stop it before migrating.
+
+A password checked by the operator's own service during a migration (10.07, 10.14). A system that speaks neither the OIDC password grant nor LDAP could be left only with an export of its hashes, and many of those cannot be exported or cannot be read here. So the operator runs a small service that can check a password against the old system, and registers it as a provider (ADR-011) for the password_verify hook.
+
+## 0223 idp_group_map
+
+Not compatible with the release before: stop it before migrating.
+
+What a provider's groups grant here (8.14). Only a directory could say who is in a group; somebody who comes through a provider, and is in `Engineering` there, was in nothing here until an administrator added them, one at a time, for good.
+
+## 0222 user_foreign_key_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+An index for every foreign key into core.users (0.50). Each one with none made a delete of a person scan that table to find their rows, so a person cost 10.7 ms, an organisation of a hundred thousand took eighteen minutes in one transaction, and `instance org-delete`, `-on-deactivate delete` and erasure all paid it. Full and not partial, because the check a cascade runs has no predicate to match one.
+
+## 0221 refresh_reuse_grace
+
+Compatible with the release before: its binary may still serve this schema.
+
+A retry of a refresh whose answer was lost (9.17). A refresh token is good once, and a second use is taken for theft and ends the whole lineage, which is right and which also signs somebody out when a phone loses signal between the server answering and the application hearing it. refresh_reuse_grace_s lets a client opt in to one retry, within at most thirty seconds, answered with the successor it already should have had. 0, the default, is the old behaviour exactly.
+
+## 0220 idp_forward_parameters
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a sign-in here passes on to the provider it goes through (8.36). A request that asked for a fresh sign-in or a second factor went upstream saying neither, so a provider that would have done it was never asked, and the person met a second prompt here instead, or none at all.
+
+## 0219 saml_idp_initiated
+
+Compatible with the release before: its binary may still serve this schema.
+
+A sign-in the identity provider starts (8.02), for an application that has no sign-in page of its own to send anybody from, or whose people start from the portal. An unsolicited response answers no request, so a service provider has to expect one, and each is opted in: idp_initiated is false until an operator says otherwise.
+
+## 0218 rac_sessions_open
+
+Compatible with the release before: its binary may still serve this schema.
+
+The open sessions of a connection, which a connection with a cap counts on every attempt (8.29), while holding the lock that puts attempts in order. Only the open ones are indexed: the table keeps every session anybody ever had, and the count asks about a handful of them.
+
+## 0217 rac_limits
+
+Compatible with the release before: its binary may still serve this schema.
+
+How many may hold a remote connection at once, and for how long (8.29). A jump host with a licence for two seats and a session left open over a weekend are the same problem: nothing here could say no.
+
+## 0216 idp_token_auth
+
+Compatible with the release before: its binary may still serve this schema.
+
+How this engine proves itself at an upstream provider's token endpoint (8.16). It sent a client secret in the form and could do nothing else, so a provider set up with a certificate and no secret, which a good many are as a matter of policy, could not be used at all.
+
+## 0215 proxy_host_identity
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a protected application is told about a person beyond who they are (8.24): the groups released to it, and a signed statement it can check for itself. Each is per host, because a group's name says something about a person, and an application should hear only the ones it needs. Empty and off, it hears what it always has.
+
+## 0214 idp_end_session
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where to send a browser to sign out at an upstream provider too (8.18). Absent, a sign-out here ends the session here, as it always has, and a person who signed in through a company's provider is still signed in there, so the next sign-in here goes straight through without asking them anything.
+
+## 0213 relations_follow_a_changed_name
+
+Not compatible with the release before: stop it before migrating.
+
+A relation that names a person by address or username moves to their id when that name changes, so the access stays with the person and not with the name.
+
+## 0212 security_events
+
+Not compatible with the release before: stop it before migrating.
+
+core.queue_security_event tells the streams that asked what happened to a person, and a trigger on core.users makes every status change a RISC event.
+
+## 0211 idp_login_domains
+
+Compatible with the release before: its binary may still serve this schema.
+
+The address domains a provider signs in (8.20), so somebody at corp.example reaches the company's identity provider without being shown a password box first. A routing hint and nothing more: it decides where a person is sent, never who they are, and a local password in the same domain goes on working, or the one account that survives an outage at the provider could not sign in.
+
+## 0210 client_require_state
+
+Compatible with the release before: its binary may still serve this schema.
+
+A client held to sending `state` (9.13). PKCE protects the code here by default, so the parameter is optional, and a relying party whose own CSRF defence is `state` has no way to learn it stopped sending one. Off by default, since turning it on refuses a client that has not been changed.
+
+## 0209 saml_nameid_source
+
+Compatible with the release before: its binary may still serve this schema.
+
+Where a service provider's NameID comes from, and what format it went out in (8.06).
+
+## 0208 posix_ids
+
+Not compatible with the release before: stop it before migrating.
+
+A POSIX identity for every person and group (7.03), for hosts that read accounts from the directory. The identifiers here are UUIDs and a host needs an integer, one that owns files long after anybody remembers why.
+
+## 0207 directory_sync_schedule
+
+Compatible with the release before: its binary may still serve this schema.
+
+A directory source that syncs itself (7.15). A sync ran when somebody ran it, so a departed employee kept their account until the next cron job an operator had to write and watch. next_sync_at is claimed by the statement that moves it, so of several nodes one takes a source and the rest see it not yet due, and a sync that fails or dies waits for its next turn rather than being asked for every minute.
+
+## 0206 directory_attribute_map
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which LDAP attribute feeds which declared attribute (7.15), remote name to local name. A sync read only what a flavour's conventions named, so a company's employee number or department stayed behind in the directory, and an address kept anywhere but `mail` was not found at all.
+
+## 0205 scim_target_scope_groups
+
+Not compatible with the release before: stop it before migrating.
+
+A provisioning target limited to several groups (7.11), its members being the members of any of them. One column held one group, so an application used by two teams took a third group kept by hand, or everybody.
+
+## 0204 scim_target_compatibility
+
+Compatible with the release before: its binary may still serve this schema.
+
+What a provisioning target needs that the protocol does not say it should (7.11): one that refuses PATCH, one that refuses a filter, one that refuses a member with no type. By what they do rather than which product: a target can need several, and which needs which changes with its version.
+
+## 0203 scim_target_oauth
+
+Compatible with the release before: its binary may still serve this schema.
+
+A SCIM target that takes a client credentials grant rather than a long-lived bearer token (7.14). The client secret is held where the token is, in the sealed token column, so nothing new has to be sealed, rotated or kept out of an export.
+
+## 0202 scim_target_recreate
+
+Compatible with the release before: its binary may still serve this schema.
+
+Whether a sync gives somebody back an account deleted at the target (7.14). A link said they had one, so nothing ever looked, and a person removed there by hand stayed removed for as long as they stayed active here.
+
+## 0201 radius_attributes
+
+Not compatible with the release before: stop it before migrating.
+
+What else a group's members can be given at Access-Accept (7.06), beside a VLAN and a Filter-Id: a Session-Timeout in seconds, a Class the device echoes in accounting, and vendor-specific attributes. Those are named by number, the vendor's enterprise number and its own attribute type, because a device's documentation gives them that way and a dictionary here would be one more thing to go stale.
+
+## 0200 audit_by_admin_token
+
+Compatible with the release before: its binary may still serve this schema.
+
+The trail of one admin token (6.05, 0.53), which an investigation of a leaked one starts from. Nothing served it: the search read the organisation's whole trail, or the deployment's, through the column's text.
+
+## 0199 users_folded_identifiers
+
+Not compatible with the release before: stop it before migrating.
+
+Finding a person by address or name uses an index on the engine's own connection, which it never did (0.52). core.users is under FORCE ROW LEVEL SECURITY, and PostgreSQL will not run a function that is not leakproof on a column ahead of a policy, so `lower(email) = lower($1)` could use no index at all: every sign-in read every person, and the unique indexes on lower(email) served only their uniqueness. Tests connect as a role that bypasses the policy, so none of them saw it.
+
+## 0198 directory_page_index
+
+Compatible with the release before: its binary may still serve this schema.
+
+The order an LDAP subtree search reads an organisation's people in (7.01), so a page is a walk of this index from where the last one stopped however far into the directory that is. Only the active, as the directory lists.
+
+## 0197 identifier_lock_per_organisation
+
+Not compatible with the release before: stop it before migrating.
+
+A transaction writing many people no longer runs PostgreSQL out of locks (7.16). Migration 0158 took an advisory lock per identifier, held until commit, and the lock table holds about 6,400 at PostgreSQL's defaults, so a first directory sync or an import failed with `out of shared memory` around the twelve-thousandth person.
+
+## 0196 scim_page_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+The indexes behind a page of SCIM users or groups (7.13). A list is ordered by when each was provisioned, and nothing served that order, so every page sorted the source's whole collection. SCIM pages by index, so the offset stays; with these it walks an index rather than a sort.
+
+## 0195 user_handle_any_length
+
+Not compatible with the release before: stop it before migrating.
+
+A user handle of 1 to 64 bytes, as WebAuthn defines one (Web Authentication Level 3, §4 "User Handle", and §5.1.3, which refuses one "not between 1 and 64 bytes"), rather than exactly the 64 this server generates (0.44). An authenticator returns the handle a passkey was registered under, and that handle has to be the account's for either sign-in to accept the passkey. An import gives a person the handle their previous provider registered their passkeys under, and those are other lengths: a handle made from a user's UUID as text is 36 bytes. Handles this server makes are still 64 random bytes.
+
+## 0194 claim_mapper_one_per_audience
+
+Not compatible with the release before: stop it before migrating.
+
+One mapper per audience, attribute and destination, the every-client audience included (0.39). 0113's UNIQUE (org_id, client_id, attribute_id, destination) took a NULL client_id, which is what "every client" is, as distinct from every other NULL, so the upsert declaring a mapper never found an all-clients one to replace: declared again under a new claim name, the attribute was released under both, the name meant to be retired included.
+
+## 0193 organization_budgets
+
+Compatible with the release before: its binary may still serve this schema.
+
+Each organisation's own budget (6.10): how many tokens its clients may be issued, and how many sign-ins its pages may take, a minute. Counted per organisation in core.rate_limits, so one tenant's batch job or sign-in rush spends its own budget and not the deployment's: before, the only limit on sign-in was one bucket in each process that every tenant shared.
+
+## 0192 client_admin_api
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which applications may obtain tokens for the Admin API (6.01): the console, an automation acting as itself. Such a token carries the audience &lt;issuer&gt;/admin, and the Admin API acts on it with the roles its holder is bound to (0191), read per request.
+
+## 0191 admin_role_bindings
+
+Compatible with the release before: its binary may still serve this schema.
+
+Administrative roles (6.01). A binding gives a person, or an application acting as itself, one of the built-in roles in one organisation; what each role may do is the engine's (adminapi.Roles), not a column, so a role means the same thing in every deployment and a release can never widen one by a migration nobody reads.
+
+## 0190 maintenance_reads_ledger
+
+Compatible with the release before: its binary may still serve this schema.
+
+signari_maintenance may read which schema version is applied (6.08). Every other core table it can read by the default privileges 0001 set, and the ledger, made by the bootstrap before them, it could not, so GET /admin/system failed for anything holding that role. Read only: the ledger is written by `signari migrate` alone.
+
+## 0189 user_lookup_indexes
+
+Compatible with the release before: its binary may still serve this schema.
+
+Finding a person by address or name across organisations (6.08). The Admin API's user list takes ?email= (exact) and ?q= (a prefix of the address or the user name), and the only indexes on either lead with org_id, so a deployment-wide token's lookup read every user. text_pattern_ops, because one index then serves both the equality and the prefix match.
+
+## 0188 consent_lifetime
+
+Not compatible with the release before: stop it before migrating.
+
+How long a person's consent to an application lasts before they are asked again (5.22).
+
+## 0187 new_device_notice
+
+Compatible with the release before: its binary may still serve this schema.
+
+Whether a sign-in from a device the person has not used is told to them (5.21).
+
+## 0186 signup_approval
+
+Not compatible with the release before: stop it before migrating.
+
+An organisation may hold its self-sign-ups for an administrator's approval (5.19).
+
+## 0185 session_persistent
+
+Compatible with the release before: its binary may still serve this schema.
+
+Whether a session was signed in with "stay signed in on this device" ticked (5.17).
+
+## 0184 email_sign_in_codes
+
+Compatible with the release before: its binary may still serve this schema.
+
+A code emailed to the account's address as the first factor (5.16), where an organisation's sign-in flow takes one.
+
+## 0183 prompt_versions
+
+Not compatible with the release before: stop it before migrating.
+
+A prompt that is edited is asked again, and every answer is kept with the version it answered (5.13).
+
+## 0182 persistent_sessions
+
+Compatible with the release before: its binary may still serve this schema.
+
+Whether an organisation offers "stay signed in on this device" (5.11).
+
+## 0181 offline_grants
+
+Not compatible with the release before: stop it before migrating.
+
+A grant of offline_access outlives the session it was given in.
+
+## 0180 session_lifetimes
+
+Not compatible with the release before: stop it before migrating.
+
+How long a session lasts, per organisation, and how long it lasts unused.
+
+## 0179 relations_follow_their_subject
+
+Not compatible with the release before: stop it before migrating.
+
+A deleted person or group takes its relation tuples with it.
+
+## 0178 email_changes
+
+Compatible with the release before: its binary may still serve this schema.
+
+A person changing their own address (5.06). The account keeps its address until a code sent to the new one comes back, so a typo, or somebody holding a session who names a mailbox of theirs and cannot read the code, changes nothing; when it does come back the new address is verified by that proof and the old one is told.
+
+## 0177 email_verifications
+
+Compatible with the release before: its binary may still serve this schema.
+
+An address a person must prove before they are signed in (5.01). A row is written when self-sign-up creates an account under a rule with require_verified_email, which defaulted to true and was consulted by nothing, so a rule naming @example.com let anybody claim any address there. While the row exists the sign-in flow's verify_email stage holds the sign-in and sends a code to the address; the right code sets users.email_verified_at and deletes the row. Accounts an administrator made have none and are not held.
+
+## 0176 passkey_links
+
+Compatible with the release before: its binary may still serve this schema.
+
+An emailed link that lets a person register a passkey without a session (4.24): a new starter with no password, or somebody whose only way in is lost. An administrator issues it; it reaches the account's own email.
+
+## 0175 webauthn_related_origins
+
+Compatible with the release before: its binary may still serve this schema.
+
+Other origins a passkey made under this instance's RP ID may be used from (4.23; WebAuthn Level 3 §5.11, related origin requests): a country domain, a brand domain, an application on another host. The browser checks the list at https://&lt;rp_id&gt;/.well-known/webauthn, which the engine serves when the RP ID is its own host, and the engine accepts a ceremony from each origin listed.
+
+## 0174 acr_ladder
+
+Not compatible with the release before: stop it before migrating.
+
+Two rungs above multi-factor (4.15): "3", multi-factor that includes a WebAuthn assertion, which is bound to this server's origin so a page relaying the sign-in cannot obtain one; and "4", the same with a device-bound key. A client may require either as its floor, and a relying party may ask for either in acr_values.
+
+## 0173 sms_hashed_numbers
+
+Not compatible with the release before: stop it before migrating.
+
+An organisation may keep only a keyed hash of each person's phone number (4.28). The number was stored in the clear, so a read of this table gave every person's number, which is what a SIM swap starts from.
+
+## 0172 sms_delegated_codes
+
+Compatible with the release before: its binary may still serve this schema.
+
+A text-message code a delegated verification service made, sent and will check (4.13, SIGNARI_SMS_GATEWAY=verify-webhook). This engine never holds it: the outstanding code's code_hash is random bytes, the hash of no code, so the purpose-and-hash constraint keeps holding, and code_delegated says the service is to be asked instead.
+
+## 0171 otp_parameters
+
+Compatible with the release before: its binary may still serve this schema.
+
+One-time-code authenticators beyond SHA-1, six digits and thirty seconds (4.12). An organisation chooses what new authenticator apps are enrolled with, and every credential keeps what it was enrolled with, so changing the choice never breaks a phone that already works. A credential is time-based (an app, or a hardware TOTP token) or counter-based (a hardware HOTP token, whose last accepted press is last_used_counter).
+
+## 0170 webauthn_ceremony
+
+Compatible with the release before: its binary may still serve this schema.
+
+What an organisation asks of an authenticator (4.11): user verification at a passkey sign-in, whether registration makes a discoverable credential, which kind of authenticator, which algorithms, how long the browser waits, and the hints it is given. Every one was fixed in code, so an organisation issuing roaming security keys without PINs could not use them, and one that wanted only platform authenticators could not say so.
+
+## 0169 org_login_throttle
+
+Compatible with the release before: its binary may still serve this schema.
+
+The password step's backoff, per organisation (4.06): how many wrong passwords are free before a delay, and the longest the delay grows to. They were constants of three and fifteen minutes. It stays a decaying delay, not a lockout (0011): a lockout is a button that disables any account somebody can name.
+
+## 0168 trusted_devices
+
+Compatible with the release before: its binary may still serve this schema.
+
+A device a person chose to remember after a second factor (4.05), so the organisation's sign-in flow does not ask for one there again for a while.
+
+## 0167 org_reauth_window
+
+Compatible with the release before: its binary may still serve this schema.
+
+How recently a session must have been authenticated for its holder to change the account (4.04): its sign-in methods, its password, which sessions and applications hold it. It was a constant of ten minutes, applied to the sign-in methods only.
+
+## 0166 client_minimum_acr
+
+Compatible with the release before: its binary may still serve this schema.
+
+The weakest authentication a client accepts (4.02). '1' accepts a password alone, which is what every client accepted before; '2' requires multi-factor, whatever the client's own request asks for. A relying party could ask with acr_values, and nothing let the operator require it of an application that does not ask, or that a user could reach with the parameter removed.
+
+## 0165 drop_audit_detail_enc
+
+Not compatible with the release before: stop it before migrating.
+
+core.audit_events.detail_enc is dropped (3.23). It was created for personal detail sealed under the subject's key, so a shred would leave the record and remove its content, and nothing ever wrote it, read it, or hashed it. The trail keeps personal data out instead: rows name people by subject id only, and a test reads the detail every audit write is given and refuses one that names a person. A column that suggests encryption the trail does not have made two documents say the chain covered ciphertext.
+
+## 0164 saml_signature_alg
+
+Compatible with the release before: its binary may still serve this schema.
+
+Which signature algorithm a service provider is signed with (3.15).
+
+## 0163 audit_hash_version
+
+Not compatible with the release before: stop it before migrating.
+
+Which hash each audit row was written under (3.19). Version 2 hashes occurred_at; version 1, every row before this, did not, so a row's time could be rewritten and the chain still verified. The engine now sets occurred_at itself and writes 2. A release before this one writes the default, 1, and its rows keep verifying as 1.
+
+## 0162 restored_reason
+
+Not compatible with the release before: stop it before migrating.
+
+A session ended because the database was restored (3.10). A restore brings back every session as it was at the backup, including the ones ended since, so `signari restore finalize` ends all of them, tells the applications, and records why.
+
+## 0161 relation_check_survives_restore
+
+Not compatible with the release before: stop it before migrating.
+
+A restored database must match its own ledger (3.03). pg_dump writes each CHECK as PostgreSQL renders it and the restore parses that text again; for relation_ids_are_present (0072) the two trees differed, because BETWEEN expands into an AND nested inside the outer one, and the parser flattens a nested AND when it reads the rendering back. So a database restored by the runbook rendered the constraint differently, its fingerprint no longer matched what the ledger recorded, and the engine refused to start on it as drift.
+
+## 0160 ledger_compatibility
+
+Not compatible with the release before: stop it before migrating.
+
+The ledger records whether a binary built for the version before a migration may run against the database it leaves, and which fingerprint scheme computed its fingerprint (3.03).
+
+## 0159 ledger_server_version
+
+Not compatible with the release before: stop it before migrating.
+
+The ledger records which PostgreSQL version computed each fingerprint (3.04). A binary built without a pinned fingerprint now compares the live schema with the ledger's latest row, and refuses to start when they differ: before this it compared nothing, so a hand change within a version went unnoticed by every build that was not pinned, which was every shipped build.
+
+## 0158 users_identifier_cross_field
+
+Not compatible with the release before: stop it before migrating.
+
+One person's username may not be another's email in the same organisation (2.59). Sign-in matches an identifier against either field and refuses when two people match, so a username equal to somebody's address refused both of them. Each field was unique on its own (0002); nothing compared the two, at any of the writers -- the CLI, the Admin API, SCIM, LDAP, federation, sign-up, directory sync and the importers -- so it is refused here, once.
+
+## 0157 resource_servers
+
+Not compatible with the release before: stop it before migrating.
+
+The resource servers an organisation's access tokens may be audienced to.
+
+## 0156 refresh_family_indexes
+
+Not compatible with the release before: stop it before migrating.
+
+refresh_token_families had only its primary key (3.30). Ending a session revokes its families by sid, a consent withdrawal and a client disconnect revoke a person's live families for one client, and each of those scanned the whole table: store/sessions.go and store/consent.go on every sign-out and withdrawal, and the cascade from core.sessions on every expired session the janitor deletes.
+
+## 0155 directory_group_fetch
+
+Not compatible with the release before: stop it before migrating.
+
+Whether a directory source fetches group memberships, and for LDAP from which attribute (2.02).
+
+## 0154 migration_source_ldap
+
+Not compatible with the release before: stop it before migrating.
+
+A migration source can be the directory being migrated from, not only an OAuth provider's password grant.
+
+## 0153 credential_nonce_unscoped
+
+Not compatible with the release before: stop it before migrating.
+
+A c_nonce belongs to no organisation, so the column that said otherwise goes.
+
+## 0152 idp_trusted_mfa
+
+Not compatible with the release before: stop it before migrating.
+
+Which upstream authentication claims an identity provider is trusted to assert multi-factor with.
+
+## 0151 credential_requires_key_attestation
+
+Not compatible with the release before: stop it before migrating.
+
+Whether a credential is issued only on a key proof a trusted attester vouches for (OID4VCI 1.0 Appendix D).
+
+## 0150 credential_proof_roots
+
+Not compatible with the release before: stop it before migrating.
+
+The roots an OID4VCI key proof's `x5c` chain must verify to.
+
+## 0149 drop_access_tokens
+
+Not compatible with the release before: stop it before migrating.
+
+Drops core.access_tokens.
+
+## 0148 drop_projects
+
+Not compatible with the release before: stop it before migrating.
+
+Drops core.projects and clients.project_id.
+
+## 0147 saml_acs_post_only
+
+Not compatible with the release before: stop it before migrating.
+
+An assertion consumer URL's binding may be HTTP-POST only.
+
+## 0146 drop_access_token_format
+
+Not compatible with the release before: stop it before migrating.
+
+Drops clients.access_token_format.
+
+## 0145 drop_pkce_methods
+
+Not compatible with the release before: stop it before migrating.
+
+Drops clients.pkce_methods.
+
+## 0144 client_token_lifetime_bounds
+
+Not compatible with the release before: stop it before migrating.
+
+Bounds on a client's access and refresh token lifetimes, now that they can be set.
+
+## 0143 webauthn_refuse_cloned
+
+Not compatible with the release before: stop it before migrating.
+
+Whether a passkey whose signature counter did not advance is refused, per organisation, on by default.
+
+## 0142 outpost_search_group
+
+Not compatible with the release before: stop it before migrating.
+
+The core, not the outpost, decides who behind an LDAP outpost may read the directory.
+
+## 0141 webauthn_spent_challenges
+
+Not compatible with the release before: stop it before migrating.
+
+A WebAuthn challenge is spent by the first attempt to finish its ceremony.
+
+## 0140 cli_writes_are_audited
+
+Not compatible with the release before: stop it before migrating.
+
+Every operator CLI command that changes something leaves an audit record, without each of its hundred-odd commands having to remember to write one.
+
+## 0139 cli_writes_bump_version
+
+Not compatible with the release before: stop it before migrating.
+
+A write the operator CLI makes moves core.config_version in the same transaction, as an Admin API write does (ADR-008).
+
+## 0138 ssf_source_audience_global
+
+Not compatible with the release before: stop it before migrating.
+
+A Shared Signals source is chosen by its issuer and its audience together, and that pair belongs to one organisation in the whole deployment.
+
+## 0137 public_client_pkce
+
+Not compatible with the release before: stop it before migrating.
+
+A public client requires PKCE, in the schema as well as in the writers.
+
+## 0136 code_factor_failures
+
+Not compatible with the release before: stop it before migrating.
+
+Email and SMS codes stop after a run of wrong guesses, as TOTP and recovery codes do.
+
+## 0135 sms_pending_number
+
+Not compatible with the release before: stop it before migrating.
+
+A new SMS number is held apart from the one that works, as 0126 did for email.
+
+## 0134 proxy_host_global
+
+Not compatible with the release before: stop it before migrating.
+
+A forward-auth protected host belongs to one organisation in the whole deployment.
+
+## 0133 preauth_access_token
+
+Not compatible with the release before: stop it before migrating.
+
+A redeemed credential offer records the access token it minted, so the credential endpoint can tell an issuance token from any other.
+
+## 0132 drop_ciba_notification_token
+
+Not compatible with the release before: stop it before migrating.
+
+The CIBA client notification token no longer sits in a request row.
+
+## 0131 scim_group_ownership
+
+Not compatible with the release before: stop it before migrating.
+
+A SCIM source owns the groups it creates and no others. A group it owns can never let its members impersonate.
+
+## 0130 saml_entity_id_global
+
+Not compatible with the release before: stop it before migrating.
+
+A SAML service provider's entity ID is unique across the deployment, until there are per-organisation SAML endpoints for two tenants to share one.
+
+## 0129 identity_provider_slug_global
+
+Not compatible with the release before: stop it before migrating.
+
+An identity provider's slug is unique across the deployment, not per organisation.
+
+## 0128 password_only_binds
+
+Not compatible with the release before: stop it before migrating.
+
+Whether a protocol that can carry only a password may sign in somebody the sign-in flow would ask for a second factor.
+
+## 0127 factor_failure_ceiling
+
+Not compatible with the release before: stop it before migrating.
+
+A second factor that keeps being guessed at is switched off, not just paused.
+
+## 0126 email_otp_verified
+
+Not compatible with the release before: stop it before migrating.
+
+An email second factor counts only once its address has been proved, and a new address never displaces a proved one until it is proved too.
+
+## 0125 totp_enrolment
+
+Not compatible with the release before: stop it before migrating.
+
+A TOTP enrolment in progress lives apart from the credential it may replace.
+
+## 0124 logout_delivery_tenant
+
+Not compatible with the release before: stop it before migrating.
+
+Stops core_v1.logout_deliveries showing every tenant's sign-outs to any console session.
+
+## 0123 provider_token_hook
+
+Not compatible with the release before: stop it before migrating.
+
+Let the token hook actually be registered.
+
+## 0122 scim_group_links
+
+Not compatible with the release before: stop it before migrating.
+
+Which of our groups is which group at a provisioning target.
+
+## 0121 scim_target_scope
+
+Not compatible with the release before: stop it before migrating.
+
+Which people a provisioning target receives.
+
+## 0120 admin_token_objects
+
+Not compatible with the release before: stop it before migrating.
+
+Narrowing an admin token to named objects.
+
+## 0119 radius_group_vlan
+
+Not compatible with the release before: stop it before migrating.
+
+Network authorisation a RADIUS Access-Accept may carry.
+
+## 0118 directory_group_map
+
+Not compatible with the release before: stop it before migrating.
+
+Mapping a directory's groups onto this deployment's groups.
+
+## 0117 token_hook
+
+Not compatible with the release before: stop it before migrating.
+
+A provider consulted while a token is being minted.
+
+## 0116 webauthn_policy
+
+Not compatible with the release before: stop it before migrating.
+
+Which authenticators an organisation will accept.
+
+## 0115 scopes
+
+Not compatible with the release before: stop it before migrating.
+
+Scopes an organisation defines, as objects rather than strings.
+
+## 0114 idp_attribute_map
+
+Not compatible with the release before: stop it before migrating.
+
+Mapping an upstream provider's claims onto this deployment's attributes.
+
+## 0113 claim_mappers
+
+Not compatible with the release before: stop it before migrating.
+
+Claim mappers: which attribute becomes which claim, for which client.
+
+## 0112 user_profile_schema
+
+Not compatible with the release before: stop it before migrating.
+
+Operator-defined user attributes, and the schema that governs them.
+
+## 0111 user_locale
+
+Not compatible with the release before: stop it before migrating.
+
+A per-user language, for messages the account holder reads.
+
+## 0110 organizations_rls
+
+Not compatible with the release before: stop it before migrating.
+
+Stop the console enumerating every organisation on the instance.
+
+## 0109 providers
+
+Not compatible with the release before: stop it before migrating.
+
+Extension providers: a service the operator runs, which this engine calls to extend a decision it makes (ADR-011).
+
+## 0108 ssf_poll
+
+Not compatible with the release before: stop it before migrating.
+
+Poll-based delivery of Security Event Tokens (RFC 8936).
+
+## 0107 audit_stream_cursor
+
+Not compatible with the release before: stop it before migrating.
+
+A cursor for streaming the audit trail off the box.
+
+## 0106 user_session_revoke
+
+Not compatible with the release before: stop it before migrating.
+
+A revocation reason for a session the user ended themselves, from the self-service account console.
+
+## 0105 ldap_write
+
+Not compatible with the release before: stop it before migrating.
+
+## 0104 uma_claims_gathering
+
+Not compatible with the release before: stop it before migrating.
+
+## 0103 trust_marks
+
+Not compatible with the release before: stop it before migrating.
+
+## 0102 ciba_push
+
+Not compatible with the release before: stop it before migrating.
+
+## 0101 jwt_bearer_client_providers
+
+Not compatible with the release before: stop it before migrating.
+
+## 0100 mtls_san_ip_email
+
+Not compatible with the release before: stop it before migrating.
+
+## 0099 assertion_issuers
+
+Not compatible with the release before: stop it before migrating.
+
+## 0098 jwt_bearer_grant
+
+Not compatible with the release before: stop it before migrating.
+
+## 0097 key_retirement
+
+Not compatible with the release before: stop it before migrating.
+
+Retirement, the last step of the rotation machine that was documented and never built.
+
+## 0096 session_limits
+
+Not compatible with the release before: stop it before migrating.
+
+## 0095 ciba_ping_mode
+
+Not compatible with the release before: stop it before migrating.
+
+## 0094 exchange_audience_match
+
+Not compatible with the release before: stop it before migrating.
+
+## 0093 dpop_bound_access_tokens
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 9449 §5.2 client registration metadata.
+
+## 0092 rls_completeness
+
+Not compatible with the release before: stop it before migrating.
+
+Close the tenant boundary on every table that carries org_id.
+
+## 0091 reauthenticated_reason
+
+Not compatible with the release before: stop it before migrating.
+
+A termination reason for the session replaced by a re-authentication.
+
+## 0090 webauthn_backup_flags
+
+Not compatible with the release before: stop it before migrating.
+
+Carry WebAuthn backup eligibility and backup state on each credential.
+
+## 0089 uma_permission_tickets
+
+Not compatible with the release before: stop it before migrating.
+
+## 0088 backchannel_authentication
+
+Not compatible with the release before: stop it before migrating.
+
+## 0087 sign_in_flows
+
+Not compatible with the release before: stop it before migrating.
+
+The sign-in flow in force, as the file an operator wrote.
+
+## 0086 ssf_critical_subject_members
+
+Not compatible with the release before: stop it before migrating.
+
+Shared Signals Framework 1.0 §3.6 and §7.1: critical subject members.
+
+## 0085 client_attestation
+
+Not compatible with the release before: stop it before migrating.
+
+OAuth 2.0 Attestation-Based Client Authentication, draft-ietf-oauth-attestation-based-client-auth-10 (6 July 2026).
+
+## 0084 refresh_cert_binding
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 8705 §4: bind a public client's refresh token to its certificate.
+
+## 0083 refresh_dpop_binding
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 9449 §5: bind a public client's refresh token to its DPoP key.
+
+## 0082 credential_nonce_scope
+
+Not compatible with the release before: stop it before migrating.
+
+A c_nonce is not organisation data.
+
+## 0081 credential_issuance
+
+Not compatible with the release before: stop it before migrating.
+
+OID4VCI Credential Issuer: the half we did not implement.
+
+## 0080 authorization_details
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 9396 Rich Authorization Requests.
+
+## 0079 scim_source_groups
+
+Not compatible with the release before: stop it before migrating.
+
+## 0078 oid4vci_client
+
+Not compatible with the release before: stop it before migrating.
+
+Bind a pre-authorized code to the client it was issued for.
+
+## 0077 oid4vci
+
+Not compatible with the release before: stop it before migrating.
+
+OpenID for Verifiable Credential Issuance 1.0 (Final, 16 September 2025): the Pre-Authorized Code grant.
+
+## 0076 dpop_jkt
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 9449 §10: Authorization Code Binding to a DPoP Key.
+
+## 0075 federation_key_index
+
+Not compatible with the release before: stop it before migrating.
+
+The one-active-key constraint has to know about purpose.
+
+## 0074 federation
+
+Not compatible with the release before: stop it before migrating.
+
+OpenID Federation 1.0 (Final, 17 February 2026): Entity Configuration.
+
+## 0073 ssf_receiver
+
+Not compatible with the release before: stop it before migrating.
+
+## 0072 authorization
+
+Not compatible with the release before: stop it before migrating.
+
+The authorization layer: answering "may Alice edit document 42?"
+
+## 0071 webhooks
+
+Not compatible with the release before: stop it before migrating.
+
+Event subscriptions: telling other systems what happened here.
+
+## 0070 impersonation
+
+Not compatible with the release before: stop it before migrating.
+
+Support access: an administrator acting as a user, visibly.
+
+## 0069 password_must_change
+
+Not compatible with the release before: stop it before migrating.
+
+## 0068 password_history
+
+Not compatible with the release before: stop it before migrating.
+
+Previous passwords, so one cannot be reused.
+
+## 0067 more_social_providers
+
+Not compatible with the release before: stop it before migrating.
+
+Slack and Atlassian as federated sign-in providers.
+
+## 0066 desktop_outposts
+
+Not compatible with the release before: stop it before migrating.
+
+Outposts that authenticate a desktop or a workstation login.
+
+## 0065 prompts
+
+Not compatible with the release before: stop it before migrating.
+
+Questions asked during sign-in: terms acceptance, a missing field, a notice.
+
+## 0064 native_target_urls
+
+Not compatible with the release before: stop it before migrating.
+
+A native provisioning target has no base URL to be https.
+
+## 0063 native_provisioning_targets
+
+Not compatible with the release before: stop it before migrating.
+
+Provisioning targets that are not SCIM servers.
+
+## 0062 more_social_providers
+
+Not compatible with the release before: stop it before migrating.
+
+Apple, GitLab, Discord, Twitch and LinkedIn as federated sign-in providers.
+
+## 0061 hybrid_and_form_post
+
+Not compatible with the release before: stop it before migrating.
+
+## 0060 outposts
+
+Not compatible with the release before: stop it before migrating.
+
+Protocol servers running somewhere the database must not be reachable from.
+
+## 0059 invitation_claim_fix
+
+Not compatible with the release before: stop it before migrating.
+
+Let an invitation be claimed before the account it creates exists.
+
+## 0058 invitation_rls_fix
+
+Not compatible with the release before: stop it before migrating.
+
+Let the engine read the tables it has to read before anyone has signed in.
+
+## 0057 invitations_and_signup
+
+Not compatible with the release before: stop it before migrating.
+
+Getting a new person an account.
+
+## 0056 brands
+
+Not compatible with the release before: stop it before migrating.
+
+An organisation's appearance on the pages a user sees.
+
+## 0055 app_portal
+
+Not compatible with the release before: stop it before migrating.
+
+What a user sees when they ask "what can I get into?"
+
+## 0054 saml_key_transport
+
+Not compatible with the release before: stop it before migrating.
+
+Which RSA key transport algorithm to use when encrypting assertions.
+
+## 0053 rac_connections
+
+Not compatible with the release before: stop it before migrating.
+
+Remote access: which hosts a person may reach through the browser.
+
+## 0052 rate_limits
+
+Not compatible with the release before: stop it before migrating.
+
+Rate limits that survive more than one instance.
+
+## 0051 duo
+
+Not compatible with the release before: stop it before migrating.
+
+Duo Universal Prompt as a second factor.
+
+## 0050 sms_otp
+
+Not compatible with the release before: stop it before migrating.
+
+SMS as a second factor.
+
+## 0049 scim_sources
+
+Not compatible with the release before: stop it before migrating.
+
+## 0048 saml_sources
+
+Not compatible with the release before: stop it before migrating.
+
+## 0047 ldap_ca
+
+Not compatible with the release before: stop it before migrating.
+
+An LDAP source's CA bundle.
+
+## 0046 ldap_source
+
+Not compatible with the release before: stop it before migrating.
+
+LDAP as a directory SOURCE.
+
+## 0045 directory_sources
+
+Not compatible with the release before: stop it before migrating.
+
+## 0044 mtls_client_auth
+
+Not compatible with the release before: stop it before migrating.
+
+## 0043 audit_is_immutable
+
+Not compatible with the release before: stop it before migrating.
+
+An audit row must never be mutated. Not even by a foreign key.
+
+## 0042 drop_redundant_enrolled_at
+
+Not compatible with the release before: stop it before migrating.
+
+Drop email_otp_credentials.enrolled_at.
+
+## 0041 dynamic_registration
+
+Not compatible with the release before: stop it before migrating.
+
+Dynamic client registration, RFC 7591 and RFC 7592.
+
+## 0040 email_otp
+
+Not compatible with the release before: stop it before migrating.
+
+Email as a second factor.
+
+## 0039 device_authorization
+
+Not compatible with the release before: stop it before migrating.
+
+The device authorization grant, RFC 8628.
+
+## 0038 policy_view
+
+Not compatible with the release before: stop it before migrating.
+
+## 0037 radius_clients
+
+Not compatible with the release before: stop it before migrating.
+
+RADIUS clients: the network devices permitted to ask.
+
+## 0036 console_read_models
+
+Not compatible with the release before: stop it before migrating.
+
+Console visibility for everything built after the first week.
+
+## 0035 admin_tokens
+
+Not compatible with the release before: stop it before migrating.
+
+Admin API tokens with scopes and an organisation boundary.
+
+## 0034 saml_encryption
+
+Not compatible with the release before: stop it before migrating.
+
+SAML assertion encryption.
+
+## 0033 auth_locations
+
+Not compatible with the release before: stop it before migrating.
+
+Where authentications came from, for impossible-travel detection.
+
+## 0032 ssf
+
+Not compatible with the release before: stop it before migrating.
+
+Shared Signals Framework streams, and CAEP events.
+
+## 0031 frontchannel_logout
+
+Not compatible with the release before: stop it before migrating.
+
+OpenID Connect Front-Channel Logout 1.0.
+
+## 0030 access_policies
+
+Not compatible with the release before: stop it before migrating.
+
+The access policy in force, as the file an operator wrote.
+
+## 0029 par
+
+Not compatible with the release before: stop it before migrating.
+
+Pushed Authorization Requests (RFC 9126).
+
+## 0028 confidential_client_credential
+
+Not compatible with the release before: stop it before migrating.
+
+A confidential client must hold SOME credential. Until now that meant a secret, because a secret was the only kind there was.
+
+## 0027 private_key_jwt
+
+Not compatible with the release before: stop it before migrating.
+
+Client authentication with a signed assertion instead of a shared secret (OIDC Core §9, RFC 7523).
+
+## 0026 dpop
+
+Not compatible with the release before: stop it before migrating.
+
+Replay detection for DPoP proofs (RFC 9449 §11.1).
+
+## 0025 groups
+
+Not compatible with the release before: stop it before migrating.
+
+Groups, and the release of group membership as a claim.
+
+## 0024 scim
+
+Not compatible with the release before: stop it before migrating.
+
+Outbound SCIM 2.0 provisioning: pushing users to downstream applications so they exist there before first sign-in, and -- far more importantly -- stop existing there when they leave.
+
+## 0023 trust_email_verification
+
+Not compatible with the release before: stop it before migrating.
+
+## 0022 identity_providers
+
+Not compatible with the release before: stop it before migrating.
+
+## 0021 saml_logout_progress
+
+Not compatible with the release before: stop it before migrating.
+
+Front-channel single logout is a redirect CHAIN, and a chain needs state.
+
+## 0020 saml_certificates
+
+Not compatible with the release before: stop it before migrating.
+
+SAML needs an X.509 certificate where OIDC needs only a public key.
+
+## 0019 saml
+
+Not compatible with the release before: stop it before migrating.
+
+## 0018 engine_rls_access
+
+Not compatible with the release before: stop it before migrating.
+
+THE ENGINE COULD NOT READ ITS OWN TABLES.
+
+## 0017 proxy_hosts
+
+Not compatible with the release before: stop it before migrating.
+
+The hosts forward authentication will protect, and redirect back to.
+
+## 0016 token_exchange
+
+Not compatible with the release before: stop it before migrating.
+
+RFC 8693 token exchange, off by default per client.
+
+## 0015 per_client_issuer
+
+Not compatible with the release before: stop it before migrating.
+
+Per-client issuer override, so an OAuth migration becomes a DNS change.
+
+## 0014 migration_sources
+
+Not compatible with the release before: stop it before migrating.
+
+## 0013 logout_delivery_view
+
+Not compatible with the release before: stop it before migrating.
+
+Makes back-channel logout DELIVERY visible to an operator.
+
+## 0012 account_recovery
+
+Not compatible with the release before: stop it before migrating.
+
+Account recovery, built as delay-and-notify.
+
+## 0011 login_throttle
+
+Not compatible with the release before: stop it before migrating.
+
+Per-account login throttling, replacing a single global bucket.
+
+## 0010 first_party_clients
+
+Not compatible with the release before: stop it before migrating.
+
+Marks the clients that may skip the consent screen.
+
+## 0009 rp_id_per_instance
+
+Not compatible with the release before: stop it before migrating.
+
+The WebAuthn RP ID, as configuration rather than a constant, with its irreversibility ENFORCED instead of documented.
+
+## 0008 mfa_replay_and_recovery
+
+Not compatible with the release before: stop it before migrating.
+
+Two things TOTP needs that the original schema did not model.
+
+## 0007 revoked_jtis
+
+Not compatible with the release before: stop it before migrating.
+
+Makes RFC 7009 revocation of an ACCESS token mean something.
+
+## 0006 view_arrays_as_json
+
+Not compatible with the release before: stop it before migrating.
+
+Emits array-valued columns in core_v1 as JSON rather than PostgreSQL arrays.
+
+## 0005 optional_pkce
+
+Not compatible with the release before: stop it before migrating.
+
+Models an authorization code that carries no PKCE challenge.
+
+## 0004 session_cookie_split
+
+Not compatible with the release before: stop it before migrating.
+
+Separates the session's PUBLIC identifier from its SECRET bearer token.
+
+## 0003 rls_and_views
+
+Not compatible with the release before: stop it before migrating.
+
+Row-level security as a backstop, and the versioned read-only view contract.
+
+## 0002 core
+
+Not compatible with the release before: stop it before migrating.
+
+## 0001 bootstrap
+
+The bootstrap: roles, schemas and grants, run once with a superuser.
+
+Roles, schemas, and the privilege boundary between the Go engine and the Laravel admin.

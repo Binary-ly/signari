@@ -22,14 +22,23 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/authzen"
+	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/i18n"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 	"signari.dev/engine/internal/pages"
+	"signari.dev/engine/internal/policy"
 	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/risk"
+	"signari.dev/engine/internal/sms"
+	"signari.dev/engine/internal/store"
 	"sort"
 	"strings"
 	"time"
@@ -80,6 +89,31 @@ func (r *Report) add(sev Severity, area, summary, fix string) {
 	r.Findings = append(r.Findings, Finding{sev, area, summary, fix})
 }
 
+// JSON is the report for a script (3.26): a monitoring job that wants to
+// alert on a critical finding parsed the text, which changes whenever a
+// finding's wording does. Severities are lower case; every check that ran is
+// listed, as in the text, so an empty findings list is evidence.
+func (r *Report) JSON() ([]byte, error) {
+	type finding struct {
+		Severity string `json:"severity"`
+		Area     string `json:"area"`
+		Summary  string `json:"summary"`
+		Fix      string `json:"fix,omitempty"`
+	}
+	out := struct {
+		Findings []finding `json:"findings"`
+		Checked  []string  `json:"checked"`
+		Critical int       `json:"critical"`
+		Warning  int       `json:"warning"`
+		Info     int       `json:"info"`
+	}{Findings: []finding{}, Checked: r.Checked,
+		Critical: r.Count(Critical), Warning: r.Count(Warning), Info: r.Count(Info)}
+	for _, f := range r.Findings {
+		out.Findings = append(out.Findings, finding{strings.ToLower(f.Severity.String()), f.Area, f.Summary, f.Fix})
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
 func (r *Report) ran(what string) { r.Checked = append(r.Checked, what) }
 
 // Count returns how many findings of a severity there are.
@@ -101,6 +135,7 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	checkRootKey(r)
 	checkAdminToken(r)
 	checkMail(r)
+	checkSMS(r)
 	checkAuthenticatorModels(r)
 	if err := checkSigningKeys(ctx, conn, r); err != nil {
 		return nil, err
@@ -123,6 +158,21 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkPolicy(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkSignInFlows(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkAuthorizationModels(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkGrantsToNoGroup(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkClaimMapperScopes(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkProviderSecrets(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkAdminTokens(ctx, conn, r); err != nil {
 		return nil, err
 	}
@@ -141,7 +191,36 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkProviderHooks(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkOutposts(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkClientProfiles(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkAuthenticatorAllowList(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkPasswordOnlyBinds(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	if err := checkNotificationChannels(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	if err := checkSchemaLedger(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	checkQueryExecMode(conn, r)
+	if err := checkServerVersion(ctx, conn, r); err != nil {
+		return nil, err
+	}
+	for _, check := range []func(context.Context, *pgx.Conn, *Report) error{
+		checkTenantIsolation, checkJanitorBacklog, checkGrowth, checkFIPS, checkPasswordHashes,
+	} {
+		if err := check(ctx, conn, r); err != nil {
+			return nil, err
+		}
+	}
+	if err := checkAuditChain(ctx, conn, r); err != nil {
 		return nil, err
 	}
 	checkSchemaPin(r)
@@ -179,10 +258,23 @@ func checkIssuer(r *Report, issuer string) {
 
 func checkRootKey(r *Report) {
 	r.ran("root key")
-	if os.Getenv("SIGNARI_ROOT_KEY") == "" && os.Getenv("SIGNARI_ROOT_KEY_REF") == "" {
+	// SIGNARI_ROOT_KEY alone. SIGNARI_ROOT_KEY_REF is the label stored beside
+	// what the key seals and fetches no key from anywhere, and this passed on
+	// it while `serve` refused to start without the key itself.
+	// Through the loader serve uses, so a key file serve would refuse -- one
+	// its group or others may read, or set beside the variable -- is refused
+	// here too (3.12).
+	if os.Getenv("SIGNARI_ROOT_KEY") == "" && os.Getenv("SIGNARI_ROOT_KEY_FILE") == "" {
 		r.add(Critical, "root key", "no root key is configured",
-			"set SIGNARI_ROOT_KEY to base64 of 32 random bytes. It wraps every stored "+
-				"private signing key; without it nothing can be unsealed")
+			"set SIGNARI_ROOT_KEY to base64 of 32 random bytes, or SIGNARI_ROOT_KEY_FILE to a "+
+				"file holding it, readable by this user alone. It wraps every stored "+
+				"private signing key; without it nothing can be unsealed, and "+
+				"SIGNARI_ROOT_KEY_REF, a label, is no substitute")
+		return
+	}
+	if _, err := keys.LoadRootKeyring(os.Getenv); err != nil {
+		r.add(Critical, "root key", "the root key cannot be loaded: "+err.Error(),
+			"`serve` refuses to start on it too. Fix the source the message names.")
 	}
 }
 
@@ -210,6 +302,35 @@ func checkMail(r *Report) {
 			"set SIGNARI_SMTP_HOST and SIGNARI_MAIL_FROM. Until then recovery messages "+
 				"are written to the log, which is fine for development and means nobody "+
 				"can recover an account in production")
+	}
+}
+
+// checkSMS names an SMS gateway left open to every country, the shape SMS
+// pumping needs, and a malformed limit, which `serve` refuses to start on.
+func checkSMS(r *Report) {
+	if os.Getenv("SIGNARI_SMS_GATEWAY") == "" {
+		return
+	}
+	r.ran("text messages")
+	p, err := sms.PolicyFromEnv(os.Getenv)
+	if err != nil {
+		r.add(Critical, "sms", err.Error(), "correct it; the server will not start until it is")
+		return
+	}
+	if v, err := sms.NewVerifierFromEnv(os.Getenv); err != nil {
+		r.add(Critical, "sms", err.Error(), "correct it; the server will not start until it is")
+		return
+	} else if v != nil {
+		r.add(Info, "sms", "SMS codes are made, sent and checked by "+v.Describe()+
+			", so account notices go by email only",
+			"a person whose email is compromised hears about changes to their account nowhere else")
+	}
+	if !p.Restricted() {
+		number, org := p.Limits()
+		r.add(Warning, "sms", "SMS is enabled for numbers in every country",
+			fmt.Sprintf("set SIGNARI_SMS_ALLOWED_PREFIXES to the countries you serve (+1,+44 ...). "+
+				"Until then a number on a high-cost range can be enrolled and sent codes, "+
+				"capped only by %d a day per number and %d per organisation", number, org))
 	}
 }
 
@@ -245,6 +366,94 @@ func checkAuthenticatorModels(r *Report) {
 				"Service BLOB, or unset it and use SIGNARI_FIDO_MDS_FETCH=1 to fetch "+
 				"it. Until then passkeys are named by their nickname only")
 	}
+}
+
+// checkAuthenticatorAllowList reports an approved-model allow-list that nothing
+// can satisfy.
+//
+// An allow-list admits a passkey only when its attestation is a certificate
+// chain anchored in the FIDO catalogue: an AAGUID on its own is the
+// authenticator's claim about itself. With no catalogue configured nothing can
+// be anchored, so every registration in that organisation is refused -- the
+// correct failure, and one an operator should hear about here rather than from
+// users who cannot add a passkey.
+func checkAuthenticatorAllowList(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, r *Report) error {
+	r.ran("approved authenticator models")
+	if os.Getenv("SIGNARI_FIDO_MDS_PATH") != "" || os.Getenv("SIGNARI_FIDO_MDS_URL") != "" ||
+		os.Getenv("SIGNARI_FIDO_MDS_FETCH") == "1" {
+		return nil
+	}
+	var orgs int
+	if err := conn.QueryRow(ctx, `
+		SELECT count(*) FROM core.webauthn_policy WHERE cardinality(allowed_aaguids) > 0`).Scan(&orgs); err != nil {
+		return fmt.Errorf("checking authenticator allow-lists: %w", err)
+	}
+	if orgs > 0 {
+		r.add(Warning, "approved authenticator models",
+			fmt.Sprintf("%d organisation(s) accept only approved authenticator models, and no FIDO "+
+				"metadata catalogue is configured, so no passkey can be registered in them", orgs),
+			"set SIGNARI_FIDO_MDS_PATH, SIGNARI_FIDO_MDS_URL or SIGNARI_FIDO_MDS_FETCH=1 so attestation "+
+				"can be anchored, or remove the allow-list with `signari webauthn policy`")
+	}
+	return nil
+}
+
+// checkPasswordOnlyBinds names each organisation where a password alone signs in
+// over LDAP, RADIUS PAP or an outpost, whatever its sign-in flow demands.
+//
+// Those protocols carry nothing but a password. An organisation set to `allow`
+// (every organisation that existed before 0128) has a sign-in page that asks
+// for a second factor and a directory port beside it that does not, which is an
+// MFA mandate with a side door. Reported only where the side door is open: an
+// LDAP or RADIUS listener serving the organisation, or an enabled outpost of
+// either kind.
+func checkPasswordOnlyBinds(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("password-only binds")
+	rows, err := conn.Query(ctx, `
+		SELECT o.id::text, o.slug,
+		       EXISTS (SELECT 1 FROM core.outposts p
+		                WHERE p.org_id = o.id AND p.enabled AND p.kind IN ('ldap', 'radius'))
+		  FROM core.organizations o
+		 WHERE o.password_only_binds = 'allow'
+		 ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("checking password-only binds: %w", err)
+	}
+	defer rows.Close()
+
+	listener := func(addrVar, orgVar, id string) bool {
+		return os.Getenv(addrVar) != "" && os.Getenv(orgVar) == id
+	}
+	for rows.Next() {
+		var id, slug string
+		var outpost bool
+		if err := rows.Scan(&id, &slug, &outpost); err != nil {
+			return err
+		}
+		var doors []string
+		if listener("SIGNARI_LDAP_ADDR", "SIGNARI_LDAP_ORG_ID", id) {
+			doors = append(doors, "the LDAP listener")
+		}
+		if listener("SIGNARI_RADIUS_ADDR", "SIGNARI_RADIUS_ORG_ID", id) {
+			doors = append(doors, "the RADIUS listener")
+		}
+		if outpost {
+			doors = append(doors, "an LDAP or RADIUS outpost")
+		}
+		if len(doors) == 0 {
+			continue
+		}
+		r.add(Warning, "password-only binds",
+			fmt.Sprintf("organisation %q accepts a password alone through %s, even from people "+
+				"its sign-in page would ask for a second factor", slug, strings.Join(doors, " and ")),
+			fmt.Sprintf("`signari instance password-binds -org %s -binds refuse_when_mfa`, once "+
+				"the service accounts that bind there have no second factor", id))
+	}
+	return rows.Err()
 }
 
 // checkProviderHooks reports a registered provider whose hook nothing consults.
@@ -294,6 +503,74 @@ func checkProviderHooks(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	return rows.Err()
 }
 
+// checkOutposts reports a running outpost the core has stopped hearing from. It
+// says hello once a minute whether or not anybody uses it, so its silence is not
+// a quiet branch office: the protocol it served has stopped answering somewhere
+// nobody is looking.
+// checkClientProfiles says which clients have left the security profile they are held
+// to, by a command that has never heard of one. Such a client is refused at the token
+// endpoint, safely and with no word to it of why, so this is where an operator hears.
+func checkClientProfiles(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("client profiles")
+	rows, err := conn.Query(ctx, `SELECT client_id FROM core.clients WHERE security_profile <> 'none' ORDER BY client_id`)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		c, err := clients.Lookup(ctx, conn, id)
+		if err != nil {
+			return err
+		}
+		if problems := c.ProfileProblems(); len(problems) > 0 {
+			r.add(Warning, "client profiles",
+				fmt.Sprintf("client %s is held to %s and does not meet it, so it is refused: %s", id,
+					c.SecurityProfile, strings.Join(problems, "; ")),
+				"put the setting back, or `signari client set-profile -security-profile none` to release it.")
+		}
+	}
+	return nil
+}
+
+func checkOutposts(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("outposts")
+	rows, err := conn.Query(ctx, `SELECT DISTINCT o.id::text, o.slug
+		  FROM core.organizations o JOIN core.outposts p ON p.org_id = o.id WHERE p.enabled`)
+	if err != nil {
+		return err
+	}
+	type org struct{ id, slug string }
+	orgs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (org, error) {
+		var o org
+		err := row.Scan(&o.id, &o.slug)
+		return o, err
+	})
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, o := range orgs {
+		outposts, err := store.Outposts(ctx, conn, o.id)
+		if err != nil {
+			return err
+		}
+		for _, p := range outposts {
+			if !p.Stale(now) {
+				continue
+			}
+			r.add(Warning, "outposts",
+				fmt.Sprintf("%s's %s outpost %s was last heard from %s ago", o.slug, p.Kind, p.Name,
+					now.Sub(*p.LastSeenAt).Round(time.Minute)),
+				"a running outpost says hello once a minute, so this one has stopped or lost "+
+					"its way here. `signari outpost disable` it if it is meant to be gone.")
+		}
+	}
+	return nil
+}
+
 func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("notification channels")
 
@@ -323,6 +600,33 @@ func checkNotificationChannels(ctx context.Context, conn *pgx.Conn, r *Report) e
 
 func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	r.ran("signing keys")
+	// A key made smaller than the default on purpose, for a relying party that
+	// could take no more, stays in view so the reason can be asked about again.
+	small, err := conn.Query(ctx, `
+		SELECT kid, algorithm, length(public_jwk->>'n') * 6 / 8 * 8
+		  FROM core.signing_keys
+		 WHERE purpose = 'oidc' AND state IN ('active', 'next') AND public_jwk ? 'n'
+		   AND length(public_jwk->>'n') * 6 / 8 * 8 < $1
+		 ORDER BY kid LIMIT 20`, keys.RSABits)
+	if err != nil {
+		return err
+	}
+	for small.Next() {
+		var kid, alg string
+		var bits int
+		if err := small.Scan(&kid, &alg, &bits); err != nil {
+			small.Close()
+			return err
+		}
+		r.add(Warning, "keys", fmt.Sprintf("%s key %s is %d bits, below the %d this server makes by default",
+			alg, kid, bits, keys.RSABits),
+			"it was asked for, and rotation keeps the size. `signari keys rotate -alg "+alg+" -rsa-bits 3072` "+
+				"goes back once the relying party can take it")
+	}
+	small.Close()
+	if err := small.Err(); err != nil {
+		return err
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT algorithm, count(*) FILTER (WHERE state = 'active'),
 		       count(*) FILTER (WHERE state = 'next')
@@ -364,7 +668,10 @@ func checkSigningKeys(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	return rows.Err()
 }
 
-func checkClients(ctx context.Context, conn *pgx.Conn, r *Report) error {
+func checkClients(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
 	r.ran("OAuth clients")
 
 	var plaintextRedirects int
@@ -394,7 +701,63 @@ func checkClients(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"PKCE is what stops an intercepted authorization code being exchanged by "+
 				"somebody else. Turn it on unless a client genuinely cannot do it")
 	}
-	return nil
+
+	// A client signing with an algorithm its instance holds no active key for.
+	// `client set-alg` refuses one, but a key can be retired afterwards, and
+	// then every token request from that client fails at the signature.
+	unsigned, err := conn.Query(ctx, `
+		SELECT c.client_id, a.alg FROM core.clients c
+		  JOIN core.organizations o ON o.id = c.org_id
+		 CROSS JOIN LATERAL (SELECT DISTINCT unnest(ARRAY[c.id_token_signed_alg,
+		                            COALESCE(c.access_token_signed_alg, c.id_token_signed_alg),
+		                            COALESCE(c.authorization_signed_response_alg, c.id_token_signed_alg)]) AS alg) a
+		 WHERE c.enabled AND NOT EXISTS (
+		       SELECT 1 FROM core.signing_keys k
+		        WHERE k.instance_id = o.instance_id AND k.algorithm = a.alg
+		          AND k.state = 'active' AND k.purpose = 'oidc')
+		 ORDER BY c.client_id LIMIT 20`)
+	if err != nil {
+		return err
+	}
+	for unsigned.Next() {
+		var id, alg string
+		if err := unsigned.Scan(&id, &alg); err != nil {
+			unsigned.Close()
+			return err
+		}
+		r.add(Critical, "clients",
+			fmt.Sprintf("%s signs with %s and its instance holds no active %s key, so every "+
+				"token it asks for fails to sign", id, alg, alg),
+			fmt.Sprintf("publish and promote one with `signari keys rotate -alg %s`, or move the "+
+				"client with `signari client set-alg`", alg))
+	}
+	unsigned.Close()
+	if err := unsigned.Err(); err != nil {
+		return err
+	}
+
+	// The hybrid-flow exemption's review date. `client set-hybrid` demands one
+	// and the column says "Reported, not enforced", and nothing reported it:
+	// the date was asked for, stored, and never mentioned again.
+	rows, err := conn.Query(ctx, `
+		SELECT client_id, hybrid_review_by::text FROM core.clients
+		 WHERE allow_hybrid AND hybrid_review_by IS NOT NULL AND hybrid_review_by < current_date
+		 ORDER BY hybrid_review_by`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, due string
+		if err := rows.Scan(&id, &due); err != nil {
+			return err
+		}
+		r.add(Warning, "clients",
+			fmt.Sprintf("%s still allows the hybrid flow; its exemption was due for review on %s", id, due),
+			"the hybrid flow exists for migration only. Move the client to the code flow and "+
+				"turn it off, or record a new review date with `signari client set-hybrid`")
+	}
+	return rows.Err()
 }
 
 func checkSAML(ctx context.Context, conn *pgx.Conn, r *Report) error {
@@ -567,7 +930,278 @@ func checkPolicy(ctx context.Context, conn *pgx.Conn, r *Report) error {
 			"to every user",
 			"that may be correct. If not, write one and apply it with `signari policy apply`")
 	}
+	noGeo := os.Getenv("SIGNARI_GEOIP_DB") == "" && os.Getenv("SIGNARI_GEOIP_STATIC") == ""
+	// The ASN source as the engine would build it, so a file that is named and
+	// unreadable, or is not an ASN database, counts as no source.
+	asn := risk.NewASNResolver()
+	noASN := !risk.ASNConfigured(asn)
+	if !noGeo && !noASN {
+		return nil
+	}
+	// Nothing to place an address with, and a rule that asks where it is: from_countries
+	// is not met by an address it cannot place, so everybody it covers is refused, and
+	// not_from_countries refuses nobody. The same for networks and from_asns.
+	rows, err := conn.Query(ctx, `SELECT o.slug, p.document FROM core.access_policies p
+		JOIN core.organizations o ON o.id = p.org_id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, doc string
+		if err := rows.Scan(&slug, &doc); err != nil {
+			return err
+		}
+		f, err := policy.Parse([]byte(doc))
+		if err != nil {
+			continue
+		}
+		if noGeo && f.UsesCountries() {
+			r.add(Warning, "policy", fmt.Sprintf("%s's access policy asks where an address is, and no GeoIP "+
+				"source is configured, so nothing can be placed", slug),
+				"set SIGNARI_GEOIP_DB or SIGNARI_GEOIP_STATIC: until then from_countries refuses "+
+					"everybody it covers and not_from_countries refuses nobody")
+		}
+		if noASN && f.UsesASNs() {
+			why := risk.ExplainASN(asn)
+			if why == "" {
+				why = "set SIGNARI_GEOIP_ASN_DB or SIGNARI_GEOIP_ASN_STATIC: until then from_asns refuses " +
+					"everybody it covers and not_from_asns refuses nobody"
+			}
+			r.add(Warning, "policy", fmt.Sprintf("%s's access policy asks which network an address is on, "+
+				"and no ASN source can answer", slug), why)
+		}
+	}
+	return rows.Err()
+}
+
+// checkSignInFlows reports a stored flow the engine refuses to load.
+//
+// `signari flow apply` parses before it stores, so such a row was written
+// before a rule existed or around the command. The engine then runs the last
+// flow that loaded or the built-in one, which is not the journey the operator
+// applied, and says so only in its log. Critical, because the difference is
+// who gets asked for what on the way in: a flow that branched on a condition
+// no journey evaluates (refused since 2.20) is the expected case.
+func checkSignInFlows(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, r *Report) error {
+	r.ran("sign-in flows")
+	rows, err := conn.Query(ctx, `
+		SELECT o.id::text, o.slug, f.document FROM core.sign_in_flows f
+		JOIN core.organizations o ON o.id = f.org_id ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading sign-in flows: %w", err)
+	}
+	type applied struct {
+		orgID, slug string
+		fl          *flow.Flow
+	}
+	var loaded []applied
+	for rows.Next() {
+		var orgID, slug, doc string
+		if err := rows.Scan(&orgID, &slug, &doc); err != nil {
+			rows.Close()
+			return err
+		}
+		file, perr := flow.Parse([]byte(doc))
+		if perr != nil {
+			r.add(Critical, "flows", fmt.Sprintf("the sign-in flow applied to %s does not load, "+
+				"so that organisation is running the last flow that did or the built-in one: %v",
+				slug, perr),
+				"fix the file and apply it again with `signari flow apply`, which refuses "+
+					"exactly what the engine refuses")
+			continue
+		}
+		for i := range file.Flows {
+			if file.Flows[i].On == flow.Authentication {
+				loaded = append(loaded, applied{orgID, slug, &file.Flows[i]})
+			}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// A flow that loads and refuses a way in the organisation uses (2.49). A
+	// sign-in's proving stage must be the proof presented, so a flow naming
+	// only password, written when the walker passed every such stage, now
+	// refuses everybody who signs in with a passkey or through a provider.
+	for _, a := range loaded {
+		// And a condition only a provider answers, with no provider to: it reads
+		// false, which guards nothing and looks like a guard.
+		if a.fl.AsksProvider() {
+			var n int
+			if err := conn.QueryRow(ctx, `SELECT count(*) FROM core.providers
+				WHERE org_id = $1::uuid AND hook = 'flow_condition' AND enabled`, a.orgID).Scan(&n); err != nil {
+				return err
+			}
+			if n == 0 {
+				r.add(Warning, "flows", fmt.Sprintf("the sign-in flow %q applied to %s branches on a "+
+					"condition only a flow_condition provider answers, and it has none, so it reads false",
+					a.fl.Name, a.slug),
+					"register one with `signari provider add -hook flow_condition`, or take the condition out")
+			}
+		}
+		for _, use := range []struct {
+			stage flow.StageName
+			query string
+			what  string
+		}{
+			{flow.StagePasskey, `SELECT count(DISTINCT w.user_id) FROM core.webauthn_credentials w
+				JOIN core.users u ON u.id = w.user_id WHERE u.org_id = $1::uuid AND u.status = 'active'`,
+				"people hold passkeys"},
+			{flow.StageFederated, `SELECT count(*) FROM core.identity_providers
+				WHERE org_id = $1::uuid AND enabled`, "upstream providers are enabled"},
+		} {
+			if a.fl.AdmitsProof(use.stage) {
+				continue
+			}
+			var n int
+			if err := conn.QueryRow(ctx, use.query, a.orgID).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				r.add(Warning, "flows", fmt.Sprintf("in %s %d %s, and the sign-in flow %q applied "+
+					"to it refuses a %s sign-in", a.slug, n, use.what, a.fl.Name, use.stage),
+					fmt.Sprintf("a sign-in's proving stage must be the proof presented; add "+
+						"`{stage: %s, when: proved_by_%s}` to a one_of with the password, or "+
+						"leave it out on purpose", use.stage, use.stage))
+			}
+		}
+	}
 	return nil
+}
+
+// checkClaimMapperScopes reports a claim mapper waiting for a scope no grant can
+// carry: neither standard nor declared by its organisation. The Admin API
+// refuses one since 2.33, but a mapper saved before that, with a typo in
+// required_scope, still releases nothing to anybody and looks configured.
+func checkClaimMapperScopes(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("claim mapper scopes")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, m.claim_name, m.required_scope
+		FROM core.claim_mappers m
+		JOIN core.organizations o ON o.id = m.org_id
+		WHERE m.required_scope <> ''
+		  AND m.required_scope <> ALL ($1::text[])
+		  AND NOT EXISTS (SELECT 1 FROM core.scopes s
+		                  WHERE s.org_id = m.org_id AND s.name = m.required_scope)
+		ORDER BY o.slug, m.claim_name`, store.StandardScopes)
+	if err != nil {
+		return fmt.Errorf("reading claim mappers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, claim, scope string
+		if err := rows.Scan(&slug, &claim, &scope); err != nil {
+			return err
+		}
+		r.add(Warning, "claim mappers", fmt.Sprintf("organisation %s: the %s claim "+
+			"waits for scope %q, which is neither standard nor declared, so it is "+
+			"released to nobody", slug, claim, scope),
+			"declare the scope, or replace the mapper with one naming the scope you meant")
+	}
+	return rows.Err()
+}
+
+// checkProviderSecrets reports an enabled extension provider called unsigned.
+// Registration mints a signing secret since 2.04; one registered before that
+// has none, and its service cannot tell this engine's calls from anybody's.
+func checkProviderSecrets(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("provider signing")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, p.hook FROM core.providers p
+		JOIN core.organizations o ON o.id = p.org_id
+		WHERE p.enabled AND p.token_wrapped IS NULL
+		ORDER BY o.slug, p.hook`)
+	if err != nil {
+		return fmt.Errorf("reading providers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug, hook string
+		if err := rows.Scan(&slug, &hook); err != nil {
+			return err
+		}
+		r.add(Warning, "providers", fmt.Sprintf("organisation %s: the %s provider is "+
+			"called without a Signari-Signature, so it cannot tell this engine's calls "+
+			"from anybody else's", slug, hook),
+			fmt.Sprintf("signari provider rotate -org <id> -hook %s, and give the service the secret", hook))
+	}
+	return rows.Err()
+}
+
+// checkAuthorizationModels reports a stored model that does not load: the engine
+// evaluates the compiled copy, and nothing else would say that it cannot.
+func checkAuthorizationModels(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("authorization models")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, m.compiled FROM core.authorization_models m
+		JOIN core.organizations o ON o.id = m.org_id ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading authorization models: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug string
+		var compiled []byte
+		if err := rows.Scan(&slug, &compiled); err != nil {
+			return err
+		}
+		var m authzen.Model
+		if err := json.Unmarshal(compiled, &m); err != nil {
+			r.add(Critical, "authorization", fmt.Sprintf("the authorization model of %s "+
+				"does not load: %v", slug, err), "set it again with `signari authz set-model`")
+		}
+	}
+	return rows.Err()
+}
+
+// checkGrantsToNoGroup names relations granted to a group that does not exist.
+// Since migration 0179 a group's deletion takes its relations with it. Before,
+// they stayed, and a group created later under the same name held every one.
+// A grant made ahead of the sync that will create its group looks the same,
+// so this reports rather than removes.
+func checkGrantsToNoGroup(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, r *Report) error {
+	r.ran("grants to groups")
+	rows, err := conn.Query(ctx, `
+		SELECT o.slug, count(*), array_agg(DISTINCT r.subject_id ORDER BY r.subject_id)
+		  FROM core.relations r JOIN core.organizations o ON o.id = r.org_id
+		 WHERE r.subject_type = 'group'
+		   AND NOT EXISTS (SELECT 1 FROM core.groups g WHERE g.org_id = r.org_id AND g.name = r.subject_id)
+		 GROUP BY o.slug ORDER BY o.slug`)
+	if err != nil {
+		return fmt.Errorf("reading grants to groups: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug string
+		var n int
+		var names []string
+		if err := rows.Scan(&slug, &n, &names); err != nil {
+			return err
+		}
+		shown := names
+		if len(shown) > 5 {
+			shown = append(shown[:5:5], fmt.Sprintf("and %d more", len(names)-5))
+		}
+		r.add(Warning, "authorization", fmt.Sprintf("%d relation(s) in %s are granted to groups that "+
+			"do not exist (%s): a group created under one of those names holds all of them",
+			n, slug, strings.Join(shown, ", ")),
+			"revoke each with `signari authz revoke`, unless it was granted ahead of the sync that creates the group")
+	}
+	return rows.Err()
 }
 
 func checkAdminTokens(ctx context.Context, conn *pgx.Conn, r *Report) error {
@@ -885,22 +1519,236 @@ func reportCredentialLifetimes(r *Report, over []string) {
 // release", and until now nothing checked.
 //
 // Warning rather than Critical: the version counter still gates every ordinary
-// upgrade, so a database that is simply behind is still refused. What is missing
-// is detection of drift WITHIN a version, which needs somebody to have edited the
-// schema by hand.
+// upgrade, and since 3.04 an unpinned binary compares the schema with its
+// ledger (checkSchemaLedger). What is missing is refusing a hand change made
+// together with a rewrite of the ledger row, which the database being checked
+// cannot be trusted to say.
 func checkSchemaPin(r *Report) {
 	r.ran("schema fingerprint pinning")
 	if migrate.ExpectedFingerprint != "" {
 		return
 	}
 	r.add(Warning, "schema",
-		"this binary has no pinned schema fingerprint, so it accepts any database "+
-			"at the right version, including one that has been hand-patched",
+		"this binary has no pinned schema fingerprint, so it compares the schema only "+
+			"with the ledger in the same database, and accepts a hand-patched database "+
+			"whose ledger row was rewritten along with it",
 		"Build with the fingerprint pinned: `scripts/build-release.sh`, or pass "+
 			"--build-arg SIGNARI_SCHEMA_FINGERPRINT=\"$(scripts/schema-fingerprint.sh)\" "+
-			"to docker build. The version counter still gates upgrades either way; "+
-			"what is missing is noticing drift within a version, which is what the "+
-			"fingerprint is for.")
+			"to docker build. The version counter and the ledger comparison gate an "+
+			"unpinned binary either way.")
+}
+
+// checkTenantIsolation names every organisation-scoped table without row-level
+// security, or with it and not forced on its owner (3.26). The views the
+// console reads run as that owner, so a table that is not forced returns every
+// organisation's rows to every console request.
+func checkTenantIsolation(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("tenant isolation")
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core' AND c.relkind IN ('r', 'p')
+		  AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+		              WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND NOT a.attisdropped)
+		  AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+		ORDER BY 1`)
+	if err != nil {
+		return err
+	}
+	open, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if len(open) > 0 {
+		r.add(Critical, "tenancy",
+			fmt.Sprintf("%d organisation-scoped table(s) without forced row-level security: %s",
+				len(open), strings.Join(open, ", ")),
+			"ALTER TABLE core.<table> ENABLE ROW LEVEL SECURITY, then FORCE ROW LEVEL SECURITY. "+
+				"Until then the console's views return every organisation's rows from them.")
+	}
+	return nil
+}
+
+// checkJanitorBacklog reports work the janitor should have done and has not
+// (3.26). It sweeps every minute; sessions past their end by more than an
+// hour, or codes kept a day past their retention, mean no node has run it.
+// Read from the database, because the janitor runs in `serve` and doctor is
+// another process.
+func checkJanitorBacklog(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("janitor backlog")
+	var sessions, codes int
+	if err := conn.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.sessions
+		         WHERE revoked_at IS NULL AND not_after <= now() - interval '1 hour'),
+		       (SELECT count(*) FROM core.authorization_codes
+		         WHERE expires_at < now() - interval '2 days')`).Scan(&sessions, &codes); err != nil {
+		return err
+	}
+	if sessions > 0 || codes > 0 {
+		r.add(Warning, "janitor",
+			fmt.Sprintf("%d session(s) ended more than an hour ago are still marked live, and %d "+
+				"authorization code(s) are a day past their retention: the janitor has not run",
+				sessions, codes),
+			"It runs inside `serve`, every minute, on whichever node holds its lock. Check that a "+
+				"node is serving; `signari janitor once` runs a pass by hand.")
+	}
+	return nil
+}
+
+// checkGrowth names the largest tables (3.26), so a table growing without
+// bound is seen before the disk is full. The audit trail grows by design
+// until it can be archived; the others should not.
+func checkGrowth(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("table growth")
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname || ' ' || pg_catalog.pg_size_pretty(pg_catalog.pg_total_relation_size(c.oid))
+		FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'core' AND c.relkind = 'r'
+		ORDER BY pg_catalog.pg_total_relation_size(c.oid) DESC LIMIT 3`)
+	if err != nil {
+		return err
+	}
+	largest, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	if len(largest) > 0 {
+		r.add(Info, "database", "largest tables: "+strings.Join(largest, ", "), "")
+	}
+	return nil
+}
+
+// checkServerVersion says when PostgreSQL is a major this release was not
+// tested on (3.28). One older than it runs on is refused by `verify` and
+// `migrate` before this is reached.
+func checkServerVersion(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("PostgreSQL version")
+	major, err := migrate.ServerMajor(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if major < migrate.MinServerMajor {
+		r.add(Critical, "database", fmt.Sprintf("PostgreSQL %d is older than %d, the oldest this "+
+			"release runs on", major, migrate.MinServerMajor), "Upgrade the database first.")
+	} else if !migrate.Tested(major) {
+		r.add(Warning, "database", fmt.Sprintf("PostgreSQL %d is not one this release was tested "+
+			"on (%v)", major, migrate.TestedServerMajors),
+			"It is new enough to run; run the release's own checks against a copy before "+
+				"relying on it.")
+	}
+	return nil
+}
+
+// checkAuditChain says whether the audit trail verifies, judged as an export
+// judges it (3.21). Nothing reported a broken chain until somebody exported
+// the trail, which is when it is already needed as evidence.
+func checkAuditChain(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("audit chain")
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	s, err := audit.JudgeChain(ctx, tx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case s.HeadFailure != "":
+		r.add(Critical, "audit",
+			fmt.Sprintf("the audit chain's hashes agree with each other but not with the signed head "+
+				"at entry %d: %s", s.BrokenAt, s.HeadFailure),
+			"The trail was rewritten and its hashes recomputed after that head was signed. Hold it "+
+				"against a head kept outside the database too: `signari audit verify -head @<file>`.")
+	case !s.Verified:
+		r.add(Critical, "audit",
+			fmt.Sprintf("the audit chain is broken at entry %d: a row was altered or removed, "+
+				"and no checkpoint covers it", s.BrokenAt),
+			"Do not declare a checkpoint to make this go away. Find what changed the row "+
+				"first: `signari audit verify` names the entry, and the entries around it "+
+				"say when.")
+	case s.Checkpoint != nil:
+		r.add(Info, "audit",
+			fmt.Sprintf("the audit chain verifies over %d entries since the checkpoint declared on %s; "+
+				"the %d before it are not asserted", s.Checked, s.Checkpoint.At.Format("2006-01-02"),
+				s.Checkpoint.SkippedEntries), "")
+	}
+
+	// Heads that stopped appearing (3.20). Removing every head and recomputing
+	// the chain leaves nothing to compare in the database; it leaves this.
+	interval, err := audit.HeadInterval(os.Getenv)
+	if err != nil {
+		r.add(Warning, "audit", err.Error(), "serve refuses to start on it too.")
+		return nil
+	}
+	age, since, ok, err := audit.HeadAge(ctx, tx, time.Now())
+	if err != nil {
+		return err
+	}
+	switch {
+	case since > 0 && !ok:
+		r.add(Warning, "audit",
+			fmt.Sprintf("no signed audit head exists, and the trail holds %d entries", since),
+			"serve's janitor signs one within a minute of starting, then every "+
+				"SIGNARI_AUDIT_HEAD_INTERVAL. If serve is running, its log says why signing failed; "+
+				"if every head was removed, compare with one kept outside the database.")
+	case since > 0 && age > 2*interval:
+		r.add(Warning, "audit",
+			fmt.Sprintf("the newest signed audit head is %s old, with %d entries written since",
+				age.Round(time.Minute), since),
+			"Heads are signed every SIGNARI_AUDIT_HEAD_INTERVAL by the node running the janitor; "+
+				"its log says why signing stopped.")
+	}
+	return nil
+}
+
+// checkQueryExecMode refuses the two query modes the engine does not work in
+// (3.06). They are the ones pgx's own documentation suggests for a proxy such
+// as PgBouncer, and they send parameters without the types the server
+// expects: run with either, the test suites fail on JSON written as bytes
+// ("invalid input syntax for type json") and on an empty identifier sent for
+// a uuid. The describe modes send typed parameters and pass.
+func checkQueryExecMode(conn *pgx.Conn, r *Report) {
+	r.ran("query mode")
+	switch mode := conn.Config().DefaultQueryExecMode; mode {
+	case pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol:
+		r.add(Critical, "database",
+			fmt.Sprintf("SIGNARI_DSN sets default_query_exec_mode=%s, in which the engine's queries "+
+				"fail: JSON it writes is refused as invalid and identifiers it sends empty are "+
+				"refused as uuids", mode),
+			"Behind a transaction-mode pooler use default_query_exec_mode=cache_describe, and "+
+				"connected directly leave it unset. See docs/connection-pooling.md.")
+	}
+}
+
+// checkSchemaLedger compares the live schema, tenant boundary included, with
+// the fingerprint the ledger recorded when the latest migration was applied.
+// A difference means something changed the schema by hand since, and `serve`
+// refuses to start on it; doctor says so before a restart finds out.
+func checkSchemaLedger(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("schema against its ledger")
+	c, err := migrate.CompareLedger(ctx, conn)
+	if err != nil {
+		return err
+	}
+	switch {
+	case c.Drifted():
+		r.add(Critical, "schema",
+			fmt.Sprintf("the live schema (%.12s) is not what migration %d recorded (%.12s): "+
+				"a table, policy, view, grant, function or trigger has been changed by hand "+
+				"since, and `serve` refuses to start on it", c.Live, c.Version, c.Recorded),
+			"Find the change by comparing `pg_dump --schema-only` of this database with one "+
+				"of a database freshly migrated to the same version, and undo it. Changing the "+
+				"ledger row to match instead would make the drift the new normal.")
+	case !c.Comparable:
+		r.add(Warning, "schema",
+			"the schema cannot be compared with its ledger: "+c.Reason,
+			"Run `signari migrate up` if a migration is pending. After a PostgreSQL "+
+				"upgrade there is nothing to do: the next migration records a fingerprint "+
+				"that can be compared.")
+	}
+	return nil
 }
 
 // checkTheme reports whether an operator's page overrides are actually in force.

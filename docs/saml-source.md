@@ -18,7 +18,9 @@ metadata    : <issuer>/saml/source/corp/metadata
 
 Give the upstream the **metadata URL** rather than typing the entity ID and ACS
 URL into its console by hand. A mistyped audience produces an assertion this
-engine refuses correctly and unhelpfully.
+engine refuses correctly and unhelpfully. The same goes the other way: an upstream
+that publishes metadata can be [registered from it](saml-metadata.md), and read
+again when its key rotates.
 
 
 ## Consuming an assertion is a security boundary
@@ -36,6 +38,13 @@ implementation.
 | `Audience` | same, stated by the issuer rather than the transport |
 | `NotBefore` / `NotOnOrAfter` | otherwise it is a permanent credential |
 | assertion ID | a valid assertion must work **once** |
+
+An assertion's audience and timing say who it is for and when. What says it may be
+presented here is a bearer `SubjectConfirmation` naming this ACS as its `Recipient`,
+with a `NotOnOrAfter` that has not passed. Every confirmation is tried, since an
+assertion may carry one per recipient, and one that fits is required: an assertion
+whose only confirmation names another service provider's ACS is refused, as is one
+with no `Recipient` at all.
 
 ## No email matching, at any setting
 
@@ -56,6 +65,16 @@ signed assertion hidden inside Extensions          refused
 forged assertion nested inside the signed one      refused
 duplicate IDs                                      refused
 ```
+
+### Where a signature may be
+
+The response, the assertion, or both, each signature a direct child of the element it
+covers and naming that element's ID. When both are signed, both must verify: a response
+the provider signed around an assertion somebody else signed is refused. Any other
+signature in the document, wherever it is, refuses the whole document. Many providers sign
+both levels when told to sign the response and the assertion. Until November 2026 the two
+were counted together and every such response was refused, which a sign-in through a
+public test provider found.
 
 The test runs each **twice** — once normally, once with the outermost guard
 switched off — because a layered defence claimed in a comment is not a layered
@@ -125,15 +144,105 @@ This is safe to default on **only because** the address is never used to find or
 match an account. It is recorded, displayed, used for notifications. The vector
 that makes email trust dangerous elsewhere is closed one level up.
 
-## Not yet
+## This deployment's keys toward an upstream
 
-- **Encrypted assertions.** Refused with a message saying so, rather than
-  silently ignored. The decryption side of `internal/saml/encrypt.go` exists for
-  the outbound direction; wiring it here is the next piece.
-- **Signed AuthnRequests.** Most upstreams do not require them, and the security
-  of this flow rests on verifying the response.
-- **SAML single logout as a source.** Sessions here end normally; the upstream
-  is not notified.
+Each upstream gets keys of its own, kept apart from the keys that sign tokens, so
+one partner's certificate is nobody else's. They are made here and sealed under
+the root key, and only the certificate ever leaves:
 
-Each is absent from the metadata document as well as from the code — a
+```sh
+signari idp saml-key -slug corp -purpose signing
+signari idp saml-use -slug corp -sign-requests=true
+```
+
+The certificate is in the upstream's metadata at `/saml/source/corp/metadata`,
+with `AuthnRequestsSigned` saying what the upstream can expect, and in the answer
+to `idp saml-key`. Give the certificate to the upstream first and turn signing on
+second: a provider that verifies requests refuses any it has no certificate for.
+
+To rotate, make a second key. The newest signs, the older stays in the metadata
+until it is retired with `signari idp saml-key -slug corp -retire <id>`, and a key
+the upstream is held to cannot be retired while it is the last one. Neither setting
+can be turned on with no key to do it with. A signature is over the HTTP-Redirect
+query as it is sent, so it verifies however the upstream's URL was written, and the
+signing is with RSA-SHA256, which is what a provider that insists on signed requests
+can be counted on to take.
+
+## Encrypted assertions
+
+An upstream that encrypts needs a key to encrypt to:
+
+```sh
+signari idp saml-key -slug corp -purpose encryption
+signari idp saml-use -slug corp -require-encryption=true
+```
+
+The certificate is in the metadata with `use="encryption"` and the algorithms taken
+here. Any live key opens an assertion, so an upstream can move to a new certificate
+in its own time, and until `-require-encryption` is on a plain assertion is still
+taken, which is how a change of this kind is rolled out without an outage.
+`EncryptedAssertion`, `EncryptedID` and `EncryptedAttribute` are all read, the last as
+the attribute it holds. An assertion carrying an encrypted attribute or NameID is
+refused, not read without it, when no key is configured: an address dropped quietly
+would match the person on less than the upstream sent.
+
+| | |
+|---|---|
+| Key transport | RSA-OAEP, as `rsa-oaep-mgf1p` or `rsa-oaep`, with SHA-1 or SHA-256 |
+| Refused outright | RSA PKCS#1 v1.5. It is an oracle on the key itself, and no signature over one document changes what the key does for whoever sends it another |
+| Data | AES-128-GCM and AES-256-GCM |
+| Only behind a signature | AES-128-CBC and AES-256-CBC |
+
+CBC is what this deployment refuses to send and takes on one condition. The attack
+on it needs a receiver that decrypts what an attacker has altered and lets it be
+seen what became of it, and nothing can alter what a verified signature covers. So
+a signature over the ciphertext, which means on the response, is checked before a
+byte is decrypted, and CBC with no such signature is refused and says so. An
+encrypted NameID sits inside the assertion, whose signature is checked first in any
+case. Encrypting to a public key says nothing about who wrote the assertion, so one
+that is signed by nothing is refused as a plain one would be.
+
+What decrypts is a document from outside like any other: the same scan for DTDs and
+entities, one `Assertion` and nothing else, and every check of the assertion after
+that. A second assertion, whether inside the ciphertext or beside it, is refused.
+
+## Single logout with an upstream
+
+With a logout address, read from the upstream's metadata or set with
+`signari idp logout -slug corp -url <its SingleLogoutService>`, and a signing key,
+logout goes both ways on the HTTP-Redirect binding. The metadata offers
+`/saml/source/corp/slo` once both are there, and not before: a logout has to be signed.
+
+A sign-out here ends the session here first and then sends the browser to the
+upstream with a signed `LogoutRequest` carrying the NameID and SessionIndex its
+assertion did, kept sealed in the browser since a request with anything else ends
+nothing. The upstream's answer brings the browser back to where it was going. With no
+signing key the sign-out stops here, and the session here has ended all the same.
+
+A `LogoutRequest` from the upstream has to be signed with the certificate registered
+for it, on the HTTP-Redirect or HTTP-POST binding, and is heard once. It ends every
+session here of the person it names that came through a provider: no record is kept
+that could match its SessionIndex to one of them, the upstream signed them all in, and
+it has said they are signed out. A name nobody here is linked to is answered with
+success, that being the state it asked for. The answer is signed and goes back by
+redirect.
+
+### With no browser
+
+An upstream that ends a session on its side by itself, because an administrator ended
+it, it expired or the person was deactivated, can say so over the SOAP binding: a
+signed `LogoutRequest` in a SOAP 1.1 envelope posted to `/saml/source/corp/slo/soap`,
+which the metadata always offers, since it needs nothing of this deployment's. It is
+held to everything the redirect binding's request is (the upstream's signature, never
+optional; heard once; the Destination, when it names one) and ends the same sessions.
+The `LogoutResponse` goes back on the same connection, signed when a signing key is
+held here and unsigned when none is, the logout having happened either way. A request
+refused is answered with a SOAP fault.
+
+## What is not done
+
+A logout address that takes only HTTP-POST is left out, with a note: a sign-out from
+here reaches an upstream as a redirect.
+
+It is absent from the metadata document as well as from the code — a
 capability advertised and not implemented is the failure this project sweeps for.

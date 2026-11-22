@@ -27,12 +27,16 @@
 package config
 
 import (
-	"net/url"
-
 	"fmt"
 	"signari.dev/engine/internal/clients"
+	"signari.dev/engine/internal/proxyrules"
+	"signari.dev/engine/internal/radius"
+	"signari.dev/engine/internal/saml"
+	"signari.dev/engine/internal/store"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +50,73 @@ type File struct {
 	Clients       []Client       `yaml:"clients"`
 	SAMLProviders []SAMLProvider `yaml:"saml_providers"`
 	RADIUSClients []RADIUSClient `yaml:"radius_clients"`
+	ProxyHosts    []ProxyHost    `yaml:"proxy_hosts"`
+
+	// The kinds in sections.go (6.19).
+	Scopes     []Scope     `yaml:"scopes,omitempty"`
+	Attributes []Attribute `yaml:"attributes,omitempty"`
+	Resources  []Resource  `yaml:"resources,omitempty"`
+	Signup     *Signup     `yaml:"signup,omitempty"`
+
+	ClaimMappers []ClaimMapper `yaml:"claim_mappers,omitempty"`
+	// AccessPolicy and SignInFlow are documents, kept as the text they were
+	// written in; absent leaves the one in force.
+	AccessPolicy *string  `yaml:"access_policy,omitempty"`
+	SignInFlow   *string  `yaml:"sign_in_flow,omitempty"`
+	Prompts      []Prompt `yaml:"prompts,omitempty"`
+
+	// The settings that are one each (settingskinds.go); absent leaves them.
+	Registration   *Registration   `yaml:"registration,omitempty"`
+	WebAuthnPolicy *WebAuthnPolicy `yaml:"webauthn_policy,omitempty"`
+	UMA            *UMA            `yaml:"uma,omitempty"`
+	Brand          *Brand          `yaml:"brand,omitempty"`
+	Messages       []Message       `yaml:"messages,omitempty"`
+
+	// What is told of group membership (releasekinds.go).
+	GroupReleases        []GroupRelease        `yaml:"group_releases,omitempty"`
+	RADIUSAuthorizations []RADIUSAuthorization `yaml:"radius_authorizations,omitempty"`
+
+	// The kinds whose material is public (publickinds.go).
+	DetailTypes []DetailType `yaml:"authorization_detail_types,omitempty"`
+	Attesters   []Attester   `yaml:"client_attesters,omitempty"`
+	Credentials []Credential `yaml:"credential_configurations,omitempty"`
+	ProofRoots  []ProofRoot  `yaml:"credential_proof_roots,omitempty"`
+
+	// The services an external_factor stage may ask (publickinds.go).
+	ExternalFactors []ExternalFactor `yaml:"external_factors,omitempty"`
+
+	// The kinds holding a secret, which the file names by reference or the
+	// engine mints (secrets.go).
+	Providers         []Provider         `yaml:"providers,omitempty"`
+	Subscriptions     []Subscription     `yaml:"event_subscriptions,omitempty"`
+	SCIMTargets       []SCIMTarget       `yaml:"scim_targets,omitempty"`
+	RACConnections    []RACConnection    `yaml:"rac_connections,omitempty"`
+	IdentityProviders []IdentityProvider `yaml:"identity_providers,omitempty"`
+	DirectorySources  []DirectorySource  `yaml:"directory_sources,omitempty"`
+	Duo               *Duo               `yaml:"duo,omitempty"`
+	MigrationSource   *MigrationSource   `yaml:"migration_source,omitempty"`
+
+	// The rest (tokenkinds.go): outposts and SCIM sources, whose tokens are
+	// minted, Shared Signals, and the authorization model as its text.
+	Outposts           []Outpost    `yaml:"outposts,omitempty"`
+	SCIMSources        []SCIMSource `yaml:"scim_sources,omitempty"`
+	SSFStreams         []SSFStream  `yaml:"ssf_streams,omitempty"`
+	SSFSources         []SSFSource  `yaml:"ssf_sources,omitempty"`
+	AuthorizationModel *string      `yaml:"authorization_model,omitempty"`
+}
+
+// ProxyHost is an application protected by forward authentication.
+type ProxyHost struct {
+	Host    string `yaml:"host"`
+	Enabled *bool  `yaml:"enabled"`
+	// ReleaseGroups and SignedIdentity keep what the host has when left out.
+	ReleaseGroups  *[]string `yaml:"release_groups,omitempty"`
+	SignedIdentity *bool     `yaml:"signed_identity,omitempty"`
+	// Rules keep what the host has when left out, and an empty list clears them.
+	Rules *[]proxyrules.Rule `yaml:"rules,omitempty"`
+	// CookieDomain and OwnCookie say where its proxy cookie lives, kept when left out.
+	CookieDomain *string `yaml:"cookie_domain,omitempty"`
+	OwnCookie    *bool   `yaml:"own_cookie,omitempty"`
 }
 
 // Group is a group of people.
@@ -53,6 +124,99 @@ type Group struct {
 	Name        string `yaml:"name"`
 	DisplayName string `yaml:"display_name"`
 	Description string `yaml:"description"`
+	// MemberOf is the groups this one is inside (11.09), the file's or the
+	// organisation's, so everybody in it is in those and every group above them.
+	// Left out, what the group is inside is left as it is; empty takes it out of
+	// all of them. A loop among them is refused.
+	MemberOf *[]string `yaml:"member_of,omitempty"`
+}
+
+// nestingLoop is a path of names that comes back to where it started through the
+// file's member_of, or nil when there is none. Depth first, in the file's order, so
+// the loop named is the same on every run.
+func nestingLoop(groups []Group) []string {
+	parents := map[string][]string{}
+	for _, g := range groups {
+		parents[g.Name] = g.memberOf()
+	}
+	const (
+		unseen = iota
+		onPath
+		done
+	)
+	state := map[string]int{}
+	var path []string
+	var visit func(string) []string
+	visit = func(name string) []string {
+		switch state[name] {
+		case onPath:
+			for i, n := range path {
+				if n == name {
+					return append(append([]string{}, path[i:]...), name)
+				}
+			}
+		case done:
+			return nil
+		}
+		state[name] = onPath
+		path = append(path, name)
+		for _, p := range parents[name] {
+			if loop := visit(p); loop != nil {
+				return loop
+			}
+		}
+		path = path[:len(path)-1]
+		state[name] = done
+		return nil
+	}
+	for _, g := range groups {
+		if loop := visit(g.Name); loop != nil {
+			return loop
+		}
+	}
+	return nil
+}
+
+// insideThroughFile is every group name reachable upward from name by the file's
+// member_of, without name itself, sorted. A group the file says nothing about ends the
+// walk there: what it is inside already, the database answers for.
+func insideThroughFile(groups []Group, name string) []string {
+	parents := map[string][]string{}
+	for _, g := range groups {
+		parents[g.Name] = g.memberOf()
+	}
+	seen := map[string]bool{name: true}
+	var out []string
+	queue := append([]string{}, parents[name]...)
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+		queue = append(queue, parents[n]...)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// memberOf is what the file says the group is inside, nil when it says nothing.
+func (g Group) memberOf() []string {
+	if g.MemberOf == nil {
+		return nil
+	}
+	return *g.MemberOf
+}
+
+// shownAs is the group's display name, its name when the file gives none, as
+// `signari group create` names one (0.34).
+func (g Group) shownAs() string {
+	if g.DisplayName == "" {
+		return g.Name
+	}
+	return g.DisplayName
 }
 
 // Client is an OAuth/OIDC application.
@@ -66,6 +230,93 @@ type Client struct {
 	LogoURL      string   `yaml:"logo_url"`
 	PortalHidden bool     `yaml:"portal_hidden"`
 	Enabled      *bool    `yaml:"enabled"`
+	// LocalizedNames is the client's name in other languages by BCP 47 tag (10.12),
+	// RFC 7591's client_name#<tag>, shown to a person who asks for that language;
+	// name is shown to everybody else. Absent leaves them; {} takes them all away.
+	LocalizedNames *map[string]string `yaml:"localized_names,omitempty"`
+	// TokenExchange grants RFC 8693 token exchange. Absent leaves the client's
+	// current permission alone, as an omitted `enabled` does.
+	TokenExchange *TokenExchange `yaml:"token_exchange"`
+	// The sign-out registration. Each left alone when absent; an empty list or
+	// string clears it.
+	PostLogoutRedirectURIs      *[]string `yaml:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI       *string   `yaml:"frontchannel_logout_uri"`
+	FrontchannelSessionRequired *bool     `yaml:"frontchannel_logout_session_required"`
+	// Token lifetimes, as Go durations ("10m", "720h"). Each left alone when
+	// absent, as `client set-lifetimes` leaves the one it is not given.
+	AccessTokenTTL  *time.Duration `yaml:"access_token_ttl"`
+	RefreshTokenTTL *time.Duration `yaml:"refresh_token_ttl"`
+	// IDTokenAlg signs the client's ID and access tokens; absent leaves it.
+	IDTokenAlg *string `yaml:"id_token_signed_response_alg"`
+	// AccessTokenAlg signs its access tokens alone, "" going back to the above.
+	AccessTokenAlg *string `yaml:"access_token_signed_response_alg"`
+	// AuthorizationResponseAlg signs its authorization responses and holds it to
+	// asking for them signed; "" lets go of both, absent leaves it.
+	AuthorizationResponseAlg *string `yaml:"authorization_signed_response_alg"`
+	// UserinfoSignedAlg signs its userinfo responses; "" goes back to JSON.
+	UserinfoSignedAlg *string `yaml:"userinfo_signed_response_alg"`
+	// IntrospectionSignedAlg signs an introspection answer it asks for as a JWT.
+	IntrospectionSignedAlg *string `yaml:"introspection_signed_response_alg"`
+	// What is encrypted to it, each needing a key it has registered already. An alg
+	// alone comes with the default enc, "" turns it off, and absent leaves it.
+	IDTokenEncryptedAlg       *string `yaml:"id_token_encrypted_response_alg"`
+	IDTokenEncryptedEnc       *string `yaml:"id_token_encrypted_response_enc"`
+	UserinfoEncryptedAlg      *string `yaml:"userinfo_encrypted_response_alg"`
+	UserinfoEncryptedEnc      *string `yaml:"userinfo_encrypted_response_enc"`
+	AuthorizationEncryptedAlg *string `yaml:"authorization_encrypted_response_alg"`
+	AuthorizationEncryptedEnc *string `yaml:"authorization_encrypted_response_enc"`
+	IntrospectionEncryptedAlg *string `yaml:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedEnc *string `yaml:"introspection_encrypted_response_enc"`
+	// RolesClaim is the claim its tokens carry a person's roles in the application
+	// under, "" for none; absent leaves it.
+	RolesClaim *string `yaml:"roles_claim"`
+	// LoginUI is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; empty for this server's page.
+	LoginUI *string `yaml:"login_ui_url"`
+	// AccessTokenFormat is jwt, or opaque for a handle a resource server
+	// introspects; absent leaves it.
+	AccessTokenFormat *string `yaml:"access_token_format"`
+	// SubjectType is public, or pairwise for a subject that means nothing outside
+	// Sector, the host name of the clients that share one; each absent leaves it.
+	SubjectType *string `yaml:"subject_type"`
+	Sector      *string `yaml:"sector"`
+	// SecurityProfile is none, or fapi2 to hold the client to that profile; absent
+	// leaves it.
+	SecurityProfile *string `yaml:"security_profile"`
+	// RequirePAR and FirstParty are the switches; each absent leaves it.
+	RequirePAR           *bool `yaml:"require_pushed_authorization_requests"`
+	RequireSignedRequest *bool `yaml:"require_signed_request_object"`
+	RequireState         *bool `yaml:"require_state"`
+	FirstParty           *bool `yaml:"first_party"`
+	// IssuerAlias pins the client to a legacy issuer the instance claims;
+	// empty clears it, absent leaves it.
+	IssuerAlias *string `yaml:"issuer_alias"`
+	// MinimumACR is the weakest authentication the client accepts, "1" to
+	// "4" (oauth.Meets); absent leaves it.
+	MinimumACR *string `yaml:"minimum_acr"`
+}
+
+// settings is the client's part for store.SetClientSettings.
+func (c Client) settings() store.ClientSettings {
+	return store.ClientSettings{AccessTokenTTL: c.AccessTokenTTL, RefreshTokenTTL: c.RefreshTokenTTL,
+		IDTokenAlg: c.IDTokenAlg, AccessTokenAlg: c.AccessTokenAlg, AuthorizationResponseAlg: c.AuthorizationResponseAlg,
+		UserinfoSignedAlg: c.UserinfoSignedAlg, IDTokenEncryptedAlg: c.IDTokenEncryptedAlg,
+		IDTokenEncryptedEnc: c.IDTokenEncryptedEnc, UserinfoEncryptedAlg: c.UserinfoEncryptedAlg,
+		UserinfoEncryptedEnc: c.UserinfoEncryptedEnc, AuthorizationEncryptedAlg: c.AuthorizationEncryptedAlg,
+		AuthorizationEncryptedEnc: c.AuthorizationEncryptedEnc, IntrospectionSignedAlg: c.IntrospectionSignedAlg,
+		IntrospectionEncryptedAlg: c.IntrospectionEncryptedAlg, IntrospectionEncryptedEnc: c.IntrospectionEncryptedEnc,
+		RolesClaim: c.RolesClaim, LoginUI: c.LoginUI,
+		AccessTokenFormat: c.AccessTokenFormat, SubjectType: c.SubjectType, Sector: c.Sector,
+		SecurityProfile: c.SecurityProfile, RequirePAR: c.RequirePAR, RequireSignedRequest: c.RequireSignedRequest,
+		RequireState: c.RequireState, FirstParty: c.FirstParty,
+		IssuerAlias: c.IssuerAlias, MinimumACR: c.MinimumACR}
+}
+
+// TokenExchange is whether a client may exchange tokens, and for which
+// audiences besides itself.
+type TokenExchange struct {
+	Enabled   bool     `yaml:"enabled"`
+	Audiences []string `yaml:"audiences"`
 }
 
 // SAMLProvider is a SAML service provider.
@@ -75,6 +326,23 @@ type SAMLProvider struct {
 	ACSURLs  []string `yaml:"acs_urls"`
 	NameID   string   `yaml:"name_id_format"`
 	Enabled  *bool    `yaml:"enabled"`
+	// ArtifactACSURLs take the response by artifact (HTTP-Artifact), never by default.
+	ArtifactACSURLs []string `yaml:"artifact_acs_urls,omitempty"`
+	// ECPACSURLs are PAOS endpoints, which make the provider one that takes ECP sign-ins.
+	ECPACSURLs []string `yaml:"ecp_acs_urls,omitempty"`
+	// ArtifactResolution is where it resolves the artifacts it sends requests by,
+	// each by the index an artifact names.
+	ArtifactResolution []ArtifactResolutionService `yaml:"artifact_resolution,omitempty"`
+	// IdPInitiated lets a sign-in to it start from the portal and DefaultRelayState
+	// is what goes with that response, each left as it is when absent.
+	IdPInitiated      *bool   `yaml:"idp_initiated,omitempty"`
+	DefaultRelayState *string `yaml:"default_relay_state,omitempty"`
+}
+
+// ArtifactResolutionService is one place a service provider resolves its artifacts.
+type ArtifactResolutionService struct {
+	Index int    `yaml:"index"`
+	URL   string `yaml:"url"`
 }
 
 // RADIUSClient is a network device permitted to ask.
@@ -126,6 +394,24 @@ func (f *File) Validate() error {
 			add("groups[%d]: %q appears twice", i, g.Name)
 		}
 		seenGroup[g.Name] = true
+		seenParent := map[string]bool{}
+		for _, parent := range g.memberOf() {
+			switch {
+			case parent == "":
+				add("groups[%d]: member_of names a group with no name", i)
+			case parent == g.Name:
+				add("groups[%d]: %q is in its own member_of; a group cannot be inside itself", i, g.Name)
+			case seenParent[parent]:
+				add("groups[%d]: member_of names %q twice", i, parent)
+			}
+			seenParent[parent] = true
+		}
+	}
+	// A loop among the file's own nestings is refused here, where `signari plan`
+	// in CI sees it with no database; one closed through the organisation's
+	// existing nestings is refused by the database when the file is applied.
+	if loop := nestingLoop(f.Groups); loop != nil {
+		add("groups: member_of makes a loop, %s: each would be inside itself", strings.Join(loop, " -> "))
 	}
 
 	seenClient := map[string]bool{}
@@ -139,6 +425,12 @@ func (f *File) Validate() error {
 		}
 		seenClient[c.ClientID] = true
 
+		if c.LocalizedNames != nil {
+			if _, err := store.NormaliseClientNames(*c.LocalizedNames); err != nil {
+				add("clients[%s]: localized_names: %v", c.ClientID, err)
+			}
+		}
+
 		if len(c.RedirectURIs) == 0 {
 			add("clients[%s]: at least one redirect_uri is required", c.ClientID)
 		}
@@ -147,7 +439,9 @@ func (f *File) Validate() error {
 				add("clients[%s]: %s", c.ClientID, err.Error())
 			}
 		}
-		if c.LaunchURL != "" && !secureURL(c.LaunchURL) {
+		// Redirect URIs go to clients.ValidateRedirectURI; launch URLs to the
+		// rule the client PATCH applies too.
+		if c.LaunchURL != "" && !clients.SecureLaunchURL(c.LaunchURL) {
 			add("clients[%s]: launch_url must be https", c.ClientID)
 		}
 		if c.LogoURL != "" && !strings.HasPrefix(c.LogoURL, "https://") {
@@ -156,6 +450,33 @@ func (f *File) Validate() error {
 		if c.PortalHidden && c.LaunchURL != "" {
 			add("clients[%s]: portal_hidden and launch_url contradict each other",
 				c.ClientID)
+		}
+		if c.PostLogoutRedirectURIs != nil {
+			for _, u := range *c.PostLogoutRedirectURIs {
+				if err := clients.ValidateRedirectURI(u); err != nil {
+					add("clients[%s]: post_logout_redirect_uri: %s", c.ClientID, err.Error())
+				}
+			}
+		}
+		if u := c.FrontchannelLogoutURI; u != nil && *u != "" &&
+			(!strings.HasPrefix(*u, "https://") || strings.Contains(*u, "#")) {
+			add("clients[%s]: frontchannel_logout_uri must be https with no fragment", c.ClientID)
+		}
+		if x := c.TokenExchange; x != nil {
+			if x.Enabled && c.Public {
+				add("clients[%s]: token_exchange needs a confidential client; a public "+
+					"client cannot prove it is the one the permission was granted to", c.ClientID)
+			}
+			if !x.Enabled && len(x.Audiences) > 0 {
+				add("clients[%s]: token_exchange lists audiences but is not enabled, "+
+					"so they would grant nothing", c.ClientID)
+			}
+			if _, err := store.CleanExchangeAudiences(x.Audiences); err != nil {
+				add("clients[%s]: token_exchange: %s", c.ClientID, err.Error())
+			}
+		}
+		if err := store.CheckClientSettings(c.settings()); err != nil {
+			add("clients[%s]: %s", c.ClientID, err.Error())
 		}
 	}
 
@@ -172,13 +493,44 @@ func (f *File) Validate() error {
 		if len(p.ACSURLs) == 0 {
 			add("saml_providers[%s]: at least one acs_url is required", p.EntityID)
 		}
+		if p.DefaultRelayState != nil && len(*p.DefaultRelayState) > saml.MaxRelayState {
+			add("saml_providers[%s]: default_relay_state is at most %d bytes", p.EntityID, saml.MaxRelayState)
+		}
+		posted := map[string]bool{}
 		for _, u := range p.ACSURLs {
+			posted[u] = true
+		}
+		for _, u := range slices.Concat(p.ACSURLs, p.ArtifactACSURLs, p.ECPACSURLs) {
 			if !strings.HasPrefix(u, "https://") {
 				add("saml_providers[%s]: acs_url %q must be https: it carries a "+
 					"signed assertion for a real user", p.EntityID, u)
 			}
 			if strings.Contains(u, "*") {
 				add("saml_providers[%s]: acs_url %q contains a wildcard", p.EntityID, u)
+			}
+		}
+		for _, u := range slices.Concat(p.ArtifactACSURLs, p.ECPACSURLs) {
+			if posted[u] {
+				add("saml_providers[%s]: %q is given for more than one binding; a URL takes one", p.EntityID, u)
+			}
+			posted[u] = true
+		}
+		indexes := map[int]bool{}
+		for _, a := range p.ArtifactResolution {
+			switch {
+			case a.Index < 0 || a.Index > saml.MaxEndpointIndex:
+				add("saml_providers[%s]: artifact_resolution index %d is not one an artifact can name (0 to %d)",
+					p.EntityID, a.Index, saml.MaxEndpointIndex)
+			case indexes[a.Index]:
+				add("saml_providers[%s]: artifact_resolution index %d is given twice", p.EntityID, a.Index)
+			}
+			indexes[a.Index] = true
+			if !strings.HasPrefix(a.URL, "https://") {
+				add("saml_providers[%s]: artifact_resolution %q must be https: what it answers is believed "+
+					"for coming from there", p.EntityID, a.URL)
+			}
+			if strings.Contains(a.URL, "*") {
+				add("saml_providers[%s]: artifact_resolution %q contains a wildcard", p.EntityID, a.URL)
 			}
 		}
 		switch p.NameID {
@@ -201,6 +553,10 @@ func (f *File) Validate() error {
 		seenRadius[r.Name] = true
 		if r.Network == "" {
 			add("radius_clients[%s]: network is required", r.Name)
+		} else if _, err := radius.ClientNetwork(r.Network); err != nil {
+			// The rule `radius add-client` applies, an IPv4-mapped spelling of
+			// every address included.
+			add("radius_clients[%s]: network %v", r.Name, err)
 		}
 		if r.Secret != "" {
 			add("radius_clients[%s]: remove `secret`. A RADIUS shared secret in a "+
@@ -208,6 +564,45 @@ func (f *File) Validate() error {
 				"logs of anyone who forked it. Set it with `signari radius "+
 				"add-client` instead", r.Name)
 		}
+	}
+
+	seenHosts := map[string]bool{}
+	for i, h := range f.ProxyHosts {
+		host, err := store.NormaliseProxyHost(h.Host)
+		if err != nil {
+			add("proxy_hosts[%d]: %v", i, err)
+			continue
+		}
+		if host != h.Host {
+			// Written as stored, so the plan's diff and the file agree on what
+			// the host is called.
+			add("proxy_hosts[%d]: write %q as %q", i, h.Host, host)
+		}
+		if seenHosts[host] {
+			add("proxy_hosts[%d]: %q appears twice", i, host)
+		}
+		seenHosts[host] = true
+		if h.Rules != nil {
+			if err := proxyrules.Check(*h.Rules); err != nil {
+				add("proxy_hosts[%d]: %v", i, err)
+			}
+		}
+		if h.CookieDomain != nil || h.OwnCookie != nil {
+			domain, own := "", false
+			if h.CookieDomain != nil {
+				domain = *h.CookieDomain
+			}
+			if h.OwnCookie != nil {
+				own = *h.OwnCookie
+			}
+			if err := store.CheckProxyCookie(domain, own); err != nil {
+				add("proxy_hosts[%d]: %v", i, err)
+			}
+		}
+	}
+
+	for _, s := range sections {
+		s.validate(f, add)
 	}
 
 	if len(problems) > 0 {
@@ -219,46 +614,44 @@ func (f *File) Validate() error {
 	return nil
 }
 
-// secureURL reports whether a URL is https, or http on a loopback host.
-//
-// Parsed rather than prefix-matched. `strings.HasPrefix(u, "http://localhost")`
-// is true for `http://localhost.evil.com`, and `strings.HasPrefix(u, "https://")`
-// is true for `https://good.example@evil.example` -- a host that reads as one
-// name and resolves to another.
-//
-// Redirect URIs no longer come through here at all; they go to
-// clients.ValidateRedirectURI. This remains for launch and logo URLs, where the
-// same two mistakes are less dangerous and still wrong.
-func secureURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || u.User != nil {
-		return false
-	}
-	switch u.Scheme {
-	case "https":
-		return u.Host != ""
-	case "http":
-		h := u.Hostname()
-		return h == "localhost" || h == "127.0.0.1" || h == "::1"
-	}
-	return false
-}
-
 // Change is one difference between the file and the deployment.
 type Change struct {
 	Action string // create, update, delete
-	Kind   string // group, client, saml_provider, radius_client
+	Kind   string // group, client, saml_provider, radius_client, proxy_host
 	Name   string
 	Detail string
 	// Destructive marks a change that removes something.
 	Destructive bool
+	// Inside is, for a group the file puts inside others, every group it will be
+	// inside by the file's member_of, at any depth. A caller deciding whether the
+	// change grants what one of those groups grants -- impersonation -- asks of
+	// each, and the database answers for whatever is above them already.
+	Inside []string
 }
 
 // Plan is everything that would change.
-type Plan struct{ Changes []Change }
+type Plan struct {
+	Changes []Change
+	// Minted is filled by Apply: the secrets it made for what it created.
+	Minted []Minted
+
+	// opts are the plan's, so it is applied with what it was computed with.
+	opts Options
+}
 
 // Add records a change.
 func (p *Plan) Add(c Change) { p.Changes = append(p.Changes, c) }
+
+// planned answers whether the plan changes the thing of that kind and name,
+// and how.
+func (p *Plan) planned(kind, name string) (Change, bool) {
+	for _, c := range p.Changes {
+		if c.Kind == kind && c.Name == name {
+			return c, true
+		}
+	}
+	return Change{}, false
+}
 
 // Empty reports whether the deployment already matches.
 func (p *Plan) Empty() bool { return len(p.Changes) == 0 }

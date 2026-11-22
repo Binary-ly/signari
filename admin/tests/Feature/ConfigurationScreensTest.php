@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Services\SignariSignIn;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Concerns\SeedsEngineState;
 use Tests\TestCase;
 
 /**
@@ -31,6 +33,8 @@ use Tests\TestCase;
  */
 class ConfigurationScreensTest extends TestCase
 {
+    use SeedsEngineState;
+
     private array $createdUserIds = [];
 
     /** Every configuration screen this test covers. */
@@ -42,6 +46,8 @@ class ConfigurationScreensTest extends TestCase
         '/admin/admin-tokens',
         '/admin/radius-clients',
         '/admin/access-policies',
+        '/admin/relations',
+        '/admin/authorization-models',
     ];
 
     protected function tearDown(): void
@@ -49,6 +55,7 @@ class ConfigurationScreensTest extends TestCase
         if ($this->createdUserIds !== []) {
             User::whereIn('id', $this->createdUserIds)->delete();
         }
+        $this->removePlantedEngineState();
 
         parent::tearDown();
     }
@@ -60,7 +67,7 @@ class ConfigurationScreensTest extends TestCase
         $user->email = 'cfg-'.Str::random(10).'@example.test';
         $user->password = bcrypt('irrelevant');
         $user->org_id = $orgId;
-        $user->save();
+        $this->enrol($user)->save();
 
         $this->createdUserIds[] = $user->id;
 
@@ -68,41 +75,33 @@ class ConfigurationScreensTest extends TestCase
     }
 
     /**
-     * An organisation that actually has some of this configuration, so the
-     * screens are exercised with rows rather than empty states.
+     * An organisation planted with configuration, so the screens are exercised
+     * with rows rather than empty states. Returns [org id, SAML entity id].
      *
-     * Found by asking each organisation in turn THROUGH the scoped view, because
-     * the console role has no privilege on schema `core` at all (ADR-004) — the
-     * first version of this helper queried core.saml_providers directly and was
-     * refused by the database, which is the boundary doing its job.
+     * The SAML provider is read back THROUGH the scoped view: the console role
+     * has no privilege on schema `core` at all (ADR-004).
      */
-    private function orgWithConfiguration(): string
+    private function orgWithConfiguration(): array
     {
-        $orgs = DB::select('SELECT id::text AS id FROM core_v1.organizations');
+        $org = $this->plantOrganisation();
+        $entityId = $this->plantSAMLProvider($org);
+        $this->plantClient($org);
+        $this->plantAdminToken($org);
 
-        if ($orgs === []) {
-            $this->markTestSkipped('no organisation in this database');
-        }
+        $visible = DB::transaction(function () use ($org) {
+            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
 
-        foreach ($orgs as $org) {
-            $found = DB::transaction(function () use ($org) {
-                DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org->id]);
+            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
+        });
+        $this->assertSame($entityId, $visible?->entity_id);
 
-                return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-            });
-
-            if ($found !== null) {
-                return $org->id;
-            }
-        }
-
-        // None has SAML configured; the render tests are still worth running.
-        return $orgs[0]->id;
+        return [$org, $entityId];
     }
 
     public function test_every_configuration_screen_renders(): void
     {
-        $operator = $this->operatorFor($this->orgWithConfiguration());
+        [$org] = $this->orgWithConfiguration();
+        $operator = $this->operatorFor($org);
 
         foreach (self::SCREENS as $screen) {
             $this->actingAs($operator)->get($screen)->assertOk();
@@ -117,43 +116,36 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_the_saml_screen_shows_a_real_provider(): void
     {
-        $org = $this->orgWithConfiguration();
-
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
-
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+        [$org, $entityId] = $this->orgWithConfiguration();
 
         $this->actingAs($this->operatorFor($org))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertSee($provider->entity_id);
+            ->assertSee($entityId);
     }
 
     public function test_configuration_is_scoped_to_the_operators_organisation(): void
     {
-        $org = $this->orgWithConfiguration();
+        [, $entityId] = $this->orgWithConfiguration();
 
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
+        // A real, configured second organisation sees its own provider only.
+        [$other, $otherEntity] = $this->orgWithConfiguration();
+        $this->actingAs($this->operatorFor($other))
+            ->get('/admin/saml-providers')
+            ->assertOk()
+            ->assertSee($otherEntity)
+            ->assertDontSee($entityId);
+    }
 
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+    public function test_an_organisation_that_owns_nothing_sees_no_configuration(): void
+    {
+        [, $entityId] = $this->orgWithConfiguration();
 
         // A well-formed organisation that owns nothing.
         $this->actingAs($this->operatorFor((string) Str::uuid()))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertDontSee($provider->entity_id);
+            ->assertDontSee($entityId);
     }
 
     /**
@@ -162,22 +154,137 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_an_unassigned_operator_sees_no_configuration(): void
     {
-        $org = $this->orgWithConfiguration();
-
-        $provider = DB::transaction(function () use ($org) {
-            DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
-
-            return DB::selectOne('SELECT entity_id FROM core_v1.saml_providers LIMIT 1');
-        });
-
-        if ($provider === null) {
-            $this->markTestSkipped('no SAML provider registered for that organisation');
-        }
+        [, $entityId] = $this->orgWithConfiguration();
 
         $this->actingAs($this->operatorFor(null))
             ->get('/admin/saml-providers')
             ->assertOk()
-            ->assertDontSee($provider->entity_id);
+            ->assertDontSee($entityId);
+    }
+
+    /**
+     * Who holds what is a tenant's business like anything else, and a grant that
+     * ran out is not shown as one in force: a decision would not read it.
+     */
+    /**
+     * A user manager delegated over a group sees its members on the people screen
+     * and nobody else, and somebody whose scope is not narrowed sees everybody.
+     */
+    public function test_a_delegated_user_manager_sees_their_groups_members(): void
+    {
+        $org = $this->plantOrganisation();
+        $member = $this->plantUser($org);
+        $outsider = $this->plantUser($org);
+        $email = fn (string $id): string => $this->maintenance()
+            ->selectOne('SELECT email FROM core.users WHERE id = ?::uuid', [$id])->email;
+        $group = $this->maintenance()->selectOne(
+            'INSERT INTO core.groups (org_id, name, display_name) VALUES (?::uuid, ?, ?) RETURNING id::text AS id',
+            [$org, 'managed-'.Str::lower(Str::random(8)), 'Managed']
+        )->id;
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_members (group_id, user_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid)',
+            [$group, $member, $org]
+        );
+
+        try {
+            $operator = $this->operatorFor($org);
+            $this->actingAs($operator)
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => ['users:read' => [$group]]]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($member))
+                ->assertDontSee($email($outsider));
+
+            $this->actingAs($operator)
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => []]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($member))
+                ->assertSee($email($outsider));
+        } finally {
+            $this->maintenance()->delete('DELETE FROM core.groups WHERE org_id = ?::uuid', [$org]);
+        }
+    }
+
+    /**
+     * A user manager delegated over a group sees the members of the groups inside it
+     * too (11.09), as the Admin API lets the role act on them, and nobody else.
+     */
+    public function test_a_delegated_user_manager_sees_the_members_of_groups_inside_theirs(): void
+    {
+        $org = $this->plantOrganisation();
+        $below = $this->plantUser($org);
+        $outsider = $this->plantUser($org);
+        $email = fn (string $id): string => $this->maintenance()
+            ->selectOne('SELECT email FROM core.users WHERE id = ?::uuid', [$id])->email;
+        $group = fn (string $name): string => $this->maintenance()->selectOne(
+            'INSERT INTO core.groups (org_id, name, display_name) VALUES (?::uuid, ?, ?) RETURNING id::text AS id',
+            [$org, $name.'-'.Str::lower(Str::random(8)), $name]
+        )->id;
+        $managed = $group('managed');
+        $inside = $group('inside');
+        $elsewhere = $group('elsewhere');
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_parents (group_id, parent_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid)',
+            [$inside, $managed, $org]
+        );
+        $this->maintenance()->insert(
+            'INSERT INTO core.group_members (group_id, user_id, org_id) VALUES (?::uuid, ?::uuid, ?::uuid), (?::uuid, ?::uuid, ?::uuid)',
+            [$inside, $below, $org, $elsewhere, $outsider, $org]
+        );
+
+        try {
+            $this->actingAs($this->operatorFor($org))
+                ->withSession([SignariSignIn::ME => ['scopes' => ['users:read'], 'delegated' => ['users:read' => [$managed]]]])
+                ->get('/admin/engine-users')
+                ->assertOk()
+                ->assertSee($email($below))
+                ->assertDontSee($email($outsider));
+        } finally {
+            $this->maintenance()->delete('DELETE FROM core.groups WHERE org_id = ?::uuid', [$org]);
+        }
+    }
+
+    public function test_relations_and_the_model_are_scoped_and_live(): void
+    {
+        $org = $this->plantOrganisation();
+        $other = $this->plantOrganisation();
+        $tag = Str::lower(Str::random(8));
+        $grant = function (string $orgId, string $subject, ?string $expires) use ($tag): void {
+            $this->maintenance()->insert(
+                'INSERT INTO core.relations (org_id, subject_type, subject_id, relation, object_type, object_id, expires_at)
+                 VALUES (?::uuid, ?, ?, ?, ?, ?, ?::timestamptz)',
+                [$orgId, 'user', "{$subject}-{$tag}", 'viewer', 'document', '42', $expires]
+            );
+        };
+        $grant($org, 'holds-it', null);
+        $grant($org, 'held-it', '2020-01-01T00:00:00Z');
+        $grant($other, 'elsewhere', null);
+        foreach ([$org => "own-model-{$tag}", $other => "other-model-{$tag}"] as $orgId => $source) {
+            $this->maintenance()->insert(
+                'INSERT INTO core.authorization_models (org_id, source, compiled) VALUES (?::uuid, ?, ?::jsonb)',
+                [$orgId, $source, '{}']
+            );
+        }
+
+        try {
+            $operator = $this->actingAs($this->operatorFor($org));
+            $operator->get('/admin/relations')
+                ->assertOk()
+                ->assertSee("user:holds-it-{$tag}")
+                ->assertDontSee("held-it-{$tag}")
+                ->assertDontSee("elsewhere-{$tag}");
+
+            $operator->get('/admin/authorization-models')
+                ->assertOk()
+                ->assertSee("own-model-{$tag}")
+                ->assertDontSee("other-model-{$tag}");
+        } finally {
+            foreach ([$org, $other] as $orgId) {
+                $this->maintenance()->delete('DELETE FROM core.relations WHERE org_id = ?::uuid', [$orgId]);
+                $this->maintenance()->delete('DELETE FROM core.authorization_models WHERE org_id = ?::uuid', [$orgId]);
+            }
+        }
     }
 
     /**
@@ -190,33 +297,31 @@ class ConfigurationScreensTest extends TestCase
      */
     public function test_admin_tokens_are_scoped_and_hide_deployment_wide_ones(): void
     {
-        $org = $this->orgWithConfiguration();
+        $org = $this->plantOrganisation();
+        $own = $this->plantAdminToken($org);
+        // The two that must stay invisible: a deployment-wide token (org_id NULL)
+        // and another tenant's. Planted, not hoped for, because "we cannot see
+        // them" and "there happened to be none" are different claims and only
+        // the first is what the policy guarantees.
+        $deploymentWide = $this->plantAdminToken(null);
+        $foreign = $this->plantAdminToken($this->plantOrganisation());
 
-        $scoped = DB::transaction(function () use ($org) {
+        $names = DB::transaction(function () use ($org) {
             DB::selectOne('SELECT set_config(?, ?, true)', ['app.org_id', $org]);
 
-            return DB::select('SELECT name, org_id FROM core_v1.admin_tokens');
+            return array_map(fn ($t) => $t->name, DB::select('SELECT name FROM core_v1.admin_tokens'));
         });
 
-        foreach ($scoped as $token) {
-            $this->assertSame(
-                $org,
-                $token->org_id,
-                'a token belonging to another organisation is visible on this screen'
-            );
-        }
+        $this->assertContains($own, $names, 'the organisation cannot see its own token');
+        $this->assertNotContains($deploymentWide, $names, 'a deployment-wide token is listed on a tenant screen');
+        $this->assertNotContains($foreign, $names, 'another organisation\'s token is visible on this screen');
 
-        // A deployment-wide token has org_id NULL, so the assertion above already
-        // excludes it — there is no way for one to appear without failing that
-        // identity check. Stated explicitly because "we cannot see them" and "we
-        // checked and there were none" are different claims, and only the first
-        // is what the policy guarantees.
-        foreach ($scoped as $token) {
-            $this->assertNotNull(
-                $token->org_id,
-                'a deployment-wide token is listed on a tenant screen'
-            );
-        }
+        $this->actingAs($this->operatorFor($org))
+            ->get('/admin/admin-tokens')
+            ->assertOk()
+            ->assertSee($own)
+            ->assertDontSee($deploymentWide)
+            ->assertDontSee($foreign);
     }
 
     /**

@@ -8,43 +8,60 @@
 //
 //	EVERY mutation bumps core.config_version IN THE SAME TRANSACTION.
 //
-// Engine nodes poll that version to decide when to reload. If a write commits
-// without bumping it, the change is durable but invisible: the database says a
-// client is disabled while every running node keeps honouring it, until some
-// unrelated write happens to bump the version. That failure is silent, it is
-// intermittent, and it looks like a caching bug rather than a missing line --
-// so the bump lives in one helper that every handler must route through.
+// That version is what an If-Match precondition is compared against, and what
+// the console and Terraform send back. If a write commits without bumping it,
+// a client that read the configuration before the write still matches, and its
+// conditional write overwrites the change it never saw. That failure is silent
+// and looks like a lost edit rather than a missing line -- so the bump lives in
+// one helper that every handler must route through. No reload loop watches the
+// counter: configuration is read per request (ADR-007, ADR-008). This comment
+// once described a reload driven by it, which never existed.
 package adminapi
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/delegated"
+	"signari.dev/engine/internal/directory"
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/metrics"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/provision"
 	"signari.dev/engine/internal/ratelimit"
+	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/tracing"
 )
 
 // Server is the admin write API. It listens separately from the public protocol
 // endpoints so it can be bound to a private interface: an internet-reachable
 // admin API on an identity provider is a large and unnecessary target.
 type Server struct {
-	db    *pgxpool.Pool
+	db *pgxpool.Pool
+	// reads is a replica, for the audit trail alone. See SetReadReplica.
+	reads *pgxpool.Pool
 	log   *slog.Logger
 	token string
 	// ops is what Routes() registered, in registration order. The OpenAPI
 	// document is rendered from this rather than from a parallel description,
 	// so it cannot name a route that does not exist or omit one that does.
 	ops []operation
+	// metrics counts every admin request by route, method and status, on the
+	// same series as the protocol listener (the /admin/ prefix keeps them
+	// apart). Nil when nothing scrapes the process.
+	metrics *metrics.Engine
 	// hasher is the ENGINE's Argon2 configuration. Passwords set by an
 	// administrator must be written with the same parameters the login path
 	// expects; a hash produced elsewhere is a credential that may simply not
@@ -60,6 +77,20 @@ type Server struct {
 	// ever answer "no key configured" is worse than an absent one, because it
 	// looks like a capability.
 	root *keys.RootKey
+
+	// verify asks a migration source about a credential, as sign-in does;
+	// nil is delegated.New(), through safedial. A test points it at its own
+	// trust root.
+	verify *delegated.Verifier
+
+	// outbound makes the client a provider is called through; nil is
+	// safedial.Client. A test points it at its own trust root.
+	outbound func(time.Duration) *http.Client
+
+	// accessIssuers verify this deployment's own access tokens audienced to
+	// the Admin API (accesstoken.go), one for each instance served. Empty until
+	// AcceptAccessTokens, and then only admin tokens are accepted.
+	accessIssuers []accessIssuer
 
 	// arrivals bounds work done for callers who have not authenticated yet.
 	//
@@ -79,6 +110,34 @@ type Server struct {
 	// the authenticated token, which is safe to evict from because the key had
 	// to exist and be unrevoked before the limiter is ever consulted.
 	perToken *ratelimit.Keyed
+
+	// limits are the rates the two limiters were built with, reported by
+	// /admin/system; release names the build there.
+	limits  adminLimits
+	release string
+
+	// mux is the router Routes last built, which a batch dispatches its
+	// operations through.
+	mux atomic.Pointer[http.ServeMux]
+
+	// targetClient is what calls a provisioning target: provision.HTTPClient,
+	// the client `signari scim sync` uses, unless a test hands it a server it
+	// started.
+	targetClient func() (*http.Client, error)
+
+	// directorySync runs one directory sync: directory.Sync, which
+	// `signari dir sync` runs too, unless a test stands in for the
+	// directory it would call.
+	directorySync func(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string,
+		apply bool) (directory.SyncReport, error)
+	// directoryTest is directory.TestSource, and a stand-in in the same way.
+	directoryTest func(ctx context.Context, pool *pgxpool.Pool, root *keys.RootKey, orgID, slug string) (
+		directory.TestResult, error)
+
+	// providerClient discovers an upstream identity provider and reads an
+	// assertion issuer's keys: safedial's, which the sign-in reaches them
+	// with too, unless a test hands it a server it started.
+	providerClient func() *http.Client
 }
 
 func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
@@ -89,26 +148,35 @@ func New(db *pgxpool.Pool, log *slog.Logger, token string) (*Server, error) {
 	if token != "" && len(token) < 32 {
 		return nil, fmt.Errorf("admin API token must be at least 32 characters (got %d)", len(token))
 	}
+	limits, err := limitsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{db: db, log: log, token: token,
-		hasher:   passwords.NewHasher(passwords.MemoryBudgetMiB),
+		hasher:   passwords.Shared(),
 		pwPolicy: passwords.PolicyFromEnv(),
 		// Generous on purpose. Administration is low-volume and bursty -- an
 		// operator paging through clients, a provisioning run creating a batch --
 		// so these bound the damage without being something a real deployment
 		// ever notices. A limit tight enough to interfere is a limit somebody
-		// raises to infinity during an incident.
-		arrivals: ratelimit.New(adminArrivalsPerSecond, adminArrivalsBurst),
-		perToken: ratelimit.NewKeyed(adminPerTokenPerSecond, adminPerTokenBurst,
+		// raises to infinity during an incident. SIGNARI_ADMIN_RATE and
+		// SIGNARI_ADMIN_TOKEN_RATE move them (6.08); the bursts are twice.
+		limits:   limits,
+		arrivals: ratelimit.New(float64(limits.arrivals), float64(2*limits.arrivals)),
+		perToken: ratelimit.NewKeyed(float64(limits.perToken), float64(2*limits.perToken),
 			adminTrackedTokens),
+		targetClient:   provision.HTTPClient,
+		directorySync:  directory.Sync,
+		directoryTest:  directory.TestSource,
+		providerClient: providerHTTPClient,
 	}, nil
 }
 
-// Rate limits for the administrative interface.
+// Rate limits for the administrative interface, by default; the bursts are
+// twice the rate.
 const (
 	adminArrivalsPerSecond = 100
-	adminArrivalsBurst     = 200
 	adminPerTokenPerSecond = 50
-	adminPerTokenBurst     = 100
 	// adminTrackedTokens bounds the per-token map. Far above the number of
 	// credentials any deployment issues, because the map is only a memory bound
 	// and evicting an entry hands its key a fresh allowance.
@@ -129,8 +197,26 @@ func (s *Server) SetRootKey(root *keys.RootKey) { s.root = root }
 // is part of what a caller receives. Exposing the bare mux and a separate
 // wrapper would leave two ways to serve this API, one of them unlimited -- and
 // the unlimited one is shorter to type.
+// SetMetrics instruments the admin API. Until it existed, every write to the
+// identity provider (each client disabled, each token minted, each privilege
+// granted) went unmeasured while the protocol listener counted its health
+// checks.
+func (s *Server) SetMetrics(e *metrics.Engine) { s.metrics = e }
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	handle := mux.HandleFunc
+	if s.metrics != nil {
+		// Each pattern declared to the route label set as it is registered,
+		// as the protocol router does, or every admin series would read
+		// route="other".
+		handle = func(pattern string, h func(http.ResponseWriter, *http.Request)) {
+			if i := strings.IndexByte(pattern, '/'); i >= 0 {
+				metrics.RegisterRoutePattern(pattern[i:])
+			}
+			mux.HandleFunc(pattern, h)
+		}
+	}
 
 	// route registers a handler AND records the operation, so the OpenAPI
 	// document is derived from this list rather than written beside it.
@@ -141,31 +227,256 @@ func (s *Server) Routes() http.Handler {
 	// the document that generated somebody's client.
 	s.ops = s.ops[:0]
 	route := func(pattern, scope string, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, s.auth(scope, h))
+		handle(pattern, s.auth(scope, canonicalIDs(h)))
 		s.recordOperation(pattern, scope)
 	}
+	// privileged is route for a write on a user or a group, which needs
+	// privileged-users:write as well when the target is privileged (see
+	// privileged.go). TestEveryWriteOnAUserOrGroupGuardsPrivilegedTargets
+	// derives the routes that need it from this table, so a write on a user
+	// registered with plain route fails there.
+	privileged := func(pattern, scope string, target privilegedTarget, h http.HandlerFunc) {
+		handle(pattern, s.auth(scope, canonicalIDs(s.requirePrivileged(target, h))))
+		s.recordOperation(pattern, scope)
+		s.ops[len(s.ops)-1].privileged = true
+	}
 
-	route("PATCH /admin/clients/{clientID}", ScopeClientsWrite, s.patchClient)
-	route("DELETE /admin/clients/{clientID}", ScopeClientsWrite, s.deleteClient)
+	privileged("PATCH /admin/clients/{clientID}", ScopeClientsWrite, targetClient, s.patchClient)
+	privileged("DELETE /admin/clients/{clientID}", ScopeClientsWrite, targetClient, s.deleteClient)
 	route("POST /admin/users", ScopeUsersWrite, s.createUser)
 	route("POST /admin/clients", ScopeClientsWrite, s.createClient)
-	route("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, s.rotateClientSecret)
-	route("PATCH /admin/users/{userID}", ScopeUsersWrite, s.patchUser)
-	route("DELETE /admin/users/{userID}", ScopeUsersWrite, s.deleteUser)
+	privileged("POST /admin/clients/{clientID}/rotate-secret", ScopeClientsWrite, targetClient, s.rotateClientSecret)
+	// Which groups it is told of (grouprelease.go).
+	privileged("PUT /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.putGroupRelease)
+	privileged("DELETE /admin/clients/{clientID}/group-release", ScopeClientsWrite, targetClient, s.deleteGroupRelease)
+	privileged("PUT /admin/clients/{clientID}/id-jag-audiences", ScopeClientsWrite, targetClient, s.putIDJAGAudience)
+	privileged("DELETE /admin/clients/{clientID}/id-jag-audiences", ScopeClientsWrite, targetClient, s.deleteIDJAGAudience)
+	// A client's Shared Signals stream paused, disabled or enabled (ssf.go).
+	privileged("PATCH /admin/clients/{clientID}/ssf-stream", ScopeClientsWrite, targetClient, s.setStreamStatus)
+	privileged("PATCH /admin/users/{userID}", ScopeUsersWrite, targetUser, s.patchUser)
+	privileged("DELETE /admin/users/{userID}", ScopeUsersWrite, targetUser, s.deleteUser)
 	route("GET /admin/users/{userID}/factors", ScopeUsersRead, s.listUserFactors)
 	// Two patterns rather than an optional segment: the kinds a user may hold
 	// several of need the credential named, and the ones keyed on the user must
 	// not accept an id that would be silently ignored.
-	route("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, s.deleteUserFactor)
-	route("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/factors/{kind}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/factors/{kind}/{factorID}", ScopeUsersWrite, targetUser, s.deleteUserFactor)
+	privileged("DELETE /admin/users/{userID}/throttle", ScopeUsersWrite, targetUser, s.unlockUser)
+	// A passkey is a way into the account, so a privileged target needs the
+	// privileged scope as a password reset does.
+	privileged("POST /admin/users/{userID}/passkey-link", ScopeUsersWrite, targetUser, s.issuePasskeyLink)
+	// So is a link to an upstream subject, whose assertions then mint tokens
+	// for the person (idplinks.go).
+	route("GET /admin/users/{userID}/identity-links", ScopeUsersRead, s.listIdentityLinks)
+	privileged("PUT /admin/users/{userID}/identity-links/{slug}", ScopeUsersWrite, targetUser, s.putIdentityLink)
+	privileged("DELETE /admin/users/{userID}/identity-links/{slug}", ScopeUsersWrite, targetUser, s.deleteIdentityLink)
+	// And a credential offer, which whoever holds it redeems into a token
+	// for the person (credentialadmin.go).
+	privileged("POST /admin/users/{userID}/credential-offers", ScopeUsersWrite, targetUser, s.offerCredential)
+	// Invitations. users:write, because an accepted one makes an account; a
+	// group it names is checked as adding a member is (invitations.go).
+	route("GET /admin/invitations", ScopeUsersRead, s.listInvitations)
+	route("POST /admin/invitations", ScopeUsersWrite, s.createInvitation)
+	route("DELETE /admin/invitations/{invitationID}", ScopeUsersWrite, s.revokeInvitation)
+	// Admin tokens, each held to the caller in every dimension (tokensapi.go).
+	route("GET /admin/tokens", ScopeTokensRead, s.listTokens)
+	route("POST /admin/tokens", ScopeTokensWrite, s.createToken)
+	route("POST /admin/tokens/{tokenID}/rotate", ScopeTokensWrite, s.rotateToken)
+	route("DELETE /admin/tokens/{tokenID}", ScopeTokensWrite, s.revokeToken)
 	route("POST /admin/organizations", ScopeOrganizationsWrite, s.createOrganization)
+	route("GET /admin/organizations", ScopeConfigRead, s.listOrganizations)
+	route("GET /admin/organizations/{orgID}", ScopeConfigRead, s.getOrganization)
+	// Suspension, deployment-wide tokens only (organizations.go).
+	route("PATCH /admin/organizations/{orgID}", ScopeOrganizationsWrite, s.patchOrganization)
+	// Each organisation's budget (budgets.go): deployment-wide tokens set it.
+	route("GET /admin/organizations/{orgID}/budgets", ScopeConfigRead, s.getBudgets)
+	route("PUT /admin/organizations/{orgID}/budgets", ScopeOrganizationsWrite, s.putBudgets)
+	// Its sign-in and session policy, the `instance` commands' (orgsettings.go).
+	route("GET /admin/organizations/{orgID}/brand", ScopeConfigRead, s.getOrgBrand)
+	route("PUT /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.putOrgBrand)
+	route("DELETE /admin/organizations/{orgID}/brand", ScopeOrganizationsWrite, s.deleteOrgBrand)
+	route("GET /admin/organizations/{orgID}/messages", ScopeConfigRead, s.listOrgMessages)
+	route("PUT /admin/organizations/{orgID}/messages/{locale}/{key}", ScopeOrganizationsWrite, s.putOrgMessage)
+	route("DELETE /admin/organizations/{orgID}/messages/{locale}/{key}", ScopeOrganizationsWrite, s.deleteOrgMessage)
+	route("GET /admin/organizations/{orgID}/settings", ScopeConfigRead, s.getOrgSettings)
+	route("PATCH /admin/organizations/{orgID}/settings", ScopeOrganizationsWrite, s.patchOrgSettings)
+	// Self-sign-up, `signari signup` (signup.go).
+	route("GET /admin/organizations/{orgID}/signup", ScopeConfigRead, s.getSignup)
+	route("PUT /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.putSignup)
+	route("DELETE /admin/organizations/{orgID}/signup", ScopeOrganizationsWrite, s.deleteSignup)
+	// Instances and their appearance, deployment-wide tokens only
+	// (instances.go).
+	route("GET /admin/instances", ScopeConfigRead, s.listInstances)
+	route("GET /admin/instances/{instanceID}/brand", ScopeConfigRead, s.getBrand)
+	route("PUT /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.putBrand)
+	route("DELETE /admin/instances/{instanceID}/brand", ScopeOrganizationsWrite, s.deleteBrand)
+	route("GET /admin/instances/{instanceID}/webauthn", ScopeConfigRead, s.getInstanceWebAuthn)
+	route("PUT /admin/instances/{instanceID}/webauthn", ScopeOrganizationsWrite, s.putInstanceWebAuthn)
+	route("GET /admin/instances/{instanceID}/issuer-aliases", ScopeConfigRead, s.listIssuerAliases)
+	route("POST /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.addIssuerAlias)
+	route("PATCH /admin/instances/{instanceID}/issuer-aliases", ScopeOrganizationsWrite, s.retireIssuerAlias)
+	// UMA resource-owner intervention, `signari uma` (uma.go).
+	route("GET /admin/organizations/{orgID}/uma", ScopeConfigRead, s.getUMASettings)
+	route("PUT /admin/organizations/{orgID}/uma", ScopeOrganizationsWrite, s.putUMASettings)
+	route("GET /admin/organizations/{orgID}/uma/requests", ScopeConfigRead, s.listUMARequests)
+	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve", ScopeOrganizationsWrite, s.approveUMA)
+	route("POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny", ScopeOrganizationsWrite, s.denyUMA)
+	// The services an external_factor stage asks (externalfactors.go).
+	route("GET /admin/organizations/{orgID}/external-factors", ScopeConfigRead, s.listExternalFactors)
+	route("PUT /admin/organizations/{orgID}/external-factors/{name}", ScopeOrganizationsWrite, s.putExternalFactor)
+	route("DELETE /admin/organizations/{orgID}/external-factors/{name}", ScopeOrganizationsWrite, s.deleteExternalFactor)
+
+	// Trusted Client Attesters, `signari attester` (attesters.go).
+	route("GET /admin/organizations/{orgID}/attesters", ScopeConfigRead, s.listAttesters)
+	route("PUT /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.putAttester)
+	route("DELETE /admin/organizations/{orgID}/attesters/{name}", ScopeOrganizationsWrite, s.deleteAttester)
+	// OID4VCI issuance, `signari credential` (credentialadmin.go).
+	route("GET /admin/organizations/{orgID}/credential-configurations", ScopeConfigRead,
+		s.listCredentialConfigurations)
+	route("PUT /admin/organizations/{orgID}/credential-configurations/{configID}", ScopeOrganizationsWrite,
+		s.putCredentialConfiguration)
+	route("GET /admin/organizations/{orgID}/credential-requests", ScopeConfigRead, s.listCredentialRequests)
+	route("PUT /admin/organizations/{orgID}/credential-requests/{requestID}", ScopeOrganizationsWrite,
+		s.decideOnCredentialRequest)
+	route("GET /admin/organizations/{orgID}/issued-credentials", ScopeConfigRead, s.listIssuedCredentials)
+	route("POST /admin/organizations/{orgID}/credential-revocations", ScopeOrganizationsWrite, s.revokeCredentials)
+	route("GET /admin/organizations/{orgID}/credential-proof-roots", ScopeConfigRead, s.listCredentialProofRoots)
+	route("PUT /admin/organizations/{orgID}/credential-proof-roots/{name}", ScopeOrganizationsWrite,
+		s.putCredentialProofRoot)
+	route("DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}", ScopeOrganizationsWrite,
+		s.deleteCredentialProofRoot)
+	// RFC 9396 authorization details types, `signari rar register` (rar.go).
+	route("GET /admin/organizations/{orgID}/authorization-detail-types", ScopeConfigRead, s.listDetailTypes)
+	route("PUT /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.putDetailType)
+	route("DELETE /admin/organizations/{orgID}/authorization-detail-types", ScopeOrganizationsWrite, s.deleteDetailType)
+	// Interstitial prompts, `signari prompt` (prompts.go).
+	route("GET /admin/organizations/{orgID}/prompts", ScopeConfigRead, s.listPrompts)
+	route("PUT /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.putPrompt)
+	route("PATCH /admin/organizations/{orgID}/prompts/{slug}", ScopeOrganizationsWrite, s.patchPrompt)
+	// The access policy and sign-in flows, `signari policy` and `signari flow`
+	// (declarative.go).
+	route("GET /admin/organizations/{orgID}/access-policy", ScopeConfigRead, s.getAccessPolicy)
+	route("PUT /admin/organizations/{orgID}/access-policy", ScopeOrganizationsWrite, s.putAccessPolicy)
+	route("GET /admin/organizations/{orgID}/sign-in-flow", ScopeConfigRead, s.getSignInFlow)
+	route("GET /admin/organizations/{orgID}/sign-in-flow/paths", ScopeConfigRead, s.getSignInFlowPaths)
+	route("PUT /admin/organizations/{orgID}/sign-in-flow", ScopeOrganizationsWrite, s.putSignInFlow)
+	// Upstream identity providers' settings, `signari idp` (idps.go).
+	route("GET /admin/organizations/{orgID}/identity-providers", ScopeConfigRead, s.listIdentityProviders)
+	route("PATCH /admin/organizations/{orgID}/identity-providers/{slug}", ScopeOrganizationsWrite,
+		s.patchIdentityProvider)
+	route("POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata", ScopeOrganizationsWrite,
+		s.refreshIdentityProviderMetadata)
+	route("GET /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", ScopeConfigRead, s.listSAMLSourceKeys)
+	route("POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys", ScopeOrganizationsWrite, s.addSAMLSourceKey)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys/{keyID}", ScopeOrganizationsWrite,
+		s.retireSAMLSourceKey)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use", ScopeOrganizationsWrite,
+		s.setSAMLSourceKeyUse)
+	// An organisation's Kerberos realms, `signari kerberos add-realm` (kerberosrealms.go).
+	route("GET /admin/organizations/{orgID}/kerberos-realms", ScopeConfigRead, s.listKerberosRealms)
+	route("POST /admin/organizations/{orgID}/kerberos-realms", ScopeOrganizationsWrite, s.addKerberosRealm)
+	route("DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}", ScopeOrganizationsWrite, s.removeKerberosRealm)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth", ScopeOrganizationsWrite,
+		s.putIdPTokenAuth)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
+		s.putIdPAttributeMap)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map", ScopeOrganizationsWrite,
+		s.deleteIdPAttributeMap)
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map", ScopeOrganizationsWrite,
+		s.putIdPGroupMap)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/group-map", ScopeOrganizationsWrite,
+		s.deleteIdPGroupMap)
+	// The issuers a wallet sign-in believes (idps.go).
+	route("PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", ScopeOrganizationsWrite,
+		s.putVPIssuer)
+	route("DELETE /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers", ScopeOrganizationsWrite,
+		s.deleteVPIssuer)
+	// SAML service providers, `signari saml` (saml.go).
+	route("GET /admin/organizations/{orgID}/saml-providers", ScopeConfigRead, s.listSAMLProviders)
+	route("POST /admin/organizations/{orgID}/saml-providers", ScopeOrganizationsWrite, s.addSAMLProvider)
+	route("POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata", ScopeOrganizationsWrite,
+		s.refreshSAMLProviderMetadata)
+	route("PATCH /admin/organizations/{orgID}/saml-providers/{providerID}", ScopeOrganizationsWrite,
+		s.patchSAMLProvider)
+	route("PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", ScopeOrganizationsWrite,
+		s.putSAMLAttributeRelease)
+	route("DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release", ScopeOrganizationsWrite,
+		s.deleteSAMLAttributeRelease)
+	route("PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", ScopeOrganizationsWrite,
+		s.putSAMLGroupRelease)
+	route("DELETE /admin/organizations/{orgID}/saml-providers/{providerID}/group-release", ScopeOrganizationsWrite,
+		s.deleteSAMLGroupRelease)
+	// Inbound SCIM sources, `signari scim-source` (scimsources.go).
+	route("GET /admin/organizations/{orgID}/scim-sources", ScopeConfigRead, s.listSCIMSources)
+	route("POST /admin/organizations/{orgID}/scim-sources", ScopeOrganizationsWrite, s.addSCIMSource)
+	route("PATCH /admin/organizations/{orgID}/scim-sources/{slug}", ScopeOrganizationsWrite, s.patchSCIMSource)
+	// The transmitters whose Shared Signals events are acted on, `signari ssf
+	// add-source` (ssf.go).
+	route("GET /admin/organizations/{orgID}/ssf-sources", ScopeConfigRead, s.listSources)
+	route("PUT /admin/organizations/{orgID}/ssf-sources", ScopeOrganizationsWrite, s.putSource)
+	route("PUT /admin/organizations/{orgID}/ssf-sources/poll", ScopeOrganizationsWrite, s.setSourcePoll)
+	// Fine-grained authorization, `signari authz` (authz.go).
+	route("GET /admin/organizations/{orgID}/authorization-model", ScopeConfigRead, s.getAuthzModel)
+	route("GET /admin/organizations/{orgID}/authorization/explain", ScopeConfigRead, s.explainAuthz)
+	route("PUT /admin/organizations/{orgID}/authorization-model", ScopeOrganizationsWrite, s.putAuthzModel)
+	route("GET /admin/organizations/{orgID}/relations", ScopeRelationsRead, s.listRelations)
+	route("PUT /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.grantRelation)
+	route("DELETE /admin/organizations/{orgID}/relations", ScopeRelationsWrite, s.revokeRelation)
+	route("GET /admin/organizations/{orgID}/relation-delegations", ScopeRelationsRead, s.listRelationDelegations)
+	route("POST /admin/organizations/{orgID}/relation-delegations", ScopeRelationsWrite, s.createRelationDelegation)
+	route("DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}", ScopeRelationsWrite, s.deleteRelationDelegation)
+	route("GET /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsRead, s.listDelegatedRelations)
+	route("PUT /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsWrite, s.grantDelegatedRelation)
+	route("DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}/relations", ScopeRelationsWrite, s.revokeDelegatedRelation)
+	// Configuration as code, `signari plan` and `signari apply`
+	// (configapply.go). Each change also needs the scope its own route takes.
+	route("POST /admin/organizations/{orgID}/config", ScopeOrganizationsWrite, s.applyConfig)
+	// Outposts, `signari outpost` (outposts.go).
+	route("GET /admin/organizations/{orgID}/outposts", ScopeConfigRead, s.listOutposts)
+	route("POST /admin/organizations/{orgID}/outposts", ScopeOrganizationsWrite, s.createOutpost)
+	route("PATCH /admin/organizations/{orgID}/outposts/{name}", ScopeOrganizationsWrite, s.patchOutpost)
+	route("DELETE /admin/organizations/{orgID}/outposts/{name}", ScopeOrganizationsWrite, s.removeOutpost)
+	route("POST /admin/organizations/{orgID}/outposts/{name}/rotate", ScopeOrganizationsWrite, s.rotateOutpost)
+	// Dynamic client registration and its initial access tokens, `signari
+	// registration` (registration.go).
+	route("GET /admin/organizations/{orgID}/registration", ScopeConfigRead, s.getRegistration)
+	route("PUT /admin/organizations/{orgID}/registration", ScopeOrganizationsWrite, s.putRegistration)
+	route("DELETE /admin/organizations/{orgID}/registration", ScopeOrganizationsWrite, s.deleteRegistration)
+	route("GET /admin/organizations/{orgID}/registration-tokens", ScopeConfigRead, s.listRegistrationTokens)
+	route("POST /admin/organizations/{orgID}/registration-tokens", ScopeOrganizationsWrite, s.createRegistrationToken)
+	route("DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}", ScopeOrganizationsWrite,
+		s.revokeRegistrationToken)
 
 	// The scope catalogue. Registered unconditionally — unlike attributes, a
 	// scope holds no personal data and needs no subject key.
+	route("GET /admin/organizations/{orgID}/webauthn-policy", ScopeConfigRead, s.getWebAuthnPolicy)
+	route("PUT /admin/organizations/{orgID}/webauthn-policy", ScopeOrganizationsWrite, s.putWebAuthnPolicy)
 	route("GET /admin/organizations/{orgID}/scopes", ScopeConfigRead, s.listScopes)
 	route("PUT /admin/organizations/{orgID}/scopes", ScopeOrganizationsWrite, s.declareScope)
 	route("DELETE /admin/organizations/{orgID}/scopes/{scope}",
 		ScopeOrganizationsWrite, s.deleteScope)
+
+	// Forward-auth protected hosts.
+	route("GET /admin/organizations/{orgID}/proxy-hosts", ScopeConfigRead, s.listProxyHosts)
+	route("PUT /admin/organizations/{orgID}/proxy-hosts", ScopeOrganizationsWrite, s.putProxyHost)
+	route("DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
+		ScopeOrganizationsWrite, s.deleteProxyHost)
+
+	// Who the caller is, for any caller (me.go).
+	route("GET /admin/me", "", s.handleMe)
+
+	// Administrative roles (roles.go): who holds which in the organisation.
+	// A second person for the highest-value changes (approvals.go). Approving
+	// and rejecting take no scope of their own: an approval replays the request
+	// as the approver, held to that request's scope, and a rejection is held to
+	// it by the handler.
+	route("GET /admin/organizations/{orgID}/approvals", ScopeConfigRead, s.listApprovals)
+	route("POST /admin/approvals/{approvalID}/approve", "", s.approveRequest)
+	route("POST /admin/approvals/{approvalID}/reject", "", s.rejectRequest)
+	route("GET /admin/organizations/{orgID}/role-bindings", ScopeConfigRead, s.listRoleBindings)
+	route("POST /admin/organizations/{orgID}/role-bindings", ScopeOrganizationsWrite, s.grantRole)
+	route("DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
+		ScopeOrganizationsWrite, s.revokeRole)
 	route("GET /admin/audit-events", ScopeAuditRead, s.listAuditEvents)
 	route("GET /admin/config-version", ScopeConfigRead, s.configVersion)
 
@@ -175,6 +486,8 @@ func (s *Server) Routes() http.Handler {
 	// precondition had nothing to be a precondition ON.
 	route("GET /admin/clients", ScopeClientsRead, s.listClients)
 	route("GET /admin/clients/{clientID}", ScopeClientsRead, s.getClient)
+	route("GET /admin/clients/{clientID}/group-release", ScopeClientsRead, s.getGroupRelease)
+	route("GET /admin/clients/{clientID}/id-jag-audiences", ScopeClientsRead, s.listIDJAGAudiences)
 	route("GET /admin/users", ScopeUsersRead, s.listUsers)
 	route("GET /admin/users/{userID}", ScopeUsersRead, s.getUser)
 
@@ -183,18 +496,33 @@ func (s *Server) Routes() http.Handler {
 	route("GET /admin/groups", ScopeGroupsRead, s.listGroups)
 	route("GET /admin/groups/{groupID}", ScopeGroupsRead, s.getGroup)
 	route("POST /admin/groups", ScopeGroupsWrite, s.createGroup)
-	route("PATCH /admin/groups/{groupID}", ScopeGroupsWrite, s.patchGroup)
-	route("DELETE /admin/groups/{groupID}", ScopeGroupsWrite, s.deleteGroup)
+	privileged("PATCH /admin/groups/{groupID}", ScopeGroupsWrite, targetGroup, s.patchGroup)
+	privileged("DELETE /admin/groups/{groupID}", ScopeGroupsWrite, targetGroup, s.deleteGroup)
 	route("GET /admin/groups/{groupID}/members", ScopeGroupsRead, s.listGroupMembers)
-	route("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.addGroupMember)
-	route("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, s.removeGroupMember)
+	privileged("PUT /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.addGroupMember)
+	privileged("DELETE /admin/groups/{groupID}/members/{userID}", ScopeGroupsWrite, targetGroup, s.removeGroupMember)
+	// Groups inside groups (groupnesting.go): {groupID} is the group that gains or
+	// loses the members, so the privileged check falls on it.
+	route("GET /admin/groups/{groupID}/member-groups", ScopeGroupsRead, s.listMemberGroups)
+	privileged("PUT /admin/groups/{groupID}/member-groups/{memberGroupID}", ScopeGroupsWrite, targetGroup, s.addMemberGroup)
+	privileged("DELETE /admin/groups/{groupID}/member-groups/{memberGroupID}", ScopeGroupsWrite, targetGroup, s.removeMemberGroup)
+	// The VLAN or Filter-Id a group's members are given (radius.go). Under
+	// groups:write, which already decides who is in the group.
+	route("GET /admin/organizations/{orgID}/radius-authorizations", ScopeConfigRead, s.listRADIUSAuthorizations)
+	privileged("PUT /admin/groups/{groupID}/radius", ScopeGroupsWrite, targetGroup, s.putRADIUSAuthorization)
+	privileged("DELETE /admin/groups/{groupID}/radius", ScopeGroupsWrite, targetGroup, s.deleteRADIUSAuthorization)
 
 	// Sessions. Reading is part of seeing a user; ending one is acting on them,
-	// so the scopes follow users:* rather than getting a third pair.
+	// so the scopes follow users:* rather than getting a third pair. Ending
+	// sessions is plain route even for a privileged user: it only withdraws
+	// access (see privileged.go).
 	route("GET /admin/users/{userID}/sessions", ScopeUsersRead, s.listUserSessions)
 	route("DELETE /admin/users/{userID}/sessions", ScopeUsersWrite, s.revokeUserSessions)
+	// What the person sees at /account/connected, and its withdrawal (6.08).
+	route("GET /admin/users/{userID}/consents", ScopeUsersRead, s.listUserConsents)
+	route("DELETE /admin/users/{userID}/consents/{clientID}", ScopeUsersWrite, s.revokeUserConsent)
 	route("DELETE /admin/sessions/{sid}", ScopeUsersWrite, s.revokeSession)
-	route("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, s.eraseSubject)
+	privileged("POST /admin/subjects/{subjectID}/erase", ScopeSubjectsErase, targetUser, s.eraseSubject)
 
 	// User attributes. Registered only when a root key is available, because a
 	// personal attribute is sealed under a subject key and cannot be read
@@ -204,7 +532,11 @@ func (s *Server) Routes() http.Handler {
 		route("GET /admin/organizations/{orgID}/attributes", ScopeConfigRead, s.listAttributes)
 		route("PUT /admin/organizations/{orgID}/attributes", ScopeOrganizationsWrite, s.declareAttribute)
 		route("GET /admin/users/{userID}/attributes", ScopeUsersRead, s.getUserAttributes)
-		route("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, s.setUserAttributes)
+		// Everything kept about a person, which includes their attributes
+		// unsealed; registered here for the same reason.
+		route("GET /admin/subjects/{subjectID}/export", ScopeSubjectsExport, s.exportSubject)
+		privileged("PUT /admin/users/{userID}/attributes", ScopeUsersWrite, targetUser, s.setUserAttributes)
+		privileged("DELETE /admin/users/{userID}/attributes/{name}", ScopeUsersWrite, targetUser, s.clearUserAttribute)
 
 		// Claim mappers. Creating one decides that a relying party receives a
 		// fact about every user who has it, so it takes the same scope as
@@ -214,14 +546,168 @@ func (s *Server) Routes() http.Handler {
 			ScopeOrganizationsWrite, s.createMapper)
 		route("DELETE /admin/organizations/{orgID}/claim-mappers/{mapperID}",
 			ScopeOrganizationsWrite, s.deleteMapper)
+
+		// The provider an organisation is migrating off (2.01). Under the root
+		// key because an oidc_password source's client secret is sealed with it.
+		route("GET /admin/organizations/{orgID}/migration-source", ScopeConfigRead, s.getMigrationSource)
+		route("PUT /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.putMigrationSource)
+		route("DELETE /admin/organizations/{orgID}/migration-source", ScopeOrganizationsWrite, s.deleteMigrationSource)
+		route("POST /admin/organizations/{orgID}/migration-source/test", ScopeOrganizationsWrite,
+			s.testMigrationSource)
+		route("GET /admin/organizations/{orgID}/resource-servers", ScopeConfigRead, s.listResourceServers)
+		route("PUT /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.putResourceServer)
+		route("DELETE /admin/organizations/{orgID}/resource-servers", ScopeOrganizationsWrite, s.deleteResourceServer)
+
+		// Event subscriptions (subscriptions.go), whose signing secrets are
+		// sealed with the root key.
+		route("GET /admin/organizations/{orgID}/event-subscriptions", ScopeConfigRead, s.listSubscriptions)
+		route("POST /admin/organizations/{orgID}/event-subscriptions", ScopeOrganizationsWrite, s.createSubscription)
+		route("DELETE /admin/organizations/{orgID}/event-subscriptions/{name}", ScopeOrganizationsWrite, s.deleteSubscription)
+		route("POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret", ScopeOrganizationsWrite,
+			s.rotateSubscriptionSecret)
+		route("POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable", ScopeOrganizationsWrite,
+			s.enableSubscription)
+		route("POST /admin/organizations/{orgID}/event-subscriptions/{name}/test", ScopeOrganizationsWrite,
+			s.testSubscription)
+
+		// Extension providers (providers.go), whose signing secrets are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/providers", ScopeConfigRead, s.listProviders)
+		route("PUT /admin/organizations/{orgID}/providers/{hook}", ScopeOrganizationsWrite, s.putProvider)
+		route("DELETE /admin/organizations/{orgID}/providers/{hook}", ScopeOrganizationsWrite, s.deleteProvider)
+		route("POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret", ScopeOrganizationsWrite,
+			s.rotateProviderSecret)
+		route("PUT /admin/organizations/{orgID}/providers/{hook}/claims", ScopeOrganizationsWrite,
+			s.putProviderClaims)
+
+		// RADIUS devices (radius.go), whose shared secrets are sealed with the
+		// root key.
+		route("GET /admin/organizations/{orgID}/radius-clients", ScopeConfigRead, s.listRADIUSClients)
+		route("POST /admin/organizations/{orgID}/radius-clients", ScopeOrganizationsWrite, s.addRADIUSClient)
+		route("PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}", ScopeOrganizationsWrite,
+			s.patchRADIUSClient)
+
+		// Directory sources (directories.go), whose credentials are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/directories", ScopeConfigRead, s.listDirectories)
+		route("POST /admin/organizations/{orgID}/directories", ScopeOrganizationsWrite, s.addDirectory)
+		route("PATCH /admin/organizations/{orgID}/directories/{slug}", ScopeOrganizationsWrite, s.patchDirectory)
+		route("PUT /admin/organizations/{orgID}/directories/{slug}/group-map", ScopeOrganizationsWrite,
+			s.mapDirectoryGroup)
+		route("DELETE /admin/organizations/{orgID}/directories/{slug}/group-map", ScopeOrganizationsWrite,
+			s.unmapDirectoryGroup)
+		route("POST /admin/organizations/{orgID}/directories/{slug}/sync", ScopeOrganizationsWrite,
+			s.syncDirectory)
+		route("POST /admin/organizations/{orgID}/directories/{slug}/test", ScopeOrganizationsWrite,
+			s.testDirectory)
+
+		// Registering an upstream identity provider (idps.go), whose client
+		// secret is sealed with the root key.
+		route("POST /admin/organizations/{orgID}/identity-providers", ScopeOrganizationsWrite,
+			s.addIdentityProvider)
+
+		// Provisioning targets (scimtargets.go), whose tokens and credentials
+		// are sealed with the root key.
+		route("GET /admin/organizations/{orgID}/scim-targets", ScopeConfigRead, s.listSCIMTargets)
+		route("POST /admin/organizations/{orgID}/scim-targets", ScopeOrganizationsWrite, s.addSCIMTarget)
+		route("PATCH /admin/organizations/{orgID}/scim-targets/{slug}", ScopeOrganizationsWrite, s.patchSCIMTarget)
+		route("PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", ScopeOrganizationsWrite,
+			s.provisionSCIMGroup)
+		route("DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}", ScopeOrganizationsWrite,
+			s.deprovisionSCIMGroup)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/sync", ScopeOrganizationsWrite,
+			s.syncSCIMTarget)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization", ScopeOrganizationsWrite,
+			s.startSCIMAuthorization)
+		route("POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code", ScopeOrganizationsWrite,
+			s.finishSCIMAuthorization)
+
+		// Shared Signals streams (ssf.go), whose receiver tokens are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/ssf-streams", ScopeClientsRead, s.listStreams)
+		route("POST /admin/organizations/{orgID}/ssf-streams", ScopeClientsWrite, s.addStream)
+
+		// Remote-access connections (rac.go), whose credentials are sealed
+		// with the root key.
+		route("GET /admin/organizations/{orgID}/rac-connections", ScopeConfigRead, s.listRAC)
+		route("POST /admin/organizations/{orgID}/rac-connections", ScopeOrganizationsWrite, s.addRAC)
+		route("PATCH /admin/organizations/{orgID}/rac-connections/{slug}", ScopeOrganizationsWrite, s.patchRAC)
+
+		// An instance's signing keys (keys.go), under the root key their
+		// private halves are sealed with; deployment-wide tokens only.
+		route("GET /admin/instances/{instanceID}/keys", ScopeConfigRead, s.listSigningKeys)
+		route("POST /admin/instances/{instanceID}/keys/rotate", ScopeOrganizationsWrite, s.rotateSigningKeys)
+		route("POST /admin/instances/{instanceID}/credential-encryption-key", ScopeOrganizationsWrite, s.rotateCredentialEncryptionKey)
+		route("POST /admin/instances/{instanceID}/keys/retire", ScopeOrganizationsWrite, s.retireSigningKeys)
+
+		// OpenID Federation and Trust Marks (federation.go), signed with the
+		// instance's federation key, which is sealed with the root key;
+		// deployment-wide tokens only.
+		route("GET /admin/instances/{instanceID}/federation", ScopeConfigRead, s.getFederation)
+		route("PUT /admin/instances/{instanceID}/federation", ScopeOrganizationsWrite, s.putFederation)
+		route("GET /admin/instances/{instanceID}/federation/subordinates", ScopeConfigRead, s.listSubordinates)
+		route("PUT /admin/instances/{instanceID}/federation/subordinates", ScopeOrganizationsWrite, s.putSubordinate)
+		route("DELETE /admin/instances/{instanceID}/federation/subordinates", ScopeOrganizationsWrite, s.deleteSubordinate)
+		route("GET /admin/instances/{instanceID}/federation/anchors", ScopeConfigRead, s.listAnchors)
+		route("PUT /admin/instances/{instanceID}/federation/anchors", ScopeOrganizationsWrite, s.putAnchor)
+		route("DELETE /admin/instances/{instanceID}/federation/anchors", ScopeOrganizationsWrite, s.deleteAnchor)
+		route("GET /admin/instances/{instanceID}/client-metadata-rules", ScopeConfigRead, s.listClientMetadataRules)
+		route("PUT /admin/instances/{instanceID}/client-metadata-rules", ScopeOrganizationsWrite, s.putClientMetadataRule)
+		route("DELETE /admin/instances/{instanceID}/client-metadata-rules", ScopeOrganizationsWrite, s.deleteClientMetadataRule)
+		route("GET /admin/instances/{instanceID}/trust-marks", ScopeConfigRead, s.listTrustMarks)
+		route("POST /admin/instances/{instanceID}/trust-marks", ScopeOrganizationsWrite, s.issueTrustMark)
+		route("POST /admin/instances/{instanceID}/trust-marks/revoke", ScopeOrganizationsWrite, s.revokeTrustMark)
+		route("PUT /admin/instances/{instanceID}/held-trust-marks", ScopeOrganizationsWrite, s.acceptTrustMark)
+		route("DELETE /admin/instances/{instanceID}/held-trust-marks", ScopeOrganizationsWrite, s.dropTrustMark)
+		route("POST /admin/instances/{instanceID}/trust-mark-delegations", ScopeOrganizationsWrite,
+			s.delegateTrustMark)
+
+		// Duo as a second factor (duo.go), under the root key its secret is
+		// sealed with.
+		route("GET /admin/organizations/{orgID}/duo", ScopeConfigRead, s.getDuo)
+		route("PUT /admin/organizations/{orgID}/duo", ScopeOrganizationsWrite, s.putDuo)
+		privileged("PUT /admin/users/{userID}/duo", ScopeUsersWrite, targetUser, s.enrollDuo)
 	}
 
 	// The document itself, unauthenticated. See handleOpenAPI for why: it
 	// describes the shape of the API and no data, and the same facts are already
 	// public in docs/admin-api.md.
-	mux.HandleFunc("GET /admin/openapi.json", s.handleOpenAPI)
+	handle("GET /admin/openapi.json", s.handleOpenAPI)
+	route("GET /admin/system", ScopeConfigRead, s.getSystem)
+	// No scope of its own: each operation it carries is held to its own
+	// (batch.go).
+	route("POST /admin/batch", "", s.handleBatch)
+	s.mux.Store(mux)
 
-	return s.limitArrivals(mux)
+	inner := tracing.NoteRoute(mux)
+	if s.metrics != nil {
+		// Innermost, next to the mux, which is the only place the matched
+		// pattern is known (see the same choice in httpapi.Routes).
+		inner = s.metrics.Middleware(inner)
+	}
+	return tracing.Middleware(s.limitArrivals(versioned(inner)))
+}
+
+// versioned serves /admin/v1/... as /admin/..., one route table under both
+// (6.08). The version is in the path so a caller can pin it: this API is v1,
+// a change that breaks a caller would come as /admin/v2 beside it, and
+// /admin/... stays v1's. Rewritten before the router rather than registered
+// twice, so the OpenAPI document and the route guards see each route once.
+func versioned(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/admin/v1/"); ok {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/admin/" + rest
+			if r.URL.RawPath != "" {
+				if raw, ok := strings.CutPrefix(r.URL.RawPath, "/admin/v1/"); ok {
+					r2.URL.RawPath = "/admin/" + raw
+				}
+			}
+			next.ServeHTTP(w, r2)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitArrivals is the outermost wrapper: it runs before authentication, because
@@ -272,6 +758,16 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		p, err := s.resolveToken(r.Context(), h[len(prefix):])
+		if errors.Is(err, errMultiFactorRequired) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "multi_factor_required",
+				"detail": "administration needs a session that proved a second factor; sign in again with one"})
+			return
+		}
+		if errors.Is(err, errOrgSuspended) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "organisation_suspended",
+				"detail": "this token's organisation is suspended; a deployment-wide token can reactivate it"})
+			return
+		}
 		if err != nil {
 			if !errors.Is(err, errTokenRejected) {
 				s.log.Error("resolving an admin token", "err", err)
@@ -296,7 +792,9 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 		// Its purpose is fairness, not defence: the global limiter above already
 		// bounds total work. This stops one integration's bulk run from consuming
 		// the whole allowance while an operator is trying to use the console.
-		if s.perToken != nil && !s.perToken.Allow(p.Name) {
+		// An operation inside a batch was counted with its batch.
+		_, batched := inBatch(r.Context())
+		if s.perToken != nil && !batched && !s.perToken.Allow(p.Name) {
 			s.log.Info("admin request throttled", "token", p.Name,
 				"method", r.Method, "path", r.URL.Path)
 			tooManyRequests(w)
@@ -305,8 +803,9 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 
 		// Authenticated but not permitted is 403, and says which scope was
 		// missing. This is an operator-facing API: "forbidden" with no detail
-		// turns a one-line fix into an afternoon.
-		if !p.Can(scope) {
+		// turns a one-line fix into an afternoon. No scope is the batch, whose
+		// operations are each held to their own.
+		if scope != "" && !p.Can(scope) {
 			s.log.Info("admin request refused: missing scope", "token", p.Name,
 				"required", scope, "held", p.Scopes)
 			writeJSON(w, http.StatusForbidden, map[string]string{
@@ -316,6 +815,26 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// A role delegated over groups reaches only their members (6.01): every
+		// route naming a person in its path is held to it here, so none can be
+		// registered without it. Handlers finding their person another way
+		// apply it themselves (TestEveryRouteOnAPersonIsHeldToADelegatedReach).
+		for _, name := range []string{"userID", "subjectID"} {
+			id := r.PathValue(name)
+			if id == "" {
+				continue
+			}
+			if err := requireReach(r.Context(), s.db, p, scope, id); err != nil {
+				if errors.Is(err, errCrossOrg) {
+					writeCrossOrg(w, err)
+					return
+				}
+				s.log.Error("checking a delegated role's reach", "err", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
+				return
+			}
+		}
+
 		if p.BreakGlass {
 			// Logged every single time. A credential that bypasses revocation and
 			// expiry should never be quietly interchangeable with the others.
@@ -323,7 +842,37 @@ func (s *Server) auth(scope string, next http.HandlerFunc) http.HandlerFunc {
 				"method", r.Method, "path", r.URL.Path)
 		}
 		s.touch(p.TokenID)
-		next(w, r.WithContext(withPrincipal(r.Context(), p)))
+		// A read is tagged with the version as it was BEFORE the handler reads
+		// anything, so a change that commits while the rows are read moves the
+		// version past the tag, and a write sent back with it is refused. Read
+		// after the rows, as writeList did until October 2026, a change landing
+		// between the two was tagged as seen and the write made over it.
+		if r.Method == http.MethodGet {
+			var v int64
+			if err := s.db.QueryRow(r.Context(),
+				`SELECT version FROM core.config_version`).Scan(&v); err == nil {
+				setETag(w, v)
+			}
+		}
+		// Who the caller acts for, written onto every audit record this request
+		// makes, with whether it came through the break-glass token (6.05).
+		operator := r.Header.Get(OperatorHeader)
+		if operator != "" && !operatorPattern.MatchString(operator) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_operator",
+				"detail": OperatorHeader + " is the caller's own reference for the person it acts for, " +
+					"1-128 of A-Z a-z 0-9 . _ : -, such as console-user:42; never an address, since " +
+					"it is kept in the audit trail, which nothing erases"})
+			return
+		}
+		// A role principal is named on the record by who it is (6.01): the
+		// person as the actor, and either kind as the principal, since it has no
+		// admin token for admin_token_id to name.
+		actor := audit.Actor{BreakGlass: p.BreakGlass, Operator: operator, UserID: p.UserID}
+		if p.TokenID == "" && !p.BreakGlass {
+			actor.Principal = p.Name
+		}
+		ctx := audit.WithActor(withPrincipal(r.Context(), p), actor)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -336,6 +885,329 @@ type patchClientRequest struct {
 	// Pointer so "absent" and "false" are distinguishable. Without this, a PATCH
 	// that does not mention `enabled` would silently disable the client.
 	Enabled *bool `json:"enabled"`
+	// RequirePKCE is the opt-out for an application that cannot send a PKCE
+	// challenge, and the way back. A public client cannot opt out.
+	RequirePKCE *bool `json:"require_pkce"`
+	// MayExchange grants or withdraws RFC 8693 token exchange, and
+	// ExchangeAudiences replaces the audiences it may exchange for besides
+	// itself. Either alone leaves the other as it is. Written by the same
+	// store.SetClientExchange as the CLI and `signari apply`.
+	MayExchange       *bool     `json:"may_exchange"`
+	ExchangeAudiences *[]string `json:"exchange_audiences"`
+	// The sign-out registration, through store.SetClientLogout as the CLI,
+	// `apply` and dynamic registration write it. Each is left alone when absent.
+	PostLogoutRedirectURIs      *[]string `json:"post_logout_redirect_uris"`
+	FrontchannelLogoutURI       *string   `json:"frontchannel_logout_uri"`
+	FrontchannelSessionRequired *bool     `json:"frontchannel_logout_session_required"`
+	// Token lifetimes in seconds, the columns' own units, through
+	// store.SetClientSettings as the CLI and `apply` write them.
+	AccessTokenTTLSeconds  *int `json:"access_token_ttl_s"`
+	RefreshTokenTTLSeconds *int `json:"refresh_token_ttl_s"`
+	// RefreshReuseGraceSeconds is how long after a rotation the old refresh token
+	// may be presented once more for the same answer, 0 to 30, 0 for never.
+	RefreshReuseGraceSeconds *int `json:"refresh_reuse_grace_s"`
+	// IDTokenSignedResponseAlg, by its dynamic-registration name, signs the
+	// client's ID and access tokens.
+	IDTokenSignedResponseAlg *string `json:"id_token_signed_response_alg"`
+	// AccessTokenSignedResponseAlg signs its access tokens alone; "" goes back
+	// to the above.
+	AccessTokenSignedResponseAlg *string `json:"access_token_signed_response_alg"`
+	// AuthorizationSignedResponseAlg is JARM §3's name. It signs the client's
+	// authorization responses and holds it to asking for them signed; "" lets go of both.
+	AuthorizationSignedResponseAlg *string `json:"authorization_signed_response_alg"`
+	// UserinfoSignedResponseAlg signs its userinfo responses; "" goes back to JSON.
+	UserinfoSignedResponseAlg *string `json:"userinfo_signed_response_alg"`
+	// IntrospectionSignedResponseAlg signs an introspection answer it asks for as a JWT.
+	IntrospectionSignedResponseAlg *string `json:"introspection_signed_response_alg"`
+	// What is encrypted to it. An alg alone comes with the default enc, and "" stops.
+	IDTokenEncryptedResponseAlg       *string `json:"id_token_encrypted_response_alg"`
+	IDTokenEncryptedResponseEnc       *string `json:"id_token_encrypted_response_enc"`
+	UserinfoEncryptedResponseAlg      *string `json:"userinfo_encrypted_response_alg"`
+	UserinfoEncryptedResponseEnc      *string `json:"userinfo_encrypted_response_enc"`
+	AuthorizationEncryptedResponseAlg *string `json:"authorization_encrypted_response_alg"`
+	AuthorizationEncryptedResponseEnc *string `json:"authorization_encrypted_response_enc"`
+	IntrospectionEncryptedResponseAlg *string `json:"introspection_encrypted_response_alg"`
+	IntrospectionEncryptedResponseEnc *string `json:"introspection_encrypted_response_enc"`
+	// RolesClaim names the claim its tokens carry a person's roles in it under;
+	// "" carries none.
+	RolesClaim *string `json:"roles_claim"`
+	// LoginUIURL is the page of its own a sign-in is sent to, and what lets it walk
+	// one over JSON; "" is this server's page.
+	LoginUIURL *string `json:"login_ui_url"`
+	// AccessTokenFormat is jwt, or opaque for a handle a resource server introspects.
+	AccessTokenFormat *string `json:"access_token_format"`
+	// SubjectType is public, or pairwise for a subject that means nothing outside
+	// Sector, the host name of the clients that share one.
+	SubjectType *string `json:"subject_type"`
+	Sector      *string `json:"sector"`
+	// SecurityProfile is none, or fapi2 to hold the client to that profile.
+	SecurityProfile *string `json:"security_profile"`
+	// RequirePushedAuthorizationRequests is RFC 9126 §6's name; FirstParty
+	// skips the consent screen.
+	RequirePushedAuthorizationRequests *bool `json:"require_pushed_authorization_requests"`
+	// RequireSignedRequestObject is RFC 9101 §10.5's name.
+	RequireSignedRequestObject *bool `json:"require_signed_request_object"`
+	RequireState               *bool `json:"require_state"`
+	FirstParty                 *bool `json:"first_party"`
+	// AdminAPI designates the client for the Admin API (6.01): it may obtain
+	// tokens that act with their holder's roles. Needs privileged-users:write,
+	// as every later write on such a client does (targetClient).
+	AdminAPI *bool `json:"admin_api"`
+	// IssuerAlias pins the client to a live alias of its instance; "" clears.
+	IssuerAlias *string `json:"issuer_alias"`
+	// MinimumACR is the weakest authentication the client accepts, "1" to "4".
+	MinimumACR *string `json:"minimum_acr"`
+	// ConsentLifetimeSeconds is how long a person's consent to the client lasts
+	// before they are asked again; 0 for never (0188).
+	ConsentLifetimeSeconds *int `json:"consent_lifetime_s"`
+
+	// The settings the CLI's `client set-*` verbs write, through the same
+	// store writers, so the two refuse alike (6.03). Each by its column name,
+	// as GET returns it; each left alone when absent.
+	GrantTypes                            *[]string `json:"grant_types"`
+	BackchannelTokenDeliveryMode          *string   `json:"backchannel_token_delivery_mode"`
+	BackchannelClientNotificationEndpoint *string   `json:"backchannel_client_notification_endpoint"`
+	AllowHybrid                           *bool     `json:"allow_hybrid"`
+	HybridReviewBy                        *string   `json:"hybrid_review_by"`
+	ClaimsRedirectURIs                    *[]string `json:"claims_redirect_uris"`
+	DPoPBoundAccessTokens                 *bool     `json:"dpop_bound_access_tokens"`
+	ExchangeRequiresAudienceMatch         *bool     `json:"exchange_requires_audience_match"`
+	JWTBearerProviders                    *[]string `json:"jwt_bearer_providers"`
+
+	// AuthorizationDetailTypes replaces the RFC 9396 types the client may ask
+	// for, each its organisation registered, as `signari rar allow` adds one.
+	AuthorizationDetailTypes *[]string `json:"authorization_detail_types"`
+
+	// LocalizedNames replaces the client's name in other languages, by BCP 47 tag
+	// (RFC 7591 section 2.2's client_name#<tag>, 10.12); {} takes them all away.
+	LocalizedNames *map[string]string `json:"localized_names"`
+
+	// What only `signari apply` or nothing set: the name, the redirect URIs,
+	// the scopes, the portal fields and the back channel (6.03).
+	DisplayName                      *string   `json:"display_name"`
+	RedirectURIs                     *[]string `json:"redirect_uris"`
+	Scopes                           *[]string `json:"scopes"`
+	InitiateLoginURI                 *string   `json:"initiate_login_uri"`
+	LogoURI                          *string   `json:"logo_uri"`
+	PortalHidden                     *bool     `json:"portal_hidden"`
+	BackchannelLogoutURI             *string   `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired *bool     `json:"backchannel_logout_session_required"`
+	// The key set moves the client to private_key_jwt and drops its secret,
+	// as `client set-keys` does.
+	JWKS *json.RawMessage `json:"jwks"`
+	// KeepAuthMethod registers those keys for signing requests and being encrypted to,
+	// leaving how the client authenticates as it is.
+	KeepAuthMethod bool `json:"keep_auth_method"`
+	// Mutual TLS, as `client set-tls`: any rule field replaces the rule, and
+	// exactly one must then be set; tls_certificate is a self-signed client's
+	// PEM certificate, kept as its thumbprint.
+	TLSSubjectDN   *string `json:"tls_subject_dn"`
+	TLSSANDNS      *string `json:"tls_san_dns"`
+	TLSSANURI      *string `json:"tls_san_uri"`
+	TLSSANIP       *string `json:"tls_san_ip"`
+	TLSSANEmail    *string `json:"tls_san_email"`
+	TLSCertificate *string `json:"tls_certificate"`
+	TLSBoundTokens *bool   `json:"tls_bound_tokens"`
+}
+
+func (req patchClientRequest) setsTLSRule() bool {
+	return req.TLSSubjectDN != nil || req.TLSSANDNS != nil || req.TLSSANURI != nil ||
+		req.TLSSANIP != nil || req.TLSSANEmail != nil || req.TLSCertificate != nil
+}
+
+// applyTLS replaces the mutual-TLS rule when one is sent, keeping the current
+// one when only tls_bound_tokens is.
+func (req patchClientRequest) applyTLS(ctx context.Context, tx pgx.Tx, clientID string, before map[string]any) error {
+	str := func(k string) string { v, _ := before[k].(string); return v }
+	t := store.ClientTLS{SubjectDN: str("tls_subject_dn"), SANDNS: str("tls_san_dns"), SANURI: str("tls_san_uri"),
+		SANIP: str("tls_san_ip"), SANEmail: str("tls_san_email")}
+	if th := strings.TrimPrefix(str("tls_thumbprint"), `\x`); th != "" {
+		t.Thumbprint, _ = hex.DecodeString(th)
+	}
+	t.BoundTokens, _ = before["tls_bound_tokens"].(bool)
+	if req.setsTLSRule() {
+		t = store.ClientTLS{BoundTokens: t.BoundTokens}
+		for dst, src := range map[*string]*string{&t.SubjectDN: req.TLSSubjectDN, &t.SANDNS: req.TLSSANDNS,
+			&t.SANURI: req.TLSSANURI, &t.SANIP: req.TLSSANIP, &t.SANEmail: req.TLSSANEmail} {
+			if src != nil {
+				*dst = strings.TrimSpace(*src)
+			}
+		}
+		if req.TLSCertificate != nil && strings.TrimSpace(*req.TLSCertificate) != "" {
+			th, err := store.CertificateThumbprint([]byte(*req.TLSCertificate))
+			if err != nil {
+				return err
+			}
+			t.Thumbprint = th
+		}
+	}
+	if req.TLSBoundTokens != nil {
+		t.BoundTokens = *req.TLSBoundTokens
+	}
+	return store.SetClientTLS(ctx, tx, clientID, t)
+}
+
+// setsShared reports whether the request sets any of the settings the CLI's
+// verbs share.
+func (req patchClientRequest) setsShared() bool {
+	return req.GrantTypes != nil || req.BackchannelTokenDeliveryMode != nil ||
+		req.BackchannelClientNotificationEndpoint != nil || req.AllowHybrid != nil ||
+		req.HybridReviewBy != nil || req.ClaimsRedirectURIs != nil || req.DPoPBoundAccessTokens != nil ||
+		req.ExchangeRequiresAudienceMatch != nil || req.JWTBearerProviders != nil ||
+		req.DisplayName != nil || req.RedirectURIs != nil || req.Scopes != nil ||
+		req.InitiateLoginURI != nil || req.LogoURI != nil || req.PortalHidden != nil ||
+		req.JWKS != nil || req.setsTLSRule() || req.TLSBoundTokens != nil ||
+		req.AuthorizationDetailTypes != nil || req.LocalizedNames != nil
+}
+
+// applySharedSettings writes what the request sets of the settings the CLI's
+// verbs share, holding each unset half of a pair at what it was.
+func (req patchClientRequest) applySharedSettings(ctx context.Context, tx pgx.Tx, clientID string,
+	before map[string]any) error {
+	if req.GrantTypes != nil {
+		if err := store.SetClientGrants(ctx, tx, clientID, *req.GrantTypes); err != nil {
+			return err
+		}
+	}
+	if req.BackchannelTokenDeliveryMode != nil || req.BackchannelClientNotificationEndpoint != nil {
+		mode, _ := before["backchannel_token_delivery_mode"].(string)
+		endpoint, _ := before["backchannel_client_notification_endpoint"].(string)
+		if req.BackchannelTokenDeliveryMode != nil {
+			mode = *req.BackchannelTokenDeliveryMode
+		}
+		if req.BackchannelClientNotificationEndpoint != nil {
+			endpoint = *req.BackchannelClientNotificationEndpoint
+		}
+		if err := store.SetClientCIBA(ctx, tx, clientID, mode, endpoint); err != nil {
+			return err
+		}
+	}
+	if req.AllowHybrid != nil || req.HybridReviewBy != nil {
+		allow, _ := before["allow_hybrid"].(bool)
+		review, _ := before["hybrid_review_by"].(string)
+		if req.AllowHybrid != nil {
+			allow = *req.AllowHybrid
+		}
+		if req.HybridReviewBy != nil {
+			review = *req.HybridReviewBy
+		}
+		if err := store.SetClientHybrid(ctx, tx, clientID, allow, review); err != nil {
+			return err
+		}
+	}
+	if req.ClaimsRedirectURIs != nil {
+		if err := store.SetClientClaimsRedirects(ctx, tx, clientID, *req.ClaimsRedirectURIs); err != nil {
+			return err
+		}
+	}
+	if req.DPoPBoundAccessTokens != nil {
+		if err := store.SetClientDPoP(ctx, tx, clientID, *req.DPoPBoundAccessTokens); err != nil {
+			return err
+		}
+	}
+	if req.ExchangeRequiresAudienceMatch != nil {
+		if err := store.SetClientExchangeContainment(ctx, tx, clientID, *req.ExchangeRequiresAudienceMatch); err != nil {
+			return err
+		}
+	}
+	if req.JWTBearerProviders != nil {
+		if _, err := store.SetClientAssertionIssuers(ctx, tx, clientID, *req.JWTBearerProviders); err != nil {
+			return err
+		}
+	}
+	if req.DisplayName != nil {
+		if err := store.SetClientDisplayName(ctx, tx, clientID, *req.DisplayName); err != nil {
+			return err
+		}
+	}
+	if req.RedirectURIs != nil {
+		if err := store.SetClientRedirectURIs(ctx, tx, clientID, *req.RedirectURIs); err != nil {
+			return err
+		}
+	}
+	if req.Scopes != nil {
+		if err := store.SetClientScopes(ctx, tx, clientID, *req.Scopes); err != nil {
+			return err
+		}
+	}
+	if req.InitiateLoginURI != nil || req.LogoURI != nil || req.PortalHidden != nil {
+		if err := store.SetClientPortal(ctx, tx, clientID, store.ClientPortal{
+			LaunchURL: req.InitiateLoginURI, LogoURL: req.LogoURI, Hidden: req.PortalHidden}); err != nil {
+			return err
+		}
+	}
+	if req.JWKS != nil {
+		set := store.SetClientKeys
+		if req.KeepAuthMethod {
+			set = store.SetClientMessageKeys
+		}
+		if _, err := set(ctx, tx, clientID, *req.JWKS); err != nil {
+			return err
+		}
+	}
+	if req.AuthorizationDetailTypes != nil {
+		if err := store.SetClientDetailTypes(ctx, tx, clientID, *req.AuthorizationDetailTypes); err != nil {
+			return err
+		}
+	}
+	if req.LocalizedNames != nil {
+		orgID, _ := before["org_id"].(string)
+		if err := store.SetClientNames(ctx, tx, orgID, clientID, *req.LocalizedNames); err != nil {
+			return err
+		}
+	}
+	if req.setsTLSRule() || req.TLSBoundTokens != nil {
+		if err := req.applyTLS(ctx, tx, clientID, before); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r patchClientRequest) setsLogout() bool {
+	return r.PostLogoutRedirectURIs != nil || r.FrontchannelLogoutURI != nil || r.FrontchannelSessionRequired != nil ||
+		r.BackchannelLogoutURI != nil || r.BackchannelLogoutSessionRequired != nil
+}
+
+// settings is the request's part for store.SetClientSettings, and whether it
+// has one.
+func (r patchClientRequest) settings() (store.ClientSettings, bool) {
+	var s store.ClientSettings
+	if r.AccessTokenTTLSeconds != nil {
+		d := time.Duration(*r.AccessTokenTTLSeconds) * time.Second
+		s.AccessTokenTTL = &d
+	}
+	if r.RefreshTokenTTLSeconds != nil {
+		d := time.Duration(*r.RefreshTokenTTLSeconds) * time.Second
+		s.RefreshTokenTTL = &d
+	}
+	if r.RefreshReuseGraceSeconds != nil {
+		d := time.Duration(*r.RefreshReuseGraceSeconds) * time.Second
+		s.RefreshReuseGrace = &d
+	}
+	s.IDTokenAlg, s.AccessTokenAlg = r.IDTokenSignedResponseAlg, r.AccessTokenSignedResponseAlg
+	s.AuthorizationResponseAlg = r.AuthorizationSignedResponseAlg
+	s.UserinfoSignedAlg = r.UserinfoSignedResponseAlg
+	s.IDTokenEncryptedAlg, s.IDTokenEncryptedEnc = r.IDTokenEncryptedResponseAlg, r.IDTokenEncryptedResponseEnc
+	s.UserinfoEncryptedAlg, s.UserinfoEncryptedEnc = r.UserinfoEncryptedResponseAlg, r.UserinfoEncryptedResponseEnc
+	s.AuthorizationEncryptedAlg, s.AuthorizationEncryptedEnc = r.AuthorizationEncryptedResponseAlg, r.AuthorizationEncryptedResponseEnc
+	s.IntrospectionSignedAlg = r.IntrospectionSignedResponseAlg
+	s.IntrospectionEncryptedAlg, s.IntrospectionEncryptedEnc = r.IntrospectionEncryptedResponseAlg, r.IntrospectionEncryptedResponseEnc
+	s.RolesClaim, s.LoginUI, s.AccessTokenFormat = r.RolesClaim, r.LoginUIURL, r.AccessTokenFormat
+	s.SubjectType, s.Sector, s.SecurityProfile = r.SubjectType, r.Sector, r.SecurityProfile
+	s.RequirePAR, s.FirstParty, s.IssuerAlias = r.RequirePushedAuthorizationRequests, r.FirstParty, r.IssuerAlias
+	s.RequireState = r.RequireState
+	s.RequireSignedRequest = r.RequireSignedRequestObject
+	s.MinimumACR = r.MinimumACR
+	if r.ConsentLifetimeSeconds != nil {
+		d := time.Duration(*r.ConsentLifetimeSeconds) * time.Second
+		s.ConsentLifetime = &d
+	}
+	return s, r.AccessTokenTTLSeconds != nil || r.RefreshTokenTTLSeconds != nil ||
+		r.RefreshReuseGraceSeconds != nil || r.IDTokenSignedResponseAlg != nil ||
+		r.AccessTokenSignedResponseAlg != nil || r.RolesClaim != nil || r.LoginUIURL != nil || r.AccessTokenFormat != nil ||
+		r.SubjectType != nil || r.Sector != nil || r.SecurityProfile != nil || r.RequirePushedAuthorizationRequests != nil ||
+		r.FirstParty != nil || r.IssuerAlias != nil || r.MinimumACR != nil || r.ConsentLifetimeSeconds != nil
 }
 
 func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
@@ -347,14 +1219,28 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchClientRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+	// A field this cannot set is refused by name rather than dropped. Dropped,
+	// a caller sending the name or redirect URIs before 6.03, or a typo, got
+	// 200 with nothing written, which is how the Terraform provider came to
+	// replace a client rather than update it.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json", "detail": err.Error()})
 		return
 	}
-	if req.Enabled == nil {
+	settings, setsSettings := req.settings()
+	if req.Enabled == nil && req.RequirePKCE == nil && req.MayExchange == nil && req.ExchangeAudiences == nil &&
+		req.AdminAPI == nil && !req.setsLogout() && !setsSettings && !req.setsShared() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "nothing_to_change", "detail": "no supported field present",
 		})
+		return
+	}
+	if p, _ := principalFrom(ctx); req.AdminAPI != nil && !p.Can(ScopePrivilegedUsersWrite) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "privileged_target",
+			"detail": "designating an application for the Admin API makes it where administrators sign in; " +
+				"it needs " + ScopePrivilegedUsersWrite})
 		return
 	}
 	pre, ok := s.readPrecondition(w, r)
@@ -362,14 +1248,17 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var enabled, requirePKCE, mayExchange bool
+	var exchangeAudiences []string
+	var logout, lifetimes map[string]any
 	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
 		// This handler previously changed a client without ever reading which
 		// organisation it belonged to, so there was nothing for the boundary to
 		// check against. The lookup exists for that reason.
-		var orgID string
+		var orgID, kind string
 		if err := tx.QueryRow(ctx,
-			`SELECT org_id::text FROM core.clients WHERE client_id = $1`,
-			clientID).Scan(&orgID); err != nil {
+			`SELECT org_id::text, client_type FROM core.clients WHERE client_id = $1`,
+			clientID).Scan(&orgID, &kind); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errNotFound
 			}
@@ -378,26 +1267,136 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 		if err := requireOrg(ctx, orgID); err != nil {
 			return err
 		}
-
-		tag, err := tx.Exec(ctx,
-			`UPDATE core.clients SET enabled = $2, updated_at = now() WHERE client_id = $1`,
-			clientID, *req.Enabled)
+		if kind == "public" && req.RequirePKCE != nil && !*req.RequirePKCE {
+			return errPublicClientNeedsPKCE
+		}
+		// What the client was, for the record's before-and-after (6.05).
+		before, err := clientState(ctx, tx, clientID)
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
+
+		err = tx.QueryRow(ctx, `
+			UPDATE core.clients
+			   SET enabled = COALESCE($2, enabled),
+			       require_pkce = COALESCE($3, require_pkce),
+			       admin_api = COALESCE($4, admin_api),
+			       updated_at = now()
+			 WHERE client_id = $1
+			RETURNING enabled, require_pkce`,
+			clientID, req.Enabled, req.RequirePKCE, req.AdminAPI).Scan(&enabled, &requirePKCE)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return errNotFound
+		}
+		if err != nil {
+			return err
 		}
 
 		// Disabling a client is the emergency lever -- the way an operator cuts a
 		// compromised integration off from every user at once. It had no audit
 		// record at all, so afterwards there was no way to say who pulled it, or
 		// when, or whether it was pulled rather than the client breaking on its
-		// own.
+		// own. The record names only the fields this request set.
+		detail := map[string]any{}
+		if req.Enabled != nil {
+			detail["enabled"] = *req.Enabled
+		}
+		if req.RequirePKCE != nil {
+			detail["require_pkce"] = *req.RequirePKCE
+		}
+		if req.MayExchange != nil || req.ExchangeAudiences != nil {
+			if err := tx.QueryRow(ctx, `SELECT may_exchange, exchange_audiences FROM core.clients
+				WHERE client_id = $1`, clientID).Scan(&mayExchange, &exchangeAudiences); err != nil {
+				return err
+			}
+			if req.MayExchange != nil {
+				mayExchange = *req.MayExchange
+			}
+			if req.ExchangeAudiences != nil {
+				exchangeAudiences = *req.ExchangeAudiences
+			}
+			if _, err := store.SetClientExchange(ctx, tx, clientID, mayExchange, exchangeAudiences); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT may_exchange, exchange_audiences FROM core.clients
+				WHERE client_id = $1`, clientID).Scan(&mayExchange, &exchangeAudiences); err != nil {
+				return err
+			}
+			detail["may_exchange"] = mayExchange
+			detail["exchange_audiences"] = exchangeAudiences
+		}
+		if req.setsLogout() {
+			if err := store.SetClientLogout(ctx, tx, clientID, store.ClientLogout{
+				PostLogoutRedirectURIs: req.PostLogoutRedirectURIs, FrontchannelURI: req.FrontchannelLogoutURI,
+				FrontchannelSessionRequired: req.FrontchannelSessionRequired, BackchannelURI: req.BackchannelLogoutURI,
+				BackchannelSessionRequired: req.BackchannelLogoutSessionRequired,
+			}); err != nil {
+				return err
+			}
+			uris, fc, fcSID, err := store.ClientLogoutOf(ctx, tx, clientID)
+			if err != nil {
+				return err
+			}
+			logout = map[string]any{"post_logout_redirect_uris": uris, "frontchannel_logout_uri": fc,
+				"frontchannel_logout_session_required": fcSID}
+			for k, v := range logout {
+				detail[k] = v
+			}
+		}
+		if setsSettings {
+			if err := store.SetClientSettings(ctx, tx, clientID, settings); err != nil {
+				return err
+			}
+			got, err := store.ClientSettingsOf(ctx, tx, clientID)
+			if err != nil {
+				return err
+			}
+			lifetimes = map[string]any{
+				"access_token_ttl_s":                    int(got.AccessTokenTTL.Seconds()),
+				"refresh_token_ttl_s":                   int(got.RefreshTokenTTL.Seconds()),
+				"refresh_reuse_grace_s":                 int(got.RefreshReuseGrace.Seconds()),
+				"id_token_signed_response_alg":          got.IDTokenAlg,
+				"access_token_signed_response_alg":      got.AccessTokenAlg,
+				"authorization_signed_response_alg":     got.AuthorizationResponseAlg,
+				"userinfo_signed_response_alg":          got.UserinfoSignedAlg,
+				"id_token_encrypted_response_alg":       got.IDTokenEncryption.Alg,
+				"id_token_encrypted_response_enc":       got.IDTokenEncryption.Enc,
+				"userinfo_encrypted_response_alg":       got.UserinfoEncryption.Alg,
+				"userinfo_encrypted_response_enc":       got.UserinfoEncryption.Enc,
+				"authorization_encrypted_response_alg":  got.AuthorizationEncryption.Alg,
+				"authorization_encrypted_response_enc":  got.AuthorizationEncryption.Enc,
+				"introspection_signed_response_alg":     got.IntrospectionSignedAlg,
+				"introspection_encrypted_response_alg":  got.IntrospectionEncryption.Alg,
+				"introspection_encrypted_response_enc":  got.IntrospectionEncryption.Enc,
+				"roles_claim":                           got.RolesClaim,
+				"login_ui_url":                          got.LoginUI,
+				"access_token_format":                   got.AccessTokenFormat,
+				"subject_type":                          got.SubjectType,
+				"sector":                                got.Sector,
+				"security_profile":                      got.SecurityProfile,
+				"require_pushed_authorization_requests": got.RequirePAR,
+				"require_signed_request_object":         got.RequireSignedRequest,
+				"require_state":                         got.RequireState,
+				"first_party":                           got.FirstParty,
+				"issuer_alias":                          got.IssuerAlias,
+				"minimum_acr":                           got.MinimumACR,
+				"consent_lifetime_s":                    int(got.ConsentLifetime.Seconds()),
+			}
+			for k, v := range lifetimes {
+				detail[k] = v
+			}
+		}
+		if err := req.applySharedSettings(ctx, tx, clientID, before); err != nil {
+			return err
+		}
+		after, err := clientState(ctx, tx, clientID)
+		if err != nil {
+			return err
+		}
+		detail["changes"] = stateChanges(before, after, clientValueless)
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.client_updated", AdminTokenID: TokenIDFrom(ctx),
-			OrgID: orgID, ClientID: clientID,
-			Detail: map[string]any{"enabled": *req.Enabled},
+			OrgID: orgID, ClientID: clientID, Detail: detail,
 		})
 	})
 
@@ -410,6 +1409,31 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client_not_found"})
 		return
+	case errors.Is(err, errPublicClientNeedsPKCE):
+		writePublicClientNeedsPKCE(w)
+		return
+	case errors.Is(err, store.ErrExchangeNeedsConfidentialClient):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "confidential_client_required", "detail": err.Error() +
+				": a public client cannot prove it is the client the permission was granted to",
+		})
+		return
+	case errors.Is(err, store.ErrInvalidExchangeAudience):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_audience", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrInvalidLogoutRegistration):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_logout_uri", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrInvalidClientSetting):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client_setting", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrInvalidClientName):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client_name", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrInvalidDetailType):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_authorization_details_type",
+			"detail": err.Error()})
+		return
 	case err != nil:
 		s.log.Error("patching client", "client_id", clientID, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -419,13 +1443,26 @@ func (s *Server) patchClient(w http.ResponseWriter, r *http.Request) {
 
 	// Disabling is a security-relevant action, so it is logged at a level an
 	// operator will actually see, with the version needed to confirm propagation.
-	s.log.Info("client updated", "client_id", clientID, "enabled", *req.Enabled,
-		"config_version", version)
+	s.log.Info("client updated", "client_id", clientID, "enabled", enabled,
+		"require_pkce", requirePKCE, "config_version", version)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id": clientID, "enabled": *req.Enabled, "config_version": version,
-	})
+	out := map[string]any{
+		"client_id": clientID, "enabled": enabled, "require_pkce": requirePKCE,
+		"config_version": version,
+	}
+	if req.MayExchange != nil || req.ExchangeAudiences != nil {
+		out["may_exchange"], out["exchange_audiences"] = mayExchange, exchangeAudiences
+	}
+	for k, v := range logout {
+		out[k] = v
+	}
+	for k, v := range lifetimes {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }
+
+var errPublicClientNeedsPKCE = errors.New("a public client must require PKCE")
 
 // configVersion reports the current configuration version.
 //
@@ -453,9 +1490,36 @@ var errNotFound = errors.New("not found")
 // pretending otherwise sends an operator hunting for a resource that is right
 // where they left it.
 func writeCrossOrg(w http.ResponseWriter, err error) {
+	var objects outsideObjects
+	if errors.As(err, &objects) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "outside_token_objects", "detail": objects.msg,
+		})
+		return
+	}
 	writeJSON(w, http.StatusForbidden, map[string]string{
 		"error": "outside_token_organisation", "detail": err.Error(),
 	})
+}
+
+// writeOrgRefusal answers a refusal from requireNamedOrg, or from requireOrg,
+// and reports whether err was one.
+func writeOrgRefusal(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, errCrossOrg):
+		writeCrossOrg(w, err)
+	case errors.Is(err, errUnknownOrg):
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "organization_not_found", "detail": err.Error(),
+		})
+	case errors.Is(err, errMalformedOrg):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_request", "detail": err.Error(),
+		})
+	default:
+		return false
+	}
+	return true
 }
 
 // mutate runs fn inside a transaction and bumps config_version with it.
@@ -478,11 +1542,29 @@ func (s *Server) mutate(ctx context.Context, fn func(pgx.Tx) error) (int64, erro
 // write leaves the database exactly as it was -- which is the property that makes
 // it worth offering rather than a status code that arrives too late.
 func (s *Server) mutateIf(ctx context.Context, p precondition, fn func(pgx.Tx) error) (int64, error) {
+	// Inside a batch (batch.go), into the batch's transaction: it holds the
+	// version lock and checked the batch's precondition, and bumps and commits
+	// once, after every operation has written.
+	if b, ok := inBatch(ctx); ok {
+		if err := fn(b.tx); err != nil {
+			return 0, err
+		}
+		b.wrote = true
+		return b.version, nil
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The version row first, conditional or not, before fn can take another
+	// lock (store.LockConfigVersion). An unconditional write here took the
+	// audit chain's lock inside fn and the row at the end, and a CLI command
+	// and this API, run together, deadlocked (4.25).
+	if err := store.LockConfigVersion(ctx, tx); err != nil {
+		return 0, err
+	}
 
 	if err := checkPrecondition(ctx, tx, p); err != nil {
 		return 0, err

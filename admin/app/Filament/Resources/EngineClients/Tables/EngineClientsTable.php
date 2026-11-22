@@ -137,9 +137,12 @@ class EngineClientsTable
             ->modalDescription(fn ($record): string => $record->enabled
                 ? __('Every authorization and token request from this client starts failing on the next request. Sessions already issued are not revoked.')
                 : __('This client can request authorization and tokens again from the next request.'))
-            ->action(function ($record): void {
+            ->action(function ($record, $livewire): void {
                 try {
+                    // Held to the page the operator confirmed from, so a client
+                    // somebody else changed since cannot be flipped back unseen.
                     $version = EngineAdminApi::fromConfig()
+                        ->asOf($livewire->renderedConfigVersion ?? null)
                         ->setClientEnabled($record->client_id, ! $record->enabled);
                 } catch (RuntimeException $e) {
                     // The engine refused or is unreachable. Nothing changed, and
@@ -194,7 +197,7 @@ class EngineClientsTable
                     ->password()->revealable()
                     ->helperText(__('Only when migrating an app that already has one. Leave blank to generate.')),
             ])
-            ->action(function (array $data): void {
+            ->action(function (array $data, $livewire): void {
                 $orgId = auth()->user()?->org_id;
                 if (blank($orgId)) {
                     Notification::make()->title(__('You are not assigned to an organisation'))
@@ -203,7 +206,7 @@ class EngineClientsTable
                     return;
                 }
                 try {
-                    $r = EngineAdminApi::fromConfig()->createClient(
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)->createClient(
                         $orgId, $data['client_id'], $data['display_name'] ?: $data['client_id'],
                         self::splitURIs($data['redirect_uris'] ?? ''),
                         (bool) ($data['public'] ?? false),
@@ -239,9 +242,10 @@ class EngineClientsTable
             // leaked, and a window in which the leaked value still works is the
             // thing you were trying to end.
             ->modalDescription(__('The current secret stops working IMMEDIATELY. Any deployment still using it will fail to get tokens until it is updated.'))
-            ->action(function ($record): void {
+            ->action(function ($record, $livewire): void {
                 try {
-                    $r = EngineAdminApi::fromConfig()->rotateClientSecret($record->client_id);
+                    $r = EngineAdminApi::fromConfig()->asOf($livewire->renderedConfigVersion ?? null)
+                        ->rotateClientSecret($record->client_id);
                 } catch (RuntimeException $e) {
                     Notification::make()->title(__('Nothing was rotated'))->body($e->getMessage())
                         ->danger()->persistent()->send();

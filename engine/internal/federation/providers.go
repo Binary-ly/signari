@@ -19,7 +19,11 @@ import (
 type Kind string
 
 const (
-	KindOIDC      Kind = "oidc"
+	KindOIDC Kind = "oidc"
+	// KindOAuth2 is a provider that speaks plain OAuth 2.0: no ID token, no
+	// discovery, and an identity read from its userinfo endpoint by the paths
+	// Config.Userinfo names. It covers whatever has no preset and no OIDC.
+	KindOAuth2    Kind = "oauth2"
 	KindGoogle    Kind = "google"
 	KindGitHub    Kind = "github"
 	KindMicrosoft Kind = "microsoft"
@@ -35,6 +39,11 @@ const (
 	// preset, because a SAML upstream's endpoints and certificate come from its
 	// metadata rather than from a list this package could know.
 	KindSAML Kind = "saml"
+	// KindOID4VP is this deployment as an OpenID4VP verifier, signing somebody
+	// in with a credential their wallet presents. Like KindSAML it shares the
+	// linking rules and has no preset: what it asks for and whom it believes are
+	// its own rows.
+	KindOID4VP Kind = "oid4vp"
 	// KindAssertion only publishes signing keys. It is a trust anchor for the
 	// RFC 7523 jwt-bearer grant and is never signed in through: there is no
 	// authorization endpoint to send a browser to and no token endpoint to
@@ -313,6 +322,11 @@ var presets = map[Kind]Preset{
 		EmailNeedsSeparateCheck: false,
 		Note: "Verification is not trusted by default for an unknown provider. " +
 			"Enable it only if you know how that provider verifies addresses.",
+	},
+	KindOAuth2: {
+		Note: "Nothing is signed here: who somebody is rests on the TLS connection to the " +
+			"userinfo endpoint you named. Verification is not trusted by default, and enabling " +
+			"it needs a path to where the provider says so.",
 	},
 }
 

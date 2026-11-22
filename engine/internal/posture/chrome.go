@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Chrome Enterprise device trust, as a source of device posture.
@@ -86,7 +88,7 @@ func (c *Chrome) client() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: 10 * time.Second, Transport: &tracing.Transport{Base: http.DefaultTransport}}
 }
 
 // Challenge asks Google for a challenge to hand the browser.

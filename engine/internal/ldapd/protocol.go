@@ -13,8 +13,8 @@
 // surface than one that cannot, and because the LDAP outpost has no write path
 // back to the engine at all. See write.go.
 //
-// It is still not a directory. There is no replication, no subschema subentry,
-// no DIT structure rules, no aliases, no subordinate entries: the tree is flat
+// It is still not a directory. There is no replication, no DIT structure rules,
+// no aliases, no subordinate entries: the tree is flat
 // and holds `person` entries. Everything outside that is refused rather than
 // stubbed, because a half-implemented directory is one somebody eventually
 // depends on.
@@ -72,18 +72,24 @@ const (
 	resultSuccess                = 0
 	resultProtocolError          = 2
 	resultTimeLimitExceeded      = 3
+	resultSizeLimitExceeded      = 4
 	resultAuthMethodNotSupported = 7
-	resultNoSuchAttribute        = 16
-	resultUndefinedAttributeType = 17
-	resultConstraintViolation    = 19
-	resultAttributeOrValueExists = 20
-	resultNoSuchObject           = 32
-	resultInvalidDNSyntax        = 34
-	resultInvalidCredentials     = 49
-	resultInsufficientAccess     = 50
+	resultAdminLimitExceeded     = 11
+	// A critical control this server does not apply. RFC 4511 §4.1.11,
+	// specs/rfc4511.txt:766-771: such an operation MUST NOT be performed.
+	resultUnavailableCriticalExtension = 12
+	resultNoSuchAttribute              = 16
+	resultUndefinedAttributeType       = 17
+	resultConstraintViolation          = 19
+	resultAttributeOrValueExists       = 20
+	resultNoSuchObject                 = 32
+	resultInvalidDNSyntax              = 34
+	resultInvalidCredentials           = 49
+	resultInsufficientAccess           = 50
 	// "Indicates that the server is too busy to service the operation."
 	// RFC 4511 s4.1.9, specs/rfc4511.txt:2904.
 	resultBusy                      = 51
+	resultUnavailable               = 52 // specs/rfc4511.txt:2919
 	resultUnwillingToPerform        = 53
 	resultNamingViolation           = 64
 	resultObjectClassViolation      = 65
@@ -203,137 +209,6 @@ func decodeSearch(op *ber.Packet) (*searchRequest, error) {
 	}, nil
 }
 
-// filter is the subset of LDAP filters this shim understands.
-//
-// Deliberately small. The full grammar includes substring matching, extensible
-// matches and approximate matches, and each is a way to ask the server to do
-// work on behalf of an unauthenticated stranger. What applications actually
-// send when authenticating is an equality match on a login attribute, and
-// occasionally an AND of that with an objectClass.
-type filter struct {
-	Kind     filterKind
-	Attr     string
-	Value    string
-	Children []*filter
-}
-
-type filterKind int
-
-const (
-	filterAnd filterKind = iota
-	filterOr
-	filterNot
-	filterEquality
-	filterPresent
-	// filterUnsupported is returned rather than an error so a search carrying a
-	// construct we do not implement can be answered with an empty result set
-	// instead of a protocol error. Applications probe with odd filters, and a
-	// protocol error tends to abort the whole connection.
-	filterUnsupported
-)
-
-// Filter tags (RFC 4511 §4.5.1.7).
-const (
-	filterTagAnd       = 0
-	filterTagOr        = 1
-	filterTagNot       = 2
-	filterTagEquality  = 3
-	filterTagSubstring = 4
-	filterTagPresent   = 7
-)
-
-func decodeFilter(p *ber.Packet) (*filter, error) {
-	switch p.Tag {
-	case filterTagAnd, filterTagOr:
-		kind := filterAnd
-		if p.Tag == filterTagOr {
-			kind = filterOr
-		}
-		f := &filter{Kind: kind}
-		for _, c := range p.Children {
-			child, err := decodeFilter(c)
-			if err != nil {
-				return nil, err
-			}
-			f.Children = append(f.Children, child)
-		}
-		return f, nil
-
-	case filterTagNot:
-		if len(p.Children) != 1 {
-			return &filter{Kind: filterUnsupported}, nil
-		}
-		child, err := decodeFilter(p.Children[0])
-		if err != nil {
-			return nil, err
-		}
-		return &filter{Kind: filterNot, Children: []*filter{child}}, nil
-
-	case filterTagEquality:
-		if len(p.Children) != 2 {
-			return &filter{Kind: filterUnsupported}, nil
-		}
-		attr := string(p.Children[0].Data.Bytes())
-		val := string(p.Children[1].Data.Bytes())
-		return &filter{Kind: filterEquality, Attr: attr, Value: val}, nil
-
-	case filterTagPresent:
-		return &filter{Kind: filterPresent, Attr: string(p.Data.Bytes())}, nil
-
-	default:
-		return &filter{Kind: filterUnsupported}, nil
-	}
-}
-
-// entry is one directory entry we return.
-type entry struct {
-	DN    string
-	Attrs map[string][]string
-}
-
-// Matches evaluates a filter against an entry.
-//
-// Attribute names are compared case-insensitively, because LDAP attribute
-// descriptions are case-insensitive and clients send every variation of `uid`,
-// `uID` and `UID` that you can imagine.
-func (f *filter) Matches(e *entry) bool {
-	if f == nil {
-		return true
-	}
-	switch f.Kind {
-	case filterAnd:
-		for _, c := range f.Children {
-			if !c.Matches(e) {
-				return false
-			}
-		}
-		return true
-	case filterOr:
-		for _, c := range f.Children {
-			if c.Matches(e) {
-				return true
-			}
-		}
-		return false
-	case filterNot:
-		return len(f.Children) == 1 && !f.Children[0].Matches(e)
-	case filterEquality:
-		for _, v := range attrValues(e, f.Attr) {
-			if equalFold(v, f.Value) {
-				return true
-			}
-		}
-		return false
-	case filterPresent:
-		return len(attrValues(e, f.Attr)) > 0
-	default:
-		// An unsupported construct matches nothing, so the search returns an
-		// empty result rather than everything. Failing open here would answer a
-		// filter we did not understand with the entire directory.
-		return false
-	}
-}
-
 func attrValues(e *entry, attr string) []string {
 	for k, v := range e.Attrs {
 		if equalFold(k, attr) {
@@ -368,6 +243,67 @@ func newMessage(messageID int64, op *ber.Packet) *ber.Packet {
 	m := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAPMessage")
 	m.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, messageID, "MessageID"))
 	m.AppendChild(op)
+	return m
+}
+
+// oidPagedResults is RFC 2696's control. Its value is a BER SEQUENCE of a size
+// and an opaque cookie, in both directions.
+const oidPagedResults = "1.2.840.113556.1.4.319"
+
+// pagedResults is that control on a request.
+type pagedResults struct {
+	size   int
+	cookie string
+}
+
+// pagedResultsOf finds the control among an LDAPMessage's controls.
+func pagedResultsOf(controls *ber.Packet) (*pagedResults, error) {
+	if controls == nil {
+		return nil, nil
+	}
+	for _, ctl := range controls.Children {
+		if len(ctl.Children) == 0 || ber.DecodeString(ctl.Children[0].Data.Bytes()) != oidPagedResults {
+			continue
+		}
+		// The value is the last child: the criticality before it is optional.
+		value := ctl.Children[len(ctl.Children)-1]
+		if len(ctl.Children) < 2 || value.Tag != ber.TagOctetString {
+			return nil, fmt.Errorf("the paged results control has no value")
+		}
+		seq, err := ber.DecodePacketErr(value.Data.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		if len(seq.Children) != 2 {
+			return nil, fmt.Errorf("the paged results value has %d fields, expected 2", len(seq.Children))
+		}
+		size, ok := seq.Children[0].Value.(int64)
+		if !ok || size < 0 {
+			return nil, fmt.Errorf("the paged results size is not a size")
+		}
+		return &pagedResults{size: int(size), cookie: string(seq.Children[1].Data.Bytes())}, nil
+	}
+	return nil, nil
+}
+
+// pagedDone is a SearchResultDone carrying the control back: the cookie to send
+// for the next page, empty when there is none. The estimate of the total stays
+// zero, which means it is not known; counting would read everybody.
+func pagedDone(messageID, code int64, cookie string) *ber.Packet {
+	seq := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "realSearchControlValue")
+	seq.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, int64(0), "size"))
+	seq.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, cookie, "cookie"))
+	value := ber.Encode(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, nil, "controlValue")
+	value.Data.Write(seq.Bytes())
+
+	ctl := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Control")
+	ctl.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, oidPagedResults, "controlType"))
+	ctl.AppendChild(value)
+	controls := ber.Encode(ber.ClassContext, ber.TypeConstructed, 0, nil, "Controls")
+	controls.AppendChild(ctl)
+
+	m := newMessage(messageID, newResult(appSearchResultDone, code, "", ""))
+	m.AppendChild(controls)
 	return m
 }
 

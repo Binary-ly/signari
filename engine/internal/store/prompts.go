@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,40 +22,84 @@ type Querier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-// Prompts a user still owes an answer to.
+// ErrPromptChanged is an answer to a version of a prompt that is no longer the
+// current one: it was edited while the person was reading it.
+var ErrPromptChanged = errors.New("the prompt changed while it was being answered")
+
+// Prompts a user still owes an answer to, and the required attributes they may write
+// and hold no value for (MissingRequiredAttributes), which sign-in asks for at the
+// same stage. One statement for both: a password sign-in is held to a count of round
+// trips, and the second list used to cost one more.
 //
 // Ordered, and filtered by what they have already answered. A prompt marked
-// `once` disappears after the first answer; one that is not is asked every time,
+// `once` disappears once its CURRENT version is answered (5.13), so editing
+// the terms asks everybody again; one that is not once is asked every time,
 // which is right for a notice and wrong for terms acceptance.
 func PendingPrompts(ctx context.Context, db Querier, orgID, userID string) (
-	[]prompts.Prompt, error) {
+	[]prompts.Prompt, []Attribute, error) {
 
-	rows, err := db.Query(ctx, `
-		SELECT p.id::text, p.slug, p.title, COALESCE(p.body,''), p.once, p.fields
+	rows, err := db.Query(ctx, pendingPromptsStatement, orgID, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	return scanPendingPrompts(rows)
+}
+
+// QueuePendingPrompts asks PendingPrompts' question as one more statement in a batch
+// the caller sends (E.37).
+func QueuePendingPrompts(b *pgx.Batch, orgID, userID string) func() ([]prompts.Prompt, []Attribute, error) {
+	var out []prompts.Prompt
+	var missing []Attribute
+	err := errors.New("the batch asking for pending prompts was not sent")
+	b.Queue(pendingPromptsStatement, orgID, userID).Query(func(rows pgx.Rows) error {
+		out, missing, err = scanPendingPrompts(rows)
+		return nil
+	})
+	return func() ([]prompts.Prompt, []Attribute, error) { return out, missing, err }
+}
+
+const pendingPromptsStatement = `
+		SELECT 'prompt', p.id::text, p.slug, p.title, COALESCE(p.body,''), p.once, p.fields, p.version,
+		       p.position, p.slug
 		  FROM core.prompts p
 		 WHERE p.org_id = $1::uuid AND p.enabled
 		   AND (NOT p.once OR NOT EXISTS (
 		         SELECT 1 FROM core.prompt_responses r
-		          WHERE r.prompt_id = p.id AND r.user_id = $2::uuid))
-		 ORDER BY p.position, p.slug`, orgID, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+		          WHERE r.prompt_id = p.id AND r.user_id = $2::uuid AND r.prompt_version = p.version))
+		UNION ALL
+		SELECT 'attribute', s.id::text, s.name, s.display_name, s.value_type, false, '[]'::jsonb, 0,
+		       0, s.name
+		  FROM core.user_attribute_schema s
+		 WHERE s.org_id = $1::uuid AND s.required AND s.user_writable
+		   AND NOT EXISTS (SELECT 1 FROM core.user_attributes a
+		                    WHERE a.attribute_id = s.id AND a.user_id = $2::uuid)
+		 ORDER BY 1, 9, 10`
 
+func scanPendingPrompts(rows pgx.Rows) ([]prompts.Prompt, []Attribute, error) {
 	var out []prompts.Prompt
+	var missing []Attribute
 	for rows.Next() {
+		var kind, sortKey string
+		var position int
 		var p prompts.Prompt
 		var fields []byte
-		if err := rows.Scan(&p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields); err != nil {
-			return nil, err
+		if err := rows.Scan(&kind, &p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields, &p.Version,
+			&position, &sortKey); err != nil {
+			return nil, nil, err
+		}
+		if kind == "attribute" {
+			// Required and the person's to write, by the WHERE above.
+			missing = append(missing, Attribute{ID: p.ID, Name: p.Slug, DisplayName: p.Title, ValueType: p.Body,
+				UserWritable: true, Required: true})
+			continue
 		}
 		if err := json.Unmarshal(fields, &p.Fields); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return out, missing, rows.Err()
 }
 
 // LoadPrompt reads one by slug.
@@ -64,9 +109,9 @@ func LoadPrompt(ctx context.Context, db *pgxpool.Pool, orgID, slug string) (
 	var p prompts.Prompt
 	var fields []byte
 	err := db.QueryRow(ctx, `
-		SELECT id::text, slug, title, COALESCE(body,''), once, fields
+		SELECT id::text, slug, title, COALESCE(body,''), once, fields, version
 		  FROM core.prompts WHERE org_id = $1::uuid AND slug = $2 AND enabled`,
-		orgID, slug).Scan(&p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields)
+		orgID, slug).Scan(&p.ID, &p.Slug, &p.Title, &p.Body, &p.Once, &fields, &p.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -76,19 +121,28 @@ func LoadPrompt(ctx context.Context, db *pgxpool.Pool, orgID, slug string) (
 	return &p, nil
 }
 
-// RecordAnswer stores a submission.
-func RecordAnswer(ctx context.Context, tx pgx.Tx, promptID, userID, orgID string,
+// RecordAnswer stores a submission to the version of the prompt the person
+// was shown, as a new row (5.13): earlier answers are kept, and an answer to a
+// version since replaced is refused with ErrPromptChanged rather than filed
+// against text the person never saw. The row carries the prompt's content hash
+// as it stood, the evidence of exactly what was agreed.
+func RecordAnswer(ctx context.Context, tx pgx.Tx, promptID string, version int, userID, orgID string,
 	answers prompts.Answers) error {
 
 	raw, err := json.Marshal(answers)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO core.prompt_responses (prompt_id, user_id, org_id, answers)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4)
-		ON CONFLICT (prompt_id, user_id) DO UPDATE SET
-			answers = EXCLUDED.answers, answered_at = now()`,
-		promptID, userID, orgID, raw)
-	return err
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO core.prompt_responses (prompt_id, user_id, org_id, answers, prompt_version, content_hash)
+		SELECT p.id, $2::uuid, $3::uuid, $4, p.version, p.content_hash
+		  FROM core.prompts p WHERE p.id = $1::uuid AND p.version = $5`,
+		promptID, userID, orgID, raw, version)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrPromptChanged
+	}
+	return nil
 }

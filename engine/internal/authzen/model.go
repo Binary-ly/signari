@@ -2,7 +2,9 @@ package authzen
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +65,89 @@ type Type struct {
 	// factor" is a fact about the SESSION, and only whoever authenticated the
 	// session knows it.
 	Require map[string]Condition `yaml:"require" json:"require,omitempty"`
+	// Also and Except narrow an action by what else the subject holds. Also asks
+	// for one of its relations on top of the permission, and Except refuses anybody
+	// holding one of its, whatever else they hold: a deny list is an except.
+	Also   map[string][]string `yaml:"also" json:"also,omitempty"`
+	Except map[string][]string `yaml:"except" json:"except,omitempty"`
+}
+
+// Rewrite is `parent->viewer` among the relations implying another: whoever holds
+// viewer on whatever is the parent of this object holds this relation here. Through
+// is a relation on this type and its subject is the other object, so `viewer` is
+// looked for on that object's own type.
+type Rewrite struct{ Through, Relation string }
+
+func parseRewrite(entry string) (Rewrite, bool) {
+	through, relation, ok := strings.Cut(entry, "->")
+	return Rewrite{through, relation}, ok
+}
+
+// RewritesOf answers the ways a relation is held through another object, itself
+// and only itself: a walk arrives at each of Expand's relations in turn.
+func (t Type) RewritesOf(rel string) []Rewrite {
+	var out []Rewrite
+	for _, entry := range t.Relations[rel] {
+		if r, ok := parseRewrite(entry); ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Walks reports whether answering this action can take more than the object's own
+// relations: a relation held through another object, or anything else asked of the
+// subject. Without one, one read of the relations settles it.
+func (m *Model) Walks(objectType, action string) bool {
+	t, ok := m.Types[objectType]
+	if !ok {
+		return false
+	}
+	if len(t.Also[action]) > 0 || len(t.Except[action]) > 0 {
+		return true
+	}
+	relations, _ := m.RelationsFor(objectType, action)
+	for _, r := range relations {
+		if len(t.RewritesOf(r)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// AlsoFor and ExceptFor answer an action's narrowing, each relation with what implies it.
+func (m *Model) AlsoFor(objectType, action string) []string {
+	return m.Types[objectType].expandAll(m.Types[objectType].Also[action])
+}
+
+// ExceptFor is AlsoFor's other half.
+func (m *Model) ExceptFor(objectType, action string) []string {
+	return m.Types[objectType].expandAll(m.Types[objectType].Except[action])
+}
+
+func (t Type) expandAll(names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range names {
+		for _, r := range t.Expand(name) {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// declaresRelation reports whether any type in the model has this relation.
+func (m *Model) declaresRelation(rel string) bool {
+	for _, t := range m.Types {
+		if _, ok := t.Relations[rel]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 type Condition struct {
@@ -82,6 +167,11 @@ type Condition struct {
 	SubjectActive bool `yaml:"subject_active" json:"subject_active,omitempty"`
 	// EmailVerified requires a verified address.
 	EmailVerified bool `yaml:"email_verified" json:"email_verified,omitempty"`
+	// UserAttributes requires the subject to hold each of these attributes, as
+	// our directory has it: one of the values listed, or any value when none are.
+	// Only an attribute declared and not personal: a sealed value would be
+	// opened for every decision, and a rule on it would outlive an erasure.
+	UserAttributes map[string][]string `yaml:"user_attributes" json:"user_attributes,omitempty"`
 
 	// Time restricts the action to a window, by OUR clock. Not the caller's:
 	// a time restriction an application can lie about is a comment.
@@ -140,7 +230,63 @@ func (c Condition) isEmpty() bool {
 	return !c.MFA && !c.DeviceManaged && !c.DeviceCompliant &&
 		len(c.AnyGroup) == 0 && c.MaxRisk == 0 && !c.SubjectActive &&
 		!c.EmailVerified && c.Time == nil && c.Asserted == nil &&
-		len(c.Policies) == 0
+		len(c.Policies) == 0 && len(c.UserAttributes) == 0
+}
+
+// AttributeNames lists the attributes the model's conditions read, sorted, for
+// whoever stores it to check against the organisation's declarations.
+func (m *Model) AttributeNames() []string {
+	seen := map[string]bool{}
+	add := func(c Condition) {
+		for name := range c.UserAttributes {
+			seen[name] = true
+		}
+	}
+	for _, t := range m.Types {
+		for _, c := range t.Require {
+			add(c)
+		}
+	}
+	for _, c := range m.Policies {
+		add(c)
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// missingAttribute names the first attribute required that the subject does not
+// hold as required, in a fixed order so a refusal says the same thing each time.
+func missingAttribute(required map[string][]string, held map[string]string) (string, bool) {
+	for _, name := range slices.Sorted(maps.Keys(required)) {
+		v, present := held[name]
+		if !present || (len(required[name]) > 0 && !slices.Contains(required[name], v)) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// Summary says what a condition asks for, in words for an operator.
+func (c Condition) Summary() string {
+	var parts []string
+	if c.MFA {
+		parts = append(parts, "a second factor")
+	}
+	if c.DeviceManaged {
+		parts = append(parts, "a managed device")
+	}
+	if c.DeviceCompliant {
+		parts = append(parts, "a compliant device")
+	}
+	if c.MaxRisk > 0 {
+		parts = append(parts, fmt.Sprintf("risk at most %d", c.MaxRisk))
+	}
+	if len(c.AnyGroup) > 0 {
+		parts = append(parts, "membership of "+strings.Join(c.AnyGroup, " or "))
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
+		parts = append(parts, "the attribute "+name)
+	}
+	return strings.Join(parts, " and ")
 }
 
 // resolved is a Condition with its named policies attached.
@@ -191,6 +337,8 @@ type ModelTest struct {
 	Risk            int      `yaml:"risk" json:"risk,omitempty"`
 	Active          *bool    `yaml:"active" json:"active,omitempty"`
 	EmailVerified   bool     `yaml:"email_verified" json:"email_verified,omitempty"`
+	// Attributes are what the directory would hold for the subject.
+	Attributes map[string]string `yaml:"attributes" json:"attributes,omitempty"`
 	// At pins the clock, as RFC 3339. A time-window rule whose tests only pass
 	// between nine and five is a test nobody can run in CI.
 	At string `yaml:"at" json:"at,omitempty"`
@@ -256,9 +404,36 @@ func (m *Model) validate() error {
 					"digits, _ or -", name, rel)
 			}
 			for _, from := range implies {
+				if rw, ok := parseRewrite(from); ok {
+					if _, ok := t.Relations[rw.Through]; !ok {
+						return fmt.Errorf("%s.%s goes through %q, which is not a "+
+							"relation on %s", name, rel, rw.Through, name)
+					}
+					if !m.declaresRelation(rw.Relation) {
+						return fmt.Errorf("%s.%s looks for %q on another object, and no "+
+							"type has that relation", name, rel, rw.Relation)
+					}
+					continue
+				}
 				if _, ok := t.Relations[from]; !ok {
 					return fmt.Errorf("%s.%s is implied by %q, which is not a "+
 						"relation on %s", name, rel, from, name)
+				}
+			}
+		}
+		for kind, narrowing := range map[string]map[string][]string{"also": t.Also, "except": t.Except} {
+			for act, relations := range narrowing {
+				if _, ok := t.Permissions[act]; !ok {
+					// As for `require`: a rule on an action nobody defined never
+					// runs, and reads as a restriction in force.
+					return fmt.Errorf("%s: `%s` names %q, which is not a permission "+
+						"on %s", name, kind, act, name)
+				}
+				for _, rel := range relations {
+					if _, ok := t.Relations[rel]; !ok {
+						return fmt.Errorf("%s: `%s` of %s names %q, which is not a "+
+							"relation on %s", name, kind, act, rel, name)
+					}
 				}
 			}
 		}
@@ -312,33 +487,44 @@ func (m *Model) validate() error {
 	return nil
 }
 
+// Validate checks a window can be evaluated and restricts something, where naming
+// what it is on in an error. The access policy holds its windows to the same.
+func (w *TimeWindow) Validate(where string) error {
+	if (w.From != "" || w.To != "") && w.Zone == "" {
+		return fmt.Errorf("%s: a time window needs a `zone` -- \"%s\" without "+
+			"one means that hour somewhere, which is not a control", where, w.From+w.To)
+	}
+	if w.Zone != "" {
+		if _, err := time.LoadLocation(w.Zone); err != nil {
+			return fmt.Errorf("%s: %q is not an IANA time zone", where, w.Zone)
+		}
+	}
+	for _, f := range []string{w.From, w.To} {
+		if f != "" && !validHM(f) {
+			return fmt.Errorf("%s: %q is not HH:MM", where, f)
+		}
+	}
+	for _, d := range w.Days {
+		if !validDay(d) {
+			return fmt.Errorf("%s: %q is not a day (use mon, tue, wed, thu, "+
+				"fri, sat, sun)", where, d)
+		}
+	}
+	if len(w.Days) == 0 && w.From == "" && w.To == "" {
+		return fmt.Errorf("%s: the time window restricts nothing", where)
+	}
+	return nil
+}
+
+// Contains reports whether t falls inside the window.
+func (w *TimeWindow) Contains(t time.Time) bool { return w.contains(t) }
+
 // validate checks a condition can actually be evaluated.
 func (c Condition) validate(typeName, action string) error {
 	where := typeName + "." + action
 	if c.Time != nil {
-		w := c.Time
-		if (w.From != "" || w.To != "") && w.Zone == "" {
-			return fmt.Errorf("%s: a time window needs a `zone` -- \"%s\" without "+
-				"one means that hour somewhere, which is not a control", where, w.From+w.To)
-		}
-		if w.Zone != "" {
-			if _, err := time.LoadLocation(w.Zone); err != nil {
-				return fmt.Errorf("%s: %q is not an IANA time zone", where, w.Zone)
-			}
-		}
-		for _, f := range []string{w.From, w.To} {
-			if f != "" && !validHM(f) {
-				return fmt.Errorf("%s: %q is not HH:MM", where, f)
-			}
-		}
-		for _, d := range w.Days {
-			if !validDay(d) {
-				return fmt.Errorf("%s: %q is not a day (use mon, tue, wed, thu, "+
-					"fri, sat, sun)", where, d)
-			}
-		}
-		if len(w.Days) == 0 && w.From == "" && w.To == "" {
-			return fmt.Errorf("%s: the time window restricts nothing", where)
+		if err := c.Time.Validate(where); err != nil {
+			return err
 		}
 	}
 	if c.Asserted != nil {
@@ -396,6 +582,11 @@ func (t Type) cycle() string {
 		colour[rel] = grey
 		path = append(path, rel)
 		for _, next := range t.Relations[rel] {
+			// Through another object is another object: only the data can make
+			// that a cycle, so a walk bounds it and this cannot.
+			if _, across := parseRewrite(next); across {
+				continue
+			}
 			switch colour[next] {
 			case grey:
 				return strings.Join(append(path, next), " -> ")
@@ -435,6 +626,9 @@ func (t Type) Expand(rel string) []string {
 		cur := queue[0]
 		queue = queue[1:]
 		for _, from := range t.Relations[cur] {
+			if _, across := parseRewrite(from); across {
+				continue
+			}
 			if !seen[from] {
 				seen[from] = true
 				queue = append(queue, from)
@@ -584,19 +778,26 @@ func (m *Model) RunTests() error {
 		for _, r := range tc.Relations {
 			held[r] = true
 		}
-		granted := false
-		for _, r := range wanted {
-			if held[r] {
-				granted = true
-				break
+		holdsAny := func(relations []string) bool {
+			for _, r := range relations {
+				if held[r] {
+					return true
+				}
 			}
+			return false
+		}
+		granted := holdsAny(wanted) && !holdsAny(m.ExceptFor(objType, tc.Action))
+		if also := m.AlsoFor(objType, tc.Action); len(also) > 0 && !holdsAny(also) {
+			granted = false
 		}
 		if granted {
 			if c, has := m.ConditionFor(objType, tc.Action); has {
+				// A case describes a session, which is what its facts are about.
 				f := Facts{
-					MFA: tc.MFA, Groups: tc.Groups, DeviceManaged: tc.DeviceManaged,
+					FromSession: true,
+					MFA:         tc.MFA, Groups: tc.Groups, DeviceManaged: tc.DeviceManaged,
 					DeviceCompliant: tc.DeviceCompliant, Risk: tc.Risk,
-					EmailVerified: tc.EmailVerified,
+					EmailVerified: tc.EmailVerified, Attributes: tc.Attributes,
 					ResourceProps: tc.ResourceProps, IP: tc.IP,
 				}
 				// A test that does not say defaults to active, because that is
@@ -642,6 +843,8 @@ type Facts struct {
 	// Active and EmailVerified come from our directory.
 	Active        bool
 	EmailVerified bool
+	// Attributes are the subject's attributes that are not personal.
+	Attributes map[string]string
 	// Now is the evaluation time. A field rather than a call to time.Now so a
 	// model's own tests can pin it -- a time window whose tests only pass
 	// between nine and five is a test nobody can run.
@@ -668,7 +871,8 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 	if c.DeviceCompliant && !f.DeviceCompliant {
 		return false
 	}
-	if c.MaxRisk > 0 && f.Risk > c.MaxRisk {
+	// With no session there is no score, and no score is not a low one.
+	if c.MaxRisk > 0 && (!f.FromSession || f.Risk > c.MaxRisk) {
 		return false
 	}
 	if len(c.AnyGroup) > 0 {
@@ -689,6 +893,9 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 		return false
 	}
 	if c.EmailVerified && !f.EmailVerified {
+		return false
+	}
+	if _, missing := missingAttribute(c.UserAttributes, f.Attributes); missing {
 		return false
 	}
 	if c.Time != nil && !c.Time.contains(f.Now) {
@@ -724,6 +931,11 @@ func (c Condition) SatisfiedBy(f Facts) bool {
 		}
 	}
 	return true
+}
+
+func (c Condition) hasMissingAttribute(f Facts) bool {
+	_, missing := missingAttribute(c.UserAttributes, f.Attributes)
+	return missing
 }
 
 // contains reports whether t falls inside the window.
@@ -843,6 +1055,8 @@ func (c Condition) Unmet(f Facts) string {
 		return "a managed device"
 	case c.DeviceCompliant && !f.DeviceCompliant:
 		return "a compliant device"
+	case c.MaxRisk > 0 && !f.FromSession:
+		return fmt.Sprintf("session risk at most %d", c.MaxRisk)
 	case c.MaxRisk > 0 && f.Risk > c.MaxRisk:
 		return fmt.Sprintf("session risk at most %d (it is %d)", c.MaxRisk, f.Risk)
 	case len(c.AnyGroup) > 0 && !hasAny(f.Groups, c.AnyGroup):
@@ -851,6 +1065,9 @@ func (c Condition) Unmet(f Facts) string {
 		return "an active account"
 	case c.EmailVerified && !f.EmailVerified:
 		return "a verified email address"
+	case c.hasMissingAttribute(f):
+		name, _ := missingAttribute(c.UserAttributes, f.Attributes)
+		return "the attribute " + name
 	case c.Time != nil && !c.Time.contains(f.Now):
 		return "the action to be taken inside its permitted hours"
 	case c.Asserted != nil:

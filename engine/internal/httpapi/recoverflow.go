@@ -80,12 +80,24 @@ import (
 // reset, `sms_otp` as the proving channel, `passkey` recovery: each is a
 // coherent thing to write and none of them runs, so each stops the journey
 // rather than being skipped.
+//
+// Since 5.12 two more run in the reset half:
+//   - mfa             a second factor proven on the link's page before the
+//     reset: an authenticator, a text-message code or a recovery code, never
+//     email, which is what the link came by (handleResetFactor)
+//   - session         the other terminal: the person ends signed in, through
+//     the organisation's ordinary sign-in from there
 var recoveryDrivableStages = map[flow.StageName]bool{
 	flow.StageCaptcha:        true,
 	flow.StageIdentify:       true,
 	flow.StageEmailOTP:       true,
+	flow.StageMFA:            true,
 	flow.StagePasswordChange: true,
 	flow.StageDone:           true,
+	flow.StageSession:        true,
+	// Since 5.24 the third terminal: after the reset, the browser goes to the
+	// flow's `to` instead of the built-in page.
+	flow.StageRedirect: true,
 }
 
 // recoveryPlan returns the stages in force, and whether every one of them can be
@@ -96,7 +108,7 @@ var recoveryDrivableStages = map[flow.StageName]bool{
 func (s *Server) recoveryPlan(ctx context.Context, orgID string, st flow.State,
 	fallback []flow.StageName) (plan []flow.StageName, unsupported flow.StageName, name string) {
 
-	fl := s.flowFor(ctx, orgID, flow.Recovery)
+	fl := s.flowFor(ctx, s.db, orgID, flow.Recovery)
 	plan = fallback
 	if fl != nil {
 		plan = fl.Plan(st)
@@ -118,7 +130,7 @@ func (s *Server) recoveryPlan(ctx context.Context, orgID string, st flow.State,
 // about the account, because this is reachable from the request half where the
 // account's existence is not the caller's business.
 func (s *Server) refuseRecoveryStage(w http.ResponseWriter, r *http.Request, stage flow.StageName, flowName string) {
-	s.log.Error("the recovery flow requires a stage this engine does not drive",
+	s.log.ErrorContext(r.Context(), "the recovery flow requires a stage this engine does not drive",
 		"stage", stage, "flow", flowName, "correlation_id", correlationID(r.Context()))
 	writeError(w, http.StatusNotImplemented, "not_implemented",
 		"account recovery is unavailable: the configured recovery flow uses a step "+
@@ -139,9 +151,9 @@ func (s *Server) refuseRecoveryStage(w http.ResponseWriter, r *http.Request, sta
 // is the one place that convenience helps an enumerator more than a user.
 func (s *Server) recoverCaptcha(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
-	if cerr := s.captcha.Verify(ctx, captchaResponse(r), r.RemoteAddr); cerr != nil {
+	if cerr := s.captcha.Verify(ctx, s.captchaResponse(r), r.RemoteAddr); cerr != nil {
 		s.captcha.RecordFailure(ctx, r.RemoteAddr)
-		s.log.Info("captcha refused at recovery", "err", cerr,
+		s.log.InfoContext(ctx, "captcha refused at recovery", "err", cerr,
 			"correlation_id", correlationID(ctx))
 		csrf, _ := s.csrfToken(w, r)
 		// captchaWidget, not captchaFields: reaching here means the FLOW put a
@@ -177,7 +189,7 @@ func recoveryDenied(plan []flow.StageName) bool {
 		switch stage {
 		case flow.StageDeny:
 			return true
-		case flow.StageDone, flow.StageSession:
+		case flow.StageDone, flow.StageSession, flow.StageRedirect:
 			// A terminal was reached first, so the deny belongs to a branch this
 			// walk did not take.
 			return false

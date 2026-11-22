@@ -1,13 +1,21 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jcmturner/goidentity/v6"
-	"github.com/jcmturner/gokrb5/v8/spnego"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/kerberos"
+	"signari.dev/engine/internal/provider"
+	"signari.dev/engine/internal/store"
 )
 
 // SPNEGO sign-in, for domain-joined machines.
@@ -31,9 +39,143 @@ import (
 // credential dialog before it ever sees the form -- so SPNEGO lives at its own
 // path, and the login page links to it.
 
-// handleKerberosLogin is wrapped by the SPNEGO middleware; by the time it runs,
-// the ticket has been validated.
-func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
+// handleKerberos finds the realm a request is for, and validates its ticket with that
+// realm's key. A browser gets a ticket for the host it is talking to, so the host says
+// which, and with it whose organisation the person is in. Read per request: a realm
+// removed takes effect on commit, and a keytab held in memory would go on opening
+// tickets. A host with no realm of its own falls back to the one the environment
+// names, and with neither there is nothing here, as if the route did not exist.
+func (s *Server) handleKerberos(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	realm, err := store.KerberosRealmForHost(ctx, s.db, s.cfg.Root, s.instanceID, kerberosHost(r))
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	config, kt, orgID := s.krbConfig, s.krbKeytab, ""
+	if realm != nil {
+		config = kerberos.Config{Realm: realm.Realm, ServicePrincipal: realm.ServicePrincipal, StripRealm: realm.StripRealm,
+			TrustedRealms: realm.TrustedRealms, CreateAccounts: realm.CreateAccounts}
+		orgID = realm.OrgID
+		if kt, err = kerberos.ParseKeytab(realm.Keytab, "the keytab of realm "+realm.Realm); err != nil {
+			s.log.ErrorContext(ctx, "reading a realm's keytab", "err", err, "correlation_id", correlationID(ctx))
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+	}
+	if kt == nil {
+		http.NotFound(w, r)
+		return
+	}
+	signIn := func(w http.ResponseWriter, r *http.Request) { s.handleKerberosLogin(w, r, config, orgID) }
+	kerberos.Negotiate(http.HandlerFunc(signIn), kt, config.ServicePrincipal).ServeHTTP(w, r)
+}
+
+// ticketIsTheOnlyWayIn reports whether orgID's sign-in flow admits a ticket and nothing
+// else, and the host the browser asked can take one for that organisation: its realm's
+// keytab, or with no realm of its own the deployment's, which signs people in to its
+// first organisation. The sign-in page would offer nothing that could succeed, and a
+// redirect to a Negotiate route answering 404 would say less than the page does.
+func (s *Server) ticketIsTheOnlyWayIn(r *http.Request, orgID string) bool {
+	ctx := r.Context()
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil || !fl.OnlyKerberos() {
+		return false
+	}
+	return s.ticketServes(r, orgID)
+}
+
+// ticketServes reports whether the host a request came to can take a ticket for orgID:
+// its realm is the organisation's, or it has none and the deployment's keytab signs
+// people in to the first organisation, which orgID is.
+func (s *Server) ticketServes(r *http.Request, orgID string) bool {
+	if s.db == nil {
+		return false
+	}
+	ctx := r.Context()
+	realmOrg, err := store.KerberosHostOrg(ctx, s.db, s.instanceID, kerberosHost(r))
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		return false
+	}
+	return s.ticketServesWith(ctx, orgID, realmOrg, "", false)
+}
+
+// ticketServesWith is ticketServes from answers already read: the organisation of the
+// host's realm ("" for none) and, when firstKnown, the instance's first organisation.
+func (s *Server) ticketServesWith(ctx context.Context, orgID, realmOrg, firstOrg string, firstKnown bool) bool {
+	if orgID == "" {
+		return false
+	}
+	if realmOrg != "" {
+		return realmOrg == orgID
+	}
+	if s.krbKeytab == nil {
+		return false
+	}
+	if !firstKnown {
+		var err error
+		if firstOrg, err = s.defaultOrg(ctx); err != nil {
+			return false
+		}
+	}
+	return firstOrg == orgID
+}
+
+// kerberosLinkWith is the sign-in page's link to the Negotiate exchange, carrying the
+// parked request, where orgID's flow admits a ticket and the host can take one for it;
+// "" anywhere else, so the page offers nothing that would answer 404.
+func (s *Server) kerberosLinkWith(ctx context.Context, orgID, authzQuery, realmOrg, firstOrg string, firstKnown bool) string {
+	if !s.ticketServesWith(ctx, orgID, realmOrg, firstOrg, firstKnown) {
+		return ""
+	}
+	fl := s.flowFor(ctx, s.db, orgID, flow.Authentication)
+	if fl == nil || !fl.AdmitsProof(flow.StageKerberos) {
+		return ""
+	}
+	return kerberosStart(authzQuery)
+}
+
+// kerberosLink is kerberosLinkWith asking for what it needs itself, for a sign-in page
+// whose batch could not be read.
+func (s *Server) kerberosLink(r *http.Request, orgID, authzQuery string) string {
+	if s.db == nil {
+		// No database to say where a realm is, as the page's other readers find.
+		return ""
+	}
+	ctx := r.Context()
+	realmOrg, err := store.KerberosHostOrg(ctx, s.db, s.instanceID, kerberosHost(r))
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the Kerberos realm of a host", "err", err, "correlation_id", correlationID(ctx))
+		return ""
+	}
+	return s.kerberosLinkWith(ctx, orgID, authzQuery, realmOrg, "", false)
+}
+
+// kerberosStart is the Negotiate exchange's address, carrying the request to come back
+// to once the ticket has signed somebody in.
+func kerberosStart(authzQuery string) string {
+	if authzQuery == "" {
+		return "/login/kerberos"
+	}
+	return "/login/kerberos?" + url.Values{"authz": {authzQuery}}.Encode()
+}
+
+// kerberosHost is the name a request's host is known by to a realm, without a port, as
+// handleKerberos reads it.
+func kerberosHost(r *http.Request) string {
+	host := requestHost(r.Host)
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return host
+}
+
+// handleKerberosLogin runs behind the SPNEGO middleware; by the time it does, the
+// ticket has been validated. orgID is the realm's organisation, empty for the one the
+// environment names.
+func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request, config kerberos.Config, orgID string) {
 	ctx := r.Context()
 
 	id := goidentity.FromHTTPRequestContext(r)
@@ -50,12 +192,13 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 		principal = principal + "@" + d
 	}
 
-	username, err := s.krbConfig.UsernameFor(principal)
+	username, err := config.UsernameFor(principal)
 	if err != nil {
-		// Logged with the principal, answered without it. The reason a mapping
+		// Logged with the reason, answered without it. The reason a mapping
 		// was refused is an operator's business; telling the browser which
-		// realms are trusted is not.
-		s.log.Info("kerberos principal refused", "principal", principal, "err", err,
+		// realms are trusted is not. Not with the principal, which names the
+		// person (3.35); the correlation id finds the request.
+		s.log.InfoContext(ctx, "kerberos principal refused", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, CorrelationID: correlationID(ctx),
@@ -70,27 +213,29 @@ func (s *Server) handleKerberosLogin(w http.ResponseWriter, r *http.Request) {
 	// From here it is an ordinary sign-in. The session, the policy, the audit
 	// entry and the amr are the same as every other route, because a second
 	// notion of "signed in" is how one of them ends up missing a check.
-	s.completeKerberosSignIn(w, r, username, principal)
+	s.completeKerberosSignIn(w, r, username, orgID, config.CreateAccounts)
 }
 
 // completeKerberosSignIn establishes a session for an already-validated ticket.
 //
-// # No account is created
+// # No account is created, unless the realm says so
 //
 // A valid ticket proves the realm knows this principal. It does not decide that
 // the principal should have an account HERE, and creating one on the strength of
 // a ticket means every principal in the realm is a user the moment they visit.
 //
-// Accounts come from the directory sync, which is a deliberate act by an
-// administrator. An unmatched principal is refused and told to ask for one.
-func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
-	username, principal string) {
-
+// So accounts come from the directory sync, which is a deliberate act by an
+// administrator, and an unmatched principal is refused and told to ask for one. A
+// realm can opt out of that by saying everybody it knows is welcome, which is then
+// the operator's decision and still the user_create provider's to refuse.
+func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request, username, orgID string, create bool) {
 	ctx := r.Context()
-	orgID, err := s.defaultOrg(ctx)
-	if err != nil || orgID == "" {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
+	if orgID == "" {
+		var err error
+		if orgID, err = s.defaultOrg(ctx); err != nil || orgID == "" {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -103,11 +248,31 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	var userID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM core.users
-		 WHERE org_id = $1::uuid AND lower(email) = lower($2) AND status = 'active'`,
+		 WHERE org_id = $1::uuid AND (email_fold = lower($2) OR username_fold = lower($2))
+		   AND status = 'active'`,
 		orgID, username).Scan(&userID)
+	var vetoed string
+	if errors.Is(err, pgx.ErrNoRows) && create {
+		var refused bool
+		if vetoed, refused = s.userCreateRefused(ctx, tx, orgID, username, "kerberos"); !refused {
+			userID, err = store.CreateUserFromKerberos(ctx, tx, orgID, username)
+		}
+		if err == nil && userID != "" {
+			if aerr := audit.Write(ctx, tx, audit.Event{
+				Type: "kerberos.user_created", OrgID: orgID, SubjectID: userID, CorrelationID: correlationID(ctx),
+			}); aerr != nil {
+				s.log.ErrorContext(ctx, "recording an account made for a ticket", "err", aerr)
+			}
+		}
+	}
 	if err != nil {
-		s.log.Info("kerberos principal has no account", "principal", principal,
-			"looked_for", username, "correlation_id", correlationID(ctx))
+		s.log.InfoContext(ctx, "kerberos principal has no account", "correlation_id", correlationID(ctx))
+		// Released before the refusal is recorded: the record is a second
+		// connection, and taking one while holding this deadlocks the pool.
+		_ = tx.Rollback(ctx)
+		if vetoed != "" {
+			s.recordHookRefusal(ctx, provider.HookUserCreate, orgID, "", "", vetoed)
+		}
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID,
 			CorrelationID: correlationID(ctx),
@@ -125,15 +290,4 @@ func (s *Server) completeKerberosSignIn(w http.ResponseWriter, r *http.Request,
 	// to say so.
 	s.completeSignIn(w, r, tx, userID, orgID, []string{"krb"},
 		r.URL.Query().Get("authz"))
-}
-
-// wrapKerberos installs the SPNEGO middleware in front of the handler.
-//
-// Returns nil when Kerberos is not configured, so the route is simply not
-// registered rather than registered and always failing.
-func (s *Server) wrapKerberos(h http.Handler) http.Handler {
-	if s.krbKeytab == nil {
-		return nil
-	}
-	return spnego.SPNEGOKRB5Authenticate(h, s.krbKeytab)
 }

@@ -30,6 +30,59 @@ func idpFixture(t *testing.T, orgID string) string {
 	return id
 }
 
+func TestAClaimIsFoundByNameThenByPath(t *testing.T) {
+	claims := map[string]any{
+		"department":                  "Maths",
+		"https://claims.example/role": "editor",
+		"urn.oid.2.5.4.11":            "Physics",
+		"realm":                       map[string]any{"team": "Platform", "deep": map[string]any{"er": "found"}},
+		"a.b":                         "the whole name",
+		"a":                           map[string]any{"b": "the path"},
+		"not_an_object":               "x",
+		"list":                        []any{map[string]any{"name": "no index into a list"}},
+	}
+	for name, want := range map[string]any{
+		"department": "Maths", "https://claims.example/role": "editor", "urn.oid.2.5.4.11": "Physics",
+		"realm.team": "Platform", "realm.deep.er": "found", "a.b": "the whole name",
+		"realm.nothing": nil, "nothing.at.all": nil, "not_an_object.x": nil, "list.name": nil, "": nil,
+	} {
+		if got := claimAt(claims, name); got != want {
+			t.Errorf("%q found %v, want %v", name, got, want)
+		}
+	}
+}
+
+// A nested claim lands, and the path reads only what the operator named.
+func TestANestedClaimFillsAnAttribute(t *testing.T) {
+	ctx, orgID, userID := profileFixture(t)
+	conn := connect(t)
+	root := profileRoot(t)
+	providerID := idpFixture(t, orgID)
+	tx, err := conn.Begin(ctx)
+	must(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	name := fmt.Sprintf("team_%d", time.Now().UnixNano())
+	id, err := DeclareAttribute(ctx, tx, orgID, Attribute{Name: name, ValueType: "string"})
+	must(t, err)
+	_, err = tx.Exec(ctx, `INSERT INTO core.idp_attribute_map (provider_id, org_id, upstream_claim, attribute_id)
+		VALUES ($1::uuid, $2::uuid, 'realm.team', $3::uuid)`, providerID, orgID, id)
+	must(t, err)
+	applied, _, err := ApplyIDPAttributeMapping(ctx, tx, userID, orgID, providerID,
+		[]byte(`{"realm":{"team":"Platform","other":"not named"}}`), root)
+	must(t, err)
+	if applied != 1 {
+		t.Fatalf("applied %d", applied)
+	}
+	got, err := UserAttributes(ctx, tx, userID, orgID, root)
+	must(t, err)
+	for _, a := range got {
+		if a.Name == name && a.Value == "Platform" {
+			return
+		}
+	}
+	t.Errorf("the attribute reads %+v", got)
+}
+
 // An unmapped claim is never written, however helpful it looks.
 func TestAnUnmappedUpstreamClaimIsNotWritten(t *testing.T) {
 	ctx, orgID, userID := profileFixture(t)

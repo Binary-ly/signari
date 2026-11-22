@@ -23,7 +23,7 @@ change reaches them.
 | `hcaptcha.com/siteverify` | `captcha` | as above | as above |
 | `www.google.com/recaptcha/api/siteverify` | `captcha` | as above | as above |
 | `verifiedaccess.googleapis.com/v2` | `posture/chrome` | Chrome device-posture attestation | a posture policy demands it |
-| `admin.googleapis.com` | `provision/google` | directory sync | a sync runs |
+| `admin.googleapis.com` | `provision/google`, `directory/google` | directory sync | a sync runs. The token request goes to the service-account key's `token_uri`, normally `oauth2.googleapis.com`. It is data, not a constant, so both clients dial through `safedial`, and a key naming an internal address is refused |
 | `graph.microsoft.com`, `login.microsoftonline.com` | `provision/entra` | directory sync | a sync runs |
 
 Each is optional: none is contacted unless an operator configures the feature.
@@ -63,21 +63,46 @@ font provider — which resolves to the Bunny Fonts CDN — is not used. That is
 property worth re-checking rather than assuming: render a page and look for any
 `src` or `href` with a scheme in it.
 
+It was not true of the console until November 2026, and only the sign-in page had
+been looked at. Filament's default avatar provider drew the operator's avatar at
+ui-avatars.com, with their initials in the address, on every screen with a user
+menu. The console now draws it as a data URI, its test reads a signed-in screen as
+well, and the console's content policy is `default-src 'self'` with `data:` images,
+so a fourth default of the kind is refused by the browser rather than found by
+reading. Every one of its 23 screens was swept in headless Chrome with no violation
+and no request to another origin.
+
 ## Operator-configured destinations
 
-An operator names these. They are trusted to the same degree as the binary's own
-configuration.
+An operator names these. That does not make them safe to dial wherever they
+point: a stored setting can be changed by anyone holding the right admin scope,
+and a name can start resolving somewhere else after it was saved. So every HTTP
+destination here goes through `safedial` too, and one that really is internal is
+named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` (see
+[configuration](configuration.md#internal-destinations)).
 
 | Destination | Package | Notes |
 |---|---|---|
-| SMTP host | `mail` | **refuses to send at all** if the server does not offer STARTTLS |
-| LDAP/AD directory | `directory/ldapsource` | TLS with `MinVersion` 1.2; `InsecureSkipVerify` deliberately absent |
-| SMS gateway | `sms/gateway` | |
-| SCIM target | `scim/client` | outbound provisioning |
-| SSF transmitter | `ssf/receive` | Shared Signals stream |
-| OpenID Federation trust anchors | `oidfed/fetch` | plus intermediates discovered while resolving a chain |
-| Outpost callbacks | `outpost` | |
+| SMTP host | `mail` | **refuses to send at all** if the server does not offer STARTTLS. Not HTTP; dialled directly |
+| LDAP/AD directory | `directory/ldapsource`, `delegated/ldapbind` | TLS with `MinVersion` 1.2; `InsecureSkipVerify` deliberately absent. Not HTTP; a directory is internal by nature and is dialled directly |
+| SMS gateway | `sms/gateway` | `safedial`; a loopback webhook URL is allowed because the operator wrote that address down |
+| Duo API host | `duo` | `safedial` |
+| SCIM target | `scim/client` | `safedial`, with `SIGNARI_SCIM_CA_BUNDLE` as its roots when set |
+| SSF transmitter keys | `ssf/receive` | `safedial`; fetched when a token names a key id not yet seen, which the sender chooses |
+| Upstream identity provider | `httpapi/federation` | `safedial` for the token endpoint and userinfo |
+| jwt-bearer issuer keys | `httpapi/jwtbearer` | `safedial`; fetched before anyone has authenticated |
+| Old provider behind delegated sign-in | `delegated` | `safedial`; the request carries a password |
+| FIDO metadata mirror | `fidomds` | `safedial` |
+| OpenID Federation trust anchors | `oidfed/fetch` | `safedial`, plus intermediates discovered while resolving a chain |
+| A service provider's artifact resolution service | `httpapi/samlartifactrequest` | `safedial`, https only, no redirect followed. Anybody can bring an artifact, which is what makes the call, so it goes only to the address registered under the index the artifact names, for the provider whose SourceID it carries, and once per artifact. See [saml](saml.md#requests-by-artifact) |
+| Outpost callbacks | `outpost` | the outpost agent calling its own engine; not a request the engine makes |
 | A URL passed to `signari proxycheck` / logout test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the server |
+| Vault or OpenBao transit engine | `keys` | named only by `SIGNARI_VAULT_ADDR`, and not `safedial`, as the server is the operator's own, usually on their network. Plain http is refused except to loopback, since the token goes with every request. Makes and reads signing keys and asks for signatures; nothing private comes back. See [signing keys in a module](signing-keys-in-a-module.md) |
+| OpenTelemetry collector | `tracing` | named only by `SIGNARI_OTLP_TRACES_ENDPOINT`, and not `safedial`, as a collector is usually on loopback or the cluster network. Receives spans, which carry no identifier, and nothing is read back but a status. See [tracing](tracing.md) |
+
+`TestEveryOutboundClientIsSafedialsOrListed` keeps this true. A client built
+anywhere outside `safedial` fails the build unless it is listed with the reason
+its destination cannot come from configuration or a request.
 
 ## Destinations a CLIENT can choose — the SSRF surface
 
@@ -88,8 +113,6 @@ identity provider is *defined* by connecting to places its relying parties name.
 |---|---|---|
 | `backchannel_logout_uri` | the client, at registration | a session ends |
 | Webhook endpoint | an operator, per subscription | an event fires |
-| `jwks_uri` | the client, at registration | verifying a signed request object or client assertion |
-| `request_uri` | the client, per request | a request object is passed by reference |
 | Federation entity statements | the trust chain | resolving a chain |
 
 ### What bounds it
@@ -105,6 +128,24 @@ private, loopback, link-local and IPv4-mapped-IPv6 addresses **at dial time**, s
 a hostname that resolves to 169.254.169.254 is refused even though the name
 looked fine — and each redirect hop is dialled through the same check, so a 302
 into the private range is refused exactly like a direct attempt.
+
+The check also covers the special-purpose ranges that Go's address predicates
+treat as ordinary public unicast: `0.0.0.0/8`, the shared address space
+`100.64.0.0/10` (where some clouds put their metadata service), `192.0.0.0/24`,
+the benchmarking range `198.18.0.0/15`, `240.0.0.0/4` with broadcast, and the
+IPv6 discard prefix. An IPv6 address that carries an IPv4 one is judged by that
+IPv4 address: NAT64's well-known prefix, 6to4 and the deprecated
+IPv4-compatible form. So `64:ff9b::a9fe:a9fe` is refused as the metadata
+service it reaches through a translator. Teredo and NAT64's local-use prefix
+are refused outright.
+
+No allowance reopens a cloud metadata endpoint: `169.254.169.254`,
+`fd00:ec2::254`, the container credentials range `169.254.170.0/24` and
+`100.100.100.200`. That covers each one in every form that carries it, and the
+two translators whose destination cannot be read. This holds for
+`SIGNARI_OUTBOUND_ALLOW_PRIVATE`, a per-client allowance and
+`SIGNARI_ALLOW_PRIVATE_DELIVERY` alike. The first version knew only the first
+address, so allowing `fd00::/8` or `100.64.0.0/10` reached the others.
 
 > **This sentence was wrong when this document was written, and the correction is
 > the reason the document was worth writing.** It said "every outbound connection
@@ -134,6 +175,8 @@ this document is what they need to write it.
 | guacd handshake | 10 s |
 | Back-channel logout / webhooks | retried with capped backoff, up to 10 attempts, then **parked** so an undelivered event is visible rather than silently dropped |
 | Admin token touch | 3 s, out of band |
+| Span export | 10 s a batch; a batch the collector does not take is dropped, not retried |
+| Transit engine | 10 s a call, a minute to make a key; a signature that fails fails the request that needed it, and is not retried |
 
 `V13.1.2` and `V13.1.3` ask for documented connection-pool limits and per-service
 resource strategies. The database pool is `pgxpool`'s default sizing, which is not

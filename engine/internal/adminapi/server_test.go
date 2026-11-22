@@ -13,9 +13,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef" // 32 chars
+
+// routerOnly builds the route table with no database behind it, for tests that
+// read the registrations rather than call them. A root key is set so the
+// conditional attribute routes are registered too.
+func routerOnly(t *testing.T) *Server {
+	t.Helper()
+	s, err := New(nil, slog.New(slog.NewTextHandler(os.Stderr, nil)), testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := keys.NewRootKey("test", make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetRootKey(root)
+	s.Routes()
+	return s
+}
 
 func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	t.Helper()
@@ -35,6 +54,10 @@ func newTestServer(t *testing.T) (*Server, *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Tests of how a request is answered call every route, some several times,
+	// and on a fast database that is past the limit: a 429 says nothing about
+	// what they ask. The limits have their own tests, which set their own.
+	s.arrivals, s.perToken = nil, nil
 
 	// A root key, so the user-attribute routes are registered.
 	//
@@ -102,6 +125,7 @@ func TestMutationBumpsConfigVersion(t *testing.T) {
 		RETURNING id::text`).Scan(&orgID); err != nil {
 		t.Fatalf("fixture org: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	clientID := "admin-api-" + orgID[:8]
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type, client_secret_hash)
@@ -150,30 +174,76 @@ func TestMutationBumpsConfigVersion(t *testing.T) {
 // transaction, so a rollback takes it along.
 func TestFailedMutationDoesNotBumpVersion(t *testing.T) {
 	s, pool := newTestServer(t)
-	before := configVersionOf(t, pool)
 
-	rec := doPatch(t, s, "no-such-client-"+strings.Repeat("z", 6), `{"enabled":false}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown client gave %d, want 404", rec.Code)
+	// The version is one counter for the whole database, and other packages write to
+	// it while this runs. A bump of this request's would move it every time, so one
+	// attempt it stays still on is the answer.
+	var before, after int64
+	for range 5 {
+		before = configVersionOf(t, pool)
+		rec := doPatch(t, s, "no-such-client-"+strings.Repeat("z", 6), `{"enabled":false}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unknown client gave %d, want 404", rec.Code)
+		}
+		if after = configVersionOf(t, pool); after == before {
+			return
+		}
 	}
-	if after := configVersionOf(t, pool); after != before {
-		t.Fatalf("version moved on a failed mutation: %d -> %d", before, after)
-	}
+	t.Fatalf("version moved on a failed mutation: %d -> %d", before, after)
 }
 
 // Absent and false must be distinguishable, or a PATCH that does not mention
 // `enabled` silently disables the client.
 func TestAbsentFieldIsNotFalse(t *testing.T) {
 	s, pool := newTestServer(t)
-	before := configVersionOf(t, pool)
 
-	rec := doPatch(t, s, "irrelevant", `{}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("empty patch gave %d, want 400", rec.Code)
+	// One attempt it stays still on is the answer, as for a failed mutation above.
+	var before, after int64
+	for range 5 {
+		before = configVersionOf(t, pool)
+		rec := doPatch(t, s, "irrelevant", `{}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("empty patch gave %d, want 400", rec.Code)
+		}
+		if after = configVersionOf(t, pool); after == before {
+			return
+		}
 	}
-	if after := configVersionOf(t, pool); after != before {
-		t.Fatalf("version moved on a no-op patch: %d -> %d", before, after)
+	t.Fatalf("version moved on a no-op patch: %d -> %d", before, after)
+}
+
+// versionStays says the version held across a request that must not move it. It is one
+// counter for the whole database and other packages write to it meanwhile, but a bump
+// of the request's own would move it every time, so one attempt it holds on is the
+// answer. The request must be one that can be repeated.
+func versionStays(t *testing.T, s *Server, request func()) (from, to int64, held bool) {
+	t.Helper()
+	for range 5 {
+		from = currentVersion(t, s)
+		request()
+		if to = currentVersion(t, s); to == from {
+			return from, to, true
+		}
 	}
+	return from, to, false
+}
+
+// versionBumpsOnce is versionStays for a write: a request that must move the
+// version by exactly one, tried until an attempt saw no other writer. Packages run
+// in parallel against one database, and one test elsewhere bumping the version
+// inside this window made the single-shot check fail in CI ("696 -> 698"). A
+// handler that bumps twice fails every attempt. request is called with the
+// attempt's number, so it can make each one a real change.
+func versionBumpsOnce(t *testing.T, s *Server, request func(attempt int)) (from, to int64, once bool) {
+	t.Helper()
+	for attempt := range 5 {
+		from = currentVersion(t, s)
+		request(attempt)
+		if to = currentVersion(t, s); to == from+1 {
+			return from, to, true
+		}
+	}
+	return from, to, false
 }
 
 func doPatch(t *testing.T, s *Server, clientID, body string) *httptest.ResponseRecorder {

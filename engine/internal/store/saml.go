@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/saml"
 )
 
@@ -25,44 +26,70 @@ import (
 // make this endpoint a redirector for any entity id an attacker invents.
 var ErrSAMLProviderUnknown = errors.New("no service provider registered with that entity id")
 
-// LoadSAMLProvider fetches a provider and everything needed to answer it.
+// LoadSAMLProvider fetches a provider at the deployment's endpoints, where an entity id
+// is held once, and everything needed to answer it.
 func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "entity_id = $1 AND org_endpoint = false", entityID)
+}
+
+// LoadOrgSAMLProvider is the same at an organisation's endpoints.
+func LoadOrgSAMLProvider(ctx context.Context, db *pgxpool.Pool, orgID, entityID string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "entity_id = $1 AND org_id = $2::uuid AND org_endpoint", entityID, orgID)
+}
+
+// LoadSAMLProviderByID is the same by the provider's own id.
+func LoadSAMLProviderByID(ctx context.Context, db *pgxpool.Pool, id string) (*saml.Provider, error) {
+	return loadSAMLProvider(ctx, db, "id = $1::uuid", ExactUUIDOrNil(id))
+}
+
+// OrgBySlug finds the organisation a path names in an instance, or
+// ErrSAMLProviderUnknown for none, since all a path does is find a provider. An empty
+// instance is a server that was not told its own, as for InInstance.
+func OrgBySlug(ctx context.Context, q rowQuerier, instanceID, slug string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id::text FROM core.organizations
+		WHERE slug = $1 AND instance_id = COALESCE(NULLIF($2, '')::uuid, instance_id)`, slug, instanceID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrSAMLProviderUnknown
+	}
+	return id, err
+}
+
+func loadSAMLProvider(ctx context.Context, db *pgxpool.Pool, where string, args ...any) (*saml.Provider, error) {
 	p := &saml.Provider{}
 	err := db.QueryRow(ctx, `
 		SELECT id::text, org_id::text, entity_id, display_name, name_id_format,
 		       sign_assertions, sign_responses, want_authn_requests_signed,
 		       COALESCE(sp_signing_cert,''), COALESCE(sp_encryption_cert,''),
-		       sp_key_transport,
-		       lifetime_seconds, enabled
+		       sp_key_transport, signature_alg, wsfed_saml_version,
+		       CASE WHEN org_endpoint THEN (SELECT o.slug FROM core.organizations o WHERE o.id = core.saml_providers.org_id)
+		            ELSE '' END,
+		       lifetime_seconds, enabled, COALESCE(name_id_attribute, ''),
+		       idp_initiated, default_relay_state,
+		       (SELECT o.instance_id::text FROM core.organizations o WHERE o.id = core.saml_providers.org_id),
+		       EXISTS (SELECT 1 FROM core.access_policies a WHERE a.org_id = core.saml_providers.org_id),
+		       EXISTS (SELECT 1 FROM core.providers h
+		                WHERE h.org_id = core.saml_providers.org_id AND h.hook = 'saml_assertion'),
+		       EXISTS (SELECT 1 FROM core.saml_group_release g WHERE g.provider_id = core.saml_providers.id),
+		       attributes <> '{}'::jsonb,
+		       COALESCE((SELECT jsonb_agg(jsonb_build_object('URL', u.url, 'Binding', u.binding, 'IsDefault', u.is_default)
+		                                  ORDER BY u.is_default DESC, u.url)
+		                   FROM core.saml_acs_urls u WHERE u.provider_id = core.saml_providers.id), '[]'::jsonb)
 		FROM core.saml_providers
-		WHERE entity_id = $1`, entityID).Scan(
+		WHERE `+where, args...).Scan(
 		&p.ID, &p.OrgID, &p.EntityID, &p.DisplayName, &p.NameIDFormat,
 		&p.SignAssertions, &p.SignResponses, &p.WantAuthnRequestsSigned,
-		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport,
-		&p.LifetimeSeconds, &p.Enabled)
+		&p.SPSigningCert, &p.SPEncryptionCert, &p.SPKeyTransport, &p.SignatureAlg, &p.WSFedSAMLVersion, &p.EndpointOrg,
+		&p.LifetimeSeconds, &p.Enabled, &p.NameIDAttribute, &p.IdPInitiated, &p.DefaultRelayState,
+		&p.InstanceID, &p.HasAccessPolicy, &p.HasAssertionHook, &p.ReleasesGroups, &p.ReleasesAttributes,
+		&p.ACSURLs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrSAMLProviderUnknown
 		}
 		return nil, fmt.Errorf("loading the service provider: %w", err)
 	}
-
-	rows, err := db.Query(ctx, `
-		SELECT url, binding, is_default FROM core.saml_acs_urls
-		WHERE provider_id = $1::uuid
-		ORDER BY is_default DESC, url`, p.ID)
-	if err != nil {
-		return nil, fmt.Errorf("loading assertion consumer URLs: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var a saml.ACSURL
-		if err := rows.Scan(&a.URL, &a.Binding, &a.IsDefault); err != nil {
-			return nil, err
-		}
-		p.ACSURLs = append(p.ACSURLs, a)
-	}
-	return p, rows.Err()
+	return p, nil
 }
 
 // EnsureNameID returns the stable pairwise identifier for a user at a provider,
@@ -76,7 +103,7 @@ func LoadSAMLProvider(ctx context.Context, db *pgxpool.Pool, entityID string) (*
 // NameID as the account key, so a new value means a new, empty account.
 //
 // A random per-provider value costs nothing and removes both problems.
-func EnsureNameID(ctx context.Context, tx pgx.Tx, providerID, userID, orgID, format string) (string, error) {
+func EnsureNameID(ctx context.Context, tx claimReader, providerID, userID, orgID, format string) (string, error) {
 	// Transient identifiers are per-session by definition and are never stored.
 	if format == "transient" {
 		return newOpaqueID()
@@ -124,14 +151,146 @@ func EnsureNameID(ctx context.Context, tx pgx.Tx, providerID, userID, orgID, for
 }
 
 // RecordSAMLParticipant notes that this session reached this provider, so
-// single logout can enumerate them later.
-func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgID, sessionIndex, nameID string) error {
+// single logout can enumerate them later, with the NameID and its format as the
+// assertion carried them.
+func RecordSAMLParticipant(ctx context.Context, tx pgx.Tx, sid, providerID, orgID, sessionIndex, nameID,
+	nameIDFormat, wsfedReplyURL string) error {
+	// wsfedReplyURL is where a WS-Federation token went, "" for a SAML response. The
+	// latest one is kept: it is where the application last took a token, so where it
+	// reads a clean-up message (WSFedCleanupTargets).
 	_, err := tx.Exec(ctx, `
 		INSERT INTO core.saml_session_participants
-			(sid, provider_id, org_id, session_index, name_id)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5)
-		ON CONFLICT (sid, provider_id) DO NOTHING`,
-		sid, providerID, orgID, sessionIndex, nameID)
+			(sid, provider_id, org_id, session_index, name_id, name_id_format, wsfed_reply_url)
+		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, NULLIF($7, ''))
+		ON CONFLICT (sid, provider_id) DO UPDATE SET wsfed_reply_url = EXCLUDED.wsfed_reply_url
+		 WHERE EXCLUDED.wsfed_reply_url IS NOT NULL`,
+		sid, providerID, orgID, sessionIndex, nameID, nameIDFormat, wsfedReplyURL)
+	return err
+}
+
+// WSFedTarget is a WS-Federation application of a session, and the reply URL it took
+// its token at.
+type WSFedTarget struct {
+	EntityID string
+	ReplyURL string
+}
+
+// WSFedCleanupTargets lists the WS-Federation applications a session gave a token to,
+// each at the reply URL it took it at, for the clean-up message of a sign-out
+// (specs/ws-federation-1.2.txt:2222). Only a reply URL still registered for an enabled
+// provider: the browser is made to load it, so it has to be one an operator put there
+// and has not since taken away.
+func WSFedCleanupTargets(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, sid string) ([]WSFedTarget, error) {
+	rows, err := q.Query(ctx, `
+		SELECT sp.entity_id, p.wsfed_reply_url
+		  FROM core.saml_session_participants p
+		  JOIN core.saml_providers sp ON sp.id = p.provider_id AND sp.enabled
+		  JOIN core.saml_acs_urls u ON u.provider_id = p.provider_id AND u.url = p.wsfed_reply_url
+		 WHERE p.sid = $1
+		 ORDER BY sp.entity_id`, sid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WSFedTarget
+	for rows.Next() {
+		var t WSFedTarget
+		if err := rows.Scan(&t.EntityID, &t.ReplyURL); err != nil {
+			return out, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SessionHoldsReplyURL reports whether a URL is a reply URL of an application this
+// session was given a token for, which is all a WS-Federation sign-out naming no realm
+// can be held to.
+func SessionHoldsReplyURL(ctx context.Context, q rowQuerier, sid, replyURL string) (bool, error) {
+	var held bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM core.saml_session_participants p
+		                 JOIN core.saml_acs_urls u ON u.provider_id = p.provider_id
+		                WHERE p.sid = $1 AND u.url = $2)`, sid, replyURL).Scan(&held)
+	return held, err
+}
+
+// NameIDFromAttribute reads a person's NameID from what a provider names. Refused
+// rather than falling back: another identifier would be a new, empty account at the
+// provider. Refused too when the attribute has since become one a person can edit,
+// since whoever writes this value signs in as whoever else holds it there.
+func NameIDFromAttribute(ctx context.Context, tx claimReader, userID, orgID, attribute string, root *keys.RootKey) (string, error) {
+	if attribute == nameIDFromUsername {
+		var username string
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(username, '') FROM core.users WHERE id = $1::uuid`,
+			userID).Scan(&username); err != nil {
+			return "", err
+		}
+		if username == "" {
+			return "", errors.New("this service provider takes its NameID from the username and the account has none")
+		}
+		return username, nil
+	}
+	var writable bool
+	if err := tx.QueryRow(ctx, `SELECT user_writable FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, attribute).Scan(&writable); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("this service provider takes its NameID from %q, which is no longer declared", attribute)
+		}
+		return "", err
+	}
+	if writable {
+		return "", fmt.Errorf("this service provider takes its NameID from %q, which a person can edit", attribute)
+	}
+	values, err := UserAttributes(ctx, tx, userID, orgID, root)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range values {
+		if v.Name == attribute && v.Value != "" {
+			return v.Value, nil
+		}
+	}
+	return "", fmt.Errorf("this service provider takes its NameID from %q and the account has no value for it", attribute)
+}
+
+// nameIDFromUsername is the one source that is not a declared attribute.
+const nameIDFromUsername = "username"
+
+// SetSAMLNameIDAttribute says where a provider's NameID comes from; empty is what its
+// format alone decides. Refused for an attribute a person can edit, which would let
+// them choose who they are at the provider, and for a transient format, which is a
+// new identifier every session by definition.
+func SetSAMLNameIDAttribute(ctx context.Context, q outpostDB, orgID, providerID, attribute string) error {
+	var format string
+	if err := q.QueryRow(ctx, `SELECT name_id_format FROM core.saml_providers
+		WHERE id::text = $2 AND org_id = $1::uuid`, orgID, providerID).Scan(&format); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSAMLProviderUnknown
+		}
+		return err
+	}
+	if attribute != "" && attribute != nameIDFromUsername {
+		var writable bool
+		err := q.QueryRow(ctx, `SELECT user_writable FROM core.user_attribute_schema
+			WHERE org_id = $1::uuid AND name = $2`, orgID, attribute).Scan(&writable)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return samlInvalid{fmt.Sprintf("the organisation declares no attribute %q", attribute)}
+		case err != nil:
+			return err
+		case writable:
+			return samlInvalid{fmt.Sprintf("people can edit %q, and a NameID from it would let them choose who "+
+				"they are at this service provider", attribute)}
+		}
+	}
+	if attribute != "" && format == "transient" {
+		return samlInvalid{"a transient NameID is new every session, so it cannot come from an attribute"}
+	}
+	_, err := q.Exec(ctx, `UPDATE core.saml_providers SET name_id_attribute = NULLIF($3, ''), updated_at = now()
+		WHERE id::text = $2 AND org_id = $1::uuid`, orgID, providerID, attribute)
 	return err
 }
 
@@ -168,22 +327,6 @@ func newOpaqueID() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// SessionAuthContext reports what the user actually did to establish this
-// session, so the assertion can state it truthfully.
-//
-// Read at assertion time rather than carried from login, because a session's
-// authentication context can change underneath it -- a step-up raises it, and
-// an assertion claiming the old value would understate what happened.
-func SessionAuthContext(ctx context.Context, tx pgx.Tx, sid string) (acr string, amr []string, authTime time.Time, err error) {
-	err = tx.QueryRow(ctx, `
-		SELECT acr, amr, auth_time FROM core.sessions WHERE sid = $1`, sid).
-		Scan(&acr, &amr, &authTime)
-	if err != nil {
-		return "", nil, time.Time{}, fmt.Errorf("reading the session's authentication context: %w", err)
-	}
-	return acr, amr, authTime, nil
-}
-
 // SAMLParticipant is one service provider's view of a session.
 type SAMLParticipant struct {
 	SID          string
@@ -191,6 +334,9 @@ type SAMLParticipant struct {
 	EntityID     string
 	SessionIndex string
 	NameID       string
+	// NameIDFormat is as the assertion carried it, empty on a row from before
+	// this was kept.
+	NameIDFormat string
 	SLOURLs      []string
 }
 
@@ -231,13 +377,13 @@ func FindSAMLSession(ctx context.Context, tx pgx.Tx, providerID, nameID, session
 // exchange back and forth.
 func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude string) ([]SAMLParticipant, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT p.provider_id::text, sp.entity_id, p.session_index, p.name_id,
+		SELECT p.provider_id::text, sp.entity_id, p.session_index, p.name_id, COALESCE(p.name_id_format, ''),
 		       COALESCE(array_agg(u.url) FILTER (WHERE u.url IS NOT NULL), '{}')
 		FROM core.saml_session_participants p
 		JOIN core.saml_providers sp ON sp.id = p.provider_id
-		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id
+		LEFT JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id AND u.binding <> 'SOAP'
 		WHERE p.sid = $1 AND ($2 = '' OR p.provider_id <> $2::uuid) AND sp.enabled
-		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id`, sid, exclude)
+		GROUP BY p.provider_id, sp.entity_id, p.session_index, p.name_id, p.name_id_format`, sid, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +392,7 @@ func SAMLParticipantsForSession(ctx context.Context, tx pgx.Tx, sid, exclude str
 	var out []SAMLParticipant
 	for rows.Next() {
 		var p SAMLParticipant
-		if err := rows.Scan(&p.ProviderID, &p.EntityID, &p.SessionIndex, &p.NameID, &p.SLOURLs); err != nil {
+		if err := rows.Scan(&p.ProviderID, &p.EntityID, &p.SessionIndex, &p.NameID, &p.NameIDFormat, &p.SLOURLs); err != nil {
 			return nil, err
 		}
 		p.SID = sid
@@ -261,6 +407,7 @@ type LogoutStep struct {
 	EntityID     string `json:"entity_id"`
 	SLOURL       string `json:"slo_url"`
 	NameID       string `json:"name_id"`
+	NameIDFormat string `json:"name_id_format,omitempty"`
 	SessionIndex string `json:"session_index"`
 }
 
@@ -364,9 +511,10 @@ func AdvanceLogoutChain(ctx context.Context, tx pgx.Tx, token string, previousFa
 }
 
 // SweepExpiredLogoutChains removes abandoned chains. Called by the janitor.
-func SweepExpiredLogoutChains(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.saml_logout_progress WHERE expires_at <= now()`)
+func SweepExpiredLogoutChains(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.saml_logout_progress WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.saml_logout_progress WHERE expires_at <= now()
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

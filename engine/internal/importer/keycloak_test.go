@@ -35,7 +35,7 @@ func TestImportedClientSecretIsHashedAndStillVerifies(t *testing.T) {
 	}
 
 	var orgID string
-	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&orgID); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
 		t.Skip("no organisation seeded")
 	}
 
@@ -52,7 +52,7 @@ func TestImportedClientSecretIsHashedAndStillVerifies(t *testing.T) {
 	}}}
 
 	h := passwords.NewHasher(passwords.MemoryBudgetMiB)
-	if _, err := Import(ctx, tx, orgID, realm, h, false); err != nil {
+	if _, err := Import(ctx, tx, orgID, realm, h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,7 +114,7 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	var orgID string
-	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations LIMIT 1`).Scan(&orgID); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT id::text FROM core.organizations ORDER BY created_at, id LIMIT 1`).Scan(&orgID); err != nil {
 		t.Skip("no organisation seeded")
 	}
 	tx, err := conn.Begin(ctx)
@@ -141,7 +141,7 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 	}}
 
 	h := passwords.NewHasher(passwords.MemoryBudgetMiB)
-	res, err := Import(ctx, tx, orgID, realm, h, false)
+	res, err := Import(ctx, tx, orgID, realm, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,5 +204,24 @@ func TestServiceAccountClientsKeepTheirGrant(t *testing.T) {
 	if !skipped {
 		t.Errorf("a client using no flow we implement was imported anyway: %v",
 			res.ClientsSkipped)
+	}
+
+	// Every imported client requires PKCE. The importer once required it only of
+	// public clients, so every confidential one accepted a request with no
+	// challenge. The confidential browser-flow clients are the ones an
+	// application might notice, and are listed for the operator.
+	for _, id := range []string{"kc-both", "kc-machine", "kc-browser", "kc-public-sa"} {
+		var pkce bool
+		if err := tx.QueryRow(ctx,
+			`SELECT require_pkce FROM core.clients WHERE client_id = $1`, id).Scan(&pkce); err != nil {
+			t.Fatal(err)
+		}
+		if !pkce {
+			t.Errorf("%s was imported without requiring PKCE", id)
+		}
+	}
+	listed := strings.Join(res.ClientsNowRequiringPKCE, ",")
+	if listed != "kc-both,kc-browser" {
+		t.Errorf("ClientsNowRequiringPKCE = %q, want the confidential browser-flow clients kc-both,kc-browser", listed)
 	}
 }

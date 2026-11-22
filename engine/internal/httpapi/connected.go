@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
@@ -26,6 +27,8 @@ type connectedApp struct {
 	Scopes       []string
 	Granted      string
 	ActiveTokens int
+	// OfflineUntil is the date its offline access ends, empty for none.
+	OfflineUntil string
 }
 
 // handleConnectedApps lists what the user has granted.
@@ -39,22 +42,43 @@ func (s *Server) handleConnectedApps(w http.ResponseWriter, r *http.Request) {
 
 	apps, err := store.ConnectedApps(ctx, s.db, userID)
 	if err != nil {
-		s.log.Error("listing connected applications", "err", err)
+		s.log.ErrorContext(ctx, "listing connected applications", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 
+	// Each in the reader's language when it has a name in it (10.12), read at once.
+	ids := make([]string, 0, len(apps))
+	for _, a := range apps {
+		ids = append(ids, a.ClientID)
+	}
+	names, err := store.ClientNamesOf(ctx, s.db, ids)
+	if err != nil {
+		s.log.WarnContext(ctx, "reading applications' names", "err", err)
+	}
+	prefs := s.languagePreferences(r)
+
 	view := make([]connectedApp, 0, len(apps))
 	for _, a := range apps {
-		view = append(view, connectedApp{
-			ClientID: a.ClientID, Name: a.DisplayName, Scopes: a.Scopes,
+		app := connectedApp{
+			ClientID: a.ClientID, Name: pickClientName(names[a.ClientID], prefs, a.DisplayName), Scopes: a.Scopes,
 			Granted: a.GrantedAt.Format("2 January 2006"), ActiveTokens: a.ActiveTokens,
-		})
+		}
+		// A persisted claims token is acting for them while they are away as
+		// much as an offline grant is, so the page says the later of the two.
+		until := a.OfflineUntil
+		if p := a.PersistedClaimsUntil; p != nil && (until == nil || p.After(*until)) {
+			until = p
+		}
+		if until != nil {
+			app.OfflineUntil = until.Format("2 January 2006")
+		}
+		view = append(view, app)
 	}
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(ctx, "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -77,9 +101,12 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that request could not be verified", http.StatusBadRequest)
 		return
 	}
-	_, userID, orgID, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/connected"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account/connected", false) {
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
@@ -98,9 +125,9 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 	// Scoped to THIS user. The client id arrives from a form field, so the only
 	// thing stopping it naming somebody else's grant is that the query is keyed
 	// on the session's user as well.
-	revoked, err := store.DisconnectApp(ctx, tx, userID, clientID)
+	revoked, err := store.DisconnectApp(ctx, tx, userID, clientID, "user disconnected the application")
 	if err != nil {
-		s.log.Error("disconnecting an application", "err", err, "client_id", clientID)
+		s.log.ErrorContext(ctx, "disconnecting an application", "err", err, "client_id", clientID)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -112,7 +139,7 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 			"client_id": clientID, "families_revoked": revoked,
 		},
 	}); aerr != nil {
-		s.log.Error("recording the withdrawal", "err", aerr)
+		s.log.ErrorContext(ctx, "recording the withdrawal", "err", aerr)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -122,9 +149,16 @@ func (s *Server) handleConnectedRevoke(w http.ResponseWriter, r *http.Request) {
 
 	// Honest about the window. An access token already issued is self-contained
 	// and stays valid until it expires; saying "removed" full stop would be the
-	// more comfortable message and the false one.
+	// more comfortable message and the false one. The window is this client's
+	// lifetime, which is set per client. A lifetime lowered within the last hour
+	// leaves earlier tokens to the one they were minted with; that is said to
+	// the operator who lowers it, not to somebody revoking an application.
+	window := tokens.DefaultAccessTokenTTL
+	if c, cerr := clients.Lookup(ctx, s.db, clientID); cerr == nil {
+		window = c.AccessTokenTTL()
+	}
 	msg := "Access removed. The application can no longer obtain new tokens, and " +
 		"any it already holds stop working within " +
-		tokens.DefaultAccessTokenTTL.Round(time.Minute).String() + "."
+		window.Round(time.Minute).String() + "."
 	http.Redirect(w, r, "/account/connected?m="+url.QueryEscape(msg), http.StatusSeeOther)
 }

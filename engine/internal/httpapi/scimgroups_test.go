@@ -21,6 +21,7 @@ import (
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/scim"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 )
 
 type scimFixture struct {
@@ -34,6 +35,8 @@ type scimFixture struct {
 	nameB  string
 	srcID  string
 	groups []string
+	// queries counts the statements the pool sends.
+	queries *statementCount
 }
 
 func newSCIMFixture(t *testing.T) *scimFixture {
@@ -52,6 +55,8 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
 		return err
 	}
+	queries := &statementCount{}
+	cfg.ConnConfig.Tracer = queries
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +79,7 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		t.Fatal(err)
 	}
 
-	f := &scimFixture{srv: srv, pool: pool}
+	f := &scimFixture{srv: srv, pool: pool, queries: queries}
 	if err := pool.QueryRow(ctx, `
 		WITH i AS (
 			INSERT INTO core.instances (issuer, display_name)
@@ -99,8 +104,8 @@ func newSCIMFixture(t *testing.T) *scimFixture {
 		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(c, `DELETE FROM core.scim_sources WHERE id = $1::uuid`, f.srcID)
-		_, _ = pool.Exec(c, `DELETE FROM core.organizations WHERE id = $1::uuid`, f.orgID)
 	})
+	storetest.Forget(t, pool, f.orgID)
 
 	// Two users, provisioned through the endpoint itself rather than planted, so
 	// the resource ids are the ones an upstream would actually hold.
@@ -359,11 +364,15 @@ func TestGroupFiltering(t *testing.T) {
 		t.Errorf("totalResults = %v, want 1: %v", total, body)
 	}
 
-	status, _ = f.do(t, http.MethodGet,
-		`/scim/v2/Groups?filter=id+eq+%22whatever%22`, "")
+	status, body = f.do(t, http.MethodGet,
+		`/scim/v2/Groups?filter=nickName+eq+%22whatever%22`, "")
 	if status != http.StatusBadRequest {
 		t.Errorf("an unrecognised filter gave %d; ignoring it returns everything "+
 			"and the upstream matches the wrong group", status)
+	}
+	// RFC 7644 Table 9 names the case (2.42).
+	if body["scimType"] != "invalidFilter" {
+		t.Errorf("an unsupported filter answered scimType %v, want invalidFilter", body["scimType"])
 	}
 }
 

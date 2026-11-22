@@ -164,6 +164,37 @@ func RecordTxCodeFailure(ctx context.Context, db Execer, id string) error {
 	return err
 }
 
+// RecordPreAuthorizedToken notes which access token a redeemed offer minted.
+// In the minting transaction, so a token exists only with its record.
+func RecordPreAuthorizedToken(ctx context.Context, db Execer, id, jti string) error {
+	tag, err := db.Exec(ctx, `
+		UPDATE core.preauthorized_codes SET access_token_jti = $2
+		WHERE id = $1::uuid AND redeemed_at IS NOT NULL AND access_token_jti IS NULL`, id, jti)
+	if err != nil {
+		return fmt.Errorf("recording the token an offer minted: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("the offer was not redeemed, or already minted a token")
+	}
+	return nil
+}
+
+// IssuableConfigurations is what an access token may be exchanged for at the
+// credential endpoint: the configurations of the offer that minted it, for
+// the subject it was minted for. A token no offer minted gets nothing.
+func IssuableConfigurations(ctx context.Context, db rowQuerier, jti, userID string) ([]string, error) {
+	var ids []string
+	// user_id as text: a client-credentials token's subject is a client id,
+	// and a cast would turn "not an issuance token" into a server error.
+	err := db.QueryRow(ctx, `
+		SELECT configuration_ids FROM core.preauthorized_codes
+		WHERE access_token_jti = $1 AND user_id::text = $2`, jti, userID).Scan(&ids)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return ids, err
+}
+
 // ClaimPreAuthorizedCode marks the code redeemed, single use.
 //
 // The claim and the check are one statement, so two concurrent redemptions
@@ -180,4 +211,22 @@ func ClaimPreAuthorizedCode(ctx context.Context, db Execer, id string) error {
 		return fmt.Errorf("this pre-authorized code has already been used")
 	}
 	return nil
+}
+
+// SweepSpentPreAuthorizedCodes drops offers past their own expiry by more than
+// tokenTTL, the longest an access token minted from one can live.
+//
+// Not at the offer's expiry: a redeemed offer is what the credential endpoint
+// reads to learn what its token may be exchanged for (IssuableConfigurations),
+// so removing it while that token is still live would refuse a wallet holding
+// a valid token. A redemption happens before the offer expires, so an offer
+// expired by more than the token's lifetime cannot have a live token.
+func SweepSpentPreAuthorizedCodes(ctx context.Context, tx pgx.Tx, tokenTTL time.Duration, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.preauthorized_codes WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.preauthorized_codes WHERE expires_at < now() - $1::interval
+		LIMIT $2 FOR UPDATE SKIP LOCKED))`, tokenTTL.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

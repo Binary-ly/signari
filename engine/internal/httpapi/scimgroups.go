@@ -17,6 +17,13 @@ import (
 	"signari.dev/engine/internal/store"
 )
 
+// scimGroupBodyLimit holds a group of some thirty thousand as upstreams send
+// one, a reference and a display name beside each id, about 130 bytes a member.
+// A user's bodies keep the megabyte; a group is the one resource whose size is
+// the size of the company, and at a megabyte ten thousand members were refused
+// as not being JSON.
+const scimGroupBodyLimit = 4 << 20
+
 // handleSCIMGroups is the collection: list, filter and create.
 func (s *Server) handleSCIMGroups(w http.ResponseWriter, r *http.Request) {
 	src, err := s.scimAuth(r)
@@ -66,15 +73,22 @@ func (s *Server) scimListGroups(w http.ResponseWriter, r *http.Request, src *sto
 		count = scimMaxPageSize
 	}
 
-	displayName, err := scim.ParseDisplayNameFilter(q.Get("filter"))
+	filter, err := scim.ParseListFilter(q.Get("filter"))
 	if err != nil {
-		writeSCIMError(w, http.StatusBadRequest, err.Error())
+		// RFC 7644 Table 9: invalidFilter covers "the specified attribute and
+		// filter comparison combination is not supported", so a client can tell
+		// a filter this server cannot answer from a malformed request.
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
 		return
 	}
 
-	groups, total, err := store.ListSCIMGroups(r.Context(), s.db, src, displayName, start, count)
+	groups, total, err := store.ListSCIMGroups(r.Context(), s.db, src, filter, start, count)
+	if errors.Is(err, store.ErrSCIMFilter) {
+		writeSCIMErrorType(w, http.StatusBadRequest, "invalidFilter", err.Error())
+		return
+	}
 	if err != nil {
-		s.log.Error("listing SCIM groups", "err", err)
+		s.log.ErrorContext(r.Context(), "listing SCIM groups", "err", err)
 		writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 		return
 	}
@@ -119,7 +133,7 @@ func (g *inboundGroup) memberIDs() []string {
 
 func decodeInboundGroup(w http.ResponseWriter, r *http.Request) (*inboundGroup, error) {
 	var probe map[string]json.RawMessage
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, scimGroupBodyLimit))
 	if err := dec.Decode(&probe); err != nil {
 		return nil, err
 	}
@@ -159,7 +173,7 @@ func (s *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request, src *st
 
 	g, err := store.UpsertSCIMGroup(ctx, s.db, src, in.ExternalID, in.DisplayName, in.memberIDs())
 	if err != nil {
-		s.writeSCIMGroupError(w, err, "creating a SCIM group")
+		s.writeSCIMGroupError(r.Context(), w, err, "creating a SCIM group")
 		return
 	}
 	s.auditDetached(ctx, audit.Event{
@@ -183,6 +197,11 @@ func (s *Server) handleSCIMGroup(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusNotFound, "no such group")
 		return
 	}
+	s.scimServeGroup(w, r, src, id)
+}
+
+// scimServeGroup does what a request asks of one group, however it arrived.
+func (s *Server) scimServeGroup(w http.ResponseWriter, r *http.Request, src *store.SCIMSource, id string) {
 	ctx := r.Context()
 
 	switch r.Method {
@@ -219,7 +238,7 @@ func (s *Server) handleSCIMGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		g, uerr := store.UpsertSCIMGroup(ctx, s.db, src, existing.ExternalID, name, members)
 		if uerr != nil {
-			s.writeSCIMGroupError(w, uerr, "replacing a SCIM group")
+			s.writeSCIMGroupError(r.Context(), w, uerr, "replacing a SCIM group")
 			return
 		}
 		s.auditGroupChange(ctx, src, g, "scim.group_replaced")
@@ -232,13 +251,11 @@ func (s *Server) handleSCIMGroup(w http.ResponseWriter, r *http.Request) {
 		g, derr := store.DeleteSCIMGroup(ctx, s.db, src, id)
 		if derr != nil {
 			if errors.Is(derr, pgx.ErrNoRows) {
-				// Already gone is the outcome the upstream wanted. 204 rather
-				// than 404, so a retried deprovisioning does not look like a
-				// permanent failure.
-				w.WriteHeader(http.StatusNoContent)
+				// A 404, as RFC 7644 §3.6 requires; see scimDeleteUser.
+				writeSCIMError(w, http.StatusNotFound, "no such group")
 				return
 			}
-			s.log.Error("deleting a SCIM group", "err", derr)
+			s.log.ErrorContext(ctx, "deleting a SCIM group", "err", derr)
 			writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 			return
 		}
@@ -255,7 +272,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 
 	ctx := r.Context()
 	var req scim.PatchRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, scimGroupBodyLimit)).Decode(&req); err != nil {
 		writeSCIMError(w, http.StatusBadRequest, "body is not SCIM JSON")
 		return
 	}
@@ -271,7 +288,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if len(patch.Unsupported) > 0 {
-		s.log.Warn("SCIM group patch contained paths this engine does not store",
+		s.log.WarnContext(ctx, "SCIM group patch contained paths this engine does not store",
 			"paths", strings.Join(patch.Unsupported, ","), "source", src.Slug)
 	}
 
@@ -281,7 +298,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 			writeSCIMError(w, http.StatusNotFound, "no such group")
 			return
 		}
-		s.writeSCIMGroupError(w, err, "patching a SCIM group")
+		s.writeSCIMGroupError(r.Context(), w, err, "patching a SCIM group")
 		return
 	}
 	s.auditDetached(ctx, audit.Event{
@@ -295,7 +312,7 @@ func (s *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request,
 }
 
 // writeSCIMGroupError maps a store error to the status an upstream acts on.
-func (s *Server) writeSCIMGroupError(w http.ResponseWriter, err error, what string) {
+func (s *Server) writeSCIMGroupError(ctx context.Context, w http.ResponseWriter, err error, what string) {
 	var conflict *store.SCIMConflictError
 	if errors.As(err, &conflict) {
 		// 409 uniqueness is what stops an upstream retrying forever.
@@ -322,7 +339,7 @@ func (s *Server) writeSCIMGroupError(w http.ResponseWriter, err error, what stri
 		writeSCIMError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.log.Error(what, "err", err)
+	s.log.ErrorContext(ctx, what, "err", err)
 	writeSCIMError(w, http.StatusInternalServerError, "unavailable")
 }
 

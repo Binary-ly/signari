@@ -21,6 +21,8 @@ import (
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/oidc"
 	"signari.dev/engine/internal/passwords"
+	"signari.dev/engine/internal/store/storetest"
+	"signari.dev/engine/internal/tracing"
 )
 
 // The browser sign-in journey, end to end.
@@ -74,6 +76,8 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		_, err := c.Exec(ctx, "SET ROLE signari_maintenance")
 		return err
 	}
+	// As serve's pools have it, so a test capturing spans sees the queries.
+	cfg.ConnConfig.Tracer = tracing.DB{}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +118,7 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		Scan(&f.orgID, &f.userID, &f.email); err != nil {
 		t.Fatalf("fixture user: %v", err)
 	}
+	storetest.Forget(t, pool, f.orgID)
 
 	// A real Argon2id hash, produced by the same hasher the handler verifies
 	// with. A hand-written constant here would test the constant.
@@ -132,7 +137,7 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		INSERT INTO core.clients (client_id, org_id, display_name, client_type,
 		                          client_secret_hash, grant_types, scopes, require_pkce)
 		VALUES ($1,$2,'T','public','', ARRAY['authorization_code'],
-		        ARRAY['openid'], false)`, f.clientID, f.orgID); err != nil {
+		        ARRAY['openid'], true)`, f.clientID, f.orgID); err != nil {
 		t.Fatalf("fixture client: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
@@ -202,6 +207,13 @@ func clearSignInBucket(t *testing.T, pool *pgxpool.Pool) {
 // would pass just as happily if the outer one stopped calling it.
 func (f *signInFixture) attempt(t *testing.T, identifier, password string) outcome {
 	t.Helper()
+	return f.attemptCtx(t, context.Background(), identifier, password)
+}
+
+// attemptCtx is attempt with the POST bound to ctx, for a test that must not
+// hang if the handler blocks waiting on a connection.
+func (f *signInFixture) attemptCtx(t *testing.T, ctx context.Context, identifier, password string) outcome {
+	t.Helper()
 
 	// A real form first, for a CSRF token pair the POST will accept.
 	get := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -228,7 +240,8 @@ func (f *signInFixture) attempt(t *testing.T, identifier, password string) outco
 		"password":    {password},
 		csrfFormField: {csrfField},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login",
+		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
 	req.RemoteAddr = testClientIP(t) + ":5555"

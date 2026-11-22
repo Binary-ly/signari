@@ -68,9 +68,20 @@ func TestExchangeAudienceMatchIsOptionalAndEnforcedWhenOn(t *testing.T) {
 		}
 	}
 
-	// A subject token addressed to somebody else entirely.
+	// A subject token addressed to somebody else entirely, from another client.
+	// That client exists: a token naming a client this server does not have is
+	// refused before the audience rule is reached (2.50).
 	subjectForAnother := func(t *testing.T, f *tokenFixture) string {
 		t.Helper()
+		other := f.clientID + "-other"
+		if _, err := f.pool.Exec(context.Background(), `
+			INSERT INTO core.clients (client_id, org_id, display_name, client_type)
+			VALUES ($1, $2, 'other', 'public')`, other, f.orgID); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = f.pool.Exec(context.Background(), `DELETE FROM core.clients WHERE client_id = $1`, other)
+		})
 		k, err := f.srv.cfg.Keys.Active(keys.ES256)
 		if err != nil {
 			t.Fatal(err)
@@ -80,7 +91,7 @@ func TestExchangeAudienceMatchIsOptionalAndEnforcedWhenOn(t *testing.T) {
 			Issuer: f.srv.cfg.Issuer, Subject: f.userID,
 			Audience: []string{"https://someone-else.example"},
 			Expiry:   now.Add(time.Minute).Unix(), IssuedAt: now.Unix(),
-			JTI: "audmatch-" + t.Name(), ClientID: "a-different-client",
+			JTI: "audmatch-" + t.Name(), ClientID: other,
 			Scope: "openid",
 		}, tokens.TypAccessToken)
 		if err != nil {

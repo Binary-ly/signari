@@ -8,9 +8,79 @@ everything:
 | **back-channel** (OIDC) | server-side sessions at relying parties | retried, parked failures surfaced |
 | **front-channel** (OIDC) | state the browser holds — cookies the RP's server never sees, local storage, service workers | best effort, no completion signal |
 | **SAML front-channel chain** | SAML service providers | sequential, per-provider result recorded |
+| **SAML SOAP** | SAML service providers with a SOAP address, however the session ended | retried, parked failures surfaced |
 
 Each is reported separately rather than summed into a single "signed out",
 because they succeed and fail independently.
+
+**A sign-out ends every account the browser holds**, not only the one in use
+([several accounts](accounts.md)). Each one's relying parties are told by back
+channel. The front channel and the SAML chain run for the account that was in
+use.
+
+**Signing out does not end a grant of `offline_access`.** That grant is access
+for an application while the person is *not* signed in, so it outlives the
+session it was given in, for the organisation's offline lifetime (`signari
+instance session-lifetime -offline`, thirty days unless changed). It ends when
+the person removes the application at `/account/connected`, or when every
+session they have is ended: a password changed or reset, a factor reset,
+deactivation, "sign out everywhere". An application that wants a sign-out to
+end its own access revokes its refresh token (RFC 7009). Until October 2026
+every grant ended with its session, so `offline_access` lasted only while the
+person stayed signed in.
+
+## Registering a client's sign-out
+
+```sh
+signari client set-logout -client-id wiki \
+  -post-logout-redirects https://wiki.example.com/signed-out \
+  -frontchannel-uri https://wiki.example.com/oidc/frontchannel-logout
+```
+
+`-post-logout-redirects` lists where RP-initiated logout may send the browser
+afterwards. A `post_logout_redirect_uri` is honoured only when this client
+registered it, and the same rules as a redirect URI apply: https, or a loopback
+address for development, and no wildcard. `-frontchannel-uri` is the
+front-channel URI below, and `-frontchannel-sid` (on by default) adds `iss` and
+`sid` to it. The same three are the client PATCH's `post_logout_redirect_uris`,
+`frontchannel_logout_uri` and `frontchannel_logout_session_required`, the client
+fields of the same names in `signari apply`, and dynamic registration metadata.
+Until October 2026 nothing could register either one, so every
+`post_logout_redirect_uri` was refused and the front channel reached no client.
+
+One that is not registered stops the return and nothing else: the person is signed
+out, every channel is told, and they stay here. Until November 2026 it answered 400
+instead, after the session here had ended and before the front channel, SAML service
+providers and the provider they came through were told, so a mistyped address left
+them signed in to all of those. The engine logs the client that asked.
+
+## Signing out at the provider too
+
+Somebody who signed in through a company's provider is still signed in there after
+signing out here, so the next sign-in goes straight through without asking them
+anything. On a shared machine that is the wrong answer. An operator can send them
+on to the provider:
+
+```sh
+signari idp logout -slug corp -url https://idp.corp.example/logout
+```
+
+The address is the provider's `end_session_endpoint`, which `signari idp check`
+reads from its discovery document if you need it. Register
+`https://<this issuer>/logout/complete` there as a post-logout redirect. After a
+sign-out the browser goes to the provider with `client_id`,
+`post_logout_redirect_uri` and a `state`, and comes back to `/logout/complete`,
+which carries on to the application's own `post_logout_redirect_uri`, or reports
+the sign-out if there was none.
+
+This is the last stop, after back-channel notices, the front channel and any SAML
+chain, because nothing here can resume once the browser has left. Sessions end here
+first, so a provider that fails or refuses leaves the person signed out here, and
+only here. It happens only for a session that came through a provider, in the
+browser it came through. The upstream `id_token` is not kept, so no `id_token_hint`
+goes with it and the provider may ask the person to confirm. A SAML upstream's address
+is its SingleLogoutService, and it needs a signing key, for which see
+[single logout with an upstream](saml-source.md#single-logout-with-an-upstream).
 
 ## Why both OIDC channels
 

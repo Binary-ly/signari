@@ -8,7 +8,28 @@ signari idp add-issuer -org <uuid> -slug github-actions \
 signari idp assertions -slug github-actions -allow-assertions
 
 signari client set-assertion-issuers -client-id ci-deploy -issuers github-actions
+signari client set-grants -client-id ci-deploy \
+    -grant-types urn:ietf:params:oauth:grant-type:jwt-bearer
+
+# the account each workload acts as: the assertion's `sub`, linked to a person
+signari idp link -slug github-actions \
+    -subject repo:acme/deploy:ref:refs/heads/main -email deploy-bot@acme.example
 ```
+
+The client also needs the grant itself, like every grant the token endpoint
+serves. Until October 2026 `set-grants` did not accept this one, so no client
+could be given it.
+
+An assertion mints for the local account its `sub` is linked to, and a
+key-publishing issuer is never a sign-in option, so no sign-in creates that
+link: `idp link` does, `idp links` lists them and `idp unlink` removes one.
+Until October 2026 nothing could, and this set-up minted nothing without SQL.
+A subject acts as one person and a person is one subject at an issuer, so
+pointing a workload at another account is `idp unlink` and then `idp link`;
+linking it again is refused rather than taken as a move. The Admin API does the
+same under the person, at `PUT` and `DELETE /admin/users/{userID}/identity-links/{slug}`
+(see [admin-api.md](admin-api.md#users)), and registers the issuer itself at
+`POST /admin/organizations/{orgID}/identity-providers`.
 
 Two commands because they are two decisions: the first records that an issuer
 exists and where its keys are, the second grants it the power to mint tokens
@@ -66,8 +87,14 @@ across the industry of exactly that mistake.
 5. The assertion's `sub` is linked to a local user whose status is `active`.
 6. The assertion's `jti` has not been seen before.
 
-6. The account has no unmet obligation — an account flagged as needing a password
+7. The account has no unmet obligation — an account flagged as needing a password
    change cannot mint tokens through a door that involves no password.
+8. The person has not withdrawn their consent from this client on the account
+   page. No consent is asked for beforehand, since a workload never sees a
+   consent screen and pairing the client with the issuer is your authorisation;
+   but a person who disconnected the client is not minted for by its next
+   assertion. Until October 2026 they were. Consenting again at sign-in restores
+   it.
 
 Every failure returns the **same** `invalid_grant` and the same sentence, with the
 real reason in the log against a correlation id. That matters more than it looks:
@@ -186,6 +213,40 @@ rather than answered with invented claims.
 **No session.** Nothing was signed in, so nothing can be signed out. The token
 carries no `sid`, because inventing one would make logout appear to reach a token
 it cannot.
+
+## The same token through token exchange
+
+A JWT from a registered issuer can also be presented to RFC 8693 token exchange, as
+`subject_token` with `subject_token_type=urn:ietf:params:oauth:token-type:jwt`. Use
+this rather than the grant when the token is going to be passed on: it can be
+addressed to one of the client's `set-exchange` audiences, and the result records
+who is acting.
+
+```sh
+signari client set-exchange -client-id gateway -exchange-audiences https://api.acme.example
+signari client set-assertion-issuers -client-id gateway -issuers partner
+```
+
+Every rule above applies, with the same one sentence for every refusal: the issuer
+opted in, the client paired with it, the claim rules, a linked and active person, a
+consent not withdrawn, the access policy, and one use of each `jti`, shared with the
+grant. A token spent either way cannot be spent the other. On top of those:
+
+- The client needs exchange too, and one without it is refused before any keys are
+  fetched.
+- The ceiling is the client's registered scope. A `scope` claim in the token is its
+  issuer's vocabulary and buys nothing here.
+- `openid` is refused, and so is a client whose registration carries it when no
+  `scope` was asked for, as with the grant.
+- An `act` chain in the token is kept, with the calling client added above it, and a
+  `may_act` in it is held to.
+- The result never outlives the token it came from, and has no session.
+- Only `...token-type:jwt`. An access token from elsewhere means whatever its issuer
+  says it means, and nothing asks them, so it is refused as any invalid token is.
+
+The audit record, `oauth.token_exchanged`, names the `subject_issuer`. Refusals of a
+subject or actor token are `invalid_request`, as RFC 8693 §2.2.2 requires, where this
+grant's are `invalid_grant`.
 
 ## Key fetching
 

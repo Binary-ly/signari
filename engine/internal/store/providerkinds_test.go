@@ -59,8 +59,9 @@ func TestEveryProviderKindIsStorable(t *testing.T) {
 	// And the other direction: a value the constraint permits that no preset
 	// backs would be a kind an operator can store and the engine cannot use.
 	// `saml` is deliberately excluded — it is a real kind with no preset,
-	// because a SAML upstream's endpoints come from its metadata.
-	known := map[string]bool{"saml": true}
+	// because a SAML upstream's endpoints come from its metadata — and so is
+	// `oid4vp`, whose settings are its own rows in core.vp_verifiers.
+	known := map[string]bool{"saml": true, "oid4vp": true}
 	for _, k := range kinds {
 		known[string(k)] = true
 	}

@@ -13,10 +13,84 @@ signari dir add -org <uuid> -kind ldap -slug corp \
   -ldap-flavour ad \
   -ldap-ca /etc/signari/corp-ca.pem
 
+signari dir test -slug corp            # connect, bind, read a few people
 signari dir sync -slug corp            # preview, writes nothing
 signari dir sync -slug corp -apply
 ```
 
+Through the Admin API an LDAP source is registered only by a deployment-wide
+token. The engine dials its URL from inside the deployment's network, so
+choosing it is choosing where the engine connects, and that is not a setting
+for one organisation's administrator. See [admin-api.md](admin-api.md).
+
+
+## Several servers, and asking one before trusting it
+
+`-ldap-url` can name replicas, separated by spaces, tried in order:
+
+```sh
+signari dir add -org <uuid> -kind ldap -slug corp \
+  -ldap-url "ldaps://dc01.corp.example:636 ldaps://dc02.corp.example:636" \
+  ...
+```
+
+The next server is tried only when one cannot be reached or its TLS fails. A
+server that answers and refuses the bind is not passed over: the password is wrong
+for all of them, and trying each one in turn would lock the service account on
+every replica. Each URL is held to the rule below on its own, so one plaintext
+entry in a list is refused however good the others are.
+
+`signari dir test` (`POST .../directories/{slug}/test`) reads the directory as a
+sync would and changes nothing, in it or here. It works on a disabled source, so a
+source can be checked before it is turned on, and it says where it stopped:
+
+| Step | Means |
+|---|---|
+| `connect` | No server could be reached, or TLS failed |
+| `bind` | The server answered and refused the credentials |
+| `search` | The bind worked and the search failed or found nobody, so the base DN or the filter is wrong |
+| `identity` | An entry has no value for what this flavour tracks people by, so the flavour is wrong for this server |
+
+It reads five entries. A server that stops there on a size limit has still
+answered, so that counts as success; `dir sync` is what proves the whole directory
+reads, and its paged search treats a short list as a failure.
+
+## Reading more than a flavour names
+
+A flavour says where a person's identifier, address and name are kept. An attribute
+map says what else to read, and where those three are kept when the convention is
+wrong for this directory:
+
+```sh
+signari dir set -slug corp \
+  -attribute-map "employeeNumber=employee_number,department=department,userPrincipalName=email"
+signari dir sync -slug corp            # shows how many values would change
+```
+
+The left of each pair is an LDAP attribute, matched in any case. The right is a
+declared attribute, or `email` or `name`, which replace what the flavour reads for
+those two. An attribute has to be declared first, through the Admin API or a
+configuration file, because its declaration decides its type and whether it is
+sealed. `-attribute-map ""` clears the map, and `PATCH .../directories/{slug}` takes
+the same thing as `attribute_map`. Only an LDAP source has one: Google and Entra
+report what their APIs do.
+
+A mapped attribute belongs to the directory. Each sync writes what the directory
+says, so a value changed here goes back at the next one, and a value the directory
+no longer holds is cleared here. There are limits on that:
+
+- If no entry at all carries an attribute, nobody's is cleared and the report says
+  so. A bind account that cannot read an attribute looks exactly like a company with
+  no departments, and this is the same rule a short list gets.
+- A required attribute is never cleared.
+- A value the attribute's type refuses, or one that is not text, is reported by
+  person and attribute and left out. The rest of the sync goes on.
+- A person who may act as others keeps their values, and the trail records
+  `directory.privileged_skipped`. These values can feed claims, and administering
+  the directory does not make anybody an administrator here.
+- A person with several values gets the first the server returns.
+
+Values are never printed. The report and the audit record give counts and names.
 
 ## It reuses the Google/Entra reconciler on purpose
 

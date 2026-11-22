@@ -14,14 +14,12 @@ building and validation (§10), metadata policy (§6) and constraints (§6.2). A
 **Trust Marks** (§7): issuing, delegation, validation, and the three Trust Mark
 Issuer endpoints of §8.4–§8.6 — see [trust-marks.md](trust-marks.md).
 
-**Not implemented.** The remaining §8 endpoints — fetch, subordinate listing,
-resolve. Signari can be a **Leaf Entity** and a **Trust Mark Issuer**. It cannot
-yet be an Intermediate or a Trust Anchor *for others*, because it cannot serve
-Subordinate Statements.
+Signari can be a **Leaf Entity**, a **Trust Mark Issuer**, an **Intermediate** and a
+**Trust Anchor**. Fetch, subordinate listing and resolve are in
+[Speaking for other entities](#speaking-for-other-entities).
 
-Nothing advertises what is missing. The `federation_entity` metadata contains no
-`federation_fetch_endpoint`, because that endpoint does not exist — the same rule
-this repository applies to OIDC discovery. The three trust-mark endpoints are
+Nothing advertises what does not apply. A Leaf Entity's `federation_entity` metadata
+contains no `federation_fetch_endpoint`, which §5.1.1 forbids it. The three trust-mark endpoints are
 advertised only once this entity has actually issued a Trust Mark.
 
 ## Enabling it
@@ -33,11 +31,36 @@ advertised only once this entity has actually issued a Trust Mark.
 Then restart `signari serve`; the endpoint is registered at startup only when a
 federation key exists.
 
-`-authority-hints` names this entity's **Immediate Superiors**. §3.1.2 makes it
-REQUIRED for any entity with a superior above it, forbids the empty array, and
-forbids the claim entirely for a Trust Anchor with no superiors. Omitting the
-flag publishes this entity as a Trust Anchor, and the command says so rather than
-leaving it to be inferred.
+`-authority-hints` names this entity's **Immediate Superiors**. §3.1.2 makes the
+claim REQUIRED for any entity with a superior above it, forbids the empty array,
+and forbids the claim entirely for a Trust Anchor with no superiors, so leaving it
+out makes this entity a **Trust Anchor** (see below). `trust-mark issuers` and
+`trust-mark owners` set claims only a Trust Anchor publishes.
+
+Three more settings go into the Entity Configuration, and each is kept when its
+flag is not given, so a re-run to change the name does not wipe them:
+
+    signari federation enable -authority-hints https://anchor.example \
+      -trust-anchor-hints https://anchor.example,https://edugain.example \
+      -federation-contacts security@example.edu \
+      -entity-lifetime 12h
+
+- `-trust-anchor-hints` is published as `trust_anchor_hints`, the Trust Anchors
+  this entity trusts. Each must be an Entity Identifier; empty clears it, and the
+  claim is then absent, because §3.1.2 forbids the empty array.
+- `-federation-contacts` goes into the `federation_entity` metadata as
+  `contacts`, which may hold names, addresses or phone numbers.
+- `-entity-lifetime` is how long the Entity Configuration is valid, from 5m to
+  168h, 24h by default. A long one is a statement a federation keeps trusting
+  after you have changed your mind.
+
+`federation show` prints all three. Until October 2026 they were read and
+published and nothing could set them.
+
+The Admin API enables federation and changes these settings the same way at
+`/admin/instances/{instanceID}/federation`, with a deployment-wide token. Its
+answer says `restart_required` when it generated the federation key, since the
+endpoint is registered when `serve` starts. See [admin-api.md](admin-api.md).
 
 ## The federation key is separate, and that is the point
 
@@ -259,14 +282,82 @@ test suite full of passing tests said nothing about it.
 
 ## Automatic Registration (§12.1)
 
-`oidfed.Register` turns a resolved chain into a usable client. An RP in the same
-federation uses this OP with **no prior registration step**: its Entity
-Identifier is its `client_id`, and everything the OP needs — redirect URIs, keys,
-scopes — comes from metadata resolved through a Trust Chain rather than from a
-registration request.
+An RP in a federation can use this OP with no registration step: its Entity Identifier
+is its `client_id`, and everything the OP needs — redirect URIs, keys, scopes — comes
+from metadata resolved through a Trust Chain rather than from a registration request.
 
 This is the feature that makes the rest of the federation work pay off for an
 OpenID Provider.
+
+### Whose word to take
+
+**Nobody is admitted until an operator writes down whose word to take.** Being in a
+federation is not enough: a federation is somebody else's opinion, and with an empty list
+this server does not so much as fetch anything for a stranger.
+
+```sh
+signari federation add-anchor -entity-id https://anchor.example \
+  -org <org-uuid> -jwks-file anchor-keys.json \
+  -trust-marks https://marks.example/accredited     # optional
+signari federation anchors
+signari federation remove-anchor -entity-id https://anchor.example
+```
+
+The keys are the anchor's Federation Entity Keys, and they come from the operator, not
+from the anchor's address: fetched, the anchor would be whoever answers there. `-org` is
+where the RPs it vouches for are registered. `-trust-marks` are types an RP has to hold
+besides, each valid under §7.3: issued to it, by an issuer the anchor allows for that
+type where it says, signed by keys established through a chain of its own.
+
+The same list is `/admin/instances/{instanceID}/federation/anchors` on the Admin API.
+
+**Removing an anchor deletes the clients it admitted**, with their sessions and tokens.
+They had no other standing here. One the federation still vouches for through another
+listed anchor is registered again by its next request.
+
+### What a first request does
+
+An `https` `client_id` nobody has registered, with a signed `request` at the authorization
+endpoint or the pushed authorization endpoint, is taken to be an RP:
+
+1. The chain is resolved to a listed anchor, with the metadata policy along it applied.
+2. Any Trust Marks the anchor asks for are checked.
+3. The request is verified with the keys the chain published.
+4. It becomes a client: confidential, `private_key_jwt`, no secret, and required to sign
+   every request. Its consent screen is shown like any other.
+
+Failing any of these leaves it unknown, and nothing is written. §12.1.3 is why that is
+shown to the person and not sent to the redirect URI: *"it MUST treat the redirection URI
+as invalid and not perform redirection"*. One address can make the server walk 30 chains
+a minute.
+
+Its requests are held to §12.1.1.1 from then on: `aud` this server and nobody else, `exp`
+and `jti` required, no `sub`, and each one good once. The registration lasts as long as
+the chain, and the first request after that resolves it again. If it no longer resolves,
+the client stops signing people in. Tokens already issued go on working until they end.
+
+A client an operator made is never touched, whatever a chain says about the same name.
+
+### Explicit Registration (§12.2)
+
+An RP can also register first. It POSTs its Entity Configuration, addressed to this OP in
+`aud`, to `/federation/register`, as `application/entity-statement+jwt`, or a Trust Chain
+as `application/trust-chain+json`, of which the first statement is read. The anchor list
+governs this just as it does the other: with nothing on it the endpoint answers `404`, and
+neither registration is advertised.
+
+What it sent is what counts, so it can tailor its metadata for this OP. A configuration is
+only as good as its signature, and anybody can sign one naming an RP, so the keys in it
+have to be the keys its superior attests to.
+
+It keeps its Entity Identifier as its `client_id` and gets no secret, as an automatic one
+does, and the answer is a signed `application/explicit-registration-response+jwt`, whose
+`exp` is the registration's and never later than the chain's. Unlike an automatic client
+it is not held to signed requests, having proved who it is by registering. To renew, it
+registers again before `exp`.
+
+Not here: an RP proving itself at a push with `private_key_jwt` alone, with no Request
+Object, which §12.1.1.2 also allows, and the `trust_chain` header, which is a hint.
 
 ### The chain is not the whole story
 
@@ -402,15 +493,40 @@ every test here, and that is a property of the operator set rather than a gap in
 the tests. The direction still matters for the additional operators §6.1.3.2
 permits, whose merges need not be commutative.
 
-## Where it goes next
+## Speaking for other entities
 
-- **The §8 endpoints** we would serve as an Intermediate: fetch and subordinate
-  listing. Signari cannot yet issue Subordinate Statements, so it cannot vouch
-  for another entity's keys — which is a different thing from vouching for its
-  conformance, and that second one is now covered by
-  [trust marks](trust-marks.md).
-- **The resolve endpoint** (§8.3), which would let others reuse chains we have
-  already validated.
+An entity with no superior is a Trust Anchor, and one with a superior becomes an
+Intermediate by speaking for somebody:
 
-The resolution side — publish, fetch, build, validate, register — is complete and
-tested end to end against multi-entity federations over HTTP.
+```sh
+signari federation enable                 # no -authority-hints: a Trust Anchor
+signari federation add-subordinate -entity-id https://rp.example \
+    -jwks-file rp-federation-keys.json \
+    [-metadata-policy-file policy.json] [-max-path-length 1] [-intermediate]
+signari federation subordinates
+signari federation remove-subordinate -entity-id https://rp.example
+```
+
+**Take the keys from the entity by some way other than its own address.** A
+Subordinate Statement says "these are that entity's keys", and it is worth what you
+checked to say so. Asking the entity at the moment of adding it would vouch for
+whoever answered, so the keys are a file. A private key is refused, since the keys
+are published to everybody who asks, and so is a policy no resolver could apply,
+which would break the chain of everybody below.
+
+Three endpoints serve it, and are published in the `federation_entity` metadata only
+by a Trust Anchor or an entity with subordinates, as §5.1.1 requires:
+
+| | |
+|---|---|
+| `GET /federation/fetch?sub=` | §8.1: a Subordinate Statement, signed with the Federation Entity Key and made at each request, so that a removal or a change of keys holds from the next one. `not_found` for an entity it does not speak for, `invalid_request` for itself. A statement already fetched lasts until it expires, which is the lifetime of this entity's own configuration |
+| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters, and so do `?trust_marked=true` and `?trust_mark_type=`, from the Trust Marks this entity issued, live ones only: revoked or past their `exp` they count for nothing. Several filters together keep what all of them keep. `entity_type` is refused with `unsupported_parameter`: an operator gives a subordinate's keys and policy, not its types, so this entity does not know them, and a list ignoring the filter would look filtered and be wrong |
+| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. For chains ending at this entity or at a Trust Anchor an operator listed with `federation add-anchor`, verified with the keys it was given with, the first of several `trust_anchor` values it can stand behind; any other is `invalid_trust_anchor`, since it could be taken only on the word of whoever answers at that address. The chain ends with the anchor's own configuration, verified with those keys. `trust_marks` carries the subject's marks that hold under §7.3 against that anchor, as a registering client is held to them, and none that do not; the response lasts no longer than the first of them to expire |
+
+Not built: client authentication at these endpoints (§8.8). It is off by default and a
+choice each federation makes per endpoint, and none here has asked for it.
+
+## Where it stands
+
+The resolution side — publish, fetch, build, validate, register, resolve — is complete
+and tested end to end against multi-entity federations over HTTP.

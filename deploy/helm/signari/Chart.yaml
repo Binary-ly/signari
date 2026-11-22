@@ -6,7 +6,10 @@ type: application
 # container image the chart deploys by default; bumping the image is a chart
 # change, so this and values.image.tag move together.
 version: 0.1.0
-appVersion: "latest"
+# Pinned, not "latest": a tag that moves deploys a different engine on every
+# pull, so two pods of one release could run two versions. This is the image
+# scripts/build-release.sh builds for the release of the same number.
+appVersion: "0.1.0"
 home: https://signari.dev
 sources:
   - https://github.com/binary-ly/signari

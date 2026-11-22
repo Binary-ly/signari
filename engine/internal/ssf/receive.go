@@ -2,6 +2,7 @@ package ssf
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,10 +15,17 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"signari.dev/engine/internal/jsonstrict"
+	"signari.dev/engine/internal/safedial"
 )
 
 // ErrNotVerified means the token failed a check before anything was acted on.
 var ErrNotVerified = fmt.Errorf("the security event token did not verify")
+
+// ErrKeysUnavailable means the source's keys could not be fetched, which says nothing
+// about the token. Answered as ours to retry and not as a refusal: a transmitter told a
+// session-revoked event was invalid has no reason to send it again, and the outage was
+// never its event's fault.
+var ErrKeysUnavailable = fmt.Errorf("the source's keys could not be fetched")
 
 // ReceivedEvent is a verified event, ready to act on.
 type ReceivedEvent struct {
@@ -51,6 +59,31 @@ type Source struct {
 	// that contains a Subject with a Critical member that it is unable to
 	// process." Empty is the normal case and means no member is critical.
 	CriticalSubjectMembers []string
+}
+
+// Routing reads `iss` and `aud` from a compact JWS without verifying it.
+//
+// Used ONLY to choose which source to verify against: the pair is what tells
+// two organisations trusting one transmitter apart. Choosing wrongly makes
+// verification fail, so this cannot grant anything -- but it must never be used
+// for a decision, and it is not. `aud` may be a string or an array (§4.1.8).
+func Routing(raw string) (issuer string, audiences []string, ok bool) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return "", nil, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", nil, false
+	}
+	var c struct {
+		Issuer   string   `json:"iss"`
+		Audience audience `json:"aud"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil || c.Issuer == "" {
+		return "", nil, false
+	}
+	return c.Issuer, c.Audience, true
 }
 
 // processableSubjectMembers are the members subjectFrom actually reads.
@@ -153,8 +186,15 @@ func (f *KeyFetcher) client() *http.Client {
 	if t <= 0 {
 		t = 5 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	return keyClient(t)
 }
+
+// keyClient is safedial's: a source's JWKS URI is a stored setting, fetched
+// whenever a token names a key id not yet seen, which a sender chooses. A
+// variable so this package's tests can reach a transmitter on loopback.
+var keyClient = safeKeyClient
+
+func safeKeyClient(t time.Duration) *http.Client { return safedial.Client(t) }
 
 // Keys returns the source's key set, fetching if needed.
 func (f *KeyFetcher) Keys(ctx context.Context, jwksURI string, wantKID string) (
@@ -280,7 +320,7 @@ func Verify(ctx context.Context, f *KeyFetcher, src Source, raw string, now time
 
 	keys, err := f.Keys(ctx, src.JWKSURI, h.KeyID)
 	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrNotVerified, err)
+		return out, fmt.Errorf("%w: %w: %v", ErrNotVerified, ErrKeysUnavailable, err)
 	}
 	var payload []byte
 	var verified bool

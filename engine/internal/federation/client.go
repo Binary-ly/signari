@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -34,6 +35,137 @@ type Config struct {
 	AuthorizeOverride, TokenOverride, UserinfoOverride string
 	JWKSOverride, IssuerOverride                       string
 	Scopes                                             []string
+	// MFAAMR and MFAACR are the upstream ID token `amr` values and `acr`
+	// values this deployment trusts to mean the provider authenticated with
+	// more than one factor (`signari idp trust-mfa`). Empty trusts nothing.
+	MFAAMR, MFAACR []string
+	// EndSessionURL is where a sign-out here sends the browser next (`signari idp
+	// logout`). Empty stops at this side.
+	EndSessionURL string
+	// TokenAuth is how this engine proves itself at the token endpoint.
+	TokenAuth TokenAuth
+	// StoreTokens keeps what this provider hands over at a sign-in, sealed, for an
+	// application to call its API as the person (store.KeepFederatedTokens).
+	StoreTokens bool
+	// Forward names what a sign-in here passes on to this provider (`signari idp
+	// forward`). Empty tells it nothing.
+	Forward []string
+	// Userinfo says where a KindOAuth2 provider's answer holds the person.
+	Userinfo UserinfoClaims
+	// Keys is the cache an ID token's key set is read through, set by whoever holds one for
+	// the life of the process; nil fetches the set for every token. A sign-in through a
+	// provider fetched the provider's keys every time, so a provider whose key endpoint had a
+	// bad minute failed every sign-in it would have verified, and each sign-in waited on a
+	// round trip to it. The cache fetches again for a kid it has not seen, which is OpenID
+	// Connect Core 1.0 §10.1.1's model of rotation (specs/oidc-core.txt:5557-5559). What it
+	// costs: a key the provider withdraws is believed until the set's ten minutes are up
+	// (jwksTTL), as it already was for a jwt-bearer assertion and a logout token.
+	Keys *JWKSCache
+}
+
+// UserinfoClaims are paths into a userinfo answer, read as ClaimAt reads them.
+type UserinfoClaims struct {
+	// Subject is what a person is linked by, a string or a whole number. Make it
+	// the provider's stable id and not a login, which can be given up and taken
+	// by somebody else.
+	Subject string
+	Email   string
+	// EmailVerified is a JSON true at this path, or empty for a provider that
+	// never says. Whether it is believed is the provider's trust setting.
+	EmailVerified string
+	Name          string
+}
+
+// ClaimAt finds a claim by name, or by a dotted path into nested objects, as a
+// provider that groups its claims needs (8.13). The whole name is tried first,
+// since many claim names hold dots of their own: a URL, or a SAML attribute's OID.
+func ClaimAt(claims map[string]any, name string) any {
+	if v, ok := claims[name]; ok {
+		return v
+	}
+	head, rest, nested := strings.Cut(name, ".")
+	if !nested {
+		return nil
+	}
+	if inner, ok := claims[head].(map[string]any); ok {
+		return ClaimAt(inner, rest)
+	}
+	return nil
+}
+
+// The parameters a provider can be told, each opted in. Nothing else on a request
+// here is any provider's business, and a parameter passed on by default would tell
+// every provider what each application asked.
+const (
+	ForwardPrompt    = "prompt"
+	ForwardLoginHint = "login_hint"
+	ForwardACR       = "acr_values"
+)
+
+// ForwardableParameters are those parameters.
+var ForwardableParameters = []string{ForwardACR, ForwardLoginHint, ForwardPrompt}
+
+// Asks is what this provider is told of a sign-in. `prompt=none` is never among it,
+// since a request that may not interact does not get as far as a provider. The
+// acr_values are its own values and not the request's, which mean something only
+// here: multiFactor says a second factor is wanted, and the values are those this
+// deployment takes from the provider to mean one. Asked or not, what it answers is
+// held to the same list when it comes back.
+func (c Config) Asks(request url.Values, multiFactor bool) url.Values {
+	asks := url.Values{}
+	for _, name := range c.Forward {
+		switch name {
+		case ForwardPrompt:
+			var kept []string
+			for _, p := range strings.Fields(request.Get("prompt")) {
+				if p == "login" || p == "consent" || p == "select_account" {
+					kept = append(kept, p)
+				}
+			}
+			if len(kept) > 0 {
+				asks.Set(ForwardPrompt, strings.Join(kept, " "))
+			}
+		case ForwardLoginHint:
+			if hint := request.Get(ForwardLoginHint); hint != "" {
+				asks.Set(ForwardLoginHint, hint)
+			}
+		case ForwardACR:
+			if multiFactor && len(c.MFAACR) > 0 {
+				asks.Set(ForwardACR, strings.Join(c.MFAACR, " "))
+			}
+		}
+	}
+	return asks
+}
+
+// UpstreamMFA reports whether a verified upstream payload asserts
+// multi-factor authentication in a way this provider is trusted for: an `amr`
+// value in MFAAMR, or an `acr` in MFAACR. What the provider says beyond what
+// the operator chose to trust counts for nothing.
+func (c Config) UpstreamMFA(raw []byte) bool {
+	if len(c.MFAAMR) == 0 && len(c.MFAACR) == 0 {
+		return false
+	}
+	var claims struct {
+		AMR []string `json:"amr"`
+		ACR string   `json:"acr"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return false
+	}
+	for _, m := range claims.AMR {
+		for _, trusted := range c.MFAAMR {
+			if m == trusted {
+				return true
+			}
+		}
+	}
+	for _, trusted := range c.MFAACR {
+		if claims.ACR != "" && claims.ACR == trusted {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) authorizeURL() string { return pick(c.AuthorizeOverride, c.Preset.AuthorizeURL) }
@@ -82,16 +214,22 @@ func pick(a, b string) string {
 // require it. The code arrives back on a redirect the browser can see, and
 // PKCE is what stops a code intercepted there being exchanged by anybody else.
 // It costs one hash.
-func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string) string {
+func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string, asks url.Values) string {
 	sum := sha256.Sum256([]byte(verifier))
-	q := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {c.ClientID},
-		"redirect_uri":          {redirectURI},
-		"scope":                 {strings.Join(c.scopes(), " ")},
-		"state":                 {state},
-		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
-		"code_challenge_method": {"S256"},
+	q := url.Values{}
+	for name, values := range asks {
+		q[name] = values
+	}
+	for name, value := range map[string]string{
+		"response_type":         "code",
+		"client_id":             c.ClientID,
+		"redirect_uri":          redirectURI,
+		"scope":                 strings.Join(c.scopes(), " "),
+		"state":                 state,
+		"code_challenge":        base64.RawURLEncoding.EncodeToString(sum[:]),
+		"code_challenge_method": "S256",
+	} {
+		q.Set(name, value)
 	}
 	if c.Preset.OIDC {
 		// Binds the id_token to this flow. Without it an id_token obtained
@@ -112,22 +250,50 @@ func (c Config) AuthorizeURL(redirectURI, state, nonce, verifier string) string 
 
 // TokenSet is what the provider returned from the token endpoint.
 type TokenSet struct {
-	AccessToken string `json:"access_token"`
-	IDToken     string `json:"id_token"`
-	TokenType   string `json:"token_type"`
+	AccessToken  string `json:"access_token"`
+	IDToken      string `json:"id_token,omitempty"`
+	TokenType    string `json:"token_type"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int    `json:"expires_in,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // ExchangeCode swaps the authorization code for tokens.
 func (c Config) ExchangeCode(ctx context.Context, hc *http.Client, redirectURI, code, verifier string) (*TokenSet, error) {
-	form := url.Values{
+	return c.tokenRequest(ctx, hc, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"client_id":     {c.ClientID},
 		"code_verifier": {verifier},
+	})
+}
+
+// RefreshTokens asks the provider for a new access token. A provider that sends no new
+// refresh token leaves the old one good, so it is carried over.
+func (c Config) RefreshTokens(ctx context.Context, hc *http.Client, refreshToken string) (*TokenSet, error) {
+	ts, err := c.tokenRequest(ctx, hc, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {c.ClientID},
+	})
+	if err != nil {
+		return nil, err
 	}
-	if c.ClientSecret != "" {
-		form.Set("client_secret", c.ClientSecret)
+	if ts.RefreshToken == "" {
+		ts.RefreshToken = refreshToken
+	}
+	return ts, nil
+}
+
+// tokenRequest is one call to the provider's token endpoint, as this client.
+func (c Config) tokenRequest(ctx context.Context, hc *http.Client, form url.Values) (*TokenSet, error) {
+	onRequest, err := c.authenticate(form, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if hc, err = c.tokenClient(hc); err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL(),
@@ -135,6 +301,7 @@ func (c Config) ExchangeCode(ctx context.Context, hc *http.Client, redirectURI, 
 	if err != nil {
 		return nil, err
 	}
+	onRequest(req)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// GitHub returns form-encoded unless asked otherwise, and silently: you get
 	// a 200 with a body that json.Unmarshal turns into an empty struct.
@@ -167,11 +334,66 @@ func (c Config) FetchIdentity(ctx context.Context, hc *http.Client, ts *TokenSet
 	if c.Kind == KindGitHub {
 		return c.githubIdentity(ctx, hc, ts)
 	}
+	if c.Kind == KindOAuth2 {
+		return c.oauth2Identity(ctx, hc, ts)
+	}
 	if c.Preset.OIDC && ts.IDToken != "" {
 		return c.oidcIdentity(ctx, hc, ts, nonce)
 	}
 	return ExternalIdentity{}, fmt.Errorf("the provider returned no id_token and this " +
 		"kind has no other way to establish identity")
+}
+
+// oauth2Identity asks the userinfo endpoint who the token is for. There is no
+// signature to check, so everything here rests on TLS to the endpoint an operator
+// named, and a sign-in goes no further without a subject: linking somebody by an
+// empty identifier would hand every such person the same account.
+func (c Config) oauth2Identity(ctx context.Context, hc *http.Client, ts *TokenSet) (ExternalIdentity, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.userinfoURL(), nil)
+	if err != nil {
+		return ExternalIdentity{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return ExternalIdentity{}, fmt.Errorf("calling %s: %w", c.userinfoURL(), err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ExternalIdentity{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ExternalIdentity{}, fmt.Errorf("%s answered %d", c.userinfoURL(), resp.StatusCode)
+	}
+	// Numbers kept as written: an id read through a float64 loses its low digits
+	// past 2^53, and two people would share one.
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var claims map[string]any
+	if err := dec.Decode(&claims); err != nil {
+		return ExternalIdentity{}, fmt.Errorf("%s did not answer an object: %w", c.userinfoURL(), err)
+	}
+	var subject string
+	switch v := ClaimAt(claims, c.Userinfo.Subject).(type) {
+	case string:
+		subject = v
+	case json.Number:
+		if _, err := v.Int64(); err == nil {
+			subject = v.String()
+		}
+	}
+	if subject == "" {
+		return ExternalIdentity{}, fmt.Errorf("%s gave no identifier at %q", c.userinfoURL(), c.Userinfo.Subject)
+	}
+	id := ExternalIdentity{Subject: subject, RawClaims: body}
+	id.Email, _ = ClaimAt(claims, c.Userinfo.Email).(string)
+	id.Name, _ = ClaimAt(claims, c.Userinfo.Name).(string)
+	if c.Userinfo.EmailVerified != "" {
+		id.EmailVerified, _ = ClaimAt(claims, c.Userinfo.EmailVerified).(bool)
+	}
+	return id, nil
 }
 
 // oidcIdentity verifies the id_token and reads the identity from it.
@@ -231,40 +453,64 @@ type idTokenClaims struct {
 	XMSEdov *bool `json:"xms_edov"`
 }
 
+// verifiedPayload is what a token from this provider says, once a key in its JWKS has
+// verified the signature. kind names the token in an error.
+func (c Config) verifiedPayload(ctx context.Context, hc *http.Client, raw, kind string) ([]byte, error) {
+	sig, err := parseSignedToken(raw, kind)
+	if err != nil {
+		return nil, err
+	}
+	var jwks *jose.JSONWebKeySet
+	if u := c.jwksURL(); c.Keys != nil && u != "" {
+		kid := ""
+		if len(sig.Signatures) > 0 {
+			kid = sig.Signatures[0].Header.KeyID
+		}
+		jwks, err = c.Keys.Get(ctx, hc, u, kid)
+	} else {
+		jwks, err = c.fetchJWKS(ctx, hc)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return verifiedBy(sig, jwks, kind)
+}
+
+// parseSignedToken reads a token, of the algorithms allow-listed. Passing the token's
+// own header algorithm to the parser is how "alg: none" and HMAC-with-the-public-key
+// confusion get in -- the attacker chooses the algorithm.
+func parseSignedToken(raw, kind string) (*jose.JSONWebSignature, error) {
+	sig, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{
+		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.PS256,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("the %s did not parse: %w", kind, err)
+	}
+	return sig, nil
+}
+
+// verifiedBy is a token's payload, once a key in the set has verified it.
+func verifiedBy(sig *jose.JSONWebSignature, jwks *jose.JSONWebKeySet, kind string) ([]byte, error) {
+	var lastErr error
+	for _, key := range jwks.Keys {
+		p, err := sig.Verify(key)
+		if err == nil {
+			return p, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("the %s signature did not verify against any key in the provider's JWKS: %w", kind, lastErr)
+}
+
 // verifyIDToken checks the signature and every binding claim.
 //
 // Written out rather than delegated, because the failure mode of a
 // half-verified id_token is silent: it parses, the claims look right, and the
 // only thing missing is any reason to believe them.
 func (c Config) verifyIDToken(ctx context.Context, hc *http.Client, raw, nonce string) (*idTokenClaims, error) {
-	jwks, err := c.fetchJWKS(ctx, hc)
+	payload, err := c.verifiedPayload(ctx, hc, raw, "id_token")
 	if err != nil {
 		return nil, err
-	}
-
-	// Algorithms are allow-listed. Passing the token's own header algorithm to
-	// the parser is how "alg: none" and HMAC-with-the-public-key confusion get
-	// in -- the attacker chooses the algorithm.
-	sig, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{
-		jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.PS256,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("the id_token did not parse: %w", err)
-	}
-
-	var payload []byte
-	var lastErr error
-	for _, key := range jwks.Keys {
-		if p, err := sig.Verify(key); err == nil {
-			payload = p
-			break
-		} else {
-			lastErr = err
-		}
-	}
-	if payload == nil {
-		return nil, fmt.Errorf("the id_token signature did not verify against any key in "+
-			"the provider's JWKS: %w", lastErr)
 	}
 
 	var claims idTokenClaims

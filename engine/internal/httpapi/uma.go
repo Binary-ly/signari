@@ -19,7 +19,7 @@ import (
 // UMA 2.0, the protocol surface. See internal/uma for what it is and what is
 // deliberately absent.
 //
-//	POST /uma2/permission    resource server authenticates -> ticket
+//	POST /uma2/permission    resource server presents its PAT -> ticket
 //	POST /oauth2/token       grant_type=urn:...:uma-ticket -> RPT
 //	GET  /uma2/claims        the requesting party identifies themselves
 //
@@ -35,10 +35,17 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 
-	c, ok := s.authenticateResourceServer(w, r)
+	// A PAT and nothing else: "The authorization server MUST use OAuth and require a
+	// valid PAT to secure its protection API endpoints" (Federated Authorization §1.3,
+	// specs/uma-fedauthz.txt:122), and this is one. It took the client's own credentials
+	// too, from before it had resource registration; a secret is the resource server
+	// alone, and the PAT is "the resource owner's authorization to use the protection
+	// API" (:139), which decides whose resources a request may name.
+	caller, ok := s.protectionToken(w, r, "uma permission")
 	if !ok {
 		return
 	}
+	c, owner := caller.client, caller.owner
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 	if err != nil {
@@ -50,16 +57,20 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 		writeUMAError(w, uerr)
 		return
 	}
+	if uerr := s.resolveRegistered(ctx, perms, c.ClientID, owner); uerr != nil {
+		writeUMAError(w, uerr)
+		return
+	}
 
 	ticket, err := uma.NewTicket()
 	if err != nil {
-		s.log.Error("minting a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "minting a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if _, err := store.CreatePermissionTicket(ctx, s.db, c.OrgID, c.ClientID,
 		store.HashToken(ticket), perms, uma.TicketLifetime); err != nil {
-		s.log.Error("recording a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "recording a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -68,62 +79,9 @@ func (s *Server) handleUMAPermission(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"ticket": ticket})
 }
 
-// authenticateResourceServer admits only a confidential client.
-//
-// A resource server is not a browser and has no user in front of it, so there is
-// no public-client case to accommodate. Refused explicitly rather than falling
-// through to a secret comparison that an empty secret would pass.
-func (s *Server) authenticateResourceServer(w http.ResponseWriter, r *http.Request) (*clients.Client, bool) {
-	ctx := r.Context()
-	// Credentials from the HEADER only, and no ParseForm call.
-	//
-	// The permission request's body is JSON (Federated Authorization §3.1), so
-	// there are no form-encoded credentials to find and calling ParseForm would
-	// consume the body this handler is about to read. An earlier version called
-	// it and discarded the error, which the repository's own
-	// TestNoParameterIsDiscardedSilently correctly refused: a discarded error is
-	// shaped like a check and is not one.
-	creds, cerr := oauth.ParseClientCredentials(r.Header, nil)
-	if cerr != nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", cerr.Description)
-		return nil, false
-	}
-	c, err := s.lookupClient(ctx, creds.ClientID)
-	if err != nil || c == nil {
-		writeError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
-		return nil, false
-	}
-	if c.Type != "confidential" {
-		writeError(w, http.StatusUnauthorized, "invalid_client",
-			"the permission endpoint requires a confidential client: it mints a "+
-				"credential a stranger will present back here")
-		return nil, false
-	}
-	if err := s.authenticateConfidentialClient(ctx, r, c, creds.ClientSecret); err != nil {
-		s.log.Info("UMA permission endpoint client authentication failed",
-			"client_id", creds.ClientID, "err", err, "correlation_id", correlationID(ctx))
-		writeError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
-		return nil, false
-	}
-	return c, true
-}
-
 // handleUMAGrant is §3.3: ticket in, RPT out.
 func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clients.Client) {
 	ctx := r.Context()
-
-	// Still not implemented, and still refused rather than ignored. Both are
-	// optimisations -- a PCT saves gathering the same claims twice, an upgrade
-	// saves minting a second token -- and a client that sends one and receives a
-	// token concludes it was honoured.
-	for _, unsupported := range []string{"pct", "rpt"} {
-		if r.PostForm.Get(unsupported) != "" {
-			writeUMAError(w, uma.InvalidRequest(unsupported+" is not supported by this "+
-				"server; there is no persisted claims token and no RPT upgrade, so "+
-				"nothing here would act on it"))
-			return
-		}
-	}
 
 	ticket := r.PostForm.Get("ticket")
 	if ticket == "" {
@@ -142,7 +100,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		return
 	}
 	if err != nil {
-		s.log.Error("redeeming a permission ticket", "err", err)
+		s.log.ErrorContext(ctx, "redeeming a permission ticket", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -174,13 +132,49 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		writeUMAError(w, uerr)
 		return
 	}
-
+	// An RPT names the requesting party once there is one, so the access
+	// policy is asked whether that person may reach this client, as for any
+	// other token issued for them. The PDP below answers a different question:
+	// whether the resource owner lets them have these permissions.
+	//
+	// Asked about the scope the RPT will carry, which is the ticket's
+	// permissions. The request's own `scope` parameter mints nothing here, so
+	// asking about it let the caller choose what the policy saw, and leaving it
+	// out passed every rule written about a scope.
 	subject := authzen.Subject{Type: "client", ID: c.ClientID}
 	if party.userID != "" {
 		// The person, not the client. This is the point of the whole exercise: a
 		// resource owner writes policy about somebody this server may never have
 		// seen before, and the grant now carries one.
 		subject = authzen.Subject{Type: "user", ID: party.ref}
+	}
+	// The RPT's subject is the REQUESTING PARTY when there is one.
+	//
+	// §1.2 defines an RPT as "unique to a requesting party, client, authorization
+	// server, resource server, and resource owner", and a resource server
+	// introspecting one has to be able to tell who it is about. Leaving the
+	// client id here once claims have been gathered would produce a token that
+	// says the application asked for itself, after this server went to the
+	// trouble of establishing that it did not.
+	rptSubject := c.ClientID
+	if party.userID != "" {
+		rptSubject = party.userID
+	}
+
+	// §5.3 leaves proof of possession to a profile, and an RPT is an access token
+	// like any other at a resource server that takes DPoP: a proof at this endpoint
+	// binds it, as it binds every other grant's.
+	jkt := dpopThumbprintFrom(ctx)
+	scopes := uma.Scopes(t.Permissions)
+	carried, upgraded := s.rptToUpgrade(ctx, r.PostForm.Get("rpt"), c, t.ResourceServer, rptSubject, subject, jkt)
+	for _, permission := range carried {
+		if !containsScope(scopes, permission) {
+			scopes = append(scopes, permission)
+		}
+	}
+	if party.userID != "" && s.grantRefusedByPolicy(w, r, c, party.userID, "",
+		joinScopes(scopes), "uma") {
+		return
 	}
 
 	// The decision comes from the SAME policy decision point that answers
@@ -193,7 +187,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 				Action:   authzen.Action{Name: scope},
 			})
 			if derr != nil {
-				s.log.Error("evaluating a UMA permission", "err", derr)
+				s.log.ErrorContext(ctx, "evaluating a UMA permission", "err", derr)
 				writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 				return
 			}
@@ -223,7 +217,7 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		}
 	}
 	if err != nil {
-		s.log.Error("no signing key for an RPT", "err", err)
+		s.log.ErrorContext(ctx, "no signing key for an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -234,33 +228,30 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	scopes := uma.Scopes(t.Permissions)
-	// The RPT's subject is the REQUESTING PARTY when there is one.
-	//
-	// §1.2 defines an RPT as "unique to a requesting party, client, authorization
-	// server, resource server, and resource owner", and a resource server
-	// introspecting one has to be able to tell who it is about. Leaving the
-	// client id here once claims have been gathered would produce a token that
-	// says the application asked for itself, after this server went to the
-	// trouble of establishing that it did not.
-	rptSubject := c.ClientID
-	if party.userID != "" {
-		rptSubject = party.userID
+	hookCtx, ok := s.consultTokenHook(ctx, w, c, store.TokenHookRequest{
+		Subject: rptSubject, ClientID: c.ClientID, Scopes: scopes,
+		Grant: oauth.GrantTypeUMATicket, OrgID: c.OrgID})
+	if !ok {
+		return
 	}
-	rpt, err := tokens.NewSigner(key).SignJSON(tokens.AccessTokenClaims{
+	rpt, err := issueAccessToken(hookCtx, s.db, c, tokens.NewSigner(key), tokens.AccessTokenClaims{
 		Issuer:   s.cfg.Issuer,
 		Subject:  rptSubject,
 		Audience: []string{t.ResourceServer},
-		Expiry:   now.Add(tokens.DefaultAccessTokenTTL).Unix(),
+		Expiry:   now.Add(c.AccessTokenTTL()).Unix(),
 		IssuedAt: now.Unix(),
 		JTI:      jti,
 		ClientID: c.ClientID,
 		Scope:    joinScopes(scopes),
-	}, tokens.TypAccessToken)
+		Cnf:      bindingFor(jkt, ""),
+	})
 	if err != nil {
-		s.log.Error("signing an RPT", "err", err)
+		s.log.ErrorContext(ctx, "signing an RPT", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
+	}
+	if upgraded != nil {
+		s.retireUpgraded(ctx, upgraded, c.ClientID)
 	}
 
 	s.auditDetached(ctx, audit.Event{
@@ -270,16 +261,31 @@ func (s *Server) handleUMAGrant(w http.ResponseWriter, r *http.Request, c *clien
 			"resource_server": t.ResourceServer,
 			"scope":           joinScopes(scopes),
 			"identified":      party.userID != "",
+			"upgraded":        upgraded != nil,
 		},
 	})
 
-	// §3.3.5: the RFC 6749 §5.1 response shape, token_type Bearer.
-	writeJSON(w, http.StatusOK, map[string]any{
+	// §3.3.5: the RFC 6749 §5.1 response shape. `upgraded` only when it is so:
+	// absent, the client treats the new RPT as not holding the old one's.
+	body := map[string]any{
 		"access_token": rpt,
-		"token_type":   "Bearer",
-		"expires_in":   int(tokens.DefaultAccessTokenTTL.Seconds()),
+		"token_type":   bearerOrDPoP(jkt),
+		"expires_in":   int(c.AccessTokenTTL().Seconds()),
 		"scope":        joinScopes(scopes),
-	})
+	}
+	if upgraded != nil {
+		body["upgraded"] = true
+	}
+	// Only to a person who said so, at the screen they said it on. One that fails
+	// costs them being asked again, which is no reason to withhold the RPT.
+	if t.PersistClaims && party.userID != "" {
+		if pct, err := store.NewPersistedClaims(ctx, s.db, c.OrgID, c.ClientID, party.userID); err != nil {
+			s.log.ErrorContext(ctx, "issuing a persisted claims token", "err", err, "correlation_id", correlationID(ctx))
+		} else {
+			body["pct"] = pct
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // writeUMAError renders §3.3.6's error with its own status.
@@ -289,7 +295,7 @@ func writeUMAError(w http.ResponseWriter, e *uma.Error) {
 		status = http.StatusBadRequest
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	body := map[string]any{"error": e.Code, "error_description": e.Description}
+	body := map[string]any{"error": e.Code, "error_description": oauth.ErrorText(e.Description)}
 	if e.Ticket != "" {
 		body["ticket"] = e.Ticket
 	}

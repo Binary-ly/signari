@@ -27,12 +27,15 @@
   {{range .Apps}}
   <div class="app">
     <strong>{{.Name}}</strong>
-    <div class="scopes">{{T "connected.cansee"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>
+    {{/* Only with something after it: an application that holds nothing but the
+         right to go on acting for the person (a UMA PCT) has no scope to name. */}}
+    {{if .Scopes}}<div class="scopes">{{T "connected.cansee"}} {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</div>{{end}}
     <div class="meta">
       {{T "connected.granted" .}}
       {{/* N, not "session(s)": the same defect front-channel logout had. */}}
       {{N "connected.sessions" .ActiveTokens .}}
     </div>
+    {{if .OfflineUntil}}<div class="meta">{{T "connected.offline" .}}</div>{{end}}
     <form method="post" action="/account/connected/revoke" style="margin-top:.6rem">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <input type="hidden" name="client_id" value="{{.ClientID}}">

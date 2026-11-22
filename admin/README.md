@@ -25,6 +25,55 @@ the checks pass vacuously:
 
     php artisan signari:verify-boundary --org=<uuid>
 
+## Signing in
+
+Every operator needs a second factor: an authenticator app, plus recovery
+codes. An operator who has not set one up is sent to do it before any other
+page. Their first sign-in after this change enrols them, so whoever knows that
+operator's password at that moment can enrol instead. Change any password that
+has been shared before the operator signs in again.
+
+Setting up, replacing or removing the factor ends every other session that
+operator holds, and every remember-me cookie issued before. Without that, a
+session opened with the password alone kept working after the second factor
+existed. The session doing the enrolment is kept. Sessions are ended this way
+only with the default `SESSION_DRIVER=database`. With another driver,
+remember-me cookies are still ended, but open sessions run to their expiry.
+
+The session cookie is `Secure` whenever `APP_URL` is `https://`. Set
+`SESSION_SECURE_COOKIE` to override it either way. `.env.example` ships with
+`APP_DEBUG=false`, because a debug page shows the environment and the database
+credentials to whoever triggers an error.
+
+Every response is sent with a `Content-Security-Policy` that loads everything
+from the console's own origin (`default-src 'self'`, `connect-src 'self'`,
+`img-src 'self' data:`) and forbids framing, `<base>`, foreign form targets and
+plugins (`frame-ancestors 'none'; base-uri 'self'; form-action 'self';
+object-src 'none'`). With it go `X-Frame-Options: DENY`, `nosniff` and
+`Referrer-Policy: same-origin`, and over HTTPS, HSTS (one year, without
+`includeSubDomains`).
+
+An inline script runs only when it carries the nonce of the response it came in,
+so a `<script>` injected into a screen does not run. Filament's views that write
+inline scripts are copied under `resources/views/vendor/` to carry it, and a test
+fails when they fall out of step with Filament ([why and how](resources/views/vendor/README.md)).
+`script-src` still allows `'unsafe-eval'`. The Alpine that Livewire 3 bundles
+compiles every expression with `new Function`, and Livewire runs Filament's
+`@script` blocks the same way, so every screen breaks without it. An injected
+attribute that Alpine reads as an expression is therefore not stopped by the
+nonce. Alpine's CSP evaluator was tried in its place, without `'unsafe-eval'`. It
+failed on all 23 screens: it refuses the object shorthand and globals Filament
+writes for every form field, action and table, so passing would mean forking
+Filament's rendering (`app/Http/Middleware/SecurityHeaders.php` has the detail).
+Styles keep `'unsafe-inline'`, because Filament writes `style` attributes, which
+no nonce covers.
+
+Behind a proxy that terminates TLS, name it in `TRUSTED_PROXIES` (addresses or
+CIDR ranges, comma separated). Requests then count as HTTPS when that proxy says
+they were, and HSTS is sent. Unset, every request reached PHP as plain HTTP,
+HSTS was never sent, and URLs were generated as `http`. A proxy that is not
+named is not believed.
+
 ## What that command proves
 
 It asserts the boundary from the side that would benefit from cheating:

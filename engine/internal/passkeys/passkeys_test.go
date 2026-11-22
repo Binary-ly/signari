@@ -3,15 +3,38 @@ package passkeys
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 )
+
+// A refusal whose explanation is only in the type and debug fields still says
+// something in the log; it once logged as err="".
+func TestAReasonCarriesWhatTheLibraryPutOutsideDetails(t *testing.T) {
+	err := error(protocol.ErrMetadata.WithInfo("the chain does not reach the catalogue's roots"))
+	if err.Error() != "" {
+		t.Skip("the library now prints more than Details; Reason may be redundant")
+	}
+	got := Reason(err)
+	for _, want := range []string{protocol.ErrMetadata.Type, "does not reach"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Reason(%#v) = %q, missing %q", err, got, want)
+		}
+	}
+	if got := Reason(errOther("plain")); got != "plain" {
+		t.Errorf("a plain error renders as %q", got)
+	}
+}
+
+type errOther string
+
+func (e errOther) Error() string { return string(e) }
 
 // An instance with no rp_id must refuse to build a relying party rather than
 // guess. Guessing produces credentials bound to a value nobody chose, and the
 // value is permanent once a passkey exists.
 func TestMissingRPIDIsRefused(t *testing.T) {
-	if _, err := New("", "Signari", "https://id.example.com"); err == nil {
+	if _, err := New("", "Signari", "https://id.example.com", nil); err == nil {
 		t.Fatal("a relying party was built with no rp_id")
 	}
 }
@@ -26,7 +49,7 @@ func TestMalformedRPIDIsRefused(t *testing.T) {
 		"example.com/auth",    // path
 		"http://localhost",    // scheme again, the most common mistake
 	} {
-		if _, err := New(bad, "Signari", "https://example.com"); err == nil {
+		if _, err := New(bad, "Signari", "https://example.com", nil); err == nil {
 			t.Errorf("rp_id %q was accepted", bad)
 		}
 	}
@@ -76,20 +99,21 @@ func TestLocalhostGetsPlaintextAndNothingElseDoes(t *testing.T) {
 	}
 }
 
-// Registration policy: resident keys and user verification are both REQUIRED.
+// Registration policy by default: resident keys and user verification are both
+// REQUIRED.
 //
 // Without resident keys there is no conditional UI, so the user must type an
 // identifier before the browser offers their passkey -- removing most of the
 // point. Without user verification a passkey proves possession of a device and
 // nothing more, so it is one factor and cannot honestly back an acr of 2.
 func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
-	rp, err := New("localhost", "Signari", "http://localhost:9411")
+	rp, err := New("localhost", "Signari", "http://localhost:9411", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	u := &User{ID: make([]byte, 64), Name: "alice@example.test", DisplayName: "Alice"}
 
-	creation, session, err := rp.BeginRegistration(u, "")
+	creation, session, err := rp.BeginRegistration(u, DefaultCeremony)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +132,68 @@ func TestRegistrationRequiresResidentKeyAndUserVerification(t *testing.T) {
 	}
 }
 
+// A related origin (WebAuthn §5.11) is a web origin and nothing more, over
+// https, written as one, so the list cannot carry a path that matches nothing
+// or a plaintext origin a ceremony could be intercepted on.
+func TestARelatedOriginIsAnHTTPSOrigin(t *testing.T) {
+	for _, ok := range []string{"https://example.co.uk", "https://shop.example:8443", "http://localhost:9000"} {
+		if err := CheckRelatedOrigin(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://example.com", "https://example.com/login", "https://u@example.com",
+		"example.com", "https://example.com/", "https://Example.com", "https://example.com?x=1", ""} {
+		if err := CheckRelatedOrigin(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if _, err := New("localhost", "Signari", "http://localhost:9411", nil, "https://example.com/x"); err == nil {
+		t.Error("a relying party was built with a related origin that is not one")
+	}
+}
+
+// The organisation's timeout is what the browser is told and how long the
+// challenge is held: the library refuses a finish after Expires.
+func TestTheCeremonyTimeoutBoundsTheChallenge(t *testing.T) {
+	rp, err := New("localhost", "Signari", "http://localhost:9411", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
+	c := DefaultCeremony
+	c.Timeout = 30 * time.Second
+
+	creation, sd, err := rp.BeginRegistration(u, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertion, ad, err := rp.BeginDiscoverableLogin(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]struct {
+		ms      int
+		expires time.Time
+	}{
+		"registration": {creation.Response.Timeout, sd.Expires},
+		"sign-in":      {assertion.Response.Timeout, ad.Expires},
+	} {
+		if got.ms != 30000 {
+			t.Errorf("%s told the browser %dms, want 30000", name, got.ms)
+		}
+		if left := time.Until(got.expires); left < 28*time.Second || left > 31*time.Second {
+			t.Errorf("%s holds its challenge for %s, want 30s", name, left)
+		}
+	}
+}
+
 // Re-registering the SAME authenticator must be excluded, or one device produces
 // two credential rows and silently satisfies the two-credential rule on its own.
 func TestExistingCredentialsAreExcluded(t *testing.T) {
-	rp, _ := New("localhost", "Signari", "http://localhost:9411")
+	rp, _ := New("localhost", "Signari", "http://localhost:9411", nil)
 	u := &User{ID: make([]byte, 64), Name: "alice", DisplayName: "Alice"}
 
-	creation, _, err := rp.BeginRegistration(u, "")
+	creation, _, err := rp.BeginRegistration(u, DefaultCeremony)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +225,7 @@ func TestOriginsIncludeThePort(t *testing.T) {
 // Saying so here beats an opaque browser failure.
 func TestIPAddressRPIDIsRefused(t *testing.T) {
 	for _, ip := range []string{"127.0.0.1", "::1", "192.168.1.10"} {
-		if _, err := New(ip, "Signari", "http://"+ip+":9411"); err == nil {
+		if _, err := New(ip, "Signari", "http://"+ip+":9411", nil); err == nil {
 			t.Errorf("rp_id %q was accepted", ip)
 		}
 	}

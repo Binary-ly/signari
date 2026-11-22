@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/duo"
@@ -33,21 +36,109 @@ import (
 // longer period in which a captured code is worth something.
 const duoChallengeTTL = 5 * time.Minute
 
+// duoOutcome is what startDuo did.
+type duoOutcome int
+
+const (
+	// duoNotUsed: no integration, no enrolment, or another factor the person
+	// can present instead. The code prompt follows.
+	duoNotUsed duoOutcome = iota
+	// duoTookOver: the browser was sent to Duo, or a refusal was rendered.
+	duoTookOver
+	// duoFailedOpen: Duo is unreachable, the deployment fails open, and the
+	// person has nothing else to present. The caller carries on WITHOUT a
+	// second factor and records why (recordDuoFailOpen).
+	//
+	// Reported, not acted on. startDuo used to finish the sign-in itself, by
+	// opening a transaction and calling completeSignIn -- whose mfa stage, still
+	// unsatisfied by a password, called startDuo again, which failed open again
+	// and opened another transaction, each level holding its own, until the pool
+	// was empty and every sign-in in the deployment waited on a Duo outage.
+	duoFailedOpen
+)
+
 // startDuo sends the browser to Duo, or reports why it cannot.
-//
-// Returns true when it has taken over the response.
 func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
-	userID, orgID, authzQuery string, amr []string) bool {
+	userID, orgID, authzQuery string, amr []string) duoOutcome {
+	return s.actOnDuo(w, r, s.probeDuo(r.Context(), s.db, userID, orgID),
+		userID, orgID, authzQuery, amr)
+}
 
-	ctx := r.Context()
+// duoProbe is everything startDuo has to know before it acts: whether Duo
+// applies to this person, and whether it answers.
+//
+// Gathered apart from acting so the sign-in walk can ask through its own
+// transaction and act only after releasing it. The walk has to know whether
+// Duo fails open before it lets go, because then it carries on in that
+// transaction; every other outcome takes over the response, and rendering,
+// redirecting and auditing each take a connection of their own.
+type duoProbe struct {
+	kind        duoProbeKind
+	cfg         *duo.Config
+	username    string
+	err         error // what made it broken, or the health check's error
+	otherFactor bool
+	otherErr    error
+}
 
-	cfg, err := store.LoadDuoIntegration(ctx, s.db, orgID, s.cfg.Root,
+type duoProbeKind int
+
+const (
+	probeNotUsed duoProbeKind = iota
+	probeBroken
+	probeUnreachable
+	probeReady
+)
+
+// failsOpen reports the one outcome that lets a sign-in carry on without a
+// second factor.
+func (p duoProbe) failsOpen() bool {
+	return p.kind == probeUnreachable && p.cfg.FailOpen && p.otherErr == nil && !p.otherFactor
+}
+
+// probeDuo reads through q and asks Duo's health endpoint. It writes no
+// response and records nothing.
+func (s *Server) probeDuo(ctx context.Context, q dbReader, userID, orgID string) duoProbe {
+	cfg, err := store.LoadDuoIntegration(ctx, q, orgID, s.cfg.Root,
 		s.duoRedirectURI(), s.cfg.AllowInsecureIssuer)
 	switch {
 	case errors.Is(err, store.ErrNoDuoIntegration):
-		// Not configured. Nothing to do, and the other factors follow.
-		return false
+		return duoProbe{kind: probeNotUsed}
 	case err != nil:
+		return duoProbe{kind: probeBroken, err: err}
+	}
+	username, err := store.DuoUsernameFor(ctx, q, userID)
+	if err != nil {
+		// Not enrolled is ordinary: this organisation uses Duo and this person
+		// has another factor. A real error is not, and is logged.
+		if !errors.Is(err, store.ErrNoDuoEnrollment) {
+			s.log.ErrorContext(ctx, "reading the Duo enrollment", "err", err)
+		}
+		return duoProbe{kind: probeNotUsed}
+	}
+	p := duoProbe{kind: probeReady, cfg: cfg, username: username}
+	if herr := cfg.HealthCheck(ctx); herr != nil {
+		p.kind, p.err = probeUnreachable, herr
+		if cfg.FailOpen {
+			p.otherFactor, p.otherErr = store.HasFactorOtherThanDuo(ctx, q, userID)
+		}
+	}
+	return p
+}
+
+// actOnDuo does what the probe found: sends the browser to Duo, renders the
+// refusal, or reports that the code prompt follows or that Duo failed open.
+func (s *Server) actOnDuo(w http.ResponseWriter, r *http.Request, p duoProbe,
+	userID, orgID, authzQuery string, amr []string) duoOutcome {
+
+	ctx := r.Context()
+	cfg, duoUsername := p.cfg, p.username
+	switch p.kind {
+	case probeNotUsed:
+		// Not configured, or not enrolled. The other factors follow.
+		return duoNotUsed
+	case probeBroken:
+		err := p.err
 		// Configured and BROKEN -- an unsealable secret, an override refused, a
 		// database error. Falling through here was the first version's
 		// behaviour and it is wrong: a user enrolled in Duo and nothing else is
@@ -57,27 +148,16 @@ func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 		// Found by pointing the engine at a stand-in with the wrong environment
 		// variable name: the log said what was wrong, and the sign-in showed a
 		// form instead.
-		s.log.Error("the Duo integration is configured but unusable", "err", err,
+		s.log.ErrorContext(ctx, "the Duo integration is configured but unusable", "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r,
-			"Second-factor authentication is misconfigured on this server, so this "+
-				"sign-in cannot be completed. Please tell an administrator.")
-		return true
+		s.federationRefusal(w, r, "federr.duomisconfigured")
+		return duoTookOver
 	}
 
-	duoUsername, err := store.DuoUsernameFor(ctx, s.db, userID)
-	if err != nil {
-		// Not enrolled is ordinary: this organisation uses Duo and this person
-		// has another factor. A real error is not, and is logged.
-		if !errors.Is(err, store.ErrNoDuoEnrollment) {
-			s.log.Error("reading the Duo enrollment", "err", err)
-		}
-		return false
-	}
-
-	// Health check BEFORE the redirect.
-	if herr := cfg.HealthCheck(ctx); herr != nil {
-		s.log.Error("Duo is unreachable", "err", herr, "fail_open", cfg.FailOpen,
+	// Health checked BEFORE the redirect, by the probe.
+	if p.kind == probeUnreachable {
+		herr := p.err
+		s.log.ErrorContext(ctx, "Duo is unreachable", "err", herr, "fail_open", cfg.FailOpen,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.duo_unavailable", OrgID: orgID, SubjectID: userID,
@@ -99,44 +179,42 @@ func (s *Server) startDuo(w http.ResponseWriter, r *http.Request,
 			// So: if anything else can be presented, ask for that. It is a
 			// working factor and it is strictly better than none. Only when
 			// there is nothing else does fail-open actually mean sign them in.
-			other, oerr := store.HasFactorOtherThanDuo(ctx, s.db, userID)
+			other, oerr := p.otherFactor, p.otherErr
 			if oerr != nil {
-				s.log.Error("checking for another factor", "err", oerr)
-				s.federationError(w, r, "Something went wrong. Please try again.")
-				return true
+				s.log.ErrorContext(ctx, "checking for another factor", "err", oerr)
+				s.federationRefusal(w, r, "federr.generic")
+				return duoTookOver
 			}
 			if other {
-				return false // the code prompt follows, and it can be answered
+				return duoNotUsed // the code prompt follows, and it can be answered
 			}
-			return s.completeAfterDuoFailOpen(w, r, userID, orgID, authzQuery, amr)
+			return duoFailedOpen
 		}
-		s.federationError(w, r,
-			"The second-factor service is not responding, so this sign-in cannot be "+
-				"completed. Please try again shortly.")
-		return true
+		s.federationRefusal(w, r, "federr.duodown")
+		return duoTookOver
 	}
 
 	state, err := duo.NewState()
 	if err != nil {
-		s.log.Error("generating Duo state", "err", err)
-		return false
+		s.log.ErrorContext(ctx, "generating Duo state", "err", err)
+		return duoNotUsed
 	}
 	target, err := cfg.AuthorizeURL(state, duoUsername)
 	if err != nil {
-		s.log.Error("building the Duo authorization URL", "err", err)
-		return false
+		s.log.ErrorContext(ctx, "building the Duo authorization URL", "err", err)
+		return duoNotUsed
 	}
 
 	if err := store.BeginDuoChallenge(ctx, s.db, store.DuoChallenge{
 		State: state, UserID: userID, OrgID: orgID, DuoUsername: duoUsername,
 		Authz: authzQuery, AMRSoFar: amr,
 	}, duoChallengeTTL); err != nil {
-		s.log.Error("recording the Duo challenge", "err", err)
-		return false
+		s.log.ErrorContext(ctx, "recording the Duo challenge", "err", err)
+		return duoNotUsed
 	}
 
 	http.Redirect(w, r, target, http.StatusSeeOther)
-	return true
+	return duoTookOver
 }
 
 // handleDuoCallback completes a Duo prompt.
@@ -151,23 +229,23 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 		code = r.URL.Query().Get("code")
 	}
 	if state == "" || code == "" {
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
 	// Claimed exactly once. A replayed callback finds nothing.
 	ch, err := store.ConsumeDuoChallenge(ctx, s.db, state)
 	if err != nil {
-		s.log.Info("no Duo challenge in progress", "err", err,
+		s.log.InfoContext(ctx, "no Duo challenge in progress", "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in has expired. Please start again.")
+		s.federationRefusal(w, r, "federr.expired")
 		return
 	}
 
 	cfg, err := store.LoadDuoIntegration(ctx, s.db, ch.OrgID, s.cfg.Root, s.duoRedirectURI(), s.cfg.AllowInsecureIssuer)
 	if err != nil {
-		s.log.Error("loading the Duo integration for a callback", "err", err)
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.log.ErrorContext(ctx, "loading the Duo integration for a callback", "err", err)
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -176,19 +254,19 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 	// request parameter would let the browser choose the question.
 	res, err := cfg.Exchange(ctx, code, ch.DuoUsername)
 	if err != nil {
-		s.log.Warn("Duo refused or answered about somebody else", "err", err,
+		s.log.WarnContext(ctx, "Duo refused or answered about somebody else", "err", err,
 			"correlation_id", correlationID(ctx))
 		s.auditDetached(ctx, audit.Event{
 			Type: "mfa.duo_failed", OrgID: ch.OrgID, SubjectID: ch.UserID,
 			CorrelationID: correlationID(ctx),
 		})
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -200,7 +278,7 @@ func (s *Server) handleDuoCallback(w http.ResponseWriter, r *http.Request) {
 			"duo_username": res.Username, "factor": res.Factor, "device": res.Device,
 		},
 	}); aerr != nil {
-		s.log.Error("recording the Duo result", "err", aerr)
+		s.log.ErrorContext(ctx, "recording the Duo result", "err", aerr)
 	}
 
 	// amr records what actually happened: the password proven before the
@@ -219,33 +297,39 @@ func (s *Server) duoRedirectURI() string {
 	return s.cfg.Issuer + "/login/duo/callback"
 }
 
-// completeAfterDuoFailOpen signs somebody in with no second factor at all.
+// recordDuoFailOpen records, in the sign-in's own transaction, that the mfa
+// stage was passed with no second factor at all.
 //
 // Reached only when Duo is unreachable, the deployment has set fail-open, and
 // the person has no other factor to offer. The amr carries only what was
 // actually proven -- a password -- so acr stays single-factor and every policy
 // that asked for MFA still refuses. Fail-open decides whether the sign-in
 // continues; it does not get to claim a factor that never happened.
-func (s *Server) completeAfterDuoFailOpen(w http.ResponseWriter, r *http.Request,
-	userID, orgID, authzQuery string, amr []string) bool {
-
-	ctx := r.Context()
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.federationError(w, r, "Something went wrong. Please try again.")
-		return true
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+//
+// In the caller's transaction rather than one of its own, so the record lands
+// with the session or not at all, and the sign-in holds one connection.
+func (s *Server) recordDuoFailOpen(ctx context.Context, tx pgx.Tx, orgID, userID string) {
 	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "mfa.skipped_duo_unavailable", OrgID: orgID, SubjectID: userID,
 		CorrelationID: correlationID(ctx),
 	}); aerr != nil {
-		s.log.Error("recording a fail-open sign-in", "err", aerr)
+		s.log.ErrorContext(ctx, "recording a fail-open sign-in", "err", aerr)
 	}
-	s.log.Warn("signed in WITHOUT a second factor because Duo is unreachable",
+	s.log.WarnContext(ctx, "signing in WITHOUT a second factor because Duo is unreachable",
 		"user_id", userID, "correlation_id", correlationID(ctx))
+}
 
-	s.completeSignIn(w, r, tx, userID, orgID, amr, authzQuery)
-	return true
+// mfaWaivedKey marks a request whose mfa stage was already answered by Duo
+// failing open, so the walk that completeSignIn starts does not ask Duo again.
+// Unexported and set in exactly one place (handleLoginPost); nothing outside
+// this package can put it on a request.
+type mfaWaivedKey struct{}
+
+func withMFAWaivedByFailOpen(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), mfaWaivedKey{}, true))
+}
+
+func mfaWaivedByFailOpen(ctx context.Context) bool {
+	v, _ := ctx.Value(mfaWaivedKey{}).(bool)
+	return v
 }

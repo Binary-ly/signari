@@ -3,7 +3,10 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -70,6 +73,8 @@ type providerData struct {
 	// rather than inside it, because it is a policy about how to use the client
 	// rather than a property of the connection.
 	conditional bool
+	// chain is the run of versions this apply's own writes made.
+	chain writeChain
 }
 
 func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureRequest,
@@ -111,18 +116,29 @@ func (p *signariProvider) Configure(ctx context.Context, req provider.ConfigureR
 		conditional = cfg.ConditionalWrites.ValueBool()
 	}
 
-	data := &providerData{
-		client:      &signari.Client{Endpoint: endpoint, Token: token},
-		conditional: conditional,
+	client := &signari.Client{Endpoint: endpoint, Token: token}
+	// For a listener with SIGNARI_ADMIN_CLIENT_CA, which admits nobody without one.
+	if cert := os.Getenv("SIGNARI_ADMIN_CLIENT_CERT"); cert != "" {
+		pair, err := tls.LoadX509KeyPair(cert, os.Getenv("SIGNARI_ADMIN_CLIENT_KEY"))
+		if err != nil {
+			resp.Diagnostics.AddError("the Admin API client certificate cannot be read", err.Error())
+			return
+		}
+		client.HTTP = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}}
 	}
+
+	data := &providerData{client: client, conditional: conditional}
 	resp.DataSourceData = data
 	resp.ResourceData = data
 }
 
 func (p *signariProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{NewClientResource}
+	return []func() resource.Resource{NewClientResource, NewOrganizationResource, NewGroupResource,
+		NewGroupMemberResource, NewGroupMemberGroupResource, NewUserResource, NewGroupReleaseResource, NewScopeResource, NewProxyHostResource,
+		NewRelationResource, NewConfigurationResource, NewAdminTokenResource}
 }
 
 func (p *signariProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{NewOrganizationDataSource, NewGroupDataSource, NewUserDataSource}
 }

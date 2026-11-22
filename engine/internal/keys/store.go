@@ -5,9 +5,13 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +33,18 @@ import (
 type RootKey struct {
 	aead cipher.AEAD
 	ref  string
+	// addressKey keys AddressHash. Derived, so it says nothing about the key
+	// that seals, and held beside it, so it is as absent from the database.
+	addressKey []byte
+	// tag names this key's material, one-way, so running nodes can say which
+	// key they seal with (see PoolTag).
+	tag string
+	// accepted are root keys this one opens with and never seals with, held
+	// through an online rotation (3.13; keyring.go).
+	accepted []*RootKey
+	// backend holds the signing keys that never leave a module, and makes
+	// every new one when it is set (3.14; backend.go).
+	backend Backend
 }
 
 // NewRootKey takes 32 raw bytes. `ref` names which root key this is, so a future
@@ -41,11 +57,33 @@ func NewRootKey(ref string, secret []byte) (*RootKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	// The module owns the nonce: GCM given one by its caller is refused under
+	// GODEBUG=fips140=only, and was, so serve could not start in that mode at
+	// all (3.11). It writes what was written before, a 96-bit nonce ahead of
+	// the ciphertext and tag (crypto/cipher gcm.go), so every stored blob opens.
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	return &RootKey{aead: aead, ref: ref}, nil
+	addressKey, err := hkdf.Key(sha256.New, secret, nil, "signari session address hash v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	tag, err := hkdf.Key(sha256.New, secret, nil, "signari root key tag v1", 4)
+	if err != nil {
+		return nil, err
+	}
+	return &RootKey{aead: aead, ref: ref, addressKey: addressKey, tag: hex.EncodeToString(tag)}, nil
+}
+
+// AddressHash is the keyed hash core.sessions.ip_hash stores: enough to tell
+// whether two sessions came from one address, nothing that gives the address
+// back. Keyed, because an IPv4 address is one of four billion, and an unkeyed
+// hash of one is reversed by trying them all from a copy of the database.
+func (r *RootKey) AddressHash(addr string) []byte {
+	m := hmac.New(sha256.New, r.addressKey)
+	m.Write([]byte(addr))
+	return m.Sum(nil)
 }
 
 // NewRootKeyFromBase64 parses the usual env-var form.
@@ -61,20 +99,33 @@ func NewRootKeyFromBase64(ref, b64 string) (*RootKey, error) {
 func (r *RootKey) Ref() string { return r.ref }
 
 func (r *RootKey) seal(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, r.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	// Nonce is prefixed to the ciphertext; GCM nonces are not secret.
-	return r.aead.Seal(nonce, nonce, plaintext, nil), nil
+	// The AEAD makes the nonce and prefixes it to the ciphertext; GCM nonces
+	// are not secret.
+	// #nosec G407 -- the nil nonce is what NewGCMWithRandomNonce requires.
+	return r.aead.Seal(nil, nil, plaintext, nil), nil
 }
 
+// open unseals with this key, then with each accepted one. GCM authenticates,
+// so a key that did not seal a blob fails on it rather than returning noise,
+// and the order only decides which key is tried first.
 func (r *RootKey) open(sealed []byte) ([]byte, error) {
-	n := r.aead.NonceSize()
-	if len(sealed) < n {
+	plain, err := r.openOwn(sealed)
+	if err == nil {
+		return plain, nil
+	}
+	for _, a := range r.accepted {
+		if p, aerr := a.openOwn(sealed); aerr == nil {
+			return p, nil
+		}
+	}
+	return nil, err
+}
+
+func (r *RootKey) openOwn(sealed []byte) ([]byte, error) {
+	if len(sealed) < r.aead.Overhead() {
 		return nil, fmt.Errorf("wrapped key is truncated")
 	}
-	return r.aead.Open(nil, sealed[:n], sealed[n:], nil)
+	return r.aead.Open(nil, nil, sealed, nil)
 }
 
 // Save persists a key. Private material is marshalled as PKCS#8 and sealed with
@@ -91,6 +142,8 @@ func (r *RootKey) open(sealed []byte) ([]byte, error) {
 const (
 	PurposeOIDC       = "oidc"
 	PurposeFederation = "federation"
+	// PurposeEncryption decrypts and signs nothing (decrypt.go).
+	PurposeEncryption = "encryption"
 )
 
 // Save persists an OIDC protocol key.
@@ -105,17 +158,23 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 		return fmt.Errorf("marshalling public jwk: %w", err)
 	}
 
-	sk, ok := k.(*softwareKey)
+	sk, ok := k.(*signingKey)
 	if !ok {
-		return fmt.Errorf("Save supports software keys only; %T must persist its own key_ref", k)
+		return fmt.Errorf("Save stores this package's keys only, not %T", k)
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(sk.signer)
-	if err != nil {
-		return fmt.Errorf("marshalling private key: %w", err)
-	}
-	wrapped, err := root.seal(der)
-	if err != nil {
-		return fmt.Errorf("wrapping private key: %w", err)
+	// A key a module holds is stored as its reference alone: there is no
+	// material here to seal.
+	var wrapped []byte
+	ref := sk.held
+	if ref == "" {
+		der, err := x509.MarshalPKCS8PrivateKey(sk.signer)
+		if err != nil {
+			return fmt.Errorf("marshalling private key: %w", err)
+		}
+		if wrapped, err = root.seal(der); err != nil {
+			return fmt.Errorf("wrapping private key: %w", err)
+		}
+		ref = root.Ref()
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -132,7 +191,7 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 			                    AND core.signing_keys.state <> 'passive'
 			                   THEN now() ELSE core.signing_keys.demoted_at END`,
 		k.KID(), instanceID, string(k.Algorithm()), string(k.State()),
-		jwkBytes, wrapped, root.Ref(), k.PublishedAt(), purpose,
+		jwkBytes, wrapped, ref, k.PublishedAt(), purpose,
 	)
 	if err != nil {
 		return fmt.Errorf("saving key %s: %w", k.KID(), err)
@@ -145,12 +204,17 @@ func SaveFor(ctx context.Context, tx pgx.Tx, instanceID, purpose string, k Key, 
 // It loads all three states deliberately: `next` so the JWKS can publish a key
 // before it signs, and `passive` so tokens issued before the last rotation still
 // verify. Loading only the active key is how rotation breaks verification.
-func LoadSet(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey) (*Set, error) {
+func LoadSet(ctx context.Context, conn Querier, instanceID string, root *RootKey) (*Set, error) {
 	return LoadSetFor(ctx, conn, instanceID, PurposeOIDC, root)
 }
 
+// Querier is what loading keys needs: a connection or the pool alike.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // LoadSetFor reads the keys for one purpose.
-func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string, root *RootKey) (*Set, error) {
+func LoadSetFor(ctx context.Context, conn Querier, instanceID, purpose string, root *RootKey) (*Set, error) {
 	// OIDC keys only.
 	//
 	// `purpose` was added for OpenID Federation, whose §3.1.1 says "These
@@ -190,17 +254,25 @@ func LoadSetFor(ctx context.Context, conn *pgx.Conn, instanceID, purpose string,
 			return nil, err
 		}
 		if wrapped == nil {
-			// An HSM/KMS-backed key. Resolving key_ref to a crypto.Signer is the
-			// job of a backend this build does not have yet; skipping it silently
-			// would mean serving a JWKS without a key we claim to hold.
-			return nil, fmt.Errorf(
-				"key %s is backed by %q, and no external signer backend is configured", kid, keyRef)
+			// A key a module holds. One this node cannot reach fails the load
+			// rather than being skipped: skipped, the JWKS would go without a
+			// key this deployment published and signs with.
+			k, err := root.openHeld(kid, Algorithm(alg), State(state), keyRef, jwkRaw, publishedAt)
+			if err != nil {
+				return nil, err
+			}
+			if demotedAt != nil {
+				k = withDemotedAt(k, *demotedAt)
+			}
+			loaded = append(loaded, k)
+			continue
 		}
-		if keyRef != root.Ref() {
+		wrapper := root.forRef(keyRef)
+		if wrapper == nil {
 			return nil, fmt.Errorf(
-				"key %s was wrapped with root key %q but %q is configured", kid, keyRef, root.Ref())
+				"key %s was wrapped with root key %q but %s configured", kid, keyRef, root.refsHeld())
 		}
-		der, err := root.open(wrapped)
+		der, err := wrapper.openOwn(wrapped)
 		if err != nil {
 			return nil, fmt.Errorf("unwrapping key %s: %w", kid, err)
 		}
@@ -253,11 +325,11 @@ func Ensure(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKe
 		if n > 0 {
 			continue
 		}
-		k, err := Generate(newKID(), alg)
+		k, err := root.Generate(newKID(), alg)
 		if err != nil {
 			return nil, err
 		}
-		sk := k.(*softwareKey)
+		sk := k.(*signingKey)
 		sk.state = StateActive
 		if err := Save(ctx, tx, instanceID, sk, root); err != nil {
 			return nil, err
@@ -322,7 +394,7 @@ const KeyRefreshInterval = time.Minute
 // are the ones known to work, and replacing them with nothing because the
 // database was briefly unreachable would take an instance out of service for a
 // transient fault.
-func Refresh(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootKey,
+func Refresh(ctx context.Context, conn Querier, instanceID string, root *RootKey,
 	live *Set) error {
 
 	next, err := LoadSet(ctx, conn, instanceID, root)
@@ -353,7 +425,9 @@ func Refresh(ctx context.Context, conn *pgx.Conn, instanceID string, root *RootK
 // The lifetime is read across the whole instance, not per organisation, because
 // one key signs for every organisation on it. Scoping this per tenant would
 // retire a key on the shortest tenant's schedule and break the longest one's.
-func RequiredPassiveDwell(ctx context.Context, conn *pgx.Conn, instanceID string) (time.Duration, string, error) {
+func RequiredPassiveDwell(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, instanceID string) (time.Duration, string, error) {
 	var present *string
 	if err := conn.QueryRow(ctx,
 		`SELECT to_regclass('core.credential_configurations')::text`).Scan(&present); err != nil {

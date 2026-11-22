@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store"
 )
 
 // A voluntary password change must prove the CURRENT password.
@@ -63,6 +65,9 @@ func TestVoluntaryPasswordChangeRequiresTheCurrentPassword(t *testing.T) {
 		t.Error("the stored password no longer verifies against the original; a " +
 			"failed change must leave the credential untouched")
 	}
+	if n := queuedNotices(t, f.pool, f.userID, store.NoticePasswordChanged); n != 0 {
+		t.Errorf("%d password-changed notices for a change that did not happen", n)
+	}
 
 	// Right current password: succeeds (redirects to sign in) and the new one works.
 	rec = post(signInTestPassword, "a-brand-new-passphrase-9271")
@@ -76,6 +81,46 @@ func TestVoluntaryPasswordChangeRequiresTheCurrentPassword(t *testing.T) {
 	}
 	if _, verr := f.srv.hasher.Verify(ctx, stored, "a-brand-new-passphrase-9271"); verr != nil {
 		t.Error("after a successful change the new password does not verify")
+	}
+	// The holder is told, whoever was holding the session.
+	if n := queuedNotices(t, f.pool, f.userID, store.NoticePasswordChanged); n != 1 {
+		t.Errorf("%d password-changed notices queued after the change, want 1", n)
+	}
+}
+
+// The policy's refusal is said in the reader's language, with the number it names,
+// and never as the policy's English (which the Admin API and the command line keep).
+func TestAPasswordTheSigninPolicyRefusesIsSaidInTheReadersLanguage(t *testing.T) {
+	f := newSignInFixture(t)
+	out := f.attempt(t, f.email, signInTestPassword)
+	if out.sessionCookie == "" {
+		t.Fatal("could not sign in to obtain a session")
+	}
+	for lang, want := range map[string]string{
+		"ar": "يجب أن تتكون كلمة المرور من",
+		"en": "Passwords must be at least",
+	} {
+		getReq := httptest.NewRequest(http.MethodGet, "/account/password", nil)
+		getReq.AddCookie(&http.Cookie{Name: SessionCookieName, Value: out.sessionCookie})
+		getRec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(getRec, getReq)
+		csrfCookie, csrfField := extractCSRF(t, getRec)
+		form := url.Values{"current": {signInTestPassword}, "password": {"short"}, "confirm": {"short"},
+			csrfFormField: {csrfField}}
+		req := httptest.NewRequest(http.MethodPost, "/account/password", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept-Language", lang)
+		req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: out.sessionCookie})
+		req.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: csrfCookie})
+		rec := httptest.NewRecorder()
+		f.srv.Routes().ServeHTTP(rec, req)
+		body := rec.Body.String()
+		if !strings.Contains(body, want) {
+			t.Errorf("%s: the refusal does not say %q: %s", lang, want, truncate(body, 500))
+		}
+		if lang == "ar" && strings.Contains(body, "passwords must be at least") {
+			t.Error("the policy's English reached an Arabic page")
+		}
 	}
 }
 

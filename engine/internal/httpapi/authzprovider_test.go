@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,7 +106,7 @@ func (a *authzProviderFixture) registerProvider(t *testing.T, url, mode string) 
 	if _, err := a.f.pool.Exec(context.Background(), `
 		INSERT INTO core.providers (org_id, name, hook, url, mode, timeout_ms)
 		VALUES ($1::uuid, 'test-pdp', 'authorize', $2, $3, 400)
-		ON CONFLICT (org_id, hook) DO UPDATE SET
+		ON CONFLICT (org_id, hook, name) DO UPDATE SET
 			url = EXCLUDED.url, mode = EXCLUDED.mode, enabled = true`,
 		a.f.orgID, url, mode); err != nil {
 		t.Fatalf("registering the provider: %v", err)
@@ -163,6 +164,40 @@ func TestAnUnreachableProviderDeniesWhenFailClosed(t *testing.T) {
 		t.Fatalf("a fail_closed provider was unreachable and access was allowed "+
 			"anyway. An authorization hook that fails open stops enforcing exactly "+
 			"when something is wrong: %s", body)
+	}
+}
+
+// A policy service of each kind on one question: either can refuse, and neither can
+// speak for the other (10.06).
+func TestEitherAuthorizeProviderCanRefuse(t *testing.T) {
+	a := newAuthzProviderFixture(t)
+	a.registerProvider(t, "https://first.example.test/decide", "fail_closed")
+	if _, err := a.f.pool.Exec(context.Background(), `
+		INSERT INTO core.providers (org_id, name, hook, url, mode, timeout_ms, position)
+		VALUES ($1::uuid, 'second-pdp', 'authorize', 'https://second.example.test/decide', 'fail_closed', 400, 1)`,
+		a.f.orgID); err != nil {
+		t.Fatal(err)
+	}
+	var asked []string
+	answers := map[string]string{"first.example.test": `{"decision":true}`, "second.example.test": `{"decision":true}`}
+	a.f.srv.outboundHTTP = func(time.Duration) *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			asked = append(asked, r.URL.Host)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+				Body: io.NopCloser(strings.NewReader(answers[r.URL.Host]))}, nil
+		})}
+	}
+	if ok, body := a.evaluate(t, a.subject, a.resource); !ok || len(asked) != 2 {
+		t.Fatalf("both agreeing gave %v after asking %v: %s", ok, asked, body)
+	}
+	answers["second.example.test"] = `{"decision":false}`
+	if ok, body := a.evaluate(t, a.subject, a.resource); ok {
+		t.Fatalf("the second refusing was ignored: %s", body)
+	}
+	asked = nil
+	answers["first.example.test"] = `{"decision":false}`
+	if ok, body := a.evaluate(t, a.subject, a.resource); ok || len(asked) != 1 {
+		t.Fatalf("the first refusing gave %v after asking %v: %s", ok, asked, body)
 	}
 }
 

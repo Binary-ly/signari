@@ -1,18 +1,52 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/clients"
 	"signari.dev/engine/internal/dpop"
+	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/provider"
 	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tokens"
 )
 
 func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
+	// The person is asked in the round trip that asks the token's standing (E.06): asked
+	// after it, a userinfo waited on two round trips one after the other, where a provider
+	// that caches both waits on none. Read before the standing is known, and used only once
+	// it is good.
+	var person func() (store.UserinfoPerson, error)
+	claims, ok := s.acceptedTokenAsking(w, r, "openid", "userinfo", func(b *pgx.Batch, c *tokens.AccessTokenClaims) {
+		person = store.QueueUserinfoPersonOf(b, c.Subject, c.ClientID)
+	})
+	if !ok {
+		return
+	}
+	s.answerUserinfo(w, r, claims, person)
+}
 
+// acceptedToken takes the access token on a request to an endpoint this server is
+// the resource server for, and answers for itself when it will not: every question a
+// token is asked here, in one place, so a second endpoint cannot ask fewer. scope is what
+// the endpoint needs. where names it in the log.
+func (s *Server) acceptedToken(w http.ResponseWriter, r *http.Request, scope, where string) (
+	claims *tokens.AccessTokenClaims, ok bool) {
+	return s.acceptedTokenAsking(w, r, scope, where, nil)
+}
+
+// acceptedTokenAsking is acceptedToken, asking the token's standing in one batch with
+// whatever also queues once the token is known to be this server's and to carry the
+// scope; with also nil the standing is asked alone. Every refusal is the same either way.
+func (s *Server) acceptedTokenAsking(w http.ResponseWriter, r *http.Request, scope, where string,
+	also func(*pgx.Batch, *tokens.AccessTokenClaims)) (claims *tokens.AccessTokenClaims, ok bool) {
+	ctx := r.Context()
 	raw, scheme := bearerTokenAndScheme(r)
 	if raw == "" {
 		// RFC 9449 §7.2: a resource supporting both schemes should advertise
@@ -30,10 +64,10 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := tokens.VerifyAccessTokenAny(s.cfg.Keys, s.acceptedIssuers(), raw)
+	claims, err := s.verifyAccepted(ctx, raw)
 	if err != nil {
 		// Logged with the reason, returned without it.
-		s.log.Info("userinfo token rejected", "err", err)
+		s.log.InfoContext(ctx, "a token was rejected", "where", where, "err", err)
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", `+s.resourceMetadataChallenge()+
 				`, error="invalid_token", error_description="The access token is invalid"`)
@@ -46,7 +80,7 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// server here, and the mint path honours RFC 8707 `resource`, so a token
 	// audience-restricted to a downstream API must not also open this endpoint.
 	if !tokens.AudienceAccepted(claims, s.cfg.Issuer) {
-		s.log.Info("userinfo refused a token audienced elsewhere",
+		s.log.InfoContext(ctx, "refused a token audienced elsewhere", "where", where,
 			"aud", claims.Audience, "correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="`+
@@ -55,47 +89,28 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !tokens.HasScope(claims.Scope, "openid") {
+	if !tokens.HasScope(claims.Scope, scope) {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="insufficient_scope", scope="openid"`)
+			`Bearer realm="signari", error="insufficient_scope", scope="`+scope+`"`)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
 	// An explicitly revoked token must stop working here immediately. This is the
 	// endpoint where /revoke earns its 200: we are the resource server, so there
-	// is no excuse for honouring a token the client told us to drop.
-	if revoked, err := store.GrantRevoked(ctx, s.db, claims.GrantID); err != nil || revoked {
-		// RFC 7009 §2.1: revoking the refresh token invalidates the access tokens
-		// from the same grant. Checked alongside the per-jti denylist because a
-		// client revokes the refresh token far more often than each access token.
-		if err != nil {
-			s.log.Error("userinfo grant revocation check failed", "err", err)
-		}
+	// is no excuse for honouring a token the client told us to drop. The session
+	// must still be live, and the client the token was issued to still enabled.
+	var standing store.TokenStanding
+	if also == nil {
+		standing = s.standing(ctx, claims, where)
+	} else {
+		standing = s.standingWith(ctx, claims, where, also)
+	}
+	if ended := endedDescription(standing); ended != "" {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The authorization behind this token has been revoked"`)
+			`Bearer realm="signari", error="invalid_token", error_description="`+ended+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
-	}
-	if revoked, err := store.JTIRevoked(ctx, s.db, claims.JTI); err != nil || revoked {
-		if err != nil {
-			s.log.Error("userinfo revocation check failed", "err", err)
-		}
-		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="signari", error="invalid_token", error_description="The access token has been revoked"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-
-	// The session must still be live. See (1) above.
-	if claims.SessionID != "" {
-		live, err := store.IsSessionLive(ctx, s.db, claims.SessionID)
-		if err != nil || !live {
-			w.Header().Set("WWW-Authenticate",
-				`Bearer realm="signari", error="invalid_token", error_description="The session has ended"`)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
 	}
 
 	// # Enforcement
@@ -110,48 +125,39 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// on the scheme rather than on the token, which is why checking `cnf` alone
 	// missed them. See dpop.CheckPresentation.
 	if perr := dpop.CheckPresentation(bound, scheme); perr != nil {
-		s.log.Info("a token was presented under the wrong scheme", "err", perr,
+		s.log.InfoContext(ctx, "a token was presented under the wrong scheme", "err", perr,
 			"correlation_id", correlationID(ctx))
 		w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token", perr.Error()))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	if bound {
-		jkt, derr := s.verifyDPoPForRequest(r, raw)
-		if derr != nil || jkt == "" {
-			reason := "a DPoP proof is required for this token"
-			if derr != nil {
-				reason = derr.Error()
-			}
-			s.log.Info("DPoP enforcement refused a userinfo request", "reason", reason,
-				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
-				"the access token is sender-constrained and the DPoP proof did not match"))
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if err := dpop.BoundTo(&dpop.Confirmation{JKT: claims.Cnf.JKT},
-			&dpop.Proof{JKT: jkt}); err != nil {
-			s.log.Info("DPoP binding mismatch", "err", err,
-				"correlation_id", correlationID(ctx))
-			w.Header().Set("WWW-Authenticate", dpopChallenge("invalid_token",
-				"this access token is bound to a different key"))
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+	// The proof for a DPoP-bound token, the certificate for one bound to it.
+	if s.boundTokenRefused(w, r, raw, claims.Cnf, where, standing.HeldToProfile) {
+		return
 	}
+	return claims, true
+}
 
-	out := map[string]any{"sub": claims.Subject}
+// answerUserinfo says what a token that was accepted may hear.
+func (s *Server) answerUserinfo(w http.ResponseWriter, r *http.Request, claims *tokens.AccessTokenClaims,
+	asked func() (store.UserinfoPerson, error)) {
+	ctx := r.Context()
+	out := map[string]any{"sub": claims.Presented()}
 
 	// Claims are released strictly by granted scope. `profile` and `email` are
 	// separate grants and must not leak into each other.
-	var email, username string
-	var verified *bool
-	if err := s.db.QueryRow(ctx,
-		`SELECT COALESCE(email,''), COALESCE(username,''), email_verified_at IS NOT NULL
-		 FROM core.users WHERE id = $1 AND status = 'active'`,
-		claims.Subject).Scan(&email, &username, &verified); err != nil {
+	//
+	// The person as the standing's batch read it. A batch that could not be sent never
+	// gets here: the standing it carried reads as ended, and the token was refused.
+	var person store.UserinfoPerson
+	var err error
+	if asked != nil {
+		person, err = asked()
+	} else {
+		person, err = store.UserinfoPersonOf(ctx, s.db, claims.Subject, claims.ClientID)
+	}
+	if err != nil {
 		// A token for a user who no longer exists or is deactivated.
 		w.Header().Set("WWW-Authenticate",
 			`Bearer realm="signari", error="invalid_token", error_description="The subject is not active"`)
@@ -159,12 +165,17 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if tokens.HasScope(claims.Scope, "email") && email != "" {
-		out["email"] = email
-		out["email_verified"] = verified != nil && *verified
+	if tokens.HasScope(claims.Scope, "email") && person.Email != "" {
+		out["email"] = person.Email
+		out["email_verified"] = person.EmailVerified
 	}
-	if tokens.HasScope(claims.Scope, "profile") && username != "" {
-		out["preferred_username"] = username
+	if tokens.HasScope(claims.Scope, "profile") {
+		for claim, v := range map[string]string{"preferred_username": person.Username,
+			"name": person.Name, "given_name": person.Given, "family_name": person.Family} {
+			if v != "" {
+				out[claim] = v
+			}
+		}
 	}
 	// Same two gates as the ID token, and read fresh for the same reason: a
 	// long-lived access token must not keep asserting a group after the
@@ -172,9 +183,20 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	if tokens.HasScope(claims.Scope, "groups") {
 		groups, err := store.GroupsForUser(ctx, s.db, claims.Subject, claims.ClientID)
 		if err != nil {
-			s.log.Error("loading group membership for userinfo", "err", err)
+			s.log.ErrorContext(ctx, "loading group membership for userinfo", "err", err)
 		} else if len(groups) > 0 {
 			out["groups"] = groups
+		}
+	}
+
+	// Roles in the application, read fresh for the same reason, under the claim the
+	// client named. A failure to read them is logged and leaves them out, as above.
+	if person.ClientOfOrg && person.RolesClaim != "" {
+		roles, rerr := store.ApplicationRoles(ctx, s.db, person.OrgID, claims.Subject, claims.ClientID)
+		if rerr != nil {
+			s.log.ErrorContext(ctx, "loading roles for userinfo", "err", rerr)
+		} else if _, taken := out[person.RolesClaim]; !taken && len(roles) > 0 {
+			out[person.RolesClaim] = roles
 		}
 	}
 
@@ -186,28 +208,95 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	// loop refuses to overwrite anything already released above. Between them a
 	// mapper can only ADD, which means no configuration change can alter the
 	// meaning of a claim a relying party already trusts.
-	if s.root != nil {
-		if tx, err := s.db.Begin(ctx); err == nil {
-			var orgID string
-			if err := tx.QueryRow(ctx,
-				`SELECT org_id::text FROM core.users WHERE id = $1::uuid`,
-				claims.Subject).Scan(&orgID); err == nil {
-				mapped, merr := store.MappedClaims(ctx, tx, claims.Subject, orgID,
-					claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
-				if merr != nil {
-					s.log.Error("resolving mapped claims", "err", merr)
-				}
-				for name, value := range mapped {
-					if _, taken := out[name]; !taken {
-						out[name] = value
-					}
-				}
+	if s.root != nil && person.HasMappers {
+		mapped, merr := store.MappedClaims(ctx, s.db, claims.Subject, person.OrgID,
+			claims.ClientID, store.ClaimInUserInfo, claims.Scope, s.root)
+		if merr != nil {
+			s.log.ErrorContext(ctx, "resolving mapped claims", "err", merr)
+		}
+		for name, value := range mapped {
+			if _, taken := out[name]; !taken {
+				out[name] = value
 			}
-			_ = tx.Rollback(ctx)
 		}
 	}
 
+	// The operator's provider, last, so what it adds cannot take a name already
+	// released, and a refusal is a refusal of the whole answer.
+	if person.ClientOfOrg && person.HasProvider {
+		hook := s.askHook(ctx, s.db, person.OrgID, provider.HookUserinfo, store.UserinfoHookRequest{
+			Subject: claims.Subject, ClientID: claims.ClientID, Scopes: strings.Fields(claims.Scope), OrgID: person.OrgID})
+		if hook.Vetoed {
+			s.recordHookRefusal(ctx, provider.HookUserinfo, person.OrgID, claims.Subject, claims.ClientID, hook.Reason)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		for name, value := range hook.Claims {
+			if _, taken := out[name]; !taken {
+				out[name] = value
+			}
+		}
+	}
+
+	if person.AsJWT {
+		s.writeUserinfoJWT(w, r, claims.ClientID, out)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// writeUserinfoJWT answers a client that asked for its claims signed, encrypted or both,
+// in OIDC Core §5.3.2's terms: "the content-type MUST be application/jwt", "the response
+// MUST be signed then encrypted", and "The response MAY be encrypted without also being
+// signed". What fails to sign or encrypt is not sent as JSON instead: that is the form
+// the client said it would not take these claims in.
+func (s *Server) writeUserinfoJWT(w http.ResponseWriter, r *http.Request, clientID string, out map[string]any) {
+	ctx := r.Context()
+	body, err := s.userinfoJWT(ctx, clientID, out)
+	if err != nil {
+		s.log.ErrorContext(ctx, "preparing a userinfo response", "err", err, "client", clientID)
+		http.Error(w, "the response could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/jwt")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		s.log.InfoContext(ctx, "writing a userinfo response", "err", err)
+	}
+}
+
+func (s *Server) userinfoJWT(ctx context.Context, clientID string, out map[string]any) ([]byte, error) {
+	c, err := s.lookupClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, clients.ErrNotFound
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	signed := c.UserinfoSignedAlg != ""
+	if signed {
+		key, kerr := s.cfg.Keys.Active(keys.Algorithm(c.UserinfoSignedAlg))
+		if kerr != nil {
+			return nil, kerr
+		}
+		// §5.3.2: "If signed, the UserInfo Response MUST contain the Claims iss
+		// (issuer) and aud (audience) as members."
+		out["iss"], out["aud"] = s.issuerFor(c), c.ClientID
+		jwt, serr := tokens.NewSigner(key).SignJSON(out, "JWT")
+		if serr != nil {
+			return nil, serr
+		}
+		body = []byte(jwt)
+	}
+	if c.UserinfoEncryption.Alg == "" {
+		return body, nil
+	}
+	sealed, err := tokens.EncryptTo(body, signed, c.EncryptionKeys, c.UserinfoEncryption)
+	return []byte(sealed), err
 }
 
 // bearerToken reads the access token from the Authorization header (RFC 6750

@@ -6,10 +6,13 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -19,10 +22,12 @@ import (
 // with at least one factor) terminate any or all currently active sessions". The
 // termination mechanism (store.TerminateSessions) already existed and the admin
 // path used it; what was missing was the page where the person whose sessions
-// they are can see them and press the button. The "authenticated again" clause is
-// satisfied here by the session cookie plus a CSRF token -- the person is signed
-// in on this browser -- which is the practical floor; a full step-up is a policy
-// an operator can layer on the /account routes.
+// they are can see them and press the button. The "authenticated again" clause
+// is met by credentialChangeRefused: ending a session needs one authenticated
+// within the organisation's re-authentication window, as every change from
+// /account does. This said a session cookie and a CSRF token were the practical
+// floor and that an operator could layer a step-up on these routes, which
+// nothing let them do.
 
 type sessionRow struct {
 	SID       string
@@ -43,7 +48,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	sessions, err := store.ListUserSessions(ctx, s.db, userID, sid)
 	if err != nil {
-		s.log.Error("listing sessions", "err", err)
+		s.log.ErrorContext(ctx, "listing sessions", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -53,7 +58,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, sessionRow{
 			SID:       ss.SID,
 			UserAgent: describeUserAgent(ss.UserAgent),
-			How:       describeAuth(ss.ACR, ss.AMR),
+			How:       describeAuth(ss.AMR),
 			Signed:    ss.CreatedAt.Format("2 January 2006, 15:04 UTC"),
 			Current:   ss.Current,
 		})
@@ -61,7 +66,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("issuing a CSRF token", "err", err)
+		s.log.ErrorContext(ctx, "issuing a CSRF token", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -84,6 +89,11 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	curSID, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account/sessions"), http.StatusSeeOther)
+		return
+	}
+	// V7.5.2's "having authenticated again": a session authenticated within
+	// the organisation's window, not merely a live cookie (accountgate.go).
+	if s.credentialChangeRefused(w, r, curSID, "/account/sessions", false) {
 		return
 	}
 	target := strings.TrimSpace(r.PostForm.Get("sid"))
@@ -113,7 +123,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		// form field must not let one account end another's session.
 		owned, oerr := userOwnsSession(ctx, tx, userID, target)
 		if oerr != nil {
-			s.log.Error("checking session ownership", "err", oerr)
+			s.log.ErrorContext(ctx, "checking session ownership", "err", oerr)
 			http.Error(w, "unavailable", http.StatusInternalServerError)
 			return
 		}
@@ -131,7 +141,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.log.Error("revoking sessions", "err", err)
+		s.log.ErrorContext(ctx, "revoking sessions", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -143,7 +153,7 @@ func (s *Server) handleSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 			"scope": revokeScope(target), "sessions_ended": term.Sessions,
 		},
 	}); aerr != nil {
-		s.log.Error("recording a session revocation", "err", aerr)
+		s.log.ErrorContext(ctx, "recording a session revocation", "err", aerr)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -173,18 +183,67 @@ func revokeScope(target string) string {
 
 // describeAuth returns the MESSAGE KEY for how a session signed in, so the
 // template renders it in the reader's language via {{T .How}} rather than this
-// function deciding the words. acr/amr are the only inputs, read at list time.
-func describeAuth(acr string, amr []string) string {
+// function deciding the words. Derived from amr alone, through the same
+// predicate every MFA decision uses: this once labelled every password session
+// "more than one factor", because a password session's acr is "1" and the test
+// was acr != "0".
+func describeAuth(amr []string) string {
+	multi := oauth.IsMultiFactor(amr)
+	// Which label, not whether it was multi-factor: that is `multi`.
+	passkey := slices.Contains(amr, "webauthn") || slices.Contains(amr, oauth.AMRHardwareKey) ||
+		slices.Contains(amr, "swk")
 	switch {
-	case slices.Contains(amr, "webauthn") || slices.Contains(amr, "hwk") || slices.Contains(amr, "swk"):
+	case passkey:
 		return "sessions.how.passkey"
-	case slices.Contains(amr, "otp") || slices.Contains(amr, "sms") || slices.Contains(amr, "mfa"):
+	case multi && slices.Contains(amr, oauth.AMRPassword):
 		return "sessions.how.mfa"
-	case acr != "" && acr != "0":
+	case multi:
 		return "sessions.how.multifactor"
-	default:
-		return "sessions.how.password"
 	}
+	// The route, not "a password" for whatever was not one: this list is where
+	// a person looks for a sign-in that was not theirs, and a code to their
+	// mailbox or a provider's account is how one would be. Kerberos and
+	// provider sign-ins read as a password until October 2026.
+	switch primaryProof(amr) {
+	case flow.StageEmailOTP:
+		return "sessions.how.emailcode"
+	case flow.StageKerberos:
+		return "sessions.how.kerberos"
+	case flow.StageFederated:
+		return "sessions.how.federated"
+	}
+	return "sessions.how.password"
+}
+
+// maxSessionUserAgent bounds what a session row keeps of the User-Agent header,
+// which the client writes and may make as long as the server accepts.
+const maxSessionUserAgent = 256
+
+// sessionDevice is what a new session records about the browser that opened it:
+// the User-Agent, trimmed, and a keyed hash of the address (keys.AddressHash).
+// Both were columns from the start and nothing wrote either, so every session a
+// person was shown looked the same and the admin list said no address was known.
+//
+// No root key, no hash: an unkeyed one would be reversible, and the address
+// itself is not kept.
+func (s *Server) sessionDevice(r *http.Request) (userAgent *string, ipHash []byte) {
+	ua := strings.Map(func(c rune) rune {
+		if c < 0x20 || c == 0x7f || c == utf8.RuneError {
+			return -1
+		}
+		return c
+	}, strings.TrimSpace(r.UserAgent()))
+	for len(ua) > maxSessionUserAgent {
+		_, size := utf8.DecodeLastRuneInString(ua)
+		ua = ua[:len(ua)-size]
+	}
+	if ua != "" {
+		userAgent = &ua
+	}
+	if ip := clientIP(r); ip != "" && s.root != nil {
+		ipHash = s.root.AddressHash(ip)
+	}
+	return userAgent, ipHash
 }
 
 // describeUserAgent trims a raw User-Agent to something legible without pretending

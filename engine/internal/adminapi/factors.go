@@ -2,11 +2,9 @@ package adminapi
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/store"
@@ -60,25 +58,8 @@ import (
 // way that rule normally breaks is somebody selecting `*` because it was
 // convenient. There is a test asserting the absence.
 
-// factorKinds maps the URL segment to the table holding it.
-//
-// A fixed map, never the path value interpolated into SQL. The table name is the
-// one part of this query that cannot be a bind parameter, so it must not come
-// from the request at all -- and this is the shape where that mistake is easy,
-// because the segment and the table name look interchangeable.
-var factorKinds = map[string]struct {
-	table string
-	// keyed says the table holds one row per credential rather than one per
-	// user, so a delete needs the credential's own id.
-	keyed bool
-}{
-	"totp":      {table: "totp_credentials"},
-	"email_otp": {table: "email_otp_credentials"},
-	"sms_otp":   {table: "sms_otp_credentials"},
-	"duo":       {table: "duo_enrollments"},
-	"webauthn":  {table: "webauthn_credentials", keyed: true},
-	"recovery":  {table: "recovery_codes", keyed: true},
-}
+// The kinds a factor removal names, and the table each is in, are
+// store.FactorKinds: the URL segment is never interpolated into SQL.
 
 type factorSummary struct {
 	Type string `json:"type"`
@@ -90,7 +71,11 @@ type factorSummary struct {
 	// Confirmed distinguishes an enrolment that was completed from one that was
 	// started and abandoned. An unconfirmed TOTP row is not a usable factor and
 	// reporting it as one would have a support desk delete the wrong thing.
-	Confirmed bool   `json:"confirmed"`
+	Confirmed bool `json:"confirmed"`
+	// Disabled is a factor switched off for too many consecutive wrong codes:
+	// still the account's second factor, accepting nothing. The answer to "why
+	// does my authenticator not work", which is otherwise a mystery.
+	Disabled  bool   `json:"disabled,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 	LastUsed  string `json:"last_used_at,omitempty"`
 }
@@ -123,14 +108,16 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// behind that never worked.
 	var totpConfirmed *string
 	var totpCreated string
+	var totpDisabled bool
 	err := s.db.QueryRow(ctx, `
-		SELECT confirmed_at::text, created_at::text
+		SELECT confirmed_at::text, `+rfc3339("created_at")+`, disabled_at IS NOT NULL
 		FROM core.totp_credentials WHERE user_id = $1::uuid`, userID).
-		Scan(&totpConfirmed, &totpCreated)
+		Scan(&totpConfirmed, &totpCreated, &totpDisabled)
 	switch {
 	case err == nil:
 		out = append(out, factorSummary{
-			Type: "totp", Confirmed: totpConfirmed != nil, CreatedAt: totpCreated,
+			Type: "totp", Confirmed: totpConfirmed != nil, Disabled: totpDisabled,
+			CreatedAt: totpCreated,
 		})
 	case !errors.Is(err, pgx.ErrNoRows):
 		s.log.Error("listing totp", "err", err)
@@ -139,21 +126,30 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// WebAuthn. friendly_name is the label the person chose; the public key,
 	// credential id and AAGUID stay here.
 	rows, err := s.db.Query(ctx, `
-		SELECT id::text, COALESCE(friendly_name,''), created_at::text,
-		       COALESCE(last_used_at::text,'')
+		SELECT id::text, COALESCE(friendly_name,''), `+rfc3339("created_at")+`,
+		       COALESCE(`+rfc3339("last_used_at")+`,'')
 		FROM core.webauthn_credentials WHERE user_id = $1::uuid ORDER BY created_at`, userID)
 	if err != nil {
 		s.log.Error("listing webauthn credentials", "err", err)
-	} else {
-		defer rows.Close()
-		for rows.Next() {
-			var f factorSummary
-			if err := rows.Scan(&f.ID, &f.Label, &f.CreatedAt, &f.LastUsed); err != nil {
-				continue
-			}
-			f.Type, f.Confirmed = "webauthn", true
-			out = append(out, f)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f factorSummary
+		if err := rows.Scan(&f.ID, &f.Label, &f.CreatedAt, &f.LastUsed); err != nil {
+			continue
 		}
+		f.Type, f.Confirmed = "webauthn", true
+		out = append(out, f)
+	}
+	// A support desk decides from this whether a person still has a passkey;
+	// one listed without theirs, because the read failed, is told they have
+	// none (0.31). A failed read is the server's, as anywhere else.
+	if err := rows.Err(); err != nil {
+		s.log.Error("listing webauthn credentials", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
 	}
 
 	// Email and SMS one-time codes. The address and the number are NOT returned:
@@ -164,11 +160,15 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 		{"sms_otp", "sms_otp_credentials"},
 	} {
 		var created string
+		var verified bool
 		// The table name is from this fixed list, never from the request.
+		// Confirmed is the proved state, not the existence of a row: an address
+		// or number abandoned at the code screen is listed so a support desk can
+		// see it, and is not a factor (0126).
 		if err := s.db.QueryRow(ctx,
-			`SELECT created_at::text FROM core.`+k.table+` WHERE user_id = $1::uuid`,
-			userID).Scan(&created); err == nil {
-			out = append(out, factorSummary{Type: k.kind, Confirmed: true, CreatedAt: created})
+			`SELECT `+rfc3339("created_at")+`, verified_at IS NOT NULL FROM core.`+k.table+` WHERE user_id = $1::uuid`,
+			userID).Scan(&created, &verified); err == nil {
+			out = append(out, factorSummary{Type: k.kind, Confirmed: verified, CreatedAt: created})
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			s.log.Error("listing otp credentials", "kind", k.kind, "err", err)
 		}
@@ -176,7 +176,7 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 
 	var duoCreated string
 	if err := s.db.QueryRow(ctx,
-		`SELECT created_at::text FROM core.duo_enrollments WHERE user_id = $1::uuid`,
+		`SELECT `+rfc3339("created_at")+` FROM core.duo_enrollments WHERE user_id = $1::uuid`,
 		userID).Scan(&duoCreated); err == nil {
 		out = append(out, factorSummary{Type: "duo", Confirmed: true, CreatedAt: duoCreated})
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -186,17 +186,33 @@ func (s *Server) listUserFactors(w http.ResponseWriter, r *http.Request) {
 	// Recovery codes are reported as a COUNT of unused ones, never listed. A
 	// list would be the codes themselves.
 	var unused int
+	var recoveryDisabled bool
 	if err := s.db.QueryRow(ctx, `
-		SELECT count(*) FROM core.recovery_codes
-		WHERE user_id = $1::uuid AND used_at IS NULL`, userID).Scan(&unused); err != nil {
+		SELECT (SELECT count(*) FROM core.recovery_codes
+		         WHERE user_id = $1::uuid AND used_at IS NULL),
+		       EXISTS (SELECT 1 FROM core.recovery_code_failures
+		                WHERE user_id = $1::uuid AND disabled_at IS NOT NULL)`,
+		userID).Scan(&unused, &recoveryDisabled); err != nil {
 		s.log.Error("counting recovery codes", "err", err)
+	}
+
+	// The same gate a password sign-in passes through, not a count of the rows
+	// above: those include enrolments nobody proved. Two different answers to
+	// "is MFA on?" is how a support desk tells someone they are protected when
+	// sign-in does not agree.
+	hasSecond, err := store.HasSecondFactor(ctx, s.db, userID)
+	if err != nil {
+		s.log.Error("checking for a second factor", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":               userID,
 		"factors":               out,
 		"recovery_codes_unused": unused,
-		"has_second_factor":     len(out) > 0,
+		// Switched off for too many wrong attempts: the unused codes above
+		// exist and none is accepted.
+		"recovery_codes_disabled": recoveryDisabled,
+		"has_second_factor":       hasSecond,
 	})
 }
 
@@ -206,7 +222,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("userID")
 	kind := r.PathValue("kind")
 
-	spec, ok := factorKinds[kind]
+	spec, ok := store.FactorKinds[kind]
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "unknown_factor", "detail": "no factor of that kind exists",
@@ -214,7 +230,7 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	factorID := r.PathValue("factorID")
-	if spec.keyed && factorID == "" {
+	if spec.Keyed && factorID == "" && !spec.Whole {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "factor_id_required",
 			"detail": "a user may hold several of these, so the one to remove " +
@@ -243,36 +259,16 @@ func (s *Server) deleteUserFactor(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// The table comes from factorKinds, the values are bound. The user_id
-		// predicate is present on BOTH branches: without it a caller could
-		// delete another user's credential by id, which is the whole tenancy
-		// boundary undone by an omitted clause.
-		var tag pgconn.CommandTag
-		var execErr error
-		if spec.keyed {
-			tag, execErr = tx.Exec(ctx,
-				`DELETE FROM core.`+spec.table+` WHERE user_id = $1::uuid AND id = $2::uuid`,
-				userID, factorID)
-		} else {
-			tag, execErr = tx.Exec(ctx,
-				`DELETE FROM core.`+spec.table+` WHERE user_id = $1::uuid`, userID)
-		}
-		if execErr != nil {
-			return execErr
-		}
-		removed = tag.RowsAffected()
-		if removed == 0 {
+		// The removal, the sessions ended and the holder's notice queued, as
+		// the CLI's `user remove-factor` does them (store.RemoveFactor).
+		got, err := store.RemoveFactor(ctx, tx, userID, kind, factorID)
+		if errors.Is(err, store.ErrFactorNotFound) {
 			return errNotFound
 		}
-
-		// See the file comment: the sessions are the point, not a side effect.
-		term, err := store.TerminateSessions(ctx, tx, "", userID, store.ReasonMFAReset)
 		if err != nil {
-			return fmt.Errorf("ending sessions after a factor reset: %w", err)
+			return err
 		}
-		if term != nil {
-			ended, notified = term.Sessions, term.Notices
-		}
+		removed, ended, notified = got.Removed, got.SessionsEnded, got.NoticesQueued
 
 		return audit.Write(ctx, tx, audit.Event{
 			Type: "admin.factor_removed", AdminTokenID: TokenIDFrom(ctx),

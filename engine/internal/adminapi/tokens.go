@@ -30,6 +30,15 @@ func NewToken(ctx context.Context, conn interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, name, orgID string, scopes []string, expires *time.Time,
 	clientIDs, groupIDs []string) (secret, id string, err error) {
+	return NewNarrowedToken(ctx, conn, name, orgID, scopes, expires, clientIDs, groupIDs, nil)
+}
+
+// NewNarrowedToken is NewToken narrowed to named user attributes as well
+// (V8.2.3, migration 0295): nil is every attribute, as for clients and groups.
+func NewNarrowedToken(ctx context.Context, conn interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, name, orgID string, scopes []string, expires *time.Time,
+	clientIDs, groupIDs, attributeNames []string) (secret, id string, err error) {
 
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -57,8 +66,8 @@ func NewToken(ctx context.Context, conn interface {
 	// organisation, so a token scoped to one client and to every organisation
 	// would reach a different client in each -- which is wider than the operator
 	// asked for, in the one direction a scoping flag must never fail.
-	if orgID == "" && (len(clientIDs) > 0 || len(groupIDs) > 0) {
-		return "", "", fmt.Errorf("a token scoped to particular clients or groups must " +
+	if orgID == "" && (len(clientIDs) > 0 || len(groupIDs) > 0 || len(attributeNames) > 0) {
+		return "", "", fmt.Errorf("a token scoped to particular clients, groups or attributes must " +
 			"also be scoped to an organisation; without one the same identifier names a " +
 			"different object in each")
 	}
@@ -74,20 +83,23 @@ func NewToken(ctx context.Context, conn interface {
 	// as "every client in this token's organisation" and an empty array as "no
 	// client at all"; storing '{}' for the unscoped case would mint a token that
 	// can reach nothing and report no reason why.
-	var clientArg, groupArg any
+	var clientArg, groupArg, attributeArg any
 	if len(clientIDs) > 0 {
 		clientArg = clientIDs
 	}
 	if len(groupIDs) > 0 {
 		groupArg = groupIDs
 	}
+	if len(attributeNames) > 0 {
+		attributeArg = attributeNames
+	}
 
 	err = conn.QueryRow(ctx, `
 		INSERT INTO core.admin_tokens
-		    (org_id, name, token_hash, scopes, expires_at, client_ids, group_ids)
-		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6, $7::uuid[])
+		    (org_id, name, token_hash, scopes, expires_at, client_ids, group_ids, attribute_names)
+		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6, $7::uuid[], $8::text[])
 		RETURNING id::text`,
-		orgID, name, sum[:], scopes, expires, clientArg, groupArg).Scan(&id)
+		orgID, name, sum[:], scopes, expires, clientArg, groupArg, attributeArg).Scan(&id)
 	if err != nil {
 		return "", "", err
 	}

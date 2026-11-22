@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // RFC 7591 initial access tokens, ASVS 5.0 V10.4.7.
@@ -67,6 +69,7 @@ func plantRegistrationToken(t *testing.T, pool *pgxpool.Pool, enabled bool,
 		instanceID, "reg-"+itoa(suffix)).Scan(&orgID); err != nil {
 		t.Fatalf("org: %v", err)
 	}
+	storetest.Forget(t, pool, orgID)
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO core.registration_policies (org_id, enabled) VALUES ($1::uuid, $2)`,
 		orgID, enabled); err != nil {
@@ -132,7 +135,7 @@ func TestARegistrationTokenIsSpentOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, _, err := RedeemRegistrationToken(context.Background(), pool, hash)
+			_, _, err := RedeemRegistrationToken(context.Background(), pool, hash, "")
 			ok[i] = err == nil
 		}(i)
 	}
@@ -152,7 +155,7 @@ func TestARegistrationTokenIsSpentOnce(t *testing.T) {
 	}
 
 	// And the token is now spent.
-	if _, _, err := RedeemRegistrationToken(context.Background(), pool, hash); !errors.Is(err, ErrRegistrationClosed) {
+	if _, _, err := RedeemRegistrationToken(context.Background(), pool, hash, ""); !errors.Is(err, ErrRegistrationClosed) {
 		t.Errorf("an exhausted token was not refused: %v", err)
 	}
 }
@@ -181,14 +184,14 @@ func TestRegistrationTokensRespectPolicyAndLifecycle(t *testing.T) {
 		},
 	} {
 		raw := plant()
-		if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw))); err == nil {
+		if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw)), ""); err == nil {
 			t.Errorf("%s: the token was still redeemed", name)
 		}
 	}
 
 	// The positive case, so the negatives cannot pass by refusing everything.
 	_, raw := plantRegistrationToken(t, pool, true, &one, nil, false)
-	if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw))); err != nil {
+	if _, _, err := RedeemRegistrationToken(ctx, pool, HashToken(string(raw)), ""); err != nil {
 		t.Fatalf("a live token against an enabled policy was refused: %v", err)
 	}
 }

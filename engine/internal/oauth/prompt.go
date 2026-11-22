@@ -1,14 +1,29 @@
 package oauth
 
-import "strings"
+import (
+	"slices"
+	"strconv"
+	"strings"
+)
 
-// The prompt values OpenID Connect Core §3.1.2.1 defines.
+// The prompt values OpenID Connect Core §3.1.2.1 defines, and `create` from
+// Initiating User Registration via OpenID Connect 1.0
+// (https://openid.net/specs/openid-connect-prompt-create-1_0.html §4).
 const (
 	PromptNone          = "none"
 	PromptLogin         = "login"
 	PromptConsent       = "consent"
 	PromptSelectAccount = "select_account"
+	PromptCreate        = "create"
 )
+
+// SupportedPrompts is every prompt value this server acts on, advertised as
+// prompt_values_supported. That spec's §4.2: an OP supporting `create` "MUST
+// define this metadata element", and "must also specify all other prompt values
+// which it supports"; §4.1: a value not declared there SHOULD be answered with
+// `invalid_request`, which ValidatePrompt does. httpapi's
+// TestEveryAdvertisedPromptDoesWhatItSays drives each one.
+var SupportedPrompts = []string{PromptNone, PromptLogin, PromptConsent, PromptSelectAccount, PromptCreate}
 
 // HasPrompt reports whether a prompt parameter contains a value.
 //
@@ -57,8 +72,19 @@ func HasPrompt(prompt, want string) bool {
 // for, and it is also the only answer that cannot mislead: a client sending
 // `prompt=none login` has a bug, and telling it so is more useful than guessing
 // which half it meant.
+//
+// And it refuses a value this server does not act on. Core leaves that open (an
+// OP "MAY return an error or MAY ignore" one); once prompt_values_supported is
+// published, the prompt-create spec's §4.1 asks for `invalid_request`. Ignored,
+// `prompt=Login` -- the parameter is case sensitive -- re-authenticated nobody
+// and told the client nothing.
 func ValidatePrompt(prompt string) error {
 	values := strings.Fields(prompt)
+	for _, v := range values {
+		if !slices.Contains(SupportedPrompts, v) {
+			return &unsupportedPromptError{value: v}
+		}
+	}
 	if len(values) < 2 {
 		return nil
 	}
@@ -68,6 +94,13 @@ func ValidatePrompt(prompt string) error {
 		}
 	}
 	return nil
+}
+
+type unsupportedPromptError struct{ value string }
+
+func (e *unsupportedPromptError) Error() string {
+	return "prompt value " + strconv.Quote(e.value) + " is not supported; prompt_values_supported " +
+		"in the discovery document lists those this server acts on (prompt values are case sensitive)"
 }
 
 // errPromptNoneCombined is the §3.1.2.1 violation.

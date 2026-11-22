@@ -5,6 +5,7 @@
 
 | Endpoint | Policy | Why |
 |---|---|---|
+| `/.well-known/webfinger` | `*` | it answers the same for any account, naming this issuer, so nothing is revealed; a browser client finding its issuer needs it |
 | `/.well-known/openid-configuration` | `*` | a client library must read it before it knows any origin |
 | `/oauth2/jwks` | `*` | public key material, already world-readable |
 | `/oauth2/token` | registered client origin | the request an SPA cannot make without CORS |

@@ -60,6 +60,12 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// By artifact (8.08): fetched from the provider, then handled as the message it is.
+	if art := params.Get("SAMLart"); art != "" && params.Get("SAMLRequest") == "" && params.Get("SAMLResponse") == "" {
+		s.handleSAMLLogoutArtifact(w, r, art, params.Get("RelayState"))
+		return
+	}
+
 	encoded := params.Get("SAMLRequest")
 	if encoded == "" {
 		if resp := params.Get("SAMLResponse"); resp != "" {
@@ -102,13 +108,13 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, err := store.LoadSAMLProvider(ctx, s.db, req.Issuer)
+	provider, err := s.providerAt(r, req.Issuer)
 	if err != nil {
 		if errors.Is(err, store.ErrSAMLProviderUnknown) {
 			s.samlRefuse(w, r, "no service provider is registered with that entity id")
 			return
 		}
-		s.log.Error("loading SAML provider for logout", "err", err)
+		s.log.ErrorContext(ctx, "loading SAML provider for logout", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -130,13 +136,13 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		err = saml.VerifyRedirectSignature(r.URL.RawQuery, provider.SPSigningCert, "SAMLRequest")
 	}
 	if err != nil {
-		s.log.Info("SAML logout refused", "entity_id", req.Issuer, "err", err,
+		s.log.InfoContext(ctx, "SAML logout refused", "entity_id", req.Issuer, "err", err,
 			"correlation_id", correlationID(ctx))
 		s.samlRefuse(w, r, err.Error())
 		return
 	}
 
-	validated, err := saml.ValidateLogoutRequest(&req, provider, s.cfg.Issuer+"/saml/slo", time.Now())
+	validated, err := saml.ValidateLogoutRequest(&req, provider, s.samlEntityID(provider)+"/slo", time.Now())
 	if err != nil {
 		s.samlRefuse(w, r, err.Error())
 		return
@@ -144,13 +150,13 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 
 	status, err := s.endSAMLSession(ctx, validated, provider)
 	if err != nil {
-		s.log.Error("ending a session for SAML logout", "err", err,
+		s.log.ErrorContext(ctx, "ending a session for SAML logout", "err", err,
 			"correlation_id", correlationID(ctx))
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 
-	key, err := s.samlSigningKey()
+	key, err := s.samlSigningKey(provider.SignatureAlg)
 	if err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
@@ -165,25 +171,28 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 	if post {
 		requestBinding = bindingPOST
 	}
+	if fetchedByArtifact(ctx) {
+		requestBinding = bindingArtifact
+	}
 	sloURL, respBinding := sloEndpoint(ctx, s, provider.ID, requestBinding)
 	if sloURL == "" {
 		// Nowhere to answer. The session is still ended -- the logout succeeded,
 		// we simply cannot say so.
-		s.log.Info("SAML logout completed with no response endpoint registered",
+		s.log.InfoContext(ctx, "SAML logout completed with no response endpoint registered",
 			"entity_id", provider.EntityID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	doc, err := saml.BuildLogoutResponse(saml.LogoutResponseInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      s.samlEntityID(provider),
 		Destination: sloURL,
 		InResponse:  validated.RequestID,
 		Status:      status,
 		Now:         time.Now(),
 	}, key.Signer(), certDER)
 	if err != nil {
-		s.log.Error("building a LogoutResponse", "err", err)
+		s.log.ErrorContext(ctx, "building a LogoutResponse", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -208,16 +217,20 @@ func (s *Server) handleSAMLSLO(w http.ResponseWriter, r *http.Request) {
 		s.postSAMLResponse(w, r, sloURL, doc, relayState)
 		return
 	}
+	if respBinding == bindingArtifact {
+		s.redirectByArtifact(w, r, provider, sloURL, doc, relayState)
+		return
+	}
 
 	respEncoded, err := saml.EncodeRedirect(doc)
 	if err != nil {
-		s.log.Error("encoding a LogoutResponse for the redirect binding", "err", err)
+		s.log.ErrorContext(ctx, "encoding a LogoutResponse for the redirect binding", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	query, err := saml.SignRedirectQuery("SAMLResponse", respEncoded, relayState, key.Signer())
 	if err != nil {
-		s.log.Error("signing a LogoutResponse query", "err", err)
+		s.log.ErrorContext(ctx, "signing a LogoutResponse query", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -295,6 +308,12 @@ func logoutResponseFailed(encoded string) bool {
 	if err != nil {
 		return true
 	}
+	return logoutDocumentFailed(raw)
+}
+
+// logoutDocumentFailed is logoutResponseFailed for the document itself, as one
+// fetched by artifact arrives.
+func logoutDocumentFailed(raw []byte) bool {
 	var lr struct {
 		Status struct {
 			StatusCode struct {
@@ -314,6 +333,7 @@ func logoutResponseFailed(encoded string) bool {
 const (
 	bindingRedirect = "HTTP-Redirect"
 	bindingPOST     = "HTTP-POST"
+	bindingArtifact = "HTTP-Artifact"
 )
 
 // sloEndpoint picks where a LogoutResponse goes and on which binding.
@@ -328,7 +348,7 @@ func sloEndpoint(ctx context.Context, s *Server, providerID, prefer string) (str
 	var u, binding string
 	_ = s.db.QueryRow(ctx, `
 		SELECT url, binding FROM core.saml_slo_urls
-		WHERE provider_id = $1::uuid
+		WHERE provider_id = $1::uuid AND binding <> 'SOAP'
 		ORDER BY (binding = $2) DESC, url
 		LIMIT 1`, providerID, prefer).Scan(&u, &binding)
 	return u, binding

@@ -2,8 +2,10 @@ package flow
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // StageName identifies a stage.
@@ -57,6 +59,13 @@ const (
 	// migrated away from. Proving: it is a password check, just not ours.
 	StageDelegated StageName = "delegated"
 
+	// StageExternalFactor sends the browser to a service the operator registered
+	// and believes the answer it signs (internal/extfactor). Not proving, though
+	// it proves something: the walk reaches it with a subject already proved,
+	// which is how the challenge can name who is being asked, so a flow still
+	// needs one of the stages above.
+	StageExternalFactor StageName = "external_factor"
+
 	// StageConsent asks the person to approve what a client is requesting.
 	StageConsent StageName = "consent"
 
@@ -74,8 +83,25 @@ const (
 	// proves you hold the factor you just created, which is nothing.
 	StageEnrolMFA StageName = "enrol_mfa"
 
+	// StageVerifyEmail holds a sign-in until a code sent to the account's
+	// address comes back, for an address self-sign-up has not yet seen proved.
+	// Not proving who is signing in -- they proved that already -- but what
+	// they claimed: that the address is theirs.
+	StageVerifyEmail StageName = "verify_email"
+
 	// StageCreateUser writes a new account. Enrolment only.
 	StageCreateUser StageName = "create_user"
+
+	// StageInvitation, in an enrolment flow, lets a sign-up through only with
+	// an invitation that is still good (5.24): sign-up by invitation alone,
+	// whatever self-sign-up rule the organisation has. Not proving: holding a
+	// link proves nobody's identity.
+	StageInvitation StageName = "invitation"
+
+	// StageRedirect ends an enrolment or a recovery by sending the browser to
+	// the step's `to`, an https URL or a path on this server checked when the
+	// file is read (5.24). Terminal, like done: it signs nobody in.
+	StageRedirect StageName = "redirect"
 
 	// StageSession issues the session. Terminal.
 	StageSession StageName = "session"
@@ -96,9 +122,10 @@ const (
 var allStages = []StageName{
 	StageIdentify, StageCaptcha,
 	StagePassword, StagePasskey, StageMFA, StageEmailOTP, StageSMSOTP,
-	StageCertificate, StageKerberos, StageFederated, StageDelegated,
-	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageCreateUser,
-	StageSession, StageDeny, StageDone,
+	StageCertificate, StageKerberos, StageFederated, StageDelegated, StageExternalFactor,
+	StageConsent, StagePrompt, StagePasswordChange, StageEnrolMFA, StageVerifyEmail, StageCreateUser,
+	StageInvitation,
+	StageSession, StageDeny, StageDone, StageRedirect,
 }
 
 // provingStages establish an authenticated subject.
@@ -151,7 +178,7 @@ func (s StageName) known() bool {
 }
 
 func (s StageName) terminal() bool {
-	return s == StageSession || s == StageDeny || s == StageDone
+	return s == StageSession || s == StageDeny || s == StageDone || s == StageRedirect
 }
 
 // proves reports whether this stage establishes a subject for a given flow.
@@ -204,8 +231,8 @@ const (
 	CondDeviceCompliant Condition = "device_compliant"
 	// CondNetworkTrusted -- the request came from a network the operator named.
 	CondNetworkTrusted Condition = "network_trusted"
-	// CondClientRequiresMFA -- the client asked for multi-factor, through
-	// acr_values or its registration.
+	// CondClientRequiresMFA -- the authorization request asked for multi-factor
+	// through acr_values. Not its registration: nothing on a client stores it.
 	CondClientRequiresMFA Condition = "client_requires_mfa"
 	// CondKerberosAvailable -- the request carried a Negotiate header.
 	CondKerberosAvailable Condition = "kerberos_available"
@@ -214,6 +241,31 @@ const (
 	CondMigrationPending Condition = "migration_pending"
 	// CondFederatedSource -- the request arrived by way of an upstream source.
 	CondFederatedSource Condition = "federated_source"
+	// CondEmailVerificationPending -- the subject's address is still to be
+	// proved: self-sign-up made the account under a rule that requires it, and
+	// no code has come back.
+	CondEmailVerificationPending Condition = "email_verification_pending"
+
+	// The proved_by family says which proof the person presented to reach this
+	// walk (2.49). A sign-in's proving stage must be the one proved: a
+	// `passkey, session` flow refuses a password, and a flow that admits
+	// several ways in says which with these, in a one_of whose branches are
+	// all proving stages.
+	CondProvedByPassword  Condition = "proved_by_password"
+	CondProvedByPasskey   Condition = "proved_by_passkey"
+	CondProvedByKerberos  Condition = "proved_by_kerberos"
+	CondProvedByFederated Condition = "proved_by_federated"
+	// CondProvedByEmail: a code emailed to the account's address, as the first
+	// factor (5.16). Single-factor, and weaker than a password against anybody
+	// who reads the person's mail, so it signs in only where a flow says so.
+	CondProvedByEmail Condition = "proved_by_email"
+
+	// CondInvited: the sign-up carries an invitation that is still good
+	// (5.24), so a flow can ask less of invited people than of anybody.
+	CondInvited Condition = "invited"
+	// CondProviderCondition -- the operator's flow_condition provider said so. What
+	// it means is between the operator's service and the operator's file.
+	CondProviderCondition Condition = "provider_condition"
 )
 
 var allConditions = []Condition{
@@ -222,7 +274,330 @@ var allConditions = []Condition{
 	CondCaptchaRequired, CondRiskElevated,
 	CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted,
 	CondClientRequiresMFA, CondKerberosAvailable, CondMigrationPending,
-	CondFederatedSource,
+	CondFederatedSource, CondEmailVerificationPending,
+	CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+	CondProvedByEmail, CondInvited, CondProviderCondition,
+}
+
+// ProviderConditions are the conditions the flow_condition hook answers, for doctor to
+// say when nothing does.
+var ProviderConditions = []Condition{CondProviderCondition, CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted}
+
+// answered is which conditions each journey this engine drives can evaluate.
+//
+// The language names fifteen and the sign-in path used to answer four. The rest
+// read false every time, so `{stage: deny, when: risk_elevated}` parsed, passed
+// the file's own tests (which set the condition true) and never refused
+// anybody: a control looked at once and trusted thereafter. A driven flow that
+// branches on a condition outside its journey's set is refused at parse, by
+// name, and so by `flow test`, `flow apply` and the engine's load alike.
+//
+// Widen a set only in step with an evaluator. internal/httpapi's
+// TestEveryConditionAFlowCanUseIsAnswered compares these with the evaluators
+// in both directions.
+//
+// captcha_required is absent from the sign-in set on purpose: a sign-in
+// decides the challenge at the form, before the flow is walked, so the walk
+// reads it false. It may guard the captcha stage there (checkAnswered), which
+// is the one place false is the truth.
+var answered = map[Designation][]Condition{
+	Authentication: {
+		CondHasSecondFactor, CondHasPasskey, CondPasswordChangeRequired,
+		CondPromptsPending, CondClientRequiresMFA, CondRiskElevated, CondEmailVerificationPending,
+		CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+		CondProvedByEmail, CondProviderCondition, CondDeviceManaged, CondDeviceCompliant, CondNetworkTrusted,
+	},
+	// No account exists yet, so nothing is pending for it: false is the
+	// answer, not the absence of one.
+	Enrolment: {CondCaptchaRequired, CondPromptsPending, CondInvited},
+	Recovery:  {CondCaptchaRequired},
+	// Which way the person signed in to reach the page, from the session.
+	Unenrolment: {CondProvedByPassword, CondProvedByPasskey, CondProvedByKerberos, CondProvedByFederated,
+		CondProvedByEmail},
+}
+
+// drivable is which stages each journey this engine drives can run.
+//
+// A stage outside its journey's set did nothing anyone could see coming: a
+// sign-in walked past it, so `password, kerberos, session` asked for a password
+// and nothing else, and an enrolment or recovery stopped at it with a 501 the
+// first time somebody tried. A driven flow naming one is refused at parse, by
+// name, like a condition no journey evaluates.
+//
+// The sign-in set has two kinds. The walker acts on mfa, enrol_mfa, prompt,
+// password_change, verify_email and the terminals. identify, captcha, password, passkey,
+// kerberos, federated, email_otp and consent are settled before the walk, by
+// the route that reached it -- the sign-in form, the passkey ceremony, the
+// Negotiate exchange, a provider's callback, the emailed code's page -- and the
+// walker requires a proving one among them to be the proof that route
+// presented (2.49). The stages refused there wait for a driver: a source pinned
+// per flow (delegated, certificate), a texted code as the first factor
+// (sms_otp).
+//
+// Widen a set only in step with a driver; internal/httpapi's
+// TestEveryStageAFlowCanUseIsDriven reads the drivers and compares.
+var drivable = map[Designation][]StageName{
+	Authentication: {
+		StageMFA, StagePrompt, StagePasswordChange, StageSession, StageDeny, StageDone,
+		StageIdentify, StageCaptcha, StagePassword, StagePasskey, StageKerberos, StageFederated,
+		StageConsent, StageEnrolMFA, StageVerifyEmail, StageEmailOTP, StageExternalFactor,
+	},
+	Enrolment: {StageCaptcha, StagePrompt, StageInvitation, StageCreateUser, StageDeny, StageDone, StageRedirect},
+	Recovery: {
+		StageCaptcha, StageIdentify, StageEmailOTP, StageMFA, StagePasswordChange,
+		StageDeny, StageDone, StageSession, StageRedirect,
+	},
+	// The proving stages are settled by the recent sign-in the page requires,
+	// each only by its own proof, as at sign-in; done deletes the account.
+	Unenrolment: {StagePassword, StagePasskey, StageKerberos, StageFederated, StageEmailOTP, StageDeny, StageDone},
+}
+
+// signInProofs are the proving stages a sign-in settles from the route that
+// reached it, each with the condition saying that route was taken. A sign-in
+// presents exactly one of them (2.49).
+var signInProofs = map[StageName]Condition{
+	StagePassword:  CondProvedByPassword,
+	StagePasskey:   CondProvedByPasskey,
+	StageKerberos:  CondProvedByKerberos,
+	StageFederated: CondProvedByFederated,
+	StageEmailOTP:  CondProvedByEmail,
+}
+
+// ProofCondition is the proved_by condition for a proving stage a sign-in
+// settles, and whether stage is one.
+func ProofCondition(stage StageName) (Condition, bool) {
+	c, ok := signInProofs[stage]
+	return c, ok
+}
+
+// checkOneProof refuses an authentication flow with a journey asking for two
+// of the proofs a sign-in settles. Somebody arrives by password, passkey,
+// Kerberos or a provider, never by two, so that journey could only refuse
+// them; before 2.49 the walker passed both and it was a sign-in by whichever
+// proof was presented, whatever the file said.
+//
+// Enumerated here rather than through Paths, which keeps one assignment per
+// distinct journey and could keep an impossible one -- two proved_by
+// conditions true at once -- in place of a possible one.
+func (fl *Flow) checkOneProof() error {
+	if fl.On != Authentication {
+		return nil
+	}
+	conds := fl.Conditions()
+	if len(conds) > maxEnumeratedConditions {
+		return nil // Paths says so wherever the journeys are asked for
+	}
+	isProvedBy := map[string]bool{}
+	for _, c := range signInProofs {
+		isProvedBy[string(c)] = true
+	}
+	for mask := 0; mask < 1<<len(conds); mask++ {
+		st, provedBy := State{}, 0
+		for i, c := range conds {
+			st[c] = mask&(1<<i) != 0
+			if st[c] && isProvedBy[c] {
+				provedBy++
+			}
+		}
+		if provedBy > 1 {
+			continue
+		}
+		var asked []StageName
+		for _, s := range fl.Plan(st) {
+			if _, ok := signInProofs[s]; ok && !slices.Contains(asked, s) {
+				asked = append(asked, s)
+			}
+		}
+		if len(asked) > 1 {
+			return fmt.Errorf("a journey through this flow asks for %s and %s, but a sign-in presents "+
+				"one of them: somebody arrives by password, passkey, Kerberos or a provider, never "+
+				"by two, so that journey could only refuse them. Offer them as alternatives with "+
+				"one_of, or ask for a second factor with mfa", asked[0], asked[1])
+		}
+	}
+	return nil
+}
+
+// AdmitsProof reports whether an authentication flow signs in somebody who
+// arrived by stage's proof: some journey with that route's proved_by true and
+// no other, ending in a session, asks for no other sign-in proof. doctor uses
+// it to say when an applied flow refuses a way in the organisation uses.
+// A flow with too many conditions to enumerate is taken to admit it, so the
+// answer only ever warns about what is certain.
+//
+// A parsed flow works each answer out once and keeps it (E.33). The answer is
+// the flow's alone, working it out plans every state of the flow's conditions,
+// and the sign-in page asks it on every render, whether to offer an emailed code
+// and a passkey: on a federated sign-in that was 6% of the server's CPU. A flow
+// is not changed once parsed; one reloaded is a new flow, and works it out anew.
+func (fl *Flow) AdmitsProof(stage StageName) bool {
+	i := slices.Index(proofStages[:], stage)
+	if fl.proofs == nil || i < 0 {
+		return fl.admitsProof(stage)
+	}
+	switch fl.proofs.answer[i].Load() {
+	case admitted:
+		return true
+	case refused:
+		return false
+	}
+	a := fl.admitsProof(stage)
+	if a {
+		fl.proofs.answer[i].Store(admitted)
+	} else {
+		fl.proofs.answer[i].Store(refused)
+	}
+	return a
+}
+
+// proofStages are signInProofs' stages, each with its place in a proofAnswers.
+var proofStages = [...]StageName{StagePassword, StagePasskey, StageKerberos, StageFederated, StageEmailOTP}
+
+// proofAnswers is what AdmitsProof has worked out for one flow, by proofStages'
+// places: unknown until asked, then admitted or refused. Reached through a pointer
+// the parse gives each flow, so a Flow copied by value shares it and carries no lock.
+type proofAnswers struct {
+	answer [len(proofStages)]atomic.Int32
+}
+
+const (
+	admitted int32 = 1
+	refused  int32 = 2
+)
+
+// admitsProof is AdmitsProof worked out.
+func (fl *Flow) admitsProof(stage StageName) bool {
+	want, ok := signInProofs[stage]
+	if !ok || fl.On != Authentication {
+		return false
+	}
+	conds := fl.Conditions()
+	if len(conds) > maxEnumeratedConditions {
+		return true
+	}
+	other := map[string]bool{}
+	for _, c := range signInProofs {
+		if c != want {
+			other[string(c)] = true
+		}
+	}
+	for mask := 0; mask < 1<<len(conds); mask++ {
+		st, impossible := State{string(want): true}, false
+		for i, c := range conds {
+			if c == string(want) {
+				continue
+			}
+			st[c] = mask&(1<<i) != 0
+			impossible = impossible || (st[c] && other[c])
+		}
+		if impossible {
+			continue
+		}
+		plan := fl.Plan(st)
+		if len(plan) == 0 || plan[len(plan)-1] != StageSession {
+			continue
+		}
+		admitted := true
+		for _, s := range plan {
+			if _, proof := signInProofs[s]; proof && s != stage {
+				admitted = false
+			}
+		}
+		if admitted {
+			return true
+		}
+	}
+	return false
+}
+
+// Drivable lists the stages a journey of designation d runs.
+func Drivable(d Designation) []StageName {
+	return append([]StageName(nil), drivable[d]...)
+}
+
+// checkDriven refuses a stage the journey a flow is for cannot run. Undriven
+// designations are exempt, as for conditions.
+func (fl *Flow) checkDriven() error {
+	if !fl.On.Driven() {
+		return nil
+	}
+	ok := map[StageName]bool{}
+	names := make([]string, 0, len(drivable[fl.On]))
+	for _, s := range drivable[fl.On] {
+		ok[s] = true
+		names = append(names, string(s))
+	}
+	sort.Strings(names)
+	for i, st := range fl.Stages {
+		for _, name := range st.stageNames() {
+			if !ok[name] {
+				return fmt.Errorf("step %d is %s, which this engine does not run in a flow "+
+					"`on: %s` yet, so the journey could not do what this file says. Remove "+
+					"it; what `on: %s` runs: %s", i+1, name, fl.On, fl.On, strings.Join(names, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// Answered lists the conditions a journey of designation d evaluates.
+func Answered(d Designation) []Condition {
+	return append([]Condition(nil), answered[d]...)
+}
+
+// conditionName is a `when:` expression without its `not`.
+func conditionName(expr string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "not "))
+}
+
+// checkAnswered refuses a condition the journey a flow is for cannot evaluate.
+// An undriven designation is exempt: nothing walks it, and flow test and flow
+// apply already say so about the whole flow.
+func checkAnswered(on Designation, stage StageName, expr string) error {
+	if expr == "" || !on.Driven() {
+		return nil
+	}
+	name := conditionName(expr)
+	if on == Authentication && Condition(name) == CondCaptchaRequired {
+		if stage == StageCaptcha {
+			return nil
+		}
+		return fmt.Errorf("`when: %s` guards %s, but a sign-in settles the captcha at the "+
+			"form before this flow is walked, so here it always reads false. In an "+
+			"authentication flow it may guard only the captcha stage", expr, stage)
+	}
+	for _, c := range answered[on] {
+		if string(c) == name {
+			return nil
+		}
+	}
+	names := make([]string, 0, len(answered[on]))
+	for _, c := range answered[on] {
+		names = append(names, string(c))
+	}
+	sort.Strings(names)
+	return fmt.Errorf("`when: %s`: a flow `on: %s` cannot evaluate %s yet, so it would "+
+		"always read false and %s would never run (or, negated, always run). Remove it; "+
+		"what `on: %s` evaluates: %s", expr, on, name, stage, on, strings.Join(names, ", "))
+}
+
+// AsksProvider reports whether a flow branches on anything only the flow_condition
+// hook can answer.
+func (fl *Flow) AsksProvider() bool {
+	asks := func(expr string) bool {
+		return slices.Contains(ProviderConditions, Condition(conditionName(expr)))
+	}
+	for _, step := range fl.Stages {
+		if asks(step.When) {
+			return true
+		}
+		for _, branch := range step.OneOf {
+			if asks(branch.When) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isCondition(s string) bool {

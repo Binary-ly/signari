@@ -103,22 +103,29 @@ The requirement is *"refresh tokens have an absolute expiration, including if
 sliding refresh token expiration is applied"*.
 
 Rotation mints a new token with a fresh expiry, so the **token-level** deadline
-does slide. What does not slide is `sessions.not_after`: it is fixed when the
-session is created and updated **nowhere** in the codebase — verified by
-searching, not assumed. `RotateRefreshToken` requires that session to be live:
+does slide. What does not slide are the two deadlines a lineage rotates within,
+both fixed when the authorization is given. `RotateRefreshToken` requires one of
+them to be ahead:
 
 ```sql
-AND (s.sid IS NULL OR (s.revoked_at IS NULL AND s.not_after > now()))
+AND (f.offline_not_after > now() OR (s.revoked_at IS NULL AND s.not_after > now()))
 ```
 
-So a lineage cannot outlive the sign-in that authorized it, however many times it
-rotates. That is a stronger property than a cap on the credential, because it
-expires the **authorization** rather than the token representing it.
+A grant of `offline_access` carries its own `offline_not_after`, the
+organisation's offline lifetime from the moment it was given (thirty days
+unless changed), set once and never moved. Otherwise the lineage lives while its
+session does. A session's `not_after` moves with use since the idle limit was
+added in October 2026, but a CHECK constraint holds it inside
+`absolute_not_after`, which is fixed at sign-in. So a lineage cannot outlive the
+authorization that started it, however many times it rotates. That is a
+stronger property than a cap on the credential, because it expires the
+**authorization** rather than the token representing it.
 
-But read that SQL again: `s.sid IS NULL OR …`. A family with no session is
-vacuously live forever. No caller created one — which is a fact about the code as
-it stands, not about the code as it will be. `NewRefreshFamily` now refuses an
-empty `sid`, and `TestARefreshFamilyMustNameASession` keeps it that way.
+Until October 2026 the clause read `s.sid IS NULL OR (…)`, and a family with no
+session was vacuously live forever. No caller created one, which is a fact
+about the code as it stood, not about the code as it would be. `NewRefreshFamily`
+refuses an empty `sid`, `TestARefreshFamilyMustNameASession` keeps it that way,
+and the clause no longer has the branch.
 
 ## V10.6 — OpenID Provider, and the requirement that was not met
 
@@ -300,12 +307,12 @@ than claimed.
 | **V7.2.4** new token on authentication **and the current one terminated** | **was half met** — fixed, below |
 | **V7.4.1** termination disallows further use | met — every lookup filters `revoked_at IS NULL` |
 | **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
-| **V7.4.3** option to end other sessions after a factor changes | partial — `ReasonPasswordChange` and `ReasonMFAReset` exist and terminate; the user-facing *option* does not |
+| **V7.4.3** option to end other sessions after a factor changes | **met** — a password change ends every session, this one included (`httpapi/passwordselfservice.go:180-187`), and `/account/sessions` ends any or all of them after any other change |
 | **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
 | **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
-| **V7.5.2** users can view and terminate their sessions | partial — the data exists; the page does not |
-| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | partial — timeouts and deviations are documented here; concurrent-session policy is not |
+| **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [security-inventories.md](security-inventories.md) |
 
 ### V7.2.4: the half that was missing
 
@@ -345,11 +352,8 @@ value travels to relying parties in the CAEP event.
 ### What V7 leaves open
 
 V7.3.1 (inactivity timeout) is item **9f** and unchanged. V7.4.3 and V7.5.2 both
-describe a *page* — "give the option to terminate all other sessions", "users are
-able to view and terminate active sessions" — and the mechanism behind both
-already exists and is used by the admin path. What is missing is the screen, which
-is the same shape as **9k**. Recorded rather than built, because a session-list UI
-is a product surface and you have not asked for one.
+describe a *page*, and when this was written the mechanism existed without one.
+The page has since shipped as `/account/sessions`, and both are met.
 
 ## V8 Authorization: the tenant boundary, audited by enumeration (21 August 2026)
 
@@ -429,8 +433,8 @@ succeed by querying the wrong schema.
 | **V8.3.1** enforced at a trusted service layer | met |
 | **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
 | **V8.4.1** cross-tenant controls | met, and now uniform |
-| **V8.1.x** documentation of the rules | partial — the rules are in code comments and these reviews rather than in one document |
-| **V8.2.3** field-level (BOPLA) | partial — SCIM releases a fixed attribute set; there is no per-field permission model |
+| **V8.1.x** documentation of the rules | **met, November 2026** — [security-inventories.md](security-inventories.md) says where each boundary is enforced and which page holds its rules |
+| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get a user attribute only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [admin-tokens.md](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound SCIM sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
 | **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
 
 ## V11 Cryptography: twenty-four requirements (21 August 2026)
@@ -448,7 +452,7 @@ succeed by querying the wrong schema.
 | **V11.4.3** collision-resistant hashes ≥256 bits for signatures | met — SHA-256 and above throughout; SHA-1 refused on inbound SAML |
 | **V11.5.1** CSPRNG, ≥128 bits of entropy | **exceeded** — `crypto/rand`, 256 bits for session and device codes |
 | **V11.6.1** approved algorithms for key generation and signatures | met — P-256, Ed25519, RSA |
-| **V11.1.x** documented key policy and inventory | partial — key lifecycle is documented in ADR-005 and the keys package; there is no single cryptographic inventory document |
+| **V11.1.x** documented key policy and inventory | **met, November 2026** — [security-inventories.md](security-inventories.md) |
 | **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
 
 ### V11.2.3: we were generating the weaker key
@@ -537,6 +541,7 @@ worth recording as carefully as a finding.
 | **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check TOTP implementations most often skip |
 | **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
 | **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
+| **V6.6.2** OOB codes bound to their request | met, November 2026 — the hash of the sign-in's attempt is kept beside each emailed or texted code (`store/codeattempt.go`); see below |
 | **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per user by construction |
 
 ### V6.8.1, and the reason it is the strongest item here
@@ -555,16 +560,20 @@ address.
 
 ### Partial, and honestly so
 
-- **V6.6.2** — codes bound to the *original authentication request*. Ours are
-  bound to the **user**: one live code per account, and requesting another
-  replaces the pending one, so guesses cannot accumulate. A code issued during
-  one login attempt could be spent in a later attempt by the same user. The
-  practical gap is narrow, because spending it still requires the first factor,
-  and binding to a session does not stop the relay attack people actually run
-  (persuading someone to read a code aloud). Recorded rather than changed.
-- **V6.1.x, V6.3.4** — documentation of every authentication pathway and its
-  strength. The pathways are documented individually across these reviews; there
-  is no single document listing all of them side by side.
+- ~~**V6.6.2** — codes bound to the *original authentication request*~~ —
+  **met, November 2026** (`specs/asvs-5.0.0.txt:2528-2530`). Codes were bound to
+  the **user**, so one issued during one sign-in could be spent in another, and an
+  LDAP bind or the desktop sign-in took a texted or emailed code sent for a
+  browser's sign-in. Now the sign-in's pending token names an attempt, and the
+  hash of that attempt is kept beside the emailed or texted code. A password reset
+  uses its link as the attempt, and an emailed first-factor code uses the request
+  that asked for it. A code given in any other attempt is no code there. Binding
+  does not stop the relay people actually run (persuading someone to read a code
+  aloud), since the relayer is the one who started the sign-in; see
+  [email codes](email-otp.md#one-live-code-never-a-queue-of-them).
+- ~~**V6.1.x, V6.3.4** — documentation of every authentication pathway and its
+  strength~~ — **met, November 2026**: all of them side by side, with what each
+  records, in [security-inventories.md](security-inventories.md).
 - **V6.4.4** — identity proofing at enrolment level when a factor is lost. We
   have recovery codes and delay-and-notify recovery; we do not do identity
   proofing, which is an IAL question rather than an AAL one.
@@ -746,12 +755,12 @@ for relying parties — would be scoring a checklist rather than securing anythi
 
 | Section | Verdict |
 |---|---|
-| V3.1.1 documentation of expected browser features | L3, partially — the headers are documented here and in the middleware, the "behave when unavailable" half is not |
+| V3.1.1 documentation of expected browser features | **met, November 2026** — [security-inventories.md](security-inventories.md), with what happens without each |
 | V3.2.1 / V3.2.2 content interpretation | met — `nosniff` now, and all rendering goes through `html/template`, which escapes by context |
 | V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
 | V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
 | V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
-| V3.4.7 CSP report location | L3, not set |
+| V3.4.7 CSP report location | **met, November 2026** — every policy carries `report-uri /csp-report`, from the one helper that sets a policy. A report is counted by directive and nothing from it is logged or kept, since it can name a URL carrying a code. Proved in Chrome 156: an injected script was refused and its report arrived at the counter |
 | V3.5.1 / V3.5.3 origin separation, CSRF, safe methods | met — per-session CSRF tokens, `POST` for every sensitive operation |
 | V3.5.2 preflight cannot be bypassed | ~~met~~ **was NOT met — fixed 21 August, see below** |
 | V3.5.5 postMessage | not applicable — zero uses |
@@ -866,7 +875,7 @@ now written down rather than assumed.
 | V16.3.4 unexpected errors | met, and this is what V16.5.4 fixed |
 | V16.4.1 log injection | met — structured key/values throughout, **zero** `fmt.Sprintf` inside a log call |
 | V16.4.2 protected from modification | met as *detectable*: hash chain over ciphertext, and migration 0043 removed the foreign keys that silently rewrote history. Stated precisely because it is not a trigger refusing `UPDATE` |
-| V16.4.3 shipped to a separate system | **not met** — engine writes to stderr and its own database; forwarding is a deployment decision, recorded in the inventory as the operator's |
+| V16.4.3 shipped to a separate system | **met** — the audit trail streams to a SIEM webhook or a syslog collector as it is written (`SIGNARI_AUDIT_WEBHOOK_URL`, `SIGNARI_AUDIT_SYSLOG_ADDR`, `internal/auditsink`), and `GET /admin/audit-events` reads it back from outside |
 | V16.5.1 generic error to the consumer | met, and now enforced on the panic path |
 | V16.5.2 graceful degradation | met — 12 explicit fail-closed sites |
 | V16.5.3 fails securely, no fail-open | met — repeatedly verified in the protocol reviews |
@@ -951,9 +960,9 @@ it.
 | V4.1.2 transparent HTTP→HTTPS only for user-facing | n/a — the engine does not redirect http to https; TLS terminates ahead of it |
 | V4.1.3 intermediary headers not user-overridable | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
-| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs, JARM and webhook bodies are all signed or MACed |
+| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JARM, which is not built) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
-| V4.2.5 over-long outbound URIs and headers | partial — outbound requests are bounded by what we construct, but no explicit length ceiling is enforced |
+| V4.2.5 over-long outbound URIs and headers | **met, November 2026** — every client `safedial` builds refuses a URI or a header field over 8,000 octets before it is sent, RFC 9110 §4.1's figure for a URI (`specs/rfc9110.txt:1059-1060`), and says which and to where without repeating a value that may be a credential |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |
 | V4.4.1 WSS | deployment; TLS terminates ahead of the engine |
 | V4.4.2 Origin checked at the handshake | **was checked too late — fixed** |
@@ -1023,17 +1032,57 @@ who can act as you.
 
 All six now call `htmlPageHeaders`.
 
-### The one page that must NOT use the helper, and why that is written down
+### The pages that must NOT use the helper, and why that is written down
 
-`postSAMLResponse` renders the auto-submitting form that delivers an assertion to
-a service provider's ACS URL — **on another origin**. `htmlPageHeaders` sets
-`form-action 'self'`, which would block exactly that delivery.
+Four pages exist to leave this origin: the SAML POST binding, `form_post`,
+WS-Federation and front-channel logout. `htmlPageHeaders` sets `form-action 'self'`
+and no `script-src`, which would stop each from doing the one thing it is for.
 
-The bulk edit initially caught this page too. It did not break, because the line
-after it overwrote the policy with the framing-only one — correct entirely by the
-order of two statements. That has been replaced with the headers written out in
-full and a comment saying why the helper is wrong here, because "it works because
-these two lines are in this order" is a thing somebody tidies up.
+So they do not use it, and `renderBare` takes their policy as a parameter. It used
+to call the helper itself, after each caller had set its own policy, and so
+replaced all four: from 22 August to 2 November 2026 those pages rendered forms no
+browser would submit and frames none would load, and every test passed, because
+every test read the markup. The SAML page had also lost its auto-submit when it
+moved into a template, and `<noscript>` hid its button from anybody with scripting
+on. A parameter leaves nothing to overwrite.
+
+The three that post carry no `form-action` at all. Naming the relying party's
+origin would be stopped the moment its callback redirected anywhere else of its own.
+`TestABridgePageIsAllowedToDoItsOneJob` reads each page as a browser does: its
+script has to be one its policy lets run.
+
+### A redirect after a form is sent as a page
+
+`form-action 'self'` on the sign-in pages stops injected markup from posting a
+password somewhere else. Chrome applies that directive to every redirect in the
+navigation a form starts, not only to the form's own target, so the walk from a
+password to an application (`POST /login`, `303` to the authorization endpoint,
+`303` to the relying party) was stopped at its last hop. The person stayed on the
+sign-in page with the right password and no error. Chrome 156 does this; an HTTP
+client does not, which is why no test here saw it.
+
+Listing every destination in the policy would make every page responsible for
+knowing where the journey might end. Removing the directive would give up what it
+is for. So the navigation is ended instead. When a browser submits a form on a
+page from this origin, `withFormRedirects` answers a redirect with `200` and a
+page that refreshes to the same place, keeping any cookies set with it. From
+there the browser is on an ordinary navigation, which the directive has no say in.
+The page's own policy lets nothing run.
+
+It is recognised by `Sec-Fetch-Site: same-origin` with `Sec-Fetch-Dest: document`,
+which a page cannot set. A form on a relying party's page, an API client and a
+script's `fetch` keep their redirects. So a reverse proxy in front of the engine
+must pass `Sec-Fetch-*` through: strip them and sign-in stops at the same place.
+
+`interop/form-redirect-e2e.mjs` drives the real forms in a real browser and passes
+only if it arrives at the application.
+
+The reverse journey has its own rule. The session cookie is `SameSite=Lax`, so it
+stays behind on a form posted from another site, and a person with a live session
+read as nobody and was asked to sign in again. `/saml/sso` and the authorization
+endpoint answer such a POST, recognised by `Sec-Fetch-Site: cross-site` with
+`Sec-Fetch-Dest: document`, with a `303` to the same request as a `GET`, which
+brings the cookie. `/wsfed` does the same for any POST without a form token of ours.
 
 ### Pinned structurally
 
@@ -1048,7 +1097,7 @@ and nothing had ever sent one.
 
 | Requirement | Verdict |
 |---|---|
-| V14.1.1 / V14.1.2 data classified, protection documented | partial — `retention_class` classifies audit data and `docs/logging-inventory.md` now documents the log layer, but there is no single inventory of every sensitive field and its protection level |
+| V14.1.1 / V14.1.2 data classified, protection documented | partial — [security-inventories.md](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
 | V14.2.1 no sensitive data in URLs | **partial, and deliberately** — invitation and password-reset links carry a token in the query string, which is how an emailed link works. Mitigated by single use, short expiry, and the `Referrer-Policy: no-referrer` added in the V3 pass |
 | V14.2.2 not cached in server components | met — `no-store` now on every HTML response and every token response |
 | V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
@@ -1159,13 +1208,13 @@ for one.
 | V12.1.2 recommended suites, forward secrecy at L3 | **met, and the right action was to change nothing** — see below |
 | V12.1.3 mTLS client certificates validated before use | met — `SetClientCAs`, and a nil pool means `tls_client_auth` is refused rather than accepted unverified |
 | V12.1.4 OCSP stapling | L3, deployment concern; not configured by the engine |
-| V12.1.5 Encrypted Client Hello | L3, not enabled |
+| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([encrypted-client-hello.md](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
 | V12.2.1 TLS to external services, no fallback | met — see SMTP below |
 | V12.2.2 publicly trusted certificates | deployment |
 | V12.3.1 encrypted in and out, no insecure fallback | met |
 | V12.3.2 TLS clients validate certificates | met — **one** `InsecureSkipVerify` in the entire tree, in the `proxycheck` diagnostic, opt-in via a flag, and when it is on the report's first line reads "DISABLED by -insecure; nothing below says anything about TLS" |
 | V12.3.3 / V12.3.4 internal service TLS | met where applicable; `directory/ldapsource` pins `RootCAs` and its comment records that `InsecureSkipVerify` is deliberately absent |
-| V12.3.5 mutual authentication between services | L3, not implemented |
+| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the admin listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the DSN. Webhooks and outbound calls to third parties are authenticated at the application layer |
 
 **V12.1.2 is the one worth writing down.** The L3 requirement is "must only
 support cipher suites which provide forward secrecy", and no `tls.Config` here
@@ -1209,7 +1258,7 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | Requirement | Verdict |
 |---|---|
 | V13.1.1 communication needs documented | **was not — now `docs/egress-inventory.md`** |
-| V13.1.2 / V13.1.3 connection limits and resource strategy documented | partial — timeouts and retry behaviour are now written down; database pool sizing is not, and that is stated in the document rather than implied |
+| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [security-inventories.md](security-inventories.md), the pools among them |
 | V13.1.4 secret rotation schedule documented | partial — key rotation is implemented and documented; there is no written rotation schedule for the root key or admin tokens |
 | V13.2.1 backend auth: individual, short-term, not shared | met for the admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
 | V13.2.2 least privilege | met — `signari_admin` holds no grants on `core`, reading 15 views in `core_v1` |
@@ -1217,7 +1266,8 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | V13.2.4 / V13.2.5 outbound allowlist | **partial, stated plainly** — `safedial` is an address-level *denylist*; the effective allowlist is registration. See the egress inventory |
 | V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, not from a vault or HSM. An operator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
 | V13.3.2 least privilege on secrets | met |
-| V13.3.3 / V13.3.4 HSM, rotation schedule | L3, not done |
+| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing-keys-in-a-module.md](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
+| V13.3.4 rotation schedule | L3, not done |
 | V13.4.1 no source-control metadata served | met by construction — **no `http.FileServer`, no `http.Dir`, nothing serves a filesystem path**. The single static asset is `//go:embed`-ed and served by name |
 | V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
 | V13.4.3 no directory listings | met by construction, same reason as V13.4.1 |
@@ -1306,8 +1356,8 @@ addresses only for *user*-submitted names.
 | V2.3.1 steps in order, none skipped | met, and it is the strongest item here: the flow engine refuses at parse a file that could reach a session without proving anything, or that changes a credential before checking one. `internal/flow/safety_test.go` proves it by exhaustive enumeration |
 | V2.3.2 documented business limits | met — device-code attempts, signup rate, registration rate, call-chain length, resource-indicator count |
 | V2.3.3 transactional | met — `pgx.Tx` around the code-to-token exchange; a partial redemption cannot leave a code spent and no token issued |
-| V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race |
-| V2.3.5 multi-user approval for high-value flows | L3, not implemented |
+| V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race. WebAuthn challenges are spent with `INSERT ... ON CONFLICT DO NOTHING RETURNING` on the first attempt to finish their ceremony. **Until October 2026 they were not**: the challenge travels in a signed cookie, the handler cleared that cookie, and the same cookie and assertion presented again opened a second session. The end-to-end passkey test found it (migration 0141) |
+| V2.3.5 multi-user approval for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([approvals.md](approvals.md)) |
 | V2.4.1 anti-automation | met — per-address and per-account limits, adaptive CAPTCHA, token buckets per endpoint with separate buckets so tuning one does not silently widen another |
 | V2.4.2 realistic human timing | L3, not implemented |
 

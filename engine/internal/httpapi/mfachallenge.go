@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/flow"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/mail"
 	"signari.dev/engine/internal/mfa"
@@ -57,11 +59,60 @@ type pendingClaims struct {
 	Authz    string   `json:"authz,omitempty"`
 	IssuedAt int64    `json:"iat"`
 	Expiry   int64    `json:"exp"`
+	// Stage names the stage that held the sign-in when only that stage's
+	// pages may continue it (enrolmfa.go). Empty for the code step and the
+	// prompts, which are reached by any pending sign-in.
+	Stage string `json:"stg,omitempty"`
+	// Attempt names this sign-in, which every emailed or texted code is
+	// issued to and taken for alone (store/codeattempt.go, ASVS V6.6.2).
+	Attempt string `json:"att,omitempty"`
+}
+
+// newAttempt is a fresh sign-in's name, for its pending token: 128 random bits
+// and more (crypto/rand.Text).
+func newAttempt() string { return rand.Text() }
+
+// attemptOf is the attempt a pending sign-in names, as the store takes it.
+func (p *pendingClaims) attemptOf() []byte {
+	if p == nil || p.Attempt == "" {
+		return nil
+	}
+	return []byte(p.Attempt)
 }
 
 // beginMFAChallenge issues the pending token and renders the code prompt.
+//
+// It reports failedOpen when Duo is unreachable, the deployment fails open and
+// the person has nothing else to present. Nothing has been written to the
+// response then: the caller records it (recordDuoFailOpen) and carries on to the
+// session in its own transaction, without a second factor and without saying it
+// had one.
 func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
-	userID, orgID, authzQuery string, amr []string) {
+	userID, orgID, authzQuery string, amr []string) (failedOpen bool) {
+	return s.challengeMFA(w, r, s.probeDuo(r.Context(), s.db, userID, orgID),
+		userID, orgID, authzQuery, amr)
+}
+
+// challengeMFA is beginMFAChallenge with Duo already probed, for a caller that
+// probed while holding a transaction and has since released it.
+func (s *Server) challengeMFA(w http.ResponseWriter, r *http.Request, p duoProbe,
+	userID, orgID, authzQuery string, amr []string) (failedOpen bool) {
+
+	// Duo takes the browser away entirely, so it is offered BEFORE the code
+	// form is rendered -- a page asking for a code the person will never receive
+	// is worse than no page. And before the pending cookie: Duo's callback is
+	// tied to its own stored challenge, and a fail-open sign-in has no code
+	// step for the cookie to admit anybody to.
+	//
+	// When Duo is configured but unreachable and the deployment fails closed,
+	// startDuo renders the refusal itself; when it is not configured, or the
+	// user is not enrolled, the ordinary code prompt follows.
+	switch s.actOnDuo(w, r, p, userID, orgID, authzQuery, amr) {
+	case duoTookOver:
+		return false
+	case duoFailedOpen:
+		return true
+	}
 
 	key, err := s.cfg.Keys.Active(keys.ES256)
 	if err != nil {
@@ -75,20 +126,22 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if err != nil {
-		s.log.Error("no signing key for the pending token", "err", err)
+		s.log.ErrorContext(r.Context(), "no signing key for the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return false
 	}
 
 	now := time.Now()
+	attempt := newAttempt()
 	tok, err := tokens.NewSigner(key).SignJSON(pendingClaims{
 		Issuer: s.cfg.Issuer, Subject: userID, OrgID: orgID, AMR: amr,
 		Authz: authzQuery, IssuedAt: now.Unix(), Expiry: now.Add(pendingTTL).Unix(),
+		Attempt: attempt,
 	}, typPending)
 	if err != nil {
-		s.log.Error("signing the pending token", "err", err)
+		s.log.ErrorContext(r.Context(), "signing the pending token", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return false
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -96,17 +149,6 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(pendingTTL.Seconds()),
 	})
-	// Duo takes the browser away entirely, so it is offered BEFORE the code
-	// form is rendered -- a page asking for a code the person will never receive
-	// is worse than no page.
-	//
-	// startDuo reports whether it took over the response. When Duo is
-	// configured but unreachable and the deployment fails closed, it renders the
-	// refusal itself; when it is not configured, or the user is not enrolled, it
-	// returns false and the ordinary code prompt follows.
-	if s.startDuo(w, r, userID, orgID, authzQuery, amr) {
-		return
-	}
 
 	// If email is the enrolled factor, the code has to be sent now -- the person
 	// is looking at a form asking for a code that does not exist yet.
@@ -114,11 +156,25 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 	// Failure here is logged and NOT surfaced: which factors somebody has
 	// enrolled is not something an unauthenticated form should disclose, and the
 	// challenge page is identical either way.
-	s.sendEmailOTPIfEnrolled(r.Context(), userID)
-	s.sendSMSOTPIfEnrolled(r.Context(), userID)
+	//
+	// Not after an emailed sign-in code: that was the mailbox, and a second code
+	// to it is no second factor (verifyCode refuses one there too).
+	//
+	// Each is issued to this sign-in's attempt alone.
+	if primaryProof(amr) != flow.StageEmailOTP {
+		s.sendEmailOTPIfEnrolled(r.Context(), userID, []byte(attempt))
+	}
+	s.sendSMSOTPIfEnrolled(r.Context(), userID, []byte(attempt))
 
-	s.renderMFA(w, r, authzQuery, "")
+	s.renderMFA(w, r, userID, authzQuery, "")
+	return false
 }
+
+// emailCodesPerHour bounds the sign-in codes mailed to one person in an hour.
+// The minute between them (store.EmailOTPResendInterval) is a resend's within
+// one sign-in, and each sign-in is sent a code of its own; this is what then
+// stops somebody holding the password from filling the person's inbox.
+const emailCodesPerHour = 10
 
 // sendEmailOTPIfEnrolled issues and mails a code, when that factor is enrolled.
 //
@@ -126,15 +182,29 @@ func (s *Server) beginMFAChallenge(w http.ResponseWriter, r *http.Request,
 // enrolled can still use the app if mail is slow or broken, and blocking the
 // sign-in because SMTP is down would turn a mail outage into an authentication
 // outage.
-func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
+func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string, attempt []byte) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("beginning a transaction for the email code", "err", err)
+		s.log.ErrorContext(ctx, "beginning a transaction for the email code", "err", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	code, address, err := store.IssueEmailOTP(ctx, tx, userID)
+	code, address, err := store.IssueEmailOTP(ctx, tx, userID, attempt)
+	if err == nil {
+		// Charged in the transaction that stores the code, so a code that does
+		// not go out costs nothing, and the check holds no second connection.
+		// Over it, the code is not stored, nothing is sent, and the page is the
+		// same.
+		res, rerr := store.AllowRate(ctx, tx, "mfa:email:user:hour:"+userID, emailCodesPerHour, time.Hour)
+		if rerr != nil {
+			s.log.ErrorContext(ctx, "checking the sign-in code allowance", "err", rerr)
+			return
+		}
+		if !res.Allowed {
+			return
+		}
+	}
 	switch {
 	case errors.Is(err, store.ErrNoEmailOTP):
 		return // not enrolled; nothing to do
@@ -143,11 +213,11 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 		// the person has one in their inbox.
 		return
 	case err != nil:
-		s.log.Error("issuing an email code", "err", err)
+		s.log.ErrorContext(ctx, "issuing an email code", "err", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("storing an email code", "err", err)
+		s.log.ErrorContext(ctx, "storing an email code", "err", err)
 		return
 	}
 
@@ -164,7 +234,7 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 	// case and uses the request instead: there, the person at the form is
 	// demonstrably the person who will read it.
 	tr := s.notifierFor(ctx, userID)
-	if err := s.mailer.Send(ctx, mail.Message{
+	if err := s.sendMailTo(ctx, userID, mail.Message{
 		To:      address,
 		Subject: tr.Text("mail.signincode.subject"),
 		Body: tr.Text("mail.signincode.body", map[string]any{
@@ -175,7 +245,7 @@ func (s *Server) sendEmailOTPIfEnrolled(ctx context.Context, userID string) {
 		// The code is already stored, so a resend can succeed later. Logged
 		// rather than surfaced: telling the form that mail failed would confirm
 		// the account exists and has email enrolled.
-		s.log.Error("sending an email code", "err", err, "user_id", userID)
+		s.log.ErrorContext(ctx, "sending an email code", "err", err, "user_id", userID)
 	}
 }
 
@@ -209,7 +279,8 @@ func (s *Server) clearPending(w http.ResponseWriter) {
 	})
 }
 
-// handleMFAPost verifies a TOTP code or a recovery code and completes sign-in.
+// handleMFAPost verifies a code, or a security key's assertion (finishMFAKey),
+// and completes sign-in.
 func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
@@ -235,6 +306,20 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	code := r.PostForm.Get("code")
 	const generic = "That code is not valid."
 
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if !s.allowSecondFactorAttempt(ctx, w, pending.Subject, ip) {
+		return
+	}
+
+	// A security key's answer, posted by the page's script in place of a code.
+	if assertion := r.PostForm.Get("assertion"); assertion != "" {
+		s.finishMFAKey(w, r, pending, ip, []byte(assertion))
+		return
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -242,27 +327,45 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	amr, ok, err := s.verifySecondFactor(ctx, tx, pending.Subject, code)
+	// An email code is a second factor only when the first was not an emailed
+	// code: the same mailbox twice is one factor, whatever amr would say.
+	res, err := s.verifyCode(ctx, tx, pending.Subject, code, primaryProof(pending.AMR) != flow.StageEmailOTP,
+		pending.attemptOf())
 	if err != nil {
-		s.log.Error("verifying second factor", "err", err)
-		s.renderMFA(w, r, pending.Authz, "Something went wrong. Please try again.")
+		// Released before rendering, which takes a connection of its own.
+		_ = tx.Rollback(ctx)
+		s.log.ErrorContext(ctx, "verifying second factor", "err", err)
+		s.renderMFA(w, r, pending.Subject, pending.Authz, "Something went wrong. Please try again.")
 		return
 	}
-	if !ok {
+	if res.Replayed {
+		_ = tx.Rollback(ctx)
+		s.auditDetached(ctx, audit.Event{
+			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.Subject,
+			CorrelationID: correlationID(ctx),
+			Detail:        map[string]any{"reason": "second_factor_replayed"},
+		})
+		s.renderMFA(w, r, pending.Subject, pending.Authz, "That code has already been used. Wait for the next one.")
+		return
+	}
+	if !res.OK {
 		// Committed: the failure counter and any lockout must persist even
 		// though the sign-in did not. Rolling back here would make the lockout
 		// unreachable, since every failed attempt would undo its own record.
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing failed second factor", "err", err)
+			s.log.ErrorContext(ctx, "committing failed second factor", "err", err)
 		}
+		s.recordSecondFactorFailure(ctx, pending.Subject, ip)
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: pending.OrgID, SubjectID: pending.Subject,
 			CorrelationID: correlationID(ctx),
 			Detail:        map[string]any{"reason": "bad_second_factor"},
 		})
-		s.renderMFA(w, r, pending.Authz, generic)
+		s.factorsDisabled(ctx, pending.OrgID, pending.Subject, res.Disabled)
+		s.renderMFA(w, r, pending.Subject, pending.Authz, generic)
 		return
 	}
+	amr := res.AMR
 
 	// Both factors are now proven. amr records what ACTUALLY happened, and acr is
 	// derived from it rather than asserted.
@@ -276,40 +379,260 @@ func (s *Server) handleMFAPost(w http.ResponseWriter, r *http.Request) {
 	// genuinely been presented. The sequencer would then demand the same code
 	// again, and again. `duo.go:210` already appends it for this reason.
 	full := append(append(append([]string{}, pending.AMR...), amr...), oauth.AMRMFA)
+	s.rememberThisDevice(ctx, w, r, tx, pending.Subject, pending.OrgID)
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, full, pending.Authz)
 }
 
-// verifySecondFactor accepts either a TOTP code or a recovery code.
+// The second-factor guessing budget.
+//
+// Two limits, both charged only by a wrong code and read before one is checked,
+// in the same way as the password step (allowSignInAttempt):
+//
+//   - Per account, keyed by the user the password step proved. Unlike the sign-in
+//     form's per-account key this one cannot be chosen by a stranger: only
+//     somebody holding the password reaches the code step, so it can be tight.
+//     It is what bounds recovery-code guessing for an account whose second
+//     factor is not an authenticator app, which had no limit at all.
+//   - Per address, the sign-in form's own `signin:fail:ip:` bucket. A guess is a
+//     guess whichever box it was typed into; two doors onto one budget, for the
+//     reason ldapauth.go gives.
+//
+// The per-factor counters in store (the TOTP pause, and the consecutive ceiling
+// that disables a factor) sit under these and are what NIST SP 800-63B §3.2.2
+// asks for. These bound the rate; those bound the total.
+const (
+	secondFactorPerAccountLimit  = 10
+	secondFactorPerAccountWindow = 15 * time.Minute
+)
+
+func secondFactorAccountKey(userID string) string { return "mfa:fail:user:" + userID }
+
+// allowSecondFactorAttempt answers 429 and returns false when either budget is
+// spent. ip is empty where the client's address is not the person's -- an
+// outpost relaying for a desktop -- and then only the account is checked.
+func (s *Server) allowSecondFactorAttempt(ctx context.Context, w http.ResponseWriter, userID, ip string) bool {
+	check := func(key string, limit int, window time.Duration) bool {
+		n, err := store.CountRate(ctx, s.db, key, window)
+		if err != nil {
+			// Fail closed, as the password step does: verifying the code needs
+			// the database one query later anyway.
+			s.log.ErrorContext(ctx, "checking the second-factor rate limit", "err", err)
+			writeError(w, http.StatusServiceUnavailable, "unavailable", "please try again")
+			return false
+		}
+		if n >= limit {
+			s.tooManyAttempts(w, window)
+			return false
+		}
+		return true
+	}
+	if ip != "" && !check("signin:fail:ip:"+budgetIP(ip), signInPerIPLimit, signInPerIPWindow) {
+		return false
+	}
+	return check(secondFactorAccountKey(userID), secondFactorPerAccountLimit,
+		secondFactorPerAccountWindow)
+}
+
+// BindCodeOK checks a code that came with a bind or a RADIUS request, as the
+// sign-in form checks one (7.05): a replay refused, a wrong code charged to the
+// factor it was a guess at and to the person's budget, and a factor it switched
+// off told to them. Not an emailed or a texted code: nothing here could have
+// sent one, so one that arrives was sent for another sign-in (codeattempt.go).
+// A texted one was taken until November 2026.
+func (s *Server) BindCodeOK(ctx context.Context, orgID, userID, code string) (bool, error) {
+	spent, err := store.CountRate(ctx, s.db, secondFactorAccountKey(userID), secondFactorPerAccountWindow)
+	if err != nil {
+		return false, err
+	}
+	if spent >= secondFactorPerAccountLimit {
+		return false, nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := s.verifyCode(ctx, tx, userID, code, false, nil)
+	if err != nil {
+		return false, err
+	}
+	// Committed either way: a success spends the code, and a failure is charged.
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	if !res.OK {
+		s.recordSecondFactorFailure(ctx, userID, "")
+		s.factorsDisabled(ctx, orgID, userID, res.Disabled)
+	}
+	return res.OK, nil
+}
+
+// recordSecondFactorFailure charges a wrong code to both budgets, on a context of its
+// own for the reason recordSignInFailure gives.
+func (s *Server) recordSecondFactorFailure(ctx context.Context, userID, ip string) {
+	ctx = context.WithoutCancel(ctx)
+	if ip != "" {
+		if _, err := store.AllowRate(ctx, s.db, "signin:fail:ip:"+budgetIP(ip),
+			signInPerIPLimit, signInPerIPWindow); err != nil {
+			s.log.ErrorContext(ctx, "recording a second-factor failure", "err", err)
+		}
+	}
+	if _, err := store.AllowRate(ctx, s.db, secondFactorAccountKey(userID),
+		secondFactorPerAccountLimit, secondFactorPerAccountWindow); err != nil {
+		s.log.ErrorContext(ctx, "recording a second-factor failure", "err", err)
+	}
+}
+
+// factorsDisabled records and announces each factor a failed code switched off.
+//
+// Called after the failure is committed. The account holder is told on every
+// channel they have, in their own language: whoever disabled the factor holds
+// their password, so the notice is the thing that tells them to change it.
+func (s *Server) factorsDisabled(ctx context.Context, orgID, userID string, disabled []string) {
+	for _, factor := range disabled {
+		s.auditDetached(ctx, audit.Event{
+			Type: "mfa.factor_disabled", OrgID: orgID, SubjectID: userID,
+			CorrelationID: correlationID(ctx),
+			Detail: map[string]any{
+				"factor": factor, "reason": "consecutive_failures",
+				"limit": s.failureLimit(),
+			},
+		})
+		s.log.WarnContext(ctx, "second factor disabled after consecutive failures",
+			"user_id", userID, "factor", factor, "limit", s.failureLimit())
+
+		tr := s.notifierFor(ctx, userID)
+		var err error
+		switch factor {
+		case factorTOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.totp.disabled.subject"),
+				tr.Text("mail.totp.disabled.body"), tr.Text("sms.totp.disabled"))
+		case factorRecoveryCodes:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.recoverycodes.disabled.subject"),
+				tr.Text("mail.recoverycodes.disabled.body"), tr.Text("sms.recoverycodes.disabled"))
+		case factorEmailOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.emailotp.disabled.subject"),
+				tr.Text("mail.emailotp.disabled.body"), tr.Text("sms.emailotp.disabled"))
+		case factorSMSOTP:
+			err = s.notifyAccount(ctx, userID, tr.Text("mail.smsotp.disabled.subject"),
+				tr.Text("mail.smsotp.disabled.body"), tr.Text("sms.smsotp.disabled"))
+		}
+		if err != nil {
+			s.log.ErrorContext(ctx, "telling the account holder a factor was disabled",
+				"user_id", userID, "factor", factor, "err", err)
+		}
+	}
+}
+
+// The factors a failed code can disable, as named in the audit record.
+const (
+	factorTOTP          = "totp"
+	factorRecoveryCodes = "recovery_codes"
+	factorEmailOTP      = "email_otp"
+	factorSMSOTP        = "sms_otp"
+)
+
+// secondFactorResult is what one presented code did.
+type secondFactorResult struct {
+	AMR []string
+	OK  bool
+	// Disabled names each factor this failure switched off, for the caller to
+	// record and announce once the failure is committed.
+	Disabled []string
+	// Replayed is an authenticator code that was right and has been used
+	// already: refused, and charged to no counter or budget, since it is no
+	// guess. Charged, a person who submitted twice, or anyone replaying a code
+	// they watched being typed, spent the factor toward being disabled.
+	Replayed bool
+}
+
+// verifySecondFactor accepts a TOTP, email, SMS or recovery code.
 //
 // Recovery codes are tried only after TOTP fails, so a recovery code is never
 // consumed by a user who simply mistyped their authenticator code.
-func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) ([]string, bool, error) {
+//
+// A wrong code is charged to each factor it could have been a guess at -- the
+// authenticator when it has the authenticator's shape, the recovery codes when
+// it has theirs -- because §3.2.2 counts failures per authenticator, and a
+// mistyped six-digit code charged to the recovery codes would let ordinary
+// typing errors disable the codes kept for the day the phone is gone. Email and
+// SMS codes count their own attempts per code (store.VerifyEmailOTP).
+//
+// For the desktop sign-in, which sends no code and so names no attempt: an
+// emailed or texted code is another sign-in's, and is not taken here.
+func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code string) (secondFactorResult, error) {
+	return s.verifyCode(ctx, tx, userID, code, true, nil)
+}
+
+// guessedAt reports whether a code nothing accepted was a guess at this authenticator,
+// to be charged to it: one with its shape, which for a Yubico token is an OTP with its
+// public ID. A code of six digits is no guess at a YubiKey, nor an OTP at an app.
+func guessedAt(cred *store.TOTPCredential, code string) bool {
+	if cred.Kind == "yubico" {
+		return mfa.PlausibleYubicoOTP(code, cred.YubicoPublicID)
+	}
+	return mfa.Plausible(code, cred.Digits)
+}
+
+// verifyCode is verifySecondFactor with the email code optional. A recovery
+// leaves it out (5.12): the link already proved the mailbox, so a code sent to
+// a mailbox is no second factor there.
+//
+// attempt is the sign-in the caller is finishing, which an emailed or texted
+// code must have been issued to (store/codeattempt.go); nil where nothing sent
+// one, and then neither is taken.
+func (s *Server) verifyCode(ctx context.Context, tx pgx.Tx, userID, code string, withEmail bool,
+	attempt []byte) (secondFactorResult, error) {
+	var res secondFactorResult
 	cred, err := store.LoadTOTP(ctx, tx, userID, s.cfg.Root)
 	switch {
-	case errors.Is(err, store.ErrTOTPLocked):
-		return nil, false, nil
+	case errors.Is(err, store.ErrTOTPLocked), errors.Is(err, store.ErrTOTPDisabled):
+		// Not tried and not charged. The other factors still are, each with its
+		// own limit -- which is what lets somebody whose authenticator an
+		// attacker paused or disabled sign in with a recovery code.
 	case errors.Is(err, store.ErrNoTOTP):
-		// No authenticator; a recovery code is the only second factor available.
+		// No authenticator; the other factors are what is available.
 	case err != nil:
-		return nil, false, err
+		return res, err
 	default:
-		counter, verr := mfa.Verify(cred.Secret, code, time.Now(), cred.Digits,
-			cred.Period, mfa.DefaultSkew, cred.LastCounter)
+		// The credential's own parameters. A counter-based token is checked
+		// against its next presses; a time-based one against the clock.
+		var counter int64
+		var verr error
+		switch cred.Kind {
+		case "yubico":
+			// A YubiKey's OTP, decrypted under its own key (4.27).
+			key, privateID, kerr := cred.YubicoKey()
+			if kerr != nil {
+				return res, kerr
+			}
+			counter, verr = mfa.VerifyYubicoOTP(key, privateID, cred.YubicoPublicID, code, cred.LastCounter)
+		case "hotp":
+			counter, verr = otpParams(cred).VerifyHOTP(cred.Secret, code, cred.LastCounter, mfa.HOTPLookAhead)
+		default:
+			counter, verr = otpParams(cred).Verify(cred.Secret, code, time.Now(), mfa.DefaultSkew, cred.LastCounter)
+		}
 		if verr == nil {
 			if err := store.RecordTOTPSuccess(ctx, tx, userID, counter); err != nil {
-				return nil, false, err
+				return res, err
 			}
-			return []string{"otp"}, true, nil
+			return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 		}
+		res.Replayed = errors.Is(verr, mfa.ErrReplay)
 	}
 
 	// Email code next. Checked before recovery codes because it is the factor a
 	// user who chose it will actually be holding -- and because a recovery code
 	// is the last resort, not the second guess.
-	if ok, eerr := store.VerifyEmailOTP(ctx, tx, userID, strings.TrimSpace(code)); eerr != nil {
-		return nil, false, eerr
-	} else if ok {
-		return []string{"otp"}, true, nil
+	var emailGuessed bool
+	if withEmail {
+		ok, guessed, eerr := store.VerifyEmailOTP(ctx, tx, userID, attempt, strings.TrimSpace(code))
+		if eerr != nil {
+			return res, eerr
+		} else if ok {
+			return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
+		}
+		emailGuessed = guessed
 	}
 
 	// SMS. The amr value is "sms", NOT "otp".
@@ -321,42 +644,117 @@ func (s *Server) verifySecondFactor(ctx context.Context, tx pgx.Tx, userID, code
 	// from an authenticator app in every record and every policy decision --
 	// documenting the weakness and then erasing it in the one field that
 	// machines read.
-	if ok, serr := store.VerifySMSOTP(ctx, tx, userID, strings.TrimSpace(code)); serr != nil {
-		return nil, false, serr
+	ok, smsGuessed, serr := store.VerifySMSOTP(ctx, tx, userID, attempt, strings.TrimSpace(code), s.smsDelegate())
+	if errors.Is(serr, store.ErrSMSVerifierUnavailable) {
+		// Refused, not charged, and the other factors still tried: an outage of
+		// the service is not the person's guess.
+		s.log.ErrorContext(ctx, "checking an SMS code with the verification service", "err", serr)
+		serr = nil
+	}
+	if serr != nil {
+		return res, serr
 	} else if ok {
-		return []string{oauth.AMRSMS}, true, nil
+		return secondFactorResult{AMR: []string{oauth.AMRSMS}, OK: true}, nil
 	}
 
 	used, err := store.ConsumeRecoveryCode(ctx, tx, userID, code)
 	if err != nil {
-		return nil, false, err
+		return res, err
 	}
 	if used {
 		// `rba` is not right and `otp` would overstate it: a recovery code is a
 		// possession factor the user wrote down. RFC 8176 has no better value,
 		// so `otp` is used and the audit record carries the distinction.
-		return []string{"otp"}, true, nil
+		return secondFactorResult{AMR: []string{"otp"}, OK: true}, nil
 	}
 
-	if cred != nil {
-		if _, err := store.RecordTOTPFailure(ctx, tx, userID); err != nil {
-			return nil, false, err
+	// A replay is refused and charged to nothing (secondFactorResult.Replayed).
+	if res.Replayed {
+		return res, nil
+	}
+
+	// cred is nil when the authenticator was absent, paused or disabled: only
+	// one that was actually tried is charged.
+	if cred != nil && guessedAt(cred, code) {
+		f, err := store.RecordTOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorTOTP)
 		}
 	}
-	return nil, false, nil
+	if store.CouldBeRecoveryCode(code) {
+		f, err := store.RecordRecoveryCodeFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorRecoveryCodes)
+		}
+	}
+	// Email and SMS codes are charged as TOTP is: once nothing took the code,
+	// and only where a live code was guessed at. They had no ceiling across
+	// codes at all -- about 960 guesses a day, indefinitely.
+	if emailGuessed {
+		f, err := store.RecordEmailOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorEmailOTP)
+		}
+	}
+	if smsGuessed {
+		f, err := store.RecordSMSOTPFailure(ctx, tx, userID, s.failureLimit())
+		if err != nil {
+			return res, err
+		}
+		if f.Disabled {
+			res.Disabled = append(res.Disabled, factorSMSOTP)
+		}
+	}
+	return res, nil
 }
 
-func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, msg string) {
+// renderMFA renders the second-factor page for userID, the person the password
+// step proved.
+//
+// The security-key button is offered only to somebody who has a key. That
+// tells the holder of the pending cookie whether the account has one, which
+// starting the ceremony would tell them anyway; they have the password, and
+// offering everybody a button that fails for most is the worse page.
+func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg string) {
+	s.renderMFAWith(w, r, userID, authzQuery, msg, "")
+}
+
+// renderMFAWith is renderMFA with a notice that is not an error: what the
+// number form says after a try (mfasms.go).
+func (s *Server) renderMFAWith(w http.ResponseWriter, r *http.Request, userID, authzQuery, msg, notice string) {
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
-		s.log.Error("minting csrf token", "err", err)
+		s.log.ErrorContext(r.Context(), "minting csrf token", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "sign-in unavailable")
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
-	w.Header().Set("X-Frame-Options", "DENY")
+	hasKey, err := store.HasPasskey(r.Context(), s.db, userID)
+	if err != nil {
+		// The codes still work; only the button is lost.
+		s.log.ErrorContext(r.Context(), "checking for a security key", "err", err)
+	}
+	// The box offering to remember this device, only where the organisation
+	// offers it (rememberdevice.go).
+	rememberDays, err := store.RememberDeviceDaysForUser(r.Context(), s.db, userID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "reading the remembered-device setting", "err", err)
+	}
+	// A number kept only as a hash is typed here to be sent a code.
+	smsForm := false
+	if s.smsAvailable() {
+		if cred, cerr := store.LoadSMSOTP(r.Context(), s.db, userID); cerr == nil {
+			smsForm = cred.Verified && cred.Hashed
+		}
+	}
 
 	ref := ""
 	status := http.StatusOK
@@ -364,10 +762,15 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, m
 		status = http.StatusUnauthorized
 		ref = shortCode(correlationID(r.Context()))
 	}
-	w.WriteHeader(status)
-	s.renderPage(w, r, "mfa", map[string]any{
+	// The policy is renderPage's: it widens script-src and connect-src to
+	// 'self' for /passkey.js and the ceremony when the key is offered, and
+	// keeps script out otherwise. This set its own before, which renderPage
+	// replaced.
+	s.renderPageStatus(w, r, status, "mfa", map[string]any{
 		"Authz": authzQuery, "Error": msg, "CSRF": csrf,
 		"CSRFField": csrfFormField, "Reference": ref,
+		"SecurityKey": hasKey, "PasskeyScript": hasKey, "RememberDays": rememberDays,
+		"SMSNumberForm": smsForm, "Notice": notice,
 	})
 }
 
@@ -380,27 +783,39 @@ func (s *Server) renderMFA(w http.ResponseWriter, r *http.Request, authzQuery, m
 // Only a VERIFIED number is texted. An unverified one is somebody's typo, and
 // sending codes to it would be this engine spamming a stranger every time an
 // account it does not own is signed into.
-func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
-	if s.texter == nil {
+func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string, attempt []byte) {
+	if !s.smsAvailable() {
 		return
 	}
-	verified, err := store.HasVerifiedSMS(ctx, s.db, userID)
+	cred, err := store.LoadSMSOTP(ctx, s.db, userID)
+	if errors.Is(err, store.ErrNoSMSOTP) {
+		return
+	}
 	if err != nil {
-		s.log.Error("checking the SMS factor", "err", err)
+		s.log.ErrorContext(ctx, "checking the SMS factor", "err", err)
 		return
 	}
-	if !verified {
+	// A number kept only as a hash is texted when the person types it on the
+	// code page (handleMFASMSSend), never here.
+	if !cred.Verified || cred.Hashed {
+		return
+	}
+	// An organisation that has moved to keeping hashes: this sign-in is still
+	// texted to the stored number, which is then replaced by its hash.
+	hashed, err := store.SMSNumbersHashed(ctx, s.db, cred.OrgID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading how SMS numbers are kept", "err", err)
 		return
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		s.log.Error("beginning a transaction for the SMS code", "err", err)
+		s.log.ErrorContext(ctx, "beginning a transaction for the SMS code", "err", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	code, number, err := store.IssueSMSOTP(ctx, tx, userID)
+	code, number, err := store.IssueSMSOTP(ctx, tx, userID, attempt, s.smsVerifier != nil)
 	switch {
 	case errors.Is(err, store.ErrNoSMSOTP):
 		return
@@ -408,15 +823,25 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 		// A code was sent moments ago and is still live. The person has it.
 		return
 	case err != nil:
-		s.log.Error("issuing an SMS code", "err", err)
+		s.log.ErrorContext(ctx, "issuing an SMS code", "err", err)
 		return
 	}
+	if hashed {
+		hash, herr := s.smsNumberHash(ctx, tx, userID, number)
+		if herr == nil {
+			herr = store.HashSMSNumber(ctx, tx, userID, hash)
+		}
+		if herr != nil {
+			s.log.ErrorContext(ctx, "replacing an SMS number with its hash", "err", herr)
+			return
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("storing an SMS code", "err", err)
+		s.log.ErrorContext(ctx, "storing an SMS code", "err", err)
 		return
 	}
 
-	if err := s.texter.Send(ctx, sms.Message{
+	if err := s.sendSMS(ctx, userID, smsCode, sms.Message{
 		To: number,
 		// No link, and the issuer named. A code with a link in it trains people
 		// to tap links in texts, which is the delivery mechanism for the attack
@@ -427,6 +852,6 @@ func (s *Server) sendSMSOTPIfEnrolled(ctx context.Context, userID string) {
 	}); err != nil {
 		// Logged with the number redacted. A log line carrying a phone number is
 		// a log line carrying the thing SIM swap targets.
-		s.log.Error("sending the SMS code", "err", err, "to", sms.RedactNumber(number))
+		s.log.ErrorContext(ctx, "sending the SMS code", "err", err, "to", sms.RedactNumber(number))
 	}
 }

@@ -2,8 +2,10 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\AvatarProviders\InitialsAvatarProvider;
 use App\Http\Middleware\NegotiateLocale;
 use App\Http\Middleware\ScopeToOrganisation;
+use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -30,6 +32,22 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            /*
+             * A second factor, required of every operator. The console signed
+             * in with a password alone, and whoever holds that password can
+             * disable clients, end sessions and read every user in the
+             * organisation. An operator without one is sent to set it up before
+             * any other page. Recovery codes so a lost phone is not a call to
+             * whoever can reach the database.
+             *
+             * Enrolment happens at the first sign-in after this, so whoever
+             * holds an unenrolled operator's password then can enrol. Signing
+             * in through Signari itself, with its own factors, is the intended
+             * replacement.
+             */
+            ->multiFactorAuthentication([
+                AppAuthentication::make()->recoverable(),
+            ], isRequired: true)
             ->brandName('Signari')
             /*
              * Laravel's own face, served from this deployment.
@@ -50,6 +68,9 @@ class AdminPanelProvider extends PanelProvider
                 provider: LocalFontProvider::class,
                 preload: [asset('fonts/instrument-sans/instrument-sans-latin-wght-normal.woff2')],
             )
+            // Drawn here, for the same reason: the default sent each operator's
+            // initials to ui-avatars.com on every screen with a user menu.
+            ->defaultAvatarProvider(InitialsAvatarProvider::class)
             /*
              * The engine's accent, so the console and the pages people sign in
              * through are recognisably the same product. An operator moves

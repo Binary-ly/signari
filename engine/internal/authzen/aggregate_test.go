@@ -21,8 +21,8 @@ func mustModel(t *testing.T, doc string) *Model {
 
 const aggregateModel = `
 policies:
-  managed_device:
-    device_managed: true
+  active_account:
+    subject_active: true
   in_hours:
     time:
       days: [mon, tue, wed, thu, fri]
@@ -41,7 +41,7 @@ types:
     require:
       write:
         strategy: %s
-        policies: [managed_device, second_factor]
+        policies: [active_account, second_factor]
 `
 
 func ruleFor(t *testing.T, strategy string) Rule {
@@ -61,8 +61,8 @@ func strings_Replace(doc, strategy string) string {
 // The three strategies, against the same two policies, with the facts varied so
 // each row distinguishes them.
 func TestDecisionStrategies(t *testing.T) {
-	both := Facts{DeviceManaged: true, MFA: true}
-	one := Facts{DeviceManaged: true}
+	both := Facts{Active: true, MFA: true}
+	one := Facts{Active: true}
 	neither := Facts{}
 
 	cases := []struct {
@@ -94,7 +94,7 @@ func TestDecisionStrategies(t *testing.T) {
 func TestConsensusPassesOnARealMajority(t *testing.T) {
 	m := mustModel(t, `
 policies:
-  a: {device_managed: true}
+  a: {subject_active: true}
   b: {mfa: true}
   c: {email_verified: true}
 types:
@@ -108,10 +108,10 @@ types:
 `)
 	r, _ := m.ConditionFor("document", "write")
 
-	if !r.SatisfiedBy(Facts{DeviceManaged: true, MFA: true}) {
+	if !r.SatisfiedBy(Facts{Active: true, MFA: true}) {
 		t.Error("two of three did not reach consensus")
 	}
-	if r.SatisfiedBy(Facts{DeviceManaged: true}) {
+	if r.SatisfiedBy(Facts{Active: true}) {
 		t.Error("one of three reached consensus")
 	}
 }
@@ -124,7 +124,7 @@ types:
 func TestAnInlineRequirementIsNotOutvoted(t *testing.T) {
 	m := mustModel(t, `
 policies:
-  a: {device_managed: true}
+  a: {subject_active: true}
   b: {email_verified: true}
 types:
   document:
@@ -139,11 +139,11 @@ types:
 	r, _ := m.ConditionFor("document", "write")
 
 	// Affirmative is satisfied by policy a, but mfa is written inline.
-	if r.SatisfiedBy(Facts{DeviceManaged: true}) {
+	if r.SatisfiedBy(Facts{Active: true}) {
 		t.Fatal("an affirmative policy satisfied a rule whose inline mfa requirement " +
 			"was not met")
 	}
-	if !r.SatisfiedBy(Facts{DeviceManaged: true, MFA: true}) {
+	if !r.SatisfiedBy(Facts{Active: true, MFA: true}) {
 		t.Fatal("both the inline requirement and a policy were met and it still refused")
 	}
 }
@@ -156,14 +156,14 @@ func TestARuleNamingAnUndefinedPolicyIsRefused(t *testing.T) {
 	var m Model
 	if err := yaml.Unmarshal([]byte(`
 policies:
-  managed_device: {device_managed: true}
+  active_account: {subject_active: true}
 types:
   document:
     relations: {owner: []}
     permissions: {write: [owner]}
     require:
       write:
-        policies: [managed_devcie]
+        policies: [active_acount]
 `), &m); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ types:
 		t.Fatal("a rule naming an undefined policy was accepted; the requirement " +
 			"would silently not apply")
 	}
-	if !strings.Contains(err.Error(), "managed_devcie") {
+	if !strings.Contains(err.Error(), "active_acount") {
 		t.Errorf("the error does not name the typo: %v", err)
 	}
 }
@@ -215,7 +215,7 @@ types:
 // operator nothing about which rule to go and look at.
 func TestTheRefusalNamesTheFailedPolicies(t *testing.T) {
 	r := ruleFor(t, StrategyUnanimous)
-	got := r.Unmet(Facts{DeviceManaged: true})
+	got := r.Unmet(Facts{Active: true})
 	if !strings.Contains(got, "second_factor") {
 		t.Errorf("Unmet = %q; it should name the policy that failed", got)
 	}

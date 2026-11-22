@@ -266,24 +266,3 @@ func GroupNameFrom(displayName string) (string, error) {
 	}
 	return name, nil
 }
-
-func ParseDisplayNameFilter(filter string) (string, error) {
-	filter = strings.TrimSpace(filter)
-	if filter == "" {
-		return "", nil
-	}
-	lower := strings.ToLower(filter)
-	if !strings.HasPrefix(lower, "displayname eq ") {
-		return "", fmt.Errorf("only `displayName eq \"...\"` is supported as a "+
-			"filter on /Groups, got %q. Returning everything for an unrecognised "+
-			"filter would let a caller match the wrong group", filter)
-	}
-	v := strings.TrimSpace(filter[len("displayname eq "):])
-	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-		v = v[1 : len(v)-1]
-	}
-	if v == "" {
-		return "", fmt.Errorf("the filter has no value")
-	}
-	return strings.ReplaceAll(v, `\"`, `"`), nil
-}

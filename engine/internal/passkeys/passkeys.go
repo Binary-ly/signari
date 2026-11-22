@@ -12,13 +12,17 @@
 package passkeys
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/protocol/webauthncose"
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"signari.dev/engine/internal/store"
@@ -36,7 +40,17 @@ type Relying struct {
 // Configuring them independently is how a deployment ends up with an RP ID and
 // an origin list that disagree -- a ceremony that fails in the browser with a
 // message naming neither.
-func New(rpID, displayName string, issuer string) (*Relying, error) {
+//
+// mds, when not nil, is the FIDO metadata catalogue: a certificate-chain
+// attestation for a model it lists is checked against that model's roots, and
+// a model marked revoked or compromised is refused. Nil means no catalogue,
+// and then no attestation can vouch for an AAGUID.
+//
+// related are further origins a credential under rpID may be used from
+// (WebAuthn §5.11, related origin requests), each checked by
+// CheckRelatedOrigin; the browser allows them only when the RP ID's
+// /.well-known/webauthn lists them too.
+func New(rpID, displayName string, issuer string, mds metadata.Provider, related ...string) (*Relying, error) {
 	if rpID == "" {
 		return nil, fmt.Errorf("passkeys: this instance has no rp_id set; passkeys are unavailable until it is")
 	}
@@ -55,10 +69,19 @@ func New(rpID, displayName string, issuer string) (*Relying, error) {
 	}
 
 	origins := originsFor(rpID, issuer)
+	for _, o := range related {
+		if err := CheckRelatedOrigin(o); err != nil {
+			return nil, err
+		}
+		if !contains(origins, o) {
+			origins = append(origins, o)
+		}
+	}
 	w, err := webauthn.New(&webauthn.Config{
 		RPID:          rpID,
 		RPDisplayName: displayName,
 		RPOrigins:     origins,
+		MDS:           mds,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("passkeys: %w", err)
@@ -113,6 +136,30 @@ func originsFor(rpID, issuer string) []string {
 	return origins
 }
 
+// CheckRelatedOrigin refuses what cannot be a related origin: it is a web
+// origin, so a scheme, a host and an optional port, and nothing else; and it is
+// https, since a ceremony over an interceptable connection is what an origin
+// list exists to rule out. http is allowed for localhost alone, as browsers
+// treat it as a secure context.
+func CheckRelatedOrigin(o string) error {
+	u, err := url.Parse(o)
+	switch {
+	case err != nil || u.Host == "":
+		return fmt.Errorf("passkeys: related origin %q is not an origin such as https://example.co.uk", o)
+	case u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("passkeys: related origin %q has a path, query or credentials; "+
+			"an origin is a scheme, a host and a port", o)
+	case u.Scheme != "https" && !(u.Scheme == "http" && u.Hostname() == "localhost"):
+		return fmt.Errorf("passkeys: related origin %q is not https", o)
+	case o != u.Scheme+"://"+strings.ToLower(u.Host):
+		// Lower case, as a browser serialises the origin it compares: one
+		// listed in capitals would never match.
+		return fmt.Errorf("passkeys: related origin %q is not written as one: use %s",
+			o, u.Scheme+"://"+strings.ToLower(u.Host))
+	}
+	return nil
+}
+
 // User adapts a stored user and their credentials to the library's interface.
 //
 // Built per ceremony from the database rather than cached: a credential deleted
@@ -156,11 +203,12 @@ func ToLibrary(stored []store.WebAuthnCredential) []webauthn.Credential {
 			// registration has nothing to compare against; the credential simply
 			// could never be used again.
 			//
-			// UserPresent and UserVerified stay hardcoded, and that is sound
-			// rather than lazy: BeginRegistration requires user verification, so
-			// no credential reaches storage without both, and the library
-			// re-checks the ASSERTED flags on every login regardless of what is
-			// claimed here.
+			// UserPresent and UserVerified stay hardcoded. The library re-checks
+			// the ASSERTED flags on every login whatever is claimed here, refusing
+			// an assertion without verification when the ceremony required it,
+			// and the credential it returns carries this UserVerified forward
+			// unchanged -- which is why a sign-in reads the assertion's own flag
+			// (FinishDiscoverableLogin) and never this one.
 			Flags: webauthn.CredentialFlags{
 				UserPresent:    true,
 				UserVerified:   true,
@@ -176,57 +224,175 @@ func ToLibrary(stored []store.WebAuthnCredential) []webauthn.Credential {
 	return out
 }
 
-// BeginRegistration starts adding an authenticator.
-//
-// Two options that are policy rather than protocol:
-//
-//   - RESIDENT KEYS ARE REQUIRED. A non-discoverable credential cannot satisfy
-//     conditional UI, which means the user must type an identifier before the
-//     browser will offer their passkey -- and that removes most of the reason to
-//     have passkeys at all.
-//   - USER VERIFICATION IS REQUIRED. Without it a passkey proves possession of a
-//     device and nothing else, so it is one factor, not two, and cannot honestly
-//     back an acr of 2.
-//
-// conveyance is the attestation preference, empty for the browser default.
-//
-// A parameter rather than configuration on the Relying party, because it is a
-// per-ORGANISATION decision and one process serves many. Asking every browser
-// for attestation because one tenant needs it would collect device identifiers
-// from everybody else's users.
-func (r *Relying) BeginRegistration(u *User, conveyance string) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+// Ceremony is what an organisation asks of an authenticator (migration 0170):
+// a per-ORGANISATION decision, so a parameter rather than configuration on
+// the Relying party -- one process serves many.
+type Ceremony struct {
+	// Conveyance is the attestation preference, empty or none for the browser
+	// default. Raised only when an organisation asked: attestation identifies
+	// the device model, and some browsers show an extra prompt for it.
+	Conveyance string
+	// UserVerification is required or preferred. Required by default: without
+	// it a passkey proves possession of a device and nothing else, one factor,
+	// and its sign-in is single-factor.
+	UserVerification string
+	// ResidentKey is required, preferred or discouraged. Required by default:
+	// a non-discoverable credential cannot sign in without a username first.
+	// It still serves as a second factor, where the account is known.
+	ResidentKey string
+	// Attachment is empty for any, platform or cross-platform.
+	Attachment string
+	// Algorithms are COSE identifiers in preference order; empty is the
+	// library's own list.
+	Algorithms []int
+	// Timeout is how long the browser waits, and the server holds the
+	// challenge.
+	Timeout time.Duration
+	// Hints are WebAuthn's security-key, client-device and hybrid.
+	Hints []string
+}
+
+// DefaultCeremony is what the code asked before an organisation could choose.
+var DefaultCeremony = Ceremony{UserVerification: "required", ResidentKey: "required",
+	Timeout: 5 * time.Minute}
+
+func (c Ceremony) uv() protocol.UserVerificationRequirement {
+	if c.UserVerification == "preferred" {
+		return protocol.VerificationPreferred
+	}
+	return protocol.VerificationRequired
+}
+
+func (c Ceremony) hints() []protocol.PublicKeyCredentialHints {
+	out := make([]protocol.PublicKeyCredentialHints, 0, len(c.Hints))
+	for _, h := range c.Hints {
+		out = append(out, protocol.PublicKeyCredentialHints(h))
+	}
+	return out
+}
+
+// expire holds the server to the ceremony's own timeout, which the library
+// enforces on the session it finishes against.
+func (c Ceremony) expire(sd *webauthn.SessionData) {
+	if c.Timeout > 0 && sd != nil {
+		sd.Expires = time.Now().Add(c.Timeout)
+	}
+}
+
+// BeginRegistration starts adding an authenticator under c.
+func (r *Relying) BeginRegistration(u *User, c Ceremony) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
+	sel := protocol.AuthenticatorSelection{UserVerification: c.uv()}
+	switch c.ResidentKey {
+	case "preferred":
+		sel.ResidentKey = protocol.ResidentKeyRequirementPreferred
+	case "discouraged":
+		sel.ResidentKey = protocol.ResidentKeyRequirementDiscouraged
+	default:
+		sel.ResidentKey = protocol.ResidentKeyRequirementRequired
+		sel.RequireResidentKey = protocol.ResidentKeyRequired()
+	}
+	switch c.Attachment {
+	case "platform":
+		sel.AuthenticatorAttachment = protocol.Platform
+	case "cross-platform":
+		sel.AuthenticatorAttachment = protocol.CrossPlatform
+	}
 	opts := []webauthn.RegistrationOption{
-		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
-			ResidentKey:      protocol.ResidentKeyRequirementRequired,
-			UserVerification: protocol.VerificationRequired,
-		}),
+		webauthn.WithAuthenticatorSelection(sel),
 		// Excluding what the user already has stops a second registration of the
 		// same authenticator, which would otherwise look like two credentials and
 		// silently satisfy the two-credential rule with one device.
 		webauthn.WithExclusions(descriptors(u.Creds)),
+		// So a credential that may or may not be discoverable says which it is.
+		webauthn.WithExtensions(webauthn.WithExtensionCredProps()),
 	}
-	// Only raised when an organisation asked. `none` is the WebAuthn default and
-	// the privacy-preserving one: attestation identifies the device model, and
-	// some browsers show the user an extra prompt for it.
-	if conveyance != "" && conveyance != "none" {
+	if len(c.Algorithms) > 0 {
+		params := make([]protocol.CredentialParameter, 0, len(c.Algorithms))
+		for _, a := range c.Algorithms {
+			params = append(params, protocol.CredentialParameter{Type: protocol.PublicKeyCredentialType,
+				Algorithm: webauthncose.COSEAlgorithmIdentifier(a)})
+		}
+		opts = append(opts, webauthn.WithCredentialParameters(params))
+	}
+	if len(c.Hints) > 0 {
+		opts = append(opts, webauthn.WithPublicKeyCredentialHints(c.hints()))
+	}
+	if c.Conveyance != "" && c.Conveyance != "none" {
 		opts = append(opts, webauthn.WithConveyancePreference(
-			protocol.ConveyancePreference(conveyance)))
+			protocol.ConveyancePreference(c.Conveyance)))
 	}
-	return r.w.BeginRegistration(u, opts...)
+	creation, sd, err := r.w.BeginRegistration(u, opts...)
+	if err == nil && c.Timeout > 0 {
+		creation.Response.Timeout = int(c.Timeout.Milliseconds())
+		c.expire(sd)
+	}
+	return creation, sd, err
 }
 
-// BeginLogin starts an assertion for a known user.
-func (r *Relying) BeginLogin(u *User) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
-	return r.w.BeginLogin(u, webauthn.WithUserVerification(protocol.VerificationRequired))
+// BeginSecondFactor starts an assertion for a known user, asked for after a
+// password.
+//
+// User verification is preferred, not required. The password is the knowledge
+// factor and the key is asked to prove possession; requiring a PIN or a
+// fingerprint as well would refuse a security key that has no PIN set. A key
+// that does not verify the user is a single-factor cryptographic authenticator
+// under SP 800-63B's syncable-authenticator appendix, which with the password
+// is still two factors. "Preferred" is what that appendix says a verifier SHALL
+// indicate (docs/security-review-nist-800-63b.md, the UV row).
+//
+// verify asks for verification instead, for a sign-in whose first factor was
+// already a key: another touch of a key proves possession a second time, not
+// a second factor.
+func (r *Relying) BeginSecondFactor(u *User, c Ceremony, verify bool) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
+	uv := protocol.VerificationPreferred
+	if verify {
+		uv = protocol.VerificationRequired
+	}
+	opts := []webauthn.LoginOption{webauthn.WithUserVerification(uv)}
+	if len(c.Hints) > 0 {
+		opts = append(opts, webauthn.WithAssertionPublicKeyCredentialHints(c.hints()))
+	}
+	assertion, sd, err := r.w.BeginLogin(u, opts...)
+	if err == nil && c.Timeout > 0 {
+		assertion.Response.Timeout = int(c.Timeout.Milliseconds())
+		c.expire(sd)
+	}
+	return assertion, sd, err
 }
 
-// BeginDiscoverableLogin starts an assertion with no identifier at all.
+// FinishSecondFactor verifies a second-factor assertion. It takes the
+// assertion's JSON rather than a request, because the page posts it as one
+// field of a form: completing a sign-in may redirect to the application or show
+// a prompt, and only a form submission can follow either. verified is this
+// assertion's own flag, as at FinishDiscoverableLogin.
+func (r *Relying) FinishSecondFactor(u *User, sd webauthn.SessionData, assertion []byte) (cred *webauthn.Credential, verified bool, err error) {
+	parsed, err := protocol.ParseCredentialRequestResponseBytes(assertion)
+	if err != nil {
+		return nil, false, err
+	}
+	if cred, err = r.w.ValidateLogin(u, sd, parsed); err != nil {
+		return nil, false, err
+	}
+	return cred, parsed.Response.AuthenticatorData.Flags.UserVerified(), nil
+}
+
+// BeginDiscoverableLogin starts an assertion with no identifier at all, under
+// c's user verification, hints and timeout.
 //
 // This is the flow passkeys exist for: the user clicks "sign in", the browser
 // offers the credential it holds, and nobody types a username. It only works
-// with resident keys, which is why registration requires them.
-func (r *Relying) BeginDiscoverableLogin() (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
-	return r.w.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
+// with resident keys, which is why registration requires them by default.
+func (r *Relying) BeginDiscoverableLogin(c Ceremony) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
+	opts := []webauthn.LoginOption{webauthn.WithUserVerification(c.uv())}
+	if len(c.Hints) > 0 {
+		opts = append(opts, webauthn.WithAssertionPublicKeyCredentialHints(c.hints()))
+	}
+	assertion, sd, err := r.w.BeginDiscoverableLogin(opts...)
+	if err == nil && c.Timeout > 0 {
+		assertion.Response.Timeout = int(c.Timeout.Milliseconds())
+		c.expire(sd)
+	}
+	return assertion, sd, err
 }
 
 func descriptors(creds []webauthn.Credential) []protocol.CredentialDescriptor {
@@ -237,13 +403,29 @@ func descriptors(creds []webauthn.Credential) []protocol.CredentialDescriptor {
 	return out
 }
 
-// FinishRegistration verifies the authenticator's attestation response.
+// FinishRegistration verifies the authenticator's attestation response, and
+// says whether the credential is discoverable: certainly when c required a
+// resident key, otherwise as the client reported it through credProps, and not
+// when it reported nothing.
 //
-// Delegated straight to the library: this is the part where the cryptography and
-// the many structural checks of the WebAuthn spec live, and second-guessing it
-// is how implementations introduce the bugs the library exists to avoid.
-func (r *Relying) FinishRegistration(u *User, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
-	return r.w.FinishRegistration(u, sd, req)
+// The verification is delegated straight to the library: this is the part
+// where the cryptography and the many structural checks of the WebAuthn spec
+// live, and second-guessing it is how implementations introduce the bugs the
+// library exists to avoid.
+func (r *Relying) FinishRegistration(u *User, sd webauthn.SessionData, req *http.Request, c Ceremony) (*webauthn.Credential, bool, error) {
+	parsed, err := protocol.ParseCredentialCreationResponse(req)
+	if err != nil {
+		return nil, false, err
+	}
+	cred, err := r.w.CreateCredential(u, sd, parsed)
+	if err != nil {
+		return nil, false, err
+	}
+	discoverable := c.ResidentKey == "" || c.ResidentKey == "required"
+	if props := parsed.ClientExtensionResults.CredProps; !discoverable && props != nil && props.RK != nil {
+		discoverable = *props.RK
+	}
+	return cred, discoverable, nil
 }
 
 // FinishLogin verifies an assertion for a known user.
@@ -253,9 +435,45 @@ func (r *Relying) FinishLogin(u *User, sd webauthn.SessionData, req *http.Reques
 
 // FinishDiscoverableLogin verifies an assertion where the user was not known in
 // advance; the handler resolves the user from the handle the authenticator
-// returned.
-func (r *Relying) FinishDiscoverableLogin(h webauthn.DiscoverableUserHandler, sd webauthn.SessionData, req *http.Request) (*webauthn.Credential, error) {
-	return r.w.FinishDiscoverableLogin(h, sd, req)
+// returned. verified is whether THIS assertion verified the user: the
+// credential the library returns carries the record's flag, set at
+// registration, so under a preferred policy it would say a sign-in with no PIN
+// or biometric had one.
+func (r *Relying) FinishDiscoverableLogin(h webauthn.DiscoverableUserHandler, sd webauthn.SessionData,
+	req *http.Request) (cred *webauthn.Credential, verified bool, err error) {
+	parsed, err := protocol.ParseCredentialRequestResponse(req)
+	if err != nil {
+		return nil, false, err
+	}
+	cred, err = r.w.ValidateDiscoverableLogin(h, sd, parsed)
+	if err != nil {
+		return nil, false, err
+	}
+	return cred, parsed.Response.AuthenticatorData.Flags.UserVerified(), nil
+}
+
+// Reason renders a ceremony failure for the operator's log.
+//
+// go-webauthn's error prints only its Details, and many of its refusals carry
+// the explanation in the type and debug fields alone, so a refused
+// registration logged as err="" -- nothing to tell a forged attestation from a
+// wrong origin. Logged, never returned: the caller tells the browser only that
+// the response was rejected.
+func Reason(err error) string {
+	var pe *protocol.Error
+	if !errors.As(err, &pe) {
+		return fmt.Sprint(err)
+	}
+	parts := []string{}
+	for _, p := range []string{pe.Type, pe.Details, pe.DevInfo} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if pe.Err != nil {
+		parts = append(parts, pe.Err.Error())
+	}
+	return strings.Join(parts, ": ")
 }
 
 func contains(hay []string, needle string) bool {

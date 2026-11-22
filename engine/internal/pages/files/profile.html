@@ -1,0 +1,28 @@
+{{define "title"}}{{T "profile.title"}}{{end}}
+{{define "content"}}
+<h1>{{T "profile.title"}}</h1>
+{{if .Message}}<p class="note" role="status">{{.Message}}</p>{{end}}
+{{if .Error}}<p class="err" role="alert">{{.Error}}</p>{{end}}
+{{if .Fields}}
+<form method="POST" action="/account/profile">
+<input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
+{{range .Fields}}
+<div class="field">
+<label for="attr-{{.Name}}">{{.Label}}{{if and .Writable .Required}} *{{end}}</label>
+{{if .Writable}}
+{{if eq .Type "boolean"}}<select id="attr-{{.Name}}" name="attr.{{.Name}}"{{if .Required}} required{{end}}>
+<option value="">{{T "prompt.choose"}}</option>
+<option value="true"{{if eq .Value "true"}} selected{{end}}>{{T "profile.yes"}}</option>
+<option value="false"{{if eq .Value "false"}} selected{{end}}>{{T "profile.no"}}</option>
+</select>
+{{else}}<input id="attr-{{.Name}}" name="attr.{{.Name}}" type="{{if eq .Type "number"}}number{{else if eq .Type "date"}}date{{else}}text{{end}}" value="{{.Value}}"{{if .Required}} required{{end}}>{{end}}
+{{else}}<p id="attr-{{.Name}}">{{if .Value}}{{.Value}}{{else}}<span class="muted">{{T "profile.notset"}}</span>{{end}}</p>
+{{end}}
+</div>
+{{end}}
+{{if .Editable}}<button type="submit">{{T "profile.save"}}</button>{{end}}
+</form>
+{{else}}
+<p class="muted">{{T "profile.none"}}</p>
+{{end}}
+{{end}}

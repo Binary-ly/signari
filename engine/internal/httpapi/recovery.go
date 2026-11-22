@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/flow"
+	"signari.dev/engine/internal/oauth"
 	"signari.dev/engine/internal/store"
 )
 
@@ -25,6 +29,46 @@ import (
 // SECOND: EVERY REGISTERED CHANNEL IS NOTIFIED, not just the one used to
 // request. The whole design assumes the requester may be an attacker holding one
 // mailbox; telling only that mailbox would defeat it entirely.
+//
+// THIRD: REQUESTS ARE PACED. Each one writes a row, supersedes the link before
+// it, and sends mail and possibly an SMS, and there was no limit at all. Anyone
+// could fill a person's inbox, run up the SMS bill, and keep the victim's own
+// link from ever working by superseding it every few seconds. A request over
+// the pace does nothing (no row, no supersede, no message) and answers with the
+// same page, so the limit is not an oracle either.
+const (
+	recoveryPerAccountMinute = 1 // and the earlier link stays valid
+	recoveryPerAccountHour   = 5
+	recoveryPerAddressLimit  = 20
+	recoveryPerAddressWindow = time.Hour
+)
+
+// recoveryRequestFallback is the request half's plan when no recovery flow is
+// configured.
+var recoveryRequestFallback = []flow.StageName{flow.StageIdentify, flow.StageEmailOTP,
+	flow.StagePasswordChange, flow.StageDone}
+
+// recoveryOffered reports whether the sign-in page should link to recovery: not
+// when the operator's recovery flow denies it, and not when it needs a stage
+// this engine cannot drive, which would answer 501. Read under the default
+// organisation, as the request itself is (see recoverflow.go).
+func (s *Server) recoveryOffered(ctx context.Context) bool {
+	if s.db == nil {
+		return false // as loginOrg and externalProviders: a server with no store offers nothing
+	}
+	orgID, _ := s.defaultOrg(ctx)
+	plan, unsupported, _ := s.recoveryPlan(ctx, orgID, flow.State{}, recoveryRequestFallback)
+	return unsupported == "" && !recoveryDenied(plan)
+}
+
+// recoveryFacts answers the conditions a recovery flow may branch on:
+// flow.Answered(flow.Recovery), which TestEveryConditionAFlowCanUseIsAnswered
+// holds this to.
+func (s *Server) recoveryFacts(ctx context.Context, remoteAddr string) flow.State {
+	return flow.State{
+		string(flow.CondCaptchaRequired): s.captcha.Required(ctx, remoteAddr),
+	}
+}
 
 // handleRecoverGet shows the "forgot password" form.
 func (s *Server) handleRecoverGet(w http.ResponseWriter, r *http.Request) {
@@ -56,11 +100,7 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	// security requirement and not a shortcut.
 	orgID, _ := s.defaultOrg(ctx)
 	plan, unsupported, flowName := s.recoveryPlan(ctx, orgID,
-		flow.State{
-			string(flow.CondCaptchaRequired): s.captcha.Required(ctx, r.RemoteAddr),
-		},
-		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
-	)
+		s.recoveryFacts(ctx, r.RemoteAddr), recoveryRequestFallback)
 	if unsupported != "" {
 		s.refuseRecoveryStage(w, r, unsupported, flowName)
 		return
@@ -88,12 +128,15 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The work happens regardless of whether the account exists, and the same
-	// page is always returned. See the file comment.
-	if identifier != "" {
+	// page is always returned. See the file comment. The address is paced
+	// before anything is looked up, so a sweep across many addresses costs a
+	// lookup only within its allowance.
+	if identifier != "" && s.allowRecovery(ctx, "recover:ip:"+budgetIP(clientIP(r)),
+		recoveryPerAddressLimit, recoveryPerAddressWindow) {
 		if err := s.beginRecovery(ctx, identifier); err != nil {
 			// Logged, never surfaced: the error text distinguishes "no such user"
 			// from "SMTP is down", and only one of those is the caller's business.
-			s.log.Error("beginning recovery", "err", err, "correlation_id", correlationID(ctx))
+			s.log.ErrorContext(ctx, "beginning recovery", "err", err, "correlation_id", correlationID(ctx))
 		}
 	}
 
@@ -101,15 +144,76 @@ func (s *Server) handleRecoverPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // beginRecovery does the work for an identifier that may not exist.
+//
+// Every account the name holds is sent its own link. Sign-in names are unique
+// per organisation, so one address can hold accounts in several; this used to
+// pick one of them at random, and the person reset whichever account the
+// planner returned. The page answers the same whatever is found, so writing to
+// each discloses nothing the address's owner does not already receive.
 func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
-	userID, orgID, _, ok, err := s.lookupCredential(ctx, identifier)
+	found, err := s.lookupCredentials(ctx, identifier, "")
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return nil // no account; the caller already returned the same page
+	var first error
+	for _, c := range found {
+		if c.status != "active" {
+			// Waiting for approval: a reset could sign nobody in, and the page
+			// answers the same whatever is found.
+			continue
+		}
+		// Paced per account, both windows charged, before the earlier request is
+		// superseded: an account over the pace keeps the link it already has.
+		minute := s.allowRecovery(ctx, "recover:user:min:"+c.userID, recoveryPerAccountMinute, time.Minute)
+		hour := minute && s.allowRecovery(ctx, "recover:user:hour:"+c.userID, recoveryPerAccountHour, time.Hour)
+		if !hour {
+			continue
+		}
+		// Queued, so the page has answered before anything is sent. Mailing in
+		// the request made an account's answer wait on SMTP and a stranger's not,
+		// which told them apart however alike the page was.
+		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			return store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: c.userID, OrgID: c.orgID,
+				Notice: store.NoticeRecovery, CorrelationID: correlationID(ctx)})
+		})
+		if err != nil && first == nil {
+			first = err
+		}
 	}
+	return first
+}
 
+// deliverRecovery starts the reset a NoticeRecovery asks for, and sends its link.
+// Made here and not when asked, so the tokens never sit in the outbox; a delivery
+// tried again starts another, which supersedes the one that was not sent.
+func (s *Server) deliverRecovery(ctx context.Context, n store.AccountNotice) error {
+	var active bool
+	err := s.db.QueryRow(ctx, `SELECT status = 'active' FROM core.users WHERE id = $1::uuid`, n.UserID).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
+		// Gone or deactivated since it was asked for: nothing to send, and
+		// trying again changes nothing.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.beginRecoveryFor(ctx, n.UserID, n.OrgID, n.CorrelationID)
+}
+
+// allowRecovery charges one request to a bucket and reports whether it was
+// within the limit. A database error refuses: nothing is sent, and the person
+// asks again, which is better than an unmetered window opened by a fault.
+func (s *Server) allowRecovery(ctx context.Context, key string, limit int, window time.Duration) bool {
+	res, err := store.AllowRate(ctx, s.db, key, limit, window)
+	if err != nil {
+		s.log.ErrorContext(ctx, "checking the recovery pace", "err", err, "correlation_id", correlationID(ctx))
+		return false
+	}
+	return res.Allowed
+}
+
+// beginRecoveryFor starts recovery for one account.
+func (s *Server) beginRecoveryFor(ctx context.Context, userID, orgID, correlation string) error {
 	token, tokenHash, err := newRecoveryToken()
 	if err != nil {
 		return err
@@ -126,8 +230,9 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// No waiver here: this path is reached by someone who proved only that they
-	// can read an address. A second factor waives the delay elsewhere, after it
-	// has actually been proven.
+	// can read an address. A proven second factor may waive the delay, and no
+	// path proves one before recovery yet (5.12), so this is the only caller and
+	// every reset waits it out.
 	req, err := store.CreateRecoveryRequest(ctx, tx, userID, orgID,
 		tokenHash, cancelHash, "", time.Now())
 	if err != nil {
@@ -135,7 +240,7 @@ func (s *Server) beginRecovery(ctx context.Context, identifier string) error {
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
 		Type: "account.recovery_requested", OrgID: orgID, SubjectID: userID,
-		CorrelationID: correlationID(ctx),
+		CorrelationID: correlation,
 		Detail:        map[string]any{"effective_at": req.EffectiveAt.UTC().Format(time.RFC3339)},
 	}); err != nil {
 		return err
@@ -195,7 +300,7 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 
 	userID, cancelled, err := store.CancelRecovery(ctx, tx, hash)
 	if err != nil {
-		s.log.Error("cancelling recovery", "err", err)
+		s.log.ErrorContext(ctx, "cancelling recovery", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -204,12 +309,14 @@ func (s *Server) handleRecoverCancel(w http.ResponseWriter, r *http.Request) {
 			Type: "account.recovery_cancelled", SubjectID: userID,
 			CorrelationID: correlationID(ctx),
 		}); err != nil {
-			s.log.Error("auditing recovery cancellation", "err", err)
+			s.log.ErrorContext(ctx, "auditing recovery cancellation", "err", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			s.log.Error("committing recovery cancellation", "err", err)
+			s.log.ErrorContext(ctx, "committing recovery cancellation", "err", err)
 		}
 	}
+	// Released before rendering, which takes a connection of its own.
+	_ = tx.Rollback(ctx)
 
 	// The same page either way. A cancel link is clicked from an email, sometimes
 	// twice, sometimes by a scanner that prefetches it; "already cancelled" would
@@ -234,29 +341,180 @@ func (s *Server) handleResetGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
-	req, lerr := store.LookupRecovery(r.Context(), tx, hash, time.Now())
+	req, lerr := s.lookupRecovery(r.Context(), tx, hash)
+	// Released before anything is rendered. Rendering reads the brand from the
+	// pool, and this page is reached with no account, no CSRF token and no
+	// limit: a few dozen requests each holding one connection and waiting for
+	// another stalled every endpoint that needs the database.
+	_ = tx.Rollback(r.Context())
 	csrf, cerr := s.csrfToken(w, r)
 	if cerr != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 
+	if lerr != nil && !errors.Is(lerr, store.ErrRecoveryPending) {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	plan, unsupported, flowName := s.recoveryResetPlan(r.Context(), req.OrgID)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	s.renderReset(w, r, req, token, csrf, errors.Is(lerr, store.ErrRecoveryPending), plan, "", "")
+}
+
+// recoveryResetFallback is the reset half's plan when no recovery flow is
+// configured.
+var recoveryResetFallback = []flow.StageName{flow.StageIdentify, flow.StageEmailOTP,
+	flow.StagePasswordChange, flow.StageDone}
+
+// recoveryResetPlan is the reset half's plan, under the organisation of the
+// account the link names.
+func (s *Server) recoveryResetPlan(ctx context.Context, orgID string) ([]flow.StageName, flow.StageName, string) {
+	return s.recoveryPlan(ctx, orgID, flow.State{string(flow.CondCaptchaRequired): false}, recoveryResetFallback)
+}
+
+// renderReset shows what the link leads to now (5.12): the wait, with a second
+// factor offered to skip it; a second factor the flow's mfa stage requires; or
+// the new-password form.
+//
+// A second factor is offered only to whoever holds the link, which already
+// proved the mailbox, so saying the account has one tells them nothing the
+// account's own sign-in page would not. Email is never one of them: it is what
+// the link came by.
+func (s *Server) renderReset(w http.ResponseWriter, r *http.Request, req *store.RecoveryRequest,
+	token, csrf string, pending bool, plan []flow.StageName, msg, notice string) {
+	ctx := r.Context()
+	factors, err := store.RecoveryFactorsOf(ctx, s.db, req.UserID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "reading the recovering person's second factors", "err", err)
+	}
+	data := map[string]any{"Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Error": msg, "Notice": notice, "SMS": factors.SMS}
+	needFactor := planHasStage(plan, flow.StageMFA) && req.WaivedBy == ""
 	switch {
-	case errors.Is(lerr, store.ErrRecoveryPending):
+	case pending:
 		// Told exactly when, because "try again later" with no time is advice
 		// nobody can act on.
-		s.renderPage(w, r, "reset", map[string]any{
-			"Pending": true,
-			"When":    req.EffectiveAt.UTC().Format("15:04 MST on 2 January"),
-			"Wait":    time.Until(req.EffectiveAt).Round(time.Minute).String(),
-		})
-	case lerr != nil:
-		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		data["Pending"] = true
+		data["When"] = req.EffectiveAt.UTC().Format("15:04 MST on 2 January")
+		data["Wait"] = time.Until(req.EffectiveAt).Round(time.Minute).String()
+		data["Factor"] = factors.Any()
+	case needFactor && !factors.Any():
+		data["Error"] = s.tr(r).T("error.reset.nofactor")
+	case needFactor:
+		data["Factor"], data["FactorRequired"] = true, true
 	default:
-		s.renderPage(w, r, "reset", map[string]any{
-			"Ready": true, "Token": token, "CSRF": csrf, "CSRFField": csrfFormField,
-		})
+		data["Ready"] = true
 	}
+	s.renderPage(w, r, "reset", data)
+}
+
+// handleResetFactor takes a second factor from whoever holds the link (5.12):
+// a waiver of the delay, and the proof an mfa stage before the reset needs.
+// The second-factor budget applies, keyed by the account, as at sign-in: the
+// link holder is the one guessing.
+func (s *Server) handleResetFactor(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "malformed form", http.StatusBadRequest)
+		return
+	}
+	if !checkCSRF(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	token := r.PostForm.Get("token")
+	_, hash, err := hashRecoveryToken(token)
+	if err != nil {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.invalid")})
+		return
+	}
+	rtx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	req, lerr := s.lookupRecovery(ctx, rtx, hash)
+	_ = rtx.Rollback(ctx)
+	if lerr != nil && !errors.Is(lerr, store.ErrRecoveryPending) {
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	pending := errors.Is(lerr, store.ErrRecoveryPending)
+	plan, unsupported, flowName := s.recoveryResetPlan(ctx, req.OrgID)
+	if unsupported != "" {
+		s.refuseRecoveryStage(w, r, unsupported, flowName)
+		return
+	}
+	csrf, cerr := s.csrfToken(w, r)
+	if cerr != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	// The link is this recovery's attempt: a code texted for it finishes it
+	// alone, and one texted for a sign-in does not (store/codeattempt.go).
+	if r.PostForm.Get("send") == "sms" {
+		s.sendSMSOTPIfEnrolled(ctx, req.UserID, hash)
+		s.renderReset(w, r, req, token, csrf, pending, plan, "", s.tr(r).Text("reset.factor.smssent"))
+		return
+	}
+
+	ip := clientIP(r)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if !s.allowSecondFactorAttempt(ctx, w, req.UserID, ip) {
+		return
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := s.verifyCode(ctx, tx, req.UserID, strings.TrimSpace(r.PostForm.Get("code")), false, hash)
+	switch {
+	case err != nil:
+		_ = tx.Rollback(ctx)
+		s.log.ErrorContext(ctx, "verifying a second factor during recovery", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	case res.Replayed:
+		_ = tx.Rollback(ctx)
+		s.renderReset(w, r, req, token, csrf, pending, plan, s.tr(r).Text("error.reset.factor.replayed"), "")
+		return
+	case !res.OK:
+		// Committed, as at sign-in: the failure counters must outlive the refusal.
+		if err := tx.Commit(ctx); err != nil {
+			s.log.ErrorContext(ctx, "committing a failed second factor during recovery", "err", err)
+		}
+		s.recordSecondFactorFailure(ctx, req.UserID, ip)
+		s.factorsDisabled(ctx, req.OrgID, req.UserID, res.Disabled)
+		s.renderReset(w, r, req, token, csrf, pending, plan, s.tr(r).Text("error.reset.factor"), "")
+		return
+	}
+	factor := strings.Join(res.AMR, ",")
+	if err := store.WaiveRecoveryDelay(ctx, tx, req.ID, factor); err != nil {
+		_ = tx.Rollback(ctx)
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+		return
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "account.recovery_factor_proven", OrgID: req.OrgID, SubjectID: req.UserID,
+		CorrelationID: correlationID(ctx), Detail: map[string]any{"factor": factor, "was_pending": pending},
+	}); err != nil {
+		s.log.ErrorContext(ctx, "auditing a second factor proven during recovery", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	http.Redirect(w, r, "/recover/reset?token="+url.QueryEscape(token), http.StatusSeeOther)
 }
 
 // handleResetPost sets the new password.
@@ -279,14 +537,19 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := s.db.Begin(ctx)
+	// The token is read in a transaction of its own and released at once. What
+	// follows renders, reads the flow and the password history, and hashes, and
+	// none of it may hold a connection while it takes another: this page is
+	// reached by anybody holding a link. The write at the end is its own short
+	// transaction, and ConsumeRecovery re-checks the token there, so a link
+	// spent or cancelled in between is still refused.
+	rtx, err := s.db.Begin(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	req, err := store.LookupRecovery(ctx, tx, hash, time.Now())
+	req, err := s.lookupRecovery(ctx, rtx, hash)
+	_ = rtx.Rollback(ctx)
 	if err != nil {
 		// Pending and invalid are shown the same way here. By the time a form is
 		// being submitted, the difference only matters to someone probing.
@@ -302,10 +565,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// Checked BEFORE the password is validated or anything is written. A flow
 	// naming a stage this engine cannot run must refuse the journey with the
 	// account untouched, not after the credential has been replaced.
-	plan, unsupported, flowName := s.recoveryPlan(ctx, req.OrgID,
-		flow.State{string(flow.CondCaptchaRequired): false},
-		[]flow.StageName{flow.StageIdentify, flow.StageEmailOTP, flow.StagePasswordChange, flow.StageDone},
-	)
+	plan, unsupported, flowName := s.recoveryResetPlan(ctx, req.OrgID)
 	if unsupported != "" {
 		s.refuseRecoveryStage(w, r, unsupported, flowName)
 		return
@@ -320,10 +580,21 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		// permits it -- nothing is handed out, so there is nothing to prove -- but
 		// consuming the token and rendering success would tell somebody their
 		// password was reset when it was not.
-		s.log.Error("the recovery flow has no password_change stage", "flow", flowName,
+		s.log.ErrorContext(ctx, "the recovery flow has no password_change stage", "flow", flowName,
 			"correlation_id", correlationID(ctx))
 		writeError(w, http.StatusInternalServerError, "server_error",
 			"account recovery is misconfigured: the recovery flow changes no credential")
+		return
+	}
+	csrf, cerr := s.csrfToken(w, r)
+	if cerr != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	// The flow's mfa stage, before the reset (5.12): a second factor proven on
+	// the link's page, or nothing is changed.
+	if planHasStage(plan, flow.StageMFA) && req.WaivedBy == "" {
+		s.renderReset(w, r, req, r.PostForm.Get("token"), csrf, false, plan, s.tr(r).Text("error.reset.factorfirst"), "")
 		return
 	}
 
@@ -335,38 +606,58 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 	// the token is validated rather than before. That is the right way round: a
 	// message about password length must not tell somebody holding a stale link
 	// that it was otherwise valid.
-	previous, perr := store.RecentPasswordHashes(ctx, tx, req.UserID, s.pwPolicy.HistoryDepth)
+	previous, perr := store.RecentPasswordHashes(ctx, s.db, req.UserID, s.pwPolicy.HistoryDepth)
 	if perr != nil {
-		s.log.Error("reading password history", "err", perr)
+		s.log.ErrorContext(ctx, "reading password history", "err", perr)
 	}
-	identity, _ := store.EmailForUser(ctx, tx, req.UserID)
+	identity, _ := store.EmailForUser(ctx, s.db, req.UserID)
 	if res, cerr := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); cerr != nil {
+		// With the CSRF token: the form was re-rendered without one, so the
+		// second password a person tried after a refused first could never be
+		// submitted.
 		s.renderPage(w, r, "reset", map[string]any{
-			"Ready": true, "Token": r.PostForm.Get("token"), "Error": cerr.Error(),
+			"Ready": true, "Token": r.PostForm.Get("token"), "Error": s.passwordRefusalText(r, cerr),
+			"CSRF": csrf, "CSRFField": csrfFormField,
 		})
 		return
 	} else if s.pwPolicy.Breach != nil && !res.BreachCheckRan {
-		s.log.Warn("the breach check did not run for a password reset",
+		s.log.WarnContext(ctx, "the breach check did not run for a password reset",
 			"correlation_id", correlationID(ctx))
 	}
+
+	newHash, err := s.hasher.Hash(ctx, password)
+	if err != nil {
+		s.log.ErrorContext(ctx, "hashing the new password", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// The outgoing hash is recorded BEFORE it is replaced. Doing it afterwards
 	// would file the new password as a previous one and refuse it next time.
 	if s.pwPolicy.HistoryDepth > 0 {
 		if err := store.RetirePassword(ctx, tx, req.UserID, req.OrgID); err != nil {
-			s.log.Error("recording the retired password", "err", err)
+			s.log.ErrorContext(ctx, "recording the retired password", "err", err)
 		}
 	}
-
-	newHash, err := s.hasher.Hash(ctx, password)
-	if err != nil {
-		s.log.Error("hashing the new password", "err", err)
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
+		_ = tx.Rollback(ctx)
+		s.log.ErrorContext(ctx, "consuming recovery", "err", err)
+		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
 		return
 	}
-	if err := store.ConsumeRecovery(ctx, tx, req.ID, req.UserID, newHash); err != nil {
-		s.log.Error("consuming recovery", "err", err)
-		s.renderPage(w, r, "reset", map[string]any{"Error": s.tr(r).T("error.reset.expired")})
+	// The link came to the address, so reaching here proves it: it is verified
+	// and an outstanding confirmation ends (0177), which is the way back for one
+	// past its ceiling of wrong codes.
+	if err := store.AddressProvedByRecovery(ctx, tx, req.ID, req.UserID); err != nil {
+		s.log.ErrorContext(ctx, "recording the address the reset proved", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
 	if err := audit.Write(ctx, tx, audit.Event{
@@ -374,7 +665,7 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"waived_by": req.WaivedBy},
 	}); err != nil {
-		s.log.Error("auditing password reset", "err", err)
+		s.log.ErrorContext(ctx, "auditing password reset", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -391,6 +682,35 @@ func (s *Server) handleResetPost(w http.ResponseWriter, r *http.Request) {
 		trChanged.Text("mail.password.changed.subject"),
 		trChanged.Text("mail.password.changed.body"),
 		trChanged.Text("sms.password.changed"))
+
+	// Ending signed in, where the flow says `session` (5.12). After the reset
+	// has committed and in a transaction of its own, because completeSignIn
+	// abandons its transaction when a prompt is owed, and the new password
+	// must not go with it. It is the organisation's sign-in from here, so a
+	// sign-in flow that wants more -- a second factor not proven here -- asks.
+	// The person now knows the password they just chose, which is what amr says;
+	// a factor proven on the way adds itself, and two make it multi-factor.
+	if planHasStage(plan, flow.StageSession) {
+		amr := []string{"pwd"}
+		if req.WaivedBy != "" {
+			amr = append(append(amr, strings.Split(req.WaivedBy, ",")...), oauth.AMRMFA)
+		}
+		stx, err := s.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		defer func() { _ = stx.Rollback(ctx) }()
+		s.completeSignIn(w, r, stx, req.UserID, req.OrgID, amr, "")
+		return
+	}
+	// Or to the operator's page (5.24), where the flow ends in a redirect.
+	if planHasStage(plan, flow.StageRedirect) {
+		if target := s.flowFor(ctx, s.db, req.OrgID, flow.Recovery).RedirectTarget(); target != "" {
+			http.Redirect(w, r, target, http.StatusSeeOther)
+			return
+		}
+	}
 	s.renderPage(w, r, "done", map[string]any{})
 }
 

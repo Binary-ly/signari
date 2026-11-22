@@ -3,6 +3,7 @@ package saml
 import (
 	"crypto/x509"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/beevik/etree"
@@ -74,28 +75,53 @@ func VerifyEmbeddedSignature(raw []byte, certPEM, wantTag, wantID string) error 
 // element cannot be reading a different subtree from the one that was verified,
 // which is signature wrapping stated as a type signature rather than as a rule
 // somebody has to remember.
+//
+// others are signatures elsewhere in the document that the caller verifies in their
+// own right: only the assertion's own, when a response is signed at both levels. Any
+// signature that is neither the target's nor one of those still refuses the document.
 func verifySignedElement(doc *etree.Document, target *etree.Element, certPEM,
-	wantTag, wantID string) (*etree.Element, error) {
+	wantTag, wantID string, others ...*etree.Element) (*etree.Element, error) {
 
-	if err := checkSignaturePlacement(doc, target, wantID); err != nil {
+	if err := checkSignaturePlacement(doc, target, wantID, others...); err != nil {
 		return nil, err
 	}
 
-	cert, err := parseCertPEM(certPEM)
+	certs, err := ParseCertificates(certPEM)
 	if err != nil {
 		return nil, err
 	}
-	store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
-	ctx := dsig.NewDefaultValidationContext(&store)
-	// Stated rather than left to the default, because the whole placement check
-	// above is written in terms of the ID attribute: if these two ever disagree,
-	// the structure verified and the structure checked are different things.
-	ctx.IdAttribute = "ID"
-
-	validated, err := ctx.Validate(target)
+	// Placement has established exactly one Signature, a direct child.
+	sig := target.SelectElement("Signature")
+	var validated *etree.Element
+	// More than one during a rotation, and either may be the one in use. A
+	// certificate that fails leaves the document as it found it: the ECDSA step
+	// rewrites the signature value for the certificate it is given.
+	value := sig.SelectElement("SignatureValue")
+	var written string
+	if value != nil {
+		written = value.Text()
+	}
+	for _, cert := range certs {
+		if value != nil {
+			value.SetText(written)
+		}
+		if err = ecdsaValueToDER(sig, cert); err != nil {
+			continue
+		}
+		store := dsig.MemoryX509CertificateStore{Roots: []*x509.Certificate{cert}}
+		ctx := dsig.NewDefaultValidationContext(&store)
+		// Stated rather than left to the default, because the whole placement check
+		// above is written in terms of the ID attribute: if these two ever disagree,
+		// the structure verified and the structure checked are different things.
+		ctx.IdAttribute = "ID"
+		if validated, err = ctx.Validate(target); err == nil {
+			break
+		}
+		err = fmt.Errorf("the %s signature did not verify against the certificate "+
+			"registered for it: %w", wantTag, err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("the %s signature did not verify against the "+
-			"certificate registered for this service provider: %w", wantTag, err)
+		return nil, err
 	}
 
 	// The element goxmldsig returns is the one it actually verified. Confirming it
@@ -121,7 +147,8 @@ func verifySignedElement(doc *etree.Document, target *etree.Element, certPEM,
 // arriving on its own -- but for an inbound Response the signed element is the
 // Assertion nested inside it, so the rules are written in terms of "the signed
 // element" rather than "the root".
-func checkSignaturePlacement(doc *etree.Document, root *etree.Element, wantID string) error {
+func checkSignaturePlacement(doc *etree.Document, root *etree.Element, wantID string,
+	others ...*etree.Element) error {
 	// The ID we are told to expect must actually be this element's ID. An element
 	// carrying no ID cannot be referred to by a signature at all, and goxmldsig
 	// would then happily accept a Reference URI of "".
@@ -151,8 +178,14 @@ func checkSignaturePlacement(doc *etree.Document, root *etree.Element, wantID st
 	}
 
 	// Exactly one Signature element in the WHOLE document, matched on local name
-	// so a different namespace prefix cannot hide one.
-	sigs := doc.FindElements("//Signature")
+	// so a different namespace prefix cannot hide one, besides those the caller
+	// names as verified in their own right (a response signed at both levels).
+	var sigs []*etree.Element
+	for _, s := range doc.FindElements("//Signature") {
+		if !slices.Contains(others, s) {
+			sigs = append(sigs, s)
+		}
+	}
 	switch {
 	case len(sigs) == 0:
 		// Named after the element actually received. A LogoutRequest refused with a

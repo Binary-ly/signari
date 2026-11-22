@@ -1,0 +1,234 @@
+{
+  "title": "Signari",
+  "uid": "signari-engine",
+  "description": "The Signari engine: traffic, sign-in, extension providers, delivery, maintenance, capacity and the Go runtime. Every series here is one the engine exports.",
+  "tags": ["signari", "identity"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Traffic", "collapsed": false, "panels": [], "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "type": "timeseries", "title": "Responses by status class", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (rate(signari_http_requests_total[5m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Server error ratio", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(signari_http_requests_total{status=\"5xx\"}[5m])) / sum(rate(signari_http_requests_total[5m]))", "legendFormat": "5xx" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Slowest routes, p99", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(5, histogram_quantile(0.99, sum by (le, route) (rate(signari_http_request_duration_seconds_bucket[5m]))))", "legendFormat": "{{route}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Token endpoint latency", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(signari_http_request_duration_seconds_bucket{route=\"/oauth2/token\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(signari_http_request_duration_seconds_bucket{route=\"/oauth2/token\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+
+    { "type": "row", "title": "Sign-in and tokens", "collapsed": false, "panels": [], "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 } },
+    {
+      "type": "timeseries", "title": "Sign-ins by outcome", "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(signari_signins_total[5m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Failed authentications by mechanism", "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (mechanism) (rate(signari_auth_failures_total[5m]))", "legendFormat": "{{mechanism}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Tokens issued by grant", "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (grant) (rate(signari_tokens_issued_total[5m]))", "legendFormat": "{{grant}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Extension provider calls", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (hook, outcome) (rate(signari_provider_calls_total[5m]))", "legendFormat": "{{hook}} {{outcome}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Text messages by outcome", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(signari_sms_total[15m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+
+    { "type": "row", "title": "Delivery and maintenance", "collapsed": false, "panels": [], "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 } },
+    {
+      "type": "timeseries", "title": "Outbox", "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_outbox_pending)", "legendFormat": "being retried" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_outbox_parked)", "legendFormat": "parked" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Oldest notice still being retried", "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_outbox_oldest_pending_seconds)", "legendFormat": "oldest" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Audit stream lag", "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_audit_stream_lag_events)", "legendFormat": "events behind" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Since the last janitor pass", "gridPos": { "h": 8, "w": 6, "x": 0, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 900 } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "time() - max(signari_janitor_last_pass_timestamp_seconds)", "legendFormat": "since last pass" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Rows retention deleted, per hour", "gridPos": { "h": 8, "w": 10, "x": 6, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (table) (increase(signari_janitor_rows_deleted_total[1h]))", "legendFormat": "{{table}}" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Active signing key age", "gridPos": { "h": 8, "w": 4, "x": 16, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 8640000 } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_signing_key_active_age_seconds)", "legendFormat": "age" }
+      ]
+    },
+    {
+      "type": "stat", "title": "Failed key refreshes in a row", "gridPos": { "h": 8, "w": 4, "x": 20, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max(signari_key_refresh_failures)", "legendFormat": "worst node" }
+      ]
+    },
+
+    { "type": "row", "title": "Capacity", "collapsed": false, "panels": [], "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 } },
+    {
+      "type": "timeseries", "title": "Database pools in use", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "signari_db_pool_connections_acquired / signari_db_pool_connections_max", "legendFormat": "requests {{instance}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "signari_db_worker_pool_connections_acquired / signari_db_worker_pool_connections_max", "legendFormat": "workers {{instance}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Password hasher in use", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "signari_password_hashes_in_flight / signari_password_hash_slots", "legendFormat": "{{instance}}" }
+      ]
+    },
+
+    { "type": "row", "title": "Runtime and releases", "collapsed": false, "panels": [], "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 } },
+    {
+      "type": "timeseries", "title": "Memory", "gridPos": { "h": 8, "w": 8, "x": 0, "y": 61 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "go_memory_total_bytes", "legendFormat": "mapped {{instance}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "go_heap_objects_bytes", "legendFormat": "heap {{instance}}" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Goroutines and collections", "gridPos": { "h": 8, "w": 8, "x": 8, "y": 61 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "go_goroutines", "legendFormat": "goroutines {{instance}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(go_gc_cycles_total[5m])", "legendFormat": "collections/s {{instance}}" }
+      ]
+    },
+    {
+      "type": "table", "title": "Releases serving", "gridPos": { "h": 8, "w": 8, "x": 16, "y": 61 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "count by (version, schema, go_version) (signari_build_info)", "format": "table", "instant": true }
+      ]
+    }
+  ]
+}

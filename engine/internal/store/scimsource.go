@@ -2,13 +2,21 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/scim"
 )
 
@@ -42,6 +50,15 @@ type SCIMUser struct {
 	Active      bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Kept is set by a delete that deactivated the person instead, because
+	// they may act as other users.
+	Kept bool
+	// Enterprise is what the extension shows of them, by user attribute, read
+	// by SCIMEnterpriseValues.
+	Enterprise map[string]string
+	// Written names the attributes a write of the extension changed, and
+	// NotStored what it gave that this organisation declares no attribute for.
+	Written, NotStored []string
 }
 
 // SCIMConflictError reports a uniqueness violation, so the handler can answer
@@ -53,14 +70,162 @@ type SCIMConflictError struct{ Detail string }
 
 func (e *SCIMConflictError) Error() string { return e.Detail }
 
-// FindSCIMSourceByToken resolves a bearer token hash to its source.
+// SCIMForbiddenError is a change a provisioning source's credential may not
+// make, answered 403 (RFC 7644 §3.12: "Operation is not permitted based on the
+// supplied authorization").
+type SCIMForbiddenError struct{ Detail string }
+
+func (e *SCIMForbiddenError) Error() string { return e.Detail }
+
+// refuseIfPrivileged refuses an upstream's adoption or rewrite of a person who
+// may act as other users (PrivilegedUser, the one definition).
+//
+// A source adopted an existing local account by email, administrators
+// included, and could then point its address somewhere the upstream controls:
+// a password reset away from an account that may impersonate anybody. An
+// upstream is trusted to describe the people it manages, not the people who
+// administer this one.
+func refuseIfPrivileged(ctx context.Context, tx pgx.Tx, userID, what string) error {
+	_, privileged, _, err := PrivilegedUser(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if privileged {
+		return &SCIMForbiddenError{Detail: "this person may act as other users, so " +
+			"provisioning may not " + what + " them; an administrator of this " +
+			"deployment can"}
+	}
+	return nil
+}
+
+// ErrSCIMSourceUnknown means no source in that organisation has that slug.
+var ErrSCIMSourceUnknown = fmt.Errorf("no SCIM source with that slug in that organisation")
+
+// SetSCIMSourceEnabled takes an inbound provisioning source out of service, or
+// puts it back, audited, in one transaction. Disabled, its bearer token is
+// refused at once (FindSCIMSourceByToken reads the flag per request); its links
+// and settings are kept, so enabling restores exactly what was there.
+//
+// The flag was read from the start and nothing could set it: a source whose
+// upstream system was compromised kept creating and changing accounts until
+// somebody edited the database.
+func SetSCIMSourceEnabled(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, orgID, slug string, enabled bool) error {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := SetSCIMSourceEnabledIn(ctx, tx, orgID, slug, enabled); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "admin.scim_source_updated", OrgID: orgID,
+		Detail: map[string]any{"source": slug, "enabled": enabled, "via": "cli"},
+	}); err != nil {
+		return fmt.Errorf("auditing the change: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// SetSCIMSourceEnabledIn is SetSCIMSourceEnabled in the caller's
+// transaction, which writes its own record: the Admin API's names the token.
+func SetSCIMSourceEnabledIn(ctx context.Context, q Execer, orgID, slug string, enabled bool) error {
+	tag, err := q.Exec(ctx, `
+		UPDATE core.scim_sources SET enabled = $3
+		 WHERE org_id = $1::uuid AND slug = $2`, orgID, slug, enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSCIMSourceUnknown
+	}
+	return nil
+}
+
+// ErrSCIMSourceExists is a slug the organisation already gave a source.
+var ErrSCIMSourceExists = errors.New("a SCIM source with that slug already exists in that organisation")
+
+// ErrSCIMSourceOnDelete is a deprovisioning policy that is neither.
+var ErrSCIMSourceOnDelete = errors.New("on delete is deactivate or delete")
+
+// AddSCIMSource registers an upstream that may provision people into the
+// organisation, and returns its bearer token, the one time it exists in the
+// clear: 32 random bytes, stored only as a hash. It can create and deactivate
+// every user in the organisation, so it is generated rather than chosen.
+// onDelete is deactivate (the default), which keeps a person's history, or
+// delete, which destroys it.
+func AddSCIMSource(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, slug, name, onDelete string) (id, token string, err error) {
+	switch onDelete {
+	case "", "deactivate":
+		onDelete = "deactivate"
+	case "delete":
+	default:
+		return "", "", ErrSCIMSourceOnDelete
+	}
+	if name == "" {
+		name = slug
+	}
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return "", "", err
+	}
+	token = base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+	if err := q.QueryRow(ctx, `
+		INSERT INTO core.scim_sources (org_id, slug, display_name, token_hash, on_delete)
+		VALUES ($1::uuid, $2, $3, $4, $5)
+		RETURNING id::text`, orgID, slug, name, sum[:], onDelete).Scan(&id); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return "", "", ErrSCIMSourceExists
+		}
+		return "", "", err
+	}
+	return id, token, nil
+}
+
+// SCIMSourceRow is one inbound source, without its token.
+type SCIMSourceRow struct {
+	ID, Slug, Name, OnDelete string
+	Enabled                  bool
+	LastSeenAt               *time.Time
+	Linked                   int
+}
+
+// SCIMSources lists an organisation's inbound sources by slug, with when
+// each last called and how many people it provisioned.
+func SCIMSources(ctx context.Context, q Querier, orgID string) ([]SCIMSourceRow, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.slug, s.display_name, s.on_delete, s.enabled, s.last_seen_at,
+		       (SELECT count(*) FROM core.scim_source_links l WHERE l.source_id = s.id)
+		  FROM core.scim_sources s WHERE s.org_id = $1::uuid ORDER BY s.slug`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SCIMSourceRow
+	for rows.Next() {
+		var s SCIMSourceRow
+		if err := rows.Scan(&s.ID, &s.Slug, &s.Name, &s.OnDelete, &s.Enabled, &s.LastSeenAt, &s.Linked); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// FindSCIMSourceByToken resolves a bearer token hash to its source, of an
+// organisation in service: a suspended one is provisioned into by nobody.
 func FindSCIMSourceByToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (
 	*SCIMSource, error) {
 
 	s := &SCIMSource{}
 	err := db.QueryRow(ctx, `
 		UPDATE core.scim_sources SET last_seen_at = now()
-		WHERE token_hash = $1 AND enabled
+		WHERE token_hash = $1 AND enabled AND `+OrgInService("org_id")+`
 		RETURNING id::text, org_id::text, slug, display_name, token_hash, on_delete`,
 		hash).Scan(&s.ID, &s.OrgID, &s.Slug, &s.DisplayName, &s.TokenHash, &s.OnDelete)
 	if err != nil {
@@ -74,7 +239,7 @@ func FindSCIMSourceByToken(ctx context.Context, db *pgxpool.Pool, hash []byte) (
 // startIndex is ONE-based, as SCIM requires. The offset conversion happens here,
 // once, rather than in each caller -- an off-by-one in this arithmetic drops the
 // first user of every page and looks like an intermittent sync failure.
-func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilter string,
+func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID string, filter *scim.Filter,
 	startIndex, count int) ([]SCIMUser, int, error) {
 
 	if startIndex < 1 {
@@ -82,12 +247,19 @@ func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilt
 	}
 	offset := startIndex - 1
 
+	cond, err := scimFilterSQL(filter, scimUserAttrs, scimUserSchema, 2)
+	if err != nil {
+		return nil, 0, err
+	}
+	matching := `core.scim_source_links l`
+	if cond.person {
+		matching += ` JOIN core.users u ON u.id = l.user_id`
+	}
+	matching += ` WHERE l.source_id = $1::uuid AND ` + cond.where
+	args := append([]any{sourceID}, cond.args...)
+
 	var total int
-	if err := db.QueryRow(ctx, `
-		SELECT count(*) FROM core.scim_source_links l
-		WHERE l.source_id = $1::uuid
-		  AND ($2 = '' OR lower(l.user_name) = lower($2))`,
-		sourceID, userNameFilter).Scan(&total); err != nil {
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM `+matching, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -98,16 +270,20 @@ func ListSCIMUsers(ctx context.Context, db *pgxpool.Pool, sourceID, userNameFilt
 		return nil, total, nil
 	}
 
+	// The offset is walked in the index and only the page reaches the join, as
+	// in ListSCIMGroups.
 	rows, err := db.Query(ctx, `
+		WITH page AS (
+			SELECT l.external_id FROM `+matching+`
+			ORDER BY l.created_at, l.external_id
+			LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2)+`)
 		SELECT l.resource_id::text, l.external_id, l.user_id::text, l.user_name,
 		       l.display_name, COALESCE(u.email,''),
 		       u.status = 'active', l.created_at, l.updated_at
-		FROM core.scim_source_links l
+		FROM page
+		JOIN core.scim_source_links l ON l.source_id = $1::uuid AND l.external_id = page.external_id
 		JOIN core.users u ON u.id = l.user_id
-		WHERE l.source_id = $1::uuid
-		  AND ($2 = '' OR lower(l.user_name) = lower($2))
-		ORDER BY l.created_at, l.external_id
-		LIMIT $3 OFFSET $4`, sourceID, userNameFilter, count, offset)
+		ORDER BY l.created_at, l.external_id`, append(args, count, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -130,6 +306,9 @@ func GetSCIMUser(ctx context.Context, db *pgxpool.Pool, sourceID, resourceID str
 	SCIMUser, error) {
 
 	var u SCIMUser
+	if !ExactUUID(resourceID) {
+		return u, pgx.ErrNoRows
+	}
 	err := db.QueryRow(ctx, `
 		SELECT l.resource_id::text, l.external_id, l.user_id::text, l.user_name,
 		       l.display_name, COALESCE(u.email,''),
@@ -149,9 +328,13 @@ func GetSCIMUser(ctx context.Context, db *pgxpool.Pool, sourceID, resourceID str
 // the SAME person arriving twice, not a second person: upstreams retry, and a
 // create that is not idempotent turns one retry into two accounts.
 func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	in scim.User) (SCIMUser, error) {
+	in scim.User, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
+	enterprise, err := in.EnterpriseValues(false)
+	if err != nil {
+		return out, fmt.Errorf("%w: %w", ErrSCIMValue, err)
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -178,10 +361,7 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			src.ID, in.ExternalID, in.UserName, display); err != nil {
 			return out, err
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return out, err
-		}
-		return GetSCIMUser(ctx, db, src.ID, existing.ResourceID)
+		return commitSCIMEnterprise(ctx, tx, db, src, existing.UserID, existing.ResourceID, enterprise, root)
 	} else if err != pgx.ErrNoRows {
 		return out, err
 	}
@@ -192,7 +372,7 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	var userID string
 	if email != "" {
 		err = tx.QueryRow(ctx, `
-			SELECT id::text FROM core.users WHERE org_id = $1::uuid AND lower(email) = lower($2)`,
+			SELECT id::text FROM core.users WHERE org_id = $1::uuid AND email_fold = lower($2)`,
 			src.OrgID, email).Scan(&userID)
 		if err != nil && err != pgx.ErrNoRows {
 			return out, err
@@ -221,8 +401,13 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			}
 			return out, err
 		}
-	} else if err := applyUserFields(ctx, tx, userID, nil, boolPtr(in.Active)); err != nil {
-		return out, err
+	} else {
+		if err := refuseIfPrivileged(ctx, tx, userID, "adopt"); err != nil {
+			return out, err
+		}
+		if err := applyUserFields(ctx, tx, userID, nil, boolPtr(in.Active)); err != nil {
+			return out, err
+		}
 	}
 
 	var resourceID string
@@ -239,18 +424,35 @@ func UpsertSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		}
 		return out, err
 	}
+	return commitSCIMEnterprise(ctx, tx, db, src, userID, resourceID, enterprise, root)
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
+// commitSCIMEnterprise is the last of a write: the extension, the commit, and
+// the person as they now stand.
+func commitSCIMEnterprise(ctx context.Context, tx pgx.Tx, db *pgxpool.Pool, src *SCIMSource,
+	userID, resourceID string, values map[string]*string, root *keys.RootKey) (SCIMUser, error) {
+
+	written, notStored, err := applySCIMEnterprise(ctx, tx, src.OrgID, userID, values, root)
+	if err != nil {
+		return SCIMUser{}, err
 	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	if err := tx.Commit(ctx); err != nil {
+		return SCIMUser{}, err
+	}
+	out, err := GetSCIMUser(ctx, db, src.ID, resourceID)
+	out.Written, out.NotStored = written, notStored
+	return out, err
 }
 
 // ReplaceSCIMUser applies a PUT: every attribute takes the value given.
 func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	resourceID string, in scim.User) (SCIMUser, error) {
+	resourceID string, in scim.User, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
+	enterprise, err := in.EnterpriseValues(true)
+	if err != nil {
+		return out, fmt.Errorf("%w: %w", ErrSCIMValue, err)
+	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return out, err
@@ -278,10 +480,7 @@ func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 		src.ID, resourceID, in.UserName, display); err != nil {
 		return out, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
-	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	return commitSCIMEnterprise(ctx, tx, db, src, link.UserID, resourceID, enterprise, root)
 }
 
 // PatchSCIMUser applies the subset of changes a PATCH asked for.
@@ -289,7 +488,7 @@ func ReplaceSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 // Only what was mentioned. The pointers in UserPatch carry that distinction,
 // and losing it here would let a PATCH of the display name clear the address.
 func PatchSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
-	resourceID string, p *scim.UserPatch) (SCIMUser, error) {
+	resourceID string, p *scim.UserPatch, root *keys.RootKey) (SCIMUser, error) {
 
 	var out SCIMUser
 	tx, err := db.Begin(ctx)
@@ -319,23 +518,7 @@ func PatchSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 			return out, err
 		}
 	}
-
-	// Deactivation ends sessions. A SCIM deactivation that leaves a live session
-	// running means the person who was just deprovisioned stays signed in until
-	// their session expires, which is the whole point of deprovisioning.
-	if p.Active != nil && !*p.Active {
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.sessions SET revoked_at = now(),
-			        revocation_reason = 'user_deactivated'
-			 WHERE user_id = $1::uuid AND revoked_at IS NULL`, link.UserID); err != nil {
-			return out, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return out, err
-	}
-	return GetSCIMUser(ctx, db, src.ID, resourceID)
+	return commitSCIMEnterprise(ctx, tx, db, src, link.UserID, resourceID, p.Enterprise, root)
 }
 
 // DeleteSCIMUser handles a DELETE according to the source's policy.
@@ -356,20 +539,29 @@ func DeleteSCIMUser(ctx context.Context, db *pgxpool.Pool, src *SCIMSource,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if src.OnDelete == "delete" {
+	// A person who may act as others is deactivated, never deleted, whatever
+	// the source's policy. The upstream's intent -- they no longer get in -- is
+	// met, sessions included; removing an administrator's account outright is
+	// left to an administrator here. Refusing instead would leave a departed
+	// administrator signed in, which is the worse failure.
+	_, privileged, _, err := PrivilegedUser(ctx, tx, u.UserID)
+	if err != nil {
+		return out, err
+	}
+	if src.OnDelete == "delete" && !privileged {
+		// Terminated first: the DELETE cascades the sessions away, and with
+		// them the list of applications to tell.
+		if _, err := TerminateSessions(ctx, tx, "", u.UserID, ReasonUserDeleted); err != nil {
+			return out, err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM core.users WHERE id = $1::uuid`,
 			u.UserID); err != nil {
 			return out, err
 		}
 	} else {
+		u.Kept = src.OnDelete == "delete"
 		f := false
 		if err := applyUserFields(ctx, tx, u.UserID, nil, &f); err != nil {
-			return out, err
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.sessions SET revoked_at = now(),
-			        revocation_reason = 'user_deactivated'
-			 WHERE user_id = $1::uuid AND revoked_at IS NULL`, u.UserID); err != nil {
 			return out, err
 		}
 	}
@@ -385,6 +577,19 @@ func applyUserFields(ctx context.Context, tx pgx.Tx, userID string,
 	email *string, active *bool) error {
 
 	if email != nil && *email != "" {
+		// Only a change of address is refused for a privileged person; the
+		// same address resent on every PUT is not a rewrite.
+		var unchanged bool
+		if err := tx.QueryRow(ctx,
+			`SELECT lower(COALESCE(email,'')) = lower($2) FROM core.users WHERE id = $1::uuid`,
+			userID, *email).Scan(&unchanged); err != nil {
+			return err
+		}
+		if !unchanged {
+			if err := refuseIfPrivileged(ctx, tx, userID, "change the address of"); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE core.users SET email = $2 WHERE id = $1::uuid`,
 			userID, *email); err != nil {
@@ -400,6 +605,17 @@ func applyUserFields(ctx context.Context, tx pgx.Tx, userID string,
 			`UPDATE core.users SET status = $2 WHERE id = $1::uuid`,
 			userID, status); err != nil {
 			return err
+		}
+		// Deactivation ends sessions, whichever request carried it: a PUT or
+		// a POST resent with active:false ended nothing, and the person the
+		// directory had just removed kept passing forward auth until their
+		// proxy cookie expired. Through TerminateSessions, so every
+		// application they reached is told; a session that was already ended
+		// is not told twice.
+		if !*active {
+			if _, err := TerminateSessions(ctx, tx, "", userID, ReasonUserDeactivated); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -427,6 +643,9 @@ func scimLinkByResourceID(ctx context.Context, tx pgx.Tx, sourceID, resourceID s
 	scimLink, error) {
 
 	var l scimLink
+	if !ExactUUID(resourceID) {
+		return l, pgx.ErrNoRows
+	}
 	err := tx.QueryRow(ctx, `
 		SELECT resource_id::text, external_id, user_id::text
 		FROM core.scim_source_links

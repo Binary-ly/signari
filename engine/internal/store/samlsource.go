@@ -36,6 +36,8 @@ type SAMLSource struct {
 	// the email-verification rules.
 	Policy   federation.Policy
 	Provider *saml.InboundProvider
+	// SLOURL is where a sign-out here goes on to, empty for nowhere.
+	SLOURL string
 }
 
 // LoadSAMLSource reads one enabled source by slug.
@@ -50,7 +52,8 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 		       p.allow_signup, p.allow_linking, p.require_verified_email,
 		       p.trust_email_verification,
 		       x.entity_id, x.sso_url, x.cert_pem, x.name_id_format,
-		       x.force_authn, x.allow_unsolicited, x.skew_seconds
+		       x.force_authn, x.allow_unsolicited, x.skew_seconds, x.sign_requests, x.require_encryption,
+		       COALESCE(p.end_session_url, '')
 		FROM core.identity_providers p
 		JOIN core.saml_sources x ON x.provider_id = p.id
 		WHERE p.slug = $1 AND p.kind = 'saml' AND p.enabled`, slug).
@@ -59,7 +62,8 @@ func LoadSAMLSource(ctx context.Context, db *pgxpool.Pool, slug, acsBase string)
 			&s.Policy.RequireVerifiedEmail, &s.Policy.TrustsEmailVerification,
 			&s.Provider.EntityID, &s.Provider.SSOURL, &s.Provider.CertPEM,
 			&s.Provider.NameIDFormat, &s.Provider.ForceAuthn,
-			&s.Provider.AllowUnsolicited, &s.Provider.SkewSeconds)
+			&s.Provider.AllowUnsolicited, &s.Provider.SkewSeconds, &s.Provider.SignRequests,
+			&s.Provider.RequireEncryption, &s.SLOURL)
 	if err != nil {
 		return nil, err
 	}
@@ -145,10 +149,11 @@ func RecordSAMLAssertion(ctx context.Context, db *pgxpool.Pool, providerID,
 // Both tables are bounded by the assertion lifetime, so this is housekeeping
 // rather than a security control -- but a table that only grows is how a
 // deployment discovers its disk on a Sunday.
-func PurgeSAMLSourceState(ctx context.Context, tx pgx.Tx) (int64, error) {
+func PurgeSAMLSourceState(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
 	var total int64
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.saml_source_requests WHERE expires_at < now() - interval '1 hour'`)
+	tag, err := tx.Exec(ctx, `DELETE FROM core.saml_source_requests WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.saml_source_requests WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -159,8 +164,9 @@ func PurgeSAMLSourceState(ctx context.Context, tx pgx.Tx) (int64, error) {
 	// between its own expiry check and this delete -- the check would refuse it
 	// anyway, but the two rules would then disagree about which one is load
 	// bearing, and only one of them is written down in the audit trail.
-	tag, err = tx.Exec(ctx,
-		`DELETE FROM core.saml_source_assertions WHERE expires_at < now() - interval '1 hour'`)
+	tag, err = tx.Exec(ctx, `DELETE FROM core.saml_source_assertions WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.saml_source_assertions WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return total, err
 	}

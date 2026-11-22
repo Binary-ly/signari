@@ -50,7 +50,7 @@ func TestAnAbsurdArgon2CostIsRefusedWithoutDoingTheWork(t *testing.T) {
 				tc.params, "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g")
 
 			start := time.Now()
-			_, err := verifyArgon2id(stored, "whatever")
+			_, err := verifyArgon2id(stored, "whatever", nil)
 			elapsed := time.Since(start)
 
 			if err == nil {
@@ -101,7 +101,7 @@ func TestOrdinaryImportedHashesAreStillAccepted(t *testing.T) {
 	} {
 		stored := fmt.Sprintf("$argon2id$v=19$%s$c29tZXNhbHR2YWx1ZTE2$%s",
 			params, "aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g")
-		_, err := verifyArgon2id(stored, "whatever")
+		_, err := verifyArgon2id(stored, "whatever", nil)
 		// The password is wrong, so ErrMismatch is expected — what must NOT happen
 		// is a refusal at the parse stage, which would mean the ceiling caught a
 		// legitimate hash. Both paths return ErrMismatch, so distinguish by timing:

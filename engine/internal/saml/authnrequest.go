@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -56,13 +57,41 @@ type Provider struct {
 	SPSigningCert           string
 	// SPKeyTransport names the RSA key transport algorithm for encryption.
 	SPKeyTransport string
+	// WSFedSAMLVersion is the SAML its WS-Federation token is in, WSFedSAML2 or
+	// WSFedSAML11.
+	WSFedSAMLVersion string
+	// EndpointOrg is the slug of the organisation whose endpoints it answers at,
+	// empty for the deployment's. See EntityID.
+	EndpointOrg string
+	// SignatureAlg is what this provider is signed with: SignatureAlgRSASHA256
+	// or SignatureAlgECDSASHA256.
+	SignatureAlg string
+	// NameIDAttribute is where the NameID comes from, when not from the format.
+	NameIDAttribute string
 
 	// SPEncryptionCert is the SEPARATE certificate the assertion is encrypted
 	// to. Empty means no encryption; TLS is the transport either way.
 	SPEncryptionCert string
 	LifetimeSeconds  int
 	Enabled          bool
+
+	// IdPInitiated lets a sign-in to this provider start here, with no request
+	// from it, and DefaultRelayState is what goes with that response.
+	IdPInitiated      bool
+	DefaultRelayState string
+
+	// InstanceID is the instance its organisation belongs to. The rest say whether
+	// an assertion for it has anything more to ask, read with the provider: most
+	// have none of them, and each was a statement on every assertion.
+	InstanceID         string
+	HasAccessPolicy    bool
+	HasAssertionHook   bool
+	ReleasesGroups     bool
+	ReleasesAttributes bool
 }
+
+// MaxRelayState is the value SAML itself specifies: 80 bytes.
+const MaxRelayState = 80
 
 type ACSURL struct {
 	URL       string
@@ -90,6 +119,51 @@ type Validated struct {
 	ForceAuthn   bool
 	IsPassive    bool
 	RequestedACR []string
+	// ACRComparison is the request's Comparison, empty when it gave none.
+	ACRComparison string
+	// WSFed is a token for a WS-Federation answer, which carries the assertion alone.
+	WSFed bool
+}
+
+// classRungs places the classes this directory can speak to on the acr ladder (see
+// oauth.Assurance): what a password reaches, and what a second factor does.
+var classRungs = map[string]int{
+	AuthnContextUnspecified:                           1,
+	AuthnContextPassword:                              1,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:Password": 1,
+	AuthnContextMFA:                                   2,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract": 2,
+	"urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken":           2,
+	"http://schemas.microsoft.com/claims/multipleauthn":              2,
+}
+
+// RequestedRung is the rung a session must reach to answer a RequestedAuthnContext,
+// 0 for no demand, and whether one can be reached at all. Any class in the list will
+// do, so the lowest recognised one decides; none recognised is a demand this directory
+// cannot meet and must not pretend to.
+//
+// exact and minimum are both a floor. An assertion states what was done, and a stronger
+// sign-in refused for being stronger helps nobody. better is the rung above, which past
+// a second factor no class here can name. maximum forces nothing.
+func RequestedRung(classes []string, comparison string) (rung int, reachable bool) {
+	if len(classes) == 0 {
+		return 0, true
+	}
+	for _, c := range classes {
+		if r, ok := classRungs[c]; ok && (rung == 0 || r < rung) {
+			rung = r
+		}
+	}
+	switch {
+	case rung == 0:
+		return 0, false
+	case comparison == "maximum":
+		return 0, true
+	case comparison == "better":
+		rung++
+		return rung, rung <= 2
+	}
+	return rung, true
 }
 
 // clockSkew is what we tolerate on IssueInstant in either direction. Real
@@ -180,7 +254,39 @@ func ValidateAuthnRequest(r *AuthnRequest, p *Provider, destination string, now 
 		ForceAuthn:   r.ForceAuthn == "true" || r.ForceAuthn == "1",
 		IsPassive:    r.IsPassive == "true" || r.IsPassive == "1",
 		RequestedACR: r.RequestedAuthnContext.ClassRefs,
+
+		ACRComparison: r.RequestedAuthnContext.Comparison,
 	}, nil
+}
+
+// ErrNotIdPInitiated is a provider that has not opted in to a sign-in starting here.
+var ErrNotIdPInitiated = errors.New("this application takes no sign-in started here")
+
+// Unsolicited is the validated shape of a sign-in nobody asked for: what the provider
+// is registered with, there being no request to read anything from. So the response
+// goes to its default URL and references no request, which is what makes it unsolicited
+// to the provider, and which is why it opts in.
+func Unsolicited(p *Provider, now time.Time) (*Validated, error) {
+	if !p.Enabled {
+		return nil, fmt.Errorf("service provider %q is disabled", p.EntityID)
+	}
+	if !p.IdPInitiated {
+		return nil, ErrNotIdPInitiated
+	}
+	acs, binding, err := resolveACS(&AuthnRequest{}, p)
+	if err != nil {
+		return nil, err
+	}
+	return &Validated{Issuer: p.EntityID, IssueInstant: now, ACSURL: acs, Binding: binding,
+		NameIDFormat: p.NameIDFormat}, nil
+}
+
+// acsBindings are the bindings a response is delivered by, as an ACS URL's
+// row names them.
+var acsBindings = map[string]string{
+	BindingPOST:     "HTTP-POST",
+	BindingArtifact: "HTTP-Artifact",
+	BindingPAOS:     "PAOS",
 }
 
 // resolveACS decides where the assertion may be delivered.
@@ -195,13 +301,40 @@ func resolveACS(r *AuthnRequest, p *Provider) (string, string, error) {
 			"AssertionConsumerService URL", p.EntityID)
 	}
 
+	// ProtocolBinding is "a SAML protocol binding to be used when returning the
+	// <Response> message" (saml-core-2.0-os lines 2068-2070). Each URL is
+	// registered for one, so a request naming another is refused rather than
+	// answered by a binding it did not ask for, and a request naming one and no
+	// URL is sent to a URL registered for it.
+	wanted := ""
+	if r.ProtocolBinding != "" {
+		var ok bool
+		if wanted, ok = acsBindings[r.ProtocolBinding]; !ok {
+			return "", "", fmt.Errorf("the AuthnRequest asks for its response by %q, which is not "+
+				"HTTP-POST, HTTP-Artifact or PAOS", r.ProtocolBinding)
+		}
+	}
+
 	if r.AssertionConsumerServiceURL == "" {
-		for _, a := range p.ACSURLs {
+		candidates := p.ACSURLs
+		if wanted != "" {
+			candidates = nil
+			for _, a := range p.ACSURLs {
+				if a.Binding == wanted {
+					candidates = append(candidates, a)
+				}
+			}
+			if len(candidates) == 0 {
+				return "", "", fmt.Errorf("the AuthnRequest asks for its response by %s and %q has "+
+					"no AssertionConsumerService URL registered for it", wanted, p.EntityID)
+			}
+		}
+		for _, a := range candidates {
 			if a.IsDefault {
 				return a.URL, a.Binding, nil
 			}
 		}
-		return p.ACSURLs[0].URL, p.ACSURLs[0].Binding, nil
+		return candidates[0].URL, candidates[0].Binding, nil
 	}
 
 	for _, a := range p.ACSURLs {
@@ -210,6 +343,10 @@ func resolveACS(r *AuthnRequest, p *Provider) (string, string, error) {
 		// slashes and percent-encoding, and every one of those disagreements is a
 		// way to satisfy the check with a URL that resolves elsewhere.
 		if a.URL == r.AssertionConsumerServiceURL {
+			if wanted != "" && a.Binding != wanted {
+				return "", "", fmt.Errorf("the AuthnRequest asks for its response at %q by %s, and "+
+					"that URL is registered for %s", a.URL, wanted, a.Binding)
+			}
 			return a.URL, a.Binding, nil
 		}
 	}

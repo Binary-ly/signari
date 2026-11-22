@@ -35,7 +35,7 @@ func (s *Server) parseAuthorizationDetails(ctx context.Context, c *clients.Clien
 
 	reg, rerr := store.AuthorizationDetailTypes(ctx, s.db, c.OrgID, c.ClientID)
 	if rerr != nil {
-		s.log.Error("loading authorization detail types", "err", rerr)
+		s.log.ErrorContext(ctx, "loading authorization detail types", "err", rerr)
 		return nil, &oauth.AuthzError{
 			Code: "server_error", Description: "unavailable",
 			Disposition: oauth.DispositionRedirect,
@@ -57,6 +57,9 @@ func (s *Server) parseAuthorizationDetails(ctx context.Context, c *clients.Clien
 			Code: rar.ErrorCode, Description: verr.Error(),
 			Disposition: oauth.DispositionRedirect,
 		}
+	}
+	if cerr := s.credentialDetailsRefused(ctx, c, details); cerr != nil {
+		return nil, cerr
 	}
 	return details, nil
 }

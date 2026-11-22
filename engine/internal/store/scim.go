@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -11,17 +10,41 @@ import (
 	"signari.dev/engine/internal/scim"
 )
 
-// LoadSCIMTargets returns the provisioning targets, secrets unsealed.
-func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, only string) ([]scim.Target, error) {
+// LoadSCIMTargets returns the provisioning targets, secrets unsealed: every
+// enabled one, or only those of orgID, or only the one named by slug.
+//
+// A slug is unique within an organisation, not across them, so asking for one
+// by slug alone used to return every tenant's target of that name, and a sync
+// of "slack" provisioned all of them. Without orgID a slug must now name one
+// organisation's target, or the call refuses.
+//
+// A target that takes the authorization code grant is handed what keeps its
+// refresh token, which needs conn to begin a transaction of its own: a pool or a
+// connection outside one does, and anything else leaves the target unable to ask
+// for a token, said when it tries.
+func LoadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string) ([]scim.Target, error) {
+	return loadSCIMTargets(ctx, conn, root, orgID, only, true)
+}
+
+// beginner is a connection that can begin a transaction.
+type beginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+func loadSCIMTargets(ctx context.Context, conn Querier, root *keys.RootKey, orgID, only string,
+	enabledOnly bool) ([]scim.Target, error) {
 	rows, err := conn.Query(ctx, `
-		SELECT id::text, org_id::text, slug, display_name, base_url, token,
-		       dry_run, on_deactivate, kind,
-		       COALESCE(credentials_enc, ''::bytea),
-		       COALESCE(impersonate, ''), COALESCE(target_domain, ''),
-		       COALESCE(scope_group_id::text, '')
-		FROM core.scim_targets
-		WHERE enabled AND ($1 = '' OR slug = $1)
-		ORDER BY slug`, only)
+		SELECT t.id::text, t.org_id::text, t.slug, t.display_name, t.base_url, t.token,
+		       t.dry_run, t.on_deactivate, t.kind,
+		       COALESCE(t.credentials_enc, ''::bytea),
+		       COALESCE(t.impersonate, ''), COALESCE(t.target_domain, ''),
+		       ARRAY(SELECT s.group_id::text FROM core.scim_target_scope_groups s WHERE s.target_id = t.id),
+		       t.recreate_missing,
+		       COALESCE(t.oauth_token_url, ''), COALESCE(t.oauth_client_id, ''), COALESCE(t.oauth_scope, ''),
+		       t.compatibility, t.oauth_client_auth, COALESCE(t.oauth_authorize_url, '')
+		FROM core.scim_targets t
+		WHERE (t.enabled OR NOT $3) AND ($1 = '' OR t.slug = $1) AND ($2 = '' OR t.org_id = $2::uuid)
+		ORDER BY t.slug`, only, orgID, enabledOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -34,8 +57,13 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		var sealedCreds []byte
 		if err := rows.Scan(&t.ID, &t.OrgID, &t.Slug, &t.DisplayName, &t.BaseURL,
 			&sealed, &t.DryRun, &t.OnDeactivate, &t.Kind,
-			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupID); err != nil {
+			&sealedCreds, &t.Impersonate, &t.TargetDomain, &t.ScopeGroupIDs, &t.RecreateMissing,
+			&t.OAuthTokenURL, &t.OAuthClientID, &t.OAuthScope, &t.Compatibility, &t.OAuthClientAuth,
+			&t.OAuthAuthorizeURL); err != nil {
 			return nil, err
+		}
+		if b, ok := conn.(beginner); ok && t.OAuthAuthorizeURL != "" {
+			t.Refresh = scimRefresh{db: b, root: root, targetID: t.ID}
 		}
 		// A SCIM target's secret is a bearer token; a native one's is a service
 		// account or a client secret. Both are sealed, and only the one this
@@ -55,7 +83,14 @@ func LoadSCIMTargets(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, on
 		}
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if only != "" && orgID == "" && len(out) > 1 {
+		return nil, fmt.Errorf("%q names a SCIM target in more than one organisation; "+
+			"give -org to say which", only)
+	}
+	return out, nil
 }
 
 // SCIMDesiredUser is what a target SHOULD hold for one of our users.
@@ -82,22 +117,28 @@ type SCIMDesiredUser struct {
 //
 // Reconciling from desired state has no such hole. Whatever went wrong last
 // time, the next pass sees the same disagreement and fixes it.
-func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) ([]SCIMDesiredUser, error) {
+func SCIMDesiredState(ctx context.Context, conn Querier, target scim.Target) ([]SCIMDesiredUser, error) {
+	scope := target.ScopeGroupIDs
+	if scope == nil {
+		scope = []string{}
+	}
 	rows, err := conn.Query(ctx, `
 		SELECT u.id::text,
 		       COALESCE(NULLIF(u.username,''), u.email, u.id::text),
 		       COALESCE(u.email,''),
 		       -- Active AT THIS TARGET, which is not the same as active here.
 		       --
-		       -- Somebody who leaves the scope group is still an active user of
+		       -- Somebody who leaves the scope's groups is still an active user of
 		       -- this deployment and must become INACTIVE at the target, so the
 		       -- reconciliation deactivates their remote account. Reporting the
 		       -- account's own status instead would leave a live account for
 		       -- somebody who lost access — the precise failure that
 		       -- reconciling from desired state is supposed to make impossible.
-		       u.status = 'active' AND ($3 = '' OR EXISTS (
-		           SELECT 1 FROM core.group_members gm
-		           WHERE gm.user_id = u.id AND gm.group_id = $3::uuid)),
+		       --
+		       -- In a scope group or a group inside one (11.09).
+		       u.status = 'active' AND (cardinality($3::uuid[]) = 0 OR EXISTS (
+		           SELECT 1 FROM core.groups_of(u.id) gm
+		           WHERE gm.group_id = ANY($3::uuid[]))),
 		       COALESCE(l.remote_id,''),
 		       l.last_synced_at IS NOT NULL
 		FROM core.users u
@@ -117,10 +158,10 @@ func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) (
 		  -- entirely would leave a live account for somebody who lost access,
 		  -- which is the exact failure reconciling-from-desired-state exists to
 		  -- prevent.
-		  AND ($3 = '' OR l.remote_id IS NOT NULL OR EXISTS (
-		        SELECT 1 FROM core.group_members gm
-		        WHERE gm.user_id = u.id AND gm.group_id = $3::uuid))
-		ORDER BY u.created_at`, target.ID, target.OrgID, target.ScopeGroupID)
+		  AND (cardinality($3::uuid[]) = 0 OR l.remote_id IS NOT NULL OR EXISTS (
+		        SELECT 1 FROM core.groups_of(u.id) gm
+		        WHERE gm.group_id = ANY($3::uuid[])))
+		ORDER BY u.created_at`, target.ID, target.OrgID, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +181,7 @@ func SCIMDesiredState(ctx context.Context, conn *pgx.Conn, target scim.Target) (
 }
 
 // RecordSCIMLink stores the id a target assigned to one of our users.
-func RecordSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID, orgID, remoteID string, active bool) error {
+func RecordSCIMLink(ctx context.Context, conn Execer, targetID, userID, orgID, remoteID string, active bool) error {
 	_, err := conn.Exec(ctx, `
 		INSERT INTO core.scim_links
 			(target_id, user_id, org_id, remote_id, should_be_active, last_synced_at)
@@ -159,7 +200,7 @@ func RecordSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID, orgID
 // last_synced_at is deliberately not touched. The intent and the confirmation
 // are separate facts, and collapsing them is what makes a failed deprovision
 // look like a completed one.
-func MarkSCIMIntent(ctx context.Context, conn *pgx.Conn, targetID, userID string, active bool) error {
+func MarkSCIMIntent(ctx context.Context, conn Execer, targetID, userID string, active bool) error {
 	_, err := conn.Exec(ctx, `
 		UPDATE core.scim_links SET should_be_active = $3
 		WHERE target_id = $1::uuid AND user_id = $2::uuid`, targetID, userID, active)
@@ -167,7 +208,7 @@ func MarkSCIMIntent(ctx context.Context, conn *pgx.Conn, targetID, userID string
 }
 
 // ConfirmSCIMSync records that the target now agrees.
-func ConfirmSCIMSync(ctx context.Context, conn *pgx.Conn, targetID, userID string) error {
+func ConfirmSCIMSync(ctx context.Context, conn Execer, targetID, userID string) error {
 	_, err := conn.Exec(ctx, `
 		UPDATE core.scim_links SET last_synced_at = now()
 		WHERE target_id = $1::uuid AND user_id = $2::uuid`, targetID, userID)
@@ -175,28 +216,9 @@ func ConfirmSCIMSync(ctx context.Context, conn *pgx.Conn, targetID, userID strin
 }
 
 // DropSCIMLink forgets a remote account, used after a delete.
-func DropSCIMLink(ctx context.Context, conn *pgx.Conn, targetID, userID string) error {
+func DropSCIMLink(ctx context.Context, conn Execer, targetID, userID string) error {
 	_, err := conn.Exec(ctx, `
 		DELETE FROM core.scim_links WHERE target_id = $1::uuid AND user_id = $2::uuid`,
 		targetID, userID)
-	return err
-}
-
-// AddSCIMTarget registers a provisioning target.
-func AddSCIMTarget(ctx context.Context, conn *pgx.Conn, root *keys.RootKey,
-	orgID, slug, name, baseURL, token, onDeactivate string, dryRun bool) error {
-
-	sealed, err := root.Seal([]byte(token), "scim_token")
-	if err != nil {
-		return fmt.Errorf("sealing the target token: %w", err)
-	}
-	_, err = conn.Exec(ctx, `
-		INSERT INTO core.scim_targets
-			(org_id, slug, display_name, base_url, token, on_deactivate, dry_run)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)`,
-		orgID, slug, name, baseURL, sealed, onDeactivate, dryRun)
-	if err != nil && errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
 	return err
 }

@@ -65,6 +65,31 @@ mid-append cannot wedge the log. The key is a constant because the chain is
 global — it is verified in id order across every organisation, so a
 per-organisation lock would permit exactly the interleaving this prevents.
 
+Those three steps are one statement now, `core.audit_append` (migration 0239).
+The lock is held to the commit and every audited transaction waits behind it, so
+what it lets through is one over the round trips made while holding it: 146
+audited transactions a second through a 1.5 ms round trip when they were three
+statements and a read of the subscriptions after them, and 490 as one. The
+function is volatile, which is what keeps it correct: a volatile function takes a
+new snapshot for each statement inside it, so the read of the tail sees what
+committed while it waited for the lock.
+
+On loopback that was still one commit's worth of records at a time, however many
+wrote them: 2,223 a second from one writer and 2,152 from sixteen, on a machine
+whose plain inserts reached 17,670. So a record written in a transaction of its
+own (a revocation's, a token exchange's, a backchannel request's) is now appended
+with the others that arrive while one is being written, by
+`core.audit_append_many` (migration 0305): the lock taken once, the tail read
+once, each record hashed after the one before it, one commit for all of them.
+Sixteen records a statement let 14,157 a second through, where sixteen calls of
+`core.audit_append` in one round trip let 8,029. Nothing about the chain changes:
+the same bytes are hashed under the same lock, a binary from before appends to
+the same chain, and each record is committed before the request it belongs to is
+answered. A record whose group cannot be appended is written again on its own,
+so the one that fails takes no other request's record with it. A record that
+joins another transaction, as a sign-in's does, still appends in that
+transaction.
+
 ## Proven both ways
 
 12 concurrent writers, on a fresh database:
@@ -164,6 +189,26 @@ first entry written after the upgrade, and the forks before it are a known
 artefact of this bug rather than evidence of tampering. That is worth recording
 somewhere an auditor will see, because "we know why those are there" is not
 something to reconstruct later from memory.
+
+## A respelled id read as tampering
+
+A second, unrelated way to break the chain without touching it. PostgreSQL
+accepts a uuid in several spellings: upper case, in braces, without hyphens, or
+with a hyphen after every four digits. Whatever the spelling, it stores the
+canonical form. The entry hash was computed over the id **as the caller passed
+it**. So an Admin API request to `/admin/users/d578-90c1-c9ae-…` produced an
+entry whose hash covered `d578-90c1-c9ae-…` while its `subject_id` column held
+`d57890c1-c9ae-…`. Verification recomputes from the column, so the chain broke
+at that entry, permanently.
+
+The detail column already went through PostgreSQL before hashing, because jsonb
+also normalises. The ids now take the same round trip, so the hash covers
+exactly what is stored, whatever spelling a caller used. The Admin API also
+refuses a non-canonical id in a path, but the chain no longer depends on every
+caller doing that.
+
+A database that took such a write has two entries with this artefact. A
+checkpoint declared after them, with that reason, is the honest record.
 
 ## A note on testing this
 

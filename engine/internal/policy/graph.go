@@ -3,6 +3,8 @@ package policy
 import (
 	"fmt"
 	"html"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -228,6 +230,30 @@ func describeConditions(c Conditions) []string {
 	if c.DeviceCompliant {
 		out = append(out, "a managed and compliant device")
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.UserAttributes)) {
+		out = append(out, "the attribute "+name)
+	}
+	if len(c.ApplicationRoles) > 0 {
+		out = append(out, "a role of "+strings.Join(c.ApplicationRoles, ", "))
+	}
+	if len(c.FromCountries) > 0 {
+		out = append(out, "from "+strings.Join(c.FromCountries, ", "))
+	}
+	if len(c.NotFromCountries) > 0 {
+		out = append(out, "not from "+strings.Join(c.NotFromCountries, ", "))
+	}
+	if len(c.FromASNs) > 0 {
+		out = append(out, "on the network of "+asList(c.FromASNs))
+	}
+	if len(c.NotFromASNs) > 0 {
+		out = append(out, "not on the network of "+asList(c.NotFromASNs))
+	}
+	if c.MaxRecentFailures > 0 {
+		out = append(out, fmt.Sprintf("an address with at most %d recent failures", c.MaxRecentFailures))
+	}
+	if c.Time != nil {
+		out = append(out, "inside its hours")
+	}
 	return out
 }
 
@@ -254,4 +280,13 @@ func fit(s string, pixels, fontSize int, bold bool) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// asList names autonomous systems as people write them, AS64500.
+func asList(asns []uint32) string {
+	out := make([]string, len(asns))
+	for i, n := range asns {
+		out[i] = fmt.Sprintf("AS%d", n)
+	}
+	return strings.Join(out, ", ")
 }

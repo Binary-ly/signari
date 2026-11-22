@@ -78,6 +78,30 @@ func TestPrincipalMapping(t *testing.T) {
 // TestWeakEncryptionTypesAreNamed: a KDC reports a mismatch as an integer, and
 // the integer is the whole error. Naming them is the difference between a
 // five-minute fix and an afternoon.
+// A trust between KDCs makes a ticket genuine. Only naming the realm here makes its
+// holder welcome, and even then they are never somebody of this realm.
+func TestATrustedRealmIsNamedAndKeptApart(t *testing.T) {
+	c := Config{Realm: "EXAMPLE.COM", StripRealm: true, TrustedRealms: []string{"PARTNER.TEST"}}
+	for principal, want := range map[string]string{
+		"alice@EXAMPLE.COM":  "alice",
+		"alice@PARTNER.TEST": "alice@partner.test",
+		"alice@partner.test": "alice@partner.test",
+	} {
+		if got, err := c.UsernameFor(principal); err != nil || got != want {
+			t.Errorf("%s mapped to %q (%v), and %q was expected", principal, got, err, want)
+		}
+	}
+	for _, principal := range []string{"alice@ELSEWHERE.TEST", "alice/admin@PARTNER.TEST", "HTTP/host@PARTNER.TEST"} {
+		if got, err := c.UsernameFor(principal); err == nil {
+			t.Errorf("%s was admitted as %q", principal, got)
+		}
+	}
+	// Named by nobody, a realm with a trust is still refused.
+	if got, err := (Config{Realm: "EXAMPLE.COM"}).UsernameFor("alice@PARTNER.TEST"); err == nil {
+		t.Errorf("a realm nobody named was admitted as %q", got)
+	}
+}
+
 func TestWeakEncryptionTypesAreNamed(t *testing.T) {
 	if !Weak(23) {
 		t.Error("rc4-hmac should be reported as weak; current KDCs disable it")

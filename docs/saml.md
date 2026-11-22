@@ -11,13 +11,64 @@ signari saml add-sp \
   -acs        https://grafana.example.com/login/saml/acs
 ```
 
-Then point the application at `https://auth.example.com/saml/metadata`.
+Then point the application at `https://auth.example.com/saml/metadata`. If the
+application publishes metadata of its own, [register it from
+that](saml-metadata.md) instead of typing it in.
+
+The Admin API registers service providers and sets their signing and their
+attribute and group releases the same way, under
+`/admin/organizations/{orgID}/saml-providers`; see [admin-api.md](admin-api.md).
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /saml/metadata` | what the service provider imports |
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
+| `POST /saml/artifact` | the artifact resolution service, SOAP; see [the Artifact binding](#the-artifact-binding) |
+| `POST /saml/ecp` | sign-on over SOAP for a client that is not a browser; see [ECP](#ecp-signing-in-without-a-browser) |
+
+## One entity ID, several organisations
+
+A SaaS application usually sends the same entity ID for every customer, so two
+organisations in a deployment may both need to register it. An AuthnRequest names
+only its issuer, and a WS-Federation `wtrealm` does the same, so the path has to say
+whose provider it is:
+
+| | |
+|---|---|
+| The deployment's endpoints | `/saml/sso`, `/saml/slo`, `/saml/metadata`, `/wsfed`. An entity ID is held here once. This server's entity ID is `<issuer>/saml` |
+| An organisation's endpoints | `/saml/org/<slug>/sso`, `/slo`, `/metadata`, `/wsfed/org/<slug>`, and `/wsfed/org/<slug>/FederationMetadata.xml`. An entity ID is held once in the organisation. This server's entity ID is `<issuer>/saml/org/<slug>` |
+
+A provider answers at one or the other. Registering an entity ID somebody else holds
+at the deployment's endpoints puts the new registration at its organisation's, and
+`saml add-sp`, the Admin API and `signari apply` all do this without being asked:
+
+```sh
+signari saml add-sp -org <uuid> -metadata https://app.example.com/saml/metadata -metadata-unsigned
+Another organisation holds this entity id at the deployment's endpoints, so this
+one answers at its own: give the provider the metadata from /saml/org/<slug>/metadata.
+```
+
+Nothing moves for whoever held it first. A request at a path finds only that path's
+provider, so one organisation's certificate cannot check another's request, its reply
+URLs cannot receive the other's assertion, and a person of one is refused at the
+other's path.
+
+Registration decides this rather than sign-in, on purpose. Refusing an entity ID two
+organisations hold at the deployment's endpoints would let any tenant switch off
+another's sign-in by registering the same entity ID.
+
+`signari saml org-endpoint -entity-id <id> [-org <uuid>]` moves a provider to its
+organisation's endpoints, `-remove` back, which is refused while somebody else holds
+the entity ID there. Either way the provider has to be given the new metadata,
+because the entity ID it knows this server by has changed. An organisation's slug
+cannot be changed through Signari, by command, Admin API or configuration file, so
+this entity ID stays as it was issued; changing the slug in the database by hand
+would change it the same way, and every provider at the organisation's endpoints
+would need the new metadata.
+
+Where two organisations hold an entity ID, a command that takes `-entity-id` needs
+`-org` as well, and says so.
 
 ## What was built against, and why it looks like this
 
@@ -44,13 +95,26 @@ element aside and insert their own assertion; the document still contains a
 valid signature over *something*. Signing the assertion means the element
 carrying the identity is the element covered.
 
-**XML comments are refused outright.** Go parses
+For a provider that wants the Response signed as well,
+`signari saml signing -entity-id <id> -sign-responses` adds an enveloped
+signature over the whole Response. It is made last, after the assertion is
+signed and, when the provider registered an encryption certificate, encrypted:
+sign, encrypt, sign, so it covers the ciphertext as it is sent.
+`-sign-assertions=false` leaves the assertion unsigned for a provider that checks
+only the Response. The two cannot both be off, and a flag left out of the
+command leaves its setting alone. Until October 2026 both settings were stored
+and ignored, and every response signed the assertion only.
+
+**XML comments inside the document are refused outright.** Go parses
 `<Issuer>admin<!---->@evil.test</Issuer>` as `admin@evil.test`. Canonicalisation
 drops comments before the digest is computed, and other parsers keep only the
 first text node — so the signed bytes, our value, and the peer's value can all
 differ. That is CVE-2017-11427 and its relatives. Rather than trying to agree
-with every other implementation, documents containing comments are rejected. No
-legitimate service provider puts a comment in an AuthnRequest.
+with every other implementation, a document with a comment anywhere inside its
+document element is rejected. No legitimate service provider puts a comment in an
+AuthnRequest. A comment before or after the document element is allowed, being in
+no element's text and under no signature: Shibboleth's metadata generator begins
+every document with one, and until November 2026 that refused its metadata.
 
 **Decompression is bounded during the read**, not measured afterwards. A few
 kilobytes of DEFLATE expands to gigabytes; that is how both `crewjam/saml` and
@@ -112,14 +176,48 @@ Metadata publishes **every** current certificate so providers can pick up an
 incoming one before it is used. Rotation is then: publish, wait for providers to
 refresh, switch.
 
-SAML requires an **RS256** key. ECDSA is specified and refused by a great deal
-of real service-provider software, so an EC-signed assertion would be correct
-and rejected anyway. Signari says so up front rather than letting you find out:
+Each certificate names its key in the subject, `OU=key <kid>`, beside the host
+in the CN. A provider that trusts every published certificate and finds the
+signer's by name needs the names to differ: with three certificates all called
+`O=Signari, CN=<host>`, xmlsec1 verified a response with them loaded in one order
+and found no key in another. A certificate made before October 2026 keeps its
+old name, since its fingerprint is pinned, and leaves when its key rotates out.
 
+### Which key signs a provider
+
+Each provider is signed with **RSA-SHA256** by the active RS256 key, unless it
+has been set to **ECDSA-SHA256**, which the active ES256 key signs:
+
+```sh
+signari saml signing -entity-id https://sp.example.com -signature-alg ecdsa-sha256
 ```
-this instance's active key is ECDSA, which most SAML service providers cannot
-verify. Rotate in an RS256 key before enabling SAML: `signari keys rotate -alg RS256`
-```
+
+RSA is the default because ECDSA is specified and refused by a great deal of
+real service-provider software, so an EC-signed assertion to a provider that
+cannot verify it is correct and rejected anyway. Only whoever knows the far end
+can say it can, which is why the setting is per provider and never follows
+whichever key happens to be active. The command refuses an algorithm the
+provider's instance has no active key for, since every sign-in to it would then
+fail.
+
+A provider's metadata, `/saml/metadata?sp=<entity-id>`, carries the
+certificates of the algorithm it is set to. Give it the new document before its
+next sign-in: it checks signatures against the certificates it already holds.
+The default document, with no `sp`, carries the RS256 certificates. Set a
+provider to ECDSA only once every node runs a release that reads the setting;
+an older node ignores it and signs with RSA.
+
+An ECDSA signature value is r and s as two 32-byte integers, concatenated,
+which is what xmlsec1 writes and accepts. A key's `crypto.Signer` returns the
+DER encoding instead, and xmlsec1 refuses that with `SIGNATURE`; the engine
+converts it. The redirect binding's `Signature` parameter carries the same
+encoding under the same `SigAlg`. No independent receiver has checked that
+encoding for the redirect binding here.
+
+Signing goes through the key's `crypto.Signer` alone, so a key whose private
+half never leaves a key store signs SAML exactly as a software key does. Until
+October 2026 SAML required an in-process RSA private key and refused every
+other.
 
 ## Single logout
 
@@ -162,17 +260,23 @@ practical, and a warning nobody reads is not a control.
 
 Signing out of Signari now signs the user out of the SAML service providers too.
 
-SAML has no usable back-channel — the SOAP binding exists and almost nothing
-implements it — so propagation means walking the **browser** through each
-provider's logout endpoint in turn. Signari redirects to provider one, it ends
-its session and redirects back, then provider two, until the list is empty.
+The SOAP binding is a back channel few providers offer, so for most of them
+propagation means walking the **browser** through each provider's logout endpoint
+in turn. Signari redirects to provider one, it ends its session and redirects
+back, then provider two, until the list is empty.
 
 **Our session is terminated before the chain starts, never at the end.** A chain
 that ended the local session last would leave the user signed in here whenever a
 provider fails to redirect back — and they fail all the time: closed tab, 500,
 dropped network. By the time the first redirect is issued, signing out of Signari
 has already happened. Everything after is best-effort notification, and what
-could not be reached is recorded rather than assumed:
+could not be reached is recorded rather than assumed. It goes in the
+`saml.logout_propagated` audit event. When nothing asked for the browser to be sent
+on afterwards, the person is shown a page that says they are signed out, which
+applications were told and which could not be reached and may still have a session
+open. It is the `signedout` page, and it can be overridden like any other
+([theming](theming.md)). A caller that does not ask for HTML is given the same
+report as JSON:
 
 ```json
 {"status":"signed out",
@@ -207,6 +311,32 @@ bookkeeping past a provider we were about to notify, and it costs a valid chain
 token the attacker does not have. Requiring a signature would instead strand the
 chain at every provider that answers unsigned, which most do.
 
+### With no browser
+
+A chain needs a browser, and most sessions do not end in one: an administrator ends
+them, a person is deactivated, a session expires. A provider with a SOAP address hears
+of all of these. It comes from the provider's metadata, as a `SingleLogoutService` on
+the SOAP binding, or is set by hand:
+
+```sh
+signari saml soap-logout -entity-id https://sp.example.com/shibboleth \
+  -url https://sp.example.com/Shibboleth.sso/SLO/SOAP
+```
+
+Every session that ends and reached that provider queues a notice in the same
+transaction, which holds ids and no NameID, since a queue is the last place to keep
+somebody's address. The outbox then posts a signed `LogoutRequest` in a SOAP 1.1
+envelope, carrying the NameID and SessionIndex the assertion did, with the signature
+the provider's copy of the metadata verifies. It is delivered like a back-channel
+logout: retried with backoff when the provider is down, answers with anything but a
+`LogoutResponse` to that request saying `Success`, or sends a SOAP fault, and parked
+after that with the failure on record. A provider since disabled is not chased.
+
+The signature on the answer is not checked. The provider was reached at its
+registered address over TLS, and all the answer decides is whether to try again. A
+SOAP address is never given to a browser, and a provider with both is told both ways,
+which it can bear: the second finds nothing left to end.
+
 ## Signed AuthnRequests
 
 Off by default, per provider:
@@ -225,6 +355,15 @@ if it is ever created another way.
 The signature is checked **before** validation, because everything validation goes
 on to decide — which ACS URL, which NameID format, whether to force
 re-authentication — is read out of the document.
+
+**A signed AuthnRequest is answered once.** Its ID is recorded when the assertion
+is issued, and the same request presented again is answered with a `Requester`
+status and no assertion, so a captured request cannot keep drawing fresh
+assertions for whoever holds a signed-in browser. It is recorded at issuance
+rather than on arrival because a request parked across sign-in comes back
+carrying the same document. An unsigned request is not recorded: anyone can mint
+a new ID for one. Until October 2026 the table documented this and nothing wrote
+to it.
 
 ### The two bindings sign different things
 
@@ -263,6 +402,19 @@ cryptographically:
 Rule 2 is the one that stops classic wrapping, and the test for it uses distinct
 IDs deliberately so the duplicate-ID rule cannot be what passes it. Without rule 2
 that document has one valid signature, no duplicate IDs, and sails through.
+
+### Service providers with an EC key
+
+A provider whose certificate holds a P-256 key may sign with `ecdsa-sha256`, on
+either binding. The signature value is r and s as two 32-byte integers, which
+is what xmlsec1 writes. goxmldsig checks ECDSA as DER, so the value is
+converted before it is checked; the value is not covered by the signature, so
+converting it changes nothing that was signed. A DER-encoded value is refused
+by name, as xmlsec1 refuses it. The other ECDSA algorithms are refused, as is
+any algorithm that does not match the key in the registered certificate. Until
+October 2026 an EC provider was refused on the redirect binding as an
+unsupported signature algorithm, and on the POST binding as a signature that
+did not verify.
 
 ### Surviving the sign-in redirect
 
@@ -332,7 +484,8 @@ The binding is now stored and honoured:
 signari saml add-sp ... -slo https://sp.test/slo -slo-binding HTTP-POST
 ```
 
-A provider that registered both is answered on whichever binding it used. The
+`HTTP-Artifact` is the third; see [Logout by artifact](#logout-by-artifact). A
+provider that registered both is answered on whichever binding it used. The
 redirect-bound response was checked with **openssl**, against the certificate the
 IdP publishes in its own metadata — an entirely separate path from the code that
 produced it:
@@ -378,10 +531,13 @@ that cannot do GCM is better served by TLS alone than by encryption that does no
 hold. There is a test that tampers with a ciphertext and requires the decryption
 to fail.
 
-Key transport is `rsa-oaep-mgf1p`. The SHA-1 in its name is OAEP's mask
-generation function, which needs a pseudorandom function rather than collision
-resistance — a different question from SHA-1 in a signature, which this package
-refuses on both bindings. See `docs/security-scanning.md`.
+Key transport is `rsa-oaep-mgf1p` by default. The SHA-1 in its name is OAEP's
+mask generation function, which needs a pseudorandom function rather than
+collision resistance — a different question from SHA-1 in a signature, which
+this package refuses on both bindings. See `docs/security-scanning.md`. A
+provider that supports it can be given `xmlenc11#rsa-oaep` with SHA-256 and
+MGF1-SHA-256 instead (`saml add-sp -sp-key-transport rsa-oaep-sha256`), which is
+the one to choose under FIPS.
 
 ### Proved end to end, by tools that are not ours
 
@@ -404,14 +560,226 @@ The envelope was checked for leakage too: no `Assertion`, `Issuer`, `NameID` or
 `SignatureValue` appears in the clear, and each encryption uses a fresh session
 key and IV.
 
+## A NameID from an attribute
+
+A provider that keys its accounts on something you already hold can be given it:
+
+```sh
+signari saml nameid -entity-id https://app.example/saml -attribute employee_number
+signari saml nameid -entity-id https://app.example/saml        # back to the format alone
+```
+
+`-attribute` is a declared attribute or `username`, and `PATCH .../saml-providers/{id}`
+takes the same thing as `name_id_attribute`. The format the provider is registered with
+still goes out, and is carried in the logout request exactly as the assertion had it,
+since a provider matches on it.
+
+An attribute a person can edit is refused, when it is set and again at every sign-in in
+case the declaration has changed since: whoever writes that value chooses who they are
+at the provider. Somebody with no value is refused rather than given a different
+identifier, which would be a new, empty account there. A transient format cannot take
+an attribute. Nothing here can make the values unique: two people sharing one share an
+account at that provider. Set it before people sign in, or expect them to arrive there
+as new accounts.
+
+## What a service provider asks of the sign-in
+
+`RequestedAuthnContext` is held to the session on every request, as `acr_values` is
+for an application, because a password session must not answer a demand for a second
+factor just because it was already live.
+
+| Asked for | Means here |
+|---|---|
+| `PasswordProtectedTransport`, `Password`, `unspecified` | A password |
+| Signari's multi-factor class, `MobileTwoFactorContract`, `TimeSyncToken`, or the `multipleauthn` claim | A second factor |
+
+Any class in the list will do, so the weakest one recognised decides. `exact` and
+`minimum` are both a floor: the assertion states what was really done, and refusing a
+stronger sign-in for being stronger helps nobody. `better` is the rung above, and
+`maximum` forces nothing.
+
+A session short of it is sent to sign in, asked for the second factor. If that cannot
+succeed, because the account has none or the flow never asks, or if no class in the
+list is one this directory knows, the service provider gets `NoAuthnContext` rather
+than a person sent round a sign-in page for ever. With `IsPassive` it gets `NoPassive`.
+
+## A sign-in that starts here
+
+Some applications have no sign-in page of their own to send anybody from, and some
+people start from the [portal](app-portal.md). For those a service provider can be
+opted in:
+
+```
+signari saml idp-initiated -entity-id https://app.example.com -relay-state /dashboard
+```
+
+It then has a tile on the portal, and `/saml/init/{id}` sends the person there. The
+command prints the URL. `-remove` stops it, and it is off until set.
+
+The response answers no request, so it has no `InResponseTo`, and the provider has to be
+set up to take one. Most refuse it until they are, which is why this is per provider
+and not a setting of the deployment. A provider that requires signed requests has no
+request here to check: opting it in is the operator's statement that it may be sent a
+response without one.
+
+Nothing about the sign-in comes from the URL except which provider. The assertion goes
+to the provider's default URL, and the `RelayState` is the one set here, never one from
+the link, so a link can start a sign-in and cannot choose where the person lands inside
+the application. The person signs in first if they have not, and a provider that does not
+exist, belongs to another organisation or has not opted in all read the same.
+
+The [access policy](policy.md) is held to it as to any assertion, by the entity
+ID, and the portal asks the same question: a provider refused shows as refused, with
+the policy's message, and opening its link directly says the same thing here, not at the
+provider, which was not expecting anything.
+
+## The Artifact binding
+
+A service provider can take its response by artifact (SAML Bindings 2.0 §3.6):
+the browser carries a short reference, and the provider fetches the response
+itself, over SOAP, from `POST /saml/artifact` (or
+`/saml/org/<slug>/artifact` for an organisation's entity). The response never
+crosses the browser. Register the URL that takes artifacts, and the provider's
+signing certificate:
+
+```sh
+signari saml add-sp -org <org-uuid> -entity-id https://sp.example.com/shibboleth \
+  -acs https://sp.example.com/Shibboleth.sso/SAML2/POST \
+  -artifact-acs https://sp.example.com/Shibboleth.sso/SAML2/Artifact \
+  -sp-cert sp-signing.pem
+```
+
+A provider's metadata does the same with an `AssertionConsumerService` on the
+HTTP-Artifact binding, and so do `artifact_acs_urls` in the Admin API and in
+[a configuration file](config-as-code.md). An artifact URL is never the default:
+a request reaches it by naming it, or by asking for HTTP-Artifact in its
+`ProtocolBinding`. A request that names one binding and a URL registered for the
+other is refused, where it used to be answered by POST whatever it asked for.
+
+The metadata publishes the resolution service at index 0. What a resolution
+has to pass:
+
+- the artifact is one this deployment issued in the last minute and nobody has
+  asked for yet. It is gone after the first request for it, whoever makes it;
+- the `ArtifactResolve` is signed with the certificate registered for the
+  provider the artifact was issued to, and names that provider as its `Issuer`.
+  A provider with no certificate registered cannot show it is the recipient, so
+  it is never given anything; configure it to sign its back-channel requests
+  (for Shibboleth, `signing="back"` or `"true"`).
+
+Anything else is answered as the specification asks: a `Success` with no
+message in it, the reason logged and audited as `saml.artifact_refused`. The
+`ArtifactResponse` is signed. The response waits sealed under a key derived from
+the artifact itself, which is not stored, so the database alone cannot read it.
+
+### Requests by artifact
+
+A provider can send its `AuthnRequest` by artifact too. The browser brings `SAMLart`
+to the sign-on service, and the request is fetched from the provider's own artifact
+resolution service over SOAP (SAML Bindings 2.0 §3.6.5). The metadata lists the
+sign-on service on the HTTP-Artifact binding for it. Register where the provider
+resolves its artifacts, by the index an artifact names:
+
+```sh
+signari saml add-sp ... -artifact-resolution 1=https://sp.example.com/Shibboleth.sso/Artifact/SOAP
+```
+
+or an `ArtifactResolutionService` in its metadata, `artifact_resolution` in the Admin
+API, or in [a configuration file](config-as-code.md). A provider with none sends no
+request by artifact. What happens to one:
+
+- The artifact names its provider by the SHA-1 of the entity ID, and the service by
+  index. Only a provider answered at the endpoint the artifact was brought to, with a
+  service at that index, is asked.
+- The `ArtifactResolve` is signed with this deployment's key for that provider.
+- The answer is believed because it comes from the address registered for the
+  provider, over https with its certificate verified: what the specification calls a
+  binding mechanism. A signature on the answer is not checked. A provider that signs
+  its answer around a request it also signed puts two signatures in one document,
+  which every check here refuses as the shape of a wrapping attack.
+- The answer has to reply to this request, come from the provider, say `Success` and
+  carry an `AuthnRequest` in that provider's name. Anything else is refused on the
+  page, with the reason.
+- An artifact is resolved once. Brought again, it is refused without asking the
+  provider, and one whose resolution failed is spent as well.
+- The request is then handled as one arriving by POST: held across sign-in,
+  validated, and refused if seen before. A provider registered to sign its requests
+  has to sign the `AuthnRequest` itself, as on the POST binding; a signature on the
+  answer around it does not count.
+
+### Logout by artifact
+
+A logout can go both ways by artifact. A provider's `LogoutRequest` or
+`LogoutResponse` comes as `SAMLart` to the logout service and is fetched from the
+provider as a request by artifact is, so the provider needs a resolution service
+registered. A `LogoutRequest` fetched that way has to name that provider as its
+`Issuer`, and is then acted on as one arriving by POST: only when it is signed with
+the certificate registered for it, since a request to end somebody's session is
+never believed unsigned. A `LogoutResponse` moves this deployment's logout along, as
+one arriving by redirect does.
+
+The other way, a provider whose logout endpoint is registered with the HTTP-Artifact
+binding is sent its `LogoutRequest`, and the answer to its own, by artifact. The
+message waits here, and the provider fetches it from `POST /saml/artifact` with an
+`ArtifactResolve` signed as itself, as it fetches a response:
+
+```sh
+signari saml add-sp ... -slo https://sp.example.com/Shibboleth.sso/SLO/Artifact -slo-binding HTTP-Artifact
+```
+
+The metadata lists the logout service on the HTTP-Artifact binding as well. Reading a
+provider's metadata takes its redirect logout endpoint, or else its POST one, and
+never an artifact one, so a logout goes by artifact only to a provider registered
+for it with `-slo-binding` or the Admin API's `slo_binding`.
+
+Both were run against Shibboleth SP 3.4.1 sending its `AuthnRequest` and its
+`LogoutRequest` by artifact (`outgoingBindings` on its `SSO` and `Logout`): the
+request was fetched from its `/Shibboleth.sso/Artifact/SOAP`, held across the
+sign-in and answered by artifact, and its logout was fetched, ended the session and
+was answered by artifact at its `/SLO/Artifact`, which it resolved here and reported
+as a completed global logout. The run found that a request handed on that way lost
+its binding when it was held across the sign-in, and was refused after the password.
+
+## ECP: signing in without a browser
+
+The Enhanced Client or Proxy profile (SAML Profiles 2.0 §4.2) is how a command-line
+tool, a desktop client or a script signs a person in to a SAML service provider.
+The client takes the provider's `AuthnRequest`, brings it here in a SOAP body to
+`POST /saml/ecp` (or `/saml/org/<slug>/ecp`) with the person's name and password
+by HTTP Basic, and carries the `Response` back to the provider's PAOS endpoint,
+which the answer's `ecp:Response` header names.
+
+A provider takes part by registering a PAOS endpoint, and one without one is
+refused:
+
+```sh
+signari saml add-sp ... -ecp-acs https://sp.example.com/Shibboleth.sso/SAML2/ECP
+```
+
+or a PAOS `AssertionConsumerService` in its metadata, `ecp_acs_urls` in the Admin
+API, or in [a configuration file](config-as-code.md). It is a decision to make per
+provider, because no page here can ask the person for anything:
+
+- The password goes through the same check LDAP and RADIUS use, with the same
+  failure budget per account and the same audit, `via: saml_ecp`.
+- A second factor, when one is wanted, comes after the password,
+  `password;123456`. The organisation's rule on password-only binds applies:
+  under `refuse_when_mfa`, the default for an organisation made since that rule
+  existed, a person the sign-in page would ask for a code is refused without
+  one; under `allow` they are not. A request asking for a second factor
+  (`RequestedAuthnContext`) is answered `NoAuthnContext` unless a code came.
+- The access policy, the NameID and the attribute releases are those of a
+  browser sign-in.
+- Every refusal of the person is the same `401`.
+
+The assertion names no `SessionIndex` and is recorded against no session, since
+there is no browser session behind it, so a logout started here does not reach
+it.
+
 ## Not yet built
 
-- **`xmlenc11#rsa-oaep` key transport with SHA-256.** `rsa-oaep-mgf1p` is what
-  service providers actually implement, and the SHA-1 in it is not a weakness (see
-  above). Worth adding when a provider asks for it; not worth a second code path
-  before then.
 - **Decrypting inbound encrypted `NameID`s.** We encrypt outbound assertions; we
   do not accept encrypted identifiers in inbound requests.
 
-Each is absent from the metadata document as well as from this list — the rule
+It is absent from the metadata document as well as from this list — the rule
 that an endpoint enters discovery only once it works applies here too.

@@ -8,9 +8,8 @@ import (
 	"net/http"
 
 	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/logging"
 )
-
-type correlationKey struct{}
 
 // WithCorrelation assigns every request an id and puts it on the context.
 //
@@ -32,7 +31,9 @@ func (s *Server) withCorrelation(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
-		ctx := context.WithValue(r.Context(), correlationKey{}, id)
+		// Through the logging package, so every line logged with this
+		// request's context names it without the call site having to.
+		ctx := logging.WithCorrelation(r.Context(), id)
 
 		// Echoed so an operator reading a proxy log or a client's network trace
 		// can find the same request. Safe to expose: it identifies a request,
@@ -44,12 +45,7 @@ func (s *Server) withCorrelation(next http.Handler) http.Handler {
 }
 
 // correlationID returns the id for this request, or "" outside a request.
-func correlationID(ctx context.Context) string {
-	if v, ok := ctx.Value(correlationKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
+func correlationID(ctx context.Context) string { return logging.Correlation(ctx) }
 
 // shortCode renders a correlation id as something a person can read aloud.
 //
@@ -90,20 +86,13 @@ func shortCode(id string) string {
 //
 // A failure here is logged, not returned. The operation these accompany has
 // already been refused, so there is no outcome left to fail.
+//
+// Committed before this returns, with the records other requests are writing at
+// the same moment: one transaction and one hold of the chain's lock for all of
+// them (audit.Detached, E.32).
 func (s *Server) auditDetached(ctx context.Context, e audit.Event) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.log.Error("auditing", "event", e.Type, "err", err)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := audit.Write(ctx, tx, e); err != nil {
-		s.log.Error("auditing", "event", e.Type, "err", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		s.log.Error("committing audit", "event", e.Type, "err", err)
+	if err := s.detachedAudit.Write(ctx, s.db, e); err != nil {
+		s.log.ErrorContext(ctx, "auditing", "event", e.Type, "err", err)
 	}
 }
 

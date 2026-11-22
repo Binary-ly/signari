@@ -81,10 +81,19 @@ func buildRequest(t *testing.T, secret, username, password string, withMAC bool)
 	return pkt
 }
 
-type fakeAuth struct{ calls int }
+type fakeAuth struct {
+	calls int
+	// left is how long the last Authenticate's context had before its
+	// deadline, or zero when it had none.
+	left time.Duration
+}
 
-func (f *fakeAuth) Authenticate(_ context.Context, u, p string) error {
+func (f *fakeAuth) Authenticate(ctx context.Context, u, p string) error {
 	f.calls++
+	f.left = 0
+	if d, ok := ctx.Deadline(); ok {
+		f.left = time.Until(d)
+	}
 	if u == "alice" && p == "correct-horse-battery" {
 		return nil
 	}
@@ -138,6 +147,39 @@ func exchange(t *testing.T, s *Server, packet []byte) *Packet {
 	return p
 }
 
+// A client network is read as what it means. `::ffff:0.0.0.0/96` passed the
+// every-address check, since 96 bits are not zero, yet matched every IPv4
+// source and outranked every real IPv4 range at 96 bits.
+func TestAClientNetworkIsReadAsWhatItMeans(t *testing.T) {
+	// The mechanism, so this test fails if net stops behaving this way and the
+	// normalisation can go: a mapped /96 matches an unrelated IPv4 address.
+	_, mapped, _ := net.ParseCIDR("::ffff:0.0.0.0/96")
+	if !mapped.Contains(net.ParseIP("203.0.113.9")) {
+		t.Log("net no longer matches IPv4 sources against a mapped /96; the defect this guards is gone")
+	}
+
+	for _, everything := range []string{"::ffff:0.0.0.0/96", "0.0.0.0/0", "::/0", "::ffff:1.2.3.4/90"} {
+		if n, err := ClientNetwork(everything); err == nil && n.Contains(net.ParseIP("203.0.113.9")) {
+			if ones, _ := n.Mask.Size(); ones == 0 {
+				t.Errorf("%s was accepted and covers every address (%s)", everything, n)
+			}
+		}
+	}
+	if _, err := ClientNetwork("::ffff:0.0.0.0/96"); err == nil {
+		t.Error("the IPv4-mapped spelling of every address was accepted")
+	}
+	n, err := ClientNetwork("::ffff:10.0.0.0/120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.String() != "10.0.0.0/24" || !n.Contains(net.ParseIP("10.0.0.5")) || n.Contains(net.ParseIP("11.0.0.1")) {
+		t.Errorf("a mapped /120 was read as %s, want 10.0.0.0/24", n)
+	}
+	if n, err := ClientNetwork("10.0.0.0/24"); err != nil || n.String() != "10.0.0.0/24" {
+		t.Errorf("a plain /24 was read as %v (%v)", n, err)
+	}
+}
+
 func TestValidRequestIsAccepted(t *testing.T) {
 	s, _ := newServer(t)
 	reply := exchange(t, s, buildRequest(t, testSecret, "alice", "correct-horse-battery", true))
@@ -146,6 +188,20 @@ func TestValidRequestIsAccepted(t *testing.T) {
 	}
 	if reply.Code != CodeAccessAccept {
 		t.Fatalf("code = %d, want Access-Accept", reply.Code)
+	}
+}
+
+// An Access-Request's verification has a deadline. It waits for a slot in the
+// hasher the sign-in form shares, on the listener's context, which lives as
+// long as the process: one packet could hold the only goroutine that answers
+// every client for as long as a sign-in flood kept the slots busy.
+func TestAnAccessRequestHasADeadline(t *testing.T) {
+	s, auth := newServer(t)
+	if reply := exchange(t, s, buildRequest(t, testSecret, "alice", "correct-horse-battery", true)); reply == nil {
+		t.Fatal("no reply")
+	}
+	if auth.left <= 0 || auth.left > AuthTimeout {
+		t.Fatalf("the request was verified with %v before its deadline, want (0, %v]", auth.left, AuthTimeout)
 	}
 }
 
@@ -372,6 +428,46 @@ func TestReplaceClientsRevokesADevice(t *testing.T) {
 	}
 	if _, ok := from("192.168.1.5"); !ok {
 		t.Fatal("revoking one device removed another")
+	}
+}
+
+// The most specific network wins, whichever order the rows arrive in: a /24
+// controller inside a /16 building is checked against the controller's secret.
+func TestTheMostSpecificNetworkChoosesTheSecret(t *testing.T) {
+	_, building, _ := net.ParseCIDR("10.20.0.0/16")
+	_, controller, _ := net.ParseCIDR("10.20.30.0/24")
+	_, host, _ := net.ParseCIDR("10.20.30.40/32")
+	b := Client{Net: building, Secret: "the-building-secret-long-enough", Name: "building"}
+	c := Client{Net: controller, Secret: "the-controller-secret-long-enough", Name: "controller"}
+	h := Client{Net: host, Secret: "the-one-host-secret-long-enough", Name: "host"}
+
+	for _, order := range [][]Client{{b, c, h}, {h, c, b}, {c, h, b}} {
+		srv, err := New(Config{Clients: order}, &fakeAuth{},
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for ip, want := range map[string]string{
+			"10.20.30.40": "host", "10.20.30.41": "controller", "10.20.1.1": "building",
+		} {
+			got, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP(ip), Port: 5000})
+			if !ok || got.Name != want {
+				t.Errorf("order %s,%s,%s: %s matched %q, want %q",
+					order[0].Name, order[1].Name, order[2].Name, ip, got.Name, want)
+			}
+		}
+	}
+
+	// Two entries for one network cannot come from the database; given anyway,
+	// the packet is not checked against whichever came first.
+	dup := Client{Net: controller, Secret: "a-different-secret-long-enough", Name: "dup"}
+	srv, err := New(Config{Clients: []Client{c, dup}}, &fakeAuth{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := srv.clientFor(&net.UDPAddr{IP: net.ParseIP("10.20.30.41"), Port: 5000}); ok {
+		t.Errorf("an ambiguous source matched %q", got.Name)
 	}
 }
 

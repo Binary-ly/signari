@@ -35,18 +35,10 @@ import (
 	"strings"
 )
 
-// Brand is one INSTANCE's appearance.
-//
-// Not one organisation's, which is what this said and what the name suggests.
-// `core.brands` keys on `instance_id` as its PRIMARY KEY (0056_brands.sql:24),
-// so every organisation on an instance shares a single brand. An operator
-// reading "one organisation's appearance" would reasonably expect to give two
-// tenants different logos and find, after building the flow, that the second
-// write replaced the first.
-//
-// Per-organisation branding is a real gap rather than a bug in this comment;
-// closing it means a composite key and a resolution order. Until then the
-// comment should describe the schema that exists.
+// Brand is an appearance: an instance's in `core.brands`, an organisation's in
+// `core.org_brands`. A page wears the organisation's over the instance's (Over),
+// and which organisation is the page's to say from the request it is answering:
+// the client it came from, or the session it came with.
 type Brand struct {
 	// ProductName replaces "Signari" in page titles and headings.
 	ProductName string
@@ -63,6 +55,36 @@ type Brand struct {
 	// Background and Text are the page.
 	Background string
 	Text       string
+}
+
+// Over is this brand worn over base, either of which may be nil: what this one
+// leaves out is base's.
+//
+// The four colours go together, because each brand's were checked for contrast
+// against each other and a background of one under the text of the other was
+// checked by nobody.
+func (b *Brand) Over(base *Brand) *Brand {
+	switch {
+	case b == nil:
+		return base
+	case base == nil:
+		return b
+	}
+	worn := *b
+	if worn.ProductName == "" {
+		worn.ProductName = base.ProductName
+	}
+	if worn.LogoURL == "" {
+		worn.LogoURL = base.LogoURL
+	}
+	if worn.SupportURL == "" {
+		worn.SupportURL = base.SupportURL
+	}
+	if worn.Primary == "" {
+		worn.Primary, worn.OnPrimary = base.Primary, base.OnPrimary
+		worn.Background, worn.Text = base.Background, base.Text
+	}
+	return &worn
 }
 
 // minContrast is WCAG 2.1 AA for body text.

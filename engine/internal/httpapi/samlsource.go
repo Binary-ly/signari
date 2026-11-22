@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,24 +31,33 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	src, err := store.LoadSAMLSource(ctx, s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
-		s.log.Info("unknown SAML source", "slug", slug, "err", err)
+		s.log.InfoContext(ctx, "unknown SAML source", "slug", slug, "err", err)
 		http.NotFound(w, r)
 		return
 	}
 
 	relay, err := saml.RelayStateToken()
 	if err != nil {
-		s.log.Error("generating relay state", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.log.ErrorContext(ctx, "generating relay state", "err", err)
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
+	if src.Provider.SignRequests {
+		signer, _, serr := store.SAMLSourceSigner(ctx, s.db, s.root, src.ProviderID)
+		if serr != nil {
+			s.log.ErrorContext(ctx, "reading the key an upstream's requests are signed with", "slug", slug, "err", serr)
+			s.federationRefusal(w, r, "federr.misconfigured")
+			return
+		}
+		src.Provider.RequestSigner = signer
+	}
 	req, err := saml.BuildAuthnRequest(src.Provider, relay, time.Now())
 	if err != nil {
-		s.log.Error("building the SAML request", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not configured correctly.")
+		s.log.ErrorContext(ctx, "building the SAML request", "slug", slug, "err", err)
+		s.federationRefusal(w, r, "federr.misconfigured")
 		return
 	}
 
@@ -57,8 +69,8 @@ func (s *Server) handleSAMLSourceStart(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.RecordSAMLRequest(ctx, s.db, src.ProviderID, req.ID, relay,
 		returnPath, samlSourceRequestTTL); err != nil {
-		s.log.Error("recording the SAML request", "err", err)
-		s.federationError(w, r, "Something went wrong. Please try again.")
+		s.log.ErrorContext(ctx, "recording the SAML request", "err", err)
+		s.federationRefusal(w, r, "federr.generic")
 		return
 	}
 
@@ -78,7 +90,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	src, err := store.LoadSAMLSource(ctx, s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(ctx, slug)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -86,8 +98,8 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := saml.DecodePOST(r.PostForm.Get("SAMLResponse"))
 	if err != nil {
-		s.log.Info("undecodable SAML response", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.log.InfoContext(ctx, "undecodable SAML response", "slug", slug, "err", err)
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -100,22 +112,31 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	if relay != "" {
 		pending, perr := store.ConsumeSAMLRequest(ctx, s.db, relay)
 		if perr != nil {
-			s.log.Info("no outstanding SAML request", "slug", slug, "err", perr)
-			s.federationError(w, r, "That sign-in has expired. Please try again.")
+			s.log.InfoContext(ctx, "no outstanding SAML request", "slug", slug, "err", perr)
+			s.federationRefusal(w, r, "federr.expired")
 			return
 		}
 		if pending.ProviderID != src.ProviderID {
 			// The relay state belongs to a different provider. Refused rather than
 			// reconciled: it means the response and the request came from two
 			// different flows.
-			s.log.Info("relay state belongs to another provider", "slug", slug)
-			s.federationError(w, r, "That sign-in could not be completed.")
+			s.log.InfoContext(ctx, "relay state belongs to another provider", "slug", slug)
+			s.federationRefusal(w, r, "federr.incomplete")
 			return
 		}
 		expectedID = pending.ID
 		returnPath = pending.ReturnPath
 	}
 
+	// Read when it has to be: a sealed key opened on every sign-in through an
+	// upstream that does not encrypt would be a statement for nothing.
+	if bytes.Contains(raw, []byte("Encrypted")) {
+		if src.Provider.Decrypters, err = store.SAMLSourceDecrypters(ctx, s.db, s.root, src.ProviderID); err != nil {
+			s.log.ErrorContext(ctx, "reading the keys an upstream encrypts to", "slug", slug, "err", err)
+			s.federationRefusal(w, r, "federr.misconfigured")
+			return
+		}
+	}
 	assertion, err := saml.ConsumeResponse(raw, src.Provider, saml.ConsumeOptions{
 		ExpectedInResponseTo: expectedID,
 		Destination:          src.Provider.ACSURL,
@@ -124,9 +145,9 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Logged in full, shown in outline. The detail is what an operator needs
 		// and what an attacker would use to find which check to satisfy next.
-		s.log.Warn("SAML assertion refused", "slug", slug, "err", err,
+		s.log.WarnContext(ctx, "SAML assertion refused", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
 	}
 
@@ -135,18 +156,22 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 	// explanation, because it is a configuration mistake on the upstream and the
 	// operator is the only person who can fix it.
 	if err := saml.CheckSubjectFormat(assertion.SubjectFormat); err != nil {
-		s.log.Warn("transient NameID from a SAML source", "slug", slug, "err", err)
-		s.federationError(w, r, "That sign-in method is not configured correctly.")
+		s.log.WarnContext(ctx, "transient NameID from a SAML source", "slug", slug, "err", err)
+		s.federationRefusal(w, r, "federr.misconfigured")
 		return
 	}
 
 	// Spend the assertion. After this, the same document is worthless.
 	if err := store.RecordSAMLAssertion(ctx, s.db, src.ProviderID,
 		assertion.AssertionID, assertion.NotOnOrAfter); err != nil {
-		s.log.Warn("SAML assertion replay", "slug", slug, "err", err,
+		s.log.WarnContext(ctx, "SAML assertion replay", "slug", slug, "err", err,
 			"correlation_id", correlationID(ctx))
-		s.federationError(w, r, "That sign-in could not be completed.")
+		s.federationRefusal(w, r, "federr.incomplete")
 		return
+	}
+
+	if src.SLOURL != "" {
+		s.rememberSAMLSubject(ctx, w, assertion)
 	}
 
 	// From here it is the ordinary external-identity path: the same decision,
@@ -159,6 +184,7 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		// addresses are trustworthy is a property of the deployment, recorded on
 		// the provider, not something the assertion can assert about itself.
 		EmailVerified: src.Policy.TrustsEmailVerification,
+		RawClaims:     samlAttributeClaims(assertion),
 	}
 
 	s.completeFederation(w, r, &federation.Config{
@@ -168,7 +194,29 @@ func (s *Server) handleSAMLSourceACS(w http.ResponseWriter, r *http.Request) {
 		DisplayName: src.DisplayName,
 		Policy:      src.Policy,
 		Kind:        federation.KindSAML,
+
+		EndSessionURL: src.SLOURL,
 	}, &store.PendingLogin{ReturnTo: returnPath}, ext)
+}
+
+// samlAttributeClaims is what an assertion's attributes look like to the attribute
+// mapping, which reads a verified payload by claim name (8.13). One value is a claim;
+// several stay a list, which maps onto nothing rather than onto a guess at which one.
+// It holds only what ConsumeResponse read out of the verified assertion.
+func samlAttributeClaims(assertion *saml.InboundAssertion) []byte {
+	claims := make(map[string]any, len(assertion.Attributes))
+	for name, values := range assertion.Attributes {
+		if len(values) == 1 {
+			claims[name] = values[0]
+		} else {
+			claims[name] = values
+		}
+	}
+	raw, err := json.Marshal(claims)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // samlSourceSlug pulls the slug out of /saml/source/{slug}/{suffix}.
@@ -197,20 +245,65 @@ func (s *Server) handleSAMLSourceMetadata(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	src, err := store.LoadSAMLSource(r.Context(), s.db, slug, s.cfg.Issuer)
+	src, err := s.loadSAMLSource(r.Context(), slug)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
+	spKeys, err := store.SAMLSourceKeys(r.Context(), s.db, src.OrgID, slug)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "reading an upstream's keys", "slug", slug, "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
 
-	// No signing certificate is advertised: this SP does not sign its requests
-	// and does not accept encrypted assertions yet, and advertising either would
-	// be the "documented but absent" failure this project sweeps for.
+	// The keys that are live, whether or not the upstream is held to them yet:
+	// a provider has to have a certificate before it can be asked to use it, and
+	// a retired one is no longer ours to hand out.
+	var descriptors strings.Builder
+	for _, k := range spKeys {
+		if k.RetiredAt != nil {
+			continue
+		}
+		certs, cerr := saml.ParseCertificates(k.Certificate)
+		if cerr != nil || len(certs) != 1 {
+			s.log.ErrorContext(r.Context(), "an upstream's key has an unreadable certificate", "slug", slug, "key", k.ID, "err", cerr)
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
+		var methods strings.Builder
+		if k.Purpose == saml.SPKeyEncryption {
+			for _, alg := range saml.EncryptionMethods {
+				methods.WriteString(`
+      <EncryptionMethod Algorithm="` + alg + `"/>`)
+			}
+		}
+		descriptors.WriteString(`
+    <KeyDescriptor use="` + k.Purpose + `">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>` +
+			saml.CertificateB64(certs[0].Raw) + `</ds:X509Certificate></ds:X509Data></ds:KeyInfo>` + methods.String() + `
+    </KeyDescriptor>`)
+	}
+
+	// Only where this deployment can take part: a logout has to be signed, which
+	// takes a key, and there has to be somewhere to send the other half.
+	logout := ""
+	if src.SLOURL != "" && strings.Contains(descriptors.String(), `use="signing"`) {
+		logout = `
+    <SingleLogoutService Binding="` + saml.BindingRedirect + `"
+        Location="` + xmlAttr(s.cfg.Issuer+"/saml/source/"+slug+"/slo") + `"/>`
+	}
+	// The SOAP binding needs nothing of this deployment's: the upstream signs, and the
+	// answer goes back on its own connection. So it is always offered.
+	logout += `
+    <SingleLogoutService Binding="` + saml.BindingSOAP + `"
+        Location="` + xmlAttr(s.cfg.Issuer+"/saml/source/"+slug+"/slo/soap") + `"/>`
+
 	xml := `<?xml version="1.0" encoding="UTF-8"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` +
 		xmlAttr(src.Provider.SPEntityID) + `">
-  <SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true"
-      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+  <SPSSODescriptor AuthnRequestsSigned="` + strconv.FormatBool(src.Provider.SignRequests) + `" WantAssertionsSigned="true"
+      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` + descriptors.String() + logout + `
     <NameIDFormat>` + xmlAttr(saml.FullNameIDFormat(src.Provider.NameIDFormat)) +
 		`</NameIDFormat>
     <AssertionConsumerService index="0" isDefault="true"

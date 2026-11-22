@@ -58,12 +58,32 @@ func (p *Pump) Run(ctx context.Context, interval time.Duration) {
 }
 
 // once forwards one batch and returns how many were sent.
+// streamLock is the transaction-scoped advisory lock one pass holds.
+const streamLock int64 = 0x7369676e73747265 // "signstre"
+
+// once takes one pass, if no other node is taking one (3.22). Every node runs
+// a pump, and each read the same cursor and sent the same batch, so with N
+// replicas a collector received every event N times. The lock is held for the
+// pass, the send included, so a second node finds it taken and waits for its
+// next tick rather than sending the batch again.
 func (p *Pump) once(ctx context.Context) (int, error) {
-	from, err := audit.StreamCursor(ctx, p.db)
+	tx, err := p.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
-	records, err := audit.FetchAfter(ctx, p.db, from, p.batch)
+	defer func() { _ = tx.Rollback(ctx) }()
+	var mine bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, streamLock).Scan(&mine); err != nil {
+		return 0, err
+	}
+	if !mine {
+		return 0, nil
+	}
+	from, err := audit.StreamCursor(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	records, err := audit.FetchAfter(ctx, tx, from, p.batch)
 	if err != nil {
 		return 0, err
 	}
@@ -75,7 +95,10 @@ func (p *Pump) once(ctx context.Context) (int, error) {
 	}
 	// The batch is ordered by id ascending, so the last one is the high-water mark.
 	last := records[len(records)-1].ID
-	if err := audit.AdvanceStreamCursor(ctx, p.db, last); err != nil {
+	if err := audit.AdvanceStreamCursor(ctx, tx, last); err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
 		// Delivered but not recorded: the next batch will re-send from the old
 		// cursor, which the receiver dedupes. Reported so the double-send is not a
 		// mystery in the collector.

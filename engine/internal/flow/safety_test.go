@@ -66,9 +66,11 @@ func paths(fl *Flow) [][]StageName {
 //
 // Enrolment is exempt from proof and order BECAUSE it cannot reach a session.
 // An oracle that applied all three rules to every designation would fail the
-// analysis for being correct.
+// analysis for being correct. An unenrolment acts at done -- the account is
+// deleted there -- so for it reaching done is reaching what must be proved.
 
-// unsafePath returns a path that reaches a session having proved nothing.
+// unsafePath returns a path that reaches a session, or an unenrolment's done,
+// having proved nothing.
 func unsafePath(fl *Flow, d Designation) ([]StageName, bool) {
 	for _, p := range paths(fl) {
 		reached, proved := false, false
@@ -79,7 +81,7 @@ func unsafePath(fl *Flow, d Designation) ([]StageName, bool) {
 			if d != Enrolment && s.proves(d) {
 				proved = true
 			}
-			if s == StageSession {
+			if s == StageSession || (d == Unenrolment && s == StageDone) {
 				reached = true
 			}
 		}
@@ -340,7 +342,7 @@ flows:
     on: authentication
     stages:
       - one_of:
-          - {stage: password, when: not user_is_new}
+          - {stage: password, when: not user_has_passkey}
           - {stage: captcha}
       - session
     tests:
@@ -351,6 +353,9 @@ flows:
 	if err == nil {
 		t.Fatal("a one_of with a branch that proves nothing was accepted; taking that " +
 			"branch reaches the session unauthenticated")
+	}
+	if !strings.Contains(err.Error(), "without proving who the subject is") {
+		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }
 
@@ -427,11 +432,11 @@ flows:
       - identify
       - email_otp
       - password_change
-      - session
+      - done
     tests:
       - name: recovers by email
         given: {}
-        expect: [identify, email_otp, password_change, session]
+        expect: [identify, email_otp, password_change, done]
 `)); err != nil {
 		t.Fatalf("a sound recovery flow was refused: %v", err)
 	}
@@ -468,13 +473,13 @@ flows:
     on: authentication
     stages:
       - identify
-      - {stage: create_user, when: user_is_new}
+      - create_user
       - password
       - session
     tests:
       - name: existing user
         given: {}
-        expect: [identify, password, session]
+        expect: [identify, create_user, password, session]
 `))
 	if err == nil {
 		t.Fatal("an authentication flow that can create accounts was accepted")
@@ -548,10 +553,15 @@ func randomFlow(rng *rand.Rand) *Flow {
 			fl.Stages = append(fl.Stages, Step{Stage: pool[rng.Intn(len(pool))]})
 		}
 	}
-	// Terminal, unconditional, as validate() requires.
-	if rng.Intn(4) == 0 {
+	// Terminal, unconditional, as validate() requires. done is among them: an
+	// unenrolment acts there, and a generator that never ended in it could not
+	// see the proof rule that covers it.
+	switch rng.Intn(5) {
+	case 0:
 		fl.Stages = append(fl.Stages, Step{Stage: StageDeny})
-	} else {
+	case 1:
+		fl.Stages = append(fl.Stages, Step{Stage: StageDone})
+	default:
 		fl.Stages = append(fl.Stages, Step{Stage: StageSession})
 	}
 	return fl

@@ -21,7 +21,7 @@ func spSigner(t *testing.T) (*rsa.PrivateKey, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, _, err := selfSign("https://sp.example.com", key)
+	der, _, err := selfSign("https://sp.example.com", "sp-kid", key)
 	if err != nil {
 		t.Fatal(err)
 	}

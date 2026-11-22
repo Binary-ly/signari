@@ -1,10 +1,16 @@
 # Static analysis
 
 ```sh
-cd engine
-govulncheck ./...
-gosec -exclude=G101 ./...
+cd engine && govulncheck ./...
+scripts/gosec-check.sh        # from the repository root
 ```
+
+`scripts/gosec-check.sh` runs `gosec -exclude=G101` and compares its findings,
+per rule and per file, with [`engine/gosec-baseline.txt`](../engine/gosec-baseline.txt).
+It fails on any finding the baseline does not already account for, and reports
+any count that has fallen so the baseline can be lowered in the same change. The
+baseline is the reviewed list, with the reason for each class beside it; a total
+on its own let a new finding hide behind one that had gone away.
 
 ## gosec
 
@@ -60,7 +66,7 @@ it is signal.
 | G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, SAML status URNs. No secrets. Excluded by flag rather than 17 annotations. |
 | G710 open redirect | 11 | **Guarded, in a different function.** Taint analysis cannot follow the validation. Each site checked by hand — see below. |
 | G304 file inclusion | 7 | TLS certificate, key, CA-bundle, client-JWKS, policy-file and GeoIP-database paths from operator configuration. Someone who can set them can already read any file the process can. |
-| G703 path traversal | 3 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB` and the policy file path, same reasoning. |
+| G703 path traversal | 4 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB`, `SIGNARI_GEOIP_ASN_DB` and the policy file path, same reasoning. |
 | G203 no auto-escape | 1 | `template.URL` on the `otpauth://` enrolment URI. Deliberate: `html/template`'s URL sanitiser rewrites unknown schemes to `#ZgotmplZ`, producing a dead QR link with no error anywhere. It only bypasses the *URL* sanitiser — contextual attribute escaping still applies — and the scheme is fixed. |
 
 ### Each open-redirect site
@@ -129,6 +135,65 @@ The lesson is the same one this project keeps relearning: a tool reporting
 success is not the same as a tool having run. I had carried "govulncheck is
 clean" forward from an earlier run rather than re-running it after adding SAML,
 federation, SCIM and LDAP.
+
+### Seven weeks later: twelve more, and a module
+
+Nothing had changed in this code; the world had. The next run on go1.26.6 found
+twelve standard-library advisories reachable from the engine and one in a module:
+
+| advisory | package | why it mattered here |
+|---|---|---|
+| GO-2026-6599, GO-2026-6600 | `html/template` | every page we render |
+| GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6617 | `net/http` (HTTP/2) | memory, CPU and crash in the server; malformed framing accepted by the transport |
+| GO-2026-6605, GO-2026-6613 | `net/http` (HTTP/1) | connection desynchronisation around CONNECT |
+| GO-2026-6608 | `net/textproto`, `mime/multipart` | header-size limit bypass on every request |
+| GO-2026-6609 | `net/http` | unbounded Range header parsing |
+| GO-2026-6607 | `crypto/tls` | malformed ECH extension references |
+| GO-2026-6629 | `golang.org/x/text` | panic in PRECIS, which normalises usernames |
+
+All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0. A later scan on
+go1.26.9 found **GO-2026-6809**: `crypto/x509` kept trusting intermediate
+certificates that have since been distrusted, reachable from the FIDO metadata
+check that decides whether a security key's attestation is anchored. It is fixed
+in **go1.26.10**. The release script refused to build until it moved, which is
+what it is for, and in November 2026 it refused again: on go1.26.10 it found
+**GO-2026-6859**, an HTTP/1 server crash through a header race in
+`http.MaxBytesReader`, which bounds request bodies on two dozen paths here. It is
+fixed in **go1.26.11**, now the floor in each module's `go.mod` and in every build
+image. The Terraform provider had fifteen of its own
+(gRPC authorization bypass and memory exhaustion among them), fixed by the same
+toolchain and newer `grpc`, `x/net` and `x/text`. A clean result is only true on
+the day it was produced, so CI runs govulncheck on every change rather than this
+page recording a verdict.
+
+## CodeQL
+
+[`.github/workflows/codeql.yml`](../.github/workflows/codeql.yml) runs CodeQL over
+every Go module, the TypeScript and JavaScript, and the workflows. It follows a value
+from a request across functions and packages to a sink, which gosec, reading one
+function at a time, does not. Its findings go to the repository's code scanning
+alerts and do not fail the job, so, like gosec's baseline, they are read rather than
+trusted.
+
+Its first run, 21 November 2026, opened 101: 5 critical, 84 high, 12 medium. Each
+was traced to its source by hand. None is a defect in shipped code. By rule:
+
+| Rule | Count | Why it is not a defect |
+|---|---|---|
+| `go/request-forgery` | 4 (critical) | The URL is a stranger's by design: a federation entity's statement, a `sector_identifier_uri`, a client ID metadata document, Duo's configured API host. Every one is fetched through `safedial`, which refuses private, loopback and link-local addresses at the moment of connection, after DNS, where taint analysis cannot see it. `Server.outboundHTTP`, the one way to swap the client, is set only by tests. |
+| `go/email-injection` | 1 (critical) | Headers are built, not interpolated: CR and LF are stripped from every header value, the subject is RFC 2047 encoded, the recipient must parse as an address, and `net/smtp` refuses a line break in `MAIL` and `RCPT` itself. The HTML part is `html/template`. |
+| `go/clear-text-logging` | 43 | Each logs a client id, a grant type, a scope name or an error. A client id is not a secret. CodeQL taints the whole `Authorization` header the id was parsed from, secret included, and none of the errors carries the presented secret: client authentication's are fixed strings ("the client secret did not match"). `SecretRef.String` prints the reference (`$NAME` or a path), never the value, and a password-hash cost refusal names only the costs. |
+| `go/weak-sensitive-data-hashing` | 17 | MD5 and SHA-1 to verify the hashes of a directory being migrated off, never to make one, and a password that verifies is rehashed with Argon2id at once; and the MD5 constructions RFC 2865 §5.2 and RFC 2548 specify for RADIUS. |
+| `go/unvalidated-url-redirection` | 11 | Every destination is registered or checked: a client's registered `redirect_uri`, login page or post-logout URI; a configured SAML logout endpoint; `validateProxyRedirect` against `core.proxy_hosts`; `parkedReturn`, which takes only a single-slash path on this origin; a return target sealed server-side. The eleventh is the benchmark's own test upstream. The section above has the same sites as gosec saw them. |
+| `go/reflected-xss` | 6 | Each is the `Write` of a response-writer wrapper passing bytes through (tracing, metrics, recovery, the access log, the token endpoint's status recorder, the form-redirect writer). The page the form-redirect writer composes escapes every value with `html.EscapeString`, under `default-src 'none'`. |
+| `go/uncontrolled-allocation-size` | 6 | A list sized by `limit`, which `pageParams` caps at 200. |
+| `go/allocation-size-overflow` | 3 | Sums of the lengths of things already in memory: a rendered page, an audit record's detail map. |
+| `go/incorrect-integer-conversion` | 2 | Argon2 iterations and parallelism from the environment, refused below the defaults (2 and 1) and above 16 before the conversion; CodeQL does not see a bound checked inside a closure. |
+| `js/polynomial-redos` | 1 | The TypeScript SDK trims trailing slashes from the endpoint its own caller passes to the constructor. That is the developer's configuration, not an attacker's input. |
+| `js/*` in `interop/`, `tools/`, `examples/` | 6 | Test pages and tools run by whoever runs the tests, and a quickstart with no rate limiting, which an example of how to sign in does not need. The preflight's "incomplete URL sanitization" is an assertion that the engine refused an attacker's address. |
+
+A new alert is read the same way. One this table does not explain is either a defect
+or a new row here.
 
 
 ## SHA-1 in `internal/saml/encrypt.go`
@@ -246,6 +311,151 @@ The rules stay on. A false positive that costs an hour of live verification once
 is a better trade than switching off the rule that would have caught the real one.
 
 **Baseline: 53, all reviewed.** Verified against `signari serve`, not by reading.
+
+### 53 to 71, and the two that were real
+
+The next run found 73. Twenty findings had arrived with new code and newer rules,
+and each was traced to its source rather than added to the total:
+
+- **G116, Trojan Source — real.** `internal/i18n/printer.go` held its two isolate
+  characters as raw bytes, and two test files held fifteen more invisible
+  characters the same way. Now written as escapes, and
+  `TestNoInvisibleFormattingCharacterIsWrittenRaw` fails the build on any raw
+  bidirectional, zero-width or separator character in a tracked file.
+- **G114 — real, if minor.** The remote-access test harness served with no header
+  deadline; it now has one.
+- **G115 ×3** in `internal/radius/authorization.go` — `taggedInteger` splits a
+  three-octet RFC 2868 value into bytes on purpose, and is called with constants.
+- **G705** — the trust-mark endpoint writes a JWT under its own media type with
+  `nosniff`; no browser renders it as HTML.
+- **G117, G203, G204, G301, G306** — a protocol field named `access_token`;
+  catalogue text marked safe only after every value is escaped; `kadmin` argv
+  with no shell; ejected theme templates and a QR image written world-readable,
+  none of them secrets.
+- **G710 rose to 14** with the logout chain, federation return and Duo: every
+  destination again resolves through a registered value, configuration, or the
+  same-origin check in `parkedReturn`.
+
+**Baseline: 71**, listed by rule and file in `engine/gosec-baseline.txt` and
+enforced by `scripts/gosec-check.sh`.
+
+**70** after the Duo hand-off was split, so that the health probe reads inside
+the sign-in's transaction and the redirect happens after it is released. The
+redirect target is still `AuthorizeURL` on the configured API host. gosec simply
+no longer follows it across the two functions.
+
+**71** when `SIGNARI_CA_BUNDLE` moved into `safedial`, which reads it once at
+startup so that every outbound client trusts it, not only delivery. It is a new
+`G304` of the operator-path class above. The delivery path keeps its own
+`G304`, because it still reads the older `SIGNARI_SCIM_CA_BUNDLE` when the
+general setting is unset.
+
+**78** with the OTLP exporter (3.09), seven `G115` in `internal/tracing/otlp.go`,
+all of them protobuf encoding. Two shift a field number and a wire type, both
+constants, into a key. Four write a length or a dropped count, none of which can
+be negative. The seventh writes an `int64` attribute as `uint64(v)`, its two's
+complement, which is how protobuf-go's own encoder writes an `int64`
+(`google.golang.org/protobuf` v1.36.12, `internal/impl/codec_gen.go:1851`). The
+bytes were decoded with the generated OTLP types, and Jaeger assembled them into
+traces. That count is measured against this change alone: the tree it was made on
+already gave 164 against the 71 here, findings that arrived after the baseline was
+last set and were never reviewed. They still are to be.
+
+### 78 to 177, every one traced
+
+The release build stopped at the gate with 186 findings. Each was traced to where
+its value comes from, and nine went away:
+
+- **One was real.** The passkey importer narrowed an export's signature counter
+  with `uint32(max(n, 0))`. The counter is a "32-bit unsigned big-endian
+  integer" (`specs/webauthn.txt:4873`), so a larger one is not a count any
+  authenticator sent, and the cast wrapped it to a small number, a floor a cloned
+  authenticator's next assertion clears. Such a passkey is now refused and named in
+  the report, and the person enrols it again.
+- **Three annotations gosec could not read.** `//nolint:gosec` is another linter's
+  syntax; gosec reads `#nosec`. That covered the `x5t` SHA-1 thumbprint in
+  federation token authentication. MPPE's `#nosec` on the md5 import sat above
+  `"context"` once the imports were sorted, so it annotated the wrong line.
+  md5-crypt (4.09) now carries the same annotation as the other foreign-hash
+  verifiers in `foreign.go`.
+- **The command line, 74 new and 111 in all.** Every `G304` and `G703` in `cmd/signari` is a
+  path the operator names with a flag, or a secret file the operator's
+  configuration names. The Admin API refuses such a file outright, and the command
+  line refuses one that an engine setting names. Most of the jump is gosec's
+  `G703` ignoring the `#nosec G304` already on eighteen of these lines. The two
+  `G704` are the command line's Admin API client calling the address the operator
+  gave.
+- **Nine new open-redirect sites**, of four kinds:
+  - The request's own routed path, sent back as a GET so the session cookie comes
+    with it: `saml.go`, `samlartifactrequest.go` and `wsfed.go`.
+  - A configured address: an external factor's URL, or an upstream's SLO endpoint.
+  - The post-logout target, checked against the client's registered URIs. It is
+    then either carried through the upstream under the root key's MAC
+    (`upstreamlogout.go`) or stored server-side when the logout began
+    (`samlsourcelogout.go`).
+  - A fixed path: `/authorize` on this origin. The forward-auth callback is built
+    from the host `validateProxyRedirect` accepted.
+
+The two kinds that act on what the request carries, its path and a returned
+state, are the class the rule exists for. They were checked against
+`signari serve` rather than by reading:
+
+```
+/logout/complete, a target with a forged mark, no mark, or an empty one   200, no redirect
+POST //wsfed and POST ///evil.test/../saml/sso, cross-site                 307 to this origin's /wsfed, /saml/sso
+POST /wsfed cross-site                                                     303 to /wsfed?wa=... on this origin
+POST /wsfed/org/x/..%2f..%2f..%2fevil.test                                 404
+```
+
+`ServeMux` cleans a doubled slash or a dot segment before any handler sees the
+path, so `r.URL.Path` there cannot begin `//`.
+
+The rest are false positives:
+
+- `G407`: `cipher.NewGCMWithRandomNonce` makes its own nonce, and `nil` is how it
+  is asked to.
+- `G124`: a cookie set on the in-process sub-request a headless step replays.
+  Nothing here is a `Set-Cookie`.
+- `G117`: a provider's tokens marshalled only to be sealed under the root key.
+- `G402`: TLS 1.2 is the tunnel's ceiling because RFC 5281's and MS-PEAP's keys
+  are defined over its PRF.
+- `G705`: a signed request object, with `nosniff`.
+- `G203`: the enrolment QR and URI, the same as `enrol.go`'s.
+- `G115` ×5: each value is bounded before the conversion.
+
+**177 to 179:** one `G304` and its `G703` twin in `cmd/signari/oid4vp.go`, the
+`-root-cert` file `idp vp-issuer` reads to believe an issuer by its certificate
+chain. It is a path the operator names on their own command line, the class above.
+What is read has to be whole PEM CA certificates or it is refused, and nothing in it
+leaves the process but the certificates themselves.
+
+**179 to 181:** two in `internal/httpapi/oid4vp.go`, from the wallet on another
+device. A `G203` for the QR code's SVG, which the encoder writes from a matrix of
+booleans, as the enrolment page's is. A `G710` on the redirect to the wallet, which
+was there before: what the request now picks is a boolean, this device or the page,
+and gosec's taint follows it into the address. The address is the configured wallet
+URL with this server's own `client_id` and `request_uri`. Checked against
+`signari serve` with `device` and `return` set to other origins: every answer sent the
+browser to the wallet URL, and `return` reached only the pending sign-in, through
+the same validation as every provider's.
+
+**181 to 180:** that `G710` went when the start handler was rebuilt for the browser's
+Digital Credentials API. The way to this device now begins its request in a helper and
+redirects to what that returns, and gosec no longer follows the request's choice into
+the address. The redirect is the same one, to the same configured wallet URL.
+
+**180 to 184:** `G304` and `G703`, two each, in `cmd/signari/oid4vp.go`, where `idp add`
+and the new `idp vp-iaca` read the IACA certificates an mdoc wallet sign-in believes from
+the file `-root-cert` names. The operator's own flag, on the operator's own machine, read
+as the request key and its chain beside them already are.
+
+**184 to 185:** a `G703` in `internal/risk/asn.go`, the `os.Stat` on the file
+`SIGNARI_GEOIP_ASN_DB` names, the twin of `geoip.go`'s. The path is the operator's
+setting, read once at startup; nothing a request carries reaches it. What is opened has
+to be a MaxMind-format database describing itself as an ASN or ISP one, or it is refused
+and logged, and one number per address is all that is read from it.
+
+**Baseline: 185**, every line with its reason in `engine/gosec-baseline.txt`.
 
 ## A fourth sweep: exported functions nothing calls
 

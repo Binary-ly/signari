@@ -2,12 +2,22 @@ package safedial
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Refusing to make requests into our own network.
@@ -39,16 +49,24 @@ type ErrBlocked struct {
 }
 
 func (e *ErrBlocked) Error() string {
-	return fmt.Sprintf("refusing to connect to %s (%s): it is a private, loopback "+
+	msg := fmt.Sprintf("refusing to connect to %s (%s): it is a private, loopback "+
 		"or link-local address, and an outbound request from the identity "+
 		"provider to one is how an internal service gets reached from outside",
 		e.Host, e.IP)
+	if a, err := netip.ParseAddr(e.IP); err == nil && !mayReachMetadata(a) {
+		msg += "; a destination that is meant to be internal is named in " +
+			"SIGNARI_OUTBOUND_ALLOW_PRIVATE"
+	}
+	return msg
 }
 
 // Blocked reports whether an address is one we refuse.
 //
-// Everything that is not ordinary public unicast. Listing the ranges by name
-// would miss one; asking what KIND of address it is does not.
+// Everything that is not ordinary public unicast. Go's predicates are asked
+// first, because asking what KIND of address it is covers whole classes. They
+// leave several special-purpose ranges looking like public unicast, though,
+// and do not look inside IPv6 forms that carry an IPv4 address. Those are the
+// `refused` table and embeddedIPv4 below.
 func Blocked(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -75,6 +93,234 @@ func Blocked(ip net.IP) bool {
 	if len(ip) == net.IPv6len && ip[0]&0xfe == 0xfc {
 		return true
 	}
+
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	a = a.Unmap()
+	for _, p := range refused {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	// An IPv6 address that carries an IPv4 one is that IPv4 address to anything
+	// translating it, so the IPv4 address is asked about. Without this,
+	// 64:ff9b::a9fe:a9fe (the metadata service, through a NAT64 gateway) and
+	// 2002:7f00:1:: (loopback, through a 6to4 relay) were permitted.
+	if v4, ok := embeddedIPv4(a); ok {
+		return Blocked(net.IP(v4.AsSlice()))
+	}
+	return false
+}
+
+// refused are the ranges the predicates above do not see, which Go's
+// IsPrivate, IsLoopback and the rest leave as ordinary unicast.
+var refused = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network": reaches the host itself on many stacks
+	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space (carrier NAT), where some clouds put metadata
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking, routed inside networks that use it
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and the broadcast address
+	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 for local use: a translator inside the network
+	netip.MustParsePrefix("2001::/32"),      // Teredo, whose IPv4 address is obfuscated rather than embedded
+	netip.MustParsePrefix("100::/64"),       // discard-only
+}
+
+var (
+	nat64     = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour = netip.MustParsePrefix("2002::/16")
+	v4compat  = netip.MustParsePrefix("::/96")
+)
+
+// embeddedIPv4 returns the IPv4 address an IPv6 address carries: the last four
+// bytes for NAT64's well-known prefix and the deprecated IPv4-compatible form,
+// bytes two to five for 6to4.
+func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
+	if !a.Is6() {
+		return netip.Addr{}, false
+	}
+	b := a.As16()
+	switch {
+	case nat64.Contains(a), v4compat.Contains(a) && a != netip.IPv6Unspecified() && a != netip.IPv6Loopback():
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case sixToFour.Contains(a):
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
+	}
+	return netip.Addr{}, false
+}
+
+// allowed are the private destinations the operator named in
+// SIGNARI_OUTBOUND_ALLOW_PRIVATE: an old identity provider being migrated off
+// inside the network, an internal SCIM target. Empty is the default and means
+// none.
+var allowed atomic.Pointer[[]netip.Prefix]
+
+// metadataEndpoints are where cloud platforms hand an instance or a task its
+// credentials. No outbound destination needs one, and each is the first thing a
+// forged request asks for, so no allowance reaches them.
+//
+// The first version named 169.254.169.254 alone, and the allow-list accepted
+// any range around the others: fd00::/8 reached the IPv6 instance metadata
+// service, 100.64.0.0/10 another cloud's, and 169.254.170.0/24 the container
+// credentials endpoint.
+var metadataEndpoints = []netip.Prefix{
+	// EC2 instance metadata, the address most clouds share; and its IPv6
+	// endpoint (docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-options.html).
+	netip.MustParsePrefix("169.254.169.254/32"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+	// ECS task credentials at 169.254.170.2
+	// (docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html),
+	// with the rest of that link-local /24 rather than one address in it.
+	netip.MustParsePrefix("169.254.170.0/24"),
+	// Alibaba Cloud ECS instance metadata
+	// (alibabacloud.com/help/en/ecs/user-guide/view-instance-metadata).
+	netip.MustParsePrefix("100.100.100.200/32"),
+}
+
+// opaqueTranslators are IPv6 ranges whose IPv4 destination cannot be read off
+// the address, so whether they reach a metadata endpoint cannot be decided:
+// NAT64's local-use prefix, which RFC 8215 §5 leaves to "any kind of IPv4/IPv6
+// translation mechanism", and Teredo, whose client address RFC 4380 §4 inverts
+// bit by bit. Blocked refuses both outright; an allowance covering either is
+// refused as if it covered the metadata service, because it may.
+var opaqueTranslators = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+}
+
+// metadataPrefixes are every endpoint in every form that carries it -- itself,
+// and for an IPv4 endpoint NAT64's well-known prefix, the IPv4-compatible form
+// and 6to4, which Blocked judges by the IPv4 inside -- plus the opaque
+// translators. An allow-list entry overlapping any of them would reopen a
+// metadata service, directly or through a translator.
+var metadataPrefixes = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range metadataEndpoints {
+		out = append(out, p)
+		if !p.Addr().Is4() {
+			continue
+		}
+		v4 := p.Addr().As4()
+		var nat, compat, six [16]byte
+		copy(nat[:], nat64.Addr().AsSlice())
+		copy(nat[12:], v4[:])
+		copy(compat[12:], v4[:])
+		six[0], six[1] = 0x20, 0x02
+		copy(six[2:], v4[:])
+		out = append(out,
+			netip.PrefixFrom(netip.AddrFrom16(nat), 96+p.Bits()),
+			netip.PrefixFrom(netip.AddrFrom16(compat), 96+p.Bits()),
+			netip.PrefixFrom(netip.AddrFrom16(six), 16+p.Bits()))
+	}
+	return append(out, opaqueTranslators...)
+}()
+
+func inMetadataEndpoint(a netip.Addr) bool {
+	for _, p := range metadataEndpoints {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// mayReachMetadata reports whether a is a metadata endpoint, however spelled,
+// or an address whose destination cannot be told apart from one.
+func mayReachMetadata(a netip.Addr) bool {
+	a = a.Unmap()
+	if inMetadataEndpoint(a) {
+		return true
+	}
+	for _, p := range opaqueTranslators {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	v4, ok := embeddedIPv4(a)
+	return ok && inMetadataEndpoint(v4)
+}
+
+// overlappedMetadata returns the metadata form p covers, if any.
+func overlappedMetadata(p netip.Prefix) (netip.Prefix, bool) {
+	for _, m := range metadataPrefixes {
+		if p.Overlaps(m) {
+			return m, true
+		}
+	}
+	return netip.Prefix{}, false
+}
+
+// AllowPrivate sets SIGNARI_OUTBOUND_ALLOW_PRIVATE, comma-separated addresses
+// or prefixes that outbound requests may reach although they are private.
+//
+// Refused: a prefix of length zero, which is every address, and one that
+// covers the cloud metadata address, which no destination needs and which is
+// the first thing a forged request asks for.
+func AllowPrivate(list string) error {
+	var out []netip.Prefix
+	for _, raw := range strings.Split(list, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		var p netip.Prefix
+		var err error
+		if strings.Contains(raw, "/") {
+			p, err = netip.ParsePrefix(raw)
+		} else {
+			var a netip.Addr
+			if a, err = netip.ParseAddr(raw); err == nil {
+				p = netip.PrefixFrom(a, a.BitLen())
+			}
+		}
+		// Addresses are compared unmapped, so an IPv4-mapped prefix is written
+		// back as the IPv4 one it means: ::ffff:0:0/96 is 0.0.0.0/0.
+		if err == nil && p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		if err != nil {
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q is not an address or a prefix", raw)
+		}
+		if p.Bits() == 0 {
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers every address; name "+
+				"the internal destinations instead", raw)
+		}
+		if m, hit := overlappedMetadata(p); hit {
+			return fmt.Errorf("SIGNARI_OUTBOUND_ALLOW_PRIVATE: %q covers %s, a cloud metadata "+
+				"endpoint or a translator that may reach one, which no destination needs; "+
+				"name a narrower range", raw, m)
+		}
+		out = append(out, p.Masked())
+	}
+	allowed.Store(&out)
+	return nil
+}
+
+// permitted reports whether the dialler may connect to ip: it is not blocked,
+// or it is a private address the operator allowed, or one this client allows.
+// A metadata endpoint, or a translator that may reach one, is never permitted.
+func permitted(ip net.IP, extra []netip.Prefix) bool {
+	if !Blocked(ip) {
+		return true
+	}
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	a = a.Unmap()
+	if mayReachMetadata(a) {
+		return false
+	}
+	list := extra
+	if p := allowed.Load(); p != nil {
+		list = append(append([]netip.Prefix(nil), *p...), extra...)
+	}
+	for _, p := range list {
+		if p.Contains(a) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -83,35 +329,150 @@ func Blocked(ip net.IP) bool {
 // Control runs AFTER the name has been resolved and BEFORE the socket connects,
 // which is the only point where the address is known and nothing has been sent.
 // Checking earlier checks a name; checking later has already connected.
-func Control(network, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		host = address
+func Control(network, address string, c syscall.RawConn) error {
+	return controlWith(nil)(network, address, c)
+}
+
+func controlWith(extra []netip.Prefix) func(string, string, syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			host = address
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			// Control is called with a resolved address. A name here means
+			// something upstream changed, and refusing is the safe reading.
+			return &ErrBlocked{Host: address, IP: "unresolved"}
+		}
+		if !permitted(ip, extra) {
+			return &ErrBlocked{Host: address, IP: ip.String()}
+		}
+		return nil
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		// Control is called with a resolved address. A name here means something
-		// upstream changed, and refusing is the safe reading.
-		return &ErrBlocked{Host: address, IP: "unresolved"}
+}
+
+// maxOutboundURI is the longest address this engine will ask for. RFC 9110 §4.1
+// (specs/rfc9110.txt:1059-1060) recommends "that all senders and recipients support,
+// at a minimum, URIs with lengths of 8000 octets", so past this a receiver owes us
+// nothing. maxOutboundHeader holds the fields to the same figure each, which is more
+// than a long bearer token or a cookie comes to: RFC 9110 sets no number for a field.
+const (
+	maxOutboundURI    = 8000
+	maxOutboundHeader = 8000
+)
+
+// ErrOverlong is a request too long to send. Refused here rather than sent, or what
+// comes back is a 414, or a connection closed, from somebody else's server, which says
+// nothing of why, or a truncated value a receiver then acts on.
+var ErrOverlong = errors.New("outbound request too long")
+
+func refuseOverlong(r *http.Request) (*url.URL, error) {
+	if n := len(r.URL.String()); n > maxOutboundURI {
+		return nil, fmt.Errorf("%w: a URI of %d octets to %s, over %d", ErrOverlong, n, r.URL.Host, maxOutboundURI)
 	}
-	if Blocked(ip) {
-		return &ErrBlocked{Host: address, IP: ip.String()}
+	for name, values := range r.Header {
+		for _, v := range values {
+			if len(name)+len(v) > maxOutboundHeader {
+				// The value is not said: it may be a credential.
+				return nil, fmt.Errorf("%w: a %s field of %d octets to %s, over %d", ErrOverlong, name,
+					len(name)+len(v), r.URL.Host, maxOutboundHeader)
+			}
+		}
 	}
-	return nil
+	return nil, nil
 }
 
 // Transport returns an http.Transport that will not reach private addresses.
-func Transport() *http.Transport {
-	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: Control}
-	return &http.Transport{
+func Transport() *http.Transport { return transportWith(nil) }
+
+// TransportAllowingPrivate opens every private and special-purpose range
+// except the cloud metadata endpoints, which permitted refuses before any
+// allowance is read. It is for an operator who delivers inside a network they
+// trust (SIGNARI_ALLOW_PRIVATE_DELIVERY). That switch once swapped in a plain
+// transport, and the metadata address went with everything else: a logout or
+// CIBA notification URL, which a client chooses, could then read the
+// instance's credentials.
+func TransportAllowingPrivate() *http.Transport {
+	return transportWith([]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")})
+}
+
+func transportWith(extra []netip.Prefix) *http.Transport {
+	d := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second, Control: controlWith(extra)}
+	t := &http.Transport{
 		DialContext:           d.DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
 		// A subscriber that opens a connection and never speaks holds a
 		// goroutine; an outbox drain that stalls stops delivering everything.
 		ExpectContinueTimeout: 1 * time.Second,
-		MaxIdleConnsPerHost:   2,
+		// A connection is kept for the next call to the same host and closed once idle
+		// this long. With no limit, one left idle in a transport nobody called again
+		// stayed open until the far side closed it, holding a port, a descriptor and two
+		// goroutines; a provider that never closes them ran the ports out (E.21).
+		IdleConnTimeout: 90 * time.Second,
+		// Enough that the calls to one busy host in flight at once go back to the pool,
+		// rather than all but two being closed and dialled again.
+		MaxIdleConnsPerHost: 32,
+		MaxIdleConns:        256,
+		// Not a proxy: the one hook a transport calls for every request, and it can
+		// refuse. Every client built here passes through it, and a wrapper round the
+		// transport would not reach the callers holding it as an *http.Transport.
+		Proxy: refuseOverlong,
 	}
+	if pool := roots.Load(); pool != nil {
+		t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	return t
+}
+
+// roots are the system roots plus SIGNARI_CA_BUNDLE, or nil for the system
+// roots alone.
+var roots atomic.Pointer[x509.CertPool]
+
+// TrustBundle adds the PEM certificates in the file at path to the system
+// roots for every client built here, which is what SIGNARI_CA_BUNDLE promises:
+// roots for outbound calls. Empty means the system roots alone.
+//
+// The setting was documented that way and read by logout and event delivery
+// only, so a transmitter's keys, a jwks_uri, a federation trust anchor or an
+// issuer behind an internal authority failed with an unknown-authority error,
+// and nothing pointed at the setting that looked as if it covered them.
+//
+// It adds rather than replaces, so trusting an internal authority does not stop
+// public endpoints verifying. Which certificates are trusted and which
+// addresses may be reached stay separate: this opens no private range.
+func TrustBundle(path string) error {
+	if path == "" {
+		roots.Store(nil)
+		return nil
+	}
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_CA_BUNDLE: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return fmt.Errorf("SIGNARI_CA_BUNDLE: %s holds no PEM certificate", path)
+	}
+	roots.Store(pool)
+	return nil
+}
+
+// Roots is a copy of the roots clients built here trust, for a caller adding a
+// narrower bundle of its own on top.
+func Roots() *x509.CertPool {
+	if pool := roots.Load(); pool != nil {
+		return pool.Clone()
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		return x509.NewCertPool()
+	}
+	return pool
 }
 
 // Client returns an HTTP client for calling addresses somebody else chose.
@@ -120,13 +481,45 @@ func Transport() *http.Transport {
 // Control -- a 302 into the private range is refused exactly like a direct
 // attempt. Not refusing redirects outright, because subscribers do move and a
 // permanent redirect is a normal thing for a URL to do.
-func Client(timeout time.Duration) *http.Client {
+func Client(timeout time.Duration) *http.Client { return ClientAllowing(timeout) }
+
+// ClientAllowing is Client that may also reach the given prefixes, for one
+// destination an operator wrote down explicitly, such as an SMS gateway on
+// loopback. Wider allowances belong in SIGNARI_OUTBOUND_ALLOW_PRIVATE, where
+// they are visible.
+func ClientAllowing(timeout time.Duration, extra ...netip.Prefix) *http.Client {
+	return client(timeout, sharedTransport(extra))
+}
+
+// sharedTransport is the one transport every client for these allowances and these roots
+// is built on, so a connection made for one call is there for the next. Each call to Client
+// built a transport of its own: every federated sign-in, hook call and delivery dialled
+// and shook hands afresh, and left its connection open behind it (E.21). A connection is
+// reused only to the address it was dialled to, which the dialler checked then, so sharing
+// opens nothing the guard refuses. Callers that change a transport clone it first, as one
+// shared must be.
+func sharedTransport(extra []netip.Prefix) *http.Transport {
+	key := fmt.Sprintf("%p|%v", roots.Load(), extra)
+	if t, ok := sharedTransports.Load(key); ok {
+		return t.(*http.Transport)
+	}
+	t, _ := sharedTransports.LoadOrStore(key, transportWith(extra))
+	return t.(*http.Transport)
+}
+
+// sharedTransports are keyed by the roots they trust as well, so a bundle set after a
+// client was built is trusted by the next one.
+var sharedTransports sync.Map
+
+// client wraps t in a span per request (3.09), which is why a caller wanting the
+// *http.Transport underneath asks Underneath rather than asserting the type.
+func client(timeout time.Duration, t *http.Transport) *http.Client {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	return &http.Client{
 		Timeout:   timeout,
-		Transport: Transport(),
+		Transport: &tracing.Transport{Base: t},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")
@@ -140,6 +533,34 @@ func Client(timeout time.Duration) *http.Client {
 			return nil
 		},
 	}
+}
+
+// ClientTrusting is Client with its own certificate roots, for a destination
+// behind an internal certificate authority. Which certificates are trusted and
+// which addresses may be reached are separate decisions: trusting a private CA
+// does not open the private network, which SIGNARI_OUTBOUND_ALLOW_PRIVATE does.
+func ClientTrusting(timeout time.Duration, roots *x509.CertPool) *http.Client {
+	t := transportWith(nil)
+	t.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return client(timeout, t)
+}
+
+// Underneath is the *http.Transport a client built here sends through, for a
+// caller that clones it.
+func Underneath(rt http.RoundTripper) (*http.Transport, bool) {
+	if t, ok := rt.(*tracing.Transport); ok {
+		rt = t.Base
+	}
+	t, ok := rt.(*http.Transport)
+	return t, ok
+}
+
+// Over is t, wrapped as rt was.
+func Over(rt http.RoundTripper, t *http.Transport) http.RoundTripper {
+	if _, ok := rt.(*tracing.Transport); ok {
+		return &tracing.Transport{Base: t}
+	}
+	return t
 }
 
 // CheckURL is a cheap pre-flight for the moment a subscription is SAVED.
@@ -160,7 +581,9 @@ func CheckURL(raw string) error {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && Blocked(ip) {
+	// The same judgement as the dialler, allow-list included, so a destination
+	// the operator permitted is not refused at save time and then reached.
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && !permitted(ip, nil) {
 		return (&ErrBlocked{Host: host, IP: ip.String()})
 	}
 	// Names are resolved rather than pattern-matched: "localhost" is not the only
@@ -173,7 +596,7 @@ func CheckURL(raw string) error {
 		return nil
 	}
 	for _, ip := range ips {
-		if Blocked(ip) {
+		if !permitted(ip, nil) {
 			return &ErrBlocked{Host: host, IP: ip.String()}
 		}
 	}

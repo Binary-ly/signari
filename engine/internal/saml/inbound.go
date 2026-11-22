@@ -1,8 +1,10 @@
 package saml
 
 import (
+	"crypto"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -50,6 +52,16 @@ type InboundProvider struct {
 	// SkewSeconds tolerates clock drift between us and the upstream. Bounded:
 	// see clampSkew.
 	SkewSeconds int
+
+	// SignRequests says this upstream is to be sent signed requests, by
+	// RequestSigner when the request is built.
+	SignRequests  bool
+	RequestSigner crypto.Signer
+
+	// Decrypters are the keys an assertion from this upstream may be encrypted
+	// to, and RequireEncryption refuses one that is not.
+	Decrypters        []crypto.Decrypter
+	RequireEncryption bool
 }
 
 // AuthnRequestOut is a request to send to an upstream provider.
@@ -64,10 +76,10 @@ type AuthnRequestOut struct {
 
 // BuildAuthnRequest builds a request to send to the upstream IdP.
 //
-// Unsigned. Most upstreams do not require SP-signed requests, and signing one
-// requires a key exchange in the other direction that many deployments never
-// complete. The security of this flow rests on verifying the RESPONSE, which is
-// where the authentication claim actually lives.
+// Unsigned unless the provider asks. Most upstreams do not require SP-signed
+// requests, and signing one requires a key exchange in the other direction that
+// many deployments never complete. The security of this flow rests on verifying
+// the RESPONSE, which is where the authentication claim actually lives.
 func BuildAuthnRequest(p *InboundProvider, relayState string,
 	now time.Time) (*AuthnRequestOut, error) {
 
@@ -78,6 +90,8 @@ func BuildAuthnRequest(p *InboundProvider, relayState string,
 		return nil, fmt.Errorf("provider has no SP entity ID")
 	case p.ACSURL == "":
 		return nil, fmt.Errorf("provider has no assertion consumer service URL")
+	case p.SignRequests && p.RequestSigner == nil:
+		return nil, fmt.Errorf("provider is to be sent signed requests and there is no key to sign them with")
 	}
 
 	id, err := newID()
@@ -121,6 +135,19 @@ func BuildAuthnRequest(p *InboundProvider, relayState string,
 	u, err := url.Parse(p.SSOURL)
 	if err != nil {
 		return nil, fmt.Errorf("SSO URL %q: %w", p.SSOURL, err)
+	}
+	if p.SignRequests {
+		// The signature is over these octets as they are sent, so they are added
+		// to the URL as a string and never go through a url.Values.
+		signed, err := SignRedirectQuery("SAMLRequest", encoded, relayState, p.RequestSigner)
+		if err != nil {
+			return nil, err
+		}
+		if u.RawQuery != "" {
+			signed = u.RawQuery + "&" + signed
+		}
+		u.RawQuery = signed
+		return &AuthnRequestOut{ID: id, RedirectURL: u.String(), XML: xml}, nil
 	}
 	q := u.Query()
 	q.Set("SAMLRequest", encoded)
@@ -210,34 +237,17 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	// returning the honest subject. Harmless in itself, and a malformed document
 	// accepted is where the next bug starts. So the guard earns its place by
 	// refusing, not by preventing takeover.
-	if all := doc.FindElements("//Assertion"); refuseMultipleAssertions && len(all) > 1 {
+	all, sealed := doc.FindElements("//Assertion"), doc.FindElements("//EncryptedAssertion")
+	if refuseMultipleAssertions && len(all)+len(sealed) > 1 {
 		return nil, fmt.Errorf("the response contains %d assertions; exactly one is "+
 			"accepted, because choosing between them is the attacker's decision to make",
-			len(all))
+			len(all)+len(sealed))
+	}
+	if p.RequireEncryption && len(sealed) == 0 {
+		return nil, fmt.Errorf("this provider is held to encrypting its assertions, and this one is not")
 	}
 
-	assertion := root.FindElement("./Assertion")
-	if assertion == nil {
-		if root.FindElement("./EncryptedAssertion") != nil {
-			return nil, fmt.Errorf("the assertion is encrypted, which this provider is " +
-				"not configured to decrypt")
-		}
-		return nil, fmt.Errorf("no assertion in the response")
-	}
-	assertionID := assertion.SelectAttrValue("ID", "")
-	if assertionID == "" {
-		return nil, fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
-	}
-
-	// The signature may cover the Response or the Assertion. Both are legal, and
-	// an attacker gets to choose, so whichever is present must actually protect
-	// the assertion we go on to read.
-	//
-	// verifyInbound returns THE ASSERTION INSIDE THE VERIFIED ELEMENT, and
-	// everything below reads from that. Re-finding the assertion in the original
-	// tree would reintroduce exactly the gap between "what was verified" and
-	// "what was read" that this whole file is about.
-	assertion, err := verifyInbound(doc, p.CertPEM, root, assertion, assertionID)
+	assertion, assertionID, err := readAssertion(doc, root, p)
 	if err != nil {
 		return nil, err
 	}
@@ -246,15 +256,19 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	if err := checkIssuer(root, assertion, p.EntityID); err != nil {
 		return nil, err
 	}
-	if err := checkInResponseTo(root, assertion, p, opt.ExpectedInResponseTo); err != nil {
-		return nil, err
-	}
 	if err := checkDestination(root, opt.Destination); err != nil {
 		return nil, err
 	}
-
 	skew := clampSkew(p.SkewSeconds)
-	notOnOrAfter, err := checkConditions(assertion, p.SPEntityID, opt.Now, skew)
+	confirmation, err := bearerConfirmation(assertion, opt, skew)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkInResponseTo(root, confirmation, p, opt.ExpectedInResponseTo); err != nil {
+		return nil, err
+	}
+
+	notOnOrAfter, err := checkConditions(assertion, confirmation, p.SPEntityID, opt.Now, skew)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +279,22 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 		NotOnOrAfter: notOnOrAfter,
 	}
 
-	if nameID := assertion.FindElement("./Subject/NameID"); nameID != nil {
+	nameID := assertion.FindElement("./Subject/NameID")
+	if encrypted := assertion.FindElement("./Subject/EncryptedID"); nameID == nil && encrypted != nil {
+		// Inside the assertion that was verified, so the signature covers this
+		// ciphertext whichever element carried it.
+		if len(p.Decrypters) == 0 {
+			return nil, fmt.Errorf("the NameID is encrypted, which this provider is not configured to decrypt")
+		}
+		plain, err := open(encrypted, p.Decrypters, true)
+		if err != nil {
+			return nil, err
+		}
+		if _, nameID, err = decrypted(plain, "NameID", encrypted); err != nil {
+			return nil, err
+		}
+	}
+	if nameID != nil {
 		out.Subject = strings.TrimSpace(nameID.Text())
 		out.SubjectFormat = nameID.SelectAttrValue("Format", "")
 	}
@@ -278,7 +307,27 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 		out.SessionIndex = sc.SelectAttrValue("SessionIndex", "")
 	}
 
-	for _, attr := range assertion.FindElements("./AttributeStatement/Attribute") {
+	attributes := assertion.FindElements("./AttributeStatement/Attribute")
+	// An EncryptedAttribute is read as the attribute it holds, an element "of or derived
+	// from AttributeType" (specs/saml-core-2.0-os.txt:1559-1571).
+	// Inside the assertion that was verified, so the signature covers its
+	// ciphertext as it covers an EncryptedID's. Refused rather than skipped without a
+	// key: an address dropped quietly would match the person on less than was sent.
+	for _, encrypted := range assertion.FindElements("./AttributeStatement/EncryptedAttribute") {
+		if len(p.Decrypters) == 0 {
+			return nil, fmt.Errorf("an attribute is encrypted, which this provider is not configured to decrypt")
+		}
+		plain, err := open(encrypted, p.Decrypters, true)
+		if err != nil {
+			return nil, err
+		}
+		_, attr, err := decrypted(plain, "Attribute", encrypted)
+		if err != nil {
+			return nil, err
+		}
+		attributes = append(attributes, attr)
+	}
+	for _, attr := range attributes {
 		name := attr.SelectAttrValue("Name", "")
 		if name == "" {
 			continue
@@ -313,6 +362,79 @@ func ConsumeResponse(raw []byte, p *InboundProvider,
 	return out, nil
 }
 
+// readAssertion finds the response's one assertion, decrypting it if it has to,
+// and returns it verified.
+//
+// The signature may cover the Response or the Assertion. Both are legal, and an
+// attacker gets to choose, so whichever is present must actually protect the
+// assertion we go on to read.
+//
+// What this returns is THE ASSERTION INSIDE THE VERIFIED ELEMENT, and everything
+// after reads from that. Re-finding the assertion in the original tree would
+// reintroduce exactly the gap between "what was verified" and "what was read" that
+// this whole file is about.
+func readAssertion(doc *etree.Document, root *etree.Element, p *InboundProvider) (*etree.Element, string, error) {
+	assertion := root.FindElement("./Assertion")
+	if assertion != nil {
+		id := assertion.SelectAttrValue("ID", "")
+		if id == "" {
+			return nil, "", fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
+		}
+		verified, err := verifyInbound(doc, p.CertPEM, root, assertion, id)
+		return verified, id, err
+	}
+	sealed := root.FindElement("./EncryptedAssertion")
+	if sealed == nil {
+		return nil, "", fmt.Errorf("no assertion in the response")
+	}
+	if len(p.Decrypters) == 0 {
+		return nil, "", fmt.Errorf("the assertion is encrypted, which this provider is " +
+			"not configured to decrypt")
+	}
+
+	// A signature over the response covers the ciphertext, and is checked before
+	// a byte of it is decrypted: that is what makes the decryption safe to attempt.
+	// Taken from the verified element, for the reason above.
+	covered := root.FindElement("./Signature") != nil
+	if covered {
+		id := root.SelectAttrValue("ID", "")
+		if id == "" {
+			return nil, "", fmt.Errorf("the response is signed but has no ID")
+		}
+		verified, err := verifySignedElement(doc, root, p.CertPEM, "Response", id)
+		if err != nil {
+			return nil, "", err
+		}
+		if sealed = verified.FindElement("./EncryptedAssertion"); sealed == nil {
+			return nil, "", fmt.Errorf("the signed response contains no assertion")
+		}
+	}
+	plain, err := open(sealed, p.Decrypters, covered)
+	if err != nil {
+		return nil, "", err
+	}
+	inner, assertion, err := decrypted(plain, "Assertion", sealed)
+	if err != nil {
+		return nil, "", err
+	}
+	if n := len(inner.FindElements("//Assertion")); refuseMultipleAssertions && n != 1 {
+		return nil, "", fmt.Errorf("the encrypted assertion holds %d assertions", n)
+	}
+	id := assertion.SelectAttrValue("ID", "")
+	if id == "" {
+		return nil, "", fmt.Errorf("the assertion has no ID, so it cannot be replay-checked")
+	}
+	if assertion.FindElement("./Signature") != nil {
+		verified, err := verifySignedElement(inner, assertion, p.CertPEM, "Assertion", id)
+		return verified, id, err
+	}
+	if covered {
+		return assertion, id, nil
+	}
+	return nil, "", fmt.Errorf("neither the response nor the assertion is signed: encrypting an " +
+		"assertion to a public key says nothing about who wrote it")
+}
+
 // verifyInbound checks the signature wherever it legitimately sits.
 //
 // A Response may be signed at the Response level, at the Assertion level, or
@@ -326,6 +448,40 @@ func verifyInbound(doc *etree.Document, certPEM string, root, assertion *etree.E
 	assertionSigned := assertion.FindElement("./Signature") != nil
 
 	switch {
+	case assertionSigned && responseSigned:
+		// Both, as an identity provider told to sign the response and the assertion
+		// does. Each signature sits in its one position, a direct child of the element
+		// it covers, and each is verified: a response signed by the provider around an
+		// assertion signed by somebody else is not a signed assertion. These two are
+		// the only signatures allowed; a third anywhere refuses the document, as when
+		// only one is expected. Until November 2026 the two were counted together and
+		// every such response was refused, though this comment said both were legal.
+		//
+		// The response first, on the document as it arrived: its signature covers the
+		// assertion's, and verifying an ECDSA signature rewrites its value in place.
+		responseID := root.SelectAttrValue("ID", "")
+		if responseID == "" {
+			return nil, fmt.Errorf("the response is signed but has no ID")
+		}
+		responseSig := root.SelectElement("Signature")
+		assertionSig := assertion.SelectElement("Signature")
+		verified, err := verifySignedElement(doc, root, certPEM, "Response", responseID, assertionSig)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := verifySignedElement(doc, assertion, certPEM, "Assertion", assertionID, responseSig); err != nil {
+			return nil, err
+		}
+		inner := verified.FindElement("./Assertion")
+		if inner == nil {
+			return nil, fmt.Errorf("the signed response contains no assertion")
+		}
+		if got := inner.SelectAttrValue("ID", ""); got != assertionID {
+			return nil, fmt.Errorf("the signed response carries assertion %q, not the "+
+				"assertion being processed (%q)", got, assertionID)
+		}
+		return inner, nil
+
 	case assertionSigned:
 		// Preferred: the signature covers exactly the element read afterwards.
 		return verifySignedElement(doc, assertion, certPEM, "Assertion", assertionID)
@@ -416,17 +572,14 @@ func checkIssuer(root, assertion *etree.Element, want string) error {
 // can be posted into a victim's session and signs them in as somebody else. The
 // signature says the upstream minted it; only this says it was minted for now,
 // for this browser, because we asked.
-func checkInResponseTo(root, assertion *etree.Element, p *InboundProvider,
+func checkInResponseTo(root, confirmation *etree.Element, p *InboundProvider,
 	expected string) error {
 
 	got := root.SelectAttrValue("InResponseTo", "")
 
 	// The subject confirmation carries it too, and both must agree: a document
 	// where they differ is trying to satisfy two readers at once.
-	scGot := ""
-	if scd := assertion.FindElement("./Subject/SubjectConfirmation/SubjectConfirmationData"); scd != nil {
-		scGot = scd.SelectAttrValue("InResponseTo", "")
-	}
+	scGot := confirmation.SelectAttrValue("InResponseTo", "")
 	if got != "" && scGot != "" && got != scGot {
 		return fmt.Errorf("the response answers request %q while the assertion inside "+
 			"answers %q", got, scGot)
@@ -471,8 +624,56 @@ func checkDestination(root *etree.Element, want string) error {
 	return nil
 }
 
+const bearerMethod = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
+
+// bearerConfirmation finds what lets the holder of this assertion present it here: a
+// bearer confirmation addressed to our ACS, unexpired, answering our request. An
+// assertion may carry several, for several recipients, so each is tried and any one
+// will do. Without this an assertion minted for another service provider's ACS passes
+// on its audience and its timing alone, and those two say nothing of where it was
+// meant to be delivered.
+//
+// The SAML profiles document is not in specs/. This is at least as strict as the
+// implementation it was read against, which takes the first bearer confirmation and
+// matches its Recipient to the response's Destination; see ROADMAP 8.35.
+func bearerConfirmation(assertion *etree.Element, opt ConsumeOptions, skew time.Duration) (*etree.Element, error) {
+	var refused error
+	for _, sc := range assertion.FindElements("./Subject/SubjectConfirmation") {
+		if sc.SelectAttrValue("Method", "") != bearerMethod {
+			continue
+		}
+		scd := sc.FindElement("./SubjectConfirmationData")
+		if scd == nil {
+			refused = errors.New("a bearer confirmation has no SubjectConfirmationData, so nothing says where it may be used")
+			continue
+		}
+		if recipient := scd.SelectAttrValue("Recipient", ""); opt.Destination == "" || !sameURL(recipient, opt.Destination) {
+			refused = fmt.Errorf("the assertion is confirmed for %q, not for this endpoint (%q)", recipient, opt.Destination)
+			continue
+		}
+		until, err := time.Parse(time.RFC3339, scd.SelectAttrValue("NotOnOrAfter", ""))
+		if err != nil {
+			refused = fmt.Errorf("a bearer confirmation has no usable NotOnOrAfter: %w", err)
+			continue
+		}
+		if !opt.Now.Add(-skew).Before(until) {
+			refused = fmt.Errorf("the subject confirmation expired at %s", until.Format(time.RFC3339))
+			continue
+		}
+		if got := scd.SelectAttrValue("InResponseTo", ""); got != "" && got != opt.ExpectedInResponseTo {
+			refused = fmt.Errorf("a bearer confirmation answers request %q, not the one this browser sent", got)
+			continue
+		}
+		return scd, nil
+	}
+	if refused == nil {
+		refused = errors.New("the assertion has no bearer confirmation, so nothing allows its holder to present it")
+	}
+	return nil, refused
+}
+
 // checkConditions validates the time window and the audience.
-func checkConditions(assertion *etree.Element, spEntityID string, now time.Time,
+func checkConditions(assertion, confirmation *etree.Element, spEntityID string, now time.Time,
 	skew time.Duration) (time.Time, error) {
 
 	cond := assertion.FindElement("./Conditions")
@@ -531,22 +732,9 @@ func checkConditions(assertion *etree.Element, spEntityID string, now time.Time,
 	}
 
 	// The subject confirmation has its own expiry, and it is usually shorter.
-	if scd := assertion.FindElement(
-		"./Subject/SubjectConfirmation/SubjectConfirmationData"); scd != nil {
-		if v := scd.SelectAttrValue("NotOnOrAfter", ""); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("SubjectConfirmationData NotOnOrAfter "+
-					"%q is not a timestamp: %w", v, err)
-			}
-			if !now.Add(-skew).Before(t) {
-				return time.Time{}, fmt.Errorf("the subject confirmation expired at %s",
-					t.Format(time.RFC3339))
-			}
-			if notOnOrAfter.IsZero() || t.Before(notOnOrAfter) {
-				notOnOrAfter = t
-			}
-		}
+	if t, err := time.Parse(time.RFC3339, confirmation.SelectAttrValue("NotOnOrAfter", "")); err == nil &&
+		(notOnOrAfter.IsZero() || t.Before(notOnOrAfter)) {
+		notOnOrAfter = t
 	}
 
 	if notOnOrAfter.IsZero() {

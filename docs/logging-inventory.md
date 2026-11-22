@@ -19,11 +19,11 @@ mistake this document exists to prevent.
 |---|---|---|
 | Written by | `slog` | `core.audit_events` |
 | Destination | stderr | PostgreSQL |
-| Format | logfmt (`slog.TextHandler`), level `Info` | table rows |
+| Format | logfmt or JSON (`SIGNARI_LOG_FORMAT`), level `Info` unless `SIGNARI_LOG_LEVEL` says otherwise | table rows |
 | Purpose | operating the server | evidencing what happened to an account |
 | Survives a crash | only if collected | yes |
 | Tamper-evident | no | yes — hash chained |
-| Personal data | avoided | encrypted per subject |
+| Personal data | subject ids where a line must say whose request it was; no username, email address or certificate subject, which a test enforces. LDAP and RADIUS lines carry the client's address, an application or access point rather than a person | subject ids only, nothing encrypted; this row said avoided, and encrypted per subject |
 | Authoritative | no | **yes** |
 
 A question about *whether the server is healthy* is answered from the first. A
@@ -32,7 +32,20 @@ diagnostic log is not evidence and is not treated as any.
 
 ## Layer 1 — the diagnostic log
 
-**Format.** logfmt via `slog.TextHandler` to stderr at `Info`. Every call site
+**Personal data.** Until October 2026, LDAP binds and RADIUS logins logged the
+username they were given, valid or not, an LDAP write refusal the bound DN, and
+an EAP-TLS refusal the certificate's subject. They now log none of it: the
+audit trail records each bind and login by subject, and an EAP-TLS refusal
+names the certificate by its serial. `TestNoLogLineNamesAPerson` reads every log
+call in the engine and fails on a `username`, `email`, `upn`, `bound_dn` or
+similar key, or on a certificate's subject.
+
+**Access log.** `SIGNARI_ACCESS_LOG=1` adds one line per request: method, route
+pattern, status, bytes, duration and correlation id. The pattern, not the path,
+so no identifier in a URL reaches it; no query string; no client address.
+
+**Format.** logfmt via `slog.TextHandler` to stderr at `Info` by default, or JSON
+with `SIGNARI_LOG_FORMAT=json`, at the level `SIGNARI_LOG_LEVEL` names. Every call site
 uses structured key/value pairs; there are **zero** uses of `fmt.Sprintf` inside a
 log call across `internal/`, which is what keeps V16.4.1 (log injection) met —
 values are escaped by the handler rather than concatenated into a message.
@@ -62,8 +75,14 @@ a code aloud is enough to find both layers.
 
 ## Layer 2 — the audit trail
 
-**Storage.** `core.audit_events`, PostgreSQL, `occurred_at timestamptz` defaulting
-to `now()`.
+**Storage.** `core.audit_events`, PostgreSQL, `occurred_at timestamptz` set by
+the engine when it writes the row and, from hash version 2, covered by the
+row's hash. Until October 2026 it defaulted to the database's clock and sat
+outside the hash, so a row's time could be rewritten and the chain still
+verified. Rows written before that, and by a release before it, are version 1
+and keep verifying without their time; `hash_version` says which a row is, and
+claiming version 1 for a version-2 row breaks the chain at that row like any
+other change.
 
 **Coverage.** 54 distinct event types, emitted from `internal/httpapi` (50 sites)
 and `internal/adminapi` (5). Authentication is covered in both directions —
@@ -74,8 +93,21 @@ impersonation start/end/refusal, token exchange, credential issuance, SCIM
 provisioning, SAML and WS-Fed issuance, RAC sessions, UMA decisions, admin
 mutations, and account recovery request/cancel.
 
+**The command line is covered too.** Every `signari` command that changes
+something leaves a record. Some write their own, more specific one, for
+example `admin.identity_provider_updated` from `idp disable`. Every other
+command that wrote gets one `admin.cli_command` record. It names the command
+and the flags given, never their values, which can be secrets. It also names
+the operating-system account and host as the operator. Migration 0140's
+triggers notice that a command wrote, and whether it audited itself, so a new
+command needs no code to be covered. Until October 2026 about 115 commands
+wrote and recorded nothing, including granting impersonation, rotating keys
+and creating admin tokens.
+
 **Tamper evidence.** Each row carries `prev_hash` and `entry_hash`, chained over
-**ciphertext** so the chain stays verifiable after a crypto-shred. Migration 0043
+the row's plaintext `detail`. It stays verifiable after a crypto-shred because a
+shred rewrites no audit row (this said the chain was over ciphertext, which it
+never was). Migration 0043
 removed the two `ON DELETE SET NULL` foreign keys (`org_id`, `admin_token_id`)
 because both columns are inside the chain hash — deleting an organisation silently
 rewrote history and broke verification. An audit row is not current state, so
@@ -85,8 +117,12 @@ Note the precise claim, because V16.4.2 says logs "cannot be modified": the chai
 makes modification **detectable**, and no ordinary administrative action can
 rewrite a row. It is not a database trigger refusing `UPDATE`.
 
-**Personal data.** `detail_enc` holds anything personal, encrypted with the
-subject's DEK. `detail` holds the rest in clear JSON.
+**Personal data.** Kept out by rule rather than by encryption: rows name people by
+subject id, never by address, and `detail` is clear JSON that must carry nothing
+personal. A test follows a person through the admin API, from creation to
+erasure, and fails if any identifier they had reaches the trail. A `detail_enc`
+column, meant for personal detail sealed under the subject's key, was never
+written or read, and was dropped in October 2026.
 
 **Retention.** `retention_class` is `security`, `operational` or `profile`,
 constrained by a `CHECK` and defaulting to `security`. It exists so an erasure
@@ -94,9 +130,12 @@ request can be honoured partially with a documented reason — security events
 survive on legitimate-interest grounds, profile events do not.
 
 **This is classification, not expiry.** No job deletes audit rows by age. Rows are
-removed only by an erasure request acting on class. An operator who needs
-time-based retention has to implement it, and this sentence is here so that is a
-decision rather than a surprise.
+removed only by an erasure request acting on class, or by an operator running
+`signari audit archive -until <date>`. That command moves the oldest entries to a
+file that verifies on its own, and the trail left goes on verifying from it (see
+[audit-export.md](audit-export.md#archiving-the-oldest-entries)). Until October
+2026 there was no way to shrink the trail that did not break the chain, so it
+only grew.
 
 **Access control.** `signari_admin`, the role the console uses, holds **no grants
 on `core`** — it reads 15 views in `core_v1`. `signari_maintenance` is `NOLOGIN`

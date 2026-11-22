@@ -133,6 +133,13 @@ func (s *Server) declareAttribute(w http.ResponseWriter, r *http.Request) {
 			"detail": "value_type is one of string, number, boolean, date",
 		})
 		return
+	case errors.Is(err, store.ErrAttributeTypeInUse):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "attribute_type_in_use",
+			"detail": err.Error() + "; its values were checked against that type. " +
+				"Declare a new attribute and move the values deliberately",
+		})
+		return
 	case err != nil:
 		s.log.Error("declaring an attribute", "org_id", orgID, "name", req.Name, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
@@ -160,7 +167,28 @@ func (s *Server) listAttributes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"attributes": attrs})
+	// By the names the declaration takes, as every other response is: the
+	// store type went out as it was, so this one route answered in Go's field
+	// names (ID, ValueType, UserReadable) where the rest say snake_case (6.02).
+	out := make([]attributeView, 0, len(attrs))
+	for _, a := range attrs {
+		out = append(out, attributeView{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+			ValueType: a.ValueType, Personal: a.Personal, UserReadable: a.UserReadable,
+			UserWritable: a.UserWritable, Required: a.Required})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attributes": out})
+}
+
+// attributeView is one declaration as the list returns it.
+type attributeView struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DisplayName  string `json:"display_name"`
+	ValueType    string `json:"value_type"`
+	Personal     bool   `json:"personal"`
+	UserReadable bool   `json:"user_readable"`
+	UserWritable bool   `json:"user_writable"`
+	Required     bool   `json:"required"`
 }
 
 // getUserAttributes returns one user's attribute values.
@@ -199,8 +227,13 @@ func (s *Server) getUserAttributes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A token narrowed to named attributes is given those, and nothing else is
+	// said about the rest: not their values, and not that the person has them.
 	out := make([]map[string]any, 0, len(values))
 	for _, v := range values {
+		if requireAttribute(ctx, v.Name) != nil {
+			continue
+		}
 		out = append(out, map[string]any{
 			"name": v.Name, "display_name": v.DisplayName,
 			"value_type": v.ValueType, "personal": v.Personal,
@@ -253,6 +286,14 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		// Every name the token may reach, before any is written: one it may not
+		// refuses the whole request, rather than writing the rest.
+		for name := range req.Attributes {
+			if err := requireAttribute(ctx, name); err != nil {
+				return err
+			}
+		}
+
 		// Names only, never values, and sorted so the record is stable.
 		names := make([]string, 0, len(req.Attributes))
 		for name, value := range req.Attributes {
@@ -286,6 +327,13 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user_not_found"})
 		return
+	case errors.Is(err, store.ErrInvalidAttributeValue):
+		// Names the attribute and its type, never the value, which may be
+		// personal and would then sit in every log that keeps responses.
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid_attribute_value", "detail": err.Error(),
+		})
+		return
 	case errors.Is(err, store.ErrNoSuchAttribute):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "unknown_attribute",
@@ -303,6 +351,54 @@ func (s *Server) setUserAttributes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": userID, "config_version": version,
 	})
+}
+
+// clearUserAttribute removes one of a person's values (6.07). Before it the
+// Admin API could set a value and never take one away, so a leaver's
+// department could only be overwritten with another.
+func (s *Server) clearUserAttribute(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID, name := r.PathValue("userID"), r.PathValue("name")
+	if err := requireAttribute(ctx, name); err != nil {
+		writeCrossOrg(w, err)
+		return
+	}
+	orgID, ok := s.consentUser(w, r)
+	if !ok {
+		return
+	}
+	pre, ok := s.readPrecondition(w, r)
+	if !ok {
+		return
+	}
+	version, err := s.mutateIf(ctx, pre, func(tx pgx.Tx) error {
+		if err := store.RemoveUserAttribute(ctx, tx, userID, orgID, name); err != nil {
+			return err
+		}
+		// The name only, as admin.attributes_set records it.
+		return audit.Write(ctx, tx, audit.Event{Type: "admin.attribute_cleared", AdminTokenID: TokenIDFrom(ctx),
+			OrgID: orgID, SubjectID: userID, Detail: map[string]any{"attribute": name}})
+	})
+	switch {
+	case err != nil && writePreconditionFailure(w, err):
+		return
+	case errors.Is(err, store.ErrNoSuchAttribute):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown_attribute", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrAttributeNotSet):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "attribute_not_set", "detail": err.Error()})
+		return
+	case errors.Is(err, store.ErrAttributeRequired):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "attribute_required", "detail": err.Error()})
+		return
+	case err != nil:
+		s.log.Error("clearing an attribute", "user_id", userID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	setETag(w, version)
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "attribute": name, "cleared": true,
+		"config_version": version})
 }
 
 // isConstraintViolation reports whether err names a database constraint.

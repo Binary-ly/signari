@@ -15,14 +15,14 @@ package migrate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -52,6 +52,75 @@ type Migration struct {
 	Name    string
 	SQL     string
 }
+
+// noTransactionMarker, as a file's first line, runs it outside a transaction
+// (3.01). Every file used to run in one, and CREATE INDEX CONCURRENTLY
+// refuses to, so an index on a large table could only be built by locking it
+// against writes for as long as the build took. Such a file may hold only
+// concurrent index builds and drops, written to be run again: a failure part
+// way leaves what it built, and the next run must not trip over it.
+const noTransactionMarker = "-- signari:no-transaction"
+
+var concurrentIndex = regexp.MustCompile(`(?is)^(?:CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)\s+ON\s+core\.[a-z0-9_]+\b.*|DROP\s+INDEX\s+CONCURRENTLY\s+IF\s+EXISTS\s+core\.[a-z0-9_]+)$`)
+
+// NoTransaction reports whether the migration runs outside a transaction.
+func (m Migration) NoTransaction() bool {
+	first, _, _ := strings.Cut(m.SQL, "\n")
+	return strings.TrimSpace(first) == noTransactionMarker
+}
+
+// statements splits a no-transaction migration into the statements it runs,
+// each with the index it builds ("" for a drop), refusing anything but a
+// concurrent, repeatable index build or drop. A plain split on ";" is safe
+// only because nothing else is allowed: no function body, no quoted string.
+func (m Migration) statements() (stmts, builds []string, err error) {
+	var body strings.Builder
+	for _, line := range strings.Split(m.SQL, "\n") {
+		if t := strings.TrimSpace(line); t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	for _, s := range strings.Split(body.String(), ";") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		match := concurrentIndex.FindStringSubmatch(s)
+		if match == nil {
+			return nil, nil, fmt.Errorf("a %s migration may only build or drop indexes, "+
+				"concurrently and repeatably (CREATE INDEX CONCURRENTLY IF NOT EXISTS name ON "+
+				"core.table ..., DROP INDEX CONCURRENTLY IF EXISTS core.name); %.60q is neither",
+				noTransactionMarker, s)
+		}
+		stmts = append(stmts, s)
+		builds = append(builds, strings.ToLower(match[1]))
+	}
+	if len(stmts) == 0 {
+		return nil, nil, fmt.Errorf("a %s migration holds no statement", noTransactionMarker)
+	}
+	return stmts, builds, nil
+}
+
+// Options bound what a migration may wait for.
+type Options struct {
+	// LockTimeout bounds each statement's wait for a lock. An ALTER TABLE
+	// queued behind a long transaction makes every later query on that table
+	// queue behind it, an outage that looks like a slow migration; failing
+	// fast and running it again is the better trade. Zero means no bound.
+	LockTimeout time.Duration
+	// StatementTimeout bounds each statement. Zero means none: building an
+	// index on a large table takes as long as it takes.
+	StatementTimeout time.Duration
+	// Waiting, when set, is called once if another `migrate` holds the lock.
+	Waiting func()
+}
+
+// migrationLock is the session advisory lock Up holds, so that two
+// deployments migrating at once take turns rather than racing for the same
+// version (3.01). It was taken by nothing.
+const migrationLock int64 = 0x7369676e6d696772 // "signmigr"
 
 // Tier reports which role this migration must be applied as.
 func (m Migration) Tier() Tier {
@@ -94,7 +163,21 @@ func LoadFS(fsys fs.FS) ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %q: %w", name, err)
 		}
-		out = append(out, Migration{Version: version, Name: m[2], SQL: string(body)})
+		mig := Migration{Version: version, Name: m[2], SQL: string(body)}
+		if mig.NoTransaction() {
+			if mig.Tier() == TierBootstrap {
+				return nil, fmt.Errorf("migration %q: the bootstrap runs in one transaction", name)
+			}
+			if _, _, err := mig.statements(); err != nil {
+				return nil, fmt.Errorf("migration %q: %w", name, err)
+			}
+		}
+		if mig.CompatibleWithPrevious() {
+			if err := checkCompatible(mig); err != nil {
+				return nil, fmt.Errorf("migration %q: %w", name, err)
+			}
+		}
+		out = append(out, mig)
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -141,11 +224,35 @@ func Applied(ctx context.Context, conn *pgx.Conn) (int, error) {
 // `target` of 0 means "as far as this tier allows". Passing a target lower than
 // the currently applied version is an error: we do not support downgrades, and
 // pretending to would be worse than refusing.
-func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration, error) {
+func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int, opts Options) ([]Migration, error) {
 	all, err := Load()
 	if err != nil {
 		return nil, err
 	}
+	return upFrom(ctx, conn, all, tier, target, opts)
+}
+
+// upFrom is Up over a given set of migrations, so a test can apply a set
+// newer than the binary's own.
+func upFrom(ctx context.Context, conn *pgx.Conn, all []Migration, tier Tier, target int, opts Options) ([]Migration, error) {
+	// Before anything is applied: an older server failed part way, on the
+	// first function it did not have.
+	if err := checkServer(ctx, conn); err != nil {
+		return nil, err
+	}
+	// One `migrate` at a time, and the ledger read once the lock is held: a
+	// second run started alongside the first waits, then finds nothing left.
+	//
+	// Waited for by polling, between statements, never inside one. A session
+	// blocked in pg_advisory_lock() holds a transaction open, and CREATE INDEX
+	// CONCURRENTLY waits for every open transaction to end -- so the first run
+	// building an index waited for the second, which waited for the first,
+	// and the database broke the deadlock by failing the migration.
+	if err := waitForMigrationLock(ctx, conn, opts.Waiting); err != nil {
+		return nil, err
+	}
+	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrationLock) }()
+
 	current, err := Applied(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -168,7 +275,7 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration
 		if target != 0 && m.Version > target {
 			break
 		}
-		if err := applyOne(ctx, conn, m, tier); err != nil {
+		if err := applyOne(ctx, conn, m, tier, opts); err != nil {
 			return applied, fmt.Errorf("migration %04d_%s: %w", m.Version, m.Name, err)
 		}
 		applied = append(applied, m)
@@ -176,7 +283,54 @@ func Up(ctx context.Context, conn *pgx.Conn, tier Tier, target int) ([]Migration
 	return applied, nil
 }
 
-func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error {
+// lockPoll is how often a waiting run asks for the migration lock again.
+const lockPoll = 250 * time.Millisecond
+
+// waitForMigrationLock takes the migration lock, asking again every lockPoll
+// while another run holds it, and calls waiting once if it had to.
+func waitForMigrationLock(ctx context.Context, conn *pgx.Conn, waiting func()) error {
+	for told := false; ; {
+		var free bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLock).Scan(&free); err != nil {
+			return fmt.Errorf("taking the migration lock: %w", err)
+		}
+		if free {
+			return nil
+		}
+		if !told && waiting != nil {
+			waiting()
+		}
+		told = true
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the migration lock: %w", ctx.Err())
+		case <-time.After(lockPoll):
+		}
+	}
+}
+
+// timeouts are the SET statements Options asks for, as Postgres reads them.
+func (o Options) timeouts(local bool) []string {
+	set := "SET "
+	if local {
+		set = "SET LOCAL "
+	}
+	var out []string
+	if o.LockTimeout > 0 {
+		out = append(out, fmt.Sprintf("%slock_timeout = '%dms'", set, o.LockTimeout.Milliseconds()))
+	}
+	if o.StatementTimeout > 0 {
+		out = append(out, fmt.Sprintf("%sstatement_timeout = '%dms'", set, o.StatementTimeout.Milliseconds()))
+	}
+	return out
+}
+
+func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier, opts Options) error {
+	if m.NoTransaction() {
+		if err := applyOutsideTransaction(ctx, conn, m, opts); err != nil {
+			return err
+		}
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
@@ -195,9 +349,16 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error
 			return fmt.Errorf("assuming signari_engine: %w", err)
 		}
 	}
+	for _, s := range opts.timeouts(true) {
+		if _, err := tx.Exec(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
 
-	if _, err := tx.Exec(ctx, m.SQL); err != nil {
-		return err
+	if !m.NoTransaction() {
+		if _, err := tx.Exec(ctx, m.SQL); err != nil {
+			return err
+		}
 	}
 
 	// The bootstrap tier creates the ledger it is about to write to, so record
@@ -206,22 +367,99 @@ func applyOne(ctx context.Context, conn *pgx.Conn, m Migration, tier Tier) error
 	if err != nil {
 		return fmt.Errorf("fingerprinting: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO core.schema_migrations (version, name, fingerprint)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`,
-		m.Version, m.Name, fp,
-	); err != nil {
+	// With, once the migrations that add the columns have run, the PostgreSQL
+	// version and the fingerprint scheme that computed it (0159, 0160), so it
+	// is compared only like with like, and whether a binary built for the
+	// version before may run against it (0160), which that binary cannot read
+	// from a file it has never seen.
+	has, err := ledgerColumns(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("reading the ledger: %w", err)
+	}
+	switch {
+	case has["fingerprint_scheme"] && has["compatible_with_previous"]:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num,
+			                                    fingerprint_scheme, compatible_with_previous)
+			VALUES ($1, $2, $3, current_setting('server_version_num')::int, $4, $5)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
+			    server_version_num = EXCLUDED.server_version_num,
+			    fingerprint_scheme = EXCLUDED.fingerprint_scheme,
+			    compatible_with_previous = EXCLUDED.compatible_with_previous`,
+			m.Version, m.Name, fp, fingerprintScheme, m.CompatibleWithPrevious())
+	case has["server_version_num"]:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint, server_version_num)
+			VALUES ($1, $2, $3, current_setting('server_version_num')::int)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint,
+			    server_version_num = EXCLUDED.server_version_num`,
+			m.Version, m.Name, fp)
+	default:
+		_, err = tx.Exec(ctx, `
+			INSERT INTO core.schema_migrations (version, name, fingerprint)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (version) DO UPDATE SET fingerprint = EXCLUDED.fingerprint`,
+			m.Version, m.Name, fp)
+	}
+	if err != nil {
 		return fmt.Errorf("recording in ledger: %w", err)
 	}
 
 	return tx.Commit(ctx)
 }
 
+// applyOutsideTransaction runs a no-transaction migration's statements one at
+// a time, as signari_engine, then checks that every index it built is valid:
+// a concurrent build that fails leaves an INVALID index behind, which IF NOT
+// EXISTS would then skip forever. One found invalid is dropped and reported,
+// so running the migration again builds it.
+func applyOutsideTransaction(ctx context.Context, conn *pgx.Conn, m Migration, opts Options) error {
+	stmts, builds, err := m.statements()
+	if err != nil {
+		return err
+	}
+	reset := context.WithoutCancel(ctx)
+	if _, err := conn.Exec(ctx, `SET ROLE signari_engine`); err != nil {
+		return fmt.Errorf("assuming signari_engine: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(reset, `RESET ROLE`) }()
+	for _, s := range opts.timeouts(false) {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return fmt.Errorf("%s: %w", s, err)
+		}
+	}
+	defer func() {
+		_, _ = conn.Exec(reset, `RESET lock_timeout`)
+		_, _ = conn.Exec(reset, `RESET statement_timeout`)
+	}()
+	for i, s := range stmts {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return err
+		}
+		if builds[i] == "" {
+			continue
+		}
+		var valid bool
+		if err := conn.QueryRow(ctx, `SELECT indisvalid FROM pg_index
+			WHERE indexrelid = to_regclass('core.' || $1)`, builds[i]).Scan(&valid); err != nil {
+			return fmt.Errorf("checking index %s: %w", builds[i], err)
+		}
+		if !valid {
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS core.`+builds[i]); err != nil {
+				return fmt.Errorf("index %s is invalid and could not be dropped: %w", builds[i], err)
+			}
+			return fmt.Errorf("index %s was left invalid by an earlier build that failed; it has "+
+				"been dropped, so running migrate up again builds it", builds[i])
+		}
+	}
+	return nil
+}
+
 // ExpectedFingerprint is the fingerprint this binary was built against. It is
 // computed by walking the embedded migrations against a scratch database during
-// the build, and pinned here. Zero value means "not pinned yet" and disables the
-// startup gate -- acceptable during early development, never in a release.
+// the build (scripts/build-release.sh), and pinned here. The zero value leaves
+// the ledger comparison alone in force, which a hand change made together with
+// a rewrite of the ledger row passes: fine in development, never in a release.
 var ExpectedFingerprint string
 
 // Verify gates engine startup. It refuses to start when the live schema does not
@@ -232,20 +470,68 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-	want := all[len(all)-1].Version
+	return verifyFor(ctx, conn, all[len(all)-1].Version)
+}
 
+// verifyFor is Verify for a binary whose latest migration is want.
+func verifyFor(ctx context.Context, conn *pgx.Conn, want int) error {
+	if err := checkServer(ctx, conn); err != nil {
+		return err
+	}
 	current, err := Applied(ctx, conn)
 	if err != nil {
 		return err
 	}
-	if current != want {
+	if current < want {
 		return fmt.Errorf(
 			"schema version mismatch: database is at %d, this binary expects %d -- run `signari migrate up`",
 			current, want)
 	}
+	// A database ahead of the binary is served when every migration since was
+	// declared compatible with the version before it (3.03): the previous
+	// release during a rolling upgrade, and the rollback afterwards.
+	if current > want {
+		if err := aheadIsCompatible(ctx, conn, want, current); err != nil {
+			return err
+		}
+	}
 
+	// The live schema against what the ledger recorded for the latest
+	// migration. Unpinned, that is the whole fingerprint check: it catches a
+	// hand change made since, and not one made together with a rewrite of the
+	// ledger row, which only a pinned build can refuse. Before 3.04 an
+	// unpinned build compared nothing. Pinned, it is how a database ahead of
+	// the binary is compared, since the pin describes an earlier schema.
+	if ExpectedFingerprint == "" || current > want {
+		c, err := CompareLedger(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("comparing the schema with its ledger: %w", err)
+		}
+		if c.Drifted() {
+			return fmt.Errorf(
+				"schema drift: the live schema (%s) is not what migration %d recorded (%s) -- "+
+					"it has been changed by hand since",
+				short(c.Live), c.Version, short(c.Recorded))
+		}
+	}
 	if ExpectedFingerprint == "" {
-		return nil // unpinned development build
+		return nil
+	}
+	if current > want {
+		// The pin against what the ledger recorded at this binary's own
+		// version: the database passed through the schema the binary was
+		// built for before the compatible migrations added to it.
+		rec, why, err := recordedFingerprint(ctx, conn, want)
+		if err != nil {
+			return err
+		}
+		if why == "" && rec != ExpectedFingerprint {
+			return fmt.Errorf(
+				"schema fingerprint mismatch: migration %d recorded %s and this binary is pinned to %s -- "+
+					"the database did not pass through the schema this binary was built for",
+				want, short(rec), short(ExpectedFingerprint))
+		}
+		return nil
 	}
 	live, err := Fingerprint(ctx, conn)
 	if err != nil {
@@ -254,109 +540,56 @@ func Verify(ctx context.Context, conn *pgx.Conn) error {
 	if live != ExpectedFingerprint {
 		return fmt.Errorf(
 			"schema fingerprint mismatch: live %s, expected %s -- the database has drifted from what this binary was built against",
-			live[:12], ExpectedFingerprint[:12])
+			short(live), short(ExpectedFingerprint))
 	}
 	return nil
 }
 
-// Fingerprint hashes the observable shape of schema `core`: every column, its
-// type, nullability and default, plus every table constraint. Deterministically
-// ordered so the same schema always produces the same digest.
-//
-// This is deliberately stronger than a version counter. Two databases can both
-// claim version 7 and disagree, if someone hand-patched one of them.
-func Fingerprint(ctx context.Context, conn *pgx.Conn) (string, error) {
-	tx, err := conn.Begin(ctx)
+// aheadIsCompatible refuses a database ahead of this binary unless the ledger
+// records every migration after want as compatible with the version before.
+func aheadIsCompatible(ctx context.Context, conn *pgx.Conn, want, current int) error {
+	ahead := fmt.Sprintf("the database is at %d, ahead of this binary (%d)", current, want)
+	deploy := fmt.Sprintf("deploy a binary built for %d, or restore the backup taken before the "+
+		"upgrade (docs/upgrading.md)", current)
+	has, err := ledgerColumns(ctx, conn)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return fingerprintTx(ctx, tx)
+	if !has["compatible_with_previous"] {
+		return fmt.Errorf("%s, and its ledger does not record which migrations an earlier binary "+
+			"may run against -- %s", ahead, deploy)
+	}
+	var first int
+	var name string
+	err = conn.QueryRow(ctx, `
+		SELECT version, name FROM core.schema_migrations
+		WHERE version > $1 AND NOT compatible_with_previous ORDER BY version LIMIT 1`, want).
+		Scan(&first, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s, and migration %04d_%s is not compatible with an earlier binary -- %s",
+		ahead, first, name, deploy)
 }
 
-func fingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT c.table_name, c.column_name, c.data_type,
-		       c.is_nullable, COALESCE(c.column_default, '')
-		FROM information_schema.columns c
-		JOIN information_schema.tables t
-		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-		WHERE c.table_schema = 'core' AND t.table_type = 'BASE TABLE'
-		ORDER BY c.table_name, c.column_name`)
-	if err != nil {
-		return "", err
+// EarliestCompatible is the oldest binary version that may run against the
+// database: the latest migration not declared compatible with the version
+// before it. Equal to the database's version when the latest is not.
+func EarliestCompatible(ctx context.Context, conn *pgx.Conn) (int, error) {
+	current, err := Applied(ctx, conn)
+	if err != nil || current == 0 {
+		return current, err
 	}
-	defer rows.Close()
-
-	h := sha256.New()
-	var b strings.Builder
-	for rows.Next() {
-		var table, col, typ, nullable, def string
-		if err := rows.Scan(&table, &col, &typ, &nullable, &def); err != nil {
-			return "", err
-		}
-		b.Reset()
-		b.WriteString(table)
-		b.WriteByte('.')
-		b.WriteString(col)
-		b.WriteByte('|')
-		b.WriteString(typ)
-		b.WriteByte('|')
-		b.WriteString(nullable)
-		b.WriteByte('|')
-		b.WriteString(def)
-		b.WriteByte('\n')
-		h.Write([]byte(b.String()))
+	has, err := ledgerColumns(ctx, conn)
+	if err != nil || !has["compatible_with_previous"] {
+		return current, err
 	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-
-	// Constraints, which this function claimed to cover and did not.
-	//
-	// The doc comment on Fingerprint has always promised "every column, its type,
-	// nullability and default, plus every table constraint", and only the columns
-	// were ever hashed. The gap is invisible in the ordinary upgrade path, because
-	// Verify checks the version counter first -- but the fingerprint exists for
-	// the case the counter cannot see, which the comment names exactly: "two
-	// databases can both claim version 7 and disagree, if someone hand-patched one
-	// of them". A hand-patch that drops a CHECK, a foreign key or a unique
-	// constraint leaves every column identical, so the digest was unchanged and
-	// the drift the fingerprint exists to catch went through it.
-	//
-	// Migration 0097 is a live example: it only widens a CHECK constraint, so
-	// before this it altered the schema without altering the fingerprint at all.
-	//
-	// pg_get_constraintdef rather than the constituent columns, because it is the
-	// canonical rendering and it moves when the meaning moves. Ordered by name so
-	// the digest does not depend on catalogue order.
-	crows, err := tx.Query(ctx, `
-		SELECT c.relname, con.conname, pg_get_constraintdef(con.oid)
-		FROM pg_constraint con
-		JOIN pg_class c ON c.oid = con.conrelid
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'core' AND c.relkind = 'r'
-		ORDER BY c.relname, con.conname, pg_get_constraintdef(con.oid)`)
-	if err != nil {
-		return "", err
-	}
-	defer crows.Close()
-	for crows.Next() {
-		var table, name, def string
-		if err := crows.Scan(&table, &name, &def); err != nil {
-			return "", err
-		}
-		b.Reset()
-		b.WriteString(table)
-		b.WriteByte('.')
-		b.WriteString(name)
-		b.WriteByte('|')
-		b.WriteString(def)
-		b.WriteByte('\n')
-		h.Write([]byte(b.String()))
-	}
-	if err := crows.Err(); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	var v int
+	err = conn.QueryRow(ctx, `
+		SELECT COALESCE(max(version), 1) FROM core.schema_migrations
+		WHERE NOT compatible_with_previous`).Scan(&v)
+	return v, err
 }

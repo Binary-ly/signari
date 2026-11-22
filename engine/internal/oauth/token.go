@@ -2,9 +2,11 @@ package oauth
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,11 +146,38 @@ func ParseClientCredentials(header http.Header, form url.Values) (ClientCredenti
 		c.ClientID, c.ClientSecret, c.AuthMethod = bodyID, bodySecret, "client_secret_post"
 	case c.ClientAssertion != "":
 		c.ClientID, c.AuthMethod = bodyID, "private_key_jwt"
+		if c.ClientID == "" {
+			c.ClientID = assertionSubject(c.ClientAssertion)
+		}
 	default:
 		// A public client authenticates with PKCE, not a secret.
 		c.ClientID, c.AuthMethod = bodyID, "none"
 	}
 	return c, nil
+}
+
+// assertionSubject is who a client assertion says it is from. RFC 7523 §3: "the subject
+// MUST be the "client_id" of the OAuth client", and §2.2's example sends no other.
+//
+// Read before anything has verified it, and that is all right: it is no more than a
+// `client_id` in the form would be, a name saying whose keys to try. Whatever it says,
+// clientauth.VerifyPrivateKeyJWT then has to find that client's signature on it.
+func assertionSubject(assertion string) string {
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Subject
 }
 
 // parseBasic decodes RFC 6749 §2.3.1 client_secret_basic. The userid and password
@@ -191,6 +220,11 @@ type GrantRecord struct {
 	Scopes     []string
 	ExpiresAt  time.Time
 	ConsumedAt *time.Time
+	// ACR is the rung above the session's own this request asked for and was
+	// given (SatisfiedACR), for its ID token; empty reports the session's.
+	ACR string
+	// GrantAction and GrantID are what the request asked of a managed grant.
+	GrantAction, GrantID string
 }
 
 // ValidateCodeRedemption checks a code exchange.
@@ -312,8 +346,16 @@ func ValidateCodeRedemption(req TokenRequest, c *clients.Client, g *GrantRecord,
 	// parameter was present in the authorization request" -- a biconditional,
 	// so both halves are failures.
 	if g.CodeChallenge != "" {
+		// invalid_grant, as a wrong one is. RFC 7636 §4.6 has the server compute the
+		// challenge from the verifier received and compare: "If the values are not
+		// equal, an error response indicating "invalid_grant" ... MUST be returned"
+		// (specs/rfc7636.txt:552-555), and an absent verifier equals nothing. OAuth
+		// 2.1 names the opposite case invalid_request (below) and not this one
+		// (draft-ietf-oauth-v2-1-17 lines 1853-1856). This answered invalid_request
+		// until November 2026, the one failure of the FAPI 2.0 conformance plans,
+		// whose module cites §4.6 for it.
 		if req.CodeVerifier == "" {
-			return false, tokenErr("invalid_request", "code_verifier is required")
+			return false, tokenErr("invalid_grant", "code_verifier is required, and none came")
 		}
 		if err := VerifyPKCE(g.CodeChallengeMethod, g.CodeChallenge, req.CodeVerifier); err != nil {
 			return false, tokenErr("invalid_grant", "code_verifier is invalid")
@@ -411,13 +453,24 @@ func RequireClientAuth(c *clients.Client, req TokenRequest) *TokenError {
 	return nil
 }
 
+// GrantTypes are the grant types the token endpoint dispatches. The one list:
+// ValidateGrantType accepts exactly these, and `signari client set-grants`
+// records exactly these. The command kept a list of its own, which lacked
+// CIBA, the UMA ticket grant and jwt-bearer -- three grants the token endpoint
+// served only to a client registered for them, and which no operator could
+// register a client for.
+var GrantTypes = []string{
+	"authorization_code", "refresh_token", "client_credentials",
+	GrantTypeTokenExchange, GrantTypeDeviceCode, GrantTypePreAuthorizedCode,
+	GrantTypeCIBA, GrantTypeUMATicket, GrantTypeJWTBearer,
+}
+
 // ValidateGrantType rejects everything we do not implement, before any lookup.
 func ValidateGrantType(gt string) *TokenError {
-	switch gt {
-	case "authorization_code", "refresh_token", "client_credentials",
-		GrantTypeTokenExchange, GrantTypeDeviceCode, GrantTypePreAuthorizedCode,
-		GrantTypeCIBA, GrantTypeUMATicket, GrantTypeJWTBearer:
+	if slices.Contains(GrantTypes, gt) {
 		return nil
+	}
+	switch gt {
 	case "":
 		return tokenErr("invalid_request", "grant_type is required")
 	case "password":

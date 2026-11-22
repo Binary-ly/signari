@@ -13,6 +13,7 @@ import (
 
 	"signari.dev/engine/internal/authzen"
 	"signari.dev/engine/internal/store"
+	"signari.dev/engine/internal/store/storetest"
 	"signari.dev/engine/internal/uma"
 )
 
@@ -22,13 +23,21 @@ import (
 // cases that matter are the refusals: a ticket presented twice, a ticket from
 // another organisation, a permission policy does not allow.
 
-// permission asks for a ticket as a resource server would.
+// permission asks for a ticket as a resource server would: with the PAT its organisation
+// grants it by the client credentials grant, as Federated Authorization §1.3 requires of
+// every protection API call (specs/uma-fedauthz.txt:122). No client, or credentials the
+// token endpoint refuses, asks with no token at all.
 func (f *cibaFixture) permission(t *testing.T, clientID, secret, body string) (int, map[string]any) {
 	t.Helper()
+	pat := ""
+	if clientID != "" {
+		f.protectionClients(t)
+		pat, _ = f.mintOrgPAT(clientID, secret)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/uma2/permission", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	if clientID != "" {
-		req.SetBasicAuth(clientID, secret)
+	if pat != "" {
+		req.Header.Set("Authorization", "Bearer "+pat)
 	}
 	rec := httptest.NewRecorder()
 	f.srv.handleUMAPermission(rec, req)
@@ -209,6 +218,26 @@ func TestThePermissionEndpointRequiresAnAuthenticatedResourceServer(t *testing.T
 	}
 }
 
+// The resource server's own credentials are not a PAT. "The authorization server MUST
+// use OAuth and require a valid PAT to secure its protection API endpoints" (Federated
+// Authorization §1.3, specs/uma-fedauthz.txt:122), and the permission endpoint took the
+// client's secret beside it, from before it had resource registration (11.12).
+func TestThePermissionEndpointTakesAPATAndNotTheClientsSecret(t *testing.T) {
+	f := newCIBAFixture(t)
+	f.protectionClients(t)
+	req := httptest.NewRequest(http.MethodPost, "/uma2/permission", strings.NewReader(onePermission))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(f.clientID, f.secret)
+	rec := httptest.NewRecorder()
+	f.srv.handleUMAPermission(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("the client's own credentials, with no PAT, answered %d %s, want 401", rec.Code, rec.Body.String())
+	}
+	if code, body := f.permission(t, f.clientID, f.secret, onePermission); code != http.StatusCreated {
+		t.Errorf("the same request with the PAT the client was granted answered %d %v, want 201", code, body)
+	}
+}
+
 // TestMalformedPermissionRequestsAreRefused.
 func TestMalformedPermissionRequestsAreRefused(t *testing.T) {
 	f := newCIBAFixture(t)
@@ -238,7 +267,7 @@ func TestUnsupportedUMAParametersAreRefusedRatherThanIgnored(t *testing.T) {
 	f := newCIBAFixture(t)
 	f.allowClientOn(t, "document", "42", "viewer")
 
-	for _, param := range []string{"claim_token", "pct", "rpt"} {
+	for _, param := range []string{"claim_token"} {
 		_, body := f.permission(t, f.clientID, f.secret, onePermission)
 		ticket, _ := body["ticket"].(string)
 
@@ -269,6 +298,7 @@ func TestATicketFromAnotherOrganisationIsRefused(t *testing.T) {
 		RETURNING id::text`).Scan(&otherOrg); err != nil {
 		t.Fatal(err)
 	}
+	storetest.Forget(t, f.pool, otherOrg)
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(context.Background(),
 			`DELETE FROM core.uma_permission_tickets WHERE org_id = $1::uuid`, otherOrg)

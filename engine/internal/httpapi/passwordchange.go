@@ -36,7 +36,7 @@ func (s *Server) beginPasswordChange(w http.ResponseWriter, r *http.Request,
 	userID, orgID string, amr []string, authzQuery, reason string) {
 
 	if err := s.setPendingCookie(w, userID, orgID, amr, authzQuery); err != nil {
-		s.log.Error("issuing the pending token for a password change", "err", err)
+		s.log.ErrorContext(r.Context(), "issuing the pending token for a password change", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -110,7 +110,7 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	previous, perr := store.RecentPasswordHashes(ctx, s.db, pending.Subject,
 		s.pwPolicy.HistoryDepth)
 	if perr != nil {
-		s.log.Error("reading password history", "err", perr)
+		s.log.ErrorContext(ctx, "reading password history", "err", perr)
 	}
 	identity, _ := store.EmailForUser(ctx, s.db, pending.Subject)
 
@@ -126,13 +126,13 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	}
 
 	if _, err := s.pwPolicy.Check(ctx, password, identity, previous, s.hasher); err != nil {
-		again(err.Error())
+		again(s.passwordRefusalText(r, err))
 		return
 	}
 
 	hash, err := s.hasher.Hash(ctx, password)
 	if err != nil {
-		s.log.Error("hashing a changed password", "err", err)
+		s.log.ErrorContext(ctx, "hashing a changed password", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -148,11 +148,11 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	// and refused at the next change.
 	if s.pwPolicy.HistoryDepth > 0 {
 		if rerr := store.RetirePassword(ctx, tx, pending.Subject, pending.OrgID); rerr != nil {
-			s.log.Error("recording the retired password", "err", rerr)
+			s.log.ErrorContext(ctx, "recording the retired password", "err", rerr)
 		}
 	}
 	if err := store.SetPassword(ctx, tx, pending.Subject, hash); err != nil {
-		s.log.Error("setting a changed password", "err", err)
+		s.log.ErrorContext(ctx, "setting a changed password", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -162,14 +162,27 @@ func (s *Server) handlePasswordChangePost(w http.ResponseWriter, r *http.Request
 	// makes the change ceremonial.
 	if _, terr := store.TerminateSessions(ctx, tx, "", pending.Subject,
 		store.ReasonPasswordChange); terr != nil {
-		s.log.Error("terminating sessions after a password change", "err", terr)
+		s.log.ErrorContext(ctx, "terminating sessions after a password change", "err", terr)
 	}
 
-	s.auditDetached(ctx, audit.Event{
+	// In the change's own transaction: it commits with the change or not at
+	// all. A detached write here took a second pool connection while this one
+	// was held, which deadlocks the pool under load.
+	if aerr := audit.Write(ctx, tx, audit.Event{
 		Type: "password.changed", OrgID: pending.OrgID, SubjectID: pending.Subject,
 		CorrelationID: correlationID(ctx),
 		Detail:        map[string]any{"required": true, "reason": reason},
-	})
+	}); aerr != nil {
+		s.log.ErrorContext(ctx, "auditing a password change", "err", aerr)
+	}
+	// Queued in the change's transaction, which the walk below commits or
+	// abandons: the notice goes out exactly when the change does.
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: pending.Subject,
+		Notice: store.NoticePasswordChanged}); err != nil {
+		s.log.ErrorContext(ctx, "queueing the password-changed notice", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	// Back into the funnel. The flag is now clear, so this step does not repeat.
 	s.completeSignIn(w, r, tx, pending.Subject, pending.OrgID, pending.AMR, pending.Authz)

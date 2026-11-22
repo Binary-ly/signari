@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"signari.dev/engine/internal/authzen"
@@ -67,13 +68,15 @@ func (s *Server) handleAuthzEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.decide(ctx, orgID, req)
+	e := s.newEvaluation(orgID)
+	resp, err := e.decide(ctx, req)
 	if err != nil {
-		s.log.Error("evaluating an authorization request", "err", err,
+		s.log.ErrorContext(ctx, "evaluating an authorization request", "err", err,
 			"correlation_id", correlationID(ctx))
 		authzError(w, http.StatusInternalServerError, "the decision could not be made")
 		return
 	}
+	e.note(ctx, req, resp)
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, resp)
 }
@@ -95,19 +98,21 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		authzError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	e := s.newEvaluation(orgID)
 	if len(batch.Evaluations) == 0 {
 		single := authzen.Request{}.Merge(batch)
 		if err := single.Validate(); err != nil {
 			authzError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		resp, derr := s.decide(ctx, orgID, single)
+		resp, derr := e.decide(ctx, single)
 		if derr != nil {
-			s.log.Error("evaluating a defaults-only evaluations request", "err", derr,
+			s.log.ErrorContext(ctx, "evaluating a defaults-only evaluations request", "err", derr,
 				"correlation_id", correlationID(ctx))
 			authzError(w, http.StatusInternalServerError, "the decision could not be made")
 			return
 		}
+		e.note(ctx, single, resp)
 		echoRequestID(w, r)
 		writeJSONResponse(w, http.StatusOK, resp)
 		return
@@ -135,10 +140,26 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	out := make([]authzen.Response, 0, len(batch.Evaluations))
-	for _, e := range batch.Evaluations {
-		merged := e.Merge(batch)
+	// One read of the relations for the batch. A failure here is each entry's to
+	// answer: with nothing read ahead they go to the database themselves.
+	entries := make([]authzen.Request, len(batch.Evaluations))
+	answerable := make([]authzen.Request, 0, len(entries))
+	for i, entry := range batch.Evaluations {
+		entries[i] = entry.Merge(batch)
+		if entries[i].Validate() == nil {
+			answerable = append(answerable, entries[i])
+		}
+	}
+	if err := e.readAhead(ctx, answerable); err != nil {
+		s.log.ErrorContext(ctx, "reading a batch's relations", "err", err, "correlation_id", correlationID(ctx))
+	}
+	if err := e.settleUnreached(ctx, answerable); err != nil {
+		s.log.ErrorContext(ctx, "settling a batch's unreached relations", "err", err,
+			"correlation_id", correlationID(ctx))
+	}
 
+	out := make([]authzen.Response, 0, len(batch.Evaluations))
+	for _, merged := range entries {
 		var resp authzen.Response
 		switch err := merged.Validate(); {
 		case err != nil:
@@ -149,9 +170,9 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 				Context:  authzen.Reasons(err.Error(), "The request could not be evaluated."),
 			}
 		default:
-			decided, derr := s.decide(ctx, orgID, merged)
+			decided, derr := e.decide(ctx, merged)
 			if derr != nil {
-				s.log.Error("evaluating a batch entry", "err", derr,
+				s.log.ErrorContext(ctx, "evaluating a batch entry", "err", derr,
 					"correlation_id", correlationID(ctx))
 				resp = authzen.Response{
 					Decision: false,
@@ -160,6 +181,7 @@ func (s *Server) handleAuthzEvaluations(w http.ResponseWriter, r *http.Request) 
 				}
 			} else {
 				resp = decided
+				e.note(ctx, merged, resp)
 			}
 		}
 
@@ -200,12 +222,245 @@ func markShortCircuit(ctx map[string]any, semantic string) map[string]any {
 	return ctx
 }
 
-// decide is the single evaluation path. Both endpoints use it, so a batch and a
-// single question can never disagree about the same request.
+// decide answers one question that is the whole of its request.
 func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) (
 	authzen.Response, error) {
+	return s.newEvaluation(orgID).decide(ctx, req)
+}
 
-	model, err := store.LoadModel(ctx, s.db, orgID)
+// evaluation is one request's run of decisions. A batch asks one model about the
+// same few people, and asking the database afresh for each entry cost six
+// statements an entry, about 1,500 for the largest batch, so what the first
+// question reads answers the rest. It lives and dies with the request: a relation
+// revoked is refused on the next one, because nothing is kept between them
+// (ADR-007).
+type evaluation struct {
+	s     *Server
+	orgID string
+
+	modelRead bool
+	model     *authzen.Model
+	subjects  map[[2]string]*evaluatedSubject
+
+	providerRead bool
+	providers    []*provider.Provider
+
+	// tuples is what readAhead found, and nil until it has run.
+	tuples map[store.Tuple]bool
+	// sets are the objects it found a subject set on, as type and id.
+	sets map[[2]string]bool
+	// walked is what this request's walks have settled, so the questions of a batch
+	// or a search that meet the same folders walk them once (E.17).
+	walked *store.WalkMemo
+}
+
+// evaluatedSubject is what our records say about a subject, by the id it was
+// asked about and the session named.
+type evaluatedSubject struct {
+	userID string
+	facts  authzen.Facts
+}
+
+func (s *Server) newEvaluation(orgID string) *evaluation {
+	return &evaluation{s: s, orgID: orgID, subjects: map[[2]string]*evaluatedSubject{}, walked: store.NewWalkMemo()}
+}
+
+func (e *evaluation) loadModel(ctx context.Context) (*authzen.Model, error) {
+	if e.modelRead {
+		return e.model, nil
+	}
+	model, err := store.LoadModel(ctx, e.s.db, e.orgID)
+	if err != nil {
+		return nil, err
+	}
+	e.model, e.modelRead = model, true
+	return model, nil
+}
+
+// subject reads the facts from OUR records, never from the request body.
+func (e *evaluation) subject(ctx context.Context, id, sid string) (*evaluatedSubject, error) {
+	key := [2]string{id, sid}
+	if known, ok := e.subjects[key]; ok {
+		return known, nil
+	}
+	userID, err := store.ResolveSubject(ctx, e.s.db, e.orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	found := &evaluatedSubject{userID: userID}
+	if userID != "" {
+		if found.facts, err = store.SubjectFacts(ctx, e.s.db, e.orgID, userID, sid); err != nil {
+			return nil, err
+		}
+	}
+	e.subjects[key] = found
+	return found, nil
+}
+
+// readAhead reads, in one statement, every relation these questions could turn
+// on. Those it cannot place go unanswered here and decide asks for them itself.
+func (e *evaluation) readAhead(ctx context.Context, reqs []authzen.Request) error {
+	model, err := e.loadModel(ctx)
+	if err != nil || model == nil {
+		return err
+	}
+	var subjects, objects [][2]string
+	var relations []string
+	for _, req := range reqs {
+		wanted, defined := model.RelationsFor(req.Resource.Type, req.Action.Name)
+		if !defined {
+			continue
+		}
+		who, err := e.subject(ctx, req.Subject.ID, sessionFromContext(req.Context))
+		if err != nil {
+			return err
+		}
+		subjects = append(subjects, [2]string{req.Subject.Type, req.Subject.ID})
+		if who.userID != "" {
+			subjects = append(subjects, [2]string{req.Subject.Type, who.userID})
+		}
+		for _, g := range who.facts.Groups {
+			subjects = append(subjects, [2]string{"group", g})
+		}
+		objects = append(objects, [2]string{req.Resource.Type, req.Resource.ID})
+		relations = append(relations, wanted...)
+	}
+	if e.tuples, err = store.TuplesAmong(ctx, e.s.db, e.orgID, subjects, objects, relations); err != nil {
+		return err
+	}
+	e.sets = map[[2]string]bool{}
+	for t := range e.tuples {
+		if strings.Contains(t.SubjectID, "#") {
+			e.sets[[2]string{t.ObjectType, t.ObjectID}] = true
+		}
+	}
+	return nil
+}
+
+// walkSubjects is who a walk looks for: the subject as given, as the person it
+// resolved to, and as each of their groups. decide and settleUnreached share it, since
+// what one settles answers the other only for the same set.
+func walkSubjects(req authzen.Request, userID string, groups []string) [][2]string {
+	subjects := [][2]string{{req.Subject.Type, req.Subject.ID}}
+	if userID != "" {
+		subjects = append(subjects, [2]string{req.Subject.Type, userID})
+	}
+	for _, g := range groups {
+		subjects = append(subjects, [2]string{"group", g})
+	}
+	return subjects
+}
+
+// settleUnreached takes the first step of the walks the read ahead left to decide, for
+// all of them at once (store.SettleUnreached), so that a question with nothing behind it
+// needs no statement of its own when decide walks it (E.17). Only the questions decide
+// would walk: not held from what was read ahead, and walking. A failure leaves each to
+// walk as before.
+func (e *evaluation) settleUnreached(ctx context.Context, reqs []authzen.Request) error {
+	if e.tuples == nil {
+		return nil
+	}
+	model, err := e.loadModel(ctx)
+	if err != nil || model == nil {
+		return err
+	}
+	type group struct {
+		subjects [][2]string
+		roots    []store.WalkRoot
+	}
+	groups := map[string]*group{}
+	var order []string
+	for _, req := range reqs {
+		relations, defined := model.RelationsFor(req.Resource.Type, req.Action.Name)
+		if !defined || !e.walks(model, req) {
+			continue
+		}
+		who, err := e.subject(ctx, req.Subject.ID, sessionFromContext(req.Context))
+		if err != nil {
+			return err
+		}
+		held, err := e.holds(ctx, req.Subject.Type, req.Subject.ID, relations, req.Resource.Type,
+			req.Resource.ID, who.facts.Groups)
+		if err != nil {
+			return err
+		}
+		if held == "" && who.userID != "" && who.userID != req.Subject.ID {
+			if held, err = e.holds(ctx, req.Subject.Type, who.userID, relations, req.Resource.Type,
+				req.Resource.ID, who.facts.Groups); err != nil {
+				return err
+			}
+		}
+		if held != "" {
+			continue
+		}
+		subjects := walkSubjects(req, who.userID, who.facts.Groups)
+		names := make([]string, len(subjects))
+		for i, s := range subjects {
+			names[i] = s[0] + "\x00" + s[1]
+		}
+		slices.Sort(names)
+		key := strings.Join(names, "\x01")
+		g := groups[key]
+		if g == nil {
+			g = &group{subjects: subjects}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.roots = append(g.roots, store.WalkRoot{Type: req.Resource.Type, ID: req.Resource.ID, Relations: relations})
+	}
+	for _, key := range order {
+		g := groups[key]
+		if err := store.SettleUnreached(ctx, e.s.db, e.orgID, model, g.subjects, g.roots, e.walked); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// walks says whether a subject with no relation of their own on this object could
+// still hold one. With nothing read ahead that is not known, so it is looked for.
+func (e *evaluation) walks(model *authzen.Model, req authzen.Request) bool {
+	return e.tuples == nil || model.Walks(req.Resource.Type, req.Action.Name) ||
+		e.sets[[2]string{req.Resource.Type, req.Resource.ID}]
+}
+
+// holds is store.HoldsAny, from what readAhead found when it has run.
+func (e *evaluation) holds(ctx context.Context, subjectType, subjectID string, relations []string,
+	objectType, objectID string, groups []string) (string, error) {
+	if e.tuples == nil {
+		return store.HoldsAny(ctx, e.s.db, e.orgID, subjectType, subjectID, relations, objectType, objectID, groups)
+	}
+	for _, relation := range relations {
+		if e.tuples[store.Tuple{SubjectType: subjectType, SubjectID: subjectID, Relation: relation,
+			ObjectType: objectType, ObjectID: objectID}] {
+			return relation, nil
+		}
+		for _, g := range groups {
+			if e.tuples[store.Tuple{SubjectType: "group", SubjectID: g, Relation: relation,
+				ObjectType: objectType, ObjectID: objectID}] {
+				return relation, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func (e *evaluation) authorizeProviders(ctx context.Context) ([]*provider.Provider, error) {
+	if e.providerRead {
+		return e.providers, nil
+	}
+	ps, err := store.LoadProviders(ctx, e.s.db, e.s.root, e.orgID, provider.HookAuthorize)
+	if err != nil {
+		return nil, err
+	}
+	e.providers, e.providerRead = ps, true
+	return ps, nil
+}
+
+// decide is the single evaluation path. Every endpoint uses it, so a batch, a
+// search and a single question can never disagree about the same request.
+func (e *evaluation) decide(ctx context.Context, req authzen.Request) (authzen.Response, error) {
+	model, err := e.loadModel(ctx)
 	if err != nil {
 		return authzen.Response{}, err
 	}
@@ -232,18 +487,11 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 	}
 
 	// Facts from OUR records, never from the request body.
-	userID, err := store.ResolveSubject(ctx, s.db, orgID, req.Subject.ID)
+	who, err := e.subject(ctx, req.Subject.ID, sessionFromContext(req.Context))
 	if err != nil {
 		return authzen.Response{}, err
 	}
-	var facts authzen.Facts
-	if userID != "" {
-		sid := sessionFromContext(req.Context)
-		facts, err = store.SubjectFacts(ctx, s.db, orgID, userID, sid)
-		if err != nil {
-			return authzen.Response{}, err
-		}
-	}
+	userID, facts := who.userID, who.facts
 	if facts.Now.IsZero() {
 		// Even when the subject is not one of our users, the clock is ours.
 		facts.Now = time.Now()
@@ -258,7 +506,7 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 	// The relation lookup uses the subject as GIVEN, so relations can be held
 	// by things that are not users in our directory -- a service account, a
 	// machine. Resolving to a user id only affects the facts.
-	held, err := store.HoldsAny(ctx, s.db, orgID, req.Subject.Type, req.Subject.ID,
+	held, err := e.holds(ctx, req.Subject.Type, req.Subject.ID,
 		relations, req.Resource.Type, req.Resource.ID, facts.Groups)
 	if err != nil {
 		return authzen.Response{}, err
@@ -266,9 +514,16 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 	if held == "" && userID != "" && userID != req.Subject.ID {
 		// Asked by email, stored by id, or the other way round. Both are tried
 		// rather than requiring the caller to know which form we keep.
-		held, err = store.HoldsAny(ctx, s.db, orgID, req.Subject.Type, userID,
+		held, err = e.holds(ctx, req.Subject.Type, userID,
 			relations, req.Resource.Type, req.Resource.ID, facts.Groups)
 		if err != nil {
+			return authzen.Response{}, err
+		}
+	}
+	subjects := walkSubjects(req, userID, facts.Groups)
+	if held == "" && e.walks(model, req) {
+		if held, _, err = store.WalkRelationsWith(ctx, e.s.db, e.orgID, model, subjects, relations,
+			req.Resource.Type, req.Resource.ID, e.walked); err != nil {
 			return authzen.Response{}, err
 		}
 	}
@@ -281,13 +536,24 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 				"You do not have access to this."),
 		}, nil
 	}
+	why, err := store.NarrowingRefusal(ctx, e.s.db, e.orgID, model, subjects, req.Action.Name,
+		req.Resource.Type, req.Resource.ID)
+	if err != nil {
+		return authzen.Response{}, err
+	}
+	if why != "" {
+		return authzen.Response{
+			Decision: false,
+			Context:  authzen.Reasons(why, "You do not have access to this."),
+		}, nil
+	}
 
 	// The condition, which is the part a relation graph cannot express.
 	if cond, has := model.ConditionFor(req.Resource.Type, req.Action.Name); has {
 		if !cond.SatisfiedBy(facts) {
 			need := cond.Unmet(facts)
 			why := "the action requires " + need + ", which this request did not show"
-			if !facts.FromSession && (cond.MFA || cond.DeviceManaged || cond.DeviceCompliant) {
+			if !facts.FromSession && (cond.MFA || cond.DeviceManaged || cond.DeviceCompliant || cond.MaxRisk > 0) {
 				// The condition is about a session, and none was named -- or the
 				// one named is not this subject's live session. Refused rather
 				// than guessed: a rule demanding a second factor must not be
@@ -307,10 +573,19 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 
 	// Everything local says yes. An operator's own policy service gets the last
 	// word -- and only ever a veto. See consultAuthorizeProvider.
-	if resp, vetoed, err := s.consultAuthorizeProvider(ctx, orgID, req, held); err != nil {
+	//
+	// A provider row that will not load is a configuration fault, not a decision.
+	// Failing the request rather than silently allowing: the operator registered
+	// something, and quietly ignoring it is the "a written policy governs
+	// nothing" bug.
+	ps, err := e.authorizeProviders(ctx)
+	if err != nil {
 		return authzen.Response{}, err
-	} else if vetoed {
-		return resp, nil
+	}
+	for _, p := range ps {
+		if resp, vetoed := e.s.consultAuthorizeProvider(ctx, p, req, held); vetoed {
+			return resp, nil
+		}
 	}
 
 	return authzen.Response{
@@ -345,44 +620,35 @@ func (s *Server) decide(ctx context.Context, orgID string, req authzen.Request) 
 // be a second dialect of a protocol already spoken, and would mean an integrator
 // could not point an existing conformant PDP at it.
 //
-// Returns (response, vetoed, error). vetoed=false means carry on with the local
-// allow, whether that is because no provider is registered, because it allowed,
-// or because it was unreachable and declared fail_open.
-func (s *Server) consultAuthorizeProvider(ctx context.Context, orgID string,
-	req authzen.Request, held string) (authzen.Response, bool, error) {
+// Returns (response, vetoed). vetoed=false means carry on with the local allow,
+// whether that is because no provider is registered, because it allowed, or
+// because it was unreachable and declared fail_open.
+func (s *Server) consultAuthorizeProvider(ctx context.Context, p *provider.Provider,
+	req authzen.Request, held string) (authzen.Response, bool) {
 
-	p, err := store.LoadProvider(ctx, s.db, orgID, provider.HookAuthorize)
-	if err != nil {
-		// A provider row that will not load is a configuration fault, not a
-		// decision. Failing the request rather than silently allowing: the
-		// operator registered something, and quietly ignoring it is the "a
-		// written policy governs nothing" bug.
-		return authzen.Response{}, false, err
-	}
 	if p == nil {
-		return authzen.Response{}, false, nil
+		return authzen.Response{}, false
 	}
 
 	var answer providerAnswer
-	callErr := p.Call(ctx, s.providerClient(p.Timeout), req, &answer)
+	callErr := p.Call(ctx, s.outboundClient(p.Timeout), req, &answer)
 
 	if callErr != nil {
 		// Logged either way. A fail_open provider that has silently stopped
 		// answering means an operator's veto is no longer being enforced, and
 		// nothing else would record that.
 		if p.Decide(callErr) {
-			s.log.Warn("the authorization provider did not answer; continuing because "+
+			s.log.WarnContext(ctx, "the authorization provider did not answer; continuing because "+
 				"it is registered fail_open",
 				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
 		} else {
-			s.log.Error("the authorization provider did not answer; denying because it "+
+			s.log.ErrorContext(ctx, "the authorization provider did not answer; denying because it "+
 				"is registered fail_closed",
 				"provider", p.Name, "err", callErr, "correlation_id", correlationID(ctx))
 		}
 	}
 
-	resp, vetoed := combineProviderAnswer(p.Name, p.Decide(callErr), callErr, answer, held)
-	return resp, vetoed, nil
+	return combineProviderAnswer(p.Name, p.Decide(callErr), callErr, answer, held)
 }
 
 // providerAnswer is what a provider returns.
@@ -437,12 +703,17 @@ func combineProviderAnswer(name string, proceed bool, callErr error,
 	}, true
 }
 
-// providerClient is the HTTP client used for provider calls.
+// outboundClient is the HTTP client for provider calls and for requests to an
+// upstream identity provider.
 //
-// safedial, so a provider URL that resolves into the private network is refused
-// at DIAL time as well as at registration. The two checks are not redundant: DNS
-// can change between them, which is the whole rebinding technique.
-func (s *Server) providerClient(timeout time.Duration) *http.Client {
+// safedial, so a URL that resolves into the private network is refused at DIAL
+// time as well as at registration. The two checks are not redundant: DNS can
+// change between them, which is the whole rebinding technique. An upstream that
+// really is internal is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
+func (s *Server) outboundClient(timeout time.Duration) *http.Client {
+	if s.outboundHTTP != nil {
+		return s.outboundHTTP(timeout)
+	}
 	return safedial.Client(timeout)
 }
 
@@ -482,24 +753,112 @@ func (s *Server) handleAuthzSearchResource(w http.ResponseWriter, r *http.Reques
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
-	ids, more, err := store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
-		req.Subject.ID, relations, req.Resource.Type, facts.Groups, limit, after)
+	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
+	if werr != nil {
+		s.log.ErrorContext(ctx, "reading whether a search can start from a row", "err", werr)
+		authzError(w, http.StatusInternalServerError, "the search could not be run")
+		return
+	}
+	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
+		func(after string, n int) ([]string, bool, error) {
+			if everything {
+				return store.ObjectsOfType(ctx, s.db, orgID, req.Resource.Type, n, after)
+			}
+			return store.ObjectsWith(ctx, s.db, orgID, req.Subject.Type,
+				req.Subject.ID, relations, req.Resource.Type, facts.Groups, n, after)
+		},
+		func(id string) authzen.Request {
+			return authzen.Request{Subject: *req.Subject, Action: *req.Action,
+				Resource: authzen.Resource{Type: req.Resource.Type, ID: id}, Context: req.Context}
+		})
 	if err != nil {
-		s.log.Error("searching resources", "err", err)
+		s.log.ErrorContext(ctx, "searching resources", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
-	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: req.Resource.Type, ID: id})
-		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(req, items, more, last),
+		Page:    pageResponse(req, items, more, cursor),
 	})
+}
+
+// searchScan bounds how many candidates one page of a search runs through the
+// full evaluation. Every candidate costs what an evaluation costs, and a
+// provider veto is a network call, so an unbounded page is a way to make the
+// PDP do arbitrary work on one request.
+const searchScan = 200
+
+// decidedPage fills one page of a search with candidates that decide() allows.
+//
+// The relation lookup alone is not the answer. It skipped the action's
+// condition, the operator's provider veto and whatever else decide() checks, so
+// a search listed documents an evaluation of the same triple refused --
+// AuthZEN's search exists so a PEP can render a list it may then act on, and a
+// list containing what it may not is worse than no list. Each candidate is
+// asked the same question an evaluation would ask, through the same function.
+//
+// The cursor is the last candidate SCANNED, not the last one returned, so the
+// next page resumes after everything already considered. A page may come back
+// short, or empty, with a next token when the scan stopped at searchScan.
+func (s *Server) decidedPage(ctx context.Context, orgID string, limit int, after string,
+	fetch func(after string, n int) ([]string, bool, error),
+	ask func(id string) authzen.Request) (allowed []string, more bool, cursor string, err error) {
+
+	want := limit
+	if want <= 0 || want > searchScan {
+		want = searchScan
+	}
+	cursor = after
+	scanned := 0
+	e := s.newEvaluation(orgID)
+	for {
+		batch, rest, err := fetch(cursor, want)
+		if err != nil {
+			return nil, false, "", err
+		}
+		questions := make([]authzen.Request, len(batch))
+		for i, id := range batch {
+			questions[i] = ask(id)
+		}
+		if err := e.readAhead(ctx, questions); err != nil {
+			return nil, false, "", err
+		}
+		for i, id := range batch {
+			resp, err := e.decide(ctx, questions[i])
+			if err != nil {
+				return nil, false, "", err
+			}
+			cursor, scanned = id, scanned+1
+			if resp.Decision {
+				allowed = append(allowed, id)
+			}
+			if len(allowed) == want || scanned == searchScan {
+				// Stopped early: whatever is left of this batch, and whatever
+				// the store had beyond it, is for the next page.
+				return allowed, i < len(batch)-1 || rest, cursor, nil
+			}
+		}
+		if !rest {
+			return allowed, false, cursor, nil
+		}
+	}
+}
+
+// searchesEverything says a search's candidates cannot come from rows naming what it
+// starts from: a document held through its folder has none naming the person, so
+// every candidate is taken and decided. decidedPage bounds what one page reads, so a
+// search of this kind is slower, and is the same answer a decision would give.
+func (s *Server) searchesEverything(ctx context.Context, orgID string, model *authzen.Model,
+	objectType, action string) (bool, error) {
+	if model.Walks(objectType, action) {
+		return true, nil
+	}
+	return store.AnySubjectSets(ctx, s.db, orgID)
 }
 
 // handleAuthzSearchSubject answers "who may act on this".
@@ -536,23 +895,37 @@ func (s *Server) handleAuthzSearchSubject(w http.ResponseWriter, r *http.Request
 		authzError(w, http.StatusBadRequest, perr.Error())
 		return
 	}
-	ids, more, err := store.SubjectsWith(ctx, s.db, orgID, relations,
-		req.Resource.Type, req.Resource.ID, limit, after)
+	everything, werr := s.searchesEverything(ctx, orgID, model, req.Resource.Type, req.Action.Name)
+	if werr != nil {
+		s.log.ErrorContext(ctx, "reading whether a search can start from a row", "err", werr)
+		authzError(w, http.StatusInternalServerError, "the search could not be run")
+		return
+	}
+	ids, more, cursor, err := s.decidedPage(ctx, orgID, limit, after,
+		func(after string, n int) ([]string, bool, error) {
+			if everything {
+				return store.PeopleInRelations(ctx, s.db, orgID, n, after)
+			}
+			return store.SubjectsWith(ctx, s.db, orgID, relations,
+				req.Resource.Type, req.Resource.ID, n, after)
+		},
+		func(id string) authzen.Request {
+			return authzen.Request{Subject: authzen.Subject{Type: "user", ID: id},
+				Action: *req.Action, Resource: *req.Resource, Context: req.Context}
+		})
 	if err != nil {
-		s.log.Error("searching subjects", "err", err)
+		s.log.ErrorContext(ctx, "searching subjects", "err", err)
 		authzError(w, http.StatusInternalServerError, "the search could not be run")
 		return
 	}
 	items := make([]authzen.Item, 0, len(ids))
-	last := ""
 	for _, id := range ids {
 		items = append(items, authzen.Item{Type: "user", ID: id})
-		last = id
 	}
 	echoRequestID(w, r)
 	writeJSONResponse(w, http.StatusOK, authzen.SearchResponse{
 		Results: items,
-		Page:    pageResponse(req, items, more, last),
+		Page:    pageResponse(req, items, more, cursor),
 	})
 }
 
@@ -589,16 +962,26 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 	// answer to a direct evaluation of the same triple cannot differ. Two code
 	// paths would eventually disagree, and the one nobody tested is the one an
 	// application would rely on.
-	var items []authzen.Item
+	questions := make([]authzen.Request, 0, len(t.Permissions))
 	for action := range t.Permissions {
-		resp, err := s.decide(ctx, orgID, authzen.Request{
+		questions = append(questions, authzen.Request{
 			Subject:  *req.Subject,
 			Resource: *req.Resource,
 			Action:   authzen.Action{Name: action},
 			Context:  req.Context,
 		})
+	}
+	e := s.newEvaluation(orgID)
+	if err := e.readAhead(ctx, questions); err != nil {
+		s.log.ErrorContext(ctx, "searching actions", "err", err)
+		authzError(w, http.StatusInternalServerError, "the search could not be run")
+		return
+	}
+	var items []authzen.Item
+	for _, question := range questions {
+		resp, err := e.decide(ctx, question)
 		if err != nil {
-			s.log.Error("searching actions", "err", err)
+			s.log.ErrorContext(ctx, "searching actions", "err", err)
 			authzError(w, http.StatusInternalServerError, "the search could not be run")
 			return
 		}
@@ -606,7 +989,7 @@ func (s *Server) handleAuthzSearchAction(w http.ResponseWriter, r *http.Request)
 			// `name`, not `id`: the specification's action results carry a name
 			// alone (section 8.6.2), and a client looking for it finds nothing
 			// if we send an id.
-			items = append(items, authzen.Item{Name: action})
+			items = append(items, authzen.Item{Name: question.Action.Name})
 		}
 	}
 	sortItems(items)
@@ -742,7 +1125,7 @@ func (s *Server) factsFor(ctx context.Context, orgID, subjectID string,
 
 func (s *Server) searchUnavailable(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
-		s.log.Error("loading the authorization model", "err", err)
+		s.log.ErrorContext(r.Context(), "loading the authorization model", "err", err)
 		authzError(w, http.StatusInternalServerError, "the model could not be loaded")
 		return
 	}

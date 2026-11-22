@@ -1,0 +1,429 @@
+package docsync
+
+import (
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// Every command that changes the configuration has an Admin API route that
+// makes the same change, or a stated reason it does not (6.07). The console,
+// the Terraform provider and any automation can do only what the Admin API
+// does, and a write that exists only as a command is one they cannot make:
+// about 115 of them once did, which left most of the product manageable only
+// from a shell with the database's credentials.
+//
+// The table is read in both directions against what main.go dispatches and the
+// admin router registers: a new command must be placed in it, and a route it
+// names must exist. Until every write had one, a row could say its route was
+// pending; none is now, so a new write arrives with its route or its reason.
+
+// reads is a command that changes nothing.
+const reads = "reads only"
+
+// orgSettings is where every organisation-wide sign-in and session setting is
+// changed.
+const orgSettings = "PATCH /admin/organizations/{orgID}/settings"
+
+// cliOnly is a write that stays a command, and why.
+func cliOnly(why string) string { return "command only: " + why }
+
+var cliAPI = map[string]string{
+	// The engine and its schema.
+	"serve":               cliOnly("runs the engine the API is part of"),
+	"verify":              reads,
+	"doctor":              reads,
+	"version":             reads,
+	"help":                reads,
+	"completion":          reads,
+	"api":                 cliOnly("is the Admin API, called from the command line: whatever it changes goes through a route"),
+	"migrate bootstrap":   cliOnly("needs a superuser connection, before the engine exists"),
+	"migrate up":          cliOnly("changes the schema the engine serving the API depends on"),
+	"migrate all":         cliOnly("changes the schema the engine serving the API depends on"),
+	"bootstrap":           cliOnly("runs before there is an Admin API token to call one with"),
+	"migrate status":      reads,
+	"migrate fingerprint": reads,
+	"janitor once":        cliOnly("the janitor's own pass, run by hand on the host"),
+	"restore finalize":    cliOnly("run against a restored database before anything serves it"),
+	"passwords calibrate": cliOnly("measures the host it runs on"),
+	"keys rewrap-root":    cliOnly("handles the root key itself, which never reaches the API"),
+	"ech new":             cliOnly("writes a TLS private key to a file on the host that serves it, as for the certificate"),
+
+	// Declarative configuration: files read and applied from where they are kept.
+	"plan":  reads,
+	"apply": "POST /admin/organizations/{orgID}/config",
+
+	// Instances and organisations.
+	"instance create":            cliOnly("a new issuer is a deployment decision, made where its root key is"),
+	"instance add-alias":         "POST /admin/instances/{instanceID}/issuer-aliases",
+	"instance retire-alias":      "PATCH /admin/instances/{instanceID}/issuer-aliases",
+	"instance aliases":           reads,
+	"instance session-limit":     orgSettings,
+	"instance remember-device":   orgSettings,
+	"instance org-status":        "PATCH /admin/organizations/{orgID}",
+	"instance org-delete":        cliOnly("deleting an organisation is done with the database in front of you, two-phase, as admin-api.md says"),
+	"instance org-budgets":       "PUT /admin/organizations/{orgID}/budgets",
+	"instance new-device-notice": orgSettings,
+	"instance reauth-window":     orgSettings,
+	"instance session-lifetime":  orgSettings,
+	"instance password-binds":    orgSettings,
+	"instance related-origins":   "PUT /admin/instances/{instanceID}/webauthn",
+	"instance webauthn":          "PUT /admin/instances/{instanceID}/webauthn",
+	"instance sms-numbers":       orgSettings,
+	"instance totp-policy":       orgSettings,
+	"instance login-throttle":    orgSettings,
+	"instance mail-sender":       orgSettings,
+
+	// People.
+	"user create":        "POST /admin/users",
+	"user locale":        "PATCH /admin/users/{userID}",
+	"user remove-factor": "DELETE /admin/users/{userID}/factors/{kind}",
+	"user passkey-link":  "POST /admin/users/{userID}/passkey-link",
+	"user approve":       "PATCH /admin/users/{userID}",
+	"user unlock":        "DELETE /admin/users/{userID}/throttle",
+	"user assign-otp":    cliOnly("reads a seed file from the operator's disk, the hardware token's, which should not cross a network"),
+	"erase subject":      "POST /admin/subjects/{subjectID}/erase",
+	"export subject":     "GET /admin/subjects/{subjectID}/export",
+	"export audit":       reads,
+	"export org":         reads,
+	"invite create":      "POST /admin/invitations",
+	"invite list":        reads,
+	"invite revoke":      "DELETE /admin/invitations/{invitationID}",
+	"signup enable":      "PUT /admin/organizations/{orgID}/signup",
+	"signup disable":     "DELETE /admin/organizations/{orgID}/signup",
+	"signup show":        reads,
+	"import keycloak":    cliOnly("reads another product's export from the operator's disk"),
+	"import authentik":   cliOnly("reads another product's export from the operator's disk"),
+	"import zitadel":     cliOnly("reads another product's export from the operator's disk"),
+	"import auth0":       cliOnly("reads another product's export from the operator's disk"),
+	"import okta":        cliOnly("reads another product's export from the operator's disk"),
+	"import entra":       cliOnly("reads another product's export from the operator's disk"),
+	"import shadow":      cliOnly("reads /etc/shadow from the operator's disk"),
+	"import pskc":        cliOnly("reads a vendor's file of seeds from the operator's disk"),
+
+	// Groups.
+	"group create":        "POST /admin/groups",
+	"group list":          reads,
+	"group member":        "PUT /admin/groups/{groupID}/members/{userID}",
+	"group nest":          "PUT /admin/groups/{groupID}/member-groups/{memberGroupID}",
+	"group release":       "PUT /admin/clients/{clientID}/group-release",
+	"group impersonation": cliOnly("deliberately not in the Admin API: a groups:write token must not be able to make anyone able to act as anyone"),
+
+	// Applications.
+	"client create":                   "POST /admin/clients",
+	"client set-keys":                 "PATCH /admin/clients/{clientID}",
+	"client set-encryption":           "PATCH /admin/clients/{clientID}",
+	"client set-tls":                  "PATCH /admin/clients/{clientID}",
+	"client set-dpop":                 "PATCH /admin/clients/{clientID}",
+	"client set-pkce":                 "PATCH /admin/clients/{clientID}",
+	"client set-logout":               "PATCH /admin/clients/{clientID}",
+	"client set-lifetimes":            "PATCH /admin/clients/{clientID}",
+	"client set-alg":                  "PATCH /admin/clients/{clientID}",
+	"client name":                     "PATCH /admin/clients/{clientID}",
+	"client set-issuer-alias":         "PATCH /admin/clients/{clientID}",
+	"client set-par":                  "PATCH /admin/clients/{clientID}",
+	"client set-signed-requests":      "PATCH /admin/clients/{clientID}",
+	"client set-state":                "PATCH /admin/clients/{clientID}",
+	"client set-admin-api":            "PATCH /admin/clients/{clientID}",
+	"client set-first-party":          "PATCH /admin/clients/{clientID}",
+	"client set-roles-claim":          "PATCH /admin/clients/{clientID}",
+	"client set-login-ui":             "PATCH /admin/clients/{clientID}",
+	"client set-token-format":         "PATCH /admin/clients/{clientID}",
+	"client set-subject-type":         "PATCH /admin/clients/{clientID}",
+	"client set-profile":              "PATCH /admin/clients/{clientID}",
+	"client set-acr":                  "PATCH /admin/clients/{clientID}",
+	"client set-exchange":             "PATCH /admin/clients/{clientID}",
+	"client id-jag-allow":             "PUT /admin/clients/{clientID}/id-jag-audiences",
+	"client id-jag-audiences":         reads,
+	"client id-jag-forget":            "DELETE /admin/clients/{clientID}/id-jag-audiences",
+	"client set-exchange-containment": "PATCH /admin/clients/{clientID}",
+	"client set-hybrid":               "PATCH /admin/clients/{clientID}",
+	"client set-claims-redirects":     "PATCH /admin/clients/{clientID}",
+	"client set-grants":               "PATCH /admin/clients/{clientID}",
+	"client set-ciba":                 "PATCH /admin/clients/{clientID}",
+	"client set-assertion-issuers":    "PATCH /admin/clients/{clientID}",
+	"registration enable":             "PUT /admin/organizations/{orgID}/registration",
+	"registration token":              "POST /admin/organizations/{orgID}/registration-tokens",
+	"registration revoke":             "DELETE /admin/organizations/{orgID}/registration-tokens/{tokenID}",
+	"resource add":                    "PUT /admin/organizations/{orgID}/resource-servers",
+	"resource list":                   reads,
+	"resource remove":                 "DELETE /admin/organizations/{orgID}/resource-servers",
+	"logout-test":                     cliOnly("runs a relying party on the operator's host to watch a logout arrive"),
+
+	// Credentials (OID4VCI).
+	"credential define":         "PUT /admin/organizations/{orgID}/credential-configurations/{configID}",
+	"credential list":           reads,
+	"credential requests":       reads,
+	"credential decide":         "PUT /admin/organizations/{orgID}/credential-requests/{requestID}",
+	"credential offer":          "POST /admin/users/{userID}/credential-offers",
+	"credential trust-root":     "PUT /admin/organizations/{orgID}/credential-proof-roots/{name}",
+	"credential roots":          reads,
+	"credential encryption-key": "POST /admin/instances/{instanceID}/credential-encryption-key",
+	"credential issued":         reads,
+	"credential revoke":         "POST /admin/organizations/{orgID}/credential-revocations",
+	"credential untrust-root":   "DELETE /admin/organizations/{orgID}/credential-proof-roots/{name}",
+
+	// Keys and the audit trail.
+	"keys list":        reads,
+	"keys rotate":      "POST /admin/instances/{instanceID}/keys/rotate",
+	"keys retire":      "POST /admin/instances/{instanceID}/keys/retire",
+	"audit checkpoint": cliOnly("anchors the chain from the host, signed by whoever runs it"),
+	"audit verify":     reads,
+	"audit archive":    cliOnly("writes a file on the operator's disk"),
+
+	// Administration.
+	"admin-token create": "POST /admin/tokens",
+	"admin-token list":   reads,
+	"admin-token revoke": "DELETE /admin/tokens/{tokenID}",
+	"role grant":         "POST /admin/organizations/{orgID}/role-bindings",
+	"role list":          reads,
+	"role revoke":        "DELETE /admin/organizations/{orgID}/role-bindings/{bindingID}",
+
+	// Upstream providers.
+	"idp add":             "POST /admin/organizations/{orgID}/identity-providers",
+	"idp disable":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp enable":          "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp list":            reads,
+	"idp check":           reads,
+	"idp refresh-saml":    "POST /admin/organizations/{orgID}/identity-providers/{slug}/metadata",
+	"idp saml-key":        "POST /admin/organizations/{orgID}/identity-providers/{slug}/saml-keys",
+	"idp saml-use":        "PUT /admin/organizations/{orgID}/identity-providers/{slug}/saml-key-use",
+	"idp domains":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp logout":          "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp forward":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp group-claim":     "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp group-map":       "PUT /admin/organizations/{orgID}/identity-providers/{slug}/group-map",
+	"idp vp-issuer":       "PUT /admin/organizations/{orgID}/identity-providers/{slug}/vp-issuers",
+	"idp vp-cross-device": "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp vp-dc-api":       "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp vp-iaca":         "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp auth":            "PUT /admin/organizations/{orgID}/identity-providers/{slug}/token-auth",
+	"idp assertions":      "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp link":            "PUT /admin/users/{userID}/identity-links/{slug}",
+	"idp unlink":          "DELETE /admin/users/{userID}/identity-links/{slug}",
+	"idp links":           reads,
+	"idp add-issuer":      "POST /admin/organizations/{orgID}/identity-providers",
+	"idp apple-secret":    cliOnly("signs with the .p8 key Apple issued, read from the operator's disk"),
+	"idp trust-mfa":       "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp store-tokens":    "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp verified-email":  "PATCH /admin/organizations/{orgID}/identity-providers/{slug}",
+	"idp attribute-map":   "PUT /admin/organizations/{orgID}/identity-providers/{slug}/attribute-map",
+
+	// SAML service providers.
+	"saml add-sp":            "POST /admin/organizations/{orgID}/saml-providers",
+	"saml list":              reads,
+	"saml refresh-sp":        "POST /admin/organizations/{orgID}/saml-providers/{providerID}/metadata",
+	"saml attribute-release": "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/attribute-release",
+	"saml signing":           "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml nameid":            "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml soap-logout":       "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml wsfed-token":       "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml org-endpoint":      "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml idp-initiated":     "PATCH /admin/organizations/{orgID}/saml-providers/{providerID}",
+	"saml group-release":     "PUT /admin/organizations/{orgID}/saml-providers/{providerID}/group-release",
+
+	// Provisioning and directories.
+	"scim-source add":          "POST /admin/organizations/{orgID}/scim-sources",
+	"scim-source disable":      "PATCH /admin/organizations/{orgID}/scim-sources/{slug}",
+	"scim-source enable":       "PATCH /admin/organizations/{orgID}/scim-sources/{slug}",
+	"scim-source list":         reads,
+	"scim add":                 "POST /admin/organizations/{orgID}/scim-targets",
+	"scim enable":              "PATCH /admin/organizations/{orgID}/scim-targets/{slug}",
+	"scim disable":             "PATCH /admin/organizations/{orgID}/scim-targets/{slug}",
+	"scim list":                reads,
+	"scim scope":               "PATCH /admin/organizations/{orgID}/scim-targets/{slug}",
+	"scim provision-group":     "PUT /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}",
+	"scim deprovision-group":   "DELETE /admin/organizations/{orgID}/scim-targets/{slug}/groups/{group}",
+	"scim sync":                "POST /admin/organizations/{orgID}/scim-targets/{slug}/sync",
+	"scim verify":              reads,
+	"scim authorize":           "POST /admin/organizations/{orgID}/scim-targets/{slug}/authorization/code",
+	"provision add":            "POST /admin/organizations/{orgID}/scim-targets",
+	"dir add":                  "POST /admin/organizations/{orgID}/directories",
+	"dir list":                 reads,
+	"dir group-map":            "PUT /admin/organizations/{orgID}/directories/{slug}/group-map",
+	"dir set":                  "PATCH /admin/organizations/{orgID}/directories/{slug}",
+	"dir sync":                 "POST /admin/organizations/{orgID}/directories/{slug}/sync",
+	"dir test":                 "POST /admin/organizations/{orgID}/directories/{slug}/test",
+	"kerberos sync":            cliOnly("asks the realm's admin server with a keytab on the operator's host"),
+	"kerberos add-realm":       "POST /admin/organizations/{orgID}/kerberos-realms",
+	"kerberos remove-realm":    "DELETE /admin/organizations/{orgID}/kerberos-realms/{realm}",
+	"kerberos list-realms":     reads,
+	"kerberos check":           reads,
+	"kerberos principals":      reads,
+	"migration-source add":     "PUT /admin/organizations/{orgID}/migration-source",
+	"migration-source enable":  "PUT /admin/organizations/{orgID}/migration-source",
+	"migration-source disable": "PUT /admin/organizations/{orgID}/migration-source",
+	"migration-source show":    reads,
+	"migration-source remove":  "DELETE /admin/organizations/{orgID}/migration-source",
+	"migration-source test":    "POST /admin/organizations/{orgID}/migration-source/test",
+
+	// Signals and events.
+	"ssf add-stream":   "POST /admin/organizations/{orgID}/ssf-streams",
+	"ssf set-status":   "PATCH /admin/clients/{clientID}/ssf-stream",
+	"ssf add-source":   "PUT /admin/organizations/{orgID}/ssf-sources",
+	"ssf poll-source":  "PUT /admin/organizations/{orgID}/ssf-sources/poll",
+	"ssf list":         reads,
+	"ssf received":     reads,
+	"events subscribe": "POST /admin/organizations/{orgID}/event-subscriptions",
+	"events remove":    "DELETE /admin/organizations/{orgID}/event-subscriptions/{name}",
+	"events rotate":    "POST /admin/organizations/{orgID}/event-subscriptions/{name}/rotate-secret",
+	"events enable":    "POST /admin/organizations/{orgID}/event-subscriptions/{name}/enable",
+	"events list":      reads,
+	"events test":      "POST /admin/organizations/{orgID}/event-subscriptions/{name}/test",
+
+	// Authorization, federation and UMA.
+	"authz set-model":     "PUT /admin/organizations/{orgID}/authorization-model",
+	"authz show-model":    reads,
+	"authz test":          reads,
+	"authz grant":         "PUT /admin/organizations/{orgID}/relations",
+	"authz revoke":        "DELETE /admin/organizations/{orgID}/relations",
+	"authz delegate":      "POST /admin/organizations/{orgID}/relation-delegations",
+	"authz delegations":   reads,
+	"authz undelegate":    "DELETE /admin/organizations/{orgID}/relation-delegations/{delegationID}",
+	"authz check":         reads,
+	"authz list":          reads,
+	"authz expand":        reads,
+	"trust-mark issue":    "POST /admin/instances/{instanceID}/trust-marks",
+	"trust-mark revoke":   "POST /admin/instances/{instanceID}/trust-marks/revoke",
+	"trust-mark list":     reads,
+	"trust-mark accept":   "PUT /admin/instances/{instanceID}/held-trust-marks",
+	"trust-mark drop":     "DELETE /admin/instances/{instanceID}/held-trust-marks",
+	"trust-mark delegate": "POST /admin/instances/{instanceID}/trust-mark-delegations",
+	"trust-mark owners":   reads,
+	"trust-mark issuers":  reads,
+	"federation enable":   "PUT /admin/instances/{instanceID}/federation",
+	"federation show":     reads,
+	"uma settings":        "PUT /admin/organizations/{orgID}/uma",
+	"uma requests":        reads,
+	"uma approve":         "POST /admin/organizations/{orgID}/uma/requests/{requestID}/approve",
+	"uma deny":            "POST /admin/organizations/{orgID}/uma/requests/{requestID}/deny",
+	"rar register":        "PUT /admin/organizations/{orgID}/authorization-detail-types",
+	"rar allow":           "PATCH /admin/clients/{clientID}",
+	"rar list":            reads,
+
+	// Extension hooks and outposts.
+	"provider add":         "PUT /admin/organizations/{orgID}/providers/{hook}",
+	"provider list":        reads,
+	"provider claims":      "PUT /admin/organizations/{orgID}/providers/{hook}/claims",
+	"provider remove":      "DELETE /admin/organizations/{orgID}/providers/{hook}",
+	"provider rotate":      "POST /admin/organizations/{orgID}/providers/{hook}/rotate-secret",
+	"provider test":        reads,
+	"outpost create":       "POST /admin/organizations/{orgID}/outposts",
+	"outpost disable":      "PATCH /admin/organizations/{orgID}/outposts/{name}",
+	"outpost enable":       "PATCH /admin/organizations/{orgID}/outposts/{name}",
+	"outpost list":         reads,
+	"outpost remove":       "DELETE /admin/organizations/{orgID}/outposts/{name}",
+	"outpost rotate":       "POST /admin/organizations/{orgID}/outposts/{name}/rotate",
+	"outpost search-group": "PATCH /admin/organizations/{orgID}/outposts/{name}",
+	"outpost run":          cliOnly("runs an outpost, which holds no database credentials"),
+	"attester add":         "PUT /admin/organizations/{orgID}/attesters/{name}",
+	"attester list":        reads,
+
+	// The services an external_factor stage asks.
+	"external-factor add":    "PUT /admin/organizations/{orgID}/external-factors/{name}",
+	"external-factor list":   reads,
+	"external-factor remove": "DELETE /admin/organizations/{orgID}/external-factors/{name}",
+
+	// Who this instance speaks for in a federation.
+	"client-metadata rules":         reads,
+	"client-metadata allow":         "PUT /admin/instances/{instanceID}/client-metadata-rules",
+	"client-metadata forget":        "DELETE /admin/instances/{instanceID}/client-metadata-rules",
+	"federation anchors":            reads,
+	"federation add-anchor":         "PUT /admin/instances/{instanceID}/federation/anchors",
+	"federation remove-anchor":      "DELETE /admin/instances/{instanceID}/federation/anchors",
+	"federation subordinates":       reads,
+	"federation add-subordinate":    "PUT /admin/instances/{instanceID}/federation/subordinates",
+	"federation remove-subordinate": "DELETE /admin/instances/{instanceID}/federation/subordinates",
+
+	// Network access.
+	"radius add-client":     "POST /admin/organizations/{orgID}/radius-clients",
+	"radius authorize":      "PUT /admin/groups/{groupID}/radius",
+	"radius disable-client": "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}",
+	"radius enable-client":  "PATCH /admin/organizations/{orgID}/radius-clients/{deviceID}",
+	"radius list":           reads,
+	"proxy check":           reads,
+	"proxy add-host":        "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy disable-host":    "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy enable-host":     "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy release":         "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy rules":           "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy cookie":          "PUT /admin/organizations/{orgID}/proxy-hosts",
+	"proxy remove-host":     "DELETE /admin/organizations/{orgID}/proxy-hosts/{host}",
+	"proxy list":            reads,
+	// Except -recording-path and a parameter naming a path, which choose where
+	// the machine guacd runs on writes and stay with the command.
+	"rac add":            "POST /admin/organizations/{orgID}/rac-connections",
+	"rac disable":        "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac enable":         "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac limits":         "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+	"rac list":           reads,
+	"rac set-parameters": "PATCH /admin/organizations/{orgID}/rac-connections/{slug}",
+
+	// Policy, flows, prompts and appearance.
+	"policy apply":    "PUT /admin/organizations/{orgID}/access-policy",
+	"policy show":     reads,
+	"policy test":     reads,
+	"policy graph":    reads,
+	"flow apply":      "PUT /admin/organizations/{orgID}/sign-in-flow",
+	"flow show":       reads,
+	"flow test":       reads,
+	"flow paths":      reads,
+	"prompt set":      "PUT /admin/organizations/{orgID}/prompts/{slug}",
+	"prompt list":     reads,
+	"prompt enable":   "PATCH /admin/organizations/{orgID}/prompts/{slug}",
+	"prompt disable":  "PATCH /admin/organizations/{orgID}/prompts/{slug}",
+	"brand set":       "PUT /admin/instances/{instanceID}/brand",
+	"brand remove":    "DELETE /admin/instances/{instanceID}/brand",
+	"brand show":      reads,
+	"brand check":     reads,
+	"message set":     "PUT /admin/organizations/{orgID}/messages/{locale}/{key}",
+	"message list":    reads,
+	"message remove":  "DELETE /admin/organizations/{orgID}/messages/{locale}/{key}",
+	"theme eject":     cliOnly("writes the built-in pages to the operator's disk"),
+	"theme check":     reads,
+	"theme list":      reads,
+	"i18n list":       reads,
+	"i18n status":     reads,
+	"i18n keys":       reads,
+	"webauthn policy": "PUT /admin/organizations/{orgID}/webauthn-policy",
+	"webauthn show":   reads,
+	"duo set":         "PUT /admin/organizations/{orgID}/duo",
+	"duo show":        reads,
+	"duo enroll":      "PUT /admin/users/{userID}/duo",
+}
+
+func TestEveryCLIWriteHasAnAdminAPIRoute(t *testing.T) {
+	root := repoRoot(t)
+	dispatched := dispatchedCommands(t, readSource(t, filepath.Join(root, "engine", "cmd", "signari", "main.go")))
+	routes := adminRoutes(t, root)
+
+	var unplaced, stale, unrouted []string
+	for cmd := range dispatched {
+		if _, ok := cliAPI[cmd]; !ok {
+			unplaced = append(unplaced, cmd)
+		}
+	}
+	for cmd, where := range cliAPI {
+		switch {
+		case !dispatched[cmd]:
+			stale = append(stale, cmd)
+		case where == reads, strings.HasPrefix(where, "command only: ") && len(where) > len("command only: "):
+		case !routes[where]:
+			unrouted = append(unrouted, cmd+" -> "+where)
+		}
+	}
+	for _, l := range [][]string{unplaced, stale, unrouted} {
+		sort.Strings(l)
+	}
+	for _, c := range unplaced {
+		t.Errorf("%q is a command and is not in cliAPI: say which Admin API route makes the same "+
+			"change, that it only reads, or why it stays a command", c)
+	}
+	for _, c := range stale {
+		t.Errorf("cliAPI places %q, which main.go does not dispatch", c)
+	}
+	for _, c := range unrouted {
+		t.Errorf("cliAPI says %s, and the admin router registers no such route", c)
+	}
+}

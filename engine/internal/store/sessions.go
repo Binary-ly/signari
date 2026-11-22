@@ -40,6 +40,9 @@ const (
 	// self-service account console (ASVS V7.5.2). Distinct from ReasonLogout
 	// because the session being ended is usually not the one making the request.
 	ReasonUserRevoke TerminationReason = "user_revoke"
+	// ReasonRestored: the database was restored from a backup, which brought
+	// back sessions ended after it was taken (3.10).
+	ReasonRestored TerminationReason = "restored"
 )
 
 // LogoutNotice is one queued back-channel logout delivery.
@@ -61,6 +64,34 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 	if (sid == "") == (userID == "") {
 		return nil, fmt.Errorf("TerminateSessions needs exactly one of sid or userID")
 	}
+	var sids []string
+	if sid != "" {
+		sids = []string{sid}
+	}
+	return terminate(ctx, tx, sids, userID, reason)
+}
+
+// TerminateEachSession ends the sessions named, each addressed by its sid, in as
+// many statements as ending one takes. The sweep ends thousands at a time, and a
+// statement per session is what kept it to 500 a minute.
+func TerminateEachSession(ctx context.Context, tx pgx.Tx, sids []string, reason TerminationReason) (*Terminated, error) {
+	if len(sids) == 0 {
+		return &Terminated{}, nil
+	}
+	return terminate(ctx, tx, sids, "", reason)
+}
+
+// terminate is the one path a session ends by: the sessions named, or every one
+// a person holds.
+func terminate(ctx context.Context, tx pgx.Tx, sids []string, userID string, reason TerminationReason) (*Terminated, error) {
+	// Everything of a person's ending ends what speaks for them with no session
+	// behind it, as it ends their refresh tokens: signed out everywhere is a thing
+	// they are told happened, and a PCT left over would make it untrue.
+	if userID != "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM core.uma_persisted_claims WHERE user_id = $1::uuid`, userID); err != nil {
+			return nil, fmt.Errorf("ending persisted claims: %w", err)
+		}
+	}
 
 	// 1. Snapshot. Only live sessions: re-revoking an already-revoked session
 	// must not re-notify, or an expiry sweep would replay logout storms.
@@ -70,10 +101,10 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		JOIN core.session_clients sc ON sc.sid = s.sid
 		JOIN core.clients c          ON c.client_id = sc.client_id
 		WHERE s.revoked_at IS NULL
-		  AND ($1::text IS NULL OR s.sid = $1)
+		  AND ($1::text[] IS NULL OR s.sid = ANY($1))
 		  AND ($2::uuid IS NULL OR s.user_id = $2)
 		  AND c.backchannel_logout_uri IS NOT NULL`,
-		nullIf(sid), nullIf(userID))
+		sids, nullIf(userID))
 	if err != nil {
 		return nil, fmt.Errorf("snapshotting sessions: %w", err)
 	}
@@ -86,8 +117,8 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 			return nil, err
 		}
 		n := LogoutNotice{ClientID: clientID, Endpoint: endpoint, Reason: string(reason)}
-		if sid != "" {
-			n.SessionID = gotSID // one session: address it by sid
+		if userID == "" {
+			n.SessionID = gotSID // a session named: address it by sid
 		} else {
 			n.Subject = gotUser // all sessions: address them by sub
 		}
@@ -101,24 +132,32 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 	// 2. Queue. Deduplicated: ending all of a user's sessions must send one
 	// sub-addressed notice per relying party, not one per session.
 	seen := map[string]bool{}
-	queued := 0
+	var payloads []string
 	for _, n := range notices {
 		key := n.ClientID + "|" + n.SessionID + "|" + n.Subject
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
+		// The receiver is told as it knows them, here because signing has no database.
+		if n.Subject != "" {
+			var err error
+			if n.Subject, err = ClientSubject(ctx, tx, n.ClientID, n.Subject); err != nil {
+				return nil, err
+			}
+		}
 		payload, err := json.Marshal(n)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO core.outbox (topic, payload) VALUES ('backchannel_logout', $1)`,
-			payload); err != nil {
-			return nil, fmt.Errorf("queuing logout notice: %w", err)
+		payloads = append(payloads, string(payload))
+	}
+	if len(payloads) > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO core.outbox (topic, payload)
+			SELECT 'backchannel_logout', p::jsonb FROM unnest($1::text[]) AS p`, payloads); err != nil {
+			return nil, fmt.Errorf("queuing logout notices: %w", err)
 		}
-		queued++
-
 	}
 
 	// 2b. CAEP security events, queued INDEPENDENTLY of back-channel logout.
@@ -129,9 +168,14 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 	// got nothing at all, silently. The two are different features for different
 	// audiences and neither should be a prerequisite for the other.
 	//
-	// Queued only for streams that are enabled, asked for THIS event type, and
-	// whose client actually participated in the session: a stream is not a
-	// licence to learn about every user in the directory.
+	// Queued only for streams that are enabled or paused, asked for THIS event
+	// type, and whose client actually participated in the session: a stream is
+	// not a licence to learn about every user in the directory. A paused
+	// stream's events are queued and held, not sent, because a paused
+	// transmitter "SHOULD hold any events it would have transmitted while
+	// paused, and SHOULD transmit them when the stream's status becomes
+	// enabled" (specs/ssf-1_0.txt:2592-2598); delivery holds them. A disabled
+	// one holds nothing.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO core.outbox (topic, payload)
 		SELECT DISTINCT 'ssf_event', jsonb_build_object(
@@ -146,12 +190,14 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		JOIN core.session_clients sc ON sc.sid = s.sid
 		JOIN core.ssf_streams st     ON st.client_id = sc.client_id
 		WHERE s.revoked_at IS NULL
-		  AND ($1::text IS NULL OR s.sid = $1)
+		  AND ($1::text[] IS NULL OR s.sid = ANY($1))
 		  AND ($2::uuid IS NULL OR s.user_id = $2)
-		  AND st.status = 'enabled'
+		  AND st.status IN ('enabled', 'paused')
 		  AND st.delivery_method = 'push'
-		  AND $3::text = ANY(st.events_requested)`,
-		nullIf(sid), nullIf(userID),
+		  AND $3::text = ANY(st.events_requested)
+		  AND NOT EXISTS (SELECT 1 FROM core.ssf_removed_subjects r
+		                   WHERE r.stream_id = st.id AND r.user_id = s.user_id)`,
+		sids, nullIf(userID),
 		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
 		string(reason)); err != nil {
 		return nil, fmt.Errorf("queuing CAEP session-revoked events: %w", err)
@@ -175,16 +221,35 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 			JOIN core.session_clients sc ON sc.sid = s.sid
 			JOIN core.ssf_streams st     ON st.client_id = sc.client_id
 			WHERE s.revoked_at IS NULL
-			  AND ($1::text IS NULL OR s.sid = $1)
+			  AND ($1::text[] IS NULL OR s.sid = ANY($1))
 			  AND ($2::uuid IS NULL OR s.user_id = $2)
-			  AND st.status = 'enabled'
+			  AND st.status IN ('enabled', 'paused')
 			  AND st.delivery_method = 'poll'
 			  AND $3::text = ANY(st.events_requested)
+			  AND NOT EXISTS (SELECT 1 FROM core.ssf_removed_subjects r
+			                   WHERE r.stream_id = st.id AND r.user_id = s.user_id)
 		) d`,
-		nullIf(sid), nullIf(userID),
+		sids, nullIf(userID),
 		"https://schemas.openid.net/secevent/caep/event-type/session-revoked",
 		string(reason)); err != nil {
 		return nil, fmt.Errorf("queuing CAEP session-revoked events for poll: %w", err)
+	}
+
+	// 2d. Service providers that take a logout with no browser. The redirect chain
+	// reaches a provider only when a person signs out by hand; this is every other
+	// way a session ends, and that way as well. A provider told twice has nothing
+	// left to end the second time.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.outbox (topic, payload)
+		SELECT DISTINCT $3::text, jsonb_build_object('sid', s.sid, 'provider_id', p.provider_id::text)
+		  FROM core.sessions s
+		  JOIN core.saml_session_participants p ON p.sid = s.sid
+		  JOIN core.saml_slo_urls u ON u.provider_id = p.provider_id AND u.binding = 'SOAP'
+		 WHERE s.revoked_at IS NULL
+		   AND ($1::text[] IS NULL OR s.sid = ANY($1))
+		   AND ($2::uuid IS NULL OR s.user_id = $2)`,
+		sids, nullIf(userID), SAMLLogoutTopic); err != nil {
+		return nil, fmt.Errorf("queuing SAML logouts: %w", err)
 	}
 
 	// 3. Destroy. Only now, once delivery is durably queued in the same
@@ -193,27 +258,43 @@ func TerminateSessions(ctx context.Context, tx pgx.Tx, sid, userID string, reaso
 		UPDATE core.sessions
 		SET revoked_at = now(), revocation_reason = $3
 		WHERE revoked_at IS NULL
-		  AND ($1::text IS NULL OR sid = $1)
+		  AND ($1::text[] IS NULL OR sid = ANY($1))
 		  AND ($2::uuid IS NULL OR user_id = $2)`,
-		nullIf(sid), nullIf(userID), string(reason))
+		sids, nullIf(userID), string(reason))
 	if err != nil {
 		return nil, fmt.Errorf("revoking sessions: %w", err)
 	}
 
-	// Refresh families follow their session. Leaving them live would let a
-	// refresh token outlive the session it was minted under.
+	// Refresh families follow their session, except an offline grant (5.10),
+	// which outlives the one session it was given in -- that is what offline
+	// means -- and ends with all of them: ending every session somebody has is
+	// what is done when the account may be in the wrong hands (a password
+	// changed or reset, a factor reset, deactivation, "sign out everywhere"),
+	// for the same reason it forgets their remembered devices below. Ending
+	// one session is a logout, an expiry, an eviction.
 	if _, err := tx.Exec(ctx, `
 		UPDATE core.refresh_token_families f
 		SET revoked_at = now(), revocation_reason = $3
 		FROM core.sessions s
 		WHERE f.sid = s.sid AND f.revoked_at IS NULL
-		  AND ($1::text IS NULL OR s.sid = $1)
-		  AND ($2::uuid IS NULL OR s.user_id = $2)`,
-		nullIf(sid), nullIf(userID), string(reason)); err != nil {
+		  AND ($1::text[] IS NULL OR s.sid = ANY($1))
+		  AND ($2::uuid IS NULL OR s.user_id = $2)
+		  AND (f.offline_not_after IS NULL OR $2::uuid IS NOT NULL)`,
+		sids, nullIf(userID), string(reason)); err != nil {
 		return nil, fmt.Errorf("revoking refresh families: %w", err)
 	}
 
-	return &Terminated{Sessions: int(tag.RowsAffected()), Notices: queued}, nil
+	// Ending all of somebody's sessions forgets their remembered devices as
+	// well: it is what is done when an account may be in the wrong hands, and
+	// a device that skips the second factor is the one thing that would let a
+	// stolen password straight back in.
+	if userID != "" {
+		if _, err := ForgetDevices(ctx, tx, userID, ""); err != nil {
+			return nil, err
+		}
+	}
+
+	return &Terminated{Sessions: int(tag.RowsAffected()), Notices: len(payloads)}, nil
 }
 
 func IsSessionLive(ctx context.Context, q interface {
@@ -224,6 +305,7 @@ func IsSessionLive(ctx context.Context, q interface {
 		SELECT s.revoked_at IS NULL
 		   AND s.not_after > now()
 		   AND u.status = 'active'
+		   AND `+OrgInService("u.org_id")+`
 		FROM core.sessions s
 		JOIN core.users u ON u.id = s.user_id
 		WHERE s.sid = $1`, sid).Scan(&live)
@@ -279,22 +361,58 @@ func ListUserSessions(ctx context.Context, q interface {
 	return out, rows.Err()
 }
 
-func ResolveSessionCookie(ctx context.Context, q interface {
+// BrowserSession is the session a browser's cookie names, with what the pages
+// after it ask of one, so that they need not each go back for it.
+type BrowserSession struct {
+	SID, UserID, OrgID string
+	// Live is whether it can be used. A session that cannot is still described:
+	// to a page it is not the same as there being none.
+	Live     bool
+	AuthTime time.Time
+	AMR      []string
+}
+
+// ResolveBrowserSession finds the session a browser's cookie names, among the
+// sessions of instanceID's organisations (6.12): another instance's session is
+// no session here, as its cookie is never sent here by a browser that was not
+// handed it by someone else. No such session is the zero value and no error.
+func ResolveBrowserSession(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, cookieHash []byte) (sid string, live bool, err error) {
-	err = q.QueryRow(ctx, `
-		SELECT s.sid,
-		       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
-		FROM core.sessions s
-		JOIN core.users u ON u.id = s.user_id
-		WHERE s.cookie_hash = $1`, cookieHash).Scan(&sid, &live)
+}, cookieHash []byte, instanceID string) (BrowserSession, error) {
+	// A browser presenting its cookie is a use of the session, recorded in the
+	// same statement (see sessionlifetime.go): liveness is decided from the
+	// row as it was, and the deadline moves for a live one only.
+	var found BrowserSession
+	err := q.QueryRow(ctx, `
+		WITH found AS (
+			SELECT s.sid, s.user_id, s.org_id, s.auth_time, s.amr,
+			       s.revoked_at IS NULL AND s.not_after > now() AND u.status = 'active'
+			       AND `+OrgInService("u.org_id")+` AS live
+			FROM core.sessions s
+			JOIN core.users u ON u.id = s.user_id
+			WHERE s.cookie_hash = $1 AND `+InInstance("s.org_id", "$2")+`),
+		touched AS (
+			UPDATE core.sessions t SET `+touchSet+`
+			  FROM core.organizations o, found f
+			 WHERE t.sid = f.sid AND f.live AND o.id = t.org_id AND `+touchDue+`)
+		SELECT sid, user_id::text, org_id::text, auth_time, amr, live FROM found`, cookieHash, instanceID).
+		Scan(&found.SID, &found.UserID, &found.OrgID, &found.AuthTime, &found.AMR, &found.Live)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return BrowserSession{}, nil
 	}
 	if err != nil {
-		return "", false, err
+		return BrowserSession{}, err
 	}
-	return sid, live, nil
+	return found, nil
+}
+
+// ResolveSessionCookie is ResolveBrowserSession for a caller that wants only
+// which session it is and whether it can be used.
+func ResolveSessionCookie(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, cookieHash []byte, instanceID string) (sid string, live bool, err error) {
+	found, err := ResolveBrowserSession(ctx, q, cookieHash, instanceID)
+	return found.SID, found.Live, err
 }
 
 // TouchSessionClient records that a relying party saw this session, so logout can
@@ -307,33 +425,22 @@ func TouchSessionClient(ctx context.Context, tx pgx.Tx, sid, clientID string) er
 }
 
 // SweepExpiredSessions ends sessions past not_after, through the same single
-// termination path so relying parties are notified.
+// termination path so relying parties are notified. SKIP LOCKED, so a session a
+// person is signing out of at this moment waits for neither of them.
 func SweepExpiredSessions(ctx context.Context, tx pgx.Tx, limit int) (int, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT sid FROM core.sessions
 		WHERE revoked_at IS NULL AND not_after <= now()
-		ORDER BY not_after LIMIT $1`, limit)
+		ORDER BY not_after LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
 		return 0, err
 	}
-	var sids []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		sids = append(sids, s)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	sids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return 0, err
 	}
-
-	for _, s := range sids {
-		if _, err := TerminateSessions(ctx, tx, s, "", ReasonExpired); err != nil {
-			return 0, err
-		}
+	if _, err := TerminateEachSession(ctx, tx, sids, ReasonExpired); err != nil {
+		return 0, err
 	}
 	return len(sids), nil
 }

@@ -17,6 +17,11 @@ the policy.
     client -> AS        grant_type=urn:...:uma-ticket, ticket=...   -> RPT
     client -> RS        Authorization: Bearer <RPT>
 
+The client exchanging the ticket needs the grant, which defaults to off:
+`signari client set-grants -client-id <id> -grant-types
+urn:ietf:params:oauth:grant-type:uma-ticket`. Until October 2026 `set-grants`
+refused this grant type, so no client could be given it.
+
 ## The decision comes from the existing policy engine
 
 `internal/authzen` — the same policy decision point that answers
@@ -125,7 +130,7 @@ values the person was never shown.
 > parties to pre-registered redirection URIs defined in [RFC6749] unless such
 > URIs are also pre-registered specifically as claims redirection URIs.
 
-    signari client set-claims-redirects -client web \
+    signari client set-claims-redirects -client-id web \
       -claims-redirect-uris https://app.example/uma/return
 
 They are a separate column and a separate list, even when they are the same host.
@@ -276,6 +281,9 @@ for. Granting one that covers three of four leaves the client polling forever
 against a decision somebody believes they made, and the pending row would say
 `approved`.
 
+`-expires-in 720h` grants it for thirty days instead of until revoked. Access
+someone needed for a project then ends without anyone having to remember it.
+
 Denial reaches the client on its next poll, as `request_denied`. There is no way
 to tell it sooner — the ticket flow is the only channel the protocol has.
 
@@ -295,6 +303,9 @@ approving a month-old one is approving a context they cannot remember.
 - `claims_interaction_endpoint` — §2's static value. §3.3.2 assumes it is
   declared, because that is what lets a client redirect a requesting party
   *before* being told to.
+- `permission_endpoint` and `resource_registration_endpoint`, Federated
+  Authorization §2's two required values, from the shared builder, so the OpenID
+  document carries them too.
 - `uma_profiles_supported` — the one claim token format this server acts on.
 
 ## Single use is a MUST
@@ -321,25 +332,114 @@ bearer credential from the moment the resource server receives it until the
 client spends it, travelling through a 401 header and back through a token
 request, so it passes any number of proxies and logs.
 
-## `resource_type` is ours, and it is not in the specification
+## Registering resources (Federated Authorization §3)
 
-UMA identifies a resource by an opaque `resource_id` issued by the resource
-registration endpoint (Federated Authorization §2), which is not implemented —
-so nothing would tell us what *kind* of thing an id refers to, and our
-authorization model is typed. `"document 42"` and `"invoice 42"` are different
-things.
+A resource server puts a resource under this server's protection at the resource
+registration endpoint, and a permission then names it by the id it was given alone:
 
-Requiring the type is the honest bridge. The alternative is a registration
-endpoint whose only purpose is to remember a string.
+    POST   /uma2/resource_set        {"resource_scopes": ["read"], "type": "document", "name": "Q3 report"}
+                                      -> 201, Location, {"_id": "...", "user_access_policy_uri": "..."}
+    GET    /uma2/resource_set        -> ["_id", ...]
+    GET    /uma2/resource_set/{id}   -> the description, with _id
+    PUT    /uma2/resource_set/{id}   the whole description again -> {"_id": "..."}
+    DELETE /uma2/resource_set/{id}   -> 204
+    POST   /uma2/permission          {"resource_id": "<_id>", "resource_scopes": ["read"]}
+
+Each needs a **protection API access token** (PAT): an access token with the scope
+`uma_protection`, issued to the resource server. Who granted it is the **resource
+owner**. A person who signed in to the resource server and agreed owns what it
+registers with their PAT; a PAT by the client credentials grant registers for the
+organisation. A resource server reads, replaces and deletes only what it registered
+for that owner, and anything else is a 404, as a resource that is not there is. The
+client needs the `uma_protection` scope among its scopes, and the client credentials
+grant for an organisation's PAT.
+
+**`type` is required here**, and names a type of the organisation's authorization
+model, because the model is what decides who may reach a resource: `"document 42"`
+and `"invoice 42"` are different things. Every scope must be an action the model
+defines for that type, or no permission on it could ever be given and nothing would
+say why. A registered resource keeps its type, since what it has been shared as is
+relations on an object of that type; deregistering it removes those relations with
+it. Other HTTP methods are answered `405` with `unsupported_method_type`.
+
+At the permission endpoint, a `resource_id` with no `resource_type` must be one this
+resource server registered, each scope one it registered for it, or the answer is
+`invalid_resource_id` or `invalid_scope` (§4.3). One request names one owner's
+resources (§4), the owner its PAT stands for: a person's PAT asks about what that
+person registered, and an organisation's about what the organisation did. The
+endpoint takes a PAT and nothing else, as §1.3 has it ("MUST use OAuth and require a
+valid PAT to secure its protection API endpoints"): a client's own credentials, which
+it took until November 2026, are answered `401`. A resource server that sent them
+gets an organisation's PAT by the client credentials grant with the same credentials
+and sends that instead.
+
+`resource_type` is ours, and not in the specification. Given, it names an object of
+the model that was never registered, which is how this server answered before it had
+registration, and still does for a resource server that keeps its resources to
+itself.
+
+### What a person shares
+
+A person's registered resources are listed at `/account/resources`, linked from their
+account page, and the `user_access_policy_uri` a registration answers. Each can be shared with somebody
+by address, as one of the relations the model gives its type, and the sharing
+stopped; a share is a relation on the resource's object, so the requesting party's
+decision at the token endpoint is the model's, as for anything else. The model's
+author decides what each relation lets somebody do; the owner decides who holds one.
+A share made by an administrator to a group or a client is listed nowhere on that
+page and is not the owner's to remove. Each share and its removal are audited
+(`uma.resource_shared`, `uma.resource_unshared`).
+
+## Upgrading an RPT (§3.3.5.1)
+
+A client holding an RPT can send it along with a new ticket as `rpt`, and the token it
+gets holds both. The response says `"upgraded": true` when that happened. Without it the
+client treats the new RPT as not holding the old one's permissions, as §3.3.5 requires,
+so a token that cannot be upgraded is not an error: the client gets its new RPT and is
+told nothing was carried.
+
+§3.3.1 says the RPT presented "MAY be expired", which is what makes this worth care. An
+upgrade gives everything it carries a new lifetime, so copying permissions forward would
+let one that was taken away go on being renewed for as long as the client kept asking.
+**So each is decided again**, by the same decision point as the ticket's, and if any is
+refused nothing is upgraded: §3.3.5.1 has the server add the previous RPT's permissions,
+and part of them is not that.
+
+It has to be this client's RPT, for this requesting party and this resource server,
+bound to the same key if it is bound to one, and not revoked. §1.2 has an RPT unique to
+all of those, and a token moved between them has proved nothing to the second. The
+RPT replaced is revoked, as §3.3.5.1 says it SHOULD be.
+
+## Binding an RPT with DPoP
+
+§5.3 leaves proof of possession to a profile. A [DPoP](dpop.md) proof on the token
+request binds an RPT as it binds any other token: `cnf.jkt`, and `token_type` `DPoP`.
+
+## Remembering a person (§3.3.5)
+
+The claims interaction has a box: remember this for the application for a month. A person
+who ticks it gets a **persisted claims token** issued to the client alongside the next
+RPT, and the client can send it as `pct` to say who is asking without sending them through
+the screen again. A person who does not tick it gets none, which is what §6.2 recommends:
+ask before keeping anything across authorization processes.
+
+A PCT works as a refresh token works, with no interaction behind the next token, so it is
+kept the same way. It is stored as a hash and holds no claims, only who it was about,
+because those are this server's own records and are read when it is used. It is good for
+the client it was issued to and no other, as §5.2 requires. It stops at its month, when
+the client revokes it (`token_type_hint=pct`, §3.7), when the person is deactivated, and
+when they are signed out everywhere, which is a thing they are told happened and would not
+be true with one of these left over. The person sees the application on their connected
+applications page (`/account/connected`), with the day it stops acting for them, and
+removing it there ends its PCTs with its other grants; an administrator sees the same as
+`persisted_claims_until` from the Admin API, and can remove it the same way.
+
+It says who is asking and nothing else: every permission is still decided, and the
+resource owner's policy applies to a remembered person as to anybody. A request that
+gathers one identity and presents a PCT for another is refused, because it has named two
+people and this server will not pick. §5.2 has the client make a best effort that the
+person using it now is the person the token was issued for, which only the client can do.
 
 ## Still not implemented
 
-- **`pct`** (§3.3.5), persisted claims tokens.
-- **`rpt`** (§3.3.5.1), RPT upgrade.
-
-Both are optimisations — a PCT saves gathering the same claims twice, an upgrade
-saves minting a second token — and both are **refused rather than ignored**,
-because a client that sends one and receives a token concludes it was honoured.
-
-- **Resource registration** (Federated Authorization §2), which is why a
-  permission carries `resource_type` — see above.
+- **`claim_token` formats** beyond an ID token this server issued.

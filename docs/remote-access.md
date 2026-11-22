@@ -4,7 +4,7 @@ A user signs in to Signari, opens a list of machines they are allowed to reach,
 and gets a desktop or a shell in a browser tab. No VPN, no client software, and
 no separate set of credentials for each host.
 
-## Status: usable, not yet proven against a real desktop
+## Status: usable, and run against a real guacd
 
 Read this before planning around it.
 
@@ -13,16 +13,34 @@ authorization chain, the WebSocket proxy with instruction-aligned framing, the
 connection registry, session records, and the browser client — the machine list,
 the viewer page, rendering, and mouse and keyboard input.
 
+**Run end to end in November 2026** against guacd 1.5.5 and a Debian machine serving
+all three protocols, signed in through the engine in Chrome: an SSH shell, a VNC
+display and an RDP session each drawn, with a command typed in the browser run on the
+machine and its output back on screen. A VNC connection holding no password asked for
+one in the viewer's form and opened with the answer; an SSH connection holding nothing
+asked in the terminal. A wrong answer ended the session with guacd's reason on screen.
+An RDP host with a self-signed certificate is refused until it is trusted; see
+[RDP and the host's certificate](#rdp-and-the-hosts-certificate).
+
 Rendering was checked by looking at it, not by assuming: a harness (see below)
 feeds the real client a real scene, and the vector drawing and the PNG image
 stream both appear. Mouse clicks arrive at the far end with coordinates
 translated into the remote display's space. Keystrokes arrive as X11 keysyms.
 
+**Until October 2026 no session opened through the engine itself.** The
+harness serves the proxy without the engine's middleware, and one of those
+middlewares, the panic recovery every request passes through, hid the
+connection a WebSocket upgrade takes over. So a signed-in person opening a
+connection got `501 Not Implemented`, and the session was recorded as `upgrade
+failed`, on every deployment. Checked against a running engine with a guacd
+stand-in, it now answers `101 Switching Protocols`, with metrics on or off.
+Every response wrapper passes the connection through, and a test fails on any
+that does not.
+
 **What is not done:**
 
-- **Not verified against a real guacd.** The harness speaks the handshake
-  faithfully and does not speak RDP, VNC or SSH. Nothing here proves those
-  work, and that is the one thing left that needs real apparatus.
+- **Not run against Windows.** The RDP host above was xrdp; a Windows host, and any
+  host that requires Network Level Authentication, has not been tried.
 - **No session replay.** Recordings can be written — `recording-path` is passed
   through — but nothing plays them back, and who may watch one is an unanswered
   policy question, not a missing button.
@@ -43,7 +61,9 @@ copy of them: a harness that reimplements what it tests will agree with itself
 while production is broken.
 
 `GET /harness/input` returns what the browser sent back, so mouse and keyboard
-can be checked without reading a log.
+can be checked without reading a log. `http://127.0.0.1:4830/prompt` is a
+connection holding no credentials, for checking the form the viewer asks for them
+with.
 
 ## What Signari provides and what guacd provides
 
@@ -92,6 +112,22 @@ is an unauthenticated proxy into the estate. Signari does not talk to a
 container runtime and does not need a mounted Docker socket — that is root on
 the host, handed to a service that accepts connections from browsers.
 
+**A guacd on another machine is reached over TLS.** The protocol carries a
+target's login and password in the clear, so a guacd that is not on loopback runs
+with `-C` and `-K` and the engine is told to expect it:
+
+```
+SIGNARI_GUACD_ADDR=guacd.internal:4822
+SIGNARI_GUACD_TLS=1
+SIGNARI_GUACD_CA=/etc/signari/guacd-ca.pem
+```
+
+The certificate has to name the host in the address. `SIGNARI_GUACD_CA` is for a
+private CA and is left out for one the system already trusts. There is no setting
+that skips the check: a certificate that cannot be verified would protect the
+credentials from nobody who could read them, and guacd, unlike the machines
+behind it, can be given a certificate of its own.
+
 ## Registering a connection
 
 ```
@@ -101,13 +137,29 @@ signari rac add \
   -name "Finance desktop" \
   -protocol rdp \
   -host 10.0.4.21 \
-  -username svc-desk \
-  -password '…' \
+  -login svc-desk \
+  -password-file /run/secrets/finance-desk \
   -group finance
 ```
 
 `-group` is the group requirement. Without it every signed-in user in the
 organisation may reach the host, subject to policy.
+
+The password is read from a file because a command line can be read by anybody on
+the machine for as long as the command runs. There is no flag that takes the
+value itself. One trailing newline in the file is ignored, and an empty file is
+refused, because it would register a connection asking for a password somebody
+meant it to hold.
+
+An SSH connection can sign in with a key instead, or as well:
+
+```
+signari rac add -org <org-uuid> -slug build -protocol ssh -host build.internal \
+  -login deploy -private-key-file ./deploy.pem -passphrase-file ./deploy.pass
+```
+
+The key is a PEM block, and a connection of another protocol refuses one, because
+guacd would refuse it at the first connect instead.
 
 Credentials are sealed with the root key and unsealed only at the moment a
 connection is made, so a database read is not a set of working logins to the
@@ -115,7 +167,79 @@ estate. They are merged into the parameter set inside `Resolve` and nowhere
 else — they exist in memory for the length of one handshake rather than for the
 lifetime of a struct somebody might log.
 
-`signari rac list -org <uuid>` shows what is registered.
+**A connection that holds no password asks the person who opens it.** Leave the
+credentials out, or give only `-login`, and guacd sends the viewer the names of
+what it still needs. The viewer shows a form, sends each answer back on a stream
+of its own, and keeps nothing: not in the page, not in a URL, and not in the
+engine, which carries the answers to guacd along with every other byte of the
+session. Each person signs in to the machine as themselves, so the machine's own
+logs say who it was.
+
+An SSH connection with neither asks in the terminal instead, inside the session,
+because that is where guacd asks; the form is for RDP and VNC. Against xrdp, which
+does not require Network Level Authentication, guacd asked nothing for RDP: the person
+signed in on the host's own login screen instead. A wrong answer ends the session with
+what guacd said, and nothing retries it. All of this was run against guacd 1.5.5.
+
+guacd does not always say why. About half the refused RDP sessions against 1.5.5
+reached the browser with no reason at all, and the viewer then says the session ended
+before it started rather than "Disconnected.", which reads like a session somebody
+closed. Until November 2026 it said "Disconnected." even when guacd had given a
+reason, writing over it as the session closed. guacd's own log has the reason either
+way.
+
+### RDP and the host's certificate
+
+guacd checks the certificate an RDP host presents, and a host whose certificate it
+cannot verify is refused: the viewer says "SSL/TLS connection failed
+(untrusted/self-signed certificate?)". xrdp's own self-signed certificate was refused
+so. Either give the host a certificate guacd can verify, or tell guacd not to check:
+
+```
+signari rac set-parameters -org <org-uuid> -slug finance-desk -rac-params ignore-cert=true
+```
+
+`ignore-cert=true` accepts any certificate on the leg from guacd to the host, so
+whoever can stand in the middle of that leg can pose as the host to guacd, and to
+whoever signs in. guacd 1.5.5 offers nothing between the two: its RDP client has no
+parameter for pinning one certificate.
+
+`signari rac list` shows what is registered, in every organisation. Until
+October 2026 this page gave the password as `-password`, which is `user
+create`'s flag: the command took it, ignored it and registered the connection
+with no password. Each command now refuses a flag it does not take.
+
+The Admin API registers connections, takes them out of service and replaces
+their guacd parameters the same way, under
+`/admin/organizations/{orgID}/rac-connections`; see
+[admin-api.md](admin-api.md). Two settings stay with the command, run from a
+shell on the deployment: `-recording-path`, and any parameter whose name
+contains `path`. Each is a location on the machine guacd runs on, so choosing
+one decides where that machine writes, and that belongs to whoever runs the
+deployment rather than to an organisation's administrator.
+
+## Limiting a connection
+
+```
+signari rac limits -org <org-uuid> -slug finance-desk -max-connections 2 -max-duration 8h
+```
+
+`-max-connections` is how many may hold the connection at once. A place is taken
+before guacd is asked, so the machine is never asked for one more than it has
+room for; the next person gets `429 connection_full`. A session that is already
+over gives its place back straight away. So does one whose process died without
+saying so, three minutes after anybody last saw it, because an open channel says
+it is still there every thirty seconds.
+
+`-max-duration` is how long one session may last. It ends the channel at the first
+check after that time, so a session can run up to thirty seconds over, and it is
+recorded with that reason in `core.rac_sessions` and in `rac.session_ended`. The
+person can connect again: this limits one session, not how long they may work,
+which is what the access policy and the group are for.
+
+A new limit does not end anybody's session for being over a new cap, and a
+session already open keeps the duration it started with. The Admin API sets both
+as `max_connections` and `max_duration_seconds`, and so does a configuration file.
 
 ## The API
 
@@ -188,3 +312,15 @@ nothing about whether the user left or the host died.
 Closing sends `disconnect` to guacd before closing the socket, so the remote
 session is torn down rather than left to time out — on RDP that can leave a
 logged-in desktop running for minutes after the browser has gone.
+
+**An open channel is asked again every 30 seconds**: is the sign-in session
+behind it still live, does the access policy still allow `rac:<slug>`, and is the
+person still in the connection's group? When any answer is no, the channel ends,
+with that answer as its recorded reason. So signing out, an administrator
+revoking the session, deactivating the account (which revokes every session), a
+new deny rule and a removed membership each end an open desktop within half a
+minute. A check that cannot be made, because the database is unreachable, ends
+the channel too rather than assuming it would have passed. Until October 2026 a
+channel asked nothing after it opened, and stayed open until the browser tab
+closed. The session's own absolute lifetime bounds a channel's length, because
+an expired session fails the first of the three questions.

@@ -91,6 +91,14 @@ type Offer struct {
 // Grants is the offer's `grants` member.
 type Grants struct {
 	PreAuthorized *PreAuthorizedGrant `json:"urn:ietf:params:oauth:grant-type:pre-authorized_code,omitempty"`
+	// AuthorizationCode has the wallet send the holder to sign in.
+	AuthorizationCode *AuthorizationCodeGrant `json:"authorization_code,omitempty"`
+}
+
+// AuthorizationCodeGrant is the authorization code grant inside an offer (§4.1.1).
+type AuthorizationCodeGrant struct {
+	// IssuerState binds the authorization request to this offer.
+	IssuerState string `json:"issuer_state"`
 }
 
 // PreAuthorizedGrant is the pre-authorized code grant inside an offer.
@@ -104,30 +112,25 @@ type PreAuthorizedGrant struct {
 	AuthorizationServer string `json:"authorization_server,omitempty"`
 }
 
-// BuildOffer assembles a Credential Offer.
-func BuildOffer(issuer string, configurationIDs []string, code string, tx *TxCode) (*Offer, error) {
-	if err := ValidateIssuer(issuer); err != nil {
+// BuildAuthorizationCodeOffer assembles an offer the holder signs in to take up.
+func BuildAuthorizationCodeOffer(issuer string, configurationIDs []string, issuerState string) (*Offer, error) {
+	if err := checkOffer(issuer, configurationIDs); err != nil {
 		return nil, err
 	}
-	if len(configurationIDs) == 0 {
-		return nil, fmt.Errorf("a credential offer must name at least one " +
-			"credential_configuration_id; an offer of nothing is not an offer")
+	if issuerState == "" {
+		return nil, fmt.Errorf("the issuer_state is what ties a sign-in to this offer, and there is none")
 	}
-	// §4.1.1: "credential_configuration_ids: REQUIRED. A non-empty array of
-	// UNIQUE strings". Non-empty was checked; unique was not.
-	//
-	// A duplicate is not harmless. §8.3 says the credentials array "matches the
-	// number of keys that the Wallet has provided via the proofs parameter", so a
-	// wallet reading a twice-named configuration reasonably supplies two proofs
-	// and expects two credentials -- and gets an issuance it did not intend from
-	// an offer the operator did not mean to make.
-	seen := make(map[string]bool, len(configurationIDs))
-	for _, id := range configurationIDs {
-		if seen[id] {
-			return nil, fmt.Errorf("the credential offer names %q twice; section "+
-				"4.1.1 requires credential_configuration_ids to be unique", id)
-		}
-		seen[id] = true
+	return &Offer{
+		CredentialIssuer: strings.TrimRight(issuer, "/"),
+		ConfigurationIDs: configurationIDs,
+		Grants:           Grants{AuthorizationCode: &AuthorizationCodeGrant{IssuerState: issuerState}},
+	}, nil
+}
+
+// BuildOffer assembles a Credential Offer.
+func BuildOffer(issuer string, configurationIDs []string, code string, tx *TxCode) (*Offer, error) {
+	if err := checkOffer(issuer, configurationIDs); err != nil {
+		return nil, err
 	}
 	if code == "" {
 		return nil, fmt.Errorf("the pre-authorized code is required (section 3.5)")
@@ -143,6 +146,34 @@ func BuildOffer(issuer string, configurationIDs []string, code string, tx *TxCod
 		ConfigurationIDs: configurationIDs,
 		Grants:           Grants{PreAuthorized: &PreAuthorizedGrant{Code: code, TxCode: tx}},
 	}, nil
+}
+
+// checkOffer is what every offer has to be, whichever grant it carries.
+func checkOffer(issuer string, configurationIDs []string) error {
+	if err := ValidateIssuer(issuer); err != nil {
+		return err
+	}
+	if len(configurationIDs) == 0 {
+		return fmt.Errorf("a credential offer must name at least one " +
+			"credential_configuration_id; an offer of nothing is not an offer")
+	}
+	// §4.1.1: "credential_configuration_ids: REQUIRED. A non-empty array of
+	// UNIQUE strings". Non-empty was checked; unique was not.
+	//
+	// A duplicate is not harmless. §8.3 says the credentials array "matches the
+	// number of keys that the Wallet has provided via the proofs parameter", so a
+	// wallet reading a twice-named configuration reasonably supplies two proofs
+	// and expects two credentials -- and gets an issuance it did not intend from
+	// an offer the operator did not mean to make.
+	seen := make(map[string]bool, len(configurationIDs))
+	for _, id := range configurationIDs {
+		if seen[id] {
+			return fmt.Errorf("the credential offer names %q twice; section "+
+				"4.1.1 requires credential_configuration_ids to be unique", id)
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 // ValidateIssuer applies §12.2.1's constraint on a Credential Issuer identifier.

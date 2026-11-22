@@ -1,0 +1,201 @@
+# Continuous integration.
+#
+# Every job below runs a suite that is only worth something when it has
+# actually run: the engine refuses to pass with no database (dbguard_test.go),
+# the console refuses to pass as a superuser (DatabaseRoleTest), and gosec is
+# compared with a reviewed baseline rather than trusted on its exit code.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          # The bootstrap migration creates signari_engine and signari_admin
+          # without passwords; trust keeps that working on the job's loopback.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      SIGNARI_TEST_DSN: postgres://postgres@localhost:5432/signari_ci
+      # internal/audit's checkpoint tests fork the audit chain; they get a
+      # database of their own so nothing else ever reads that chain.
+      SIGNARI_DESTRUCTIVE_TEST_DSN: postgres://postgres@localhost:5432/signari_destructive
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Tools the tests call
+        run: sudo apt-get update -q && sudo apt-get install -yq xmlsec1 libxml2-utils ldap-utils
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Build and vet
+        run: go build ./... && go vet ./...
+      - name: Databases at head
+        run: |
+          for db in signari_ci signari_destructive; do
+            psql -h localhost -U postgres -c "CREATE DATABASE $db"
+            SIGNARI_DSN=postgres://postgres@localhost:5432/$db go run ./cmd/signari migrate bootstrap
+            SIGNARI_DSN=postgres://signari_engine@localhost:5432/$db go run ./cmd/signari migrate up
+          done
+      # What the suite expects to find: one instance, with its signing keys, and one
+      # organisation. Without them every test that needs an active ES256 key failed
+      # here (the id-jag audiences, the batch and drift tests through them, a doctor
+      # check), and the fixtures that look for an organisation skipped, so this job
+      # proved less than a run on a developer's machine and failed besides.
+      - name: One instance and one organisation
+        run: |
+          head -c 32 /dev/urandom | base64 > "$RUNNER_TEMP/root-key"
+          chmod 600 "$RUNNER_TEMP/root-key"
+          SIGNARI_ROOT_KEY_FILE="$RUNNER_TEMP/root-key" \
+            SIGNARI_DSN=postgres://signari_engine@localhost:5432/signari_ci \
+            go run ./cmd/signari instance create -issuer https://ci.signari.test
+          PGOPTIONS='-c role=signari_maintenance' psql -q -h localhost -U postgres signari_ci -c \
+            "INSERT INTO core.organizations (instance_id, slug, display_name) SELECT id, 'ci', 'CI' FROM core.instances LIMIT 1"
+      # Twice, back to back: shared-test-state failures show up on the second
+      # run, and they have reached main before. Thirty minutes, not go test's
+      # default ten: httpapi alone takes eleven on a four-core machine.
+      - name: Test (first run)
+        run: go test -timeout 30m ./...
+      - name: Test (second run)
+        run: go test -timeout 30m -count=1 ./...
+      # The race detector over the packages whose code runs on goroutines of its
+      # own: the token budget's grouped charge, the shared outbound transports,
+      # the key cache, the remote-access proxy, the in-process buckets. The whole
+      # suite under it took an hour on sixteen threads; these take minutes. Its
+      # first run over everything found two races, both tests racing with their
+      # own fixtures.
+      - name: Test (race detector)
+        run: go test -race -timeout 30m -count=1 ./internal/store/... ./internal/safedial/ ./internal/federation/ ./internal/rac/ ./internal/ratelimit/ ./internal/directory/
+
+  provider:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: terraform-provider-signari
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: terraform-provider-signari/go.mod
+          cache-dependency-path: terraform-provider-signari/go.sum
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go build ./... && go vet ./...
+      - run: go test ./...
+
+  console:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DB_HOST: 127.0.0.1
+      DB_DATABASE: signari_console
+      DB_USERNAME: signari_admin
+      # Test-only connection that plants engine state; never used by app/.
+      DB_MAINTENANCE_USERNAME: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_pgsql
+      - name: Engine schema at head
+        working-directory: engine
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE signari_console"
+          SIGNARI_DSN=postgres://postgres@localhost:5432/signari_console go run ./cmd/signari migrate bootstrap
+          SIGNARI_DSN=postgres://signari_engine@localhost:5432/signari_console go run ./cmd/signari migrate up
+      # Installed from the committed composer.lock, then audited: a published
+      # advisory against a locked package fails the build, as govulncheck does
+      # for the engine.
+      - name: Console dependencies
+        working-directory: admin
+        run: |
+          composer install --no-interaction --no-progress --prefer-dist
+          composer audit --locked
+          cp .env.example .env
+          php artisan key:generate
+      # As signari_admin, so the console owns its own tables -- DatabaseRoleTest
+      # fails if anything else does.
+      - name: Console migrations
+        working-directory: admin
+        run: php artisan migrate --force
+      - name: Test
+        working-directory: admin
+        run: php artisan test
+
+  # The alert rules' PromQL, run. docsync's TestTheMonitoringNamesOnlyExportedSeries
+  # holds their names and structure to what the engine exports; this evaluates every
+  # alert against series that should fire it, and a healthy deployment's, which should
+  # fire none, so an expression that parses and never fires fails here (3.27).
+  monitoring:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check rules and test rules (Prometheus 3.5, the long-term release)
+        run: |
+          promtool() {
+            docker run --rm -v "$PWD/deploy/monitoring:/rules:ro" -w /rules \
+              --entrypoint promtool prom/prometheus:v3.5.0 "$@"
+          }
+          promtool check rules alerts.yaml
+          promtool test rules alerts_test.yaml
+
+  security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+      - name: Install scanners (pinned to the versions the baseline was taken with)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+      # A reachable advisory fails the build. The floor in go.mod moved twice
+      # because a clean result is only true on the day it was produced.
+      - name: govulncheck (engine)
+        working-directory: engine
+        run: govulncheck ./...
+      - name: govulncheck (provider)
+        working-directory: terraform-provider-signari
+        run: govulncheck ./...
+      - name: gosec against the reviewed baseline
+        run: scripts/gosec-check.sh

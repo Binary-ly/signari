@@ -52,6 +52,8 @@ type Member struct {
 	// our identifier would be a membership the target cannot resolve.
 	Value   string `json:"value"`
 	Display string `json:"display,omitempty"`
+	// Type is sent to a target that needs one (CompatTypedMembers).
+	Type string `json:"type,omitempty"`
 }
 
 // CreateGroup creates a group at the target and returns its remote id.
@@ -110,6 +112,9 @@ func (c *Client) patchMembers(ctx context.Context, remoteID, op string, memberID
 	if len(memberIDs) == 0 || c.target.DryRun {
 		return nil
 	}
+	if c.target.needs(CompatNoPatch) {
+		return c.replaceMembers(ctx, "/Groups/"+url.PathEscape(remoteID), op, memberIDs)
+	}
 
 	type operation struct {
 		Op    string `json:"op"`
@@ -125,7 +130,7 @@ func (c *Client) patchMembers(ctx context.Context, remoteID, op string, memberID
 		switch op {
 		case "add":
 			body.Operations = append(body.Operations, operation{
-				Op: "add", Path: "members", Value: []Member{{Value: id}},
+				Op: "add", Path: "members", Value: []Member{c.member(id)},
 			})
 		case "remove":
 			// A filtered path, so the target removes this member and leaves the

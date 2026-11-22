@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -66,13 +68,11 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Username = strings.TrimSpace(body.Username)
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+	// No transaction until the second factor, which is the only write here.
+	// This used to hold one from the first lookup, through the Argon2
+	// verification, and across the factor and budget checks that each took a
+	// second connection from the pool. A burst of desktop logins could then fill
+	// the pool with transactions that were each waiting for one more connection.
 	refuse := func(reason string) {
 		s.auditDetached(ctx, audit.Event{
 			Type: audit.EventLoginFailed, OrgID: orgID,
@@ -87,24 +87,71 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication refused")
 	}
 
-	userID, err := store.FindLocalUserByEmail(ctx, tx, orgID, body.Username)
+	// And one cost for every reason: the refusals that need no hash spend the
+	// same one a wrong password does, as the sign-in form's do. They returned
+	// at once, so the time of the answer said which it was.
+	// The account's sign-in failure budget, the one the form and LDAP draw on
+	// (1.91): reserved before the lookup and the hash, kept for a refused
+	// credential, handed back for anything else. Nothing charged it, so an
+	// outpost token had its whole allowance of calls to spend guessing one
+	// person's password. No address: the client here is the outpost, and
+	// charging it would let one person's typing lock every desktop behind it.
+	var held []store.Reservation
+	if id := strings.ToLower(body.Username); id != "" {
+		res, ok, err := store.ReserveRate(ctx, s.db, "signin:fail:user:"+id,
+			signInPerAccountLimit, signInPerAccountWindow)
+		if err != nil {
+			s.log.ErrorContext(ctx, "reserving against the desktop sign-in budget", "err", err)
+			writeError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "please try again shortly")
+			return
+		}
+		if !ok {
+			s.auditDetached(ctx, audit.Event{Type: audit.EventLoginFailed, OrgID: orgID,
+				CorrelationID: correlationID(ctx),
+				Detail:        map[string]any{"via": "desktop", "outpost": name, "reason": "rate_limited"}})
+			w.Header().Set("Retry-After", fmt.Sprint(int(signInPerAccountWindow.Seconds())))
+			writeError(w, http.StatusTooManyRequests, "temporarily_unavailable", "too many attempts")
+			return
+		}
+		held = append(held, res)
+	}
+	charged := false
+	defer func() {
+		if charged {
+			return
+		}
+		for _, r := range held {
+			if err := r.Release(context.WithoutCancel(ctx), s.db); err != nil {
+				s.log.ErrorContext(ctx, "releasing a desktop sign-in reservation", "err", err)
+			}
+		}
+	}()
+
+	refuseAfterHash := func(reason string) {
+		_, _ = s.hasher.Verify(ctx, dummyHash, body.Password)
+		charged = true
+		refuse(reason)
+	}
+
+	userID, err := store.FindLocalUserByEmail(ctx, s.db, orgID, body.Username)
 	if err != nil || userID == "" {
-		refuse("no such user")
+		refuseAfterHash("no such user")
 		return
 	}
 	if body.Password == "" {
-		refuse("no password")
+		refuseAfterHash("no password")
 		return
 	}
 
 	var stored string
-	if err := tx.QueryRow(ctx, `
+	if err := s.db.QueryRow(ctx, `
 		SELECT hash FROM core.password_credentials WHERE user_id = $1::uuid`,
 		userID).Scan(&stored); err != nil {
-		refuse("no password credential")
+		refuseAfterHash("no password credential")
 		return
 	}
 	if _, verr := s.hasher.Verify(ctx, stored, body.Password); verr != nil {
+		charged = true
 		refuse("wrong password")
 		return
 	}
@@ -114,10 +161,30 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 	// Whether a second factor is needed is decided by the same machinery as
 	// everywhere else, so a policy demanding MFA cannot be sidestepped by
 	// signing in at a desktop instead of a browser.
-	needsMFA, err := store.HasSecondFactor(ctx, s.db, userID)
+	//
+	// The flow's answer, as LDAP, RADIUS and the outpost endpoint ask it
+	// (BindDemandsMFA). This asked only whether a factor was enrolled, so an
+	// operator's unconditional mfa stage let a person with nothing enrolled in
+	// on a password at the desktop while the sign-in page stopped them.
+	// password_only_binds does not apply: it is for protocols that cannot
+	// carry a code, and this one can.
+	needsMFA, err := s.BindDemandsMFA(ctx, orgID, userID)
 	if err != nil {
-		s.log.Error("checking enrolled factors", "err", err)
+		s.log.ErrorContext(ctx, "checking whether the flow demands a second factor", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	}
+	enrolled := false
+	if needsMFA {
+		if enrolled, err = store.HasSecondFactor(ctx, s.db, userID); err != nil {
+			s.log.ErrorContext(ctx, "checking enrolled factors", "err", err)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+	}
+	if needsMFA && !enrolled {
+		// No code could be right, and enrolling happens in a browser.
+		refuse("second factor required, none enrolled")
 		return
 	}
 	if needsMFA {
@@ -130,22 +197,47 @@ func (s *Server) handleDesktopVerify(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		factors, verified, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
-		if verr != nil {
-			s.log.Error("verifying a desktop second factor", "err", verr)
+		// The browser's code step and this one draw on one budget per account.
+		// No address: the client here is the outpost, and charging its address
+		// would let one person's typing lock every desktop behind it out. The
+		// outpost token has its own ceiling (outpost.go).
+		if !s.allowSecondFactorAttempt(ctx, w, userID, "") {
+			return
+		}
+		tx, err := s.db.Begin(ctx)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 			return
 		}
-		if !verified {
+		defer func() { _ = tx.Rollback(ctx) }()
+		res, verr := s.verifySecondFactor(ctx, tx, userID, body.Code)
+		if verr != nil {
+			s.log.ErrorContext(ctx, "verifying a desktop second factor", "err", verr)
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		if res.Replayed {
+			// No guess, so charged to nothing (secondFactorResult.Replayed).
+			refuse("second factor already used")
+			return
+		}
+		if !res.OK {
+			// Committed, as on the browser's code step: rolling back would undo
+			// the failure count with the sign-in, and the lockout and the ceiling
+			// would never be reached from here. They were not, until this.
+			if err := tx.Commit(ctx); err != nil {
+				s.log.ErrorContext(ctx, "committing a failed desktop second factor", "err", err)
+			}
+			s.recordSecondFactorFailure(ctx, userID, "")
+			s.factorsDisabled(ctx, orgID, userID, res.Disabled)
 			refuse("wrong second factor")
 			return
 		}
-		amr = append(amr, factors...)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
-		return
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+			return
+		}
+		amr = append(amr, res.AMR...)
 	}
 
 	s.auditDetached(ctx, audit.Event{

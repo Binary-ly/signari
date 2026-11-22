@@ -9,15 +9,15 @@ Signari's role in that picture is the **authorization server**.
 | Requirement | Level | Signari |
 |---|---|---|
 | Implement OAuth 2.1 with measures for confidential and public clients | MUST | yes |
-| Provide OAuth 2.0 Authorization Server Metadata (RFC 8414) | MUST | yes |
+| Provide OAuth 2.0 Authorization Server Metadata (RFC 8414) | MUST | yes, at `/.well-known/oauth-authorization-server` (inserted before the issuer's path, §3.1) as well as the OpenID location |
 | Support Dynamic Client Registration (RFC 7591) | SHOULD | yes, opt-in per deployment |
 | Only accept tokens valid for use with their own resources | MUST | yes — enforced at `/oauth2/userinfo` |
 | Rotate refresh tokens for public clients | MUST | yes, with reuse detection |
 | Validate exact redirect URIs against pre-registered values | MUST | yes |
 | Redirect URIs `localhost` or HTTPS only | MUST | yes |
 | All endpoints over HTTPS | MUST | yes |
-| Issue short-lived access tokens | SHOULD | 5 minutes |
-| Honour RFC 8707 `resource` at both endpoints | — | yes, and it becomes `aud` |
+| Issue short-lived access tokens | SHOULD | 5 minutes by default; per client from one minute to an hour (`signari client set-lifetimes`) |
+| Honour RFC 8707 `resource` at both endpoints | — | yes, and it becomes `aud`, for an MCP server the organisation registered with `signari resource add` ([resource indicators](resource-indicators.md)) |
 
 Most of this was already true, and several rows became true earlier in this
 review rather than by aiming at MCP: the audience enforcement at our own resource
@@ -107,9 +107,29 @@ and on **MCP servers** acting as resource servers — token audience validation 
 the MCP server, no token passthrough, the `resource` parameter on every request.
 Those belong to whoever writes the MCP server, not to the authorization server.
 
-What Signari could add and has not: a first-class notion of an MCP server as a
-registered resource, so that one deployment can publish protected-resource
-metadata *on behalf of* several MCP servers and audience-restrict tokens to each.
-Today an MCP server integrating with Signari publishes its own RFC 9728 document
-and names Signari as its authorization server, which works and is what the
-specification describes.
+## Registering an MCP server
+
+An MCP server is registered as a resource, which is what lets a client's `resource`
+for it become the token's audience; one that is not registered is refused.
+
+```sh
+signari resource add -org <uuid> -resource https://mcp.acme.example/sse -name Tools \
+    -scopes tools.read,tools.run
+signari resource list -org <uuid>
+```
+
+`resource list` gives each one a metadata URL on this deployment. That document is
+RFC 9728's, with the server's own identifier as `resource`, this deployment as its
+authorization server, and the `-scopes` and `-name` you gave. So an MCP server need
+publish nothing of its own. Name the URL in the 401:
+
+```
+WWW-Authenticate: Bearer resource_metadata="https://id.acme.example/.well-known/oauth-protected-resource/resources/<id>"
+```
+
+A server that would rather publish its own document can, and names this deployment
+as its authorization server. The `-scopes` are only an offer: they decide nothing,
+and leaving them out of a later `resource add` keeps them. The address is public
+and unauthenticated, as metadata is, and the id in it is the only way to it, so it
+does not list what an organisation has registered. It is served for five minutes
+at a time, so a removal can take that long to reach a client that has cached it.

@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +35,10 @@ import (
 // what erasure means. Recovery after erasure is account re-creation, not repair.
 type SubjectKey struct {
 	aead cipher.AEAD
+	// mac is derived from the DEK, for values kept only as a keyed hash
+	// (MAC). The DEK is re-wrapped, never changed, by a root-key rotation, so
+	// a hash survives one; it is destroyed with the DEK at erasure.
+	mac []byte
 }
 
 // ErrErased means the subject's key has been destroyed. Their ciphertext is
@@ -54,10 +61,12 @@ var ErrNoSubjectKey = errors.New("subject has no key")
 // is a write on a read, and worse, would mint one for a subject who has no
 // sealed data and therefore should have no key at all. Reading a profile must
 // not leave a trace that says data was stored for this person.
-func LoadSubjectKey(ctx context.Context, tx pgx.Tx, subjectID string, root *RootKey) (*SubjectKey, error) {
+func LoadSubjectKey(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, subjectID string, root *RootKey) (*SubjectKey, error) {
 	var wrapped []byte
 	var erased bool
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT wrapped_dek, erased_at IS NOT NULL
 		FROM core.subject_keys WHERE subject_id = $1::uuid`, subjectID).
 		Scan(&wrapped, &erased)
@@ -75,6 +84,37 @@ func LoadSubjectKey(ctx context.Context, tx pgx.Tx, subjectID string, root *Root
 		return nil, fmt.Errorf("unwrapping subject key: %w", err)
 	}
 	return newSubjectKey(raw)
+}
+
+// LoadSubjectKeys is LoadSubjectKey for a page of people, in one statement.
+// Somebody with no key, or an erased one, is absent from the answer.
+func LoadSubjectKeys(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, subjectIDs []string, root *RootKey) (map[string]*SubjectKey, error) {
+	rows, err := q.Query(ctx, `
+		SELECT subject_id::text, wrapped_dek FROM core.subject_keys
+		 WHERE subject_id = ANY($1::uuid[]) AND erased_at IS NULL AND wrapped_dek IS NOT NULL`, subjectIDs)
+	if err != nil {
+		return nil, fmt.Errorf("loading subject keys: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]*SubjectKey{}
+	for rows.Next() {
+		var id string
+		var wrapped []byte
+		if err := rows.Scan(&id, &wrapped); err != nil {
+			return nil, err
+		}
+		raw, err := root.open(wrapped)
+		if err != nil {
+			return nil, fmt.Errorf("unwrapping subject key: %w", err)
+		}
+		if out[id], err = newSubjectKey(raw); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
 }
 
 // LoadOrCreateSubjectKey fetches a subject's DEK, minting one on first use.
@@ -135,11 +175,31 @@ func newSubjectKey(raw []byte) (*SubjectKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	// The module owns the nonce, as the root key's does (store.go), in the same
+	// layout as before, so every sealed value opens (3.11).
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	return &SubjectKey{aead: aead}, nil
+	mac, err := hkdf.Key(sha256.New, raw, nil, "signari subject mac v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	return &SubjectKey{aead: aead, mac: mac}, nil
+}
+
+// MAC is a keyed hash of data belonging to this subject, for a value kept
+// only so that a later one can be compared with it -- a phone number nobody
+// should be able to read back. purpose separates uses, as Seal's context does.
+// Without the root key the DEK cannot be unwrapped, so a copy of the database
+// alone cannot test guesses; the same value in another person's account hashes
+// differently.
+func (s *SubjectKey) MAC(data []byte, purpose string) []byte {
+	m := hmac.New(sha256.New, s.mac)
+	m.Write([]byte(purpose))
+	m.Write([]byte{0})
+	m.Write(data)
+	return m.Sum(nil)
 }
 
 // Seal encrypts data belonging to this subject.
@@ -149,20 +209,16 @@ func newSubjectKey(raw []byte) (*SubjectKey, error) {
 // a blob lifted from one column and pasted into another fails to decrypt rather
 // than silently becoming a different secret.
 func (s *SubjectKey) Seal(plaintext []byte, context string) ([]byte, error) {
-	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return s.aead.Seal(nonce, nonce, plaintext, []byte(context)), nil
+	// #nosec G407 -- the nil nonce is what NewGCMWithRandomNonce requires.
+	return s.aead.Seal(nil, nil, plaintext, []byte(context)), nil
 }
 
 // Open decrypts. The context must match the one used to seal.
 func (s *SubjectKey) Open(sealed []byte, context string) ([]byte, error) {
-	n := s.aead.NonceSize()
-	if len(sealed) < n {
+	if len(sealed) < s.aead.Overhead() {
 		return nil, fmt.Errorf("ciphertext is truncated")
 	}
-	return s.aead.Open(nil, sealed[:n], sealed[n:], []byte(context))
+	return s.aead.Open(nil, nil, sealed, []byte(context))
 }
 
 // EraseSubject destroys a subject's key, rendering all their ciphertext

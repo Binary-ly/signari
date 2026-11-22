@@ -1,6 +1,8 @@
 package saml
 
 import (
+	"fmt"
+
 	"github.com/beevik/etree"
 )
 
@@ -8,15 +10,32 @@ const (
 	nsMetadata = "urn:oasis:names:tc:SAML:2.0:metadata"
 	nsDsig     = "http://www.w3.org/2000/09/xmldsig#"
 
+	BindingSOAP     = "urn:oasis:names:tc:SAML:2.0:bindings:SOAP"
 	BindingRedirect = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 	BindingPOST     = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
 )
+
+// EntityID is this IdP's own entity id at a provider, which is also where its SAML
+// endpoints are: the deployment's, or those of the organisation named. Derived, for the
+// reason there is one function: a provider holds it to the issuer on every assertion and
+// logout message, and two ways to spell it is how one of them comes to disagree.
+func EntityID(issuer, endpointOrg string) string {
+	if endpointOrg == "" {
+		return issuer + "/saml"
+	}
+	return issuer + "/saml/org/" + endpointOrg
+}
 
 // MetadataInput is what the IdP publishes about itself.
 type MetadataInput struct {
 	EntityID string
 	SSOURL   string
 	SLOURL   string
+	// ArtifactURL is the artifact resolution service, where a provider taking its
+	// response by artifact fetches it over SOAP.
+	ArtifactURL string
+	// ECPURL is the SOAP sign-on service an ECP brings an AuthnRequest to.
+	ECPURL string
 	// Certificates, newest first. More than one is published DURING ROTATION so
 	// service providers can accept both while they update -- which is the whole
 	// reason rotation is survivable at all.
@@ -84,8 +103,22 @@ func Metadata(in MetadataInput) (string, error) {
 		xd.CreateElement("ds:X509Certificate").SetText(CertificateB64(der))
 	}
 
+	// Before the logout services, where the descriptor's schema puts it.
+	if in.ArtifactURL != "" {
+		ars := idp.CreateElement("md:ArtifactResolutionService")
+		ars.CreateAttr("Binding", BindingSOAP)
+		ars.CreateAttr("Location", in.ArtifactURL)
+		ars.CreateAttr("index", fmt.Sprint(ArtifactIndex))
+		ars.CreateAttr("isDefault", "true")
+	}
+
 	if in.SLOURL != "" {
-		for _, b := range []string{BindingRedirect, BindingPOST} {
+		sloBindings := []string{BindingRedirect, BindingPOST}
+		if in.ArtifactURL != "" {
+			// A logout message may come and go by artifact too (8.08).
+			sloBindings = append(sloBindings, BindingArtifact)
+		}
+		for _, b := range sloBindings {
 			slo := idp.CreateElement("md:SingleLogoutService")
 			slo.CreateAttr("Binding", b)
 			slo.CreateAttr("Location", in.SLOURL)
@@ -98,10 +131,21 @@ func Metadata(in MetadataInput) (string, error) {
 	}
 	idp.CreateElement("md:NameIDFormat").SetText(format)
 
-	for _, b := range []string{BindingRedirect, BindingPOST} {
+	ssoBindings := []string{BindingRedirect, BindingPOST}
+	if in.ArtifactURL != "" {
+		// A request may come by artifact too, fetched from the provider's own
+		// resolution service (8.08, saml-bindings-2.0-os lines 1188-1191).
+		ssoBindings = append(ssoBindings, BindingArtifact)
+	}
+	for _, b := range ssoBindings {
 		sso := idp.CreateElement("md:SingleSignOnService")
 		sso.CreateAttr("Binding", b)
 		sso.CreateAttr("Location", in.SSOURL)
+	}
+	if in.ECPURL != "" {
+		sso := idp.CreateElement("md:SingleSignOnService")
+		sso.CreateAttr("Binding", BindingSOAP)
+		sso.CreateAttr("Location", in.ECPURL)
 	}
 
 	// Indentation is safe here, unlike in a signed assertion: nothing computes a

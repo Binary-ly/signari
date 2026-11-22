@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/store"
 )
 
 // corsMode describes how much latitude an endpoint gets.
@@ -33,7 +34,7 @@ func corsPolicyFor(path string) corsMode {
 	case oidc.PathDiscovery, oidc.PathJWKS:
 		return corsPublic
 	case oidc.PathToken, oidc.PathUserinfo, oidc.PathRevocation, oidc.PathIntrospection,
-		"/oauth2/par", "/oauth2/device_authorization":
+		"/oauth2/par", "/oauth2/device_authorization", pathHeadlessStart, pathHeadlessSubmit:
 		return corsClientOrigin
 
 		// oidc.PathAuthorize is absent, and must stay absent. RFC 9700 §2.6 makes
@@ -46,7 +47,7 @@ const (
 	corsAllowHeaders = "Authorization, Content-Type, DPoP, Accept"
 	// WWW-Authenticate carries the error for every 401 this server returns, so a
 	// script that cannot read it cannot tell an expired token from a revoked one.
-	corsExposeHeaders = "WWW-Authenticate"
+	corsExposeHeaders = "WWW-Authenticate, DPoP-Nonce"
 	corsMaxAge        = "600"
 )
 
@@ -135,10 +136,13 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 		return s.originsCache
 	}
 
+	// This instance's clients' (6.12): another's are another issuer's callers.
 	rows, err := s.db.Query(ctx,
-		`SELECT DISTINCT redirect_uri FROM core.client_redirect_uris`)
+		`SELECT DISTINCT u.redirect_uri FROM core.client_redirect_uris u
+		   JOIN core.clients c ON c.client_id = u.client_id
+		  WHERE `+store.InInstance("c.org_id", "$1"), s.instanceID)
 	if err != nil {
-		s.log.Error("loading registered origins for CORS", "err", err)
+		s.log.ErrorContext(ctx, "loading registered origins for CORS", "err", err)
 		// Serve the previous answer rather than an empty one. Returning nothing
 		// on a database blip would refuse every SPA at once, and this list only
 		// ever widens what a browser may read -- never what it may do.
@@ -168,6 +172,12 @@ func (s *Server) registeredOrigins(ctx context.Context) []string {
 			seen[o] = true
 			out = append(out, o)
 		}
+	}
+	// As a query that failed outright, above: the previous answer, not a
+	// short one taken for the list (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.ErrorContext(ctx, "loading registered origins for CORS", "err", err)
+		return s.originsCache
 	}
 
 	s.originsCache = out

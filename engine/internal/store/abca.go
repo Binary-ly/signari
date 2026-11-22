@@ -87,9 +87,10 @@ func ClaimAttestationChallenge(ctx context.Context, db *pgxpool.Pool, challenge 
 }
 
 // PurgeExpiredAttestationChallenges is the janitor's share of this table.
-func PurgeExpiredAttestationChallenges(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx,
-		`DELETE FROM core.attestation_challenges WHERE expires_at < now() - interval '1 hour'`)
+func PurgeExpiredAttestationChallenges(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.attestation_challenges WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.attestation_challenges WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

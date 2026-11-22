@@ -35,11 +35,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"time"
 
+	"signari.dev/engine/internal/hmacsig"
 	"signari.dev/engine/internal/safedial"
 )
 
@@ -92,9 +96,60 @@ const (
 	// users' tokens" is the operator's question and an answer carried in the
 	// response would be the provider answering it.
 	HookTokenIssue Hook = "token_issue"
+
+	// HookPasswordVerify checks a password for somebody still to be migrated, against
+	// a system the engine cannot reach itself. It is told a password, the one hook that
+	// is, so it runs only for a person whose account is pending migration, and only when
+	// a `hook` migration source is enabled. A match takes a local hash, and the person
+	// never comes this way again.
+	HookPasswordVerify Hook = "password_verify"
+
+	// HookAuthenticate is asked about a sign-in every step of the flow has passed,
+	// before it gets a session. It can refuse it, and that is all it can do.
+	HookAuthenticate Hook = "authenticate"
+
+	// HookUserCreate is asked before an account is made by somebody other than an
+	// operator: a person signing up, or arriving from an identity provider. What an
+	// operator or their automation creates is theirs to decide.
+	HookUserCreate Hook = "user_create"
+
+	// HookClientAccess is asked about a person reaching an application, after the
+	// access policy has let them. It speaks AuthZEN, as HookAuthorize does, so a
+	// policy engine an operator already runs can answer it out of process.
+	HookClientAccess Hook = "client_access"
+
+	// HookUserinfo is asked as userinfo answers, and may refuse or add claims from
+	// the operator's list.
+	HookUserinfo Hook = "userinfo"
+
+	// HookSAMLAssertion is asked as an assertion is built, and may refuse or add
+	// attributes from the operator's list.
+	HookSAMLAssertion Hook = "saml_assertion"
+
+	// HookFlowCondition answers the `when:` conditions of a sign-in flow that only the
+	// operator's own service knows. It does not decide a sign-in: the flow does, and
+	// the file says what each answer leads to.
+	HookFlowCondition Hook = "flow_condition"
 )
 
-var allHooks = []Hook{HookAuthorize, HookTokenIssue}
+var allHooks = []Hook{HookAuthorize, HookTokenIssue, HookPasswordVerify, HookAuthenticate, HookUserCreate,
+	HookClientAccess, HookUserinfo, HookSAMLAssertion, HookFlowCondition}
+
+// Contributes reports whether a hook's provider may add to what is said, bounded by
+// the operator's list. The others only ever answer yes or no, or a list would be a
+// setting that does nothing.
+func (h Hook) Contributes() bool {
+	return h == HookTokenIssue || h == HookUserinfo || h == HookSAMLAssertion
+}
+
+// Composes reports whether a hook may have several providers. Each of them can refuse,
+// so they compose as AND and the order they are asked in changes who is asked and
+// nothing else. A password has one verdict and a flow condition one value, so "which
+// wins?" has no good answer for those two. migrations/core/0250 says the same.
+func (h Hook) Composes() bool { return h != HookPasswordVerify && h != HookFlowCondition }
+
+// DefaultName is what a hook's provider is called when nobody needed to tell two apart.
+func (h Hook) DefaultName() string { return "provider-" + string(h) }
 
 // AllHooks returns every defined hook, for the CLI's help text and listings.
 func AllHooks() []Hook { return append([]Hook(nil), allHooks...) }
@@ -141,6 +196,31 @@ func (h Hook) Called() bool {
 		// issuance into a refusal, and contributed claims are bounded by the
 		// operator's allow-list.
 		return true
+	case HookPasswordVerify:
+		// Consulted by store.ConsultPasswordProvider from the sign-in form, for
+		// a person pending migration from a `hook` source.
+		return true
+	case HookAuthenticate:
+		// httpapi.completeSignIn, where every way in arrives, once the flow says
+		// a session is due.
+		return true
+	case HookUserCreate:
+		// httpapi.createAccount and the federated callback's CreateUser branch.
+		return true
+	case HookClientAccess:
+		// httpapi.clientAccessRefused, at the authorization endpoint and when a
+		// device or CIBA request is approved.
+		return true
+	case HookUserinfo:
+		// httpapi.handleUserinfo, once the local claims are in.
+		return true
+	case HookSAMLAssertion:
+		// httpapi.issueSAMLAssertion, once the attributes are read.
+		return true
+	case HookFlowCondition:
+		// httpapi.signInConditions, when a walk reaches a stage guarded by a
+		// condition it answers.
+		return true
 	}
 	return false
 }
@@ -158,23 +238,32 @@ func Uncalled() []Hook {
 
 // Provider is one registered extension.
 type Provider struct {
-	// Name identifies it in logs, audit events and `signari doctor`.
+	// Name identifies it in logs, audit events and `signari doctor`, and among a
+	// hook's providers.
 	Name string
 	// Hook is which decision it extends.
 	Hook Hook
+	// Position is when it is asked among a hook's providers, lowest first.
+	Position int
 	// URL is the endpoint. Must be https and must not resolve into the private
 	// network -- checked at registration AND again at dial time, because DNS can
 	// change between the two.
 	URL string
-	// Token, when set, is sent as a bearer credential. Optional: an operator may
-	// prefer mutual TLS at the network layer.
-	Token string
+	// Secret, when set, signs every call: a Signari-Signature header over the
+	// timestamp and body (hmacsig), the scheme event deliveries carry, so the
+	// provider can tell this engine from anybody else who found its URL and
+	// refuse a replayed call. Minted at registration and shown once; a
+	// provider registered before there were secrets has none until
+	// `signari provider rotate` gives it one. Never sent itself.
+	Secret string
 	// Mode is what happens when the call does not succeed. Required.
 	Mode Mode
 	// Timeout bounds the call. Required, and bounded again by maxTimeout, because
 	// an extension point is also a way to make every sign-in as slow as the
 	// slowest thing an operator registered.
 	Timeout time.Duration
+	// Test marks the calls `signari provider test` makes (TestHeader).
+	Test bool
 
 	// AllowedClaims bounds what a HookTokenIssue provider may contribute.
 	//
@@ -230,6 +319,9 @@ func (p Provider) Validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("a provider needs a name; it is what names it in the audit trail")
 	}
+	if strings.ContainsAny(p.Name, "/ \t\r\n") {
+		return fmt.Errorf("provider name %q has a space or a slash in it, and a name is one word", p.Name)
+	}
 	if !p.Hook.Known() {
 		return fmt.Errorf("%q is not a hook this engine calls (%s)", p.Hook, hookList())
 	}
@@ -238,6 +330,10 @@ func (p Provider) Validate() error {
 			"%s refuses the journey, %s continues without it. There is no default, "+
 			"because the safe answer differs per hook and both mistakes are silent",
 			p.Name, FailClosed, FailOpen)
+	}
+	if p.Hook == HookPasswordVerify && p.Mode != FailClosed {
+		return fmt.Errorf("provider %q must be %s: a password nobody could check is not a "+
+			"correct one, and continuing without it would sign anybody in", p.Name, FailClosed)
 	}
 	if p.Timeout <= 0 {
 		return fmt.Errorf("provider %q needs a timeout; without one a slow extension "+
@@ -293,9 +389,37 @@ func (e *ErrUnreachable) Unwrap() error { return e.Err }
 // checks the URL, but only the dialer can refuse an address that resolved into
 // the private network AFTER the check.
 func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) error {
+	outcome, err := p.call(ctx, client, req, out)
+	p.observe(outcome)
+	return err
+}
+
+// observer, when set, is told each call's outcome and each failure's
+// decision (3.08). A provider failing open is a control quietly not applied,
+// and a log line per call was the only sign of it.
+var observer atomic.Pointer[func(hook Hook, outcome string)]
+
+// SetObserver installs fn to be told every outcome; nil removes it.
+func SetObserver(fn func(hook Hook, outcome string)) {
+	if fn == nil {
+		observer.Store(nil)
+		return
+	}
+	observer.Store(&fn)
+}
+
+func (p Provider) observe(outcome string) {
+	if fn := observer.Load(); fn != nil {
+		(*fn)(p.Hook, outcome)
+	}
+}
+
+// call is Call, saying how it ended: answered, timeout, unreachable,
+// bad_status or bad_answer.
+func (p Provider) call(ctx context.Context, client *http.Client, req, out any) (string, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: fmt.Errorf("encoding the request: %w", err)}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: fmt.Errorf("encoding the request: %w", err)}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
@@ -303,17 +427,24 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bytes.NewReader(body))
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: err}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: err}
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json")
-	if p.Token != "" {
-		hreq.Header.Set("Authorization", "Bearer "+p.Token)
+	hreq.Header.Set(VersionHeader, ContractVersion)
+	if p.Test {
+		hreq.Header.Set(TestHeader, "1")
+	}
+	if p.Secret != "" {
+		hreq.Header.Set(hmacsig.Header, hmacsig.Sign(p.Secret, time.Now(), body))
 	}
 
 	resp, err := client.Do(hreq)
 	if err != nil {
-		return &ErrUnreachable{Provider: p.Name, Err: err}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "timeout", &ErrUnreachable{Provider: p.Name, Err: err}
+		}
+		return "unreachable", &ErrUnreachable{Provider: p.Name, Err: err}
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
@@ -325,7 +456,7 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 		// request has not made a decision, and treating "you sent me something I
 		// did not understand" as a decision is how a contract mismatch becomes a
 		// silent authorization change.
-		return &ErrUnreachable{Provider: p.Name,
+		return "bad_status", &ErrUnreachable{Provider: p.Name,
 			Err: fmt.Errorf("status %d", resp.StatusCode)}
 	}
 
@@ -336,10 +467,10 @@ func (p Provider) Call(ctx context.Context, client *http.Client, req, out any) e
 	// every additive change to the contract a breaking one for the party we have
 	// least control over.
 	if err := dec.Decode(out); err != nil {
-		return &ErrUnreachable{Provider: p.Name,
+		return "bad_answer", &ErrUnreachable{Provider: p.Name,
 			Err: fmt.Errorf("decoding the answer: %w", err)}
 	}
-	return nil
+	return "answered", nil
 }
 
 // Decide applies the provider's failure mode to a call that did not answer.
@@ -354,5 +485,10 @@ func (p Provider) Decide(err error) (proceed bool) {
 	if err == nil {
 		return true
 	}
-	return p.Mode == FailOpen
+	if p.Mode == FailOpen {
+		p.observe("failed_open")
+		return true
+	}
+	p.observe("failed_closed")
+	return false
 }

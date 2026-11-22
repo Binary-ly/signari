@@ -182,6 +182,26 @@ func TestFactsComeFromTheSessionNotTheCaller(t *testing.T) {
 		t.Fatal("a session with otp in amr did not report a second factor")
 	}
 
+	// One factor is one factor, however it is spelled. The PDP used to count
+	// `user` or `pin` alone -- and a hardware key with no user verification --
+	// as multi-factor, while the access policy and token issuance did not. A
+	// stored acr of "2" is not evidence either; only the methods are.
+	for _, single := range []string{"{hwk,user}", "{pin}", "{user}", "{swk}", "{pwd}"} {
+		sid := "sid-one-" + itoa(time.Now().UnixNano())
+		_, err = conn.Exec(ctx, `
+			INSERT INTO core.sessions (sid, cookie_hash, org_id, user_id, acr, amr, auth_time, not_after)
+			VALUES ($1, sha256($2::bytea), $3, $4, '2', $5::text[], now(), now() + interval '1 hour')`,
+			sid, sid, orgID, userID, single)
+		must(t, err)
+		f, err = SubjectFacts(ctx, conn, orgID, userID, sid)
+		if err != nil {
+			t.Fatalf("reading facts: %v", err)
+		}
+		if f.MFA {
+			t.Errorf("a session with amr %s reported multi-factor; that is one factor", single)
+		}
+	}
+
 	// A REVOKED session proves nothing. Otherwise signing somebody out leaves
 	// their authorization decisions intact, which is the difference between
 	// revocation and the appearance of it.

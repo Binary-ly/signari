@@ -33,8 +33,15 @@ type writableDir struct {
 	updates map[string]*Update
 	removed []string
 	renames [][2]string
+	refused [][2]string
 	// fail, when set, is returned by every method -- for the error-mapping tests.
 	fail error
+}
+
+func (d *writableDir) Refused(_ context.Context, actor, operation string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.refused = append(d.refused, [2]string{actor, operation})
 }
 
 func newWritableDir(members ...string) *writableDir {
@@ -77,7 +84,7 @@ func (d *writableDir) Lookup(_ context.Context, u string) (*Identity, error) {
 	return &copied, nil
 }
 
-func (d *writableDir) List(_ context.Context, limit int) ([]*Identity, error) {
+func (d *writableDir) List(context.Context, Query) ([]*Identity, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var out []*Identity
@@ -374,7 +381,7 @@ func TestAddEnforcesTheSchema(t *testing.T) {
 			want: ldapclient.LDAPResultUndefinedAttributeType,
 			attrs: map[string][]string{
 				"objectClass": {"inetOrgPerson"}, "cn": {"X"}, "sn": {"X"},
-				"loginShell": {"/bin/sh"}},
+				"shoeSize": {"44"}},
 		},
 		{
 			name: "a single-valued attribute given two values",
@@ -523,7 +530,7 @@ func TestModifyEnforcesTheSchema(t *testing.T) {
 
 	t.Run("an unknown attribute", func(t *testing.T) {
 		m := ldapclient.NewModifyRequest(dn, nil)
-		m.Replace("loginShell", []string{"/bin/sh"})
+		m.Replace("shoeSize", []string{"44"})
 		if got := codeOf(t, c.Modify(m)); got != ldapclient.LDAPResultUndefinedAttributeType {
 			t.Fatalf("result code %d, want undefinedAttributeType(17)", got)
 		}

@@ -5,10 +5,12 @@ namespace App\Filament\Resources\EngineUsers;
 use App\Filament\Resources\EngineUsers\Pages\ListEngineUsers;
 use App\Filament\Resources\EngineUsers\Tables\EngineUsersTable;
 use App\Models\EngineUser;
+use App\Services\SignariSignIn;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Users, read-only.
@@ -26,6 +28,34 @@ class EngineUserResource extends Resource
 {
     protected static ?string $model = EngineUser::class;
 
+    /** What an operator signed in through Signari needs to see this screen (6.06). */
+    public static function canViewAny(): bool
+    {
+        return SignariSignIn::may('users:read');
+    }
+
+    /**
+     * A user manager delegated over groups sees those groups' members and nobody else:
+     * the people in them and in every group inside them (11.09), as the Admin API
+     * reaches them, so the screen lists who the role may act on.
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        $groups = SignariSignIn::delegatedGroups('users:read');
+        $query = parent::getEloquentQuery();
+
+        return $groups === [] ? $query : $query->whereIn('id', function ($members) use ($groups) {
+            $members->select('user_id')->from('core_v1.group_members')->whereRaw(
+                'group_id IN (WITH RECURSIVE below(id) AS (
+                    SELECT unnest(?::uuid[])
+                    UNION
+                    SELECT p.group_id FROM below JOIN core_v1.group_parents p ON p.parent_id = below.id
+                ) SELECT id FROM below)',
+                ['{'.implode(',', $groups).'}']
+            );
+        });
+    }
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUsers;
 
     protected static ?int $navigationSort = 1;
@@ -39,6 +69,12 @@ class EngineUserResource extends Resource
     }
 
     public static function getNavigationLabel(): string
+    {
+        return __('Users');
+    }
+
+    // See EngineClientResource: the default plural is English.
+    public static function getPluralModelLabel(): string
     {
         return __('Users');
     }

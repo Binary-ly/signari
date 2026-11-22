@@ -45,22 +45,52 @@ var columnClass = map[string]string{
 	"duo_integrations.secret_enc":       "rootSealed",
 	"event_subscriptions.secret_sealed": "rootSealed",
 	"identity_providers.client_secret":  "rootSealed",
+	"identity_providers.client_key":     "rootSealed",
 	"rac_connections.secrets_enc":       "rootSealed",
 	"radius_clients.secret_enc":         "rootSealed",
 	"scim_targets.token":                "rootSealed",
 	"scim_targets.credentials_enc":      "rootSealed",
 	"ssf_streams.auth_token":            "rootSealed",
+	"federated_tokens.sealed":           "rootSealed",
+	"saml_source_keys.key_sealed":       "rootSealed",
+	"kerberos_realms.keytab_sealed":     "rootSealed",
+	"ssf_sources.poll_secret_sealed":    "rootSealed",
+	"credential_offers.offer_sealed":    "rootSealed",
+	"credential_offers.handle_hash":     "oneWay",
+	"vp_verifiers.signing_key":          "rootSealed",
+	"federated_logins.vp_response_key":  "rootSealed",
+	// A cross-device answer, waiting for the browser that began it.
+	"federated_logins.vp_cross_presented": "rootSealed",
+	// Under a key from the response code, which is not stored, and its hash.
+	"federated_logins.vp_presented":          "oneWay",
+	"federated_logins.vp_response_code_hash": "oneWay",
+	// Under a key from the artifact's message handle, which is not stored, and its hash.
+	"saml_artifacts.message":     "oneWay",
+	"saml_artifacts.handle_hash": "oneWay",
+	// A SCIM target's refresh token and a waiting authorization's PKCE verifier,
+	// and that authorization's state, kept only as its hash (7.14).
+	"scim_targets.oauth_refresh_token":    "rootSealed",
+	"scim_targets.oauth_pending_verifier": "rootSealed",
+	"scim_targets.oauth_pending_state":    "oneWay",
+
+	// The id of a token, which proves nothing without the token.
+	"credential_notifications.token_jti": "public",
+	"credential_requests.token_jti":      "public",
+
+	"credential_requests.transaction_hash": "oneWay",
 
 	// Sealed under the subject's own DEK. Re-wrapping the DEK covers these, and
 	// touching them here would try to open them with the wrong key.
 	"totp_credentials.secret_enc": "subjectSealed",
+	// The secret shown during enrolment, sealed exactly as the credential is so
+	// confirmation can move it without opening it.
+	"totp_enrolments.secret_enc": "subjectSealed",
 	// Operator-defined attributes declared `personal`. Sealed with the
 	// subject's DEK for the same reason the TOTP secret is: erasure destroys
 	// the DEK, so these die with it and no list of tables has to stay current.
 	"user_attributes.value_sealed": "subjectSealed",
 
 	// One-way. A root key change cannot affect something nothing can open.
-	"access_tokens.token_hash":                      "oneWay",
 	"admin_tokens.token_hash":                       "oneWay",
 	"attestation_challenges.challenge_hash":         "oneWay",
 	"audit_events.entry_hash":                       "oneWay",
@@ -68,14 +98,22 @@ var columnClass = map[string]string{
 	"authorization_codes.code_hash":                 "oneWay",
 	"clients.registration_token_hash":               "oneWay",
 	"credential_nonces.nonce_hash":                  "oneWay",
+	"external_factor_challenges.nonce_hash":         "oneWay",
 	"device_authorizations.device_code_hash":        "oneWay",
 	"device_authorizations.user_code_hash":          "oneWay",
+	"email_otp_credentials.code_attempt":            "oneWay",
 	"email_otp_credentials.code_hash":               "oneWay",
+	"email_changes.code_hash":                       "oneWay",
+	"email_verifications.code_hash":                 "oneWay",
 	"federated_logins.binding_hash":                 "oneWay",
 	"federated_logins.state_hash":                   "oneWay",
 	"federation_trust_marks_issued.trust_mark_hash": "oneWay",
 	"invitations.token_hash":                        "oneWay",
 	"outposts.token_hash":                           "oneWay",
+	"passkey_links.token_hash":                      "oneWay",
+	"prompts.content_hash":                          "oneWay",
+	"email_sign_in_codes.code_hash":                 "oneWay",
+	"prompt_responses.content_hash":                 "oneWay",
 	"preauthorized_codes.code_hash":                 "oneWay",
 	"preauthorized_codes.tx_code_hash":              "oneWay",
 	"pushed_requests.uri_hash":                      "oneWay",
@@ -83,33 +121,89 @@ var columnClass = map[string]string{
 	"recovery_requests.cancel_hash":                 "oneWay",
 	"recovery_requests.token_hash":                  "oneWay",
 	"refresh_tokens.successor_hash":                 "oneWay",
+	"opaque_access_tokens.sealed":                   "oneWay", // under a key from the handle, which is not stored
+	"opaque_access_tokens.token_hash":               "oneWay",
+	"refresh_tokens.successor_sealed":               "oneWay", // under a key from the token it replaced, which nothing holds
 	"refresh_tokens.token_hash":                     "oneWay",
 	"registration_tokens.token_hash":                "oneWay",
 	"saml_logout_progress.token_hash":               "oneWay",
 	"scim_sources.token_hash":                       "oneWay",
 	"sessions.cookie_hash":                          "oneWay",
 	"sessions.ip_hash":                              "oneWay",
+	"sms_otp_credentials.code_attempt":              "oneWay",
 	"sms_otp_credentials.code_hash":                 "oneWay",
+	"sms_otp_credentials.number_hash":               "oneWay",
+	"sms_otp_credentials.pending_hash":              "oneWay",
+	"trusted_devices.token_hash":                    "oneWay",
 	"uma_claims_interactions.handle_hash":           "oneWay",
 	"uma_claims_interactions.ticket_hash":           "oneWay",
 	"uma_permission_tickets.ticket_hash":            "oneWay",
+	"uma_persisted_claims.token_hash":               "oneWay",
+	"webauthn_spent_challenges.challenge_hash":      "oneWay",
+
+	// A hash in a text column (an encoded password hash).
+	"clients.client_secret_hash": "oneWay",
 
 	// Public or non-secret material.
+	// A waiting Admin API request's body (0296): an erasure's subject id, a
+	// role grant, a settings change. Never a secret, and cleared once decided.
+	"admin_approvals.body":               "public",
+	"clients.access_token_format":        "public",
+	"clients.access_token_signed_alg":    "public",
 	"clients.tls_thumbprint":             "public",
+	"credential_proof_roots.certificate": "public",
+	"identity_providers.store_tokens":    "public", // a switch, whatever its name says
 	"signing_keys.certificate":           "public",
 	"users.user_handle":                  "public",
 	"webauthn_credentials.aaguid":        "public",
 	"webauthn_credentials.credential_id": "public",
 	"webauthn_credentials.public_key":    "public",
 
-	// Columns nothing reads or writes. Recorded rather than left unclassified so
-	// that this test does not have to be edited if one of them is ever wired up
-	// -- it will fail then, which is the moment somebody must decide how a
-	// rotation treats it.
-	"audit_events.detail_enc":             "unused",
-	"migration_sources.client_secret_enc": "unused",
-	"providers.token_wrapped":             "unused",
+	// Not bytes, and named as if secret: settings, URLs and identifiers whose
+	// names mention a token or a secret. Listed so that a column of this kind
+	// holding a real secret in the clear cannot hide among them: it arrives
+	// unclassified, and there is no class for "plaintext secret".
+	"audit_events.admin_token_id":             "public",
+	"clients.access_token_ttl_s":              "public",
+	"clients.backchannel_token_delivery_mode": "public",
+	"clients.dpop_bound_access_tokens":        "public",
+	"clients.id_token_signed_alg":             "public",
+	"clients.refresh_token_ttl_s":             "public",
+	"clients.tls_bound_tokens":                "public",
+	"clients.token_endpoint_auth_method":      "public",
+	"identity_providers.token_url":            "public",
+	"identity_providers.token_auth_method":    "public",
+	"migration_sources.token_endpoint":        "public",
+	"organizations.password_only_binds":       "public",
+	"organizations.token_budget_per_minute":   "public",
+	"outbox.subject_key":                      "public",
+	"rate_limits.bucket_key":                  "public",
+	"scim_targets.oauth_token_url":            "public",
+	"webauthn_policy.resident_key":            "public",
+	// The names of algorithms a client is encrypted to with, not anything encrypted.
+	"clients.id_token_encrypted_response_alg":      "public",
+	"clients.id_token_encrypted_response_enc":      "public",
+	"clients.userinfo_encrypted_response_enc":      "public",
+	"clients.authorization_encrypted_response_enc": "public",
+	"clients.introspection_encrypted_response_enc": "public",
+	// A token's identifier, not the token: it is in the token's own claims,
+	// and knowing it lets nobody present the token.
+	"preauthorized_codes.access_token_jti": "public",
+
+	// Root-sealed and read, though nothing writes the table yet.
+	"migration_sources.client_secret_enc": "rootSealed",
+
+	// A provider's signing secret, sealed at registration and rotation (2.04).
+	"providers.token_wrapped": "rootSealed",
 }
+
+// mayHoldASecret is which columns the classification covers: every bytea
+// column, and every column of any type whose name says it holds a token, a
+// secret, a password or a key. The name half exists because the CIBA
+// notification token sat in a text column in the clear, and a test that looked
+// only at bytea could not see it.
+const mayHoldASecret = `(c.data_type = 'bytea' OR c.column_name ~* ` +
+	`'(token|secret|password|passwd|private|sealed|wrapped|_enc$|credential|api_key|_key$)')`
 
 func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 	dsn := os.Getenv("SIGNARI_TEST_DSN")
@@ -129,7 +223,7 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 		JOIN information_schema.tables t
 		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
 		WHERE c.table_schema = 'core' AND t.table_type = 'BASE TABLE'
-		  AND c.data_type = 'bytea'
+		  AND `+mayHoldASecret+`
 		ORDER BY 1, 2`)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +248,8 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 
 	for _, col := range found {
 		if columnClass[col] == "" {
-			t.Errorf("core.%s holds bytes and is not classified.\n\n"+
+			t.Errorf("core.%s holds bytes, or is named as if it holds a secret, and "+
+				"is not classified.\n\n"+
 				"Decide what a ROOT KEY ROTATION does to it:\n"+
 				"  rootSealed    -- add it to rootSealedColumns in rewrap.go AND here\n"+
 				"  subjectSealed -- sealed under a subject DEK; the DEK is re-wrapped, so this follows\n"+
@@ -177,8 +272,9 @@ func TestEveryEncryptedColumnIsClassified(t *testing.T) {
 	}
 	for col := range columnClass {
 		if !present[col] {
-			t.Errorf("columnClass names core.%s, which is not a bytea column in "+
-				"the schema. If it was renamed, the new name is unclassified.", col)
+			t.Errorf("columnClass names core.%s, which the schema no longer has as "+
+				"a column this test covers. If it was renamed, the new name is "+
+				"unclassified.", col)
 		}
 	}
 }

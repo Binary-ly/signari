@@ -228,6 +228,77 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 	}
 }
 
+// An application that keeps a cookie of its own sends a browser to its own
+// /.signari/proxy/begin first, which its proxy routes to Signari, and Signari sends
+// it on to the issuer's /proxy/start. Each way the proxy can get that wrong exposes
+// nothing, so only following begin finds it; and the right way is a pass, where it
+// used to be "not the issuer given" on every probe.
+func TestTheSignInBegunAtTheApplicationIsFollowed(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		begin func(w http.ResponseWriter, r *http.Request)
+		want  Status
+		says  string
+	}{
+		{"routed to Signari and handed back unchanged", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, testIssuer+"/proxy/start?rd=x&state=y", http.StatusSeeOther)
+		}, Protected, "identity provider's /proxy/start"},
+		// nginx's default proxy_redirect, measured: the issuer's address in the
+		// Location becomes the application's.
+		{"its Location rewritten to this address", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/proxy/start?rd=x&state=y", http.StatusSeeOther)
+		}, Stranded, "proxy_redirect off"},
+		{"behind the forward auth", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, pathBegin+"?rd=x", http.StatusFound)
+		}, Stranded, "route /.signari/"},
+		{"not routed at all", http.NotFound, Stranded, "route /.signari/"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc(pathBegin, c.begin)
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, pathBegin+"?rd=x", http.StatusFound)
+			})
+			app := httptest.NewServer(mux)
+			defer app.Close()
+
+			rep := run(t, Options{BaseURL: app.URL, Issuer: testIssuer})
+			begun := find(t, rep, "sign-in begun")
+			if begun.Status != c.want || !strings.Contains(begun.Detail+begun.Fix, c.says) {
+				t.Errorf("the sign-in begun at the application = %v (%s / %s), want %v naming %q",
+					begun.Status, begun.Detail, begun.Fix, c.want, c.says)
+			}
+			if root := find(t, rep, "GET /"); root.Status != Protected {
+				t.Errorf("a redirect to the application's own begin = %v (%s), want Protected",
+					root.Status, root.Detail)
+			}
+			for _, r := range rep.Results {
+				if r.Status == Exposed || (r.Status == Stranded && r.Probe != begun.Probe) {
+					t.Errorf("%s was %v: %s", r.Probe, r.Status, r.Detail)
+				}
+			}
+		})
+	}
+}
+
+// A redirect to begin on some other host is not this application beginning its own
+// sign-in, and is not followed.
+func TestABeginElsewhereIsNotFollowed(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://elsewhere.test"+pathBegin+"?rd=x", http.StatusFound)
+	}))
+	defer app.Close()
+	rep := run(t, Options{BaseURL: app.URL, Issuer: testIssuer})
+	for _, r := range rep.Results {
+		if strings.Contains(r.Probe, "sign-in begun") {
+			t.Errorf("a begin on another host was followed: %s", r.Detail)
+		}
+	}
+	if root := find(t, rep, "GET /"); root.Status == Protected {
+		t.Errorf("a redirect to another host's begin was counted as this issuer protecting: %s", root.Detail)
+	}
+}
+
 func TestRunRejectsARelativeURL(t *testing.T) {
 	if _, err := Run(context.Background(), Options{BaseURL: "n8n.example.com"}); err == nil {
 		t.Error("a URL with no scheme was accepted; every probe would then be meaningless")

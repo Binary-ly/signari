@@ -18,21 +18,29 @@ package passwords
 
 import (
 	"context"
+	"crypto/fips140"
+	stdpbkdf2 "crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"golang.org/x/text/unicode/norm"
 	"io"
+	"maps"
+	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
+	"golang.org/x/sync/semaphore"
 )
 
 // ErrMismatch means the password did not verify. It is deliberately the only
@@ -49,6 +57,22 @@ const (
 	argonThreads   = 1
 	argonSaltLen   = 16
 	argonKeyLen    = 32
+)
+
+// PBKDF2-HMAC-SHA256, the password hash under FIPS 140-3 (3.11). Argon2id is
+// outside Go's validated module, so a deployment running with fips140 enabled
+// hashes new passwords with this, through crypto/pbkdf2, which is inside it,
+// and moves an Argon2id hash to it at the next sign-in.
+//
+// It has no memory hardness, so its cost is all CPU: 600,000 iterations took
+// 66 ms where this was written, against 25 ms for the Argon2id above. The salt
+// and key lengths are the ones crypto/pbkdf2 requires under fips140=only:
+// 128 bits of salt, at least 112 bits of key.
+const (
+	pbkdf2Iterations = 600_000
+	pbkdf2SaltLen    = 16
+	pbkdf2KeyLen     = 32
+	pbkdf2Prefix     = "$pbkdf2-sha256$"
 )
 
 // Ceilings for cost parameters read out of an IMPORTED hash.
@@ -70,11 +94,144 @@ const (
 	// still bounded. pbkdf2.Key is linear in this, so an unbounded value is a
 	// direct multiplier on CPU per failed sign-in.
 	pbkdf2MaxIterations = 10_000_000
+
+	// phpass and Drupal 7 store n and iterate 2^n times, and the format allows
+	// n up to 30. Measured where this was written, 2^20 took 0.14 s with MD5 and
+	// 0.19 s with SHA-512, so 2^30 is over two minutes of CPU on every attempt
+	// against the account, failed or not. It used to be accepted.
+	phpassMaxLog2 = 20
+
+	// bcrypt's format allows cost 31, and each step doubles the work: cost 15
+	// measured 2 s, so 31 is about three days. It used to be accepted.
+	bcryptMaxCost = 15
+
+	// scrypt and Keycloak's PBKDF2, bounded in foreign.go.
+	scryptMaxLn           = 20
+	scryptMaxN            = 1 << scryptMaxLn
+	scryptMaxR            = 32
+	scryptMaxP            = 16
+	keycloakMaxIterations = 1_000_000
+
+	// glibc SHA-crypt's format allows 999,999,999 rounds, linear in CPU; the
+	// default is 5,000, and a million is well over any real directory's.
+	shaCryptMaxRounds = 1_000_000
+
+	// The format's own ceilings allow 128 × N × r = 4 GiB. 256 MiB is sixteen
+	// times the common N=2^17, r=8, and half the shared budget, so one import
+	// cannot take all of it (4.08).
+	scryptMaxMemoryKiB = 256 * 1024
 )
 
+// CostRefusal says why verifying stored would cost more than this process
+// allows, or nil: a parameter above the ceilings above, or more memory than
+// the shared hasher's whole budget, which acquire refuses on every attempt.
+//
+// Read from the hash's own parameters, hashing nothing, so an importer can ask
+// it before an account is created -- CanVerify does -- and Verify asks it
+// before taking a slot. Both reading this one function is what keeps "imported
+// as verifiable" and "verifies at sign-in" the same answer: they disagreed, and
+// an Argon2id hash declaring 600 MiB, under the 1 GiB parse ceiling and over
+// the 512 MiB budget, was imported and then refused at every sign-in.
+//
+// A hash this does not recognise, or cannot parse, is not its business: Verify
+// refuses those as a mismatch and CanVerify by prefix.
+func CostRefusal(stored string) error {
+	stored, _ = cryptOf(stored)
+	return costRefusal(stored, Shared().budgetKiB)
+}
+
+func costRefusal(stored string, budgetKiB int64) error {
+	if kib := memoryKiB(stored); kib > budgetKiB {
+		return fmt.Errorf("it needs %d MiB to verify and the process allows %d MiB for all "+
+			"verifications together", kib/1024, budgetKiB/1024)
+	}
+	parts := strings.Split(stored, "$")
+	switch {
+	case strings.HasPrefix(stored, "$y$"):
+		return yescryptRefusal(stored)
+	case strings.HasPrefix(stored, pbkdf2Prefix) && len(parts) > 2:
+		var iter int
+		if _, err := fmt.Sscanf(parts[2], "i=%d", &iter); err == nil && iter > pbkdf2MaxIterations {
+			return fmt.Errorf("pbkdf2-sha256 with %d iterations is above the ceiling %d", iter, pbkdf2MaxIterations)
+		}
+	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
+		var m, t, p int64
+		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil &&
+			(m > argonMaxMemoryKiB || t > argonMaxTime || p > argonMaxThreads) {
+			return fmt.Errorf("argon2id m=%d,t=%d,p=%d is above the ceiling m=%d,t=%d,p=%d",
+				m, t, p, argonMaxMemoryKiB, argonMaxTime, argonMaxThreads)
+		}
+	case strings.HasPrefix(stored, "$2a$"), strings.HasPrefix(stored, "$2b$"),
+		strings.HasPrefix(stored, "$2y$"):
+		if cost, err := bcrypt.Cost([]byte(stored)); err == nil && cost > bcryptMaxCost {
+			return fmt.Errorf("bcrypt cost %d is above the ceiling %d", cost, bcryptMaxCost)
+		}
+	case strings.HasPrefix(stored, "$P$"), strings.HasPrefix(stored, "$H$"),
+		strings.HasPrefix(stored, "$S$"):
+		if len(stored) > 3 {
+			if n := strings.IndexByte(itoa64, stored[3]); n > phpassMaxLog2 {
+				return fmt.Errorf("2^%d iterations is above the ceiling 2^%d", n, phpassMaxLog2)
+			}
+		}
+	case strings.HasPrefix(stored, "pbkdf2_sha256$") && len(parts) > 1:
+		if iter, err := strconv.Atoi(parts[1]); err == nil && iter > pbkdf2MaxIterations {
+			return fmt.Errorf("%d PBKDF2 iterations is above the ceiling %d", iter, pbkdf2MaxIterations)
+		}
+	case (strings.HasPrefix(stored, "$5$") || strings.HasPrefix(stored, "$6$")) && len(parts) > 2 &&
+		strings.HasPrefix(parts[2], "rounds="):
+		if n, err := strconv.Atoi(strings.TrimPrefix(parts[2], "rounds=")); err == nil && n > shaCryptMaxRounds {
+			return fmt.Errorf("SHA-crypt with %d rounds is above the ceiling %d", n, shaCryptMaxRounds)
+		}
+	case strings.HasPrefix(stored, "$scrypt$") && len(parts) > 2:
+		var ln, r, p int
+		for _, kv := range strings.Split(parts[2], ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			n, _ := strconv.Atoi(v)
+			switch k {
+			case "ln":
+				ln = n
+			case "r":
+				r = n
+			case "p":
+				p = n
+			}
+		}
+		if ln > scryptMaxLn || r > scryptMaxR || p > scryptMaxP {
+			return fmt.Errorf("scrypt ln=%d,r=%d,p=%d is above the ceiling ln=%d,r=%d,p=%d",
+				ln, r, p, scryptMaxLn, scryptMaxR, scryptMaxP)
+		}
+		if kib := (int64(1) << ln) * int64(r) * 128 / 1024; ln > 0 && kib > scryptMaxMemoryKiB {
+			return fmt.Errorf("scrypt ln=%d,r=%d needs %d MiB, above the %d MiB an imported "+
+				"hash may ask for", ln, r, kib/1024, scryptMaxMemoryKiB/1024)
+		}
+	case strings.HasPrefix(stored, "$keycloak$") && len(parts) == 4:
+		if raw, err := base64.RawStdEncoding.DecodeString(parts[2]); err == nil {
+			var cd keycloakCredential
+			if json.Unmarshal(raw, &cd) == nil && cd.Iterations > keycloakMaxIterations {
+				return fmt.Errorf("%d PBKDF2 iterations is above the ceiling %d",
+					cd.Iterations, keycloakMaxIterations)
+			}
+		}
+	}
+	return nil
+}
+
 // Hasher owns the concurrency budget for password hashing.
+//
+// Two bounds, both needed. sem caps how many run at once, at the CPU count. mem
+// is the memory budget, and each evaluation takes from it what its own
+// parameters need: our Argon2id takes 19 MiB, but an imported Argon2id or
+// scrypt hash declares its own cost, and one of those may legitimately need
+// hundreds of MiB. A single slot per evaluation, sized for ours, let an import
+// within the parse ceilings use 50 times the memory the budget accounted for.
 type Hasher struct {
-	sem chan struct{}
+	sem       chan struct{}
+	mem       *semaphore.Weighted
+	budgetKiB int64
+	inFlight  atomic.Int64
+	// cfg is the cost and pepper new hashes are made with (params.go); nil is
+	// the floor and no pepper.
+	cfg *Config
 }
 
 // MemoryBudgetMiB is the default ceiling on concurrent Argon2 memory.
@@ -83,12 +240,21 @@ type Hasher struct {
 const MemoryBudgetMiB = 512
 
 // NewHasher builds a hasher whose concurrency is the smaller of the CPU count
-// and what the memory budget allows.
+// and what the memory budget allows for our own hashes.
+//
+// Outside this package, use Shared. A Hasher built per request has a budget of
+// its own, so the ceiling it was meant to be became one per request: N
+// requests, N times 512 MiB. TestNoPathBuildsItsOwnHasher keeps it that way.
 func NewHasher(memoryBudgetMiB int) *Hasher {
+	return NewHasherWith(memoryBudgetMiB, nil)
+}
+
+// NewHasherWith is NewHasher hashing with cfg's cost and pepper.
+func NewHasherWith(memoryBudgetMiB int, cfg *Config) *Hasher {
 	if memoryBudgetMiB <= 0 {
 		memoryBudgetMiB = MemoryBudgetMiB
 	}
-	byMemory := memoryBudgetMiB * 1024 / argonMemoryKiB
+	byMemory := memoryBudgetMiB * 1024 / int(cfg.params().MemoryKiB)
 	limit := runtime.GOMAXPROCS(0)
 	if byMemory < limit {
 		limit = byMemory
@@ -96,16 +262,110 @@ func NewHasher(memoryBudgetMiB int) *Hasher {
 	if limit < 1 {
 		limit = 1
 	}
-	return &Hasher{sem: make(chan struct{}, limit)}
+	budget := int64(memoryBudgetMiB) * 1024
+	return &Hasher{sem: make(chan struct{}, limit), mem: semaphore.NewWeighted(budget),
+		budgetKiB: budget, cfg: cfg}
+}
+
+var sharedErr error
+
+var shared = sync.OnceValue(func() *Hasher {
+	cfg, err := ConfigFromEnv(os.Getenv)
+	if err != nil {
+		// Hashed at the floor until serve sees SharedConfigError and stops; a
+		// CLI command that hashes refuses on it too.
+		sharedErr = err
+		return NewHasher(MemoryBudgetMiB)
+	}
+	return NewHasherWith(MemoryBudgetMiB, &cfg)
+})
+
+// Shared is the process's one Hasher, so every caller (the sign-in form,
+// LDAP, RADIUS, the outposts, the Admin API, signup) draws on one memory
+// budget.
+func Shared() *Hasher { return shared() }
+
+// SharedConfigError is why the shared Hasher could not take its configured
+// cost or pepper, or nil.
+func SharedConfigError() error {
+	shared()
+	return sharedErr
 }
 
 // Concurrency reports the cap, so it can be exported as a metric. Saturation
 // here is the first sign of a login flood.
 func (h *Hasher) Concurrency() int { return cap(h.sem) }
 
-// acquire blocks for a slot, or returns the context's error. Callers pass a
-// request context so a client that has already given up stops occupying budget.
-func (h *Hasher) acquire(ctx context.Context) error {
+// Params are the cost new hashes are made with, for sizing what may wait in front of them.
+func (h *Hasher) Params() Params { return h.cfg.params() }
+
+// InFlight reports how many evaluations are running or waiting for a slot.
+func (h *Hasher) InFlight() int64 { return h.inFlight.Load() }
+
+// memoryKiB is what verifying stored will allocate, read from its own
+// parameters. Formats that allocate next to nothing (bcrypt, PBKDF2, the
+// phpass family) are charged our Argon2 cost, which keeps their concurrency
+// where it was.
+func memoryKiB(stored string) int64 {
+	parts := strings.Split(stored, "$")
+	switch {
+	case strings.HasPrefix(stored, "$y$"):
+		if kib, ok := yescryptCost(stored); ok {
+			return kib
+		}
+	case strings.HasPrefix(stored, pbkdf2Prefix):
+		return 1 // CPU, not memory: it takes a slot and next to no budget
+	case strings.HasPrefix(stored, "$argon2id$") && len(parts) > 3:
+		var m, t, p int64
+		if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err == nil && m > 0 {
+			return m
+		}
+	case strings.HasPrefix(stored, "$scrypt$") && len(parts) > 2:
+		var ln, r int64
+		for _, kv := range strings.Split(parts[2], ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			n, _ := strconv.ParseInt(v, 10, 64)
+			switch k {
+			case "ln":
+				ln = n
+			case "r":
+				r = n
+			}
+		}
+		if ln > 0 && ln <= 22 && r > 0 {
+			return (int64(1) << ln) * r * 128 / 1024 // scrypt's V is 128·N·r bytes
+		}
+	}
+	return argonMemoryKiB
+}
+
+// acquire blocks for a slot and kib of the memory budget, or returns the
+// context's error. Callers pass a request context so a client that has already
+// given up stops occupying budget. A cost larger than the whole budget is
+// refused rather than run outside it, as a mismatch: it can never fit, and
+// waiting for it would hold the queue.
+func (h *Hasher) acquire(ctx context.Context, kib int64) error {
+	if kib > h.budgetKiB {
+		return fmt.Errorf("%w: this hash needs %d MiB to verify and the process allows "+
+			"%d MiB for all of them; reset the password", ErrMismatch, kib/1024, h.budgetKiB/1024)
+	}
+	if err := h.acquireSlot(ctx); err != nil {
+		return err
+	}
+	if err := h.mem.Acquire(ctx, kib); err != nil {
+		h.releaseSlot()
+		return err
+	}
+	return nil
+}
+
+func (h *Hasher) release(kib int64) {
+	h.mem.Release(kib)
+	h.releaseSlot()
+}
+
+// acquireSlot blocks for a concurrency slot, or returns the context's error.
+func (h *Hasher) acquireSlot(ctx context.Context) error {
 	// Check cancellation FIRST. A bare select over both cases picks at random
 	// when both are ready, so an already-abandoned request could still take a
 	// free slot and spend 19 MiB plus CPU on an answer nobody will read. Under a
@@ -122,7 +382,7 @@ func (h *Hasher) acquire(ctx context.Context) error {
 	}
 }
 
-func (h *Hasher) release() { <-h.sem }
+func (h *Hasher) releaseSlot() { <-h.sem }
 
 // Hash produces a PHC-format Argon2id string.
 
@@ -150,19 +410,35 @@ func Normalize(password string) string { return norm.NFC.String(password) }
 
 func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 	password = Normalize(password)
-	if err := h.acquire(ctx); err != nil {
+	h.inFlight.Add(1)
+	defer h.inFlight.Add(-1)
+	pepper := h.cfg.current()
+	named := ""
+	if pepper != nil {
+		named = ",k=" + pepper.ID
+	}
+	if fips140.Enabled() {
+		if err := h.acquire(ctx, 1); err != nil {
+			return "", err
+		}
+		defer h.release(1)
+		return hashPBKDF2(peppered(pepper, password), named)
+	}
+	p := h.cfg.params()
+	kib := int64(p.MemoryKiB)
+	if err := h.acquire(ctx, kib); err != nil {
 		return "", err
 	}
-	defer h.release()
+	defer h.release(kib)
 
 	salt := make([]byte, argonSaltLen)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("generating salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemoryKiB, argonThreads, argonKeyLen)
+	key := argon2.IDKey([]byte(peppered(pepper, password)), salt, p.Time, p.MemoryKiB, p.Threads, argonKeyLen)
 
-	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		argon2.Version, argonMemoryKiB, argonTime, argonThreads,
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d%s$%s$%s",
+		argon2.Version, p.MemoryKiB, p.Time, p.Threads, named,
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
@@ -175,18 +451,39 @@ func (h *Hasher) Hash(ctx context.Context, password string) (string, error) {
 // the credential.
 func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsRehash bool, err error) {
 	password = Normalize(password)
-	if err := h.acquire(ctx); err != nil {
+	// LDAP's {CRYPT} holds a crypt(3) hash as it is; it is verified as that.
+	stored, _ = cryptOf(stored)
+	// Before a slot is taken: a hash that costs more than this process allows
+	// never verifies, and the ceiling is the same one CanVerify asked at import.
+	if err := costRefusal(stored, h.budgetKiB); err != nil {
+		return false, fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
+	h.inFlight.Add(1)
+	defer h.inFlight.Add(-1)
+	kib := memoryKiB(stored)
+	if err := h.acquire(ctx, kib); err != nil {
 		return false, err
 	}
-	defer h.release()
+	defer h.release(kib)
 
 	switch {
-	case strings.HasPrefix(stored, "$argon2id$"):
-		current, err := verifyArgon2id(stored, password)
+	case strings.HasPrefix(stored, pbkdf2Prefix):
+		current, err := verifyPBKDF2(stored, password, h.cfg)
 		if err != nil {
 			return false, err
 		}
-		return !current, nil
+		// Back to Argon2id once FIPS is off: PBKDF2 is the weaker hash, kept
+		// only for the module.
+		return !current || !fips140.Enabled(), nil
+
+	case strings.HasPrefix(stored, "$argon2id$"):
+		current, err := verifyArgon2id(stored, password, h.cfg)
+		if err != nil {
+			return false, err
+		}
+		// Under FIPS, verified here once more, outside the module, and moved
+		// to PBKDF2 in the sign-in's own transaction (3.11).
+		return !current || fips140.Enabled(), nil
 
 	case strings.HasPrefix(stored, "$2a$"), strings.HasPrefix(stored, "$2b$"),
 		strings.HasPrefix(stored, "$2y$"):
@@ -212,6 +509,13 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 
 	case strings.HasPrefix(stored, "$P$"), strings.HasPrefix(stored, "$H$"):
 		// WordPress, phpBB, Drupal 7 -- the systems most in need of migrating off.
+		//
+		// MD5, which fips140=only refuses with a panic, so the sign-in failed by
+		// crashing its request (3.11). Refused instead, saying why.
+		if fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as an MD5-based hash, which "+
+				"FIPS 140-only mode refuses; reset the password", ErrMismatch)
+		}
 		if err := verifyPHPass(stored, password); err != nil {
 			return false, err
 		}
@@ -223,18 +527,42 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		}
 		return true, nil
 
-	// NOT HANDLED: $5$ and $6$ (glibc SHA-crypt, used by /etc/shadow, FreeIPA and
-	// most LDAP directories).
-	//
-	// An implementation was written and then removed, because it disagreed with
-	// PHP's crypt(3) on real vectors. Shipping it would have been worse than
-	// having nothing: every user imported from an LDAP directory would have been
-	// told their password was wrong, with no indication that the fault was ours.
-	//
-	// It falls through to the default below and is refused, so such an import
-	// fails loudly at sign-in rather than silently accepting anything. Finishing
-	// it needs the glibc permutation table checked against published vectors --
-	// see internal/passwords/foreign.go.
+	// glibc SHA-crypt: /etc/shadow, FreeIPA and most LDAP directories. It
+	// was refused here for months, because the first implementation disagreed
+	// with every other one; it now agrees with OpenSSL's and PHP's on their
+	// vectors (shacrypt_test.go), and the two faults are named in foreign.go.
+	case strings.HasPrefix(stored, "$5$"), strings.HasPrefix(stored, "$6$"):
+		if err := verifySHACrypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	// md5-crypt and Apache's apr1: older /etc/shadow entries and htpasswd.
+	case strings.HasPrefix(stored, "$1$"), strings.HasPrefix(stored, "$apr1$"):
+		if fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as an MD5-based hash, which "+
+				"FIPS 140-only mode refuses; reset the password", ErrMismatch)
+		}
+		if err := verifyMD5Crypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
+	// An LDAP userPassword scheme: {SSHA}, {SHA}, {SMD5}, {MD5} and the SHA-2
+	// forms. ({CRYPT} was unwrapped above.)
+	case strings.HasPrefix(stored, "{"):
+		name, scheme, encoded, ok := ldapSchemeOf(stored)
+		if !ok {
+			return false, ErrMismatch
+		}
+		if scheme.weak && fips140.Enforced() {
+			return false, fmt.Errorf("%w: this password was imported as %s, built on MD5 or "+
+				"SHA-1, which FIPS 140-only mode refuses; reset the password", ErrMismatch, name)
+		}
+		if err := verifyLDAP(scheme, encoded, password); err != nil {
+			return false, err
+		}
+		return true, nil
 
 	case strings.HasPrefix(stored, "$keycloak$"):
 		if err := verifyKeycloakPacked(stored, password); err != nil {
@@ -248,6 +576,12 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 		}
 		return true, nil
 
+	case strings.HasPrefix(stored, "$y$"):
+		if err := verifyYescrypt(stored, password); err != nil {
+			return false, err
+		}
+		return true, nil
+
 	default:
 		// An unrecognised format is a mismatch, never a pass. Failing open on an
 		// unknown prefix would turn a bad import into an authentication bypass.
@@ -256,9 +590,10 @@ func (h *Hasher) Verify(ctx context.Context, stored, password string) (needsReha
 }
 
 // verifyArgon2id reports whether the hash matched AND whether its parameters are
-// current. Parameters are read from the stored string, never assumed, so hashes
-// written under older settings still verify.
-func verifyArgon2id(stored, password string) (current bool, err error) {
+// current: at least cfg's cost, and made with cfg's current pepper. Parameters
+// are read from the stored string, never assumed, so hashes written under
+// older settings still verify. A nil cfg is the floor and no pepper.
+func verifyArgon2id(stored, password string, cfg *Config) (current bool, err error) {
 	parts := strings.Split(stored, "$")
 	if len(parts) != 6 {
 		return false, ErrMismatch
@@ -295,14 +630,81 @@ func verifyArgon2id(stored, password string) (current bool, err error) {
 	if err != nil {
 		return false, ErrMismatch
 	}
+	pepper, current, err := hashPepper(hashParams(parts[3])["k"], cfg)
+	if err != nil {
+		return false, err
+	}
 
 	// #nosec G115 -- the length of a decoded Argon2 hash, bounded by the parser
 	// that produced it at well under 2^32.
-	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
+	got := argon2.IDKey([]byte(peppered(pepper, password)), salt, t, m, p, uint32(len(want)))
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return false, ErrMismatch
 	}
-	return m >= argonMemoryKiB && t >= argonTime, nil
+	want4 := cfg.params()
+	return current && m >= want4.MemoryKiB && t >= want4.Time && p >= want4.Threads, nil
+}
+
+// hashPepper is the pepper a hash names, and whether it is the current one. A
+// hash naming a pepper that is not configured cannot be verified by anything,
+// so it is refused as a mismatch with the reason, for the log.
+func hashPepper(id string, cfg *Config) (*Pepper, bool, error) {
+	cur := cfg.current()
+	if id == "" {
+		return nil, cur == nil, nil
+	}
+	p, ok := cfg.pepper(id)
+	if !ok {
+		return nil, false, fmt.Errorf("%w: the hash was made with pepper %q, which "+
+			"SIGNARI_PASSWORD_PEPPERS does not hold; reset the password", ErrMismatch, id)
+	}
+	return p, cur != nil && cur.ID == id, nil
+}
+
+// hashPBKDF2 hashes with PBKDF2-HMAC-SHA256 through the standard library, the
+// one inside the FIPS module. named is the pepper's `,k=<id>`, or empty; the
+// password has had the pepper applied already.
+func hashPBKDF2(password, named string) (string, error) {
+	salt := make([]byte, pbkdf2SaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return "", fmt.Errorf("generating salt: %w", err)
+	}
+	key, err := stdpbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, pbkdf2KeyLen)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%si=%d%s$%s$%s", pbkdf2Prefix, pbkdf2Iterations, named,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
+}
+
+// verifyPBKDF2 handles `$pbkdf2-sha256$i=<iterations>[,k=<id>]$<salt>$<key>`
+// and says whether its iterations and pepper are current.
+func verifyPBKDF2(stored, password string, cfg *Config) (current bool, err error) {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 5 {
+		return false, ErrMismatch
+	}
+	var iter int
+	if _, err := fmt.Sscanf(parts[2], "i=%d", &iter); err != nil || iter <= 0 || iter > pbkdf2MaxIterations {
+		return false, ErrMismatch
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil {
+		return false, ErrMismatch
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return false, ErrMismatch
+	}
+	pepper, currentPepper, err := hashPepper(hashParams(parts[2])["k"], cfg)
+	if err != nil {
+		return false, err
+	}
+	got, err := stdpbkdf2.Key(sha256.New, peppered(pepper, password), salt, iter, len(want))
+	if err != nil || subtle.ConstantTimeCompare(got, want) != 1 {
+		return false, ErrMismatch
+	}
+	return currentPepper && iter >= pbkdf2Iterations, nil
 }
 
 // verifyDjangoPBKDF2 handles `pbkdf2_sha256$<iterations>$<salt>$<b64 hash>`.
@@ -319,7 +721,13 @@ func verifyDjangoPBKDF2(stored, password string) error {
 	if err != nil {
 		return ErrMismatch
 	}
-	got := pbkdf2.Key([]byte(password), []byte(parts[2]), iter, len(want), sha256.New)
+	// The standard library's, which returns an error where x/crypto's panics:
+	// under fips140=only a salt under 128 bits is refused, and Django's are
+	// often shorter (3.11).
+	got, err := stdpbkdf2.Key(sha256.New, password, []byte(parts[2]), iter, len(want))
+	if err != nil {
+		return fmt.Errorf("%w: %v; reset the password", ErrMismatch, err)
+	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return ErrMismatch
 	}
@@ -337,15 +745,24 @@ func verifyDjangoPBKDF2(stored, password string) error {
 //
 // TestSupportedPrefixesMatchesVerify keeps the two in step.
 func SupportedPrefixes() []string {
-	return []string{
+	prefixes := []string{
 		"$argon2id$",
+		pbkdf2Prefix,           // our own, under FIPS
 		"$2a$", "$2b$", "$2y$", // bcrypt
 		"pbkdf2_sha256$", // Django, and therefore authentik
 		"$P$", "$H$",     // phpass: WordPress, phpBB, Drupal 7
 		"$S$", // Drupal 7 native
 		"$keycloak$",
 		"$scrypt$",
+		"$5$", "$6$", // glibc SHA-crypt: /etc/shadow, LDAP directories
+		"$y$",           // yescrypt: /etc/shadow on current distributions
+		"$1$", "$apr1$", // md5-crypt, and Apache's
+		// and {CRYPT} around any of the crypt(3) ones, which CanVerify unwraps
 	}
+	// The LDAP schemes from the table Verify reads, so the two cannot disagree:
+	// a list kept here by hand lacked {SHA384} once the table had it, and
+	// CanVerify said no to a hash Verify accepted.
+	return append(prefixes, slices.Sorted(maps.Keys(ldapSchemes))...)
 }
 
 // CanVerify reports whether a stored hash is one this engine can check.
@@ -353,10 +770,19 @@ func SupportedPrefixes() []string {
 // The question migration tooling actually asks, and the one an operator needs
 // answered BEFORE importing rather than after: an account imported with a hash
 // nothing can verify is an account nobody can sign in to.
+//
+// A recognised format whose parameters cost more than Verify allows is not
+// verifiable either (CostRefusal says why). It used to be reported verifiable
+// and imported, and then refused at every sign-in.
 func CanVerify(stored string) bool {
+	stored, _ = cryptOf(stored)
+	if name, _, _, ok := ldapSchemeOf(stored); ok {
+		// LDAP scheme names are case-insensitive.
+		stored = name + stored[len(name):]
+	}
 	for _, p := range SupportedPrefixes() {
 		if strings.HasPrefix(stored, p) {
-			return true
+			return CostRefusal(stored) == nil
 		}
 	}
 	return false

@@ -48,10 +48,24 @@ second box.
 
 ## MFA cannot be sidestepped by signing in at a desktop
 
-Whether a second factor is required is decided by the same function the browser
-flow uses. Enrol an authenticator and the desktop path demands it from the next
-attempt — verified by enrolling one and watching the same correct password stop
-being sufficient.
+Whether a second factor is required is decided by the sign-in flow, the same
+question LDAP and RADIUS ask. Enrol an authenticator and the desktop path
+demands it from the next attempt. This was verified by enrolling one and
+watching the same correct password stop being sufficient. Under a flow whose
+mfa stage runs for everybody, a person with nothing enrolled is refused at the
+desktop as at the sign-in page, because no code they could type would be
+right. That case used to sign in on the password alone, because the desktop
+asked only whether a factor was enrolled.
+
+`password_only_binds` does not apply here. It exists for protocols that cannot
+carry a code, and this one can.
+
+It carries a code and nothing else. A person whose only second factor is a
+security key or passkey is asked for a code here, and the only code that can be
+right is one of their recovery codes. An emailed or texted code cannot be used
+either: each is taken only for the sign-in it was sent for, and this exchange
+sends none (see [email codes](email-otp.md#one-live-code-never-a-queue-of-them)).
+Until November 2026 one sent for a browser's sign-in was taken here.
 
 ## Its own outpost kind
 
@@ -71,6 +85,15 @@ A token worth more should not be issued to something that needs less.
 A wrong password, an unknown user and a missing credential all return the same
 `authentication refused`. An outpost sits somewhere less trusted by definition,
 and distinguishing them there is a user-enumeration endpoint on a workstation.
+They take the same time too: each refusal spends one password hash, as a wrong
+password does. Until October 2026 the others were answered before any hashing,
+so the time of the reply told them apart.
+
+Each failure is charged to the account's sign-in budget — the one the sign-in
+page and LDAP draw on, 30 failures in 15 minutes — and the attempt past it is
+refused with `429` before any hashing; a right password costs nothing. Until
+October 2026 the desktop charged nothing, so an outpost token could spend its
+whole allowance of calls guessing one person's password.
 
 Every attempt, successful or not, is written to the audit trail with the outpost
 that made it.

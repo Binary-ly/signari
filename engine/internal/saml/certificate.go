@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	dsig "github.com/russellhaering/goxmldsig"
 )
 
 // certLifetime is deliberately long.
@@ -48,7 +50,7 @@ func EnsureCertificate(ctx context.Context, tx pgx.Tx, kid, issuer string, signe
 		return der, nil
 	}
 
-	der, notAfter, err := selfSign(issuer, signer)
+	der, notAfter, err := selfSign(issuer, kid, signer)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +83,12 @@ func EnsureCertificate(ctx context.Context, tx pgx.Tx, kid, issuer string, signe
 // established by the service provider holding a copy of this exact certificate,
 // not by a chain to a public root. A CA-issued certificate here would cost money
 // and add an expiry cliff without changing what is actually verified.
-func selfSign(issuer string, signer crypto.Signer) ([]byte, time.Time, error) {
+func selfSign(issuer, kid string, signer crypto.Signer) ([]byte, time.Time, error) {
+	return selfSignFor(issuer, "key "+kid, signer, x509.KeyUsageDigitalSignature)
+}
+
+// selfSignFor is selfSign for a key used as usage says, named by label.
+func selfSignFor(issuer, label string, signer crypto.Signer, usage x509.KeyUsage) ([]byte, time.Time, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("generating a serial number: %w", err)
@@ -99,14 +106,20 @@ func selfSign(issuer string, signer crypto.Signer) ([]byte, time.Time, error) {
 	notAfter := now.Add(certLifetime)
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: cn, Organization: []string{"Signari"}},
+		// The key id as well, so each key's certificate has a name of its own.
+		// Metadata publishes the active, next and passive keys together, and a
+		// provider that trusts all three and looks the signer up by name took
+		// whichever it had loaded last when the names were the same: xmlsec1
+		// verified in one order and found no key in another.
+		Subject: pkix.Name{CommonName: cn, Organization: []string{"Signari"},
+			OrganizationalUnit: []string{label}},
 		// Backdated by an hour so a service provider whose clock is behind ours
 		// does not reject a certificate that is technically not yet valid.
 		NotBefore: now.Add(-1 * time.Hour),
 		NotAfter:  notAfter,
-		// Signing only. Not a TLS certificate, and marking it as one would invite
-		// somebody to reuse it as one.
-		KeyUsage:              x509.KeyUsageDigitalSignature,
+		// Not a TLS certificate, and marking it as one would invite somebody to
+		// reuse it as one.
+		KeyUsage:              usage,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}
@@ -124,21 +137,33 @@ func CertificateB64(der []byte) string {
 	return base64.StdEncoding.EncodeToString(der)
 }
 
-// SignatureMethod picks the XML signature algorithm for a key.
+// The signature algorithms a service provider can be signed for, as
+// core.saml_providers.signature_alg names them.
 //
-// RSA-SHA256 is what SAML deployments interoperate on. ECDSA is specified and
-// is refused by a great deal of real service-provider software, so a deployment
-// choosing an EC key for SAML would produce assertions that verify correctly and
-// are rejected anyway -- which is a much worse failure to debug than being told
-// up front.
+// RSA-SHA256 is the default because it is what SAML deployments interoperate
+// on. ECDSA is specified and refused by a great deal of real service-provider
+// software, so signing with it for a provider that cannot verify it produces
+// assertions that are correct and rejected anyway. It is therefore chosen per
+// provider, by whoever knows the far end, and never by which key happens to be
+// active.
+const (
+	SignatureAlgRSASHA256   = "rsa-sha256"
+	SignatureAlgECDSASHA256 = "ecdsa-sha256"
+)
+
+// SignatureMethod names the XML signature algorithm for a key: RSA-SHA256 for
+// an RSA key, ECDSA-SHA256 for a P-256 one. It goes by the public half alone,
+// so a key whose private half never leaves a KMS or HSM is named the same way.
 func SignatureMethod(signer crypto.Signer) (string, error) {
-	switch signer.Public().(type) {
+	switch pub := signer.Public().(type) {
 	case *rsa.PublicKey:
-		return "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256", nil
+		return dsig.RSASHA256SignatureMethod, nil
 	case *ecdsa.PublicKey:
-		return "", fmt.Errorf("this instance's active key is ECDSA, which most SAML " +
-			"service providers cannot verify. Rotate in an RS256 key before enabling " +
-			"SAML: `signari keys rotate -alg RS256`")
+		if pub.Curve != elliptic.P256() {
+			return "", fmt.Errorf("an ECDSA key on %s cannot sign SAML here; ecdsa-sha256 "+
+				"is used with P-256 keys", pub.Curve.Params().Name)
+		}
+		return dsig.ECDSASHA256SignatureMethod, nil
 	default:
 		return "", fmt.Errorf("key type %T cannot sign SAML assertions", signer.Public())
 	}

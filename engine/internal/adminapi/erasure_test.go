@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"signari.dev/engine/internal/store/storetest"
 )
 
 // Erasure is the only operation in this API that nobody can undo, so the tests
@@ -37,6 +39,11 @@ func seedSubject(t *testing.T, s *Server, active bool) string {
 	if err != nil {
 		t.Fatalf("seeding a user: %v", err)
 	}
+	var org string
+	if err := s.db.QueryRow(ctx, `SELECT org_id::text FROM core.users WHERE id = $1::uuid`, subjectID).Scan(&org); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Forget(t, s.db, org)
 	// A subject key, as the MFA path would mint.
 	if _, err := s.db.Exec(ctx, `
 		INSERT INTO core.subject_keys (subject_id, wrapped_dek, wrap_key_ref)
@@ -101,9 +108,8 @@ func TestErasureRequiresTheSubjectIdentifierAsConfirmation(t *testing.T) {
 	}
 }
 
-// An active account is refused, because an erased subject can never hold a key
-// again — so an active account whose key is gone fails permanently rather than
-// working with less data.
+// An active account is refused unless the caller says to end it, because
+// erasing a person removes their account and signs them out everywhere.
 func TestErasingAnActiveAccountIsRefusedUnlessStated(t *testing.T) {
 	s, _ := newTestServer(t)
 	id := seedSubject(t, s, true)
@@ -116,22 +122,62 @@ func TestErasingAnActiveAccountIsRefusedUnlessStated(t *testing.T) {
 		t.Errorf("error = %v, want account_still_active", body["error"])
 	}
 
-	// Saying so proceeds, and deactivates in the same transaction.
+	// Signed in, to an application that has to be told.
+	ctx := context.Background()
+	sid, clientID := "er-sid-"+id, "er-rp-"+id
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.clients (client_id, org_id, display_name, client_type, backchannel_logout_uri)
+		SELECT $1, org_id, 'RP', 'public', 'https://rp.example.test/backchannel'
+		  FROM core.users WHERE id = $2::uuid`, clientID, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO core.sessions (sid, org_id, user_id, auth_time, not_after)
+		SELECT $1, org_id, id, now(), now() + interval '1 hour' FROM core.users WHERE id = $2::uuid`,
+		sid, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx,
+		`INSERT INTO core.session_clients (sid, client_id) VALUES ($1, $2)`, sid, clientID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = s.db.Exec(c, `DELETE FROM core.outbox WHERE topic = 'backchannel_logout' AND payload->>'sub' = $1`, id)
+		_, _ = s.db.Exec(c, `DELETE FROM core.clients WHERE client_id = $1`, clientID)
+	})
+
+	// Saying so proceeds, and ends the account in the same transaction: since
+	// 3.37 an erasure removes it, where it used to leave it deactivated with the
+	// person's address and names in it.
 	code, body = erase(t, s, id, `{"confirm_subject_id":"`+id+`","deactivate":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("erasing with deactivate gave %d (%v)", code, body)
 	}
-	if body["deactivated"] != true {
-		t.Errorf("deactivated = %v, want true", body["deactivated"])
+	if body["deactivated"] != true || body["account_deleted"] != true {
+		t.Errorf("deactivated = %v, account_deleted = %v, want both true", body["deactivated"], body["account_deleted"])
 	}
 
-	var status string
+	var accounts int
 	if err := s.db.QueryRow(context.Background(),
-		`SELECT status FROM core.users WHERE id = $1::uuid`, id).Scan(&status); err != nil {
+		`SELECT count(*) FROM core.users WHERE id = $1::uuid`, id).Scan(&accounts); err != nil {
 		t.Fatal(err)
 	}
-	if status != "deactivated" {
-		t.Errorf("account status = %q after erasure, want deactivated", status)
+	if accounts != 0 {
+		t.Errorf("the account survived its erasure")
+	}
+	// And signed out, everywhere it had reached.
+	var live, notices int
+	if err := s.db.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM core.sessions WHERE sid = $1 AND revoked_at IS NULL),
+		       (SELECT count(*) FROM core.outbox WHERE topic = 'backchannel_logout'
+		           AND payload->>'sub' = $2 AND payload->>'client_id' = $3)`,
+		sid, id, clientID).Scan(&live, &notices); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 || notices != 1 {
+		t.Errorf("after erasing with deactivate: %d live sessions and %d logout notices, want 0 and 1",
+			live, notices)
 	}
 }
 

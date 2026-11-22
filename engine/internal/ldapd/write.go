@@ -43,6 +43,14 @@ type Writer interface {
 	Rename(ctx context.Context, actor, from, to string) error
 }
 
+// RefusalRecorder is implemented by a Writer that records a write refused
+// because the bound account is not in the write group (3.33). Optional, so a
+// Writer that cannot record does not have to pretend to. actor is the bound
+// account's username, operation one of add, modify, delete, modify_dn.
+type RefusalRecorder interface {
+	Refused(ctx context.Context, actor, operation string)
+}
+
 // Errors a Writer returns, mapped to result codes by the handlers.
 var (
 	ErrEntryExists = errors.New("entry already exists")
@@ -70,16 +78,45 @@ func (s *Server) writesConfigured() bool {
 	return s.writer != nil && s.cfg.WriteGroup != ""
 }
 
-// mayWrite reports whether the bound identity is permitted to change anything.
-func (s *Server) mayWrite(sess *session) bool {
+// mayWrite reports whether the bound identity is permitted to change anything,
+// as the directory holds that identity now.
+func (s *Server) mayWrite(ctx context.Context, sess *session) bool {
 	if !s.writesConfigured() {
 		return false
 	}
+	id, _ := s.currentIdentity(ctx, sess)
+	return inGroup(id, s.cfg.WriteGroup)
+}
+
+// currentIdentity is the bound person as the directory holds them now, or nil
+// when the connection is not bound or they are no longer active.
+//
+// Read for every operation that depends on who they are, never from the
+// identity captured at bind (ADR-007). A connection is held open for as long as
+// the client likes, and deciding from the bind meant someone removed from the
+// search or write group, or deactivated, kept listing or rewriting the
+// directory until they chose to reconnect.
+//
+// Active is checked here as well as by the Authenticator, whose Lookup is
+// not required to leave inactive people out. A lookup error is returned for a
+// caller that reports it; one deciding permission treats it as none.
+func (s *Server) currentIdentity(ctx context.Context, sess *session) (*Identity, error) {
 	if !sess.bound || sess.identity == nil {
+		return nil, nil
+	}
+	id, err := s.auth.Lookup(ctx, sess.identity.Username)
+	if err != nil || id == nil || !id.Active {
+		return nil, err
+	}
+	return id, nil
+}
+
+func inGroup(id *Identity, group string) bool {
+	if id == nil || group == "" {
 		return false
 	}
-	for _, g := range sess.identity.Groups {
-		if g == s.cfg.WriteGroup {
+	for _, g := range id.Groups {
+		if g == group {
 			return true
 		}
 	}
@@ -93,16 +130,27 @@ func (s *Server) mayWrite(sess *session) bool {
 // administrator to completely different places, and neither tells an attacker
 // anything they could not learn by trying with any account: whether the server
 // has writes on at all is a property of the deployment, not of a credential.
-func (s *Server) refuseWrite(c net.Conn, messageID int64, respTag ber.Tag, sess *session) bool {
+func (s *Server) refuseWrite(ctx context.Context, c net.Conn, messageID int64, respTag ber.Tag, sess *session) bool {
 	if !s.writesConfigured() {
 		s.log.Info("ldap write refused: this directory is read-only",
-			"remote", c.RemoteAddr().String(), "bound_dn", sess.dn)
+			"remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultUnwillingToPerform, "", "this directory is read-only")))
 	}
+	// Without the bound DN, which is the person's username; the audit trail
+	// records who, by subject, when the writer can.
 	s.log.Warn("ldap write refused: the bound identity is not in the write group",
-		"remote", c.RemoteAddr().String(), "bound_dn", sess.dn,
-		"write_group", s.cfg.WriteGroup)
+		"remote", c.RemoteAddr().String(), "write_group", s.cfg.WriteGroup)
+	if rec, ok := s.writer.(RefusalRecorder); ok {
+		actor := ""
+		if sess.identity != nil {
+			actor = sess.identity.Username
+		}
+		rec.Refused(ctx, actor, map[ber.Tag]string{
+			appAddRequest + 1: "add", appModifyRequest + 1: "modify",
+			appDelRequest + 1: "delete", appModifyDNRequest + 1: "modify_dn",
+		}[respTag])
+	}
 	// insufficientAccessRights(50), not unwillingToPerform. §4.7's own vocabulary
 	// distinguishes "the server will not" from "you may not", and an
 	// administrator whose service account silently cannot write needs the second.
@@ -158,8 +206,8 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appAddRequest + 1
-	if !s.mayWrite(sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+	if !s.mayWrite(ctx, sess) {
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	req, err := decodeAdd(op)
 	if err != nil {
@@ -231,8 +279,8 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Create(ctx, sess.identity.Username, e); {
 	case err == nil:
-		s.log.Info("ldap add", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		// Who and to whom are in the audit trail, by subject.
+		s.log.Info("ldap add", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrEntryExists):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -241,7 +289,7 @@ func (s *Server) handleAdd(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap add", "err", err, "uid", username)
+		s.log.Error("ldap add", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be added")))
 	}
@@ -288,8 +336,8 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appModifyRequest + 1
-	if !s.mayWrite(sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+	if !s.mayWrite(ctx, sess) {
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	dn, changes, err := decodeModify(op)
 	if err != nil {
@@ -324,8 +372,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Update(ctx, sess.identity.Username, username, update); {
 	case err == nil:
-		s.log.Info("ldap modify", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap modify", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrNoSuchEntry):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -334,7 +381,7 @@ func (s *Server) handleModify(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap modify", "err", err, "uid", username)
+		s.log.Error("ldap modify", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be modified")))
 	}
@@ -346,8 +393,8 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appDelRequest + 1
-	if !s.mayWrite(sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+	if !s.mayWrite(ctx, sess) {
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	// DelRequest ::= [APPLICATION 10] LDAPDN -- the DN is the whole request, not
 	// a sequence, so it is read from the packet's own data.
@@ -369,8 +416,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Remove(ctx, sess.identity.Username, username); {
 	case err == nil:
-		s.log.Warn("ldap delete", "uid", username, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Warn("ldap delete", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrNoSuchEntry):
 		return s.write(c, newMessage(messageID, newResult(respTag,
@@ -379,7 +425,7 @@ func (s *Server) handleDelete(ctx context.Context, c net.Conn, sess *session,
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultConstraintViolation, "", err.Error())))
 	default:
-		s.log.Error("ldap delete", "err", err, "uid", username)
+		s.log.Error("ldap delete", "err", err)
 		return s.write(c, newMessage(messageID, newResult(respTag,
 			resultOther, "", "the entry could not be deleted")))
 	}
@@ -426,8 +472,8 @@ func (s *Server) handleModifyDN(ctx context.Context, c net.Conn, sess *session,
 	messageID int64, op *ber.Packet) bool {
 
 	const respTag = appModifyDNRequest + 1
-	if !s.mayWrite(sess) {
-		return s.refuseWrite(c, messageID, respTag, sess)
+	if !s.mayWrite(ctx, sess) {
+		return s.refuseWrite(ctx, c, messageID, respTag, sess)
 	}
 	req, err := decodeModifyDN(op)
 	if err != nil {
@@ -492,8 +538,7 @@ func (s *Server) handleModifyDN(ctx context.Context, c net.Conn, sess *session,
 
 	switch err := s.writer.Rename(ctx, sess.identity.Username, from, to); {
 	case err == nil:
-		s.log.Info("ldap modify dn", "from", from, "to", to, "by", sess.dn,
-			"remote", c.RemoteAddr().String())
+		s.log.Info("ldap modify dn", "remote", c.RemoteAddr().String())
 		return s.write(c, newMessage(messageID, newResult(respTag, resultSuccess, "", "")))
 	case errors.Is(err, ErrEntryExists):
 		// §4.9: "If there was already an entry with that name, the operation
@@ -535,7 +580,7 @@ func (s *Server) writeDNError(c net.Conn, messageID int64, respTag ber.Tag,
 	if code == resultNoSuchObject {
 		matched = s.cfg.BaseDN
 	}
-	s.log.Info("ldap write with an unusable DN", "dn", dn, "err", cause,
+	s.log.Info("ldap write with an unusable DN", "err", cause,
 		"remote", c.RemoteAddr().String())
 	return s.write(c, newMessage(messageID, newResult(respTag, code, matched,
 		cause.Error())))

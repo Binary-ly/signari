@@ -41,6 +41,8 @@ type DeviceAuthorization struct {
 	SID       string
 	Interval  int
 	ExpiresAt time.Time
+	// RequestedACR is a CIBA request's acr_values, which approval is held to.
+	RequestedACR []string
 }
 
 // CreateDeviceAuthorization records a new request and returns its id.
@@ -138,7 +140,66 @@ var ErrDeviceCodeWrongClient = errors.New("device code belongs to another client
 // that -- the client, user and scope are the same either way -- but it is grant
 // confusion, and the fix is one WHERE clause rather than an argument about
 // whether it matters.
+//
+// Every answer but an approval is one statement (E.24): a device waiting on a person polls
+// every few seconds for minutes, and each poll was a transaction of four round trips. The
+// statement asks in the order the transaction did (whose code, then expiry and redemption,
+// then the interval, then the status), moves nothing for the first two, and for an approval
+// moves nothing either, which goes the whole way in a transaction as it always did.
 func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
+	clientID, flow string) (*DeviceAuthorization, error) {
+	var outcome string
+	switch err := db.QueryRow(ctx, pollStatement, deviceHash, flow, clientID).Scan(&outcome); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, ErrDeviceCodeUnknown
+	case err != nil:
+		return nil, err
+	}
+	switch outcome {
+	case "wrong_client":
+		return nil, ErrDeviceCodeWrongClient
+	case "unknown":
+		return nil, ErrDeviceCodeUnknown
+	case "slow_down":
+		return nil, ErrDeviceCodeSlowDown
+	case "pending":
+		return nil, ErrDeviceCodePending
+	case "denied":
+		return nil, ErrDeviceCodeDenied
+	}
+	return redeemDeviceCode(ctx, db, deviceHash, clientID, flow)
+}
+
+// pollStatement is a poll's verdict, and for a poll that is answered without tokens, its
+// record: when it came, and the interval grown by five seconds when it came too soon
+// (RFC 8628 §3.5). A statement modifying in WITH runs once whether or not the query reads it.
+const pollStatement = `
+	WITH cur AS (
+		SELECT id, client_id, status, interval_s, expires_at, last_polled_at, redeemed_at
+		  FROM core.device_authorizations
+		 WHERE device_code_hash = $1 AND flow = $2
+		   FOR UPDATE),
+	verdict AS (
+		SELECT id, CASE
+		         WHEN client_id <> $3 THEN 'wrong_client'
+		         WHEN now() > expires_at OR redeemed_at IS NOT NULL THEN 'unknown'
+		         WHEN last_polled_at IS NOT NULL
+		              AND now() - last_polled_at < make_interval(secs => interval_s::double precision) THEN 'slow_down'
+		         ELSE status
+		       END AS outcome
+		  FROM cur),
+	polled AS (
+		UPDATE core.device_authorizations d
+		   SET last_polled_at = now(),
+		       interval_s = d.interval_s + CASE WHEN v.outcome = 'slow_down' THEN 5 ELSE 0 END
+		  FROM verdict v
+		 WHERE d.id = v.id AND v.outcome IN ('slow_down', 'pending', 'denied'))
+	SELECT outcome FROM verdict`
+
+// redeemDeviceCode is a poll the statement found approved, the whole way, in a transaction:
+// every check again under the row's lock, the session behind the approval, and the code
+// marked redeemed in the transaction that hands it over.
+func redeemDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
 	clientID, flow string) (*DeviceAuthorization, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -247,12 +308,12 @@ func PollDeviceCode(ctx context.Context, db *pgxpool.Pool, deviceHash []byte,
 
 // PurgeExpiredDeviceCodes removes dead records. Called by the janitor.
 //
-// Takes a transaction rather than the pool so it joins the janitor's single
-// advisory-locked pass, like every other sweep.
-func PurgeExpiredDeviceCodes(ctx context.Context, tx pgx.Tx) (int64, error) {
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM core.device_authorizations
-		WHERE expires_at < now() - interval '1 hour'`)
+// Takes a transaction rather than the pool so it runs under the janitor's
+// advisory lock, like every other sweep.
+func PurgeExpiredDeviceCodes(ctx context.Context, tx pgx.Tx, limit int) (int64, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.device_authorizations WHERE ctid = ANY(ARRAY(
+		SELECT ctid FROM core.device_authorizations WHERE expires_at < now() - interval '1 hour'
+		LIMIT $1 FOR UPDATE SKIP LOCKED))`, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -131,13 +131,20 @@ func Unmarshal(doc []byte, v any) error {
 	return nil
 }
 
-// scanForUnsafeConstructs walks the token stream and refuses comments and
-// document type declarations.
+// scanForUnsafeConstructs walks the token stream and refuses comments inside the
+// document element and document type declarations.
+//
+// A comment before or after the document element is allowed: it is in no
+// element's text, so no parser can join it into a value, and no signature covers
+// it (a reference names an element, and URI="" is the document without its
+// comments). Shibboleth's metadata generator opens every document with one, so
+// refusing it refused the most common service provider's own metadata.
 func scanForUnsafeConstructs(doc []byte) error {
 	dec := xml.NewDecoder(bytes.NewReader(doc))
 	dec.Entity = nil
 	dec.Strict = true
 
+	depth := 0
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -147,7 +154,14 @@ func scanForUnsafeConstructs(doc []byte) error {
 			return fmt.Errorf("SAML document did not parse: %w", err)
 		}
 		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+		case xml.EndElement:
+			depth--
 		case xml.Comment:
+			if depth == 0 {
+				continue
+			}
 			// The comment-truncation class. See the package comment.
 			return fmt.Errorf("SAML document contains an XML comment, which is refused: " +
 				"canonicalisation drops comments before signing while parsers keep the " +

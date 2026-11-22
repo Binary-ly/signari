@@ -66,9 +66,27 @@ export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
 cd engine
 go build -o signari ./cmd/signari
 ./signari migrate all                      # roles, schemas, tables, policies
-./signari instance create -issuer http://localhost:8080
+./signari bootstrap -issuer http://localhost:8080 -email you@example.com
 ./signari serve -addr 127.0.0.1:8080
 ```
+
+`bootstrap` prints a one-time link. Open it to set your password, and you have a
+deployment with an organisation and somebody in it, with no SQL.
+
+Or with Docker, the engine, its database and an application to sign in to:
+
+```sh
+cd deploy
+export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
+  SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
+docker compose --profile first-run --profile demo up -d
+docker compose logs bootstrap     # the one-time link
+```
+
+Open the link, set a password, and sign in at `http://localhost:8097/login`. The same
+profile runs the Express, Next.js, Django, Spring Boot and Laravel quickstarts on ports
+8091 to 8095; each guide's "In compose" section says which. The certificate under
+`deploy/tls` is for development and signed by a CA nobody else trusts.
 
 `SIGNARI_ROOT_KEY` seals every stored secret and is not kept in the database it
 protects. Lose it and the sealed data — signing keys, bind passwords, RADIUS
@@ -93,6 +111,12 @@ The three you will reach for first:
 
 Those three cannot rot: the engine's `internal/docsync` package fails the build
 when a command or a setting exists in code and not on its page.
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says what a
+pull request needs and how a first contribution signs the Contributor License
+Agreement; vulnerabilities go privately, as [SECURITY.md](SECURITY.md) explains.
 
 ## Licence
 

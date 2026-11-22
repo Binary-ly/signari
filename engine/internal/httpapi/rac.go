@@ -2,9 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +62,34 @@ import (
 // racHandshakeTimeout bounds the guacd handshake.
 const racHandshakeTimeout = 10 * time.Second
 
+// guacdTLSFromEnv reads how guacd is reached. A value that does not work is
+// refused here, because the fallback would be credentials in the clear.
+func guacdTLSFromEnv(addr string) (*tls.Config, error) {
+	ca := os.Getenv("SIGNARI_GUACD_CA")
+	if os.Getenv("SIGNARI_GUACD_TLS") != "1" {
+		if ca != "" {
+			return nil, errors.New("SIGNARI_GUACD_CA is set and SIGNARI_GUACD_TLS is not 1, so it would be ignored")
+		}
+		return nil, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("SIGNARI_GUACD_ADDR %q needs a host and port for TLS: %w", addr, err)
+	}
+	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
+	if ca != "" {
+		pem, err := os.ReadFile(ca)
+		if err != nil {
+			return nil, fmt.Errorf("reading SIGNARI_GUACD_CA: %w", err)
+		}
+		config.RootCAs = x509.NewCertPool()
+		if !config.RootCAs.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("SIGNARI_GUACD_CA %s holds no certificate", ca)
+		}
+	}
+	return config, nil
+}
+
 // handleRACConnect proxies a browser to guacd.
 func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -74,7 +107,7 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	// effect somewhere: a policy evaluation, an audit row, a TCP connection to a
 	// machine somebody cares about.
 	if !sameOriginRequest(r) {
-		s.log.Info("remote access refused: cross-origin upgrade",
+		s.log.InfoContext(ctx, "remote access refused: cross-origin upgrade",
 			"origin", r.Header.Get("Origin"), "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusForbidden, "access_denied",
 			"a remote access session may only be opened from this site")
@@ -98,7 +131,7 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	mfa, amr := sessionFactors(ctx, s.db, sid)
 	if pd := s.checkAccessPolicy(ctx, r, orgID, "rac:"+slug, userID,
 		"remote_access", mfa, amr); pd != nil {
-		s.log.Info("remote access refused by policy", "connection", slug,
+		s.log.InfoContext(ctx, "remote access refused by policy", "connection", slug,
 			"rule", pd.Rule, "correlation_id", correlationID(ctx))
 		writeError(w, http.StatusForbidden, "access_denied", pd.Message)
 		return
@@ -107,7 +140,7 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 	// And the connection's own group requirement.
 	allowed, err := store.MayUse(ctx, s.db, conn, userID)
 	if err != nil {
-		s.log.Error("checking remote access group", "err", err)
+		s.log.ErrorContext(ctx, "checking remote access group", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -124,7 +157,7 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 
 	target, err := conn.Resolve(s.cfg.Root, width, height, dpi)
 	if err != nil {
-		s.log.Error("resolving a remote connection", "err", err, "connection", slug)
+		s.log.ErrorContext(ctx, "resolving a remote connection", "err", err, "connection", slug)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}
@@ -140,20 +173,42 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	guac, err := rac.Dial(s.guacdAddr, target, racHandshakeTimeout)
+	// A place first, so a machine with room for two is never asked for a third.
+	// A failure to record is a refusal when there is a cap to keep, and when
+	// there is none it costs only the record, as it always did.
+	sessionID, err := store.ReserveRACSession(ctx, s.db, conn, userID)
+	switch {
+	case errors.Is(err, store.ErrRACFull):
+		writeError(w, http.StatusTooManyRequests, "connection_full", err.Error())
+		return
+	case err != nil && conn.MaxConnections > 0:
+		s.log.ErrorContext(ctx, "reserving a remote session", "err", err)
+		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
+		return
+	case err != nil:
+		s.log.ErrorContext(ctx, "recording a remote session", "err", err)
+	}
+	guac, err := rac.DialTLS(s.guacdAddr, target, racHandshakeTimeout, s.guacdTLS)
 	if err != nil {
-		s.log.Error("connecting to guacd", "err", err, "connection", slug)
+		s.log.ErrorContext(ctx, "connecting to guacd", "err", err, "connection", slug)
+		if sessionID != "" {
+			_ = store.EndRACSession(ctx, s.db, sessionID, "the remote host could not be reached")
+		}
 		writeError(w, http.StatusBadGateway, "upstream_error",
 			"the remote host could not be reached")
 		return
 	}
 	defer func() { _ = guac.Close() }()
-
-	sessionID, err := store.StartRACSession(ctx, s.db, conn, userID, guac.ID)
-	if err != nil {
-		s.log.Error("recording a remote session", "err", err)
+	if sessionID != "" {
+		if err := store.NoteRACSession(ctx, s.db, sessionID, guac.ID); err != nil {
+			s.log.ErrorContext(ctx, "recording a remote session", "err", err)
+		}
 	}
+	started := time.Now()
 
+	// The tunnel outlives the listener's request timeouts by design: the upgrade
+	// hijacks the connection, which clears them (see listener.go), and its
+	// lifetime is bounded instead by the re-checks below.
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{"guacamole"},
 		// nil means same-origin only: the library compares the Origin host to
@@ -167,16 +222,55 @@ func (s *Server) handleRACConnect(w http.ResponseWriter, r *http.Request) {
 		OriginPatterns: nil,
 	})
 	if err != nil {
-		s.log.Info("websocket upgrade refused", "err", err)
-		_ = store.EndRACSession(ctx, s.db, sessionID, "upgrade failed")
+		s.log.InfoContext(ctx, "websocket upgrade refused", "err", err)
+		if sessionID != "" {
+			_ = store.EndRACSession(ctx, s.db, sessionID, "upgrade failed")
+		}
 		return
 	}
 
-	reason := rac.Proxy(ctx, wsPeer{ws}, guac)
+	// Asked again while the channel is open: the session behind it, the access
+	// policy and the connection's group, the three things that admitted the
+	// person a moment ago. Each can stop being true -- a sign-out, a revoked
+	// session, a deactivated account (which revokes every session), a new deny
+	// rule, a removed membership -- and none of them used to reach a channel
+	// already open. A check that cannot be made ends the channel rather than
+	// assuming it would have passed.
+	recheck := func(ctx context.Context) (bool, string) {
+		if conn.MaxDuration > 0 && time.Since(started) >= conn.MaxDuration {
+			return false, "the connection's maximum duration passed"
+		}
+		if sessionID != "" {
+			if err := store.TouchRACSession(ctx, s.db, sessionID); err != nil {
+				s.log.ErrorContext(ctx, "noting a remote session", "err", err)
+			}
+		}
+		live, err := store.SessionLive(ctx, s.db, sid)
+		if err != nil {
+			s.log.ErrorContext(ctx, "re-checking a remote session", "err", err)
+			return false, "the session could not be re-checked"
+		}
+		if !live {
+			return false, "the sign-in session ended"
+		}
+		mfa, amr := sessionFactors(ctx, s.db, sid)
+		if pd := s.checkAccessPolicy(ctx, r, orgID, "rac:"+slug, userID,
+			"remote_access", mfa, amr); pd != nil {
+			return false, "refused by the access policy: " + pd.Rule
+		}
+		if still, err := store.MayUse(ctx, s.db, conn, userID); err != nil {
+			s.log.ErrorContext(ctx, "re-checking remote access group", "err", err)
+			return false, "the session could not be re-checked"
+		} else if !still {
+			return false, "no longer in the connection's group"
+		}
+		return true, ""
+	}
+	reason := rac.Proxy(ctx, wsPeer{ws}, guac, recheck)
 
 	if sessionID != "" {
 		if err := store.EndRACSession(context.Background(), s.db, sessionID, reason); err != nil {
-			s.log.Error("closing the remote session record", "err", err)
+			s.log.ErrorContext(ctx, "closing the remote session record", "err", err)
 		}
 	}
 	s.auditDetached(context.Background(), audit.Event{
@@ -228,7 +322,7 @@ func (s *Server) handleRACList(w http.ResponseWriter, r *http.Request) {
 	}
 	conns, err := store.ListRACConnections(ctx, s.db, orgID, userID)
 	if err != nil {
-		s.log.Error("listing remote connections", "err", err)
+		s.log.ErrorContext(ctx, "listing remote connections", "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "unavailable")
 		return
 	}

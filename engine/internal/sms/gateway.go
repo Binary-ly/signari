@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"signari.dev/engine/internal/safedial"
 )
 
 // Gateways.
@@ -33,7 +36,16 @@ type HTTPGateway struct {
 	Timeout time.Duration
 }
 
-func (g *HTTPGateway) client() *http.Client {
+// loopback is what a gateway URL naming this host may reach. Configuration
+// already permits a plaintext webhook on loopback, a sidecar beside the
+// engine; the address comes from the operator's own environment, and nothing
+// a request carries can move it.
+var loopback = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+
+// client is safedial's, so a gateway that redirects into the private network,
+// or a name that later resolves into it, is refused at dial time. A gateway on
+// a private address is named in SIGNARI_OUTBOUND_ALLOW_PRIVATE.
+func (g *HTTPGateway) client(dest string) *http.Client {
 	if g.Client != nil {
 		return g.Client
 	}
@@ -41,7 +53,10 @@ func (g *HTTPGateway) client() *http.Client {
 	if t <= 0 {
 		t = 10 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	if u, err := url.Parse(dest); err == nil && isLoopbackHost(u.Hostname()) {
+		return safedial.ClientAllowing(t, loopback...)
+	}
+	return safedial.Client(t)
 }
 
 // TwilioSender speaks the Twilio Programmable Messaging API.
@@ -86,7 +101,7 @@ func (t *TwilioSender) Send(ctx context.Context, m Message) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(t.AccountSID, t.AuthToken)
 
-	resp, err := t.client().Do(req)
+	resp, err := t.client(endpoint).Do(req)
 	if err != nil {
 		return fmt.Errorf("sending via twilio: %w", err)
 	}
@@ -147,7 +162,7 @@ func (w *WebhookSender) Send(ctx context.Context, m Message) error {
 		req.Header.Set("Authorization", w.AuthHeader)
 	}
 
-	resp, err := w.client().Do(req)
+	resp, err := w.client(w.URL).Do(req)
 	if err != nil {
 		return fmt.Errorf("posting to the SMS webhook: %w", err)
 	}
@@ -211,10 +226,35 @@ func NewFromEnv(getenv func(string) string) (Sender, error) {
 		}
 		return w, nil
 
+	case "verify-webhook":
+		// No sender: the service sends only the codes it makes, so account
+		// notices go by email alone. NewVerifierFromEnv builds the service.
+		return nil, nil
+
 	default:
-		return nil, fmt.Errorf("SIGNARI_SMS_GATEWAY must be twilio or webhook (got %q)",
+		return nil, fmt.Errorf("SIGNARI_SMS_GATEWAY must be twilio, webhook or verify-webhook (got %q)",
 			getenv("SIGNARI_SMS_GATEWAY"))
 	}
+}
+
+// NewVerifierFromEnv builds the delegated verification service when
+// SIGNARI_SMS_GATEWAY is verify-webhook, and nothing otherwise.
+func NewVerifierFromEnv(getenv func(string) string) (Verifier, error) {
+	if strings.ToLower(strings.TrimSpace(getenv("SIGNARI_SMS_GATEWAY"))) != "verify-webhook" {
+		return nil, nil
+	}
+	v := &VerifyWebhook{URL: getenv("SIGNARI_SMS_VERIFY_URL"), AuthHeader: getenv("SIGNARI_SMS_VERIFY_AUTH")}
+	u, err := url.Parse(v.URL)
+	switch {
+	case v.URL == "":
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL is required for the verify-webhook gateway")
+	case err != nil || u.Host == "":
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL is not a URL: %q", v.URL)
+	case u.Scheme != "https" && !isLoopbackHost(u.Hostname()):
+		// A check carries the code the person typed, live until it is spent.
+		return nil, fmt.Errorf("SIGNARI_SMS_VERIFY_URL must be https: a check carries a live one-time code")
+	}
+	return v, nil
 }
 
 func isLoopbackHost(h string) bool {

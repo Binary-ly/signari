@@ -4,11 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/audit"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/safedial"
 )
@@ -76,16 +82,13 @@ func CreateSubscription(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
 	if err := safedial.CheckURL(url); err != nil {
 		return sub, err
 	}
-
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
+	if err := CheckEventTypes(eventTypes); err != nil {
 		return sub, err
 	}
-	secret := "whsec_" + base64.RawURLEncoding.EncodeToString(raw)
 
-	sealed, err := root.Seal([]byte(secret), "event-subscription")
+	secret, sealed, err := newSubscriptionSecret(root)
 	if err != nil {
-		return sub, fmt.Errorf("sealing the signing secret: %w", err)
+		return sub, err
 	}
 	if eventTypes == nil {
 		eventTypes = []string{}
@@ -104,6 +107,220 @@ func CreateSubscription(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
 	return sub, nil
 }
 
+// ErrUnknownEventType is a name no recorded event carries, so a subscription to
+// it would receive nothing, ever, and look configured.
+var ErrUnknownEventType = errors.New("no event of that type is recorded")
+
+// CheckEventTypes refuses a name that is not in audit.EventTypes, suggesting
+// the one it was most likely meant to be.
+func CheckEventTypes(types []string) error {
+	for _, t := range types {
+		if slices.Contains(audit.InstanceEventTypes, t) {
+			return fmt.Errorf("%w for an organisation: %q concerns the instance and is delivered "+
+				"to no subscription; read it from the audit trail", ErrUnknownEventType, t)
+		}
+		if audit.IsEventType(t) {
+			continue
+		}
+		// A family, written "group.*". It must name one, or a typo in it would be
+		// a subscription that receives nothing and says so to nobody.
+		if family, ok := strings.CutSuffix(t, ".*"); ok {
+			if slices.ContainsFunc(audit.EventTypes, func(known string) bool {
+				return strings.HasPrefix(known, family+".") && !slices.Contains(audit.InstanceEventTypes, known)
+			}) {
+				continue
+			}
+			return fmt.Errorf("%w: no event is in the %q family; docs/events.md lists every type",
+				ErrUnknownEventType, family)
+		}
+		best, bestLen := "", 0
+		for _, known := range audit.EventTypes {
+			n := 0
+			for n < len(t) && n < len(known) && t[n] == known[n] {
+				n++
+			}
+			if n > bestLen {
+				best, bestLen = known, n
+			}
+		}
+		if strings.Contains(t[:bestLen], ".") {
+			return fmt.Errorf("%w: %q; did you mean %q? docs/events.md lists every type",
+				ErrUnknownEventType, t, best)
+		}
+		return fmt.Errorf("%w: %q; docs/events.md lists every type", ErrUnknownEventType, t)
+	}
+	return nil
+}
+
+func newSubscriptionSecret(root *keys.RootKey) (secret string, sealed []byte, err error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, err
+	}
+	secret = "whsec_" + base64.RawURLEncoding.EncodeToString(raw)
+	sealed, err = root.Seal([]byte(secret), sealContextSubscriptionSecret)
+	if err != nil {
+		return "", nil, fmt.Errorf("sealing the signing secret: %w", err)
+	}
+	return secret, sealed, nil
+}
+
+// RemoveSubscription deletes one by name, and with it its delivery history. A
+// delivery already queued is closed as delivered when the worker finds its
+// subscription gone (ClaimWebhooks).
+// SubscriptionStatus is one subscription as an operator sees it: never its
+// secret, and how its deliveries are going.
+type SubscriptionStatus struct {
+	ID, Name, URL  string
+	EventTypes     []string
+	Enabled        bool
+	DisabledReason string
+	Delivered      int
+	Outstanding    int
+}
+
+// OrgSubscriptions lists an organisation's subscriptions, oldest first.
+func OrgSubscriptions(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID string) ([]SubscriptionStatus, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.display_name, s.url, s.event_types, s.enabled, COALESCE(s.disabled_reason, ''),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NOT NULL),
+		       (SELECT count(*) FROM core.event_deliveries d
+		         WHERE d.subscription_id = s.id AND d.delivered_at IS NULL)
+		  FROM core.event_subscriptions s
+		 WHERE s.org_id = $1::uuid
+		 ORDER BY s.created_at, s.id`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SubscriptionStatus{}
+	for rows.Next() {
+		var s SubscriptionStatus
+		if err := rows.Scan(&s.ID, &s.Name, &s.URL, &s.EventTypes, &s.Enabled, &s.DisabledReason,
+			&s.Delivered, &s.Outstanding); err != nil {
+			return nil, err
+		}
+		if s.EventTypes == nil {
+			s.EventTypes = []string{}
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ErrSubscriptionUnknown is a subscription name the organisation does not
+// have; each change below answers it as subscriptionNamed, which says which.
+var ErrSubscriptionUnknown = errors.New("no such subscription")
+
+type subscriptionNamed struct{ name string }
+
+func (e subscriptionNamed) Error() string {
+	return fmt.Sprintf("no subscription named %q in this organisation", e.name)
+}
+
+func (e subscriptionNamed) Is(target error) bool { return target == ErrSubscriptionUnknown }
+
+func RemoveSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.event_subscriptions
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RotateSubscriptionSecret replaces a subscription's signing secret and returns
+// the new one, the one time it is shown. Deliveries signed from now on use it,
+// including retries of ones already queued: the secret is read at delivery.
+func RotateSubscriptionSecret(ctx context.Context, tx pgx.Tx, root *keys.RootKey,
+	orgID, name string) (string, error) {
+	secret, sealed, err := newSubscriptionSecret(root)
+	if err != nil {
+		return "", err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core.event_subscriptions SET secret_sealed = $3
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name, sealed)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", subscriptionNamed{name}
+	}
+	return secret, nil
+}
+
+// EnableSubscription switches one back on after DisableSubscription gave up on
+// it, clearing the reason. Events recorded while it was off are not replayed.
+func EnableSubscription(ctx context.Context, tx pgx.Tx, orgID, name string) error {
+	tag, err := tx.Exec(ctx, `UPDATE core.event_subscriptions
+		   SET enabled = true, disabled_at = NULL, disabled_reason = NULL
+		 WHERE org_id = $1::uuid AND display_name = $2`, orgID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return subscriptionNamed{name}
+	}
+	return nil
+}
+
+// TestEventType is what `signari events test` sends. Not an audited type, so no
+// subscription filter selects it: it goes to the one subscription named.
+const TestEventType = "signari.test"
+
+// SendTestEvent queues one signed delivery of TestEventType to a subscription,
+// through the outbox as every delivery goes, so it tests the path real events
+// take, including the worker.
+func SendTestEvent(ctx context.Context, tx pgx.Tx, orgID, name string) (string, error) {
+	var id, url string
+	if err := tx.QueryRow(ctx, `SELECT id::text, url FROM core.event_subscriptions
+		WHERE org_id = $1::uuid AND display_name = $2`, orgID, name).Scan(&id, &url); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", subscriptionNamed{name}
+		}
+		return "", err
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	env := EventEnvelope{Version: 1, ID: "ev_" + hex.EncodeToString(raw), Type: TestEventType,
+		OccurredAt: time.Now().UTC().Format(time.RFC3339), OrgID: orgID,
+		Detail: map[string]any{"subscription": name}}
+	return env.ID, queueDelivery(ctx, tx, id, url, env)
+}
+
+// queueDelivery writes one delivery and its outbox row, in the caller's
+// transaction.
+func queueDelivery(ctx context.Context, tx pgx.Tx, subscriptionID, url string, env EventEnvelope) error {
+	var deliveryID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.event_deliveries (subscription_id, org_id, event_type)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id`,
+		subscriptionID, env.OrgID, env.Type).Scan(&deliveryID); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(webhookJob{
+		SubscriptionID: subscriptionID, DeliveryID: deliveryID,
+		URL: url, OrgID: env.OrgID, Envelope: env,
+	})
+	if err != nil {
+		return err
+	}
+	var outboxID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO core.outbox (topic, payload) VALUES ($1, $2) RETURNING id`,
+		WebhookTopic, payload).Scan(&outboxID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE core.event_deliveries SET outbox_id = $2 WHERE id = $1`, deliveryID, outboxID)
+	return err
+}
+
 // PublishEvent fans an event out to every subscriber that wants it.
 //
 // Takes the transaction the event itself was written in. That is the whole point
@@ -114,10 +331,12 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, env EventEnvelope) (int, error
 		SELECT id::text, url
 		  FROM core.event_subscriptions
 		 WHERE org_id = $1::uuid AND enabled AND disabled_at IS NULL
-		   -- An empty list means every event. Matching is exact rather than by
-		   -- prefix: "login" must not quietly subscribe somebody to
-		   -- "login.failed" as well.
-		   AND (cardinality(event_types) = 0 OR $2 = ANY (event_types))`,
+		   -- An empty list means every event. Matching is exact unless a name
+		   -- asks otherwise: "login" must not quietly subscribe somebody to
+		   -- "login.failed" as well, and "login.*" says that it should.
+		   AND (cardinality(event_types) = 0 OR $2 = ANY (event_types)
+		        OR EXISTS (SELECT 1 FROM unnest(event_types) AS pattern
+		                    WHERE pattern LIKE '%.*' AND starts_with($2, left(pattern, -1))))`,
 		env.OrgID, env.Type)
 	if err != nil {
 		return 0, err
@@ -136,33 +355,26 @@ func PublishEvent(ctx context.Context, tx pgx.Tx, env EventEnvelope) (int, error
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	if len(targets) == 0 {
+		return 0, nil
+	}
 
+	// A savepoint, since a statement that fails ends the transaction it is in, and
+	// this transaction is somebody signing in: audit.Write says a delivery that
+	// cannot be queued does not stop what is being recorded, and without this it
+	// did, at the commit.
+	queued, err := tx.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = queued.Rollback(ctx) }()
 	for _, t := range targets {
-		var deliveryID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO core.event_deliveries (subscription_id, org_id, event_type)
-			VALUES ($1::uuid, $2::uuid, $3) RETURNING id`,
-			t.id, env.OrgID, env.Type).Scan(&deliveryID); err != nil {
+		if err := queueDelivery(ctx, queued, t.id, t.url, env); err != nil {
 			return 0, err
 		}
-		payload, err := json.Marshal(webhookJob{
-			SubscriptionID: t.id, DeliveryID: deliveryID,
-			URL: t.url, OrgID: env.OrgID, Envelope: env,
-		})
-		if err != nil {
-			return 0, err
-		}
-		var outboxID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO core.outbox (topic, payload) VALUES ($1, $2) RETURNING id`,
-			WebhookTopic, payload).Scan(&outboxID); err != nil {
-			return 0, err
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE core.event_deliveries SET outbox_id = $2 WHERE id = $1`,
-			deliveryID, outboxID); err != nil {
-			return 0, err
-		}
+	}
+	if err := queued.Commit(ctx); err != nil {
+		return 0, err
 	}
 	return len(targets), nil
 }
@@ -180,8 +392,10 @@ type PendingWebhook struct {
 	Body           []byte
 }
 
-// ClaimWebhooks takes a batch, locking them against other workers.
-func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int) (
+// ClaimWebhooks takes a batch, and hides what it took from other workers for the
+// lease: the locks go when the caller commits, which it must do before it makes
+// any network call.
+func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int, lease time.Duration) (
 	[]PendingWebhook, error) {
 
 	rows, err := tx.Query(ctx, `
@@ -221,6 +435,7 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 	}
 
 	out := make([]PendingWebhook, 0, len(found))
+	leased := make([]int64, 0, len(found))
 	for _, c := range found {
 		var sealed []byte
 		var enabled bool
@@ -249,7 +464,7 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 			}
 			continue
 		}
-		secret, err := root.Open(sealed, "event-subscription")
+		secret, err := root.Open(sealed, sealContextSubscriptionSecret)
 		if err != nil {
 			return nil, fmt.Errorf("unsealing a subscription secret: %w", err)
 		}
@@ -263,6 +478,13 @@ func ClaimWebhooks(ctx context.Context, tx pgx.Tx, root *keys.RootKey, limit int
 			URL: c.job.URL, OrgID: c.job.OrgID, Envelope: c.job.Envelope,
 			Secret: string(secret), Body: body,
 		})
+		leased = append(leased, c.id)
+	}
+	if len(leased) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE core.outbox SET next_attempt_at = now() + $2::interval WHERE id = ANY($1)`,
+			leased, lease.String()); err != nil {
+			return nil, fmt.Errorf("leasing event deliveries: %w", err)
+		}
 	}
 	return out, nil
 }

@@ -3,6 +3,8 @@ package saml
 import (
 	"compress/flate"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/beevik/etree"
+	dsig "github.com/russellhaering/goxmldsig"
 )
 
 // Single logout.
@@ -137,7 +140,7 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 	}
 
 	switch sigAlg {
-	case sigAlgRSASHA256:
+	case sigAlgRSASHA256, dsig.ECDSASHA256SignatureMethod:
 	case sigAlgRSASHA1:
 		// SHA-1 is refused rather than accepted-with-a-warning. Chosen-prefix
 		// collisions against SHA-1 are practical, and a warning nobody reads is
@@ -153,21 +156,49 @@ func VerifyRedirectSignature(rawQuery string, certPEM string, param string) erro
 		return err
 	}
 
-	cert, err := parseCertPEM(certPEM)
+	certs, err := ParseCertificates(certPEM)
 	if err != nil {
 		return err
 	}
-	pub, ok := cert.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("the registered certificate for this service provider is not RSA")
-	}
-
 	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil {
 		return fmt.Errorf("the signature is not valid base64: %w", err)
 	}
 	sum := sha256.Sum256([]byte(signed))
-	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig); err != nil {
+	// More than one during a rotation, and either may be the one in use.
+	for _, cert := range certs {
+		if err = verifyRedirectDigest(cert, sigAlg, sum[:], sig); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func verifyRedirectDigest(cert *x509.Certificate, sigAlg string, sum, sig []byte) error {
+	// The key must be the kind SigAlg names. An ECDSA signature is r||s, as
+	// SignRedirectQuery writes it (3.36); one from a P-256 sender was refused
+	// as "not RSA".
+	if sigAlg == dsig.ECDSASHA256SignatureMethod {
+		pub, err := p256Key(cert)
+		if err != nil {
+			return err
+		}
+		r, s, err := rawRS(sig)
+		if err != nil {
+			return err
+		}
+		if !ecdsa.Verify(pub, sum, r, s) {
+			return fmt.Errorf("the signature did not verify against the certificate " +
+				"registered for this service provider")
+		}
+		return nil
+	}
+	pub, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("the message is signed with rsa-sha256 and the certificate " +
+			"registered for this service provider is not RSA")
+	}
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum, sig); err != nil {
 		return fmt.Errorf("the signature did not verify against the certificate registered "+
 			"for this service provider: %w", err)
 	}
@@ -223,6 +254,29 @@ func parseCertPEM(certPEM string) (*x509.Certificate, error) {
 	return cert, nil
 }
 
+// ParseCertificates reads every certificate in a PEM text. A partner publishes
+// two while it rotates a key, and keeping both is what lets it switch whenever it
+// likes.
+func ParseCertificates(certPEM string) ([]*x509.Certificate, error) {
+	first, err := parseCertPEM(certPEM)
+	if err != nil {
+		return nil, err
+	}
+	certs := []*x509.Certificate{first}
+	_, rest := pem.Decode([]byte(certPEM))
+	for {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			return certs, nil
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("the registered certificate did not parse: %w", err)
+		}
+		certs = append(certs, cert)
+	}
+}
+
 // LogoutResponseInput builds our answer to a LogoutRequest.
 type LogoutResponseInput struct {
 	Issuer      string
@@ -230,6 +284,18 @@ type LogoutResponseInput struct {
 	InResponse  string
 	Status      string
 	Now         time.Time
+	// unsigned is set only by BuildUnsignedSOAPLogoutResponse.
+	unsigned bool
+}
+
+// BuildUnsignedSOAPLogoutResponse is a LogoutResponse with no signature, for one
+// answer alone: an upstream's SOAP logout to a source that holds no signing key. It
+// goes back on the connection the request came in on, over TLS to the address the
+// upstream chose, so nothing in between can alter it; and the logout has happened, so
+// an answer is owed. Every other LogoutResponse is signed (BuildLogoutResponse).
+func BuildUnsignedSOAPLogoutResponse(in LogoutResponseInput) (string, error) {
+	in.unsigned = true
+	return BuildLogoutResponse(in, nil, nil)
 }
 
 // BuildLogoutResponse renders a LogoutResponse.
@@ -266,6 +332,9 @@ func BuildLogoutResponse(in LogoutResponseInput, signer crypto.Signer, certDER [
 	resp.CreateElement("saml:Issuer").SetText(in.Issuer)
 	st := resp.CreateElement("samlp:Status")
 	st.CreateElement("samlp:StatusCode").CreateAttr("Value", status)
+	if in.unsigned {
+		return doc.WriteToString()
+	}
 
 	signed, err := signElement(resp, signer, certDER)
 	if err != nil {
@@ -384,21 +453,25 @@ func EncodeRedirect(doc string) (string, error) {
 // This is the mirror of VerifyRedirectSignature, and the two are tested against
 // each other precisely because a shared misunderstanding of the encoding would
 // otherwise stay invisible.
+//
+// Through the key's crypto.Signer (ADR-009), and with the algorithm the key
+// is: an ECDSA signature goes out as r||s, the encoding XML Signature gives the
+// same algorithm identifier (see xmlSigner).
 func SignRedirectQuery(param, encodedDoc, relayState string, signer crypto.Signer) (string, error) {
-	key, ok := signer.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("SAML redirect signing needs an in-process RSA key, got %T", signer)
+	sigAlg, err := SignatureMethod(signer)
+	if err != nil {
+		return "", err
 	}
 
 	parts := []string{param + "=" + url.QueryEscape(encodedDoc)}
 	if relayState != "" {
 		parts = append(parts, "RelayState="+url.QueryEscape(relayState))
 	}
-	parts = append(parts, "SigAlg="+url.QueryEscape(sigAlgRSASHA256))
+	parts = append(parts, "SigAlg="+url.QueryEscape(sigAlg))
 	signed := strings.Join(parts, "&")
 
 	sum := sha256.Sum256([]byte(signed))
-	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, sum[:])
+	sig, err := xmlSigner(signer).Sign(rand.Reader, sum[:], crypto.SHA256)
 	if err != nil {
 		return "", fmt.Errorf("signing the redirect query: %w", err)
 	}

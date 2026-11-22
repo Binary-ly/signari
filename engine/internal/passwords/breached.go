@@ -3,6 +3,7 @@ package passwords
 import (
 	"bufio"
 	"context"
+	"crypto/fips140"
 	"crypto/sha1" // #nosec G505 -- required by the HIBP range API, not a security claim
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"signari.dev/engine/internal/tracing"
 )
 
 // Refusing passwords that are already in a breach corpus.
@@ -80,7 +83,7 @@ func (b *BreachChecker) client() *http.Client {
 		// waiting on a form should not wait on somebody else's outage.
 		t = 3 * time.Second
 	}
-	return &http.Client{Timeout: t}
+	return &http.Client{Timeout: t, Transport: &tracing.Transport{Base: http.DefaultTransport}}
 }
 
 // loadLocal reads the offline corpus once.
@@ -124,6 +127,12 @@ func (b *BreachChecker) loadLocal() {
 func (b *BreachChecker) Breached(ctx context.Context, password string) (bool, error) {
 	if password == "" {
 		return false, nil
+	}
+	// The corpus is keyed by SHA-1, which fips140=only refuses with a panic
+	// (3.11): unavailable, which the caller already handles, and serve
+	// refuses to start with the check configured under that mode.
+	if fips140.Enforced() {
+		return false, fmt.Errorf("%w: it is keyed by SHA-1, which FIPS 140-only mode refuses", ErrUnavailable)
 	}
 	sum := sha1.Sum([]byte(password)) // #nosec G401 -- see the file comment
 	digest := strings.ToUpper(hex.EncodeToString(sum[:]))

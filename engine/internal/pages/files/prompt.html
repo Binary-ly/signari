@@ -6,6 +6,7 @@
 <form method="POST" action="/login/prompt">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <input type="hidden" name="prompt" value="{{.Slug}}">
+<input type="hidden" name="version" value="{{.Version}}">
 {{range .Fields}}
   {{if eq .Type "notice"}}
     <div class="notice">{{.Label}}</div>

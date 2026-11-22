@@ -2,47 +2,229 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"signari.dev/engine/internal/audit"
+	"signari.dev/engine/internal/oidc"
+	"signari.dev/engine/internal/store"
 )
 
 // externalProvider is one sign-in button on the login page.
 type externalProvider struct {
 	Slug string
 	Name string
+	// Href is where the button goes: the start route for the provider's kind,
+	// carrying the parked request so the person comes back to it.
+	Href string
 }
 
-// externalProviders lists the enabled external providers.
+// loginOrg is the organisation a sign-in page belongs to, when that can be
+// known: the organisation of the client whose authorization request is parked,
+// or the deployment's only organisation. Empty when neither applies -- a bare
+// /login on a deployment with several.
+func (s *Server) loginOrg(ctx context.Context, authzQuery string) string {
+	memo, _ := ctx.Value(loginOrgKey{}).(*loginOrgMemo)
+	if memo != nil && memo.asked && memo.query == authzQuery {
+		return memo.org
+	}
+	org := s.findLoginOrg(ctx, authzQuery)
+	if memo != nil {
+		memo.asked, memo.query, memo.org = true, authzQuery, org
+	}
+	return org
+}
+
+type loginOrgKey struct{}
+
+// loginOrgMemo is one sign-in's answer. The form's handling asks whose page it is
+// six times over, and the organisation does not change within a request.
+type loginOrgMemo struct {
+	asked      bool
+	query, org string
+
+	// And the instance's first organisation, defaultOrg's answer: the page's
+	// recovery link and its sign-up link each asked it, a statement each (E.35).
+	defaultAsked bool
+	defaultOrg   string
+	defaultErr   error
+}
+
+func withLoginOrgMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, loginOrgKey{}, &loginOrgMemo{})
+}
+
+func (s *Server) findLoginOrg(ctx context.Context, authzQuery string) string {
+	if s.db == nil {
+		return ""
+	}
+	if org := s.clientOrg(ctx, authzQuery); org != "" {
+		return org
+	}
+	return s.onlyOrg(ctx)
+}
+
+// pageOrg is the organisation a page belongs to: the client of the authorization
+// request it is answering, then the sign-in it is part way through or the session
+// it came with, then the instance's only one. A person signed in at one
+// organisation who follows another's application to its sign-in page is reading
+// that other organisation's page.
+//
+// Empty for a bare page on a deployment of several, which wears the instance's
+// appearance rather than a guess: a wrong guess shows one customer another's logo.
+func (s *Server) pageOrg(r *http.Request) string {
+	if s.db == nil || r == nil {
+		return ""
+	}
+	ctx := r.Context()
+	for _, authz := range []string{r.URL.Query().Get("authz"), postForm(r, "authz"), r.URL.RawQuery} {
+		if authz == "" {
+			continue
+		}
+		if org := s.clientOrg(ctx, authz); org != "" {
+			return org
+		}
+	}
+	if p, err := s.readPending(r); err == nil {
+		return p.OrgID
+	}
+	if _, _, org, ok := s.currentSession(r); ok {
+		return org
+	}
+	return s.onlyOrg(ctx)
+}
+
+// clientOrg is the organisation of the client an authorization query names,
+// directly or through a parked return.
+func (s *Server) clientOrg(ctx context.Context, authzQuery string) string {
+	clientID := ""
+	if q, err := url.ParseQuery(authzQuery); err == nil {
+		clientID = q.Get("client_id")
+		if clientID == "" {
+			// A parked return, which for an authorization request is the
+			// /authorize URL with the client in it.
+			if dest, ok := parkedReturn(authzQuery); ok {
+				if u, err := url.Parse(dest); err == nil {
+					clientID = u.Query().Get("client_id")
+				}
+			}
+		}
+	}
+	if clientID != "" {
+		// Only which organisation's page to show; the authorization it came
+		// from refuses a disabled client.
+		if c, err := s.lookupClientAnyState(ctx, clientID); err == nil && c != nil {
+			return c.OrgID
+		}
+	}
+	return ""
+}
+
+// onlyOrg is the instance's organisation when it has exactly one.
+func (s *Server) onlyOrg(ctx context.Context) string {
+	// The only organisation of this instance (6.12): another instance's are
+	// another issuer's, and counting them made a page of a one-organisation
+	// instance ask whose it was. Two are enough to know it is not one, and this is
+	// a page anybody can load, so it does not count the tenants to find that out.
+	var n int
+	var only string
+	if err := s.db.QueryRow(ctx, `
+		SELECT count(*), COALESCE(min(o.id::text), '') FROM (
+			SELECT id FROM core.organizations
+			 WHERE $1::text = '' OR instance_id = NULLIF($1, '')::uuid LIMIT 2) o`, s.instanceID).Scan(&n, &only); err != nil {
+		s.log.ErrorContext(ctx, "counting organisations for the sign-in page", "err", err)
+		return ""
+	}
+	if n == 1 {
+		return only
+	}
+	return ""
+}
+
+// federationReturn is where a provider's sign-in should land afterwards: the
+// parked return, or the parked authorization request itself. Without it the
+// buttons dropped the request on the floor, and somebody who chose "continue
+// with Google" from an application ended up on their account page instead.
+func federationReturn(authzQuery string) string {
+	if dest, ok := parkedReturn(authzQuery); ok {
+		return dest
+	}
+	if q, err := url.ParseQuery(authzQuery); err == nil && q.Get("client_id") != "" {
+		return oidc.PathAuthorize + "?" + authzQuery
+	}
+	return ""
+}
+
+// externalProviders lists the enabled providers of one organisation that a
+// person can sign in through, each with the route its kind starts at.
+//
+// Scoped to the organisation, which it was not: every tenant's providers were
+// offered on every tenant's sign-in page, naming one customer's identity
+// providers to another's users. Kind-aware, which it was not either: a SAML
+// source starts at /saml/source/<slug>/start, and its button pointed at the
+// OAuth route, where it did nothing useful. Assertion issuers are not sign-in
+// providers at all and are never listed.
 //
 // Failure is deliberately silent: if this query fails the sign-in page still
 // renders with a password form, which is a degraded page rather than no page at
 // all. An identity provider whose login screen 500s because a secondary feature
 // is unavailable has turned a small fault into an outage.
-func (s *Server) externalProviders(ctx context.Context) []externalProvider {
-	if s.db == nil {
-		// No database configured at all. The sign-in form still has to render --
-		// that is the whole point of failing quietly here -- and a nil pool
-		// panics rather than returning an error, so it is checked rather than
-		// caught.
+func (s *Server) externalProviders(ctx context.Context, orgID, authzQuery string) []externalProvider {
+	if s.db == nil || orgID == "" {
+		// No database configured at all, or no way to know whose page this is.
+		// The sign-in form still has to render -- that is the whole point of
+		// failing quietly here -- and offering every tenant's buttons when the
+		// organisation is unknown is the leak this function was written to stop.
 		return nil
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT slug, display_name FROM core.identity_providers
-		WHERE enabled ORDER BY display_name`)
+	rows, err := s.db.Query(ctx, externalProvidersStatement, orgID)
 	if err != nil {
-		s.log.Error("listing external providers for the sign-in page", "err", err)
+		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
 		return nil
 	}
-	defer rows.Close()
+	out, err := scanExternalProviders(rows, authzQuery)
+	if err != nil {
+		s.log.ErrorContext(ctx, "listing external providers for the sign-in page", "err", err)
+	}
+	return out
+}
 
+// externalProvidersStatement is the sign-in page's provider buttons for an organisation.
+const externalProvidersStatement = `
+		SELECT slug, display_name, kind FROM core.identity_providers
+		WHERE enabled AND org_id = $1::uuid AND kind <> 'assertion'
+		ORDER BY display_name`
+
+// scanExternalProviders makes externalProvidersStatement's rows buttons, each carrying the
+// parked request, and answers the rows' error: a row that will not scan ends the list.
+func scanExternalProviders(rows pgx.Rows, authzQuery string) ([]externalProvider, error) {
+	defer rows.Close()
+	query := ""
+	if ret := federationReturn(authzQuery); ret != "" {
+		query = "?" + url.Values{"return": {ret}}.Encode()
+	}
 	var out []externalProvider
 	for rows.Next() {
 		var p externalProvider
-		if err := rows.Scan(&p.Slug, &p.Name); err != nil {
-			return out
+		var kind string
+		if err := rows.Scan(&p.Slug, &p.Name, &kind); err != nil {
+			return out, nil
+		}
+		switch kind {
+		case "saml":
+			p.Href = "/saml/source/" + url.PathEscape(p.Slug) + "/start" + query
+		case "oid4vp":
+			p.Href = "/oid4vp/" + url.PathEscape(p.Slug) + "/start" + query
+		default:
+			p.Href = "/login/with/" + url.PathEscape(p.Slug) + query
 		}
 		out = append(out, p)
 	}
-	return out
+	return out, rows.Err()
 }
 
 // linkedProvider is one row on the account page.
@@ -77,9 +259,12 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN core.federated_identities f
 		       ON f.provider_id = p.id AND f.user_id = $1::uuid
 		WHERE p.org_id = $2::uuid AND p.enabled
+		  -- An assertion issuer publishes keys for the jwt-bearer grant and has
+		  -- no sign-in route; offering to link one is a button that fails.
+		  AND p.kind <> 'assertion'
 		ORDER BY p.display_name`, userID, orgID)
 	if err != nil {
-		s.log.Error("listing linked providers", "err", err)
+		s.log.ErrorContext(ctx, "listing linked providers", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -93,6 +278,29 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		providers = append(providers, p)
 	}
+	// As the query's own failure above: a page listing some of the person's
+	// linked providers would read as the whole of them (0.31).
+	if err := rows.Err(); err != nil {
+		s.log.ErrorContext(ctx, "listing linked providers", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// The person's passkeys, to list and remove, beside the control that adds
+	// one. Registration and removal existed as endpoints, and passkey.js could
+	// drive both, and no page offered either: nobody could add a passkey.
+	passkeys, err := s.accountPasskeys(ctx, userID)
+	if err != nil {
+		s.log.ErrorContext(ctx, "listing passkeys", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// The language the person chose, if they chose one (language.go).
+	var locale string
+	if err := s.db.QueryRow(ctx, `SELECT COALESCE(locale, '') FROM core.users WHERE id = $1::uuid`,
+		userID).Scan(&locale); err != nil {
+		s.log.ErrorContext(ctx, "reading the chosen language", "err", err)
+	}
 
 	csrf, err := s.csrfToken(w, r)
 	if err != nil {
@@ -100,13 +308,38 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	setCSP(w, `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`)
-	w.Header().Set("X-Frame-Options", "DENY")
+	// PasskeyScript widens renderPage's policy to script-src and connect-src
+	// 'self' for /passkey.js and the ceremony's requests. Nothing inline.
 	s.renderPage(w, r, "account", map[string]any{
-		"Providers": providers, "CSRF": csrf, "CSRFField": csrfFormField,
+		"Providers": providers, "Passkeys": passkeys, "CSRF": csrf, "CSRFField": csrfFormField,
+		"PasskeyScript": true, "Languages": s.languageChoices(locale), "LanguageChosen": locale != "",
 	})
+}
+
+// accountPasskey is one row of the account page's passkey list.
+type accountPasskey struct {
+	ID, Name, Added string
+}
+
+func (s *Server) accountPasskeys(ctx context.Context, userID string) ([]accountPasskey, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, COALESCE(NULLIF(friendly_name,''), 'Passkey'), created_at
+		  FROM core.webauthn_credentials WHERE user_id = $1::uuid ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []accountPasskey
+	for rows.Next() {
+		var p accountPasskey
+		var added time.Time
+		if err := rows.Scan(&p.ID, &p.Name, &added); err != nil {
+			return nil, err
+		}
+		p.Added = added.UTC().Format("2 Jan 2006")
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // handleAccountUnlink removes an external sign-in method.
@@ -118,12 +351,15 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil || !checkCSRF(r) {
 		// A cross-site POST that removes a credential is the shape this guards.
-		s.federationError(w, r, "That request could not be verified. Please try again.")
+		s.federationRefusal(w, r, "federr.requestunverified")
 		return
 	}
-	_, userID, _, ok := s.currentSession(r)
+	sid, userID, orgID, ok := s.currentSession(r)
 	if !ok {
 		http.Redirect(w, r, parkLogin("/account"), http.StatusSeeOther)
+		return
+	}
+	if s.credentialChangeRefused(w, r, sid, "/account", false) {
 		return
 	}
 	slug := r.PathValue("slug")
@@ -132,33 +368,67 @@ func (s *Server) handleAccountUnlink(w http.ResponseWriter, r *http.Request) {
 	//
 	// A user who signed up through a provider has no password, so unlinking it
 	// leaves an account nobody can reach -- recoverable only by an administrator,
-	// and only if the account has a verified address. The check is one query and
-	// it prevents a self-inflicted lockout that looks like data loss.
-	var remaining int
-	if err := s.db.QueryRow(ctx, `
-		SELECT (SELECT count(*) FROM core.federated_identities f
-		        JOIN core.identity_providers p ON p.id = f.provider_id
-		        WHERE f.user_id = $1::uuid AND p.slug <> $2)
-		     + (SELECT count(*) FROM core.password_credentials
-		        WHERE user_id = $1::uuid AND is_current)
-		     + (SELECT count(*) FROM core.webauthn_credentials WHERE user_id = $1::uuid)`,
-		userID, slug).Scan(&remaining); err != nil {
-		s.log.Error("counting remaining sign-in methods", "err", err)
+	// and only if the account has a verified address. Counted as passkey removal
+	// counts (store.SignInMethodsBesides), in the transaction that removes it.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	remaining, err := store.SignInMethodsBesides(ctx, tx, userID, "", slug)
+	if err != nil {
+		s.log.ErrorContext(ctx, "counting remaining sign-in methods", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
 	if remaining == 0 {
-		s.federationError(w, r, "That is the only way to sign in to this account. Set a "+
-			"password or add a passkey first, then remove it.")
+		_ = tx.Rollback(ctx)
+		s.federationRefusal(w, r, "federr.onlyway")
 		return
 	}
 
-	if _, err := s.db.Exec(ctx, `
+	var provider, providerID string
+	err = tx.QueryRow(ctx, `
 		DELETE FROM core.federated_identities f
 		USING core.identity_providers p
-		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2`,
-		userID, slug); err != nil {
-		s.log.Error("unlinking provider", "err", err)
+		WHERE f.provider_id = p.id AND f.user_id = $1::uuid AND p.slug = $2
+		RETURNING p.display_name, p.id::text`, userID, slug).Scan(&provider, &providerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not linked: nothing to remove, record or tell.
+		http.Redirect(w, r, "/account", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		s.log.ErrorContext(ctx, "unlinking provider", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// The tokens came with the link.
+	if err := store.ForgetFederatedTokens(ctx, tx, providerID, userID); err != nil {
+		s.log.ErrorContext(ctx, "forgetting a provider's tokens", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	// A way into the account went, so it is audited and the holder told, as
+	// linking one is: an unlink they did not make is somebody else in their
+	// session.
+	if err := audit.Write(ctx, tx, audit.Event{
+		Type: "federation.account_unlinked", OrgID: orgID, SubjectID: userID,
+		CorrelationID: correlationID(ctx), Detail: map[string]any{"provider": slug},
+	}); err != nil {
+		s.log.ErrorContext(ctx, "auditing an unlink", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := store.EnqueueAccountNotice(ctx, tx, store.AccountNotice{UserID: userID,
+		Notice: store.NoticeProviderUnlinked, Provider: provider}); err != nil {
+		s.log.ErrorContext(ctx, "queueing the unlink notice", "err", err)
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.log.ErrorContext(ctx, "unlinking provider", "err", err)
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}

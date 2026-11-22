@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -14,8 +15,8 @@ import (
 //
 // # Why a redirect chain
 //
-// SAML has no usable back-channel. The SOAP binding exists and almost nothing
-// implements it, so propagating a logout means walking the BROWSER through each
+// The SOAP binding is a back channel few providers offer (outbox/samllogout.go), so
+// for the rest propagating a logout means walking the BROWSER through each
 // service provider's logout endpoint in turn: we redirect to provider one, it
 // ends its session and redirects back to us, we redirect to provider two, and
 // so on until the list is empty.
@@ -78,11 +79,11 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 		}
 		steps = append(steps, store.LogoutStep{
 			ProviderID: p.ProviderID, EntityID: p.EntityID, SLOURL: p.SLOURLs[0],
-			NameID: p.NameID, SessionIndex: p.SessionIndex,
+			NameID: p.NameID, NameIDFormat: p.NameIDFormat, SessionIndex: p.SessionIndex,
 		})
 	}
 	if len(unreachable) > 0 {
-		s.log.Warn("SAML providers that cannot be sent a logout",
+		s.log.WarnContext(ctx, "SAML providers that cannot be sent a logout",
 			"providers", unreachable,
 			"reason", "no SingleLogoutService URL registered, or the chain limit was reached")
 	}
@@ -95,7 +96,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 		Remaining: steps, FinalRedirect: finalRedirect,
 	})
 	if err != nil {
-		s.log.Error("starting a SAML logout chain", "err", err)
+		s.log.ErrorContext(ctx, "starting a SAML logout chain", "err", err)
 		return ""
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -104,7 +105,7 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 
 	url, err := s.logoutRedirectFor(ctx, steps[0], token)
 	if err != nil {
-		s.log.Error("building the first logout request", "err", err)
+		s.log.ErrorContext(ctx, "building the first logout request", "err", err)
 		return ""
 	}
 	return url
@@ -112,7 +113,18 @@ func (s *Server) beginSAMLLogoutChain(ctx context.Context, sid, userID, orgID, f
 
 // logoutRedirectFor builds a signed LogoutRequest for one provider.
 func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, token string) (string, error) {
-	key, err := s.samlSigningKey()
+	// With the algorithm the provider is set to now, read here rather than
+	// carried in the chain, so a provider moved between algorithms while a
+	// logout was under way is still sent a signature it can check. One that has
+	// since been removed is sent RSA, the default.
+	signatureAlg, issuer := saml.SignatureAlgRSASHA256, saml.EntityID(s.cfg.Issuer, "")
+	p, err := s.loadSAMLProviderByID(ctx, step.ProviderID)
+	if err == nil {
+		signatureAlg, issuer = p.SignatureAlg, s.samlEntityID(p)
+	} else if !errors.Is(err, store.ErrSAMLProviderUnknown) {
+		return "", err
+	}
+	key, err := s.samlSigningKey(signatureAlg)
 	if err != nil {
 		return "", err
 	}
@@ -121,19 +133,37 @@ func (s *Server) logoutRedirectFor(ctx context.Context, step store.LogoutStep, t
 		return "", err
 	}
 
+	// A participant from before the format was kept went out as this.
+	format := step.NameIDFormat
+	if format == "" {
+		format = saml.NameIDFormatPersistent
+	}
 	doc, err := saml.BuildLogoutRequest(saml.LogoutRequestInput{
-		Issuer:      s.samlEntityID(),
+		Issuer:      issuer,
 		Destination: step.SLOURL,
 		// EXACTLY what the assertion carried. A service provider matches on these;
 		// anything else is accepted and ends nothing, which reports success and
 		// leaves the session live.
 		NameID:       step.NameID,
-		NameIDFormat: saml.NameIDFormatPersistent,
+		NameIDFormat: format,
 		SessionIndex: step.SessionIndex,
 		Now:          time.Now(),
 	}, key.Signer(), certDER)
 	if err != nil {
 		return "", err
+	}
+
+	// A provider whose logout endpoint takes artifacts is sent one (8.08), the request
+	// held for it to resolve. Read now, as the algorithm is; a provider since removed
+	// has nothing to resolve it as, and is sent the redirect.
+	if p != nil {
+		binding, err := store.SAMLLogoutBinding(ctx, s.db, step.ProviderID, step.SLOURL)
+		if err != nil {
+			return "", err
+		}
+		if binding == bindingArtifact {
+			return s.artifactURL(ctx, p, step.SLOURL, doc, token)
+		}
 	}
 
 	encoded, err := saml.EncodeRedirect(doc)
@@ -173,7 +203,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 
 	chain, next, ok, err := store.AdvanceLogoutChain(ctx, tx, token, failed)
 	if err != nil {
-		s.log.Error("advancing the SAML logout chain", "err", err)
+		s.log.ErrorContext(ctx, "advancing the SAML logout chain", "err", err)
 		return false
 	}
 	if !ok {
@@ -184,18 +214,18 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 	}
 
 	if next != nil {
-		url, err := s.logoutRedirectFor(ctx, *next, token)
-		if err != nil {
-			s.log.Error("building the next logout request", "entity_id", next.EntityID, "err", err)
-			// Skip the provider we cannot build for rather than stranding the
-			// user mid-chain.
-			if err := tx.Commit(ctx); err == nil {
-				return s.continueSAMLLogoutChain(w, r, token, true)
-			}
-			return false
-		}
+		// Committed before the next request is built. Building reads the
+		// provider and signs, each on a connection of its own, and both outcomes
+		// below committed the advance anyway.
 		if err := tx.Commit(ctx); err != nil {
 			return false
+		}
+		url, err := s.logoutRedirectFor(ctx, *next, token)
+		if err != nil {
+			s.log.ErrorContext(ctx, "building the next logout request", "entity_id", next.EntityID, "err", err)
+			// Skip the provider we cannot build for rather than stranding the
+			// user mid-chain.
+			return s.continueSAMLLogoutChain(w, r, token, true)
 		}
 		http.Redirect(w, r, url, http.StatusSeeOther)
 		return true
@@ -211,16 +241,16 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 			"failed":   entityIDs(chain.Failed),
 		},
 	}); err != nil {
-		s.log.Error("recording logout propagation", "err", err)
+		s.log.ErrorContext(ctx, "recording logout propagation", "err", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false
 	}
 	if len(chain.Failed) > 0 {
-		s.log.Warn("SAML logout could not be delivered to every provider",
+		s.log.WarnContext(ctx, "SAML logout could not be delivered to every provider",
 			"failed", entityIDs(chain.Failed), "notified", entityIDs(chain.Notified))
 	} else {
-		s.log.Info("SAML logout propagated to every participating provider",
+		s.log.InfoContext(ctx, "SAML logout propagated to every participating provider",
 			"providers", entityIDs(chain.Notified))
 	}
 
@@ -228,11 +258,7 @@ func (s *Server) continueSAMLLogoutChain(w http.ResponseWriter, r *http.Request,
 		http.Redirect(w, r, chain.FinalRedirect, http.StatusSeeOther)
 		return true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "signed out",
-		"notified": entityIDs(chain.Notified),
-		"failed":   entityIDs(chain.Failed),
-	})
+	s.signedOut(w, r, entityIDs(chain.Notified), entityIDs(chain.Failed))
 	return true
 }
 

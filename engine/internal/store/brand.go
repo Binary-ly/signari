@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,20 +20,52 @@ import (
 // A missing row is not an error: an unbranded deployment is the normal state,
 // and returning an error for it would make every page render log something.
 func LoadBrandByIssuer(ctx context.Context, db *pgxpool.Pool, issuer string) (*brand.Brand, error) {
-	var b brand.Brand
-	err := db.QueryRow(ctx, `
+	return scanBrand(db.QueryRow(ctx, instanceBrandStatement, issuer))
+}
+
+// QueueInstanceBrand is LoadBrandByIssuer as one more statement in a batch the caller
+// sends; the answer is read once the batch is closed (E.36).
+func QueueInstanceBrand(b *pgx.Batch, issuer string) func() (*brand.Brand, error) {
+	return queueBrand(b, instanceBrandStatement, issuer)
+}
+
+// QueueOrgBrand is OrgBrandOf as one more statement in a batch the caller sends.
+func QueueOrgBrand(b *pgx.Batch, orgID string) func() (*brand.Brand, error) {
+	return queueBrand(b, orgBrandStatement, orgID)
+}
+
+func queueBrand(b *pgx.Batch, statement, arg string) func() (*brand.Brand, error) {
+	var got *brand.Brand
+	err := errors.New("the batch holding a brand was not sent")
+	b.Queue(statement, arg).QueryRow(func(row pgx.Row) error {
+		got, err = scanBrand(row)
+		return nil
+	})
+	return func() (*brand.Brand, error) { return got, err }
+}
+
+const brandColumns = `
 		SELECT COALESCE(product_name,''), COALESCE(logo_url,''), COALESCE(support_url,''),
 		       COALESCE(colour_primary,''), COALESCE(colour_on_primary,''),
-		       COALESCE(colour_background,''), COALESCE(colour_text,'')
+		       COALESCE(colour_background,''), COALESCE(colour_text,'')`
+
+const instanceBrandStatement = brandColumns + `
 		FROM core.brands b
 		JOIN core.instances i ON i.id = b.instance_id
-		WHERE i.issuer = $1`, issuer).
-		Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
-			&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+		WHERE i.issuer = $1`
+
+const orgBrandStatement = brandColumns + `
+		FROM core.org_brands WHERE org_id = $1::uuid`
+
+// scanBrand reads a brand's row, nil when there is none.
+func scanBrand(row pgx.Row) (*brand.Brand, error) {
+	var b brand.Brand
+	err := row.Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
+		&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &b, nil
@@ -44,7 +77,7 @@ func LoadBrandByIssuer(ctx context.Context, db *pgxpool.Pool, issuer string) (*b
 // the database constraints. Two gates rather than one because the failure mode
 // -- an unreadable sign-in page, or a colour that escapes its declaration --
 // is discovered by the people least able to report it.
-func SaveBrand(ctx context.Context, db *pgxpool.Pool, instanceID string, b *brand.Brand) error {
+func SaveBrand(ctx context.Context, db Execer, instanceID string, b *brand.Brand) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
@@ -66,4 +99,114 @@ func SaveBrand(ctx context.Context, db *pgxpool.Pool, instanceID string, b *bran
 		instanceID, b.ProductName, b.LogoURL, b.SupportURL,
 		b.Primary, b.OnPrimary, b.Background, b.Text)
 	return err
+}
+
+// BrandOf reads an instance's appearance by its id, nil when it has none.
+func BrandOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, instanceID string) (*brand.Brand, error) {
+	var b brand.Brand
+	err := q.QueryRow(ctx, `
+		SELECT COALESCE(product_name,''), COALESCE(logo_url,''), COALESCE(support_url,''),
+		       COALESCE(colour_primary,''), COALESCE(colour_on_primary,''),
+		       COALESCE(colour_background,''), COALESCE(colour_text,'')
+		FROM core.brands WHERE instance_id = $1::uuid`, instanceID).
+		Scan(&b.ProductName, &b.LogoURL, &b.SupportURL,
+			&b.Primary, &b.OnPrimary, &b.Background, &b.Text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// RemoveBrand returns an instance to the built-in appearance, reporting
+// whether it had another.
+func RemoveBrand(ctx context.Context, tx Execer, instanceID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.brands WHERE instance_id = $1::uuid`, instanceID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SaveOrgBrand writes an organisation's appearance, replacing whatever it had.
+// What it leaves out falls through to its instance's (brand.Over).
+func SaveOrgBrand(ctx context.Context, db Execer, orgID string, b *brand.Brand) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	_, err := db.Exec(ctx, `
+		INSERT INTO core.org_brands (org_id, product_name, logo_url, support_url,
+		                             colour_primary, colour_on_primary,
+		                             colour_background, colour_text)
+		VALUES ($1::uuid, NULLIF($2,''), NULLIF($3,''), NULLIF($4,''),
+		        NULLIF($5,''), NULLIF($6,''), NULLIF($7,''), NULLIF($8,''))
+		ON CONFLICT (org_id) DO UPDATE SET
+			product_name = EXCLUDED.product_name,
+			logo_url = EXCLUDED.logo_url,
+			support_url = EXCLUDED.support_url,
+			colour_primary = EXCLUDED.colour_primary,
+			colour_on_primary = EXCLUDED.colour_on_primary,
+			colour_background = EXCLUDED.colour_background,
+			colour_text = EXCLUDED.colour_text,
+			updated_at = now()`,
+		orgID, b.ProductName, b.LogoURL, b.SupportURL,
+		b.Primary, b.OnPrimary, b.Background, b.Text)
+	return err
+}
+
+// OrgBrandOf reads an organisation's own appearance, nil when it has none.
+func OrgBrandOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID string) (*brand.Brand, error) {
+	return scanBrand(q.QueryRow(ctx, orgBrandStatement, orgID))
+}
+
+// RemoveOrgBrand returns an organisation to its instance's appearance,
+// reporting whether it had its own.
+func RemoveOrgBrand(ctx context.Context, tx Execer, orgID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM core.org_brands WHERE org_id = $1::uuid`, orgID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// InstanceSummary is one issuer this deployment serves or could.
+type InstanceSummary struct {
+	ID, Issuer, DisplayName string
+	CreatedAt               time.Time
+}
+
+// Instances lists the deployment's instances, oldest first.
+func Instances(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}) ([]InstanceSummary, error) {
+	rows, err := q.Query(ctx, `SELECT id::text, issuer, display_name, created_at
+		FROM core.instances ORDER BY created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []InstanceSummary{}
+	for rows.Next() {
+		var i InstanceSummary
+		if err := rows.Scan(&i.ID, &i.Issuer, &i.DisplayName, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+// InstanceExists reports whether an instance has that id.
+func InstanceExists(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, instanceID string) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.instances WHERE id::text = $1)`, instanceID).Scan(&ok)
+	return ok, err
 }

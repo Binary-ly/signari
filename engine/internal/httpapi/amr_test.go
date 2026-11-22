@@ -33,12 +33,14 @@ func TestPasskeyAMRIsHonest(t *testing.T) {
 		{"synced passkey, verified", true, true, []string{"user", "swk", "mfa"}, oauth.ACRMultiFactor},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The record's flag is true, as the library returns it whatever this
+			// assertion said: only the assertion's own flag may decide.
 			got := amrForPasskey(&webauthn.Credential{
 				Flags: webauthn.CredentialFlags{
 					BackupEligible: tc.backupEligible,
-					UserVerified:   tc.userVerified,
+					UserVerified:   true,
 				},
-			})
+			}, tc.userVerified)
 			if len(got) != len(tc.wantAMR) {
 				t.Fatalf("amr = %v, want %v", got, tc.wantAMR)
 			}

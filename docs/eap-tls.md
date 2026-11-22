@@ -81,6 +81,12 @@ deactivate the account, certificate unchanged   → Access-Reject + EAP-Failure
 reactivate                                      → Access-Accept
 ```
 
+Every outcome is audited: `login.succeeded`, or `login.failed` with reason
+`no_identity`, `unknown_user` or `inactive`, with `via: eap-tls` and the
+certificate's serial, by the account's subject id when there is one. Until
+October 2026 nothing recorded a certificate sign-in; the listener logged the
+username, and nothing else said who had joined the network.
+
 ## The keys nobody remembers
 
 An Access-Accept without MPPE keys authenticates the supplicant and then leaves
@@ -163,13 +169,50 @@ All three settings or none. A server certificate without client CAs would
 complete handshakes with anybody holding any certificate — worse than no
 EAP-TLS at all, because it looks like it is working.
 
+## EAP-TTLS and PEAP: a password inside the tunnel
+
+```sh
+SIGNARI_EAP_TUNNELS=ttls,peap     # with SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY
+```
+
+For people with no certificate. The supplicant makes a TLS tunnel to this server
+and checks the server's certificate, then sends the person's name and password
+inside it. With **EAP-TTLS** (RFC 5281) they go as PAP AVPs. With **PEAP**
+(version 0, MS-PEAP) the server asks for an identity, then for the password in an
+EAP-GTC prompt, and says the result in a Result TLV. Either way the password is
+checked exactly as a PAP request's is: the same account, status and lockout. The
+access point is given the tunnel's own keys, so traffic flows once the person is
+in.
+
+- **PEAP's inner method is EAP-GTC.** MSCHAPv2, the one Windows offers by itself,
+  needs the password's NT hash, and nothing here keeps one. A peer that asks for
+  MSCHAPv2 is refused. Windows needs a GTC module to use PEAP here; most other
+  supplicants offer GTC directly.
+- **No PEAP cryptobinding.** MS-PEAP makes it optional. Without it, the keys are
+  EAP-TLS's, as MS-PEAP specifies for that case.
+
+- **Off unless set.** It is a password method, and the certificate is the only
+  thing standing between a person's password and whoever answers in its place.
+  A supplicant that is not set to check the certificate sends the password to
+  anyone. Configure every supplicant with the issuing CA and the server name.
+- **Certificates first.** With EAP-TLS on as well (`SIGNARI_EAP_CLIENT_CA`),
+  EAP-TLS is offered first. A supplicant without a certificate refuses it,
+  naming the methods it would rather use, and is offered the first of those that
+  is on. With only `SIGNARI_EAP_TUNNELS`, PEAP is offered straight away if it is
+  on, otherwise EAP-TTLS, and EAP-TLS stays off.
+- **No resumption.** A resumed session skips the password entirely, so nothing
+  is kept to resume. Every connection checks the password, and somebody
+  deactivated since is refused at their next one.
+- **TLS 1.2.** The tunnel's keys are defined over TLS 1.2, so the tunnel runs
+  TLS 1.2, with the extended master secret, as Go requires for exporting keys.
+- **A second factor.** PEAP asks for the code in a second GTC prompt, which is
+  what GTC was made for. With EAP-TTLS the code is typed after the password,
+  `password;123456`, as for PAP.
+
 ## Not implemented
 
-- **PEAP and EAP-TTLS.** Password-based methods tunnelled inside TLS. Absent
-  deliberately: they exist to carry a password, and this engine's answer to
-  "wifi with a password" is a passkey or a certificate. A supplicant that asks
-  for EAP when EAP-TLS is not configured is **refused**, not offered something
-  weaker.
+- **Any other password method.** A supplicant that asks for EAP when none of
+  EAP-TLS, EAP-TTLS and PEAP is on is **refused**, not offered something weaker.
 - **CRL and OCSP checking.** The account-status check above covers the case that
   matters — somebody leaving — and does it faster than a revocation list
   propagates. A stolen laptop with a live account is a revocation problem, and

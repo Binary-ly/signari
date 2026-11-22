@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
+	"signari.dev/engine/internal/federation"
 	"signari.dev/engine/internal/keys"
 )
 
@@ -41,6 +43,84 @@ import (
 
 // ErrNoSuchAttribute is returned when an attribute is not declared for the org.
 var ErrNoSuchAttribute = errors.New("no such attribute is declared")
+
+// ErrInvalidAttributeValue is a value its attribute's declared type cannot hold.
+var ErrInvalidAttributeValue = errors.New("the value does not fit the attribute's type")
+
+// ErrAttributeTypeInUse is a change of type to an attribute holding values.
+var ErrAttributeTypeInUse = errors.New("the attribute holds values, so its type cannot change")
+
+// AttributeRefusal is a value refused for an attribute, carrying what a page needs to
+// say so in the reader's language: Key names the message and Label is the attribute as
+// the person knows it. Error is English, for logs and the Admin API, and errors.Is still
+// finds the sentinel it was refused as. A page used to show Error, in English to everyone.
+type AttributeRefusal struct {
+	Key, Label string
+	sentinel   error
+	text       string
+}
+
+func (e *AttributeRefusal) Error() string { return e.text }
+func (e *AttributeRefusal) Unwrap() error { return e.sentinel }
+
+func refuseAttribute(key, label string, sentinel error, format string, args ...any) *AttributeRefusal {
+	return &AttributeRefusal{Key: key, Label: label, sentinel: sentinel,
+		text: sentinel.Error() + ": " + fmt.Sprintf(format, args...)}
+}
+
+// jsonNumber is the form a number claim carries, RFC 8259 §6
+// (rfc-editor.org/rfc/rfc8259.txt): `number = [ minus ] int [ frac ] [ exp ]`,
+// `int = zero / ( digit1-9 *DIGIT )`, `frac = decimal-point 1*DIGIT`,
+// `exp = e [ minus / plus ] 1*DIGIT`. No leading zeros, no Infinity or NaN.
+var jsonNumber = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// checkAttributeValue refuses a value its declared type would misstate.
+//
+// Values are stored as text and typed on the way out (typedValue). A boolean
+// released from anything but "true" was `false`, so "yes" became a claim that
+// said no; a number that did not parse went out as a string under a claim a
+// relying party parses as a number. Both are refused here, where the person
+// writing can be told. A string holds anything, and a date is a formatted
+// string whose format the profiles that define one do not agree on.
+func checkAttributeValue(name, valueType, value string) error {
+	switch valueType {
+	case "boolean":
+		if value != "true" && value != "false" {
+			return refuseAttribute("error.attribute.boolean", name, ErrInvalidAttributeValue,
+				"%q is a boolean, true or false", name)
+		}
+	case "number":
+		if !jsonNumber.MatchString(value) {
+			return refuseAttribute("error.attribute.number", name, ErrInvalidAttributeValue, "%q is a number", name)
+		}
+	}
+	return nil
+}
+
+// CheckPromptAttribute reports whether a prompt field may write attribute name
+// (5.14): it is declared in the organisation, and every value the field can
+// answer with is one the attribute's type accepts. Asked when the prompt is
+// defined, so a mapping that could never be written is refused there rather
+// than at somebody's sign-in.
+func CheckPromptAttribute(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, orgID, name string, candidates []string) error {
+	var valueType string
+	err := q.QueryRow(ctx, `SELECT value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&valueType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrNoSuchAttribute, name)
+	}
+	if err != nil {
+		return err
+	}
+	for _, v := range candidates {
+		if err := checkAttributeValue(name, valueType, v); err != nil {
+			return fmt.Errorf("%w (the field can answer %q)", err, v)
+		}
+	}
+	return nil
+}
 
 // Attribute is one declared attribute.
 type Attribute struct {
@@ -83,9 +163,39 @@ type AttributeValue struct {
 // Changing an attribute's sensitivity therefore means declaring a new one and
 // migrating deliberately. That is the honest amount of work for a change that
 // moves personal data between storage classes.
+//
+// # `value_type` changes only while nothing is stored
+//
+// The values were checked against the type they were written under. Retyping a
+// string attribute holding "yes" as a boolean would release it as `false`, the
+// failure the check at write exists to stop, arriving by the other door.
 func DeclareAttribute(ctx context.Context, tx pgx.Tx, orgID string, a Attribute) (string, error) {
-	var id string
+	// Locked first and counted second, in separate statements: a value written
+	// while the lock was awaited is visible to the count, and SetUserAttribute's
+	// share lock keeps a new one out until this commits.
+	var attrID, current string
 	err := tx.QueryRow(ctx, `
+		SELECT id::text, value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2
+		FOR UPDATE`, orgID, a.Name).Scan(&attrID, &current)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return "", fmt.Errorf("reading the declaration of %q: %w", a.Name, err)
+	case current != a.ValueType:
+		var held bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM core.user_attributes WHERE attribute_id = $1::uuid)`,
+			attrID).Scan(&held); err != nil {
+			return "", fmt.Errorf("counting the values of %q: %w", a.Name, err)
+		}
+		if held {
+			return "", fmt.Errorf("%w: %q is a %s", ErrAttributeTypeInUse, a.Name, current)
+		}
+	}
+
+	var id string
+	err = tx.QueryRow(ctx, `
 		INSERT INTO core.user_attribute_schema
 			(org_id, name, display_name, value_type, personal,
 			 user_readable, user_writable, required)
@@ -139,11 +249,12 @@ func Attributes(ctx context.Context, q interface {
 func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value string,
 	root *keys.RootKey) error {
 
-	var attrID string
+	var attrID, valueType string
 	var personal bool
 	err := tx.QueryRow(ctx, `
-		SELECT id::text, personal FROM core.user_attribute_schema
-		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&attrID, &personal)
+		SELECT id::text, personal, value_type FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2
+		FOR SHARE`, orgID, name).Scan(&attrID, &personal, &valueType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Refused rather than stored. An undeclared attribute has no
 		// sensitivity, no type and no read rules, so storing it would be storing
@@ -153,6 +264,9 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	}
 	if err != nil {
 		return fmt.Errorf("reading the declaration for %q: %w", name, err)
+	}
+	if err := checkAttributeValue(name, valueType, value); err != nil {
+		return err
 	}
 
 	if !personal {
@@ -191,6 +305,292 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 	return nil
 }
 
+// A POSIX number set by hand (7.03) is one kept from a directory being replaced. It
+// sits below what the sequence in 0208 allocates, so an allocated number can never
+// land on one, and at or above 1000, since below that a host's own accounts live and
+// one of them is root.
+const (
+	minPosixID = 1000
+	maxPosixID = 1999999999
+)
+
+// PosixIDRule says what PosixIDAssignable accepts.
+const PosixIDRule = "a POSIX number set by hand is 1000 to 1999999999: higher ones are allocated here"
+
+// PosixIDAssignable reports whether a number may be set by hand.
+func PosixIDAssignable(n int) bool { return n >= minPosixID && n <= maxPosixID }
+
+// CheckAttributeValue reports whether a value is one the attribute's type accepts.
+func CheckAttributeValue(a Attribute, value string) error {
+	return checkAttributeValue(a.Name, a.ValueType, value)
+}
+
+// AttributeWrite is one of a person's values, for the calls that take many.
+type AttributeWrite struct{ UserID, Name, Value string }
+
+// SetUserAttributes is SetUserAttribute for many people in a few statements, for a
+// sync, whose first run writes every value of everybody. A person seen twice has
+// the later value. Somebody whose key was erased is left out, for the reason given
+// in SetUserAttribute, and counted.
+func SetUserAttributes(ctx context.Context, tx pgx.Tx, orgID string, writes []AttributeWrite,
+	root *keys.RootKey) (erased int, err error) {
+
+	if len(writes) == 0 {
+		return 0, nil
+	}
+	names := make([]string, 0, len(writes))
+	last := make(map[[2]string]int, len(writes))
+	for i, w := range writes {
+		names = append(names, w.Name)
+		last[[2]string{w.UserID, w.Name}] = i
+	}
+	type declaration struct {
+		id, valueType string
+		personal      bool
+	}
+	declared := map[string]declaration{}
+	rows, err := tx.Query(ctx, `
+		SELECT name, id::text, value_type, personal FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = ANY($2::text[])
+		FOR SHARE`, orgID, names)
+	if err != nil {
+		return 0, fmt.Errorf("reading the attribute declarations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var d declaration
+		if err := rows.Scan(&name, &d.id, &d.valueType, &d.personal); err != nil {
+			return 0, err
+		}
+		declared[name] = d
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var subjects []string
+	for i, w := range writes {
+		d, ok := declared[w.Name]
+		if !ok {
+			return 0, fmt.Errorf("%w: %q", ErrNoSuchAttribute, w.Name)
+		}
+		if err := checkAttributeValue(w.Name, d.valueType, w.Value); err != nil {
+			return 0, err
+		}
+		if d.personal && last[[2]string{w.UserID, w.Name}] == i {
+			subjects = append(subjects, w.UserID)
+		}
+	}
+	subjectKeys := map[string]*keys.SubjectKey{}
+	if len(subjects) > 0 {
+		if subjectKeys, err = keys.LoadSubjectKeys(ctx, tx, subjects, root); err != nil {
+			return 0, err
+		}
+	}
+
+	var users, attrs []string
+	var clear []*string
+	var sealed [][]byte
+	for i, w := range writes {
+		if last[[2]string{w.UserID, w.Name}] != i {
+			continue
+		}
+		d := declared[w.Name]
+		if !d.personal {
+			value := w.Value
+			users, attrs, clear, sealed = append(users, w.UserID), append(attrs, d.id), append(clear, &value),
+				append(sealed, nil)
+			continue
+		}
+		sk := subjectKeys[w.UserID]
+		if sk == nil {
+			sk, err = keys.LoadOrCreateSubjectKey(ctx, tx, w.UserID, root)
+			if errors.Is(err, keys.ErrErased) {
+				erased++
+				continue
+			}
+			if err != nil {
+				return 0, fmt.Errorf("subject key for attribute %q: %w", w.Name, err)
+			}
+			subjectKeys[w.UserID] = sk
+		}
+		s, err := sk.Seal([]byte(w.Value), attributeContext(w.Name))
+		if err != nil {
+			return 0, fmt.Errorf("sealing attribute %q: %w", w.Name, err)
+		}
+		users, attrs, clear, sealed = append(users, w.UserID), append(attrs, d.id), append(clear, nil), append(sealed, s)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO core.user_attributes (user_id, attribute_id, org_id, value, value_sealed)
+		SELECT u, a, $1::uuid, v, s FROM unnest($2::uuid[], $3::uuid[], $4::text[], $5::bytea[]) AS t(u, a, v, s)
+		ON CONFLICT (user_id, attribute_id) DO UPDATE SET
+			value = EXCLUDED.value, value_sealed = EXCLUDED.value_sealed, updated_at = now()`,
+		orgID, users, attrs, clear, sealed); err != nil {
+		return 0, fmt.Errorf("writing attributes: %w", err)
+	}
+	return erased, nil
+}
+
+// ClearUserAttributes is ClearUserAttribute for many people in one statement.
+func ClearUserAttributes(ctx context.Context, tx pgx.Tx, orgID string, clears []AttributeWrite) error {
+	users, names := make([]string, 0, len(clears)), make([]string, 0, len(clears))
+	for _, c := range clears {
+		users, names = append(users, c.UserID), append(names, c.Name)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM core.user_attributes a USING core.user_attribute_schema s,
+		       unnest($2::uuid[], $3::text[]) AS t(u, n)
+		 WHERE a.attribute_id = s.id AND s.org_id = $1::uuid AND s.name = t.n AND a.user_id = t.u`,
+		orgID, users, names); err != nil {
+		return fmt.Errorf("clearing attributes: %w", err)
+	}
+	return nil
+}
+
+// ClearUserAttribute removes one of a person's values.
+func ClearUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name string) error {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM core.user_attributes a USING core.user_attribute_schema s
+		 WHERE a.attribute_id = s.id AND a.user_id = $1::uuid AND s.org_id = $2::uuid AND s.name = $3`,
+		userID, orgID, name); err != nil {
+		return fmt.Errorf("clearing attribute %q: %w", name, err)
+	}
+	return nil
+}
+
+// ErrAttributeRequired is a required attribute left empty.
+var ErrAttributeRequired = errors.New("this attribute is required")
+
+// ErrAttributeNotSet is a value cleared that the person does not have.
+var ErrAttributeNotSet = errors.New("the person has no value for that attribute")
+
+// RemoveUserAttribute clears one of a person's values as an administrator
+// does it (6.07). The attribute must be declared, and a required one is
+// replaced rather than cleared, as the person's own profile refuses to clear
+// it: an empty required attribute is a state nothing else can put a person in.
+func RemoveUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name string) error {
+	var attrID string
+	var required bool
+	err := tx.QueryRow(ctx, `SELECT id::text, required FROM core.user_attribute_schema
+		WHERE org_id = $1::uuid AND name = $2`, orgID, name).Scan(&attrID, &required)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %q", ErrNoSuchAttribute, name)
+	}
+	if err != nil {
+		return fmt.Errorf("reading the declaration for %q: %w", name, err)
+	}
+	if required {
+		return fmt.Errorf("%w: %q is required, so give it another value instead", ErrAttributeRequired, name)
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM core.user_attributes WHERE user_id = $1::uuid AND attribute_id = $2::uuid`,
+		userID, attrID)
+	if err != nil {
+		return fmt.Errorf("clearing attribute %q: %w", name, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: %q", ErrAttributeNotSet, name)
+	}
+	return nil
+}
+
+// SetOwnAttributes writes what a person set for themselves, from their profile
+// or at sign-up: only the attributes they may write, each checked against its
+// type and sealed as its declaration says. values maps a name to its new value;
+// an empty value clears an optional attribute and is refused for a required
+// one. A name the person may not write is refused (ErrNoSuchAttribute) rather
+// than skipped, so an administrator's attribute cannot be set by posting it.
+// changed is the names that were written or cleared.
+func SetOwnAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string, values map[string]string,
+	root *keys.RootKey) (changed []string, err error) {
+
+	decl, err := Attributes(ctx, tx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	writable := map[string]Attribute{}
+	for _, a := range decl {
+		if a.UserWritable {
+			writable[a.Name] = a
+		}
+	}
+	for name := range values {
+		if _, ok := writable[name]; !ok {
+			return nil, refuseAttribute("error.attribute.notyours", name, ErrNoSuchAttribute,
+				"%q is not one you can set", name)
+		}
+	}
+	for _, a := range decl {
+		v, posted := values[a.Name]
+		if !a.UserWritable || !posted {
+			continue
+		}
+		if v == "" {
+			if a.Required {
+				return nil, refuseAttribute("error.attribute.required", attributeLabel(a), ErrAttributeRequired,
+					"%s", attributeLabel(a))
+			}
+			if err := ClearUserAttribute(ctx, tx, userID, orgID, a.Name); err != nil {
+				return nil, err
+			}
+			changed = append(changed, a.Name)
+			continue
+		}
+		// Checked here as well as in SetUserAttribute, so the refusal names the
+		// attribute as the person's page labels it.
+		if err := checkAttributeValue(attributeLabel(a), a.ValueType, v); err != nil {
+			return nil, err
+		}
+		if err := SetUserAttribute(ctx, tx, userID, orgID, a.Name, v, root); err != nil {
+			return nil, err
+		}
+		changed = append(changed, a.Name)
+	}
+	return changed, nil
+}
+
+// MissingRequiredAttributes are the attributes declared required that the person may
+// write and holds no value for: what sign-in asks them for before a session, since an
+// account made before the attribute was required, or by an administrator or a
+// directory, never passed sign-up's check. A required attribute the person may not
+// write is not theirs to fill in, so it is not here.
+func MissingRequiredAttributes(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, orgID, userID string) ([]Attribute, error) {
+	rows, err := q.Query(ctx, `
+		SELECT s.id::text, s.name, s.display_name, s.value_type, s.personal,
+		       s.user_readable, s.user_writable, s.required
+		FROM core.user_attribute_schema s
+		WHERE s.org_id = $1::uuid AND s.required AND s.user_writable
+		  AND NOT EXISTS (SELECT 1 FROM core.user_attributes a
+		                  WHERE a.attribute_id = s.id AND a.user_id = $2::uuid)
+		ORDER BY s.name`, orgID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listing missing attributes: %w", err)
+	}
+	defer rows.Close()
+	var out []Attribute
+	for rows.Next() {
+		var a Attribute
+		if err := rows.Scan(&a.ID, &a.Name, &a.DisplayName, &a.ValueType,
+			&a.Personal, &a.UserReadable, &a.UserWritable, &a.Required); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AttributeLabel is the attribute as a person's page names it.
+func AttributeLabel(a Attribute) string { return attributeLabel(a) }
+
+func attributeLabel(a Attribute) string {
+	if a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return a.Name
+}
+
 // attributeContext binds a sealed value to the attribute it belongs to.
 //
 // Without it, a ciphertext copied from one attribute's row to another's would
@@ -199,7 +599,7 @@ func SetUserAttribute(ctx context.Context, tx pgx.Tx, userID, orgID, name, value
 func attributeContext(name string) string { return "user-attribute:" + name }
 
 // UserAttributes returns a user's attributes, unsealing what it can.
-func UserAttributes(ctx context.Context, tx pgx.Tx, userID, orgID string,
+func UserAttributes(ctx context.Context, tx claimReader, userID, orgID string,
 	root *keys.RootKey) ([]AttributeValue, error) {
 
 	rows, err := tx.Query(ctx, `
@@ -362,8 +762,8 @@ func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, pro
 	}
 
 	for _, m := range maps {
-		v, ok := claims[m.claim]
-		if !ok || v == nil {
+		v := claimAt(claims, m.claim)
+		if v == nil {
 			continue
 		}
 		value := claimToString(v)
@@ -385,6 +785,13 @@ func ApplyIDPAttributeMapping(ctx context.Context, tx pgx.Tx, userID, orgID, pro
 		applied++
 	}
 	return applied, skipped, nil
+}
+
+// claimAt finds a claim by name, or by a dotted path into nested objects, as a provider
+// that groups its claims needs (8.13). The whole name is tried first, since many claim
+// names hold dots of their own: a URL, or a SAML attribute's OID.
+func claimAt(claims map[string]any, name string) any {
+	return federation.ClaimAt(claims, name)
 }
 
 // claimToString renders a JSON claim as the text an attribute stores.

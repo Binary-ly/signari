@@ -534,8 +534,11 @@ walk take their first step together, in one statement: a question with nothing
 behind it at all, no row of its own and nothing a rewrite goes through, is settled
 there and walks no further, so a hundred questions under a model with a rewrite,
 half of them about documents nobody asking holds, no longer cost a statement each
-for that half. Nothing read for a request outlives it, so a grant revoked is
-refused on the next one. A provider veto is still one call per allowed entry.
+for that half. The rest take their first level from the rows that statement read
+and ask only what lies beyond it, so a hundred documents in one deep folder cost
+that statement and one walk up the folders. Nothing read for a request outlives
+it, so a grant revoked is refused on the next one. A provider veto is still one
+call per allowed entry.
 
 ## Recording decisions
 

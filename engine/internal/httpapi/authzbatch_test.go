@@ -222,8 +222,8 @@ func TestAHundredEvaluationsThroughARewriteDoNotWalkOneByOne(t *testing.T) {
 		}
 	}
 	// The five of the model without the rewrite, the one first step for all of them, and
-	// rw-100's walk: its parent, then the folder.
-	if spent > 8 {
+	// rw-100's walk beyond it: its parent is in the step's rows, so only the folder.
+	if spent > 7 {
 		t.Errorf("a hundred evaluations through a rewrite took %d statements beyond the %d that let the caller in", spent, entry)
 	}
 }

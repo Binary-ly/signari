@@ -709,6 +709,11 @@ func (r *setupRun) reachSuperuser(ctx context.Context) error {
 // trySuperuser connects as su, asking at a terminal for a password the
 // server wants and was not given.
 func (r *setupRun) trySuperuser(ctx context.Context, su *pgSuperuser) error {
+	// Its own database for the server-wide work, which is not the one being
+	// set up: that may not exist yet.
+	if su.cfg.Database == "" || su.cfg.Database == r.a.database {
+		su.cfg.Database = "postgres"
+	}
 	for tries := 0; ; tries++ {
 		conn, err := connectAs(ctx, su.cfg, "")
 		if err == nil {
@@ -1409,7 +1414,16 @@ type checkItem struct {
 // read from the env file and through the engine's own connection, needing no
 // superuser. It exits 0 when all of it is there, 2 when anything is missing,
 // and 1 when it could not tell.
-func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setupFlags) error {
+func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setupFlags) (err error) {
+	// With -json, one line whatever happens: a script reads it, and a check
+	// that could not be made is an answer too.
+	printed := false
+	defer func() {
+		if f.json && !printed && err != nil && !errors.Is(err, errIncomplete) {
+			line, _ := json.Marshal(map[string]any{"complete": false, "error": err.Error()})
+			fmt.Fprintln(stdout, string(line))
+		}
+	}()
 	for name := range f.given {
 		switch name {
 		case "check", "env-file", "json", "timeout":
@@ -1422,8 +1436,7 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 	if path == "" {
 		path = setupDefault("env-file", h, setupAnswers{})
 	}
-	path, err := filepath.Abs(path)
-	if err != nil {
+	if path, err = filepath.Abs(path); err != nil {
 		return err
 	}
 	var items []checkItem
@@ -1451,6 +1464,7 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 				return err
 			}
 			fmt.Fprintln(stdout, string(line))
+			printed = true
 		}
 		if !complete {
 			return errIncomplete

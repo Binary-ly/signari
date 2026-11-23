@@ -10,7 +10,7 @@ scanned, and why each thing is here at all.
 
 ## The number is the point
 
-**23 direct dependencies. 75 modules in the whole graph, as `go list -m all`
+**24 direct dependencies. 75 modules in the whole graph, as `go list -m all`
 counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
@@ -49,6 +49,7 @@ named eighteen.
 | `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |
 | `golang.org/x/crypto` | v0.59.0 | Argon2id, HKDF, bcrypt | Go project |
 | `golang.org/x/sync` | v0.25.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
+| `golang.org/x/term` | v0.48.0 | whether stdin and stdout are a terminal, and reading a line without echo | Go project, already in the graph at an older version and needing nothing beyond `golang.org/x/sys`, which it was; `signari setup` asks only at a terminal, which a check of the file mode cannot tell from `/dev/null`, and reads a superuser's password without echoing it |
 | `golang.org/x/text` | v0.44.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
 | `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | operator-supplied input only, never a request |
 

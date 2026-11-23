@@ -138,6 +138,9 @@ func usage() error {
 // help <command>` finds the command's one-line description.
 const usageText = `usage: signari <command> [flags]
 
+first run:
+  setup                take a machine with PostgreSQL to a deployment a person can sign in to
+
 schema:
   migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
   migrate up           apply 0002+ (tables, policies, views) as signari_engine
@@ -492,6 +495,7 @@ testing:
 env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
   SIGNARI_ROOT_KEY_FILE   or a file holding it, readable by this user alone
+  SIGNARI_ADDR            where serve listens when -addr is not given (default :8080)
 
 help:
   signari help <command>    what one command does and the flags it takes
@@ -536,7 +540,8 @@ func run(args []string) (err error) {
 	ifMatch := fs.String("if-match", "", "`signari api`: the configuration version the change must be made against")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
-	addr := fs.String("addr", ":8080", "listen address for `serve`")
+	addr := fs.String("addr", ":8080", "listen address for `serve`, or SIGNARI_ADDR; `setup`: the one it writes "+
+		"to the env file, 127.0.0.1:8080 unless given")
 	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS")
 	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key")
 	adminAddr := fs.String("admin-addr", os.Getenv("SIGNARI_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
@@ -571,7 +576,7 @@ func run(args []string) (err error) {
 		"registered here that is that service itself; every person is linked to it by their identifier there")
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
-	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what would be imported, retired or set up, and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm, publishing its first key if it has none "+
 		"(default: all in use); `client set-alg`: what signs the client's tokens, one the instance holds a key for")
 	rsaBits := fs.Int("rsa-bits", 0, "`keys rotate -alg`: the size of the RSA key published, 2048, 3072 or 4096 "+
@@ -667,7 +672,27 @@ func run(args []string) (err error) {
 	echPublicName := fs.String("public-name", "",
 		"`ech new`: the DNS name sent in the clear in place of the one asked for; the server needs a certificate for it")
 	echConfigID := fs.Int("config-id", -1, "`ech new`: 0 to 255, the id clients name this key by; random when not given")
-	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script")
+	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script; `setup`: one JSON "+
+		"result line on stdout, the progress on stderr, and no questions")
+	// `signari setup` (setup.go). Its database connection is a superuser's,
+	// once, never -dsn's: that is the engine's own, which setup makes.
+	superuserDSN := fs.String("superuser-dsn", "", "`setup`: a URL for a PostgreSQL role that may create roles, "+
+		"used once and never stored, with no password in it (PGPASSWORD, or -superuser-dsn-file); found on "+
+		"this machine when not given")
+	superuserDSNFile := fs.String("superuser-dsn-file", "", "`setup`: a file holding that URL, which may carry "+
+		"the password, so it is in no process list or shell history")
+	setupDatabase := fs.String("database", "", "`setup`: the database to set up, made when missing (default signari)")
+	setupRootKeyFile := fs.String("root-key-file", "", "`setup`: where the root key is, or is generated, never "+
+		"overwritten (default /etc/signari/root.key for root, else under $XDG_CONFIG_HOME/signari or "+
+		"~/.config/signari)")
+	setupEnvFile := fs.String("env-file", "", "`setup`: the env file serve starts from, written 0600 (default "+
+		"signari.env beside the root key's default)")
+	setupYes := fs.Bool("yes", false, "`setup`: ask nothing and take the defaults; a needed answer with none is "+
+		"an error naming its flag. Also when there is no terminal, or CI is set")
+	setupCheckOnly := fs.Bool("check", false, "`setup`: say what is set up and what is missing, and change "+
+		"nothing; exits 0 when complete, 2 when not, 1 when it cannot tell")
+	printRootKey := fs.Bool("print-root-key", false, "`setup`: print the root key in the summary, to copy "+
+		"it off this machine; never printed otherwise")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
@@ -1311,6 +1336,19 @@ func run(args []string) (err error) {
 		return i18nStatus(*themeDir)
 	case "i18n keys":
 		return i18nKeys(*themeDir)
+	// `setup` makes the engine's connection rather than being given one: it
+	// reaches PostgreSQL as a superuser, once, and writes signari_engine's DSN
+	// to the env file (setup.go).
+	case "setup":
+		given := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		sctx, scancel := commandContext(runFor)
+		defer scancel()
+		return setupCmd(sctx, os.Stdout, os.Stderr, thisHost(), setupFlags{issuer: *issuer, email: *email,
+			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, database: *setupDatabase,
+			addr: *addr, rootKeyFile: *setupRootKeyFile, envFile: *setupEnvFile, yes: *setupYes,
+			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
+			given: given})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database
@@ -1703,7 +1741,9 @@ func run(args []string) (err error) {
 	case "bootstrap":
 		return bootstrap(ctx, conn, *issuer, *name, *slug, *email)
 	case "serve":
-		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
+		addrGiven := false
+		fs.Visit(func(f *flag.Flag) { addrGiven = addrGiven || f.Name == "addr" })
+		return serve(conn, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
@@ -2726,23 +2766,28 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 	if issuer == "" {
 		return fmt.Errorf("-issuer is required")
 	}
-	if name == "" {
-		name = issuer
-	}
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
+	return instanceCreateWith(ctx, conn, root, os.Stdout, issuer, name)
+}
 
+// instanceCreateWith is instanceCreate under the root key given, reporting to
+// w, for bootstrap and setup.
+func instanceCreateWith(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, w io.Writer, issuer, name string) error {
+	if name == "" {
+		name = issuer
+	}
 	var id string
-	err = conn.QueryRow(ctx, `
+	err := conn.QueryRow(ctx, `
 		INSERT INTO core.instances (issuer, display_name) VALUES ($1, $2)
 		ON CONFLICT (issuer) DO UPDATE SET display_name = EXCLUDED.display_name
 		RETURNING id::text`, issuer, name).Scan(&id)
 	if err != nil {
 		return fmt.Errorf("creating instance: %w", err)
 	}
-	fmt.Printf("instance %s\n  issuer %s\n", id, issuer)
+	fmt.Fprintf(w, "instance %s\n  issuer %s\n", id, issuer)
 
 	// ES256 as the default for new clients, RS256 always available as the
 	// universal floor that every relying-party library can verify.
@@ -2751,12 +2796,24 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 		return fmt.Errorf("ensuring signing keys: %w", err)
 	}
 	for _, k := range created {
-		fmt.Printf("  generated %s key %s (%s)\n", k.Algorithm(), k.KID(), k.State())
+		fmt.Fprintf(w, "  generated %s key %s (%s)\n", k.Algorithm(), k.KID(), k.State())
 	}
 	if len(created) == 0 {
-		fmt.Println("  signing keys already present")
+		fmt.Fprintln(w, "  signing keys already present")
 	}
 	return nil
+}
+
+// serveAddr is where serve listens: -addr when it was given, else SIGNARI_ADDR
+// when that is set, else -addr's default. The variable is what lets the env
+// file `signari setup` writes hold everything serve needs, so that the unit and
+// the shell start it the same way; given, the flag still wins, as the image's
+// own `serve -addr 0.0.0.0:8080` relies on.
+func serveAddr(flagValue string, given bool, getenv func(string) string) string {
+	if v := getenv("SIGNARI_ADDR"); v != "" && !given {
+		return v
+	}
+	return flagValue
 }
 
 func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure bool) error {

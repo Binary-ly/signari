@@ -166,9 +166,11 @@ func TestEveryFlagTheCLINamesExists(t *testing.T) {
 	// Flags of other programs the messages tell an operator to run, allowed
 	// only where that program is named in the same message.
 	// -h and -help are the flag package's own, which every command answers
-	// with its help (6.15), and -eq is the shell's, in the completion script.
+	// with its help (6.15), and -eq is the shell's, in the completion script;
+	// so is -a, in the `set -a; . <env file>; set +a` setup prints to start the
+	// engine with what it wrote.
 	others := map[string]string{"c": "head ", "e": "ipa-getkeytab ", "u": "date ", "eq": "COMP_CWORD",
-		"h": "", "help": ""}
+		"a": "set -a", "h": "", "help": ""}
 	// And the arguments a command runs another program with, which are that
 	// program's argv and are shown to nobody: stty's -echo, for a password
 	// read at a terminal.

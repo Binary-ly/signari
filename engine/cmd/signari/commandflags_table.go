@@ -289,6 +289,7 @@ var commandFlags = map[string][]string{
 	"scim-source enable":              {"org", "slug"},
 	"scim-source list":                {"o"},
 	"serve":                           {"addr", "admin-addr", "admin-insecure", "tls-cert", "tls-key"},
+	"setup":                           {"addr", "check", "database", "dry-run", "email", "env-file", "issuer", "json", "print-root-key", "root-key-file", "superuser-dsn", "superuser-dsn-file", "yes"},
 	"signup disable":                  {"org"},
 	"signup enable":                   {"domains", "groups", "org", "require-approval", "verify-email"},
 	"signup show":                     {"org"},

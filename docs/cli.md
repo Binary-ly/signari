@@ -11,7 +11,7 @@ Most commands need `SIGNARI_DSN`. Anything touching sealed material also needs
 
 A command that edits configuration is cancelled after 60 seconds, so one stuck
 behind a lock fails instead of hanging a deploy script. A command whose work
-grows with the data has no limit: `serve`, the three `migrate` commands that
+grows with the data has no limit: `serve`, `setup`, the three `migrate` commands that
 apply, `export audit`, `audit checkpoint`, `audit verify`, `audit archive`, both `import` commands, `dir sync`,
 `scim sync`, `kerberos sync`, `keys rewrap-root`, `janitor once` and `restore
 finalize`. `proxy
@@ -34,7 +34,8 @@ read is refused rather than ignored, and so is a word after the flags, where
 parsing stops. `signari help <command>` and `signari <command> -h` show what one
 command takes. A command exits 0 when it worked, 1 when it failed, 2 when it was
 used wrongly (no such command, a flag it does not take, one it needs left out),
-and `signari plan` exits 3 when the deployment differs from the file. Until
+`signari setup -check` exits 2 when something is not set up, and `signari plan`
+exits 3 when the deployment differs from the file. Until
 October 2026 one set of every flag served every command, so a mistyped command's
 flags were accepted and did nothing, and every failure exited 1.
 
@@ -52,6 +53,12 @@ A listing that takes `-o json` prints its rows as a JSON array of objects, for a
 script to read instead of the columns, and `version -o json` one object; its
 text is unchanged without it. `signari help <command>` shows whether a command
 takes it. A secret is never in either.
+
+## First run
+
+| | |
+|---|---|
+| `signari setup` | Take a machine with PostgreSQL 16 or newer to a deployment somebody can sign in to, in one command: the database, migration 0001 as a superuser, a generated password for `signari_engine`, the migrations after 0001 as `signari_engine`, the root key, the instance with its signing keys, an organisation and a one-time link, good for 72 hours, for the first administrator, and an env file `serve` starts from. It asks, at a terminal, only what it cannot work out: the address people will reach Signari at, which becomes the issuer (offered as `https://` and the host's name when it has one that resolves, else `http://localhost:8080`); the first administrator's email; whether to use the PostgreSQL it found on this machine (a socket in `/var/run/postgresql` or `/tmp`, reached as the `postgres` system user when root, or `127.0.0.1:5432`), or a URL for one that may create roles; and whether to go ahead with the plan it prints. With no terminal, or with `-yes`, `-json` or `CI` set, it asks nothing, takes the same defaults, and a needed answer with none is an error naming its flag. `-issuer`, `-email`; `-superuser-dsn` or `-superuser-dsn-file`, used once and written nowhere, refused when the flag carries a password, which `PGPASSWORD` or the file holds instead; `-database` (default `signari`); `-addr`, where `serve` will listen (default `127.0.0.1:8080`, written as `SIGNARI_ADDR`); `-root-key-file` and `-env-file` (default `/etc/signari/root.key` and `/etc/signari/signari.env` for root, else `root.key` and `signari.env` under `$XDG_CONFIG_HOME/signari`, or `~/.config/signari`). The env file is 0600 and holds `SIGNARI_DSN` as `signari_engine`, `SIGNARI_ROOT_KEY_FILE`, `SIGNARI_ISSUER` and `SIGNARI_ADDR`; the root key is 32 random bytes in a 0600 file, never overwritten and printed only with `-print-root-key`. As root, a file setup makes belongs to the owner of its directory, so a `/etc/signari` made for a service user gives that user its key. Every check runs before anything is written: the server's version, that the role is a superuser, that `pg_hba.conf` lets `signari_engine` sign in over TCP (and, if not, the line to add and where), that a root key opens the signing keys already there, and that a password the role already has is not one another database's deployment depends on. Each step is skipped when it is done, so a second run changes nothing and says so; on a failure, what the run made is taken back, except the database, which is never dropped, and the root key once anything may be sealed under it. Once the first administrator has set a password with the link, run it again and it makes them the organisation's `org-owner`, only while the organisation has none. `-dry-run` prints the plan and changes nothing; `-json` prints one JSON line for a script, with the link, and the progress on standard error; `-check` reads the env file and says what is set up and what is missing, through `signari_engine` alone, exiting 0 when all of it is there, 2 when anything is missing and 1 when it cannot tell. `-dsn` is refused: it names the engine's own connection, which setup makes. `scripts/install.sh`, served as `https://signari.dev/install`, runs it after installing the binary |
 
 ## Schema
 
@@ -72,7 +79,7 @@ a class of failure that shows up as data corruption rather than an error.
 
 | | |
 |---|---|
-| `signari serve` | The engine. `-addr`, `-tls-cert`, `-tls-key` |
+| `signari serve` | The engine. `-addr`, else `SIGNARI_ADDR`, else `:8080`; `-tls-cert`, `-tls-key` |
 | `signari doctor` | Check a deployment's configuration and report what is wrong, including the audit chain, organisation tables without forced row-level security, janitor backlog, the largest tables, the PostgreSQL version and the schema against its ledger. Exits non-zero on a critical finding. `-json` prints the report as JSON for a script: `signari doctor -json \| jq '.findings[] \| select(.severity == "critical")'` |
 | `signari version` | The release, commit, Go toolchain, FIPS module, the schema version this binary expects and the fingerprint it is pinned to (`none` when unpinned). Needs no database. `scripts/build-release.sh` reads the `pinned` line before it tags. See [schema-pinning.md](schema-pinning.md) |
 | `signari janitor once` | Run one janitor pass by hand — expiry, sweeping, parking |

@@ -48,14 +48,14 @@ var errDrift = errors.New("the deployment differs from the file")
 // needs -slug", "-offer-expires must be".
 var asksForAFlag = regexp.MustCompile(`^(give -|[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)? needs -|-[a-z][a-z0-9-]* (is required|must) )`)
 
-// exitCode is what the process exits with for err: 2 for usage, 3 for drift,
-// 1 for anything else.
+// exitCode is what the process exits with for err: 2 for usage, and for
+// `setup -check` finding something missing, 3 for drift, 1 for anything else.
 func exitCode(err error) int {
 	var u usageError
 	switch {
 	case err == nil:
 		return 0
-	case errors.As(err, &u), asksForAFlag.MatchString(err.Error()):
+	case errors.As(err, &u), asksForAFlag.MatchString(err.Error()), errors.Is(err, errIncomplete):
 		return 2
 	case errors.Is(err, errDrift):
 		return 3

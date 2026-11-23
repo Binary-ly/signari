@@ -42,6 +42,7 @@ var cliAPI = map[string]string{
 	"migrate up":          cliOnly("changes the schema the engine serving the API depends on"),
 	"migrate all":         cliOnly("changes the schema the engine serving the API depends on"),
 	"bootstrap":           cliOnly("runs before there is an Admin API token to call one with"),
+	"setup":               cliOnly("needs a superuser connection, and writes the root key and env file on the host, before the engine runs"),
 	"migrate status":      reads,
 	"migrate fingerprint": reads,
 	"janitor once":        cliOnly("the janitor's own pass, run by hand on the host"),

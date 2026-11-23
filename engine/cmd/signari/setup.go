@@ -834,6 +834,11 @@ func (r *setupRun) plan() {
 	if suName == "" {
 		suName = "the superuser"
 	}
+	// The migrations still to apply, or, when none are, the ones after 0001.
+	from := max(d.applied+1, 2)
+	if from > r.latest {
+		from = 2
+	}
 	r.steps = []setupStep{
 		{name: "database", what: "create the database " + a.database, run: r.createDatabase,
 			skip: when(dbThere, "it is there")},
@@ -845,7 +850,7 @@ func (r *setupRun) plan() {
 			skip: when(r.envComplete(), "it holds every setting")},
 		{name: "engine-role", what: "give " + engineRole + " the env file's password, and sign in with it over TCP",
 			run: r.setPasswordAndProve, skip: when(r.engineWorked, "the env file's password signs in")},
-		{name: "migrations", what: fmt.Sprintf("apply migrations %04d to %04d as %s", max(d.applied+1, 2),
+		{name: "migrations", what: fmt.Sprintf("apply migrations %04d to %04d as %s", from,
 			r.latest, engineRole), run: r.migrateCore,
 			skip: when(d.applied >= r.latest, fmt.Sprintf("the schema is at %04d", d.applied))},
 		{name: "first-admin", what: "create the instance, its organisation and the first admin's link",

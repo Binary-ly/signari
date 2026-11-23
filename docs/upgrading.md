@@ -108,6 +108,69 @@ The check reads the SQL and does not run it, so it is a floor. A new column the
 previous release would read wrongly, or a new row it would misread, is the
 author's to rule out.
 
+## Serving as signari_engine
+
+From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN` signs
+in as, or acts as, a superuser or a role with `BYPASSRLS`. PostgreSQL's own words:
+"Superusers and roles with the BYPASSRLS attribute always bypass the row security
+system", so no organisation's policy binds such a role, and a query that leaves
+out its organisation reads every tenant's rows. v0.1.0's README and its compose
+file both served that way. Run `signari doctor` before you upgrade: it reports
+such a role as critical, and that is the deployment this section is for.
+
+Move it to `signari_engine`, which migration 0001 made and which the policies are
+written for, in either of two ways. Either way, keep the superuser for
+`signari migrate bootstrap` alone.
+
+**With `signari setup`**, against the database you have, on the machine that
+runs it. It reaches PostgreSQL as you over the local socket, or, run as root, as
+the `postgres` system user; elsewhere, give `-superuser-dsn-file` a file holding a
+superuser's URL. It needs the root key you serve with now in a file, since a new
+key would open none of the signing keys already sealed. For the v0.1.0 quick
+start's database:
+
+```sh
+mkdir -p -m 0700 ~/.config/signari
+( umask 077; printf '%s\n' "$SIGNARI_ROOT_KEY" > ~/.config/signari/root.key )
+signari setup -database signari_dev -issuer http://localhost:8080 -email you@example.com \
+  -root-key-file ~/.config/signari/root.key
+```
+
+As root, the files go under `/etc/signari` instead. Setup skips what is there:
+the database, migration 0001, the migrations after it, the instance, its
+organisation, and the link when people already sign in. It refuses a root key
+that does not open the signing keys. It gives `signari_engine` a password, checks
+that `pg_hba.conf` lets it sign in over TCP, and writes the env file,
+`~/.config/signari/signari.env` here, with `SIGNARI_DSN` for it. If the
+organisation has no owner yet, it makes the person `-email` names its
+`org-owner`, once they have an account. Then serve from that file, with
+`SIGNARI_ROOT_KEY` no longer set, since the file names the key:
+
+```sh
+unset SIGNARI_ROOT_KEY
+set -a; . ~/.config/signari/signari.env; set +a; signari serve
+```
+
+**By hand**, as a superuser, give the role a password, then point `SIGNARI_DSN`
+at it:
+
+```sh
+psql -d signari_dev -c '\password signari_engine'      # asks twice, and sends only its hash
+export SIGNARI_DSN='postgres://signari_engine:<that password>@127.0.0.1:5432/signari_dev?sslmode=disable'
+```
+
+`pg_hba.conf` must let `signari_engine` sign in over TCP with a password, which
+Debian's and Ubuntu's own `host all all 127.0.0.1/32 scram-sha-256` line does.
+`signari doctor` then reports no database finding.
+
+For the compose stack, a data volume made before the engine served as
+`signari_engine` needs the role's password set once. The header of
+`deploy/postgres-init/20-engine-role.sh` gives the command.
+
+Until you have moved it, `SIGNARI_ALLOW_RLS_BYPASS=1`, or `serve -allow-rls-bypass`,
+starts the engine as before, with a warning at startup, and `signari doctor`
+goes on reporting it.
+
 ## Which PostgreSQL
 
 | | |

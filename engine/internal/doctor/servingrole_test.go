@@ -12,19 +12,19 @@ import (
 // A connection that signs in as, or acts as, a role row-level security does
 // not bind is critical; signari_engine, which the forced policies bind, is not.
 func TestARoleRowSecurityDoesNotBindIsCritical(t *testing.T) {
-	engine := dbRole{name: "signari_engine"}
-	super := dbRole{name: "postgres", super: true}
+	engine := Role{Name: "signari_engine"}
+	super := Role{Name: "postgres", Super: true}
 	for _, c := range []struct {
 		why              string
-		session, current dbRole
+		session, current Role
 		critical         bool
 	}{
 		{"the engine's own role", engine, engine, false},
 		{"a superuser", super, super, true},
 		// RESET ROLE is one statement away, and an injection could send it.
 		{"a superuser acting as the engine", super, engine, true},
-		{"the engine acting as a BYPASSRLS role", engine, dbRole{name: "signari_maintenance", bypass: true}, true},
-		{"a BYPASSRLS login", dbRole{name: "ops", bypass: true}, dbRole{name: "ops", bypass: true}, true},
+		{"the engine acting as a BYPASSRLS role", engine, Role{Name: "signari_maintenance", BypassRLS: true}, true},
+		{"a BYPASSRLS login", Role{Name: "ops", BypassRLS: true}, Role{Name: "ops", BypassRLS: true}, true},
 	} {
 		r := findingsFor(t, func(r *Report) { reportServingRole(r, c.session, c.current) })
 		if got := r.Count(Critical) == 1; got != c.critical {
@@ -42,6 +42,14 @@ func TestARoleRowSecurityDoesNotBindIsCritical(t *testing.T) {
 				}
 			}
 		}
+		// serve decides on the same answer.
+		if role, unbound := UnboundRole(c.session, c.current); unbound != c.critical ||
+			(unbound && !strings.Contains(r.Findings[0].Summary, role.Name)) {
+			t.Errorf("%s: UnboundRole says %v (%+v), the finding %v", c.why, unbound, role, r.Findings)
+		}
+	}
+	if (Role{Name: "x", BypassRLS: true}).Kind() != "a role with BYPASSRLS" || super.Kind() != "a superuser" {
+		t.Error("a role's kind is named wrongly")
 	}
 }
 

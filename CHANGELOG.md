@@ -6,6 +6,29 @@ and its entry says how.
 
 ## Unreleased
 
+- **`serve` refuses a database role row-level security does not bind.** When
+  `SIGNARI_DSN` signs in as, or acts as, a superuser or a `BYPASSRLS` role, no
+  organisation's policy binds it and `serve` now stops at startup, saying so.
+  v0.1.0's README and its compose file both served as a superuser, so **a
+  deployment that followed either stops after this upgrade** until it serves as
+  `signari_engine`: `docs/upgrading.md` ("Serving as signari_engine") says how,
+  with `signari setup` against the existing database or two commands by hand.
+  `-allow-rls-bypass` or `SIGNARI_ALLOW_RLS_BYPASS=1` starts it as before, with a
+  warning, and `signari doctor` reports such a role as critical either way.
+- **`signari setup`** takes a machine with PostgreSQL 16 or newer to a deployment
+  its first administrator can sign in to, serving as `signari_engine` with a
+  generated password, and asks at a terminal only what it cannot work out. A
+  second run changes nothing; `-dry-run` prints the plan, `-check` exits 0 when
+  everything is there and 2 when not, and `-json` prints one line for a script.
+  See `docs/cli.md`.
+- **A one-line installer**, `scripts/install.sh`, served as
+  `https://signari.dev/install`: it installs a release only once its SHA-256, and
+  with cosign its signature, match, makes the systemd service as root, and runs
+  `signari setup`.
+- `serve` takes its listen address from `SIGNARI_ADDR` when `-addr` is not given.
+- The compose stack's engine serves as `signari_engine`, with a password an init
+  script gives it on a fresh volume; a volume made before needs it set once, as
+  `deploy/postgres-init/20-engine-role.sh` says.
 - **Releases are signed.** `.github/workflows/release.yml` rebuilds each published
   release from its tag and, only if the binary comes out byte-identical, signs the
   binary and its SBOM with cosign and records SLSA build provenance. v0.1.0 was

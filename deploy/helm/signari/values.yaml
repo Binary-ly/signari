@@ -26,7 +26,10 @@ secret:
   # Inline values, used only when existingSecret is empty. Leaving dsn or rootKey
   # empty makes the chart refuse to render (see _helpers.tpl) rather than deploy
   # an engine that cannot start or one whose root key regenerates on restart.
-  dsn: ""            # postgres://user:pass@host:5432/signari?sslmode=require
+  # As signari_engine: serve refuses a superuser or a BYPASSRLS role, which no
+  # organisation's row-level security binds (SIGNARI_ALLOW_RLS_BYPASS=1 under
+  # extraEnv starts it anyway, with a warning).
+  dsn: ""            # postgres://signari_engine:pass@host:5432/signari?sslmode=require
   rootKey: ""        # 32 random bytes, base64: head -c 32 /dev/urandom | base64
   rootKeyRef: "k8s"  # a label for the key, for rotation bookkeeping
   adminToken: ""     # optional; enables the admin API when set
@@ -37,9 +40,10 @@ secret:
 # engine pods wait for it via the Helm hook ordering.
 migrations:
   enabled: true
-  # The migrate Job needs a DSN with rights to create roles/schemas (bootstrap).
-  # If empty, it uses the same SIGNARI_DSN as the engine, which works when that
-  # user is a superuser; give a separate superuser DSN here otherwise.
+  # The migrate Job needs a DSN with rights to create roles/schemas (bootstrap),
+  # and the engine's own may not be one (above), so give a superuser DSN here.
+  # If empty, it uses the engine's SIGNARI_DSN, which applies migration 0001 only
+  # where a superuser already has.
   superuserDsnSecretKey: ""   # a key in the Secret holding the bootstrap DSN
   backoffLimit: 3
 

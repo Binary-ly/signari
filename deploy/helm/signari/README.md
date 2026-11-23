@@ -15,7 +15,10 @@ that would otherwise fail silently:
 
 - `issuer` — the public https URL clients reach the engine at. It is the `iss`
   claim in every token; changing it later breaks every relying party.
-- `secret.dsn` — the PostgreSQL DSN.
+- `secret.dsn` — the engine's PostgreSQL DSN, as `signari_engine`. The engine
+  refuses to start as a superuser or a `BYPASSRLS` role, which no organisation's
+  row-level security binds (`SIGNARI_ALLOW_RLS_BYPASS=1` under `extraEnv` starts
+  it anyway, with a warning).
 - `secret.rootKey` — 32 random bytes, base64 (`head -c 32 /dev/urandom | base64`).
   A generated-on-boot key would invalidate every stored signing key on restart,
   so it must be supplied and stable.
@@ -25,21 +28,27 @@ that would otherwise fail silently:
 ```sh
 helm install signari ./deploy/helm/signari \
   --set issuer=https://auth.example.com \
-  --set secret.dsn='postgres://signari:pass@db:5432/signari?sslmode=require' \
+  --set secret.dsn='postgres://signari_engine:pass@db:5432/signari?sslmode=require' \
   --set secret.rootKey="$(head -c 32 /dev/urandom | base64)"
 ```
+
+This way the migration Job has only the engine's DSN, which cannot apply migration
+0001: run `signari migrate bootstrap` against the database once with a superuser
+first, or keep a superuser DSN in a Secret of your own, as below.
 
 For production, manage the Secret yourself and reference it, so the root key and
 DSN never sit in a values file or Helm release history:
 
 ```sh
 kubectl create secret generic signari-secrets \
-  --from-literal=SIGNARI_DSN=... \
+  --from-literal=SIGNARI_DSN=postgres://signari_engine:...@db:5432/signari \
+  --from-literal=BOOTSTRAP_DSN=postgres://postgres:...@db:5432/signari \
   --from-literal=SIGNARI_ROOT_KEY=... \
   --from-literal=SIGNARI_ROOT_KEY_REF=k8s
 helm install signari ./deploy/helm/signari \
   --set issuer=https://auth.example.com \
-  --set secret.existingSecret=signari-secrets
+  --set secret.existingSecret=signari-secrets \
+  --set migrations.superuserDsnSecretKey=BOOTSTRAP_DSN
 ```
 
 ## Migrations
@@ -48,8 +57,8 @@ Run as a `pre-install,pre-upgrade` Helm hook Job (`migrate all`), never on engin
 boot — N replicas migrating on startup would race, and rollback would be
 ambiguous about which version the schema is at. The Job runs before the engine
 pods and is deleted before the next run. `migrations.superuserDsnSecretKey` names
-a Secret key holding a bootstrap DSN when the engine's own user is not a
-superuser.
+a Secret key holding the superuser DSN migration 0001 needs, since the engine's
+own signs in as `signari_engine`.
 
 ## TLS
 

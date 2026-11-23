@@ -555,6 +555,12 @@ func run(args []string) (err error) {
 	// should not be what somebody gets by forgetting.
 	adminInsecure := fs.Bool("admin-insecure", os.Getenv("SIGNARI_ADMIN_INSECURE") == "1",
 		"serve the admin API over plaintext HTTP (requires no -tls-cert; only safe on loopback behind a trusted terminator)")
+	// Refused unless asked for by name, as -admin-insecure is: a superuser or a
+	// BYPASSRLS role is bound by no organisation's row-level security, and
+	// serving as one is what every quick start here did until November 2026.
+	allowRLSBypass := fs.Bool("allow-rls-bypass", os.Getenv("SIGNARI_ALLOW_RLS_BYPASS") == "1",
+		"`serve`: start even when the database role is a superuser or has BYPASSRLS, which no organisation's "+
+			"row-level security binds (or SIGNARI_ALLOW_RLS_BYPASS=1); serve as signari_engine instead")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -1743,7 +1749,8 @@ func run(args []string) (err error) {
 	case "serve":
 		addrGiven := false
 		fs.Visit(func(f *flag.Flag) { addrGiven = addrGiven || f.Name == "addr" })
-		return serve(conn, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
+		return serve(conn, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert, *tlsKey, *adminAddr, *adminInsecure,
+			*allowRLSBypass)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
@@ -2816,7 +2823,33 @@ func serveAddr(flagValue string, given bool, getenv func(string) string) string 
 	return flagValue
 }
 
-func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure bool) error {
+// rlsBypassGate refuses to serve as a role row-level security does not bind,
+// unless allowed by name, and then says so once, loudly. The same answer as
+// `signari doctor`'s database finding, from the same query.
+func rlsBypassGate(ctx context.Context, conn *pgx.Conn, allow bool, log *slog.Logger) error {
+	session, current, err := doctor.ConnectionRoles(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("reading which role the engine signs in as: %w", err)
+	}
+	role, unbound := doctor.UnboundRole(session, current)
+	switch {
+	case !unbound:
+		return nil
+	case allow:
+		log.Warn("SERVING AS A ROLE ROW-LEVEL SECURITY DOES NOT BIND: the database connection signs in as, or acts as, "+
+			role.Name+", "+role.Kind()+", so a query that leaves out its organisation reads every tenant's rows. "+
+			"-allow-rls-bypass or SIGNARI_ALLOW_RLS_BYPASS=1 asked for this; serve as signari_engine instead.",
+			"role", role.Name)
+		return nil
+	}
+	return fmt.Errorf("not serving: the database connection signs in as, or acts as, %s, %s, which no "+
+		"organisation's row-level security binds, so a query that leaves out its organisation would read every "+
+		"tenant's rows. Serve as signari_engine: `signari setup` arranges it against this database and writes "+
+		"SIGNARI_DSN for it, and docs/upgrading.md says how by hand. To serve this way regardless, give "+
+		"-allow-rls-bypass or set SIGNARI_ALLOW_RLS_BYPASS=1", role.Name, role.Kind())
+}
+
+func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure, allowRLSBypass bool) error {
 	// Cancelled on SIGINT or SIGTERM, which is what an orchestrator sends before
 	// it eventually kills the process. Everything started below hangs off this
 	// context, so the signal reaches the background workers as well as the
@@ -2841,6 +2874,10 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// The startup gate. A drifted or half-migrated database must fail here, at
 	// boot, with a clear message -- not at 3am inside a query.
 	if err := migrate.Verify(ctx, conn); err != nil {
+		return err
+	}
+	// And as a role the organisations' row-level security binds.
+	if err := rlsBypassGate(ctx, conn, allowRLSBypass, log); err != nil {
 		return err
 	}
 	// And under GODEBUG=fips140=only, nothing configured that the module would

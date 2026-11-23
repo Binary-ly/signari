@@ -1643,55 +1643,82 @@ func checkServerVersion(ctx context.Context, conn *pgx.Conn, r *Report) error {
 	return nil
 }
 
-// dbRole is a database role and what of row-level security binds it.
-type dbRole struct {
-	name          string
-	super, bypass bool
+// Role is a database role, and whether row-level security binds it.
+//
+// "Superusers and roles with the BYPASSRLS attribute always bypass the row
+// security system when accessing a table" (PostgreSQL 17, ddl-rowsecurity.html),
+// FORCE or not, so every organisation's policy is off for either, and a query
+// that leaves out its organisation reads every tenant's rows with nothing to
+// say so. signari_engine owns the tables, is bound by their forced policies,
+// and is exempted by name only where the engine must see across organisations
+// (migration 0018).
+type Role struct {
+	Name             string
+	Super, BypassRLS bool
 }
 
-// checkServingRole says when the role this connection signs in as, or acts
-// as, is a superuser or may bypass row-level security. It is the role `serve`
-// signs in as, from the same SIGNARI_DSN. "Superusers and roles with the
-// BYPASSRLS attribute always bypass the row security system when accessing a
-// table" (PostgreSQL 17, ddl-rowsecurity.html), FORCE or not, so every
-// organisation's policy is off for either, and a query that leaves out its
-// organisation reads every tenant's rows with nothing to say so. signari_engine
-// owns the tables, is bound by their forced policies, and is exempted by name
-// only where the engine must see across organisations (migration 0018). Every
-// documented way to start Signari served as a superuser until November 2026.
-func checkServingRole(ctx context.Context, conn *pgx.Conn, r *Report) error {
-	r.ran("database role")
-	var session, current dbRole
-	if err := conn.QueryRow(ctx, `
+// Unbound says whether row-level security binds nothing this role reads.
+func (r Role) Unbound() bool { return r.Super || r.BypassRLS }
+
+// Kind says what the role is, for a message: a superuser, or a BYPASSRLS role.
+func (r Role) Kind() string {
+	if r.Super {
+		return "a superuser"
+	}
+	return "a role with BYPASSRLS"
+}
+
+// ConnectionRoles are the role conn signed in as and the one it acts as,
+// which differ under SET ROLE or a role= option. `serve` refuses to start, and
+// this package reports, on the same answer.
+func ConnectionRoles(ctx context.Context, conn *pgx.Conn) (session, current Role, err error) {
+	err = conn.QueryRow(ctx, `
 		SELECT s.rolname, s.rolsuper, s.rolbypassrls, c.rolname, c.rolsuper, c.rolbypassrls
 		  FROM pg_catalog.pg_roles s, pg_catalog.pg_roles c
 		 WHERE s.rolname = session_user AND c.rolname = current_user`).
-		Scan(&session.name, &session.super, &session.bypass, &current.name, &current.super, &current.bypass); err != nil {
+		Scan(&session.Name, &session.Super, &session.BypassRLS, &current.Name, &current.Super, &current.BypassRLS)
+	return
+}
+
+// UnboundRole is the first of the two that row-level security does not bind,
+// the one signed in as before the one acted as: signed in as a superuser, a
+// RESET ROLE is one statement away whatever it acts as.
+func UnboundRole(session, current Role) (Role, bool) {
+	for _, r := range []Role{session, current} {
+		if r.Unbound() {
+			return r, true
+		}
+	}
+	return Role{}, false
+}
+
+// checkServingRole says when the role this connection signs in as, or acts
+// as, is one row-level security does not bind. It is the role `serve` signs in
+// as, from the same SIGNARI_DSN, and serve refuses it unless told by name.
+// Every documented way to start Signari served as a superuser until November
+// 2026.
+func checkServingRole(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("database role")
+	session, current, err := ConnectionRoles(ctx, conn)
+	if err != nil {
 		return err
 	}
 	reportServingRole(r, session, current)
 	return nil
 }
 
-// reportServingRole is checkServingRole's finding for the role signed in as
-// and the one acted as, which differ under SET ROLE or a role= option.
-func reportServingRole(r *Report, session, current dbRole) {
-	for _, role := range []dbRole{session, current} {
-		if !role.super && !role.bypass {
-			continue
-		}
-		kind := "a superuser"
-		if !role.super {
-			kind = "a role with BYPASSRLS"
-		}
-		r.add(Critical, "database", fmt.Sprintf("the database connection signs in as %s, %s, which no "+
-			"organisation's row-level security binds: a query that leaves out its organisation reads every "+
-			"tenant's rows", role.name, kind),
-			"Serve as signari_engine. `signari setup` gives it a password and writes SIGNARI_DSN for it; or "+
-				"ALTER ROLE signari_engine PASSWORD '...' and point SIGNARI_DSN at that role. Keep the "+
-				"superuser for `signari migrate bootstrap` alone.")
+// reportServingRole is checkServingRole's finding.
+func reportServingRole(r *Report, session, current Role) {
+	role, unbound := UnboundRole(session, current)
+	if !unbound {
 		return
 	}
+	r.add(Critical, "database", fmt.Sprintf("the database connection signs in as, or acts as, %s, %s, which no "+
+		"organisation's row-level security binds: a query that leaves out its organisation reads every "+
+		"tenant's rows, and serve refuses to start on it", role.Name, role.Kind()),
+		"Serve as signari_engine. `signari setup` gives it a password and writes SIGNARI_DSN for it; or "+
+			"ALTER ROLE signari_engine PASSWORD '...' and point SIGNARI_DSN at that role (docs/upgrading.md). "+
+			"Keep the superuser for `signari migrate bootstrap` alone.")
 }
 
 // checkAuditChain says whether the audit trail verifies, judged as an export

@@ -634,6 +634,9 @@ func (r *setupRun) settleFirstAdmin(ctx context.Context) error {
 				r.missing = append(r.missing, "email")
 			}
 			return nil
+		case d.firstAdminDone(r.h.now()):
+			return errors.New("give -email, the address of the person to make the organisation's owner: " +
+				"it has none yet")
 		default:
 			return errors.New("give -email, the first administrator's address: nobody can sign in here yet")
 		}

@@ -79,7 +79,7 @@ a class of failure that shows up as data corruption rather than an error.
 
 | | |
 |---|---|
-| `signari serve` | The engine. `-addr`, else `SIGNARI_ADDR`, else `:8080`; `-tls-cert`, `-tls-key` |
+| `signari serve` | The engine. `-addr`, else `SIGNARI_ADDR`, else `:8080`; `-tls-cert`, `-tls-key`. Refuses to start when its database connection signs in as, or acts as, a superuser or a role with `BYPASSRLS`, which no organisation's row-level security binds: serve as `signari_engine`, which `signari setup` arranges ([upgrading.md](upgrading.md#serving-as-signari_engine) says how for an existing database). `-allow-rls-bypass`, or `SIGNARI_ALLOW_RLS_BYPASS=1`, starts it anyway and logs a warning saying so |
 | `signari doctor` | Check a deployment's configuration and report what is wrong, including the audit chain, organisation tables without forced row-level security, janitor backlog, the largest tables, the PostgreSQL version and the schema against its ledger. Exits non-zero on a critical finding. `-json` prints the report as JSON for a script: `signari doctor -json \| jq '.findings[] \| select(.severity == "critical")'` |
 | `signari version` | The release, commit, Go toolchain, FIPS module, the schema version this binary expects and the fingerprint it is pinned to (`none` when unpinned). Needs no database. `scripts/build-release.sh` reads the `pinned` line before it tags. See [schema-pinning.md](schema-pinning.md) |
 | `signari janitor once` | Run one janitor pass by hand — expiry, sweeping, parking |

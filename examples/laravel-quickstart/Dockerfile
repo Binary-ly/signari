@@ -13,7 +13,7 @@ COPY app ./app
 COPY config ./config
 COPY routes ./routes
 
-FROM php:8.5.12-cli-alpine3.24@sha256:1ff5b45922ab30f418447c6089dbe2eba5f01e0b2742863d0327ac349305d70f
+FROM php:8.6.0RC7-cli-alpine3.24@sha256:69a4d2a4768e1d392df114131fdcd047e6b18ce47be6a8d52ff8bac7b03b780f
 WORKDIR /app
 COPY --from=vendor /app /app
 RUN php artisan package:discover --ansi && chown -R 82:82 storage bootstrap/cache

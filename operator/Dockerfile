@@ -1,6 +1,6 @@
 # The operator: a static binary, run as nobody, nothing else in the image. The build
 # image pinned to a digest as engine/Dockerfile's are, and for its reason.
-FROM golang:1.26.11@sha256:957952ae74dc010608717144399a59a2c6e82ea03d63be1c7ff6577c5a135f93 AS build
+FROM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

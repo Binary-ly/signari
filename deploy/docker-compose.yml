@@ -18,6 +18,9 @@ services:
       POSTGRES_DB: signari
       # The console's role, made with this password on first start; see postgres-init/.
       SIGNARI_ADMIN_DB_PASSWORD: ${SIGNARI_ADMIN_DB_PASSWORD:-devconsole}
+      # The engine's, likewise: the engine serves as signari_engine, never as the
+      # superuser above, which no organisation's row-level security binds.
+      SIGNARI_ENGINE_DB_PASSWORD: ${SIGNARI_ENGINE_DB_PASSWORD:-devengine}
     healthcheck:
       # The engine must not start against a database that is still initialising:
       # its startup gate would report a schema mismatch and exit, which looks like
@@ -86,7 +89,10 @@ services:
         condition: service_completed_successfully
         required: false
     environment:
-      SIGNARI_DSN: postgres://signari_superuser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/signari?sslmode=disable
+      # As signari_engine, the role the policies are written for. The one-shot
+      # services above and below migrate and provision as the superuser; this one
+      # serves, and `docker compose exec engine /signari ...` runs as it too.
+      SIGNARI_DSN: postgres://signari_engine:${SIGNARI_ENGINE_DB_PASSWORD:-devengine}@postgres:5432/signari?sslmode=disable
       # 32 random bytes, base64. Deliberately has no default: a generated-on-boot
       # root key would make every restart invalidate every stored signing key.
       SIGNARI_ROOT_KEY: ${SIGNARI_ROOT_KEY:?set SIGNARI_ROOT_KEY -- head -c 32 /dev/urandom | base64}

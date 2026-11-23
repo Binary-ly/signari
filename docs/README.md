@@ -2,11 +2,28 @@
 
 Ninety-odd documents, one per capability. This page is the way in.
 
-**Start here:** [configuration.md](configuration.md) for every setting,
+**New to Signari?** Start with [introduction.md](introduction.md), then sign in
+to an example application on your own computer with
+[first-application.md](first-application.md). [documentation.md](documentation.md)
+lists every page in reading order.
+
+**Running it already:** [configuration.md](configuration.md) for every setting,
 [cli.md](cli.md) for every command, [doctor.md](doctor.md) to find out whether a
 deployment is sound. Those three are kept complete by tests rather than by
 discipline — the engine's `internal/docsync` package fails the build when a
 command or an environment variable exists in code and not on its page.
+
+## Getting started
+
+| | |
+|---|---|
+| [introduction.md](introduction.md) | What an identity provider is, and what Signari does and does not do |
+| [installation.md](installation.md) | Installing on a server, with Docker, or from source |
+| [first-application.md](first-application.md) | A real sign-in to an example application, on your own computer |
+| [how-signari-works.md](how-signari-works.md) | Instances, organisations, applications, sessions, tokens and keys, in plain words |
+| [protocols-explained.md](protocols-explained.md) | Which protocol each kind of application or device needs |
+| [glossary.md](glossary.md) | Every term these pages use, in one or two lines |
+| [writing-docs.md](writing-docs.md) | The house style these pages are written in |
 
 ## Running it
 

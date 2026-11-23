@@ -6,11 +6,12 @@
 
 Every signing key in `core.signing_keys`, every TOTP secret, and every migration
 source's client secret is encrypted with `SIGNARI_ROOT_KEY`. The engine reads that
-key from its environment and nowhere else — deliberately never from the database
+key from its environment, or from the file `SIGNARI_ROOT_KEY_FILE` names, which
+only its owner may read, and nowhere else — deliberately never from the database
 it protects, because a backup containing the key that decrypts it is not
 encryption, it is filing. Keep the value in a secret store you can reach when the
-database is gone. (This said the key could live in a file or a KMS; the engine
-reads neither.)
+database is gone. (This said the engine reads neither a file nor a KMS; it reads a
+file, and a root key held in a KMS is not built yet.)
 
 The corollary is the part people discover too late:
 

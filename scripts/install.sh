@@ -419,6 +419,14 @@ run_setup() {
     say "(once it is installed, $BIN setup -dry-run prints setup's own plan)"
     return 0
   fi
+  # A release from before setup existed (v0.1.0) installs, and is set up by hand.
+  if ! "$BIN" help setup >/dev/null 2>&1; then
+    say ""
+    say "Signari $VERSION is installed at $BIN, and has no setup command: it came in a later"
+    say "release. Set this one up as its README's quick start says:"
+    say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+    return 0
+  fi
   say ""
   if [ -t 0 ]; then
     "$BIN" "$@"

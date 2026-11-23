@@ -171,7 +171,7 @@ detect_platform() {
     Linux) OS=linux ;;
     Darwin) OS=darwin ;;
     MINGW* | MSYS* | CYGWIN*) OS=windows ;;
-    *) OS=$(printf '%s' "$kernel" | tr 'A-Z' 'a-z') ;;
+    *) OS=$(printf '%s' "$kernel" | tr '[:upper:]' '[:lower:]') ;;
   esac
   case $machine in
     x86_64 | amd64) ARCH=amd64 ;;

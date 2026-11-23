@@ -295,7 +295,9 @@ install_binary() {
   else
     run mkdir -p "$bindir" || die "could not make $bindir"
     run install -m 0755 "$TMP/$ASSET" "$BIN" || die "could not install $BIN"
-    say "installed $BIN"
+    if [ "$DRY_RUN" != 1 ]; then
+      say "installed $BIN"
+    fi
   fi
   case ":$PATH:" in
     *":$bindir:"*) ;;
@@ -509,6 +511,9 @@ offer_source() {
   fi
   say "  go build -o signari ./cmd/signari"
   say "  ./signari setup"
+  say ""
+  say "A release from before setup existed, as v0.1.0 is, has no setup command: follow that"
+  say "release's README instead, at https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
 }
 
 # elsewhere says plainly that there is no binary here, and offers what can run

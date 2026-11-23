@@ -37,8 +37,9 @@ type pgSuperuser struct {
 	// query is what a URL the operator gave asked of the connection (sslmode,
 	// sslrootcert), which the engine's own connection keeps.
 	query url.Values
-	// desc names it in the plan, with no password; as says it shortly, for
-	// the question that confirms it.
+	// desc names it in the plan and in errors, with no password, as a phrase
+	// beginning "as" or "at"; as says it shortly, for the question that
+	// confirms it.
 	desc, as string
 	// socket is a Unix socket on this machine, which the engine reaches over
 	// TCP on loopback instead, as setup proves it can.
@@ -89,7 +90,7 @@ func superuserFromURL(u *url.URL) (*pgSuperuser, error) {
 	sq := shown.Query()
 	sq.Del("password")
 	shown.RawQuery = sq.Encode()
-	return &pgSuperuser{cfg: cfg, query: q, desc: shown.String(), socket: strings.HasPrefix(cfg.Host, "/")}, nil
+	return &pgSuperuser{cfg: cfg, query: q, desc: "at " + shown.String(), socket: strings.HasPrefix(cfg.Host, "/")}, nil
 }
 
 // validSuperuserURL is the prompt's check of a typed URL.
@@ -134,9 +135,9 @@ func localPostgres(h setupHost) *pgSuperuser {
 		if h.postgresUID >= 0 {
 			cfg.User = "postgres"
 			cfg.DialFunc = peerDial(h.postgresUID)
-			su.desc = "postgres, as the postgres system user, on the socket in " + dir
+			su.desc = "as postgres over the socket in " + dir + ", by peer authentication as the postgres system user"
 		} else {
-			su.desc = cfg.User + " on the socket in " + dir
+			su.desc = "as " + cfg.User + " over the socket in " + dir
 		}
 		su.as = "as " + cfg.User + " over the local socket"
 		return su
@@ -144,7 +145,7 @@ func localPostgres(h setupHost) *pgSuperuser {
 	if h.tcpOpen("127.0.0.1:5432") {
 		cfg, err := pgx.ParseConfig("postgres://postgres@127.0.0.1:5432/postgres")
 		if err == nil {
-			return &pgSuperuser{cfg: cfg, desc: "postgres@127.0.0.1:5432", as: "as postgres at 127.0.0.1:5432"}
+			return &pgSuperuser{cfg: cfg, desc: "as postgres at 127.0.0.1:5432", as: "as postgres at 127.0.0.1:5432"}
 		}
 	}
 	return nil

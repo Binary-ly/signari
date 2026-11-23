@@ -680,9 +680,9 @@ func (r *setupRun) reachSuperuser(ctx context.Context) error {
 			_ = conn.Close(ctx)
 		} else if r.ask == nil {
 			return fmt.Errorf("give -superuser-dsn (or -superuser-dsn-file) for a role that may create roles: "+
-				"the PostgreSQL on this machine did not let setup in as %s: %w", local.desc, err)
+				"the PostgreSQL on this machine did not let setup in %s: %w", local.desc, err)
 		} else {
-			fmt.Fprintf(r.out, "\n  The PostgreSQL on this machine did not let setup in as %s:\n  %v\n", local.desc, err)
+			fmt.Fprintf(r.out, "\n  The PostgreSQL on this machine did not let setup in %s:\n  %v\n", local.desc, err)
 		}
 	}
 	if r.ask == nil {
@@ -721,7 +721,7 @@ func (r *setupRun) trySuperuser(ctx context.Context, su *pgSuperuser) error {
 			return nil
 		}
 		if r.ask == nil || pgCode(err) != "28P01" || tries == 3 {
-			return fmt.Errorf("connecting as %s: %w", su.desc, err)
+			return fmt.Errorf("connecting to PostgreSQL %s: %w", su.desc, err)
 		}
 		pw, perr := r.ask.secret("Password for "+su.cfg.User+" at "+su.cfg.Host,
 			"Read without echo, used once and never stored. PGPASSWORD works too.")
@@ -922,7 +922,7 @@ func (r *setupRun) printPlan() {
 	pgLine := "not reached"
 	switch {
 	case r.suConn != nil:
-		pgLine = fmt.Sprintf("PostgreSQL %s, as %s", r.pg.version, r.su.desc)
+		pgLine = fmt.Sprintf("PostgreSQL %s, %s", r.pg.version, r.su.desc)
 	case r.engineWorked:
 		pgLine = fmt.Sprintf("PostgreSQL %s, as %s", serverVersion(context.Background(), r.eng), engineRole)
 	case r.suErr != nil:

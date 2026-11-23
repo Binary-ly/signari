@@ -138,7 +138,7 @@ document is one a client will try to use.
 
 ---
 
-# Second pass: the lifecycle, not the endpoint
+## Second pass: the lifecycle, not the endpoint
 
 The first pass built RFC 9396 and reviewed it endpoint by endpoint. Every
 endpoint was correct. The feature was still broken, and the reason is worth

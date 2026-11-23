@@ -1,3 +1,4 @@
+# Signing in through a SAML provider
 
 The **inbound** half. `/saml/sso` serves applications consuming assertions this
 engine issues; this consumes assertions issued by somebody else's.

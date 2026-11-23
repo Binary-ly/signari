@@ -140,7 +140,7 @@ section of this page warns about.
 
 ---
 
-# Lifecycle pass: the refresh token was not certificate-bound either
+## Lifecycle pass: the refresh token was not certificate-bound either
 
 Found by running the same review over mutual TLS that had just found the DPoP
 defect — follow one grant through every refresh instead of checking each handler.

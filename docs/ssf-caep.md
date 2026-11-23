@@ -375,7 +375,7 @@ a third time in a *test* is the reason the mutation pass exists.
 
 ---
 
-# MUST-by-MUST sweep, August 2026: `critical_subject_members`
+## MUST-by-MUST sweep, August 2026: `critical_subject_members`
 
 The method that found three unmet requirements in OID4VCI — extract every `MUST`
 from the specification text and check each one against the code — applied to

@@ -199,7 +199,7 @@ identically in a table that does not say which.
 
 ---
 
-# Currency check, August 2026
+## Currency check, August 2026
 
 ASVS 5.0.0 (30 May 2025) is still the **current stable release**. Verified rather
 than assumed: the OWASP/ASVS repository carries a release tagged `latest`

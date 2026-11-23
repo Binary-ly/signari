@@ -387,7 +387,7 @@ nothing because it looked in the wrong place.
 
 ---
 
-# Third pass: running each specification's own examples through our decoder
+## Third pass: running each specification's own examples through our decoder
 
 Two methods have been applied to these ten so far. Sweeping the sections nobody
 had cited asks *what does the specification say that we never read*. Extracting

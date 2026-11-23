@@ -1,5 +1,7 @@
+# Receiving SCIM
 
-
+Another system that holds your people can create, change and deactivate them here
+over SCIM. Registering it as a source gives it an address and a token:
 
 ```
 SCIM base URL : <issuer>/scim/v2

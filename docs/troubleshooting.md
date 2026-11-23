@@ -1,9 +1,131 @@
 # Troubleshooting
 
-Each entry starts from what you see, quoted as the server writes it, then
-gives the cause and the fix. If a message is not here, search for it in the
-source: every refusal is a literal string, and most are next to a comment
-saying why it exists.
+## Introduction
+
+When something goes wrong, Signari says so in words, and those words are the
+quickest way to the cause. Each entry on this page starts from what you see,
+quoted exactly as the server writes it, then gives the cause and the fix.
+
+Search this page for the message you have. If it is not here, search for it in
+Signari's source. Every refusal is a literal string there, and most sit next to a
+comment that says why the refusal exists.
+
+## When an application cannot sign in
+
+These are the problems people meet first, while connecting their first
+application. Each has the same four parts: what you see, why it happens, what to
+change, and how to know it worked.
+
+### `redirect_uri is not registered for this client`
+
+**Symptom.** Instead of the sign-in page, Signari shows a page headed **Sign-in
+error**, with `invalid_request` and `redirect_uri is not registered for this
+client`. The browser never goes back to the application.
+
+**Why.** The application asked Signari to send the browser back to an address
+that is not registered for it. Signari compares the address exactly: the scheme,
+the host, the port and the path. It never sends anyone to an address it does not
+know, so it stops on its own page instead. The usual causes are `http` against
+`https`, `localhost` against `127.0.0.1`, a different port, or a slash at the end.
+
+**Fix.** Register the exact address the application sends. The browser's address
+bar shows the request Signari refused, and its `redirect_uri` parameter is the
+address to register. For a new application, give it to `-redirect` in
+`signari client create`. For one already registered, add it with
+`signari apply` and a file that lists it under `redirect_uris`
+([configuration as code](config-as-code.md)), or with the Admin API's
+`PATCH /admin/clients/{id}`.
+
+**How to confirm.** Start the sign-in again from the application. Signari shows its
+sign-in page instead of the error.
+
+### `unknown client`
+
+**Symptom.** Signari's **Sign-in error** page shows `invalid_client` and `unknown
+client`. An application that reaches the token address gets the same pair back as
+`error` and `error_description`.
+
+**Why.** No application is registered under the client ID the application sent.
+The ID may be misspelt, registered in another Signari deployment, or not
+registered at all.
+
+**Fix.** Compare the client ID in the application's settings with the one you
+registered, character for character. `signari export org -org <org-id>` writes
+every application the organisation has, with its client ID, and the Admin API
+answers the same at `GET /admin/clients`.
+
+**How to confirm.** Start the sign-in again. Signari shows its sign-in page.
+
+### `client authentication failed`
+
+**Symptom.** You sign in at Signari and the browser goes back to the application.
+Then the application shows an error from its token request: `invalid_client`,
+with `client authentication failed`.
+
+**Why.** The application did not prove it is itself. It sent a secret Signari does
+not recognise, or proved itself another way than it is registered for. The usual
+causes are a secret copied with a character missing, or another application's
+secret. Another is an old secret, after `signari client set-keys` moved the
+application to signed assertions. Signari tells the application no more than this,
+so that nobody can learn anything by guessing. It writes the reason to its own
+log, for example `err="the client secret did not match"`.
+
+**Fix.** Give the application the secret printed when it was registered. Signari
+keeps only a hash of it, so it cannot show it again. If the secret is lost, the
+Admin API's `POST /admin/clients/{clientID}/rotate-secret` makes a new one, shown
+once, and the old one stops working at once. An application with no secret, a
+public client, must not send one at all: Signari refuses it with `public clients
+must not present a client secret`.
+
+**How to confirm.** Sign in again. The application signs you in, and Signari's log
+no longer shows `client authentication failed` for its client ID.
+
+### The application says the ID token has expired, or is not valid yet
+
+**Symptom.** You sign in at Signari, and the browser goes back to the application.
+Then the application refuses the ID token as expired, or as issued in the future.
+The words are the application's own. The [Go example](quickstart-go.md), for
+instance, says `the ID token was refused: expired`.
+
+**Why.** The computers' clocks disagree. An ID token says when it was made and
+when it expires, five minutes later by default. The application compares those
+times with its own clock. If the application's clock is a few minutes away from
+Signari's, a token made a moment ago looks expired or not yet made.
+
+**Fix.** Set both machines to keep their clocks synchronised over the network,
+with NTP. Do not lengthen the token's lifetime or turn the application's check
+off: either hides the problem and weakens the check.
+
+**How to confirm.** Run `date -u` on both machines at the same moment. The times
+agree to within a second or two, and the sign-in works.
+
+### `Your sign-in session expired. Please try again.`
+
+**Symptom.** You enter a correct password on Signari's sign-in page, and the page
+comes back with `Your sign-in session expired. Please try again.` It happens every
+time.
+
+**Why.** Signari's sign-in form is protected by a cookie,
+`__Host-signari_csrf`, which must come back with the form. Browsers keep a cookie
+whose name starts `__Host-` only from a secure address: `https://`, or
+`http://localhost`. If Signari is served over plain HTTP at any other address, or
+the browser blocks its cookies, the cookie never comes back. When Signari starts
+without TLS, it warns about exactly this: `no TLS configured: browsers will refuse
+to store the __Host- session cookie over plaintext on any host except localhost,
+so sign-in will silently fail to persist.`
+
+**Fix.** Serve Signari over HTTPS. Give it a certificate with `SIGNARI_TLS_CERT`
+and `SIGNARI_TLS_KEY`, or put a reverse proxy that holds one in front of it. Make
+the issuer the `https://` address, and allow cookies for Signari's address in the
+browser. If the message appeared only once, after the page was left open across a
+browser restart, sign in again: Signari has already given the page a new cookie.
+
+**How to confirm.** In the browser's developer tools, the cookies for Signari's
+address include `__Host-signari_csrf`, and `__Host-signari_session` once you have
+signed in. The form signs you in.
+
+The full list of what Signari refuses, and where, is in [An application cannot
+sign anyone in](#an-application-cannot-sign-anyone-in) below.
 
 ## The server will not start
 

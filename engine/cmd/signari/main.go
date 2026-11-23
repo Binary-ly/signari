@@ -689,8 +689,8 @@ func run(args []string) (err error) {
 		"the password, so it is in no process list or shell history")
 	setupDatabase := fs.String("database", "", "`setup`: the database to set up, made when missing (default signari)")
 	setupRootKeyFile := fs.String("root-key-file", "", "`setup`: where the root key is, or is generated, never "+
-		"overwritten (default /etc/signari/root.key for root, else under $XDG_CONFIG_HOME/signari or "+
-		"~/.config/signari)")
+		"overwritten (default /etc/signari/root.key for root, else root.key under $XDG_CONFIG_HOME/signari/, "+
+		"failing that ~/.config/signari/)")
 	setupEnvFile := fs.String("env-file", "", "`setup`: the env file serve starts from, written 0600 (default "+
 		"signari.env beside the root key's default)")
 	setupYes := fs.Bool("yes", false, "`setup`: ask nothing and take the defaults; a needed answer with none is "+

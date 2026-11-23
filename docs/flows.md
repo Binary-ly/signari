@@ -1,8 +1,18 @@
 # Sign-in flows
 
-A flow is the sequence of things somebody is asked for on the way in: a
-challenge, a password, a second factor, a notice they have to accept. Signari
-takes it as a file.
+## Introduction
+
+A "flow" is the sequence of things somebody is asked for on the way in: a
+challenge, a password, a second factor, a notice they have to accept. Signari has
+built-in flows, which `signari flow show` prints. To change what people are asked
+for, you write your own flow as a file.
+
+Because it is a file, you can review it like code and test it in CI, with no
+database. Signari also refuses to load a flow that could sign somebody in without
+proving who they are.
+
+This flow asks for a passkey or a password, then a second factor if the person has
+one. Its two tests say which steps each kind of person sees:
 
 ```yaml
 version: 1
@@ -24,6 +34,8 @@ flows:
         given: {user_has_second_factor: true}
         expect: [password, mfa, session]
 ```
+
+Test it, list every path through it, and install it:
 
 ```
 signari flow test  -flow-file flows.yaml              # in CI: no database needed

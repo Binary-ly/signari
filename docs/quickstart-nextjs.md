@@ -1,11 +1,24 @@
 # Quickstart: a Next.js application
 
-[examples/nextjs-quickstart](../examples/nextjs-quickstart/lib/signari.js) signs people
-in with Signari from a [Next.js](https://nextjs.org) application (App Router), using
-[openid-client](https://github.com/panva/openid-client) in two route handlers:
-`/login` and `/callback`.
+## Introduction
+
+This guide connects a [Next.js](https://nextjs.org) application, using the App
+Router, to Signari, so that people sign in to it with their Signari account. The
+example, [examples/nextjs-quickstart](../examples/nextjs-quickstart/lib/signari.js),
+uses [openid-client](https://github.com/panva/openid-client) in two route
+handlers: `/login` and `/callback`.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -15,6 +28,9 @@ signari client create -org <org-id> -client-id quickstart -name Quickstart \
 It prints the client secret once. Keep it. A redirect URI is matched exactly.
 
 ## 2. Run it
+
+Install and build the example, then run it with Signari's address and the values
+from step 1:
 
 ```sh
 cd examples/nextjs-quickstart

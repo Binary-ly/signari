@@ -1,10 +1,23 @@
 # Quickstart: a Django application
 
-[examples/django-quickstart](../examples/django-quickstart/quickstart/views.py) signs
-people in with Signari from a [Django](https://www.djangoproject.com) application, using
-[Authlib](https://authlib.org)'s Django client.
+## Introduction
+
+This guide connects a [Django](https://www.djangoproject.com) application to
+Signari, so that people sign in to it with their Signari account. The example,
+[examples/django-quickstart](../examples/django-quickstart/quickstart/views.py),
+uses [Authlib](https://authlib.org)'s Django client for the protocol.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -15,6 +28,9 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly, th
 trailing slash Django's URLs end in included.
 
 ## 2. Run it
+
+Install the example's dependencies, then run it with Signari's address and the
+values from step 1:
 
 ```sh
 cd examples/django-quickstart

@@ -1,5 +1,16 @@
 # Upgrading and rolling back
 
+## Introduction
+
+A new release of Signari usually brings changes to the database's structure, as
+numbered "migrations". Upgrading means applying those migrations with the new
+release, then replacing the running servers with it. This page gives the order,
+and explains what happens when something goes wrong partway through.
+
+Three commands do the work. The first says where the database is, the second
+applies the new release's migrations, and the third says whether a given release
+may serve the database:
+
 ```sh
 signari migrate status        # where the database is, and the oldest binary that may serve it
 signari migrate up            # the upgrade: as signari_engine, before the new binary serves

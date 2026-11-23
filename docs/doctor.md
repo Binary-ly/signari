@@ -1,5 +1,16 @@
 # `signari doctor`
 
+## Introduction
+
+A deployment can start without complaint and still be wrong: an issuer served
+over plain HTTP, a root key nobody set, or password-reset email that only ever
+reaches a log file. `signari doctor` checks the whole deployment at once. For each
+problem it finds, it says what is wrong, why it matters and what to do.
+
+It exits with a non-zero status when it finds anything critical, so a deploy
+script or a scheduled job can stop on it. Run it with the same settings the
+server uses:
+
 ```sh
 signari doctor           # exit 1 if anything critical is found
 ```

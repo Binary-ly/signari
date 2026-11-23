@@ -1,11 +1,25 @@
 # Quickstart: a Laravel application
 
-[examples/laravel-quickstart](../examples/laravel-quickstart/routes/web.php) signs people
-in with Signari from a [Laravel](https://laravel.com) application, using
-[jumbojett/openid-connect-php](https://github.com/jumbojett/OpenID-Connect-PHP). It is a
-few files to lay over a fresh Laravel application, not an application of its own.
+## Introduction
+
+This guide connects a [Laravel](https://laravel.com) application to Signari, so
+that people sign in to it with their Signari account. The example,
+[examples/laravel-quickstart](../examples/laravel-quickstart/routes/web.php), uses
+[jumbojett/openid-connect-php](https://github.com/jumbojett/OpenID-Connect-PHP) for
+the protocol. It is a few files to lay over a fresh Laravel application, not an
+application of its own.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, and set it to the signature
+algorithm its library can check:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -19,6 +33,9 @@ signs with by default. Without it every sign-in is refused with "No support for
 signature type: ES256".
 
 ## 2. Run it
+
+Make a fresh Laravel application, add the library, and copy the example's files
+over it:
 
 ```sh
 composer create-project laravel/laravel:13.11.0 myapp && cd myapp

@@ -1,8 +1,18 @@
 # Brands
 
-An appearance on the pages a user sees: a product name, a logo, a support link,
-and four colours. An instance has one, and each organisation on it may have its
-own over it.
+## Introduction
+
+People decide whether a sign-in page is genuine partly by how it looks. A "brand"
+gives Signari's pages your product name, your logo, a support link and four
+colours, without changing the pages themselves. An instance has one, and each
+organisation on it can have its own over it.
+
+Signari checks the colours' contrast before it accepts them, so the text stays
+readable. To change more than this, such as the layout of the page, see
+[theming](theming.md).
+
+Check a set of colours first. `signari brand check` prints the contrast of each
+pair:
 
 ```sh
 signari brand check \
@@ -14,6 +24,8 @@ signari brand check \
 
 readable (WCAG 2.1 AA needs 4.5:1 for body text)
 ```
+
+Then set the brand for the instance:
 
 ```sh
 signari brand set -issuer https://auth.example.com \

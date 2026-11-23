@@ -1,5 +1,17 @@
 # Every environment variable
 
+## Introduction
+
+Signari reads its settings from environment variables whose names start with
+`SIGNARI_`. Only a few are needed to start: the database connection
+(`SIGNARI_DSN`), the root key (`SIGNARI_ROOT_KEY` or `SIGNARI_ROOT_KEY_FILE`) and,
+when the database holds more than one instance, the issuer (`SIGNARI_ISSUER`).
+Everything else has a default, and you set it only when you need what it changes.
+
+This page lists every one, grouped by what it is for. If you are starting out,
+read the "Required" table below, and look up the rest when another page sends you
+here.
+
 One page, because the alternative is what this project had: configuration
 described across twenty feature documents, with no place to see it whole — and
 four real controls described nowhere at all, including the ones you need to send

@@ -1,10 +1,25 @@
 # Quickstart: a Spring Boot application
 
-[examples/spring-quickstart](../examples/spring-quickstart/src/main/java/dev/signari/quickstart/SecurityConfig.java)
-signs people in with Signari from a [Spring Boot](https://spring.io/projects/spring-boot)
-application, using Spring Security's OAuth 2.0 client.
+## Introduction
+
+This guide connects a [Spring Boot](https://spring.io/projects/spring-boot)
+application to Signari, so that people sign in to it with their Signari account.
+The example,
+[examples/spring-quickstart](../examples/spring-quickstart/src/main/java/dev/signari/quickstart/SecurityConfig.java),
+uses Spring Security's OAuth 2.0 client for the protocol.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does, and the two settings Signari needs that Spring
+does not assume.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with Spring's callback address as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -15,6 +30,8 @@ It prints the client secret once. Keep it. The redirect URI is Spring's own patt
 `/login/oauth2/code/<registration>`, matched exactly.
 
 ## 2. Run it
+
+Build the example, then run it with Signari's address and the values from step 1:
 
 ```sh
 cd examples/spring-quickstart

@@ -1,11 +1,24 @@
 # Quickstart: an Express application
 
-[examples/express-quickstart](../examples/express-quickstart/server.js) signs people in
-with Signari from an [Express](https://expressjs.com) application, using
-[openid-client](https://github.com/panva/openid-client) for the protocol. It is about
-eighty lines.
+## Introduction
+
+This guide connects an [Express](https://expressjs.com) application to Signari, so
+that people sign in to it with their Signari account. The example,
+[examples/express-quickstart](../examples/express-quickstart/server.js), uses
+[openid-client](https://github.com/panva/openid-client) for the protocol. It is
+about eighty lines.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -16,6 +29,9 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly:
 scheme, host, port and path.
 
 ## 2. Run it
+
+Install the example's dependencies, then run it with Signari's address and the
+values from step 1:
 
 ```sh
 cd examples/express-quickstart

@@ -1,12 +1,27 @@
 # Quickstart: a Go application
 
-[examples/go-quickstart](../examples/go-quickstart/main.go) is an application
-that signs people in with Signari using nothing outside Go's standard library.
-It is about two hundred lines, and checks everything an application has to
-check itself: the authorization code flow with PKCE, then the ID token's
-signature against the published keys, its issuer, audience, expiry and nonce.
+## Introduction
+
+This guide connects a Go application to Signari, so that people sign in to it
+with their Signari account. The example,
+[examples/go-quickstart](../examples/go-quickstart/main.go), uses nothing outside
+Go's standard library. It is about two hundred lines.
+
+Because it uses no library, it shows everything an application has to check
+itself: the authorization code flow with PKCE, then the ID token's signature
+against the published keys, its issuer, audience, expiry and nonce.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -17,6 +32,8 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly:
 scheme, host, port and path.
 
 ## 2. Run it
+
+Run the example with Signari's address and the values from step 1:
 
 ```sh
 cd examples/go-quickstart

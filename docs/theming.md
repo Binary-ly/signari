@@ -1,13 +1,27 @@
 # Theming
 
-Every page a person sees while signing in — the login form, the consent screen,
-the two-factor challenge, the error pages — is an HTML file you can replace
-without a compiler.
+## Introduction
+
+People see Signari's pages more than any other part of it: the sign-in form, the
+consent screen, the two-factor challenge, the error pages. Most organisations
+want those pages to look like the rest of their own sites.
+
+Every one of them is an HTML file you can replace, without a compiler. You can
+replace the shared frame around every page, which is enough for most
+organisations, or a single page. Signari checks each replacement when it starts,
+and keeps serving its own version of any page whose replacement would break
+sign-in.
 
 Until now they were Go string literals inside twenty-two source files. Changing
 a heading meant forking the repository and shipping a binary nobody had audited.
 
+> [!NOTE]
+> To change only the product name, the logo and the colours, you do not need a
+> theme. Use a [brand](brands.md) instead.
+
 ## The thirty-second version
+
+Copy Signari's own layout into a folder, change it, check it, and serve it:
 
 ```sh
 signari theme eject -theme-dir ./theme -theme-page layout   # start from the real page

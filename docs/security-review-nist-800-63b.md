@@ -18,7 +18,7 @@ a person controls their authenticators, and here that is Signari. Three
 sign-in gives.
 
 This page is for an auditor, a security reviewer, or an administrator who has to
-meet an assurance level. Each table gives a requirement, its level (SHALL, SHOULD
+meet an authenticator assurance level (AAL). Each table gives a requirement, its level (SHALL, SHOULD
 and so on), and what Signari does. Dated sections record later passes, and the
 defects they found.
 

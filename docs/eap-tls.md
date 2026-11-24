@@ -146,7 +146,7 @@ decrypt anything.
 
 | | |
 |---|---|
-| `cn` | subject common name — what most internal PKI uses |
+| `cn` | subject common name — what most internal public key infrastructure (PKI) uses |
 | `email` | an `rfc822Name` in the subject alternative name |
 | `upn` | the Microsoft `userPrincipalName` SAN |
 

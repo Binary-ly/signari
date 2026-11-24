@@ -136,8 +136,8 @@ use a salt as long as the hash, as the engine's own do.
 
 ## Not done
 
-- **AWS KMS, Google Cloud KMS and Azure Key Vault**, the cloud providers' key
-  management services, are not spoken to. No cloud provider's PKCS#11 module has
+- **The cloud providers' key management services (KMS)**, such as AWS KMS, Google
+  Cloud KMS and Azure Key Vault, are not spoken to. No cloud provider's PKCS#11 module has
   been tried here.
 - **The key a wallet encrypts its credential request to** ([credential
   issuance](oid4vci.md)) is made in software. It opens rather than signs, and

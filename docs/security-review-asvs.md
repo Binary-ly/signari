@@ -601,7 +601,7 @@ address.
   records, in [the security inventories](security-inventories.md).
 - **V6.4.4** — identity proofing at enrolment level when a factor is lost.
   Signari has recovery codes and delay-and-notify recovery. It does not do
-  identity proofing, which is an IAL question rather than an AAL one.
+  identity proofing, which is an IAL question rather than an authenticator assurance level (AAL) one.
 - **V6.3.5, V6.3.7** — notification of suspicious attempts and of credential
   changes. Passkey bind and removal now notify (NIST §4.1.2 and §4.5). Password
   changes and unusual-location sign-ins did not, when this was written, and an
@@ -633,7 +633,7 @@ to it, and not where this engine's risk concentrates.
 
 ## CWE coverage, via a tool rather than a recital (21 August 2026)
 
-Point 4 names the CWE Top 25. It could not be retrieved at the time: both
+The Common Weakness Enumeration (CWE) Top 25 was to be checked too. It could not be retrieved at the time: both
 `cwe.mitre.org/top25/archive/2024/` and the 2025 page render their tables in
 JavaScript, and the served HTML contains **no CWE identifiers at all** — a scrape
 returns zero. The CWE REST API resolves an ID to a name but does not publish the
@@ -990,7 +990,7 @@ it.
 | V4.1.2 transparent HTTP→HTTPS only for endpoints people use | n/a — the engine does not redirect http to https; Transport Layer Security (TLS) terminates ahead of it |
 | V4.1.3 intermediary headers a request cannot override | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
-| V4.1.5 per-message signatures | met beyond the requirement — Back-Channel Logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JWT-Secured Authorization Response Mode (JARM) before it was built; it has been since, and its responses are signed too: see [signed authorization responses](jarm.md)) |
+| V4.1.5 per-message signatures | met beyond the requirement — Back-Channel Logout tokens, Shared Signals Security Event Tokens (SETs) and webhook bodies are all signed or MACed (this listed JWT-Secured Authorization Response Mode (JARM) before it was built; it has been since, and its responses are signed too: see [signed authorization responses](jarm.md)) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
 | V4.2.5 over-long outbound URIs and headers | **met, November 2026** — every client `safedial` builds refuses a URI or a header field over 8,000 octets before it is sent, RFC 9110 §4.1's figure for a URI (`specs/rfc9110.txt:1059-1060`), and says which and to where without repeating a value that may be a credential |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |
@@ -1158,7 +1158,7 @@ had started to feel like a rule rather than a sample.
 
 The reason it is clean is not luck. V1 is the injection chapter, and the injection
 classes here were each addressed where they arise: SQL in the store layer, XML in
-the SAML reviews, SSRF in `internal/safedial`, output encoding by using
+the SAML reviews, server-side request forgery (SSRF) in `internal/safedial`, output encoding by using
 `html/template` everywhere instead of building HTML.
 
 ### Checked, with the evidence

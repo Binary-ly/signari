@@ -107,7 +107,7 @@ page.
 | [Detailed permissions in a request](rich-authorization-requests.md) | RFC 9396 — when a scope string is not enough |
 | [Machine sign-in with a signed assertion](jwt-bearer.md) | RFC 7523 §2.1 — GitHub Actions, Kubernetes |
 | [Transaction tokens](transaction-tokens.md) | Per-transaction tokens inside a call chain |
-| [MCP servers and agents](mcp-authorization.md) | Acting as an authorization server for MCP |
+| [Model Context Protocol (MCP) servers and agents](mcp-authorization.md) | Acting as an authorization server for MCP |
 | [Rotating signing keys](key-rotation.md) | next → active → passive → retired |
 | [Signing keys in a hardware module](signing-keys-in-a-module.md) | Signing keys made and kept in an HSM, through PKCS#11 |
 | [Signing out](logout.md) | Three mechanisms, because none reaches everything |
@@ -198,7 +198,7 @@ page.
 | | |
 |---|---|
 | [OWASP ASVS review](security-review-asvs.md) | OWASP ASVS 5.0, requirement by requirement |
-| [CWE Top 25 review](security-review-cwe-top25.md) | MITRE's 2025 CWE Top 25, each held where, by file and line |
+| [Common Weakness Enumeration (CWE) Top 25 review](security-review-cwe-top25.md) | MITRE's 2025 CWE Top 25, each held where, by file and line |
 | [RFC 9700 review](security-review-rfc9700.md) | RFC 9700 (BCP 240) |
 | [FAPI 2.0 review](security-review-fapi2.md) | FAPI 2.0 Security Profile |
 | [NIST SP 800-63B review](security-review-nist-800-63b.md) | NIST SP 800-63B revision 4 |

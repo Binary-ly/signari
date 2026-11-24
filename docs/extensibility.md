@@ -96,9 +96,9 @@ Three alternatives were considered and rejected:
   sandbox's real attack surface is whatever the host exposes. **Deferred, not
   refused.**
 
-Out-of-process reuses what is already here: the SSRF-safe dialer that refuses
-private destinations, and the HTTP-and-JSON shape every other integration already
-speaks. Server-side request forgery (SSRF) is tricking a server into calling an
+Out-of-process reuses what is already here: the dialer that refuses private
+destinations, which keeps out server-side request forgery (SSRF), and the
+HTTP-and-JSON shape every other integration already speaks. SSRF is tricking a server into calling an
 address it should not reach.
 
 A hook is called on the request path and answered there, once. It is not queued,

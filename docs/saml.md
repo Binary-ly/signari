@@ -146,8 +146,8 @@ and ignored, and every response signed the assertion only.
 drops comments before the digest is computed, and other parsers keep only the
 first text node. So the signed bytes, Signari's value and the other party's value
 can all differ. That is the comment-truncation class of attack on XML signatures:
-an interpretation conflict (CWE-436) between what the signature covers and what
-the application reads.
+an interpretation conflict between what the signature covers and what the
+application reads, which the Common Weakness Enumeration (CWE) lists as CWE-436.
 
 Signari does not try to agree with every other implementation. Instead, a
 document with a comment anywhere inside its document element is rejected. No

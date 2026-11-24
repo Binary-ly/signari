@@ -25,7 +25,7 @@ That is small for an identity provider, and it is the result of decisions rather
 than luck. The QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec
 and the JSON Web Token (JWT) code for Selective Disclosure JWT (SD-JWT) are all
 written here, not pulled in. So are the Remote Authentication Dial-In User Service (RADIUS) server,
-the flow language and the OTLP exporter. Every dependency is a party that can
+the flow language and the OpenTelemetry Protocol (OTLP) exporter. Every dependency is a party that can
 change what this binary does.
 
 The table below is every direct requirement in `engine/go.mod`, at the version

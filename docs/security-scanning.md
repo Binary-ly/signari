@@ -179,7 +179,7 @@ module:
 | GO-2026-6605, GO-2026-6613 | `net/http` (HTTP/1) | connection desynchronisation around CONNECT |
 | GO-2026-6608 | `net/textproto`, `mime/multipart` | header-size limit bypass on every request |
 | GO-2026-6609 | `net/http` | unbounded Range header parsing |
-| GO-2026-6607 | `crypto/tls` | malformed ECH extension references |
+| GO-2026-6607 | `crypto/tls` | malformed Encrypted Client Hello (ECH) extension references |
 | GO-2026-6629 | `golang.org/x/text` | panic in PRECIS, which normalises usernames |
 
 All are fixed in **go1.26.9** and `golang.org/x/text` v0.41.0.
@@ -397,7 +397,7 @@ startup so that every outbound client trusts it, not only delivery. It is a new
 `G304`, because it still reads the older `SIGNARI_SCIM_CA_BUNDLE` when the general
 setting is unset.
 
-**78** with the OpenTelemetry (OTLP) exporter (3.09): seven `G115` in
+**78** with the OpenTelemetry Protocol (OTLP) exporter (3.09): seven `G115` in
 `internal/tracing/otlp.go`, all of them protobuf encoding. Two shift a field
 number and a wire type, both constants, into a key. Four write a length or a
 dropped count, none of which can be negative.
@@ -508,7 +508,7 @@ beside them already are.
 `SIGNARI_GEOIP_ASN_DB` names, the twin of `geoip.go`'s. The path is the
 administrator's setting, read once at startup; nothing a request carries reaches
 it. What is opened has to be a MaxMind-format database describing itself as an
-ASN or ISP one, or it is refused and logged. One number per address is all that is
+autonomous system number (ASN) or ISP one, or it is refused and logged. One number per address is all that is
 read from it.
 
 **Baseline: 185**, every line with its reason in `engine/gosec-baseline.txt`.

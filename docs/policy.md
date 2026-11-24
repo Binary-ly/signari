@@ -245,7 +245,7 @@ The policy is asked at every way into an application, keyed by its client ID or
 its Security Assertion Markup Language (SAML) entity ID. The table names some grants by their abbreviations:
 Client-Initiated Backchannel Authentication ([CIBA](ciba.md)), User-Managed
 Access ([UMA](uma.md)) and OpenID for Verifiable Credential Issuance
-([OID4VCI](oid4vci.md)). An RPT is UMA's requesting party token. The policy is
+([OID4VCI](oid4vci.md)). A requesting party token (RPT) is UMA's access token. The policy is
 asked here:
 
 | | |

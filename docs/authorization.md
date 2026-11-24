@@ -845,7 +845,7 @@ principle was already held in this codebase. It had not been applied here.
 
 **And it generalised.** The Security Event Token receiver decoded its payload
 with a plain `json.Unmarshal` too. That one is not attacker-craftable. The
-payload is signed, so producing an ambiguous SET needs the transmitter's key, and
+payload is signed, so producing an ambiguous Security Event Token (SET) needs the transmitter's key, and
 a transmitter trusted to revoke sessions could do worse things directly.
 
 But the divergence argument is unchanged. Signari would act on Go's reading of a

@@ -370,7 +370,8 @@ Stated here so the gaps are visible rather than discovered:
   stream, but not create one: that is a deliberate choice about who may subscribe
   to events. See [Shared Signals and CAEP](ssf-caep.md).
 - **The legacy Apple SSE CAEP profile**, which predates the final specification.
-- **RISC's other events**, such as `identifier-changed` and the recovery family.
+- **The other events of Risk Incident Sharing and Coordination (RISC)**, such as
+  `identifier-changed` and the recovery family.
   They are recorded with `no handler` rather than acted on.
 
 ## What an account event does

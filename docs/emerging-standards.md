@@ -30,7 +30,7 @@ Client-Initiated Backchannel Authentication (CIBA).
 | `internal/uma` | UMA 2.0 Grant | Kantara Recommendation, 7 Jan 2018 | yes | **yes** — implemented Aug 2026 |
 | `internal/oid4vci` | OpenID for Verifiable Credential Issuance | **1.0 Final**, 16 Sep 2025 | yes | **yes** — three untested key-source rules |
 | `internal/oidfed` | OpenID Federation | **1.0 Final**, 17 Feb 2026 | yes | **yes** — two untested trust-chain rules |
-| `internal/ssf` | Shared Signals Framework | **1.0 Final**, 29 Aug 2025 | yes | **yes** — three untested SET assertions |
+| `internal/ssf` | Shared Signals Framework | **1.0 Final**, 29 Aug 2025 | yes | **yes** — three untested Security Event Token (SET) assertions |
 | — | FAPI 2.0 Security Profile | **Final**, 22 Feb 2025, no errata | yes | **yes** — two MUST-level defects |
 
 Ten specifications. All ten currency-verified against the publisher, and all ten
@@ -341,7 +341,7 @@ value, for pre-1.0 receiver compatibility. The same specification's §3.1.4
 permits that, and the receiver-side ambiguity check enforces that the two cannot
 disagree.
 
-**UMA** — 9 MUST NOTs, most concerning claims-gathering redirection and PCTs,
+**UMA** — 9 MUST NOTs, most concerning claims-gathering redirection and persisted claims tokens (PCTs),
 neither of which this deployment implements.
 
 ### The remaining six, completing the method across all ten
@@ -380,7 +380,7 @@ templates, neither of which this issuer produces. The registered-claim rule
 (`iss`, `nbf`, `exp`, `cnf`, `vct` "MUST NOT be included in the Disclosures") was
 already covered by the `RedList` in `sdjwt.go`.
 
-**AuthZEN** — 4 MUST NOTs, three of which bind a PDP client rather than an API
+**AuthZEN** — 4 MUST NOTs, three of which bind a client of a policy decision point (PDP) rather than an API
 implementer.
 
 **OpenID Federation** — 45 MUST NOTs, the largest set of the ten. The recurring
@@ -467,7 +467,7 @@ there are no more results after this page, its value MUST be an empty string."
 The specification's own example of a complete result set shows a page object with
 `count` and `total` and **no `next_token`**. Signari follows the normative text,
 and always emits it. That also happens to satisfy a client written against the
-example, since `""` is falsy everywhere a PEP is written. This is recorded because
+example, since `""` is falsy everywhere a policy enforcement point (PEP) is written. This is recorded because
 the next person to read that example will think Signari is wrong.
 
 **Unknown members inside `options`** — dropped, and §10.1.1 requires receivers to

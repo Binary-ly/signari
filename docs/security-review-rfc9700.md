@@ -312,7 +312,7 @@ re-derived from the code instead. Each closes off a whole family of published
 attacks by construction, not by a check that could be forgotten.
 
 - **No request object is fetched from a URL.** `request_uri_parameter_supported`
-  is false, because we fetch no remote request object — an SSRF surface we
+  is false, because we fetch no remote request object — a server-side request forgery (SSRF) surface we
   decline to open. The only `request_uri` accepted is a Pushed Authorization
   Requests (PAR) handle, which is an
   opaque database reference and not a URL. RFC 9126 §5 confirms `false` is the

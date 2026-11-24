@@ -1,5 +1,24 @@
 # Migrating from Zitadel
 
+## Introduction
+
+When you move from Zitadel to Signari, the people already in it should not have to
+start again. They should keep their passwords, their authenticator apps and the
+roles they had.
+
+`signari import zitadel` reads an export of one Zitadel organisation, and writes it
+into one Signari organisation. People keep their password hashes and their
+time-based one-time password (TOTP) secrets, and project roles become groups.
+Applications do not come across, because the export leaves out their client IDs
+and secrets.
+
+You export from Zitadel's Admin API, then run the import from the command line.
+
+## Export and import an organisation
+
+Export one organisation through Zitadel's Admin API, then preview the import with
+`-dry-run` before you run it:
+
 ```sh
 # Export one organisation through Zitadel's Admin API, with an IAM token:
 curl -X POST https://zitadel.example.com/admin/v1/export \
@@ -12,14 +31,18 @@ signari import zitadel -file zitadel.json -org <uuid>
 ```
 
 One Zitadel organisation goes into one organisation here. An export holding
-several is refused rather than merged. Export each one by naming it in
-`org_ids`, and import each into its own organisation. Both spellings of the
-export's field names are read, `humanUsers` and `human_users`.
+several is refused rather than merged. Export each one by naming it in `org_ids`,
+and import each into its own organisation.
 
-A dry run is the import itself, run in a transaction that is rolled back, so its
+Both spellings of the export's field names are read, `humanUsers` and
+`human_users`.
+
+A dry run is the import itself, run in a transaction that is rolled back. So its
 report is what the import would do.
 
 ## What comes across
+
+Each kind of record in the export becomes this in Signari:
 
 | In Zitadel | Here |
 |---|---|
@@ -30,26 +53,34 @@ report is what the import would do.
 | IdP links | Kept, where a provider is registered here under the slug that the IdP's name makes: lower case, with other characters as hyphens (`Corporate SSO` → `corporate-sso`) |
 | Metadata | Written where the organisation declares an attribute of that name, when the value is text |
 
+An identity provider (IdP) link joins a person to their account at another
+identity provider, so that they can sign in through it.
+
 Run the import again after registering a provider or declaring an attribute. It
 duplicates nothing, and the report names whatever is still missing.
 
 ## What does not, and why
 
-- **OIDC and API applications.** Zitadel writes an application into its export
-  without its client ID or secret, so it cannot be recreated with the ID the
-  application already uses. Each one is named in the report with its redirect
-  URIs and post-logout URIs. Register it with
+Some things in the export cannot come across:
+
+- **[OpenID Connect (OIDC)](glossary.md#oidc) and API applications.** Zitadel
+  writes an application into its export without its client ID or secret. So it
+  cannot be recreated with the ID the application already uses. Each one is named
+  in the report with its redirect URIs, and the URIs it returns people to after
+  they sign out. Register it with
   `signari client create -client-id <the ID it uses>`.
-- **The subject.** Zitadel sends each person's user ID as `sub`. That ID is a
-  number written as text, and an account's id here, which is what it sends, is
-  a UUID. An application that keyed its accounts on `sub` meets every person as
-  a stranger. The report says how many people this applies to.
-- **Machine users.** They sign in with a key or a secret, and neither is
-  exported. Register whatever uses one as a client.
-- **Administrative roles**, such as `ORG_OWNER` and project roles held as a
-  member. Nothing is granted here by having held them. Each person's roles are
-  named, so you can grant what is needed explicitly.
-- **Passkeys and recovery codes.** The export does not hold them. People
-  register passkeys again, and make new recovery codes.
-- Nicknames and phone numbers, and the organisation's policies, texts, actions,
-  domains and IdP configurations. Each is counted in the report by field.
+- **The subject.** Zitadel sends each person's ID as `sub`. That ID is a
+  number written as text. An account's ID here, which is what Signari sends, is a
+  universally unique identifier (UUID). An application that keyed its accounts on
+  `sub` meets every person as a stranger. The report says how many people this
+  applies to.
+- **Machine accounts.** They sign in with a key or a secret, and neither is exported.
+  Register whatever uses one as a client.
+- **Administrative roles**, such as `ORG_OWNER` and project roles held as a member.
+  Nothing is granted here by having held them. Each person's roles are named, so
+  you can grant what is needed explicitly.
+- **Passkeys and recovery codes.** The export does not hold them. People register
+  passkeys again, and make new recovery codes.
+- **Everything else.** Nicknames and phone numbers, and the organisation's
+  policies, texts, actions, domains and IdP configurations. Each is counted in the
+  report by field.

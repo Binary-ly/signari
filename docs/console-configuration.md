@@ -53,6 +53,26 @@ organisation a request is scoped to comes from the administrator's own record. A
 selector the caller could set would be no boundary. Work across organisations is
 done through the Admin API.
 
+## Signing in to the console
+
+Administrators can sign in to the console through Signari itself, with a second
+factor, once the console's settings name the issuer and the console's own client
+(`SIGNARI_ISSUER` and `SIGNARI_CONSOLE_CLIENT_ID`). A password then admits only the
+break-glass account, which is the way in when Signari is what is down. [Signing in
+to the console through Signari](admin-tokens.md#signing-in-to-the-console-through-signari)
+sets it up.
+
+Without those settings, administrators sign in with the console's own accounts. An
+account that signs in with a password, including the break-glass account, has a
+second factor of its own, an authenticator app. Setting it up, replacing it or
+removing it ends every other session that account holds in the console, and every
+remember-me cookie issued before.
+
+> [!NOTE]
+> Open sessions are ended only with the console's default
+> `SESSION_DRIVER=database`. With another driver, the remember-me cookies are
+> still ended, but open sessions run until they expire.
+
 ## Read-only, on purpose
 
 The screens read views in `core_v1`, through Eloquent models whose `save()`

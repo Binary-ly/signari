@@ -1,4 +1,4 @@
-# OID4VCI: the authorization server's half
+# Issuing credentials to wallets (OID4VCI)
 
 ## Introduction
 
@@ -17,7 +17,7 @@ sign in. Each credential Signari issues is built on a signed JSON Web Token
 You define what Signari issues, and make offers, with the command line or the
 Admin API.
 
-## Which half, and why that is the whole job
+## The two roles, and which Signari plays
 
 OID4VCI separates two roles:
 
@@ -874,7 +874,7 @@ What escaping costs is interoperability with anything that re-serialises before
 hashing, and readability when somebody is debugging a credential by hand. It is
 defensive, not load-bearing, and the test now says it that way.
 
-### Five wrong section numbers
+### Section numbers that moved, and a date
 
 The numbering shifted between SD-JWT VC drafts, and nobody re-checked:
 

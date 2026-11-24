@@ -621,6 +621,8 @@ The file covers all of these:
 - The access policy, the sign-in flows and the authorization model.
 - Dynamic registration, and the WebAuthn policy.
 - User-Managed Access ([UMA](glossary.md#uma)) owner intervention.
+- The organisation's own brand and words (`brand` and `messages`).
+- The services an `external_factor` stage may ask (`external_factors`).
 - Group releases to clients and SAML providers.
 - Authorization details types and their clients.
 - Client attesters, credential configurations and proof roots.
@@ -744,6 +746,8 @@ are how the people who sign in through it reach their accounts. A SAML upstream
 created by a file believes its addresses, as `signari idp add` does, unless the
 file says otherwise.
 
-**The brand is not in this file.** It belongs to the instance, and every
-organisation on the instance renders with it. So applying one organisation's file
-must not change another's sign-in page. Set it with `signari brand set`.
+**The instance's brand is not in this file.** The file's `brand` and `messages` are
+the organisation's own, laid over the instance's. The instance's brand belongs to
+the instance, and every organisation on the instance renders with it. So applying
+one organisation's file must not change another's sign-in page. Set it with
+`signari brand set`.

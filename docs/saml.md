@@ -163,8 +163,8 @@ kilobytes of DEFLATE expands to gigabytes. That is how both `crewjam/saml` and
 **ACS URLs are an exact-match allow-list.** This is the SAML equivalent of
 OpenID Connect's `redirect_uri`, and it is where assertions get stolen. Whoever
 can steer the `AssertionConsumerServiceURL` receives a genuine, correctly signed
-assertion for a real person, at a server they control. Seventeen evasion
-techniques are tested:
+assertion for a real person, at a server they control. These evasion techniques
+are tested, in seventeen cases:
 
 - An attacker's host.
 - The registered host as a prefix.
@@ -628,10 +628,10 @@ encryption that does not hold. There is a test that tampers with a ciphertext an
 requires the decryption to fail.
 
 "Key transport" is how the key that encrypts the assertion is itself sent to the
-provider. It is `rsa-oaep-mgf1p` by default. The SHA-1 in its name is OAEP's mask
-generation function, which needs a pseudorandom function, not collision
-resistance. That is a different question from SHA-1 in a signature, which this
-package refuses on both bindings. See `docs/security-scanning.md`.
+provider. It is `rsa-oaep-mgf1p` by default, which uses SHA-1 inside OAEP's mask
+generation function, MGF1. That function needs a pseudorandom function, not
+collision resistance. It is a different question from SHA-1 in a signature, which
+this package refuses on both bindings. See [security scanning](security-scanning.md).
 
 A provider that supports it can be given `xmlenc11#rsa-oaep` with SHA-256 and
 MGF1-SHA-256 instead (`saml add-sp -sp-key-transport rsa-oaep-sha256`). It is the

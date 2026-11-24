@@ -132,6 +132,11 @@ anything that can authenticate as the application. Picture a key set that turns 
 be unusable at 3am, during somebody's first token request. That is a much worse
 discovery than one refused when it was registered.
 
-There is no `jwks_uri`. Fetching a URL an administrator supplied, on the
-authentication path, is a request-forgery primitive. It is also a hard dependency
-on somebody else's uptime during sign-in.
+A client you register has no `jwks_uri`. Fetching a URL an administrator
+supplied, on the authentication path, is a request-forgery primitive. It is also a
+hard dependency on somebody else's uptime during sign-in.
+
+The one exception is an [application known by its
+URL](client-metadata-documents.md). Its metadata document may name its keys by a
+`jwks_uri`, and Signari fetches that address, which must be https, under the same
+outbound rules as the document itself.

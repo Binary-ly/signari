@@ -208,6 +208,8 @@ firewall, and this document is what they need to write it.
 | Transit engine | 10 s a call, a minute to make a key; a signature that fails fails the request that needed it, and is not retried |
 
 `V13.1.2` and `V13.1.3` ask for documented connection-pool limits and per-service
-resource strategies. The database pool is `pgxpool`'s default sizing, which is not
-documented per service here. That is a real gap, and it is left stated rather than
-implied.
+resource strategies. Each node holds two database pools, one for requests and one
+for background work, each with its own limit (`SIGNARI_DB_MAX_CONNS` and
+`SIGNARI_DB_WORKER_MAX_CONNS`). Their defaults are in [the security
+inventories](security-inventories.md#connections-and-resources-v131), and
+[connection pooling](connection-pooling.md) explains how to size them.

@@ -110,9 +110,12 @@ operation now takes one snapshot.
 
 ## What this does not change
 
-- Promotion is still manual, and still waits 24 hours. Automatic promotion on a
-  timer would mean a key could start signing while a node was down and unable to
-  publish it.
+- Promotion still waits 24 hours after publication, by hand or unattended. With
+  `SIGNARI_KEY_ROTATION_PERIOD` set, Signari takes all three steps itself: it
+  publishes a `next` key once the active one reaches that age, promotes it once it
+  has been published for a day, and retires a passive key once nothing can still
+  be verifying against it. Unset, `signari keys rotate` and `keys retire` are the
+  only way.
 - An application that caches the JWKS forever and never fetches it again is
   still broken. No amount of advance publication fixes that. The 24 hours is what
   makes a rotation survivable for the applications that fetch it on a schedule.
@@ -222,3 +225,21 @@ an answer; a missing row is a mystery.
 
 The key is no longer loaded, so nothing can sign or verify with it. `keys list`
 does not show it either, because that command shows what applications can see.
+
+## Rotating the root key
+
+The root key, `SIGNARI_ROOT_KEY`, is a different key. It signs nothing: it seals
+every secret Signari stores, the signing keys among them. `signari keys
+rewrap-root` moves everything it sealed to a new root key, in one transaction.
+There are two ways to do it:
+
+- **With the deployment running**, through rolling restarts that first give every
+  node the new key as one it opens with and never seals with. See [rotating the
+  root key with the deployment
+  running](configuration.md#rotating-the-root-key-with-the-deployment-running).
+- **With the deployment stopped**, with the new key in `SIGNARI_NEW_ROOT_KEY`. See
+  [rotating the root key with the deployment
+  stopped](configuration.md#rotating-the-root-key-with-the-deployment-stopped).
+
+`signari keys rewrap-root -dry-run` performs the whole rotation and then rolls it
+back. It is the only way to learn that a rotation would succeed before you make it.

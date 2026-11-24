@@ -36,9 +36,11 @@ signari client set-tls -client-id jobs -sp-cert ./jobs.crt -tls-bound-tokens
 In this example, `-tls-bound-tokens` also binds each application's tokens to its
 certificate, as described below.
 
-Match on exactly one of `-tls-subject-dn`, `-tls-san-dns`, `-tls-san-uri` or a
-registered certificate. Two would be an AND nobody expects, and any-of is weaker
-than it looks. The database enforces it as a CHECK constraint.
+Match on exactly one of `-tls-subject-dn`, `-tls-san-dns`, `-tls-san-uri`,
+`-tls-san-ip`, `-tls-san-email` or a registered certificate. `-tls-san-ip` matches
+an IP address in the certificate, and `-tls-san-email` an email address, as RFC
+8705 allows. Two would be an AND nobody expects, and any-of is weaker than it
+looks. The database enforces it as a CHECK constraint.
 
 ## Two halves, and the one usually missing
 

@@ -82,6 +82,22 @@ development, and no wildcard.
 (on by default) adds `iss`, the issuer, and `sid`, the session's identifier, to
 it.
 
+The same command sets the back channel, when you name it. The three settings
+above are always set together, and one left out is cleared, so name them again:
+
+```sh
+signari client set-logout -client-id wiki \
+  -post-logout-redirects https://wiki.example.com/signed-out \
+  -frontchannel-uri https://wiki.example.com/oidc/frontchannel-logout \
+  -backchannel-uri https://wiki.example.com/oidc/backchannel-logout
+```
+
+`-backchannel-uri` is where Signari posts a "logout token", a signed message
+saying the session has ended, when the person signs out. It must be https, with no
+fragment, and an empty value clears it. `-backchannel-sid` (on by default) puts the
+session's `sid` in the token. Each is left alone when the command does not name
+it, because dynamic registration sets them too.
+
 You can set the same three settings in other places too, as
 `post_logout_redirect_uris`, `frontchannel_logout_uri` and
 `frontchannel_logout_session_required`:

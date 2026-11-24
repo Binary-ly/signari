@@ -128,7 +128,7 @@ wildcard: RFC 9068 §4 requires the claim.
 | Publish authorization server metadata | RECOMMENDED | RFC 8414 discovery |
 | Clients must not influence `client_id` | SHOULD NOT | dynamic registration assigns it; the request cannot choose it |
 | Authorization responses never over unencrypted connections | MUST | `ValidateRedirectURI` refuses non-loopback `http` |
-| **CORS MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — no CORS anywhere |
+| **CORS MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — CORS is served from an explicit allow-list in `cors.go`, and the authorization endpoint is not on it |
 
 ## §4 attack-specific countermeasures
 
@@ -160,10 +160,13 @@ server (§2.3).
 Both were invisible to the existing tests, because both were *absences*: one
 check that was too strict, and one that was not there at all.
 
-One MUST NOT is satisfied only because the corresponding feature is unbuilt:
-Cross-Origin Resource Sharing (CORS). That is stated rather than counted as a win.
-One encouragement, constant-PKCE-value detection, is not implemented, and is
-recorded as such.
+When this was written, one MUST NOT was satisfied only because the corresponding
+feature was unbuilt: Cross-Origin Resource Sharing (CORS). That was stated rather
+than counted as a win. CORS has since been built as an allow-list that leaves the
+authorization endpoint out, as the [later pass](#rfc-9700-2-re-verified-against-current-code--24-august-2026)
+records. One encouragement, constant-PKCE-value detection, was not implemented
+then. A repeated code challenge is now recorded, as the [§2.1.1
+table](#211-authorization-code-grant) says, and a repeated `nonce` is not.
 
 Every fix in this document is mutation-tested: the guard was removed or inverted,
 and the naming test observed to fail.
@@ -293,10 +296,12 @@ package-local run reports that as a survivor.
 Every one died. That is a different statement from "the table says yes", and it is
 the only one worth making about a MUST.
 
-**What is still honestly not implemented:** §2.1.1's encouragement to detect
+**What was still honestly not implemented:** §2.1.1's encouragement to detect
 constant PKCE challenge or nonce values across requests. It is "encouraged" rather
-than a MUST. It needs cross-request state Signari does not keep, and it is
-recorded as absent rather than quietly omitted.
+than a MUST. It needed cross-request state Signari did not keep then, and it was
+recorded as absent rather than quietly omitted. A repeated code challenge has since
+been recorded as `oauth.pkce_challenge_reused`. A repeated `nonce` is still not
+tracked.
 
 ---
 

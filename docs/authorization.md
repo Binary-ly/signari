@@ -14,7 +14,7 @@ session they signed in with.
 
 The question and the answer follow the
 [OpenID AuthZEN Authorization API 1.0](https://openid.net/specs/authorization-api-1_0-final.html),
-Final on 12 January 2026. You describe your relations in a model file, install
+Final on 11 January 2026. You describe your relations in a model file, install
 it with `signari authz set-model`, and grant relations with `signari authz grant`
 or through the Admin API.
 
@@ -578,9 +578,10 @@ and falls back to allowing.
 **A malformed request is `400`, not a denial.** "No" and "that question was
 malformed" are different answers. Returning false for both teaches callers that a
 denial might only mean they sent the wrong shape, after which nobody trusts a
-denial. Unknown JSON fields are an error for the same reason. A caller who sends
-`subjects` is told, rather than receiving a confident denial about a subject we
-never saw.
+denial. Unknown JSON fields are ignored, as the specification requires, and the
+same rule still holds. A caller who sends `subjects` instead of `subject` is told
+that `subject` is missing, with a `400`, rather than receiving a confident denial
+about a subject we never saw.
 
 **Action search results carry `name`, not `type`/`id`** (spec §8.6.2), unlike
 subject and resource results (§8.5.2). Getting this wrong means a client looking

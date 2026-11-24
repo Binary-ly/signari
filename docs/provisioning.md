@@ -18,11 +18,10 @@ through the [Admin API](admin-api.md).
 > [!NOTE]
 > To provision into a SCIM 2.0 server, see [SCIM provisioning](scim.md).
 
-**Google Workspace and Entra are the paid tier elsewhere in this field.** They
-are free in Signari, and the reason is not generosity. The hard part is the
-"reconciliation", which compares what a target holds with what it should hold,
-and that was already written for SCIM. Adding two more targets was implementing
-one small interface twice.
+**Google Workspace and Entra targets are part of Signari, not an add-on.** The
+hard part of provisioning is the "reconciliation", which compares what a target
+holds with what it should hold, and that was already written for SCIM. Adding two
+more targets was implementing one small interface twice.
 
 ## Registering
 
@@ -30,8 +29,6 @@ These commands register a Google Workspace target and a Microsoft Entra ID
 target:
 
 ```sh
-# Any SCIM 2.0 server
-
 # Google Workspace
 signari provision add -org <uuid> -slug workspace -kind-outpost google \
   -credentials ./service-account.json \

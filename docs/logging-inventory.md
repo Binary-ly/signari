@@ -173,13 +173,16 @@ on `core`**: it reads 15 views in `core_v1`. `signari_maintenance` is `NOLOGIN`
 and `BYPASSRLS` by design (migration 0003). Every org-scoped table, audit included,
 carries row-level security (RLS) with `FORCE` (migration 0092).
 
-## What is not covered here, and is the operator's
+## What is not covered here, and is the administrator's
 
 - **V16.4.3 — shipping logs to a separate system.** The engine writes diagnostics
-  to stderr and audit rows to its own database. Neither is forwarded anywhere. If
-  the host is breached, both are within reach of the breach. Collecting stderr
-  into a log service and replicating or exporting the audit trail off-box are
-  deployment decisions the engine deliberately does not make; `docs/audit-export.md`
+  to stderr and audit rows to its own database. It forwards the audit trail to a
+  syslog collector or a SIEM webhook as each event is written, once an
+  administrator sets a destination: see [audit streaming](audit-streaming.md).
+  Streaming is off by default, and stderr is never forwarded by the engine. Until
+  one is set up, a breach of the host reaches both. Collecting stderr into a log
+  service, and choosing where the audit trail goes, are deployment decisions the
+  engine deliberately does not make. [Exporting the audit trail](audit-export.md)
   covers the export path.
 - **V16.2.2 — time synchronisation.** The engine emits offsets correctly; whether
   the clock is right is NTP's job on the host.

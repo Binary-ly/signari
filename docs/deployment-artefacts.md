@@ -8,9 +8,8 @@ computer. This page lists each of those "artefacts", what it deploys, and how it
 was tested.
 
 Each is configured where its platform expects. The Helm chart takes Helm values,
-the Kubernetes controller in `operator/` takes a resource, and the Docker Compose
-stack takes
-environment variables and profiles.
+the Kubernetes operator in `operator/` takes a resource, and the Docker Compose
+stack takes environment variables and profiles.
 
 ## Helm chart — shipped
 
@@ -99,8 +98,8 @@ that run.
 ## Kubernetes operator — configuration as a resource
 
 `operator/` keeps an organisation's configuration file applied (see [its own
-guide](../operator/README.md)). It is a Kubernetes controller. A `SignariConfig`
-resource holds the file that `signari apply` reads. The controller plans it
+guide](../operator/README.md)). It is a Kubernetes operator. A `SignariConfig`
+resource holds the file that `signari apply` reads. The operator plans it
 through the Admin API, and applies it with the planned version as `If-Match`.
 
 Every `resyncSeconds` it plans again, so a change made from the console or the
@@ -140,7 +139,7 @@ library is a place for bugs the library already fixed.
 Where a first-party artefact genuinely helps is the Admin API: registering
 clients, people and providers. That is Signari-specific and not covered by any
 OIDC library, and it is the thing to build first if an SDK is wanted. This is
-recorded rather than stubbed, for the same reason as the controller above: three
+recorded rather than stubbed, for the same reason as the Kubernetes operator above: three
 half-SDKs are worse than the standard libraries that already work.
 
 ## A first run with something to sign in to

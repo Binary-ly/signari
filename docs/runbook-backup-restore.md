@@ -314,11 +314,14 @@ old cookie is signed in again. Run `restore finalize`, and it is not:
 
 ## What a restore does not bring back
 
-- **Nothing is lost from sessions, which is the danger.** Sessions are rows, so
-  they come back as they were at the dump. A browser holding one is signed in
-  again. A session ended after the dump is live again. `signari restore finalize`,
-  above, ends them all. This page once said that everyone signs in again, which is
-  not what happens: a restore of a copy brought back its nine live sessions.
+**Sessions are not on this list, and that is the danger.** Sessions are rows, so
+they come back as they were at the dump. A browser holding one is signed in again.
+A session ended after the dump is live again. `signari restore finalize`, above,
+ends them all. This page once said that everyone signs in again, which is not what
+happens: a restore of a copy brought back its nine live sessions.
+
+A restore does not bring back these:
+
 - **Undelivered sign-out notices** past their retry budget. Check the console's
   screen of sign-out deliveries after a restore.
 - **Anything erased.** A "crypto-shredded" subject, a person whose key was

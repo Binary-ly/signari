@@ -27,9 +27,9 @@ signari provider add -org <uuid> \
   -mode fail_closed
 ```
 
-The engine calls the service over HTTP with a JSON contract that only grows. No
-version is sent, and unknown fields in either direction are ignored. (This page
-said "versioned"; nothing names a version.)
+The engine calls the service over HTTP with a JSON contract. Every call names the
+contract's version in a header, and unknown fields in either direction are
+ignored. [The contract](#the-contract) says when the version moves.
 
 The Admin API registers, rotates, bounds and removes providers the same way,
 under `/admin/organizations/{orgID}/providers`. See [the Admin API](admin-api.md).

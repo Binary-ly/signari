@@ -102,10 +102,15 @@ Addresses outside every range are **unknown**, not defaulted. Putting
 unrecognised addresses at a fixed point would make every one of them look like
 impossible travel from the office.
 
-**`SIGNARI_GEOIP_DB`** names a MaxMind-format database. The reader is **not
-implemented yet**, and the resolver says so rather than pretending. A lookup
-written against a database this repository cannot test with is a lookup nobody
-has ever seen return the right answer.
+**`SIGNARI_GEOIP_DB`** names a MaxMind-format database, such as a GeoIP2 or
+GeoLite2 City file. Signari opens it once, at startup, and reads three fields for
+each address: the country, the latitude and the longitude. The reader is tested
+against MaxMind's own test database, which holds documentation ranges only.
+
+A path that cannot be read, or a file that is not a usable database, does not stop
+anybody signing in. Every check then reports that it did not run, and the reason
+is logged at startup. `SIGNARI_GEOIP_STATIC` is read first: when it is set and
+every range in it parses, `SIGNARI_GEOIP_DB` is not used.
 
 The database is also not bundled and not downloaded. It is licensed, and it
 changes weekly. An identity provider that fetches a binary blob from the internet

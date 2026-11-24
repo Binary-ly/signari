@@ -2,8 +2,9 @@
 
 ## Introduction
 
-The Model Context Protocol (MCP) connects AI agents to tools and data. An "MCP
-server" offers those tools. Before an agent's client can call one, it needs an
+The Model Context Protocol (MCP) is an open protocol that connects applications
+built on language models, such as AI agents, to outside tools and data. An "MCP
+server" offers those tools and data. Before an agent's client can call one, it needs an
 access token, and the MCP authorization specification (2025-06-18) says how it
 gets one.
 

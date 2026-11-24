@@ -117,8 +117,9 @@ its search group from its registration instead. You set it with
 
 Before this, any account that could bind could list the directory. If an
 application's service account searches for other people, add it to the search
-group. Otherwise its searches will come back with only its own entry. The same
-setting applies to an LDAP outpost, which reads it from its own environment.
+group. Otherwise its searches will come back with only its own entry. An outpost
+ignores `SIGNARI_LDAP_SEARCH_GROUP` in its own environment, and logs a warning
+naming it, because its registration decides.
 
 **Group membership is read on every operation, not at bind.** A client keeps a
 connection open for as long as it likes. So each search and each write looks the
@@ -231,10 +232,11 @@ Until October 2026, any one-level or subtree search under the base returned the
 whole directory, wherever it was based.
 
 **A critical control is refused.** A request "control" asks the directory to
-carry out an operation in a particular way, such as sorting its results. This
-server applies no request controls. So an operation carrying one marked critical
-is not performed, and is answered `unavailableCriticalExtension` (12), as RFC 4511
-§4.1.11 requires. A non-critical control is ignored.
+carry out an operation in a particular way, such as sorting its results. Signari
+applies one request control: paged results on a search, from RFC 2696. An
+operation carrying any other control marked critical is not performed, and is
+answered `unavailableCriticalExtension` (12), as RFC 4511 §4.1.11 requires. Any
+other control that is not critical is ignored.
 
 Critical controls used to be ignored too. So a client that made, say, a
 server-side sort a condition of its search got the search without it.
@@ -334,9 +336,10 @@ page as well. If whether the person has a second factor cannot be read, the bind
 is refused.
 
 Service accounts that bind to the directory should have no second factor enrolled,
-or `refuse_when_mfa` refuses them too. Carrying a code with the password (a
-`;123456` suffix, or a RADIUS Access-Challenge) is the full answer. It is not
-built yet. When it is, this setting will decide only what happens without one.
+or `refuse_when_mfa` refuses them too. A person with a second factor carries the
+code with the password instead: the `;123456` suffix above, or, over RADIUS, the
+Access-Challenge that [RADIUS](radius.md) describes. This setting decides only what
+happens to a bind that carries no code.
 
 ## Verified against
 
@@ -394,8 +397,9 @@ account.
 | `memberOf` | derived | NO-USER-MODIFICATION — it is a view of group membership |
 | `objectClass` | structural | fixed — `objectClassModsProhibited(69)` |
 
-**Three columns had to be added to make this honest.** `cn` had nowhere to go at
-all. The shim published `cn: <username>`, and Signari had never stored a display
+**Three columns had to be added to make this honest**: `display_name` for `cn`,
+`surname` for `sn`, and `given_name` for `givenName`, which the schema makes
+optional. `cn` had nowhere to go at all. The shim published `cn: <username>`, and Signari had never stored a display
 name. So an `add` carrying `cn: Alice Okonkwo` would have been accepted and
 dropped.
 

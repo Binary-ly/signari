@@ -74,7 +74,7 @@ Every claim named is asked for, and a credential without one of them is refused.
 
 Nobody, until `idp vp-issuer` names an issuer, exactly as the `iss` its
 credentials carry. SD-JWT VC lets the verifier's policy decide how an issuer's
-key is found, and you choose, issuer by issuer, between two ways.
+key is found, and you choose, issuer by issuer, among three ways.
 
 ### Where an issuer's keys come from
 

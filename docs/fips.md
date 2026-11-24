@@ -36,8 +36,8 @@ builds against it.
 
 This page used to give `GOFIPS140=latest`, while calling the result a validated
 module. `latest` is the module's code as it stands, not a validated snapshot. The
-package counts below were measured with `latest` and have not been repeated
-against `certified`.
+package counts below were measured with `latest` first, and measured again with
+`certified` in October 2026.
 
 `internal/passwords` and `internal/mfa` were re-run in October 2026 and now pass
 under `fips140=only`. Their tests of what is refused in that mode run there, and
@@ -180,6 +180,10 @@ by `x5t` alone will not find it.
 
 ### Verifying passwords from another IdP — `internal/passwords`
 
+Signari can import the password hashes of the system people are moving from, and
+check each one when that person first signs in. Several of those formats are built
+on MD5 or SHA-1, or on a salt shorter than the module allows, and the module
+refuses to compute them.
 
 **Consequence: people migrated from those systems can be imported, but cannot
 sign in under `fips140=only` until they have set a password here**. The delegated

@@ -151,7 +151,14 @@ retried, and a misread one is not.
 
 ### The dialects
 
-Upstreams say "remove this member" in several dialects, and all were handled.
+Upstreams say "remove this member" in several dialects. Each of these is read as
+the removal of that one member, and none of them empties the group:
+
+```json
+{"op":"remove","path":"members[value eq \"abc-123\"]"}
+{"op":"remove","path":"members[value eq \"abc-123\"].value"}
+{"op":"Remove","path":"members","value":[{"value":"abc-123"}]}   // Entra: in the value, capitalised
+```
 
 Two more distinctions are silent when wrong:
 
@@ -341,15 +348,13 @@ string clear a value.
 - These attributes cannot be filtered on: a personal value is sealed, so a query
   cannot read it.
 
-## Verified against a running engine
+## Three bugs a running engine found, none of them in SCIM
 
+Running it against the real schema, in August 2026, found mistakes the compiler
+cannot see, because SQL in a string is not type-checked:
 
-## Three bugs this found, none of them in SCIM
-
-Running it against the real schema found mistakes the compiler cannot see,
-because SQL in a string is not type-checked:
-
-- **`display_name` on `core.users` does not exist.** Names live on the link row,
+- **`display_name` on `core.users` did not exist.** A later change added it, for
+  the directory's `cn`. Names from a source live on the link row,
   as `core.directory_links.remote_name` already does. A name is a fact one
   upstream asserts, and two upstreams asserting different names is a conflict
   with no correct resolution.

@@ -404,7 +404,7 @@ nothing because it looked in the wrong place.
 
 ---
 
-## Third pass: running each specification's own examples through our decoder
+## Third pass: running each specification's own examples through Signari's decoder
 
 Two methods have been applied to these ten so far. Sweeping the sections nobody
 had cited asks *what does the specification say that was never read here*. Extracting
@@ -598,7 +598,7 @@ because the failure was silent: the extraction succeeded, the output was
 well-formed, and only pulling the surrounding sentence showed it was the wrong half
 of the section.
 
-### What draft-18 actually says, and what it cost us
+### What draft-18 actually says, and what Signari's list was missing
 
 | §2.2.2.3 | Claims |
 |---|---|
@@ -625,13 +625,12 @@ now recorded as a deviation with the condition that should end it: an ecosystem
 whose Type Metadata marks `iat` as `"sd": "always"` (§9.3) cannot be served until
 that entry goes.
 
-
-An earlier version of our comment cited that agreement approvingly. It is worth
-being careful about what it demonstrates: both lists were copied from the same
-document at roughly the same time, so they agree about what that document said and
-about what it has since added. Agreement between two implementations reading one
-source is not independent confirmation, and the two claims neither of us carried
-are the demonstration.
+An earlier version of the code's comment cited another implementation's list,
+which agreed with Signari's, as confirmation. It is worth being careful about what
+such agreement demonstrates. Two lists copied from the same document at roughly
+the same time agree about what that document said, and both miss what it has since
+added. Agreement between two implementations reading one source is not independent
+confirmation, and the two claims missing from Signari's list are the demonstration.
 
 ### The fix that matters is the test, not the two names
 
@@ -728,7 +727,7 @@ different thing from one that quietly cannot happen.
 
 ## In-session re-verification against fetched text — 24 August 2026
 
-Point 3 re-run against the *published draft text*, not against notes, for the two
+The re-verification was run again against the *published draft text*, not against notes, for the two
 standards most likely to have moved and the one whose failure is worst.
 
 **SD-JWT VC — draft-18, fetched and diffed. Clean.**
@@ -764,7 +763,7 @@ No standard Signari cites has been superseded since the last pass.
 
 ---
 
-## Point 3 completed — the last two standards re-verified against current text (24 August 2026)
+## The last two standards re-verified against current text (24 August 2026)
 
 The remaining two of the ten, deep-dived this session so every emerging standard
 has had a fresh pass:

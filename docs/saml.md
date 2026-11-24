@@ -145,7 +145,9 @@ and ignored, and every response signed the assertion only.
 `<Issuer>admin<!---->@evil.test</Issuer>` as `admin@evil.test`. Canonicalisation
 drops comments before the digest is computed, and other parsers keep only the
 first text node. So the signed bytes, Signari's value and the other party's value
-can all differ. That is CVE-2017-11427 and its relatives.
+can all differ. That is the comment-truncation class of attack on XML signatures:
+an interpretation conflict (CWE-436) between what the signature covers and what
+the application reads.
 
 Signari does not try to agree with every other implementation. Instead, a
 document with a comment anywhere inside its document element is rejected. No

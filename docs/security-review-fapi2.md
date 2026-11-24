@@ -25,14 +25,14 @@ Those rows say **per client** or **profile mode**.
 | Reject the resource owner password credentials grant | yes |
 | Only support confidential clients | **per client** — we support public clients generally; a client held to [the profile](fapi2.md) must be confidential |
 | Only issue sender-constrained access tokens | **per client** — a client held to the profile is refused a token unless the request proves a key |
-| Sender-constraining via mTLS or DPoP | both implemented |
+| Sender-constraining via mTLS or Demonstrating Proof of Possession (DPoP) | both implemented |
 | Client authentication via mTLS or `private_key_jwt` | both implemented |
 | Not expose open redirectors | yes |
 | Accept **only** the issuer identifier in a client assertion `aud` | **per client** — held to the profile, the issuer alone, as a string; otherwise see below |
 | Not use refresh token rotation | **per client** — held to the profile, a refresh token does not rotate; otherwise we rotate, see below |
 | Authorization codes with a maximum lifetime of 60 seconds | **yes, exactly 60** — and now pinned by `TestTheConstantsAConformanceClaimRestsOnHaveNotDrifted`, since nothing previously stopped the number drifting |
 | If using DPoP, support Authorization Code Binding to DPoP Key | **was missing — now implemented** |
-| Accept JWT `iat`/`nbf` 0–10s in the future, reject >60s | **was wrong in both directions — now implemented** |
+| Accept JSON Web Token (JWT) `iat`/`nbf` 0–10s in the future, reject >60s | **was wrong in both directions — now implemented** |
 
 Two rows are deliberate differences rather than gaps. Two were real defects.
 
@@ -74,7 +74,7 @@ the client §10.1 exists to accommodate.
 And when both are present: "the authorization server MUST reject the request if
 the JWK Thumbprint in dpop_jkt does not match the public key in the DPoP header".
 
-### The mistake I made implementing it
+### The check first went in the wrong place
 
 The redemption check went in after the PKCE block. That block returns early when
 a code carries a challenge, which is every code, since PKCE is required by
@@ -116,14 +116,8 @@ A third problem fell out of fixing the second. `MaxAssertionLifetime` only bound
 the window *forwards*. So an assertion minted an hour ago, with `exp` two minutes
 out, satisfied it completely, having been a usable credential for that hour.
 
-
-`JsonWebToken.isActive()` carries the comment:
-
-> "This assumes a default clock-skew for the 'is not before' of 10 seconds which
-> is in line FAPI 2.0."
-
-
-Ten seconds of tolerance rather than sixty. The 10–60 second band is left to the
+Signari now accepts an `iat` or `nbf` up to ten seconds in the future, and
+refuses anything later. Ten seconds of tolerance rather than sixty. The 10–60 second band is left to the
 implementation — "reject greater than 60" does not require accepting 59 — and
 every second of tolerance is a second an assertion is usable before its own
 client says it should be.
@@ -195,8 +189,15 @@ missing from it entirely. All were checked against source.
 ### §5.3.4, the resource server requirements — none were listed
 
 Signari is a resource server for `/userinfo`, `/introspect` and the credential
-endpoint, so all five bind it.
+endpoint, so all five bind it:
 
+| §5.3.4 requirement | Signari |
+|---|---|
+| 1. "shall accept access tokens in the HTTP header as in Section 2.1 of OAuth 2.0 Bearer Token Usage [RFC6750] or Section 7.1 of DPoP [RFC9449]" | met — the `Authorization` header is read under both the `Bearer` and the `DPoP` scheme |
+| 2. "shall not accept access tokens in the query parameters stated in Section 2.3 of OAuth 2.0 Bearer Token Usage [RFC6750]" | met — a token is read from the header, or from the form body of a POST, and never from the query string |
+| 3. "shall verify the validity, integrity, expiration and revocation status of access tokens" | met — the signature and expiry are verified first. Then the token is refused if it was revoked, its grant was revoked, its session has ended, or its client or subject is no longer active |
+| 4. "shall verify that the authorization represented by the access token is sufficient for the requested resource access and otherwise return errors as in Section 3.1 of [RFC6750]" | met — a token issued for another resource is `invalid_token`, and one without the scope the endpoint needs is a `403` with `insufficient_scope` |
+| 5. "shall support and verify sender-constrained access tokens using one or both of the following methods: MTLS as described in [RFC8705], DPoP as described in [RFC9449]" | both — a token carrying `cnf.jkt` needs a DPoP proof made with that key, and one carrying `cnf.x5t#S256` needs the certificate it is bound to on the connection |
 
 Requirement 2 is the one worth dwelling on. It is a **shall not**, and it is the
 cheapest of the five to get wrong. Getting it wrong is invisible until somebody
@@ -213,13 +214,16 @@ normative sections bind a server.
 
 ### §5.2 Network layer protections
 
+This section covers Transport Layer Security (TLS) and Cross-Origin Resource
+Sharing (CORS):
+
 | Requirement | Signari |
 |---|---|
-| "shall only offer TLS protected endpoints" | deployment property — the binary serves plaintext behind a terminating proxy, which is the operator's arrangement, not ours to assert |
+| "shall only offer TLS protected endpoints" | deployment property — the binary serves plaintext behind a terminating proxy, which is the administrator's arrangement, not ours to assert |
 | "shall set up TLS connections using TLS version 1.2 or later" | Go's default minimum is TLS 1.2; outbound calls use the standard library |
 | **§5.2.3: "Servers shall not support CORS for the authorization endpoint"** | **met, and tested** — `oidc.PathAuthorize` is deliberately absent from the CORS allow-list with a comment saying it must stay absent, and `TestTheAuthorizationEndpointNeverGetsCORS` holds it there. The same prohibition appears as RFC 9700 §2.6, which is where our comment cites it |
 
-The Cross-Origin Resource Sharing (CORS) rule is the one worth dwelling on. The
+The CORS rule is the one worth dwelling on. The
 authorization endpoint is reached by **navigation**, never by `fetch`. Any script
 that can read its response is reading a page that may already carry an
 authorization code.
@@ -306,48 +310,22 @@ produces a valid signature is the key that signed it.
 `internal/clientauth/privatekeyjwt.go` tries every registered key. Both terminate
 on a verified signature, so a duplicate `kid` cannot cause a false rejection.
 
-## §5.3.2.2's 303: did anyone try it and revert? (21 August 2026)
+## §5.3.2.2's 303 status code (21 August 2026)
 
 We converted 46 redirect sites from `302` to `303` for one SHOULD:
 
 > "should use the HTTP 303 status code when redirecting the user agent"
 
+Every authorization response now redirects with `303`, and none uses `307`.
 
-```
-OIDCRedirectUriBuilder$QueryRedirectUriBuilder     sipush 302 → Response.status(I)
-OIDCRedirectUriBuilder$FragmentRedirectUriBuilder  sipush 302 → Response.status(I)
-OIDCRedirectUriBuilder$JWTRedirectUriBuilder       sipush 302 → Response.status(I)
-OIDCRedirectUriBuilder$FormPostRedirectUriBuilder  Status.OK  → an HTML form
-```
+### The cost of 303 is compatibility, not correctness
 
+Nothing found argues that the SHOULD is wrong. What it costs is compatibility.
+Changing the status code of an authorization response alters behaviour that
+applications already built against a server may depend on. A server with many such
+applications has a reason to put the change off.
 
-```python
-class HttpResponseRedirectScheme(HttpResponseRedirect):
-    """HTTP Response to redirect, can be to a non-http scheme"""
-```
-
-No `status_code` override anywhere in the module, so it inherits Django's
-**302**.
-
-
-### The finding: it is not that 303 is wrong, it is that it breaks passivity
-
-The strongest evidence is from a third implementation. **Spring Authorization
-Server #1051** and **Spring Security #18264** both ask for exactly this change,
-citing *A Comprehensive Formal Security Analysis of OAuth 2.0* — the paper that
-first described the 307 credential-leak attack, and the reason FAPI writes this
-requirement at all.
-
-Both issues are **open**. Both carry the label `type: breaks-passivity`, Spring's
-term for a change that alters behaviour relying parties may depend on.
-
-That is the real answer to "why doesn't anyone do this". Not that the SHOULD is
-wrong, not that it was tried and reverted — but that changing the status code of
-an authorization response in a mature server is a compatibility event, and
-mature servers defer compatibility events. We have no installed base to break, so
-the cost that stops them does not apply to us. That is a better reason to be
-ahead than "we read the specification and they did not", and it is the one
-supported by evidence.
+Signari had no installed base that depended on `302`, so that cost did not apply.
 
 ### The counter-evidence, weighed rather than omitted
 
@@ -362,12 +340,12 @@ somebody can disagree with it:
 - A redirect status code does not sever `window.opener`. Ordinary cross-origin
   navigation does not either. The mechanism that *does* is
   `Cross-Origin-Opener-Policy` — which is why this engine deliberately does not
-  set it, for this same population of relying parties (see
-  `security-review-asvs.md`, V3.4.8).
+  set it, for this same population of applications (see the
+  [OWASP ASVS review](security-review-asvs.md), V3.4.8).
 - The symptom described — a parent unable to read or control the popup — is what
   happens when a script reads `popup.location.search` across origins, which
   throws regardless of status code.
-- The thread is an unresolved user report, not a maintainer diagnosis, and no
+- The thread is an unresolved forum report, not a maintainer diagnosis, and no
   follow-up establishes cause.
 
 It is possible and unproven. What makes it low risk for us specifically is that
@@ -378,10 +356,9 @@ we already relied on 302 to choose.
 
 ### Verdict
 
-
-Nobody tried our way and reverted. Two of the three have not tried; the third
-wants to and is blocked by backward compatibility rather than by a defect. Ours
-is better here, and now for a reason that was checked instead of assumed.
+Signari keeps `303`. No defect was found in it, and the one cost found,
+compatibility with applications that depend on `302`, did not apply. That reason
+was checked instead of assumed.
 
 ## Second turn: normative extraction, and the trap it started with (21 August 2026)
 
@@ -414,13 +391,13 @@ tooling.
 Re-run with ISO keywords: **94 normative uses, 67 distinct "shall" sentences, 25
 of them naming the authorization server.**
 
-### The requirement I nearly reported as a gap
+### A requirement that looked like a gap
 
 > "if using DPoP, shall support the server provided nonce mechanism (as defined
 > in Section 8 of [RFC9449])"
 
-
-It is not. The bullet sits under **§5.3.3, "Requirements for clients"**, in a list
+Read on its own, this looks like a requirement on the authorization server, and
+so like a gap. It is not. The bullet sits under **§5.3.3, "Requirements for clients"**, in a list
 beginning "Clients ¶ shall support sender-constrained access tokens...". It
 requires a FAPI *client* to handle a `use_dpop_nonce` challenge. It places no
 obligation on the authorization server to issue one.

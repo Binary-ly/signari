@@ -129,9 +129,9 @@ From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN`, or
 may `SET ROLE` to a superuser or a role with `BYPASSRLS`. The reason is not
 row-level security: the engine's own role, `signari_engine`, reads every
 organisation by design. It is that a superuser can run programs and read files on
-the database server (`COPY ... PROGRAM`, `pg_read_server_files`), change the
-server's configuration (`ALTER SYSTEM`) and reach every database on the cluster,
-the console's admin schema among them, and a `BYPASSRLS` role passes every
+the database server (`COPY ... PROGRAM`, `pg_read_server_files`), change that
+database server's configuration (`ALTER SYSTEM`) and reach every database on the
+cluster, the console's `admin` schema among them, and a `BYPASSRLS` role passes every
 row-level policy on every table it may read. The engine needs none of that, so
 serving as either hands a compromised engine, or one SQL injection, powers it
 never uses. v0.1.0's README and its compose file both served as a superuser.
@@ -208,7 +208,7 @@ superuser, give `signari_engine` a password:
 psql 'postgres://postgres@db:5432/signari' -c '\password signari_engine'
 ```
 
-Then put the superuser's DSN in the Secret under its own key, `BOOTSTRAP_DSN`,
+Then put the superuser's data source name (DSN) in the Secret under its own key, `BOOTSTRAP_DSN`,
 and `SIGNARI_DSN` as `signari_engine`, keeping the root key you serve with now:
 
 ```sh

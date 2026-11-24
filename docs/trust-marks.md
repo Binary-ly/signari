@@ -1,142 +1,170 @@
-# Trust Marks
+# Trust marks
 
-A **Trust Mark** is a signed statement by an accreditation authority that some
-entity conforms to a set of criteria.
+## Introduction
 
+In an [OpenID Federation](openid-federation.md), organisations trust each other's
+servers through a shared authority. Sometimes a federation also needs to know
+whether a member has passed an assessment, such as a national privacy profile. A
+**Trust Mark** says so. It is a signed statement by an accreditation authority
+that some entity conforms to a set of criteria.
+
+Signari can issue Trust Marks, revoke them, and answer questions about their
+status. It can also hold marks that others issued to it, and publish them.
 Specification: OpenID Federation 1.0, **Final, 17 February 2026**, §7 and
 §8.4–§8.6.
 
+You manage Trust Marks with the command line or the Admin API.
+
+> [!NOTE]
+> Trust Marks travel inside OpenID Federation documents. Read [OpenID
+> Federation](openid-federation.md) first if the federation words here are new.
+
 ## What it answers that a Trust Chain does not
 
-A Trust Chain proves **provenance**: this entity is who it claims to be, and an
-authority above it vouches for its keys. It says nothing about **conformance** —
-whether the entity has been assessed against a framework and passed.
+A "Trust Chain" is the chain of signed statements from an entity up to an
+authority that both sides trust. A Trust Chain proves **provenance**: this entity
+is who it claims to be, and an authority above it vouches for its keys. It says
+nothing about **conformance**: whether the entity has been assessed against a
+framework and passed.
 
-So a federation can have a perfectly valid chain to a relying party it must not
-admit. A university federation may resolve a chain to every member's software and
-still need to know which of them have been assessed against the national privacy
-profile. That is what a Trust Mark carries, and it is why the two are separate
-mechanisms rather than one.
+So a federation can have a perfectly valid chain to an application it must not
+admit. A university federation may resolve a chain to every member's software. It
+may still need to know which of them have been assessed against the national
+privacy profile. That is what a Trust Mark carries. It is why the two are separate
+mechanisms, not one.
 
 ## The claim name that changed
 
 The type identifier claim is **`trust_mark_type`**.
 
-Drafts of this specification called it `id`. A great deal of deployed code and a
-great deal of written-down knowledge still says `id`, and a fair number of
-tutorials show a mark carrying both.
+Drafts of this specification called it `id`. A great deal of deployed code, and a
+great deal of written-down knowledge, still says `id`. A fair number of tutorials
+show a mark carrying both.
 
-Signari writes only `trust_mark_type`, and **refuses** any document carrying
-`id` — including one carrying both. A document carrying both means two things at
-once, which is worse than one that means the wrong thing: a reader preferring one
-member and a reader preferring the other disagree about what was asserted, while
-each believes it validated the document.
+Signari writes only `trust_mark_type`, and **refuses** any document carrying `id`,
+including one carrying both. A document carrying both means two things at once,
+which is worse than one that means the wrong thing. A reader preferring one member
+and a reader preferring the other disagree about what was asserted, while each
+believes it validated the document.
 
-That is a deliberate compatibility break with draft-era issuers. The alternative
-— accepting `id` as a fallback — makes this server the reader that prefers the
-wrong member.
+That is a deliberate compatibility break with draft-era issuers. The alternative,
+accepting `id` as a fallback, makes Signari the reader that prefers the wrong
+member.
 
 ## The status endpoint is not what you remember
 
-§8.4 in the Final specification:
+The Final specification changes two things in §8.4:
 
-- The request is **`POST`** with one parameter, **`trust_mark`** — the whole
-  signed JWT. Not a `(sub, id)` pair.
-- The response is a **signed JWT**, `typ: trust-mark-status-response+jwt`. Not
-  `{"active": true}`.
+- The request is **`POST`** with one parameter, **`trust_mark`**: the whole signed
+  JSON Web Token ([JWT](glossary.md#jwt)). It is not a `(sub, id)` pair.
+- The response is a **signed JWT**, `typ: trust-mark-status-response+jwt`. It is
+  not `{"active": true}`.
 
 Both changes point the same way.
 
-Asking by coordinates cannot distinguish a mark from its own superseded
-predecessor. Re-issue a mark after a reassessment and the old one still matches
-`(sub, type)` — so "active" would be true of a *position* and false of the thing
-in the caller's hand. Signari looks the mark up by SHA-256 of its exact
+Asking by coordinates cannot tell a mark from its own superseded predecessor.
+Re-issue a mark after a reassessment, and the old one still matches
+`(sub, type)`. So "active" would be true of a *position*, and false of the thing in
+the caller's hand. Signari looks the mark up by the SHA-256 of its exact
 serialisation, so the question asked is the question answered.
 
-Answering in plain JSON leaves the single most security-relevant bit in a
-federation — *has this accreditation been withdrawn* — flippable by anything on
-the network path.
+Answering in plain JSON would leave the single most security-relevant bit in a
+federation, *has this accreditation been withdrawn*, flippable by anything on the
+network path.
 
-An unknown mark gets **404**, not a signed `invalid`. Signing `invalid` over
-bytes we have never seen would mint a statement about somebody else's document,
-which a caller could then present as evidence that we had considered it.
+An unknown mark gets **404**, not a signed `invalid`. Signing `invalid` over bytes
+Signari has never seen would mint a statement about somebody else's document. A
+caller could then present it as evidence that Signari had considered the document.
 
 ## Issuing
 
-The Admin API issues, revokes, accepts, drops and delegates Trust Marks the same
-way, under `/admin/instances/{instanceID}/trust-marks`,
-`/held-trust-marks` and `/trust-mark-delegations`, with a deployment-wide
-token; see [admin-api.md](admin-api.md).
+To issue a mark of one type to one subject, valid for a year:
 
-    signari trust-mark issue \
-      -trust-mark-type https://federation.example/profile/privacy-v2 \
-      -trust-mark-sub  https://rp.example.org \
-      -trust-mark-lifetime 8760h
+```sh
+signari trust-mark issue \
+  -trust-mark-type https://federation.example/profile/privacy-v2 \
+  -trust-mark-sub  https://rp.example.org \
+  -trust-mark-lifetime 8760h
+```
+
+The Admin API issues, revokes, accepts, drops and delegates Trust Marks the same
+way, under `/admin/instances/{instanceID}/trust-marks`, `/held-trust-marks` and
+`/trust-mark-delegations`, with a deployment-wide token. See [the Admin
+API](admin-api.md).
 
 The type identifier must be a URL. §7.1 says it "MUST be collision-resistant
-across multiple federations" and *recommends* a URL; Signari **requires** one,
+across multiple federations" and *recommends* a URL. Signari **requires** one,
 which is stricter than the text. A bare word like `certified` is exactly the
-collision §7.1 warns about — two federations both mint it, and a reader that
+collision §7.1 warns about. Two federations both mint it, and a reader that
 trusts one now trusts the other's.
 
-Re-issuing supersedes: the previous active mark for that `(type, subject)` is
-marked revoked with the reason `superseded by a later issuance`, in the same
+Re-issuing supersedes. The previous active mark for that `(type, subject)` is
+marked revoked, with the reason `superseded by a later issuance`, in the same
 transaction, and kept. Reassessment is the ordinary lifecycle of a conformance
-mark, and "what did we assert about this entity in March" has an answer only if
-the old row survives.
+mark. "What did we assert about this entity in March" has an answer only if the
+old row survives.
 
 ### Issuing without an expiry
 
-`-trust-mark-lifetime 0` issues a mark with no `exp`. §7.1 permits it and says it
+`-trust-mark-lifetime 0` issues a mark with no `exp`. §7.1 permits it, and says it
 means the mark does not expire.
 
-It is a commitment, made by omitting a flag, so the command says so out loud.
-§7.3's expiry step becomes vacuous, which means **the only way anybody learns the
-mark was withdrawn is to query the status endpoint** — and a reader that caches
-and does not re-check will honour it indefinitely.
+It is a commitment, made by leaving out a flag, so the command says so out loud.
+§7.3's expiry step becomes vacuous. That means **the only way anybody learns the
+mark was withdrawn is to query the status endpoint**. A reader that caches and
+does not re-check will honour it indefinitely.
 
 ## Revoking
 
-    signari trust-mark revoke \
-      -trust-mark-type https://federation.example/profile/privacy-v2 \
-      -trust-mark-sub  https://rp.example.org \
-      -trust-mark-reason "failed the 2026 reassessment"
+To revoke a mark, give its type, its subject and a reason:
 
-Revocation is local. **Nothing in the protocol tells the subject**, which is
-still publishing the mark in its own Entity Configuration and will keep doing so.
+```sh
+signari trust-mark revoke \
+  -trust-mark-type https://federation.example/profile/privacy-v2 \
+  -trust-mark-sub  https://rp.example.org \
+  -trust-mark-reason "failed the 2026 reassessment"
+```
+
+Revocation is local. **Nothing in the protocol tells the subject**, which is still
+publishing the mark in its own Entity Configuration, and will keep doing so.
 Readers learn by querying §8.4. The command prints this, because the gap between
-"recorded as revoked" and "no longer honoured anywhere" is where an operator
+"recorded as revoked" and "no longer honoured anywhere" is where an administrator
 stops following up.
 
-The guard is in the `WHERE` clause. Two operators revoking at once would
-otherwise both read `active`, both write, and the record would keep only the
-second reason and the second timestamp — so the first revocation would leave no
-trace at all.
+The guard is in the `WHERE` clause. Otherwise two administrators revoking at once
+would both read `active`, and both write. The record would keep only the second
+reason and the second timestamp, so the first revocation would leave no trace at
+all.
 
 ## Holding a mark somebody else issued
 
-    signari trust-mark accept -trust-mark-file ./mark.jwt
-    signari trust-mark drop   -trust-mark-type ... -trust-mark-issuer ...
+To hold a mark another issuer gave you, or to stop holding one:
 
-`accept` records a mark for republication in the `trust_marks` claim of our own
-Entity Configuration.
+```sh
+signari trust-mark accept -trust-mark-file ./mark.jwt
+signari trust-mark drop   -trust-mark-type ... -trust-mark-issuer ...
+```
 
-**The signature is not checked here.** §7.3's validation is the *reader's* job —
-a relying party deciding whether to believe our accreditation — and we hold no
-key for the issuer. Running the procedure on ourselves would prove nothing we do
+`accept` records a mark for republication in the `trust_marks` claim of Signari's
+own Entity Configuration. An "Entity Configuration" is the signed document each
+member of a federation publishes about itself.
+
+**The signature is not checked here.** §7.3's validation is the *reader's* job: an
+application deciding whether to believe Signari's accreditation. Signari holds no
+key for the issuer. Running the procedure on itself would prove nothing it does
 not already know.
 
-What *is* checked is everything whose failure damages our own document: a mark
-issued to a different entity, one that has already expired, or one whose outer
-and inner type identifiers disagree. Each of those makes a conformant reader
-reject the mark and, depending on the reader, the whole Entity Configuration — so
-one bad row costs us every relying party in the federation.
+What *is* checked is everything whose failure damages Signari's own document.
+That is a mark issued to a different entity, one that has already expired, or one
+whose outer and inner type identifiers disagree. Each of those makes a conformant reader
+reject the mark. Depending on the reader, it may reject the whole Entity
+Configuration too. So one bad row costs Signari every reader in the federation.
 
-**Expired held marks are excluded from the published claim, in SQL.** They stay
-in the table so `trust-mark list` can show that an accreditation lapsed. A mark
-that has expired is one every reader is required to discard, and publishing it
-puts a claim in a signed document that the federation throws away while an
-operator reading their own configuration sees the accreditation listed.
+**Expired held marks are excluded from the published claim, in SQL.** They stay in
+the table, so `trust-mark list` can show that an accreditation lapsed. A mark that
+has expired is one every reader is required to discard. Publishing it would put a
+claim in a signed document that the federation throws away, while an
+administrator reading their own configuration sees the accreditation listed.
 
 ## Delegation (§7.2)
 
@@ -144,47 +172,57 @@ The owner of a type identifier need not be the party that issues marks of that
 type. §7.2's own example is vehicle inspection: the body that mandates the
 inspections does not perform them.
 
-    # As the OWNER:
-    signari trust-mark delegate \
-      -trust-mark-type https://gov.example/inspection \
-      -trust-mark-delegate https://inspector.example \
-      -trust-mark-lifetime 8760h > delegation.jwt
+The owner signs a delegation, and the delegate then issues marks with it:
 
-    # As the DELEGATE:
-    signari trust-mark issue \
-      -trust-mark-type https://gov.example/inspection \
-      -trust-mark-sub https://garage.example \
-      -trust-mark-delegation ./delegation.jwt
+```sh
+# As the OWNER:
+signari trust-mark delegate \
+  -trust-mark-type https://gov.example/inspection \
+  -trust-mark-delegate https://inspector.example \
+  -trust-mark-lifetime 8760h > delegation.jwt
 
-The direction is the half that gets written backwards: the **owner** is `iss` and
+# As the DELEGATE:
+signari trust-mark issue \
+  -trust-mark-type https://gov.example/inspection \
+  -trust-mark-sub https://garage.example \
+  -trust-mark-delegation ./delegation.jwt
+```
+
+The direction is the half that gets written backwards. The **owner** is `iss`, and
 the **delegate** is `sub`. The owner is making a statement about who may issue on
 its behalf.
 
-For this to validate, the **Trust Anchor** must publish the owner in its
-`trust_mark_owners` claim, *with the owner's federation keys*. §7.2.2 verifies
-the delegation against the keys the anchor publishes — never against anything the
-delegation itself carries. `trust-mark delegate` prints this reminder, because a
-delegation that validates nowhere looks exactly like one that validates.
+The **Trust Anchor** is the authority at the top of the federation. For this to
+validate, it must publish the owner in its `trust_mark_owners` claim, *with the
+owner's federation keys*. §7.2.2 verifies the delegation against the keys the
+anchor publishes, never against anything the delegation itself carries.
+`trust-mark delegate` prints this reminder, because a delegation that validates
+nowhere looks exactly like one that validates.
 
 ## The Trust Anchor's two claims
 
-    signari trust-mark issuers -trust-mark-file ./issuers.json
-    signari trust-mark owners  -trust-mark-file ./owners.json
+A Trust Anchor sets its two claims from files:
 
-Both are refused unless this entity is a Trust Anchor — a schema `CHECK` and a
-refusal in `oidfed.Build`, two gates for one rule. §3.1.2 says every reader
-**MUST ignore** these claims anywhere else, so publishing them from a subordinate
-writes down a federation policy that appears to be in force and is applied
-nowhere.
+```sh
+signari trust-mark issuers -trust-mark-file ./issuers.json
+signari trust-mark owners  -trust-mark-file ./owners.json
+```
 
-**And this engine cannot be a Trust Anchor yet**, so setting either is refused
+Both are refused unless this entity is a Trust Anchor: a schema `CHECK` and a
+refusal in `oidfed.Build`, two gates for one rule. §3.1.2 says every reader **MUST
+ignore** these claims anywhere else. So publishing them from a subordinate writes
+down a federation policy that appears to be in force, and is applied nowhere.
+
+**And Signari cannot be a Trust Anchor yet**, so setting either is refused
 outright; `{}` still clears them. A Trust Anchor MUST publish a
-`federation_fetch_endpoint`, which is not built, so an anchor published here was
-one no resolver could fetch a Subordinate Statement from. See
-[OpenID Federation](openid-federation.md#enabling-it). The rest of this section
-describes the claims for when it can.
+`federation_fetch_endpoint`, which is not built. So an anchor published here was
+one no resolver could fetch a Subordinate Statement from. See [OpenID
+Federation](openid-federation.md#enabling-it). The rest of this section describes
+the claims for when it can.
 
 ### `trust_mark_issuers` and the empty array
+
+The claim lists, for each type identifier, the issuers that may issue it:
 
 ```json
 {
@@ -197,9 +235,9 @@ describes the claims for when it can.
 MAY issue Trust Marks with that identifier."*
 
 **That is the opposite of how an empty list reads everywhere else in Signari**,
-where an empty list permits nothing — the rule the SSF stream `Allows` field
-follows, on the grounds that reading an empty list as "everything" is how a
-half-made configuration becomes a live grant.
+where an empty list permits nothing. It is the rule the Shared Signals stream's
+`Allows` field follows, on the grounds that reading an empty list as "everything"
+is how a half-made configuration becomes a live grant.
 
 Here the specification says otherwise, so it is implemented as written. What is
 *not* collapsed is the three states, which mean three different things:
@@ -210,10 +248,10 @@ Here the specification says otherwise, so it is implemented as written. What is
 | type absent from the claim | the anchor enumerated the types it governs, and this is not one |
 | type present, empty array | **anyone** may issue this type |
 
-`oidfed.TrustMarkIssuers.IssuerPermitted` returns `(permitted, known)` so the
+`oidfed.TrustMarkIssuers.IssuerPermitted` returns `(permitted, known)`, so the
 first two stay distinguishable at every call site. A naive `len(list) == 0 →
-deny` turns the specification's "anyone" into "nobody" and every mark in the
-federation stops validating; a naive `len(list) == 0 → allow` applied to the
+deny` turns the specification's "anyone" into "nobody", and every mark in the
+federation stops validating. A naive `len(list) == 0 → allow` applied to the
 absent-type case turns an unenumerated type into an unguarded one.
 
 `trust-mark issuers` prints `ANYONE may issue this` for each empty array at the
@@ -221,12 +259,12 @@ moment it is set, because the file being loaded looks identical either way.
 
 ### `trust_mark_owners` and private keys
 
-The owners claim carries a JWK Set, and it goes into a signed document served to
-the whole federation. `trust-mark owners` refuses any key carrying a private
-member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`) — the same rule
-`attester add` applies, for the same reason: a private key pasted in by mistake
-would be published, the operator's only signal would have been that nothing
-complained, and it is not recoverable.
+The owners claim carries a JSON Web Key (JWK) Set, and it goes into a signed
+document served to the whole federation. `trust-mark owners` refuses any key
+carrying a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`). It is the
+same rule `attester add` applies, for the same reason. A private key pasted in by
+mistake would be published, and the administrator's only signal would have been
+that nothing complained. It is not recoverable.
 
 ## Validating a mark (§7.3)
 
@@ -237,10 +275,10 @@ calling out.
 Entity Configuration contains the instance MUST match the value of the Claim sub
 in the Trust Mark."*
 
-This is the cheapest forgery in the specification and it needs no keys at all:
-copy a genuine, unexpired, correctly signed Trust Mark out of one entity's
+This is the cheapest forgery in the specification, and it needs no keys at all.
+Copy a genuine, unexpired, correctly signed Trust Mark out of one entity's
 configuration and into your own. An implementation that skips step 4 accepts it.
-`TrustMarkOptions.ContainingEntity` has no default and validation fails without
+`TrustMarkOptions.ContainingEntity` has no default, and validation fails without
 it.
 
 **The issuer's keys arrive from a completed chain.** §7.3: *"An Entity MUST
@@ -252,13 +290,14 @@ document that supplies the key that verifies it verifies nothing.
 
 **`exp` is optional and the check is not.** §7.1 makes `exp` OPTIONAL; §7.3 says
 "the current time MUST be before the time represented by the `exp` Claim". Read
-together the check is vacuous when the claim is absent, and §7.3 then adds that
-where marks are issued without an expiry "it is RECOMMENDED that a mechanism be
-provided to validate them, such as the Trust Mark Status endpoint". Signari
-accepts an absent `exp`, and this is precisely the case the status endpoint
-exists for.
+together, the check is vacuous when the claim is absent. §7.3 then adds that where
+marks are issued without an expiry "it is RECOMMENDED that a mechanism be provided
+to validate them, such as the Trust Mark Status endpoint". Signari accepts an
+absent `exp`, and this is precisely the case the status endpoint exists for.
 
 ## Endpoints
+
+Signari serves Trust Marks at these addresses:
 
 | | |
 |---|---|
@@ -271,26 +310,26 @@ when this instance has federation keys.
 
 They are **advertised** in `federation_entity` metadata only once this entity has
 issued a Trust Mark. The metadata answers "is this a Trust Mark Issuer", and the
-honest evidence is whether it has ever issued one — a configuration flag would be
-a second copy of the same fact that an operator can set and never act on. It is a
-fact that only goes one way: rows are revoked, never deleted, so an issuer that
-has withdrawn everything still advertises a status endpoint. Which is right —
+honest evidence is whether it has ever issued one. A configuration flag would be a
+second copy of the same fact, which an administrator can set and never act on.
+
+It is a fact that only goes one way. Rows are revoked, never deleted, so an issuer
+that has withdrawn everything still advertises a status endpoint. That is right:
 "was this withdrawn" is exactly the question that entity will be asked.
 
 §8.6 answers **404** identically for never-issued, revoked and expired. Anyone
-actually holding the mark can distinguish those through the status endpoint;
-distinguishing them here would let a stranger enumerate which entities we have
-ever accredited and then withdrawn.
+really holding the mark can tell those apart through the status endpoint. Telling
+them apart here would let a stranger enumerate which entities Signari has ever
+accredited and then withdrawn.
 
 ## Privacy (§19.2)
 
 An unauthenticated status endpoint lets a Trust Mark Issuer observe who is
-evaluating whom. §19.2 recommends short-lived marks, or using the listing
-endpoint with `trust_mark_type` alone and no `sub`.
+evaluating whom. §19.2 recommends short-lived marks, or using the listing endpoint
+with `trust_mark_type` alone and no `sub`.
 
 That recommendation is addressed to the **caller**, so both forms of the listing
-request are answered. What Signari does on its own side is bound the work: these
+request are answered. What Signari does on its own side is bound the work. These
 are unauthenticated database queries, and the bucket is generous enough that a
-federation resolving chains legitimately never notices, because a limit tight
-enough to matter to an attacker would be tight enough to break the protocol it
-protects.
+federation resolving chains legitimately never notices. A limit tight enough to
+matter to an attacker would be tight enough to break the protocol it protects.

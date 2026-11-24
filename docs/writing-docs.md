@@ -69,11 +69,11 @@ A reader who meets two words assumes two things. Use these words, and only these
 |---|---|---|
 | sign in, sign-in | `log in`, `login`, `log on` | `/login` stays where it is a real path |
 | sign out | `log out`, `logout` | `logout.md` and `/oauth2/logout` keep their names |
-| application | app, relying party, service provider | Gloss "client" once as the protocol's word. Keep `client` in commands, flags and field names |
-| person, people | user, end user | Keep "user" where the code says it, as in `signari user create` |
-| organisation | tenant, realm | Gloss "tenant" once where a reader expects it |
-| administrator | admin, operator | `admin-token` and `/admin` keep their names |
-| Signari | the IdP, the server | "The engine" is the Go server, when that distinction matters |
+| application | `app`, `relying party`, `service provider` | Gloss "client" once as the protocol's word. Keep `client` in commands, flags and field names |
+| person, people | `user`, `end user` | Keep "user" where the code says it, as in `signari user create` |
+| organisation | `tenant`, `realm` | Gloss "tenant" once where a reader expects it |
+| administrator | `admin`, `operator` | `admin-token` and `/admin` keep their names |
+| Signari | `the IdP`, `the server` | "The engine" is the Go server, when that distinction matters |
 
 ## New terms
 
@@ -95,8 +95,9 @@ three.
 - The company is Acme. Its sign-in address, the issuer, is
   `https://login.example.com`.
 - The person signing in is Ada, `ada@example.com`.
-- The wiki speaks OpenID Connect, the chat application speaks SAML, and the VPN
-  speaks RADIUS.
+- The wiki speaks OpenID Connect, and the chat application speaks Security
+  Assertion Markup Language (SAML). The VPN speaks Remote Authentication Dial-In
+  User Service (RADIUS).
 
 Use `example.com` and its subdomains for every address. Use angle brackets for a
 value the reader must supply, such as `<org-id>`.
@@ -180,6 +181,11 @@ words were wrong. When you do, search the docs for links to it.
 The title a page has in the sidebar is the one a beginner would look for. "Your
 first application" is a title; `first-application.md` is a file name.
 
+Link to a page by its title, or by a phrase that reads naturally in the sentence,
+never by its file name. Write `[Upgrading](upgrading.md)`, not
+`[upgrading.md](upgrading.md)`. Readers see the words, and a file name is not
+words.
+
 ## The sidebar
 
 The sidebar is `docs/documentation.md`. Each group is a top-level item that holds
@@ -209,7 +215,8 @@ Put the options on a reference page and link to it.
 
 ## Rules a test could check
 
-These are the rules above, written as checks for a future test:
+These are the rules above, written as checks. `TestTheDocsFollowTheHouseStyle`, in
+`engine/internal/docsync`, runs each one on every published page:
 
 | Rule | Check |
 |---|---|
@@ -217,9 +224,58 @@ These are the rules above, written as checks for a future test:
 | Introduction first | The first `##` heading is `## Introduction` |
 | Introduced code | The last line of prose before each code block ends in `:` |
 | No stacked code | Some prose sits between any two code blocks |
-| Two callouts | Every `> [!` is `> [!NOTE]` or `> [!WARNING]` |
+| Two callouts | Every `> [!` is `> [!NOTE]` or `> [!WARNING]` on a line of its own, and no quotation opens with a bold label such as `> **Note:**` |
 | No minimisers | None of the seven words listed under [Sentences](#sentences), outside code |
 | One word per idea | None of the rejected words in [One word for each idea](#one-word-for-each-idea), outside code, paths and names |
 | Short sentences | On tutorial and explanation pages, no sentence over 25 words outside code and tables |
 | Abbreviations | The first use of each abbreviation in the glossary is followed by its expansion, or follows it |
+| Titles as link text | No link's visible text is a file name, such as `upgrading.md` or `../sdk/README.md`, with or without backticks |
 | Every page listed | Each published page appears once in `documentation.md` |
+
+Each failure names the page, the line, the rule and what to do.
+
+### What the test does not read
+
+The test reads prose only. It never counts words inside code, link targets, file
+paths, command names, flags or field names. So `/login`, `logout.md` and
+`signari user create` keep their names.
+
+A table is prose. The words in each cell follow the rules like any sentence.
+
+A quotation keeps its words. A blockquote that does not begin with `> [!NOTE]` or
+`> [!WARNING]` is a quotation, such as a sentence from an RFC. Changing its words
+would misquote it, so the rules about words do not read it. A callout is your own
+writing, and they do.
+
+A few fixed names hold a word the table above rejects. The test allows "user
+agent", "user code", "relying party ID", "Admin API", "admin token",
+"authenticator app", "wallet app", "Kerberos realm" and Next.js's "App Router". It
+allows the sign-out specifications by their titles, in their capitals:
+"Back-Channel Logout", "Front-Channel Logout", "RP-Initiated Logout" and "Single
+Logout". It allows the "Kubernetes operator", a program, and "the operator" later in
+a paragraph that has named it. A person who runs Signari is still an administrator.
+It allows the full name of each abbreviation in the glossary. It also allows a rejected
+word alone inside double quotes, when you explain it: a "relying party" is an
+application.
+
+An abbreviation is spelled out when its full form sits next to it in brackets,
+before or after: OpenID Connect (OIDC), or OIDC (OpenID Connect). The test reads
+the abbreviations from the glossary, as each entry whose definition opens with
+what its term stands for. Headings do not count as a first use. The glossary
+itself is excused from this rule, because each of its entries spells out its own
+term.
+
+The sentence limit applies to the pages in the sidebar's Getting started and Core
+concepts groups, which are the tutorials and explanations.
+
+A program writes `schema-versions.md` and `admin-api-reference.md`, so a fault in
+them is fixed in that program, and the test skips them. `documentation.md` is the
+sidebar's data, and only the last rule reads it.
+
+### Pages that do not pass yet
+
+Many pages were written before this test.
+`engine/internal/docsync/testdata/house-style-pending.txt` lists each of them with
+each rule it still breaks. The test fails on any fault that list does not hold,
+and on any line of it whose page now passes, so the list can only shrink. When you
+fix a page, delete its lines.

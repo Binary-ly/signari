@@ -75,7 +75,8 @@ It makes an `APP_KEY` each time it starts unless it is given one, so none is bui
 it, and runs `php artisan serve`. Its client, `demo-laravel` in
 [deploy/demo/client.yaml](../deploy/demo/client.yaml), is public and set to RS256 there,
 for the reason step 1 gives. The library authenticates a client with no secret by its
-`client_id` and the PKCE verifier alone. It trusts the development CA under
+`client_id` and the Proof Key for Code Exchange (PKCE) verifier alone. It trusts the
+development CA under
 `deploy/tls` through `SIGNARI_CA_FILE`.
 
 ## What it does, and why each step is there
@@ -90,19 +91,19 @@ for the reason step 1 gives. The library authenticates a client with no secret b
    after it has spent the code at the token endpoint. The route compares it before,
    so a code nobody here asked for is never redeemed.
 3. **Then the library** exchanges the code with the verifier over
-   `client_secret_basic`, each half form-encoded as the server decodes them. It checks
+   `client_secret_basic`, each half form-encoded as Signari decodes them. It checks
    the ID token's signature against `jwks_uri`, then its issuer, audience, expiry and
    nonce.
 
 A public client has no secret: leave `SIGNARI_CLIENT_SECRET` empty and register it with
-`-public`. The messages a refusal shows are the server's own; see
-[troubleshooting.md](troubleshooting.md).
+`-public`. The messages a refusal shows are Signari's own; see
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 
 On 14 November 2026, with PHP 8.4, Laravel 13.11.0 (framework 13.42.0) and
 jumbojett/openid-connect-php 1.0.2, served by `php artisan serve` against a running
-engine over TLS. With the client at ES256 the library refused the ID token, as above.
+engine over Transport Layer Security (TLS). With the client at ES256 the library refused the ID token, as above.
 With `client set-alg ... RS256`, Ada signed in through the engine's pages and the
 application said "Signed in as ada@staff.test". The engine's access log showed
 `/oauth2/jwks` fetched for the signature. A callback this browser never began was

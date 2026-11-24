@@ -52,9 +52,9 @@ Each application has:
 
 An application that runs on a server, such as the wiki, can keep a secret.
 It is a "confidential client". An application that runs on a person's own device
-cannot keep a secret from that person. A mobile app is one, and so is a page of
-JavaScript. It is a "public client", and it proves itself another way, with PKCE
-(see the [glossary](glossary.md#pkce)).
+cannot keep a secret from that person. A mobile application is one, and so is a
+page of JavaScript. It is a "public client", and it proves itself another way, with
+Proof Key for Code Exchange ([PKCE](glossary.md#pkce)).
 
 Signari matches a redirect URI exactly: the scheme, host, port and path must all
 be the same. This stops anyone from having Ada sent to an address the wiki does
@@ -191,20 +191,20 @@ connection that names no organisation sees no rows at all.
 
 Different parts of Signari connect as different database roles:
 
-1. The Signari server connects as `signari_engine`. Migration 0018 lets this one
-   role see every organisation, because it must find an application before it
-   knows which organisation the application belongs to.
-2. The console connects as `signari_admin`. It has no access to the server's
+1. The engine, Signari's server program, connects as `signari_engine`. Migration
+   0018 lets this one role see every organisation, because it must find an
+   application before it knows which organisation the application belongs to.
+2. The console connects as `signari_admin`. It has no access to the engine's
    tables at all. It reads through views that apply the rule above, so it sees
    only the organisation it is working on.
 3. A PostgreSQL superuser ignores row-level security entirely. Signari needs one
    to create its roles, and a backup needs one, because a backup must read every
-   organisation. The server itself never needs one.
+   organisation. The engine itself never needs one.
 
 > [!WARNING]
-> Never run the Signari server as a PostgreSQL superuser. Row-level security does
-> not apply to a superuser, so the database would stop keeping organisations
-> apart. Run the server as `signari_engine`.
+> Never run the engine as a PostgreSQL superuser. Row-level security does not
+> apply to a superuser, so the database would stop keeping organisations apart.
+> Run the engine as `signari_engine`.
 
 ## Next steps
 

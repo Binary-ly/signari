@@ -8,7 +8,7 @@ with their Signari account. The example,
 Go's standard library. It is about two hundred lines.
 
 Because it uses no library, it shows everything an application has to check
-itself: the authorization code flow with PKCE, then the ID token's signature
+itself: the authorization code flow with Proof Key for Code Exchange (PKCE), then the ID token's signature
 against the published keys, its issuer, audience, expiry and nonce.
 
 You register the application, run the example, and sign in. The last sections
@@ -65,7 +65,7 @@ Django, Spring Boot and Laravel quickstarts beside it, on ports 8091 to 8095.
 3. **The callback.** It takes the `state` back once and refuses one it does not
    hold. It sends the code, the same `redirect_uri` and the verifier to the token
    endpoint, authenticating with `client_secret_basic`, each half form-encoded
-   first, as the server decodes them.
+   first, as Signari decodes them.
 4. **The ID token.** It checks the signature with the key the token's `kid`
    names, from `jwks_uri` (ES256 by default; RS256 for a client set to it), then
    `iss`, `aud`, `exp` and `nonce`. Only then does it believe who signed in.
@@ -74,8 +74,8 @@ A public client, such as a single-page or native application, has no secret.
 Leave `CLIENT_SECRET` unset and register it with `-public`, and it sends its
 `client_id` with the code instead. PKCE is then its only proof.
 
-When something is refused, the message is the server's own. What each one means
-is in [troubleshooting.md](troubleshooting.md).
+When something is refused, the message is Signari's own. What each one means
+is in [Troubleshooting](troubleshooting.md).
 
 ## Verified
 

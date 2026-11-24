@@ -73,8 +73,8 @@ cRLSign` from the same key keeps every certificate it signed valid.
 1. **Discovery.** Authlib reads the document from the configured issuer, and holds the
    ID token to the issuer that document names. It does not compare that issuer with
    the one configured, so `/login/` does, and refuses a document naming another.
-2. **The redirect out.** `authorize_redirect` makes the `state`, `nonce` and PKCE
-   verifier (`code_challenge_method` `S256`, which Signari requires of every client)
+2. **The redirect out.** `authorize_redirect` makes the `state`, `nonce` and Proof Key
+   for Code Exchange (PKCE) verifier (`code_challenge_method` `S256`, which Signari requires of every client)
    and keeps them in the session. The session is a signed cookie, so the quickstart
    needs no database.
 3. **The callback.** `authorize_access_token` takes the state back once and refuses
@@ -84,12 +84,12 @@ cRLSign` from the same key keeps every certificate it signed valid.
 
 A public client has no secret: leave `CLIENT_SECRET` unset, register it with `-public`,
 and it authenticates with `none`, PKCE its only proof. The messages a refusal shows are
-the server's own; see [troubleshooting.md](troubleshooting.md).
+Signari's own; see [Troubleshooting](troubleshooting.md).
 
 ## Verified
 
 On 14 November 2026, with Python 3.14, Django 6.1.3, Authlib 1.9.5 and requests 2.34.2,
-against a running engine over TLS. Ada signed in through the engine's pages and the
+against a running engine over Transport Layer Security (TLS). Ada signed in through the engine's pages and the
 application said "Signed in as ada@staff.test". The engine's access log showed
 `/oauth2/jwks` fetched for the signature. A callback this browser never began was
 refused with Authlib's state check.

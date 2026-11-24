@@ -150,8 +150,8 @@ Here is each step, as it happened in the example application:
 
 The verifier is what makes this safe for an application that has no secret. An
 attacker who sees the code in step 6 cannot use it, because only the application
-holds the verifier. This check is called PKCE, and Signari requires it of every
-application by default.
+holds the verifier. This check is called Proof Key for Code Exchange (PKCE).
+Signari requires it of every application by default.
 
 [How Signari works](how-signari-works.md) explains sessions, tokens and claims in
 more detail.

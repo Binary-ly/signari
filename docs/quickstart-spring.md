@@ -70,7 +70,8 @@ document at start and refuses one naming another issuer. The registration uses
 
 `SecurityConfig` adds the two things Spring does not assume:
 
-1. **PKCE for a confidential client.** Signari requires it of every client and
+1. **Proof Key for Code Exchange (PKCE) for a confidential client.** Signari requires
+   it of every client and
    accepts only `S256`. Spring adds it by itself only for public clients, so the
    authorization request resolver is given `OAuth2AuthorizationRequestCustomizers.withPkce()`.
 2. **The ID token's algorithm.** Spring checks the ID token's signature against the
@@ -82,13 +83,14 @@ document at start and refuses one naming another issuer. The registration uses
 A public client has no secret: leave `CLIENT_SECRET` unset, set `CLIENT_AUTH=none`, and
 register it with `-public`. A refused sign-in sends the browser to Spring's
 `/login?error`; the engine's own message is in its log and in
-[troubleshooting.md](troubleshooting.md).
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 
 On 14 November 2026, with Java 17, Maven 3.9.16, Spring Boot 4.1.2 and Spring Security
-7.1.2, against a running engine over TLS. Ada signed in through the engine's pages and
-`/me` said "Signed in as ada@staff.test". The engine's access log showed `/oauth2/jwks`
-fetched for the signature. With the ES256 line taken out, the same sign-in was refused
-and the browser was sent back to Spring's login page. A callback this browser never
+7.1.2, against a running engine over Transport Layer Security (TLS). Ada signed in
+through the engine's pages and `/me` said "Signed in as ada@staff.test". The engine's
+access log showed `/oauth2/jwks` fetched for the signature. With the ES256 line taken
+out, the same sign-in was refused and the browser was sent back to Spring's sign-in
+page. A callback this browser never
 began went to `/login?error`, and `/me` signed out sent the browser to sign in.

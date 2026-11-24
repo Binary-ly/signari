@@ -62,11 +62,11 @@ languages, called "protocols". Signari speaks these:
 | Protocol | In plain words |
 |---|---|
 | OpenID Connect (OIDC) and OAuth 2.0 | How most modern web and mobile applications sign people in and call APIs |
-| SAML 2.0 | An older, widely used way for business software to sign people in |
+| SAML 2.0 (Security Assertion Markup Language) | An older, widely used way for business software to sign people in |
 | WS-Federation | An older Microsoft way of signing in, kept for applications not yet moved off it |
-| LDAP | How older software checks a username and password against a company directory |
-| RADIUS | How VPNs, wifi and network equipment check who may connect |
-| SCIM | How accounts are created and removed in other applications automatically |
+| LDAP (Lightweight Directory Access Protocol) | How older software checks a username and password against a company directory |
+| RADIUS (Remote Authentication Dial-In User Service) | How VPNs, wifi and network equipment check who may connect |
+| SCIM (System for Cross-domain Identity Management) | How accounts are created and removed in other applications automatically |
 | Kerberos | How people whose computers are signed in to a Windows domain sign in to web applications without a password |
 
 It also speaks several newer standards, for digital credentials, federations of
@@ -81,8 +81,8 @@ To run Signari, you need:
 - a Linux server, or a computer with Docker, to run it on;
 - PostgreSQL 16 or later, for its database;
 - a web address for people to sign in at, such as `https://login.example.com`;
-- a TLS certificate for that address, because Signari serves sign-in only over
-  HTTPS.
+- a Transport Layer Security (TLS) certificate for that address, because Signari
+  serves sign-in only over HTTPS.
 
 To try it on your own computer first, you need Docker and a copy of the Signari
 repository. [Your first application](first-application.md) starts everything for

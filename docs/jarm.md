@@ -4,11 +4,11 @@
 
 At the end of a sign-in, Signari sends the browser back to the application with an
 authorization code in the URL. That code says nothing about where it came from.
-"JWT-Secured Authorization Response Mode" (JARM) fixes that (see the
-[glossary](glossary.md#jarm)).
+Instead, the whole response can be a JSON Web Token (JWT) that Signari signs.
 
-With JARM, the whole response is a JSON Web Token (JWT) that Signari signs. The
-application checks it before it reads any of it.
+That is "JWT-Secured Authorization Response Mode" (JARM), and the application
+checks the response before it reads any of it (see the
+[glossary](glossary.md#jarm)).
 
 An application asks for it with a `response_mode`. You can hold one application to
 signed responses by choosing its algorithm with `signari client set-alg`.

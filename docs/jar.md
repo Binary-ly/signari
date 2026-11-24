@@ -3,9 +3,9 @@
 ## Introduction
 
 An authorization request is ordinarily a URL, which anybody holding the browser
-can read and change. A "JWT-Secured Authorization Request" (JAR), defined in
-RFC 9101, fixes that (see the [glossary](glossary.md#jar)). The application signs
-its request and sends it as a JSON Web Token (JWT) instead.
+can read and change. Instead, the application can sign its request and send it as
+a JSON Web Token (JWT). That is a "JWT-Secured Authorization Request" (JAR),
+defined in RFC 9101 (see the [glossary](glossary.md#jar)).
 
 Signari checks the signature, so what reaches Signari is what the application
 asked for. The signed request is called a "Request Object".

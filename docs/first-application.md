@@ -23,19 +23,28 @@ git clone https://github.com/Binary-ly/signari.git
 cd signari/deploy
 ```
 
-Start Signari, its database and the example applications. Use your own email
-address in place of `you@example.com`:
+> [!NOTE]
+> The example applications use Docker's host networking, so they reach Signari at
+> the same address your browser does. Docker Desktop supports it from version
+> 4.34, once you turn it on. Sign in to your Docker account in Docker Desktop
+> first. Then turn on **Enable host networking** under **Settings**,
+> **Resources**, **Network**, and press **Apply and restart**. Docker Engine on
+> Linux needs no setting.
+
+Write Signari's settings to a file called `.env` in this folder, where
+`docker compose` reads them. Use your own email address in place of
+`you@example.com`:
 
 ```sh
-export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
-  SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
-docker compose --profile first-run --profile demo up -d
+cat > .env <<EOF
+SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
+SIGNARI_FIRST_EMAIL=you@example.com
+SIGNARI_TLS_CERT=/tls/engine.crt
+SIGNARI_TLS_KEY=/tls/engine.key
+EOF
 ```
 
-The first time, Docker builds Signari and six example applications from source.
-That can take several minutes.
-
-In this example, the first line sets three things:
+In this example, the file sets four settings:
 
 - `SIGNARI_ROOT_KEY` is a new random "root key", the secret Signari encrypts its
   own keys with;
@@ -43,14 +52,20 @@ In this example, the first line sets three things:
 - `SIGNARI_TLS_CERT` and `SIGNARI_TLS_KEY` let Signari serve HTTPS, with a
   certificate made for development.
 
-The second line starts everything. Signari runs at `https://localhost:8099`. The
-example applications run at `http://localhost:8097` and on ports 8091 to 8095.
+Keep the file. Signari cannot read its own keys under a different root key, so
+every later start needs this one.
 
-> [!NOTE]
-> The example applications use Docker's host networking, so they reach Signari at
-> the same address your browser does. Docker Desktop supports this from version
-> 4.34, once **Enable host networking** is turned on under **Settings**,
-> **Resources**, **Network**.
+Start Signari, its database and the example applications:
+
+```sh
+docker compose --profile first-run --profile demo up -d
+```
+
+The first time, Docker builds Signari and six example applications from source.
+That can take several minutes.
+
+Signari runs at `https://localhost:8099`. The example applications run at
+`http://localhost:8097` and on ports 8091 to 8095.
 
 ## 2. Trust the development certificate
 
@@ -58,13 +73,46 @@ Signari's certificate is signed by a certificate authority made for development,
 `deploy/tls/ca.crt`. Your browser does not know that authority, so it warns you
 about `https://localhost:8099`.
 
-Add `deploy/tls/ca.crt` to the certificates your browser or your operating system
-trusts, for as long as you follow this tutorial.
+Tell your computer to trust that authority, for as long as you follow this
+tutorial. Run the commands for your system in the `deploy` folder.
+
+On macOS, this adds the authority to the system keychain:
+
+```sh
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain tls/ca.crt
+```
+
+On Debian or Ubuntu, this adds it to the system's authorities:
+
+```sh
+sudo cp tls/ca.crt /usr/local/share/ca-certificates/signari-development.crt
+sudo update-ca-certificates
+```
+
+On Fedora, this does the same:
+
+```sh
+sudo cp tls/ca.crt /etc/pki/ca-trust/source/anchors/signari-development.crt
+sudo update-ca-trust
+```
+
+Firefox on Linux keeps its own list of authorities. Import `tls/ca.crt` there
+too, under **Settings**, **Privacy & Security**, **View Certificates**,
+**Authorities**.
+
+On Windows, in PowerShell run as administrator, this adds it to the trusted
+root authorities:
+
+```powershell
+certutil -addstore -f Root tls\ca.crt
+```
+
+Restart your browser, so that it reads the new list.
 
 > [!WARNING]
-> Remove that certificate when you finish. The development server's private key
-> is published in the repository, so while your computer trusts it, any program
-> can pose as `https://localhost`.
+> Remove that authority when you finish, as step 7 shows. The development
+> certificate's private key is published in the repository. While your computer
+> trusts the authority, any program can pose as `https://localhost`.
 
 ## 3. Create your account
 
@@ -85,8 +133,8 @@ The first person, you@example.com, finishes setting up here, once, within 72h0m0
 ```
 
 Open the link in your browser. The page is called **Create your account**. Choose
-a password of at least eight characters, and press **Create account**. The next
-page says that your address can now sign in.
+a password of at least 15 characters, such as four unrelated words, and press
+**Create account**. The next page says that your address can now sign in.
 
 ## 4. Sign in to the example application
 
@@ -228,11 +276,50 @@ Stop everything you started:
 docker compose --profile first-run --profile demo down
 ```
 
-The database is kept for next time. Start it again with the same
-`SIGNARI_ROOT_KEY`, because Signari cannot read its own keys under a different
-one. To delete the database as well, add `-v` to the command above.
+The database is kept for next time, and the root key is kept in `.env`. Start
+everything again, in the `deploy` folder, with the command from step 1:
 
-Remember to remove the development certificate you trusted in step 2.
+```sh
+docker compose --profile first-run --profile demo up -d
+```
+
+Signari reads the same root key from `.env`, so it can read its own keys. Your
+account is still there, so the bootstrap service prints no new link.
+
+To delete the database as well, add `-v` to the `down` command. Then delete
+`.env` too, since its root key has nothing left to open.
+
+When you have finished with the tutorial, remove the development authority you
+trusted in step 2.
+
+On macOS:
+
+```sh
+sudo security remove-trusted-cert -d tls/ca.crt
+sudo security delete-certificate -c signari-conformance-ca /Library/Keychains/System.keychain
+```
+
+On Debian or Ubuntu:
+
+```sh
+sudo rm /usr/local/share/ca-certificates/signari-development.crt
+sudo update-ca-certificates --fresh
+```
+
+On Fedora:
+
+```sh
+sudo rm /etc/pki/ca-trust/source/anchors/signari-development.crt
+sudo update-ca-trust
+```
+
+In Firefox on Linux, delete **signari-conformance-ca** under **Authorities**.
+
+On Windows, in PowerShell run as administrator:
+
+```powershell
+certutil -delstore Root signari-conformance-ca
+```
 
 ## If something goes wrong
 

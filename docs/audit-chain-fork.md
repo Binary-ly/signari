@@ -154,7 +154,7 @@ loudly as it says "verified":
 Chain verified over 235 entries SINCE A CHECKPOINT.
 
 The 5465 entries before it are NOT asserted by this export.
-A checkpoint was declared on 2026-08-16 by suliman@binary.ly:
+A checkpoint was declared on 2026-08-16 by ada@example.com:
   chain forked before the advisory-lock fix; see docs/audit-chain-fork.md
 
 A checkpoint repairs nothing. It records that the earlier chain was

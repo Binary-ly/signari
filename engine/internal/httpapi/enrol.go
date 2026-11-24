@@ -483,6 +483,15 @@ func (s *Server) renderPageStatus(w http.ResponseWriter, r *http.Request, status
 		data["BrandLogo"] = b.LogoURL
 		data["BrandSupport"] = b.SupportURL
 	}
+	// The two forms that set a password say the floor the policy holds it to,
+	// in their hint and their minlength, since an administrator may raise it
+	// (SIGNARI_PASSWORD_MIN_LENGTH) and a fixed number goes stale.
+	if name == "signup" || name == "reset" {
+		if data == nil {
+			data = map[string]any{}
+		}
+		data["PasswordMinLength"] = s.pwPolicy.MinLength
+	}
 
 	if status != 0 {
 		w.WriteHeader(status)

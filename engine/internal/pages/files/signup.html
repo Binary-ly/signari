@@ -17,8 +17,8 @@
 {{end}}
 <label for="p">{{T "login.password"}}</label>
 <input id="p" name="password" type="password" autocomplete="new-password" required
-  minlength="8">
-<p class="hint">{{T "signup.passwordhint"}}</p>
+  {{- with .PasswordMinLength}} minlength="{{.}}"{{end}}>
+<p class="hint">{{with .PasswordMinLength}}{{N "signup.passwordmin" .}} {{end}}{{T "signup.passwordhint"}}</p>
 {{range .Fields}}
 <label for="attr-{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
 {{if eq .Type "boolean"}}<select id="attr-{{.Name}}" name="attr.{{.Name}}"{{if .Required}} required{{end}}>

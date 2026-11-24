@@ -183,8 +183,8 @@ Reviewing this turned up that the **device grant was gated nowhere**. Any
 registered client could run a device flow, whatever it was registered for, and
 the default value of `grant_types` does not include it. Both endpoints now check.
 The check for every grant the token endpoint dispatches lives in one place, not
-repeated per handler, which is how the device one got missed. See
-`device-flow.md`.
+repeated per handler, which is how the device one got missed. See [Device
+authorization grant](device-flow.md).
 
 ## Order of operations at redemption
 

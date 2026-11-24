@@ -61,7 +61,7 @@ and a hope.
 
 Signari's "outbox" is a queue of deliveries, kept in the database. It already had
 attempts, a capped backoff between them, and "parking", which sets aside a delivery
-that keeps failing. Back-channel logout needed them. Events use the same machinery:
+that keeps failing. [Back-Channel Logout](logout.md) needed them. Events use the same machinery:
 
 - The event and the intent to deliver it **commit in the same transaction**. There
   is no window where the log says something happened and nothing was ever sent.

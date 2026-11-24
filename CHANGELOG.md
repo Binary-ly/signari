@@ -31,6 +31,36 @@ and its entry says how.
   with cosign its signature, match, makes the systemd service as root, and runs
   `signari setup` on a release that has it. v0.1.0 does not, so until the next
   release the script installs v0.1.0 and points to its manual steps.
+- `signari setup` appends each run to a log, `/var/log/signari/setup.log` for root,
+  with every secret in it replaced, and a failed run prints the log's last 15 lines.
+- For an `https://` issuer, `signari setup` settles who ends TLS, `-tls`: a proxy in
+  front, certificate files, or nobody yet. It offers Let's Encrypt's certificate for
+  the issuer's host when there is one, and copies each renewal with a certbot hook.
+- `signari setup -compose <dir>` writes a compose project instead of setting up the
+  machine: PostgreSQL 17, a one-shot setup service and the engine, with the passwords
+  and the root key written only when they are missing.
+- **`signari uninstall`** removes what the installer and `signari setup` made, exactly
+  as their manifest lists it. The root key and the database stay unless
+  `-delete-root-key` or `-drop-database` is given, and each is confirmed.
+- `signari healthcheck` exits 0 when the engine answers `/readyz`, for a container's
+  healthcheck in an image with no shell or `curl`.
+- The installer refuses a release older than the one installed unless given
+  `--allow-downgrade`, and says to restart a running service once it replaces the
+  binary.
+- **The sign-up and reset forms ask for the password policy's real minimum.** v0.1.0's
+  forms said 8 characters, in their hint and their `minlength`, while the policy
+  refused anything shorter than 15, so a password that followed the form was refused.
+  They now say and enforce the policy's minimum: 15, or what
+  `SIGNARI_PASSWORD_MIN_LENGTH` raises it to.
+- **Erasure and backups.** v0.1.0's docs said an erased person's ciphertext was
+  unreadable in backups too. A backup taken before the erasure still holds their key,
+  wrapped under the root key, and their account in the clear, until that backup is
+  deleted. `docs/erasure.md` and `docs/cli.md` now say so.
+- **New documentation**, for someone who has never run an identity provider: an
+  introduction, installation, a first application that ends in a real sign-in, how
+  Signari works, the protocols explained and a glossary. Troubleshooting is arranged
+  by the exact error message, and the reference pages are rewritten in the same plain
+  style.
 - `serve` takes its listen address from `SIGNARI_ADDR` when `-addr` is not given.
 - The compose stack's engine serves as `signari_engine`, with a password an init
   script gives it on a fresh volume; a volume made before needs it set once, as

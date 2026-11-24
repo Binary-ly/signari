@@ -1,11 +1,24 @@
 # Emerging standards: the complete inventory
 
-Every specification this server implements that is not a settled RFC, enumerated
-from `internal/` rather than from anybody's recollection, with its status
-verified against the publisher in **August 2026**.
+## Introduction
+
+This page lists every specification Signari implements that is not a settled RFC,
+enumerated from `internal/` rather than from anybody's recollection. Each one's
+status was verified against the publisher in **August 2026**.
 
 The point of the table is the denominator. "Four standards reviewed" means
 nothing without knowing how many there are.
+
+It is for a reviewer who wants to know which texts a claim of conformance rests
+on, and how current each is. The sections after the table record how each
+specification was reviewed and what the review found. Most findings came from
+"mutation": deleting a guarantee in the code, to see whether any test notices.
+
+## The specifications
+
+Several build on the JSON Web Token (JWT), such as Selective Disclosure JWT
+(SD-JWT). Others are User-Managed Access (UMA) and, in the later sections,
+Client-Initiated Backchannel Authentication (CIBA).
 
 | package | specification | version and status | currency verified | reviewed in depth |
 |---|---|---|---|---|
@@ -21,7 +34,8 @@ nothing without knowing how many there are.
 | — | FAPI 2.0 Security Profile | **Final**, 22 Feb 2025, no errata | yes | **yes** — two MUST-level defects |
 
 Ten specifications. All ten currency-verified against the publisher, and all ten
-now put through a full review-and-mutate pass. The last three — OID4VCI, OpenID
+now put through a full review-and-mutate pass. The last three — OpenID for
+Verifiable Credential Issuance (OID4VCI), OpenID
 Federation and SSF — were the ones that had been reviewed by reading only, and
 mutating them found eight untested guarantees that reading had passed over,
 including the two below.
@@ -113,7 +127,7 @@ against the whole suite before believing it.
 
 **A second flaw in the harness, and the fix.** Rewriting a guard to `if false`
 drops the reference to whatever the condition mentioned, so every `if err != nil`
-mutation left `err` declared and unused and simply failed to compile. In
+mutation left `err` declared and unused, and failed to compile. In
 `internal/tokens` that was **21 of 31 guards unmeasured** — and unmeasured reads
 exactly like clean in a summary line.
 
@@ -137,11 +151,11 @@ some route, not whether one line is load-bearing.
 
 ## What is not here
 
-Device posture (`internal/posture`) implements no published standard — it reads
-evidence from headers an MDM sets, and is described in
-[device-posture.md](device-posture.md). It is listed nowhere above because there
-is no specification to be current with, which is worth stating rather than
-leaving the reader to wonder why it is missing.
+Device posture (`internal/posture`) implements no published standard. It reads
+evidence from headers that a mobile device management (MDM) system sets, and is
+described in [device posture](device-posture.md). It is listed nowhere above
+because there is no specification to be current with. That is worth stating,
+instead of leaving the reader to wonder why it is missing.
 
 ## A class of defect worth naming: the field that vanishes
 
@@ -150,7 +164,9 @@ gained `omitempty` — turned out to be an instance of something general, so the
 whole tree was swept for it: every boolean serialised with `omitempty`, where
 `false` and "absent" mean different things to the receiver.
 
-Five sites. Four are correct by construction and one needed a test:
+Five sites, in the OpenID Connect (OIDC) metadata, the System for Cross-domain
+Identity Management (SCIM) client, the ID token and AuthZEN. Four are correct by
+construction and one needed a test:
 
 | Site | Verdict |
 |---|---|
@@ -163,11 +179,11 @@ Five sites. Four are correct by construction and one needed a test:
 ### `email_verified`, and why both failure directions matter
 
 OIDC Core §5.1: "True if the End-User's e-mail address has been verified;
-**otherwise false**." Otherwise *false*, not otherwise absent. A relying party
+**otherwise false**." Otherwise *false*, not otherwise absent. An application
 deciding whether to trust an address needs "asserted, and not verified" to look
-different from "not asserted" — several treat an absent claim as unknown and some
-treat it as true, which makes a silently-dropped claim an account-linking hazard
-at the receiving end.
+different from "not asserted". Several applications treat an absent claim as
+unknown, and some treat it as true. That makes a silently-dropped claim an
+account-linking hazard at the receiving end.
 
 The field is a `*bool`, always assigned when the email scope is granted. Two ways
 to break it, and they are caught by different things:
@@ -188,7 +204,7 @@ somebody deciding to change both sites at once.
 The reviews had concluded, from six second passes, that **"the risk is unread
 sections, not misread ones"** — every finding came from a section a first pass
 never opened. That is mechanisable: enumerate the specification's sections,
-enumerate the ones our code and docs cite, and read the difference.
+enumerate the ones Signari's code and docs cite, and read the difference.
 
 Five standards swept so far.
 
@@ -226,23 +242,23 @@ that decision.
 
 ### CIBA §7.1.2 and §14 — verified, no change
 
-**§7.1.2 User Code.** We advertise `backchannel_user_code_parameter_supported`
-as **`false`** rather than omitting it, and the endpoint refuses a supplied
+**§7.1.2 User Code.** Signari advertises
+`backchannel_user_code_parameter_supported` as **`false`** rather than omitting it, and the endpoint refuses a supplied
 `user_code`. The reasoning is already in `metadata.go`: §7.1 gates the parameter
 on this being true, "a client reading an absent field has to guess; a client
 reading `false` knows not to send one".
 
 **§14 Security Considerations.** Its `id_token_hint` guidance — that an OP should
 accept hints whose expiry has passed, because the token is being used in a
-context other than the one it was issued for — does not bind us: we accept
-**`login_hint` only**, and refuse `id_token_hint` and `login_hint_token` with a
+context other than the one it was issued for — does not bind Signari. It accepts
+**`login_hint` only**, and refuses `id_token_hint` and `login_hint_token` with a
 message naming what to use instead.
 
 Checked rather than assumed that a subset is permitted. §7.1's REQUIRED is on the
 **Client** — "it is REQUIRED that the Client provides one (and only one) of the
 hints" — and the specification contains no corresponding requirement that an OP
 accept all three. There is also no discovery parameter for which hints an OP
-takes, so the error message is the only channel a client has; ours names the
+takes, so the error message is the only channel a client has. Signari's names the
 supported one.
 
 ### What a sweep cannot tell you
@@ -264,7 +280,7 @@ which is why it survives.
 
 ### First, a check on the method itself
 
-The FAPI 2.0 pass had just shown that an uppercase RFC 2119 sweep returns **zero**
+The FAPI 2.0 pass had shown, the same day, that an uppercase RFC 2119 sweep returns **zero**
 against a specification using ISO Directive Part 2 lowercase keywords. Before
 trusting any extraction, every specification's own conventions statement was
 checked:
@@ -300,8 +316,8 @@ can reproduce is worse than no number.
 
 ### The prohibitions, checked
 
-**Transaction Tokens** — 15 distinct MUST NOTs. Four bind us directly and all
-four hold:
+**Transaction Tokens** — 15 distinct MUST NOTs. Four bind Signari directly, and
+all four hold:
 
 | Prohibition | Where it holds |
 |---|---|
@@ -319,10 +335,11 @@ worth noticing: nothing would fail if the tag were removed.
 
 **SSF** — 13 MUST NOTs. The sharp one for a transmitter is "New event types MUST
 use the top-level `sub_id` claim and MUST NOT use the `subject` field in the
-events claim". We define no new event types; we emit the standard CAEP set, and
-for those our transmitter deliberately populates both keys with the same value
-for pre-1.0 receiver compatibility — which the same specification's §3.1.4
-permits, and which the receiver-side ambiguity check enforces cannot disagree.
+events claim". Signari defines no new event types. It emits the standard
+Continuous Access Evaluation Profile (CAEP) set, and for those its transmitter deliberately populates both keys with the same
+value, for pre-1.0 receiver compatibility. The same specification's §3.1.4
+permits that, and the receiver-side ambiguity check enforces that the two cannot
+disagree.
 
 **UMA** — 9 MUST NOTs, most concerning claims-gathering redirection and PCTs,
 neither of which this deployment implements.
@@ -348,13 +365,13 @@ before this pass looked:
 
 **OID4VCI** — 26 MUST NOTs, largely mutual exclusions. §8.2's
 "`credential_configuration_id` MUST NOT be present" when `credential_identifier`
-is used is enforced, and the refusal explains the deeper reason: we issue no
+is used is enforced, and the refusal explains the deeper reason. Signari issues no
 authorization-details-driven identifiers, so "accepting it would mean resolving an
 identifier we never handed out".
 
 **CIBA** — 11 MUST NOTs. §7.1.1's "Authentication request parameters MUST NOT be
-present outside of the JWT" governs signed authentication requests, which we do
-not implement — and a `request` parameter is **refused rather than ignored**, so
+present outside of the JWT" governs signed authentication requests, which Signari
+does not implement. A `request` parameter is **refused rather than ignored**, so
 the prohibition has no surface here. The push-mode prohibitions ("The OP MUST NOT
 follow redirects") are inapplicable to a poll-only implementation.
 
@@ -368,7 +385,7 @@ implementer.
 
 **OpenID Federation** — 45 MUST NOTs, the largest set of the ten. The recurring
 shape is "MUST NOT be the empty array `[]`" on `authority_hints` and related
-claims, which our chain builder never emits empty.
+claims, which Signari's chain builder never emits empty.
 
 ### What this pass did not find
 
@@ -378,7 +395,7 @@ now agree that the remaining exposure in these standards is not in what they
 forbid.
 
 The more interesting observation is *why* they came back empty. Nearly every
-prohibition that binds us was already refused **with its section number in the
+prohibition that binds Signari was already refused **with its section number in the
 code comment**, written by an earlier pass. The prohibitions were not missed and
 then found; they were handled and then re-verified by a method that did not know
 that in advance. That is the outcome a second turn should have when the first one
@@ -390,7 +407,7 @@ nothing because it looked in the wrong place.
 ## Third pass: running each specification's own examples through our decoder
 
 Two methods have been applied to these ten so far. Sweeping the sections nobody
-had cited asks *what does the specification say that we never read*. Extracting
+had cited asks *what does the specification say that was never read here*. Extracting
 every prohibition asks *what must not happen*. Both read prose.
 
 
@@ -430,7 +447,7 @@ to fail is a corpus test that has not been shown to do anything.
 
 ### What it found in the code: nothing dropped, and one thing worth naming
 
-No specification content is lost by any of our types. Four things that looked like
+No specification content is lost by any of Signari's types. Four things that looked like
 findings were checked and are not:
 
 **`page` on Search requests** — appeared as dropped, and was the classifier again:
@@ -448,10 +465,10 @@ this one is compared.
 with itself. §8.2.2 says `next_token` is REQUIRED inside the page object and "If
 there are no more results after this page, its value MUST be an empty string."
 The specification's own example of a complete result set shows a page object with
-`count` and `total` and **no `next_token`**. We follow the normative text and
-always emit it — which also happens to satisfy a client written against the
-example, since `""` is falsy everywhere a PEP is written. Recorded because the next
-person to read that example will think we are wrong.
+`count` and `total` and **no `next_token`**. Signari follows the normative text,
+and always emits it. That also happens to satisfy a client written against the
+example, since `""` is falsy everywhere a PEP is written. This is recorded because
+the next person to read that example will think Signari is wrong.
 
 **Unknown members inside `options`** — dropped, and §10.1.1 requires receivers to
 ignore unknown fields, so dropping is conformant. The half that matters is that
@@ -475,17 +492,17 @@ Nothing does — this package implements the PDP side, and a PDP only receives t
 but a PEP client built on these types would ship an explicit empty subject inside
 every boxcar entry, and a PDP that merges all-or-nothing rather than field by field
 reads that as "this entry overrides the default with nobody" instead of "this entry
-didn't say".
+did not say".
 
-This is the "correct by construction but unguarded" shape: the property holds
-because of something we do not do, so nothing fails when we start doing it.
+This is the "correct by construction but unguarded" shape. The property holds
+because of something Signari does not do, so nothing fails when it starts doing it.
 `TestBoxcarEntriesWouldMisreportAnOmittedSubject` does not assert the bug is absent
 — structurally it is not. It asserts that the reasoning above still holds, and
 skips itself with an instruction to delete it if the field ever becomes a pointer.
 
 ## SSF 1.0 — the third pass finds a real one
 
-The decode-and-compare method does not transfer to SSF unchanged: our SET claims
+The decode-and-compare method does not transfer to SSF unchanged: Signari's SET claims
 are `map[string]any`, so nothing is ever dropped and a round-trip corpus would
 report a clean sweep while proving nothing. The equivalent question for a
 permissive decoder is not "did a field survive" but "does the receiver reach the
@@ -570,7 +587,7 @@ and `RedList` in SD-JWT.
 
 The cached copy of the profile was **draft-10**, and the code cites **draft-18**.
 Against draft-10 the analysis produced a confident, wrong answer — that `sub` was
-missing from our list — because draft-10 §3.2.2.2 and draft-18 §2.2.2.3 are the
+missing from Signari's list — because draft-10 §3.2.2.2 and draft-18 §2.2.2.3 are the
 same section renumbered, and the section contains **two** lists whose members read
 identically in a flat text extraction: the claims that cannot be selectively
 disclosed, and the claims that can.
@@ -588,21 +605,21 @@ of the section.
 | MUST NOT be selectively disclosed | `iss`, `nbf`, `exp`, `cnf`, `vct`, **`vct#integrity`**, **`aka_vcts`**, `status` |
 | MAY be selectively disclosed | `sub`, `iat` |
 
-Two claims were missing from ours, both added since the draft the list was copied
-from:
+Two claims were missing from Signari's, both added since the draft the list was
+copied from:
 
 **`vct#integrity`** is §5's hash of the Type Metadata document — the thing that
 lets a verifier confirm the metadata it fetched is the metadata the issuer signed
 over. Selectively disclosable, a holder withholds it and the verifier falls back
 to trusting whatever that URL serves at verification time. That is precisely the
-substitution §5 exists to prevent, and our library would have issued such a
+substitution §5 exists to prevent, and Signari's library would have issued such a
 credential without complaint.
 
 **`aka_vcts`** is the credential's other declared types; withholding it hides what
 else the credential claims to be.
 
 And one deviation in the other direction: `iat` is on the **permitted** list in
-both the profile and RFC 9901 §9.7, and we block it. That is stricter than either
+both the profile and RFC 9901 §9.7, and Signari blocks it. That is stricter than either
 specification. It is kept — nothing here needs a hideable issuance time — but it is
 now recorded as a deviation with the condition that should end it: an ecosystem
 whose Type Metadata marks `iat` as `"sd": "always"` (§9.3) cannot be served until
@@ -633,8 +650,8 @@ withhold.
 
 The corpus method transfers cleanly only where a specification ships examples and
 the implementation decodes them into typed fields. For the last four the question
-was put the same way — *what does the wire carry that our types have no home
-for* — but answered against each specification's normative claim list rather than
+was put the same way — *what does the wire carry that Signari's types have no
+home for* — but answered against each specification's normative claim list rather than
 its figures.
 
 No defects. Four requirements that could have been are recorded here because
@@ -649,7 +666,7 @@ what a first search looked for and did not find. Its REQUIRED members are `iat`,
 matching in every case.
 
 `req_wl_chain` is **not** a draft-11 claim — zero mentions — and the comment on it
-already says so: it is our own additional claim, permitted by §9.2 ("A Txn-Token
+already says so: it is Signari's own additional claim, permitted by §9.2 ("A Txn-Token
 MAY contain additional claims"), carrying the Call Chain that §13.15 makes a MUST
 while leaving the mechanism out of scope. The §13.15 quote was checked word for
 word against the draft, including the "out of scope" sentence, and is exact.
@@ -682,7 +699,7 @@ condition is the missing field.
 §5.1 defines exactly four PoP claims: `aud` REQUIRED, `jti` REQUIRED, `iat`
 REQUIRED, `challenge` OPTIONAL. There is no `exp`, by design: freshness comes from
 `iat` "within an acceptable window" (§7.2 rule 6) and replay from `jti` (§11.1).
-Our struct matches the section exactly, and the hypothesis was wrong.
+Signari's struct matches the section exactly, and the hypothesis was wrong.
 
 §5.1's forward-compatibility rule — "All claims that are not understood by
 implementations MUST be ignored" — holds for the same reason as above. §7.1 and
@@ -716,17 +733,17 @@ standards most likely to have moved and the one whose failure is worst.
 
 **SD-JWT VC — draft-18, fetched and diffed. Clean.**
 - §2.2.2.3 non-selectively-disclosable list fetched from the archived draft:
-  `iss, nbf, exp, cnf, vct, vct#integrity, aka_vcts, status`. Our `RedList`
-  (`internal/sdjwt/sdjwt.go`) carries exactly these eight plus our own documented
+  `iss, nbf, exp, cnf, vct, vct#integrity, aka_vcts, status`. Signari's `RedList`
+  (`internal/sdjwt/sdjwt.go`) carries exactly these eight, plus its own documented
   extras `aud, iat`. Exact.
-- §2.2.1 `typ` = `dc+sd-jwt`. We issue exactly that and never the deprecated
-  `vc+sd-jwt`.
+- §2.2.1 `typ` = `dc+sd-jwt`. Signari issues exactly that, and never the
+  deprecated `vc+sd-jwt`.
 - §3.1 key discovery: the well-known URI is formed by inserting
   `/.well-known/jwt-vc-issuer` between host and path. `jwtVCIssuerPath`
   (`internal/httpapi/jwtvcissuer.go`) does exactly that, trims a terminating `/`
   per §3.1, and §3.3's `issuer`-must-equal-`iss` check is served verbatim. A
-  conformant verifier that has never spoken to us before can resolve our signing
-  key — the property whose absence the earlier §2.5 finding was about, now
+  conformant verifier that has never spoken to Signari before can resolve its
+  signing key — the property whose absence the earlier §2.5 finding was about, now
   confirmed present against the actual text rather than against the earlier fix.
 - **Watch item:** draft-18 is at IESG with `AD Evaluation::Revised I-D Needed`,
   so a draft-19 is expected. Nothing in the requested revisions is known to touch
@@ -743,7 +760,7 @@ in `internal/ssf/receive.go`; these are the worst-consequence paths in the tree
 SD-JWT VC -18, Transaction Tokens -11, ABCA -10, OID4VCI 1.0 (1.1 unpublished,
 Q3/Q4 2026 target), OpenID Federation 1.0, SSF 1.0, AuthZEN 1.0 Final, plus
 WebAuthn L3 (advanced to Proposed Recommendation 20 July 2026) and RFC 9901.
-No standard we cite has been superseded since the last pass.
+No standard Signari cites has been superseded since the last pass.
 
 ---
 
@@ -754,7 +771,8 @@ has had a fresh pass:
 
 ### RFC 9901 SD-JWT (core) — issuer-side exact, verifier rejections present
 
-We are an issuer plus a verifier *library* (nothing here consumes a presentation).
+Signari is an issuer plus a verifier *library* (nothing here consumes a
+presentation).
 Re-verified against RFC 9901 (Standards Track, Nov 2025, current, no successor):
 
 - **Digest construction (§4.2.3):** `DigestOf` hashes the base64url-**encoded**
@@ -769,26 +787,27 @@ Re-verified against RFC 9901 (Standards Track, Nov 2025, current, no successor):
   every rejection a MUST.
 
 The earlier section sweep (70 sections, 45 uncited) came back clean because the
-uncited sections bind a *Verifier* and we are issuer-only; re-confirmed.
+uncited sections bind a *Verifier*, and Signari is issuer-only; re-confirmed.
 
 ### FAPI 2.0 Security Profile — load-bearing requirements re-confirmed in current code
 
 Final, 22 Feb 2025, no errata (current). All 14 authorization-server requirements
-were tabled in `security-review-fapi2.md`; the load-bearing ones re-checked against
-current code this pass:
+were tabled in `security-review-fapi2.md`. The load-bearing ones were checked again
+against current code in this pass:
 
 - **§5.3.2.2** authorization-code lifetime ceiling: `codeTTL = 60s` (flow.go:32).
 - **§5.3.2.1 / §5.4.1** client-assertion clock skew: `MaxClockSkew = 10s`, an `iat`
   more than 10s in the future rejected, and a max-assertion-lifetime bound — the
   two MUSTs an earlier pass found broken in both directions and fixed.
 - **§5.4.1** client key-strength floors (RSA and EC minimums).
-- Sender-constraining conveyed via `cnf` (`jkt` for DPoP, `x5t#S256` for mTLS).
+- Sender-constraining conveyed via `cnf` (`jkt` for Demonstrating Proof of
+  Possession (DPoP), `x5t#S256` for mTLS).
 
-FAPI is a profile a deployment opts into: its restrictions (confidential-only, PAR
-mandatory, sender-constrained-only) are profile modes a general-purpose IdP
-correctly does not force by default; the two lifetime rules are ceilings we sit
-under where holding them costs nothing.
+FAPI is a profile a deployment opts into. Its restrictions (confidential-only,
+Pushed Authorization Requests (PAR) mandatory, sender-constrained-only) are profile modes a general-purpose identity
+provider correctly does not force by default. The two lifetime rules are ceilings
+Signari sits under, where holding them costs nothing.
 
-**All ten emerging standards now have a fresh deep pass this session.** No new
-defect in either of these two; both current, both conformant on the parts that
-apply to the roles we play.
+**All ten emerging standards now have a fresh deep pass this session.** There is
+no new defect in either of these two. Both are current, and both are conformant
+on the parts that apply to the roles Signari plays.

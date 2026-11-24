@@ -1,9 +1,21 @@
 # Security review: FAPI 2.0 Security Profile
 
-FAPI 2.0 Security Profile, **Final, 22 February 2025** — a general-purpose
-high-security profile of OAuth 2.0 that has "been proved by formal analysis to
-meet the stated attacker model".
+## Introduction
 
+FAPI 2.0 is the OpenID Foundation's security profile of OAuth 2.0 for
+high-security applications. It takes its name from the "Financial-grade API" it
+was first written for, and it now applies to any API that exposes high-value
+data. See [FAPI 2.0](fapi2.md) for how a client is held to it.
+
+This review reads FAPI 2.0 Security Profile, **Final, 22 February 2025**. The
+profile calls itself a general-purpose high-security profile of OAuth 2.0 that has
+"been proved by formal analysis to meet the stated attacker model".
+
+It checks Signari against the profile requirement by requirement, and records the
+defects that the check found. It is for a security reviewer, or for an
+administrator deciding whether a deployment can meet the profile. Most of the
+profile's restrictions are a mode a client is held to, not Signari's default.
+Those rows say **per client** or **profile mode**.
 
 ## §5.3.2.1, requirement by requirement
 
@@ -26,22 +38,24 @@ Two rows are deliberate differences rather than gaps. Two were real defects.
 
 ## The defect: no authorization code binding to a DPoP key
 
-FAPI 2.0 requires it "if using DPoP", and RFC 9449 §10.1 is blunter about who it
-binds:
+FAPI 2.0 requires this binding "if using DPoP", for Demonstrating Proof of
+Possession. RFC 9449 §10.1 is blunter about who it binds:
 
 > **Both mechanisms MUST be supported by an authorization server that supports
 > PAR and DPoP.**
 
-Signari supports PAR and supports DPoP, so that MUST applied — and neither
-mechanism existed. `dpop_jkt` appeared nowhere in the codebase.
+Signari supports Pushed Authorization Requests (PAR) and supports DPoP, so that
+MUST applied, and neither mechanism existed. `dpop_jkt` appeared nowhere in the
+codebase.
 
 ### What it buys that PKCE does not
 
-PKCE binds an authorization code to a secret the client generated. `dpop_jkt`
-binds it to the **key the resulting token will be bound to**, which closes the
-flow end to end: an authorization code intercepted in the front channel cannot be
-redeemed by an attacker's own DPoP key, because the code names the key permitted
-to redeem it.
+Proof Key for Code Exchange (PKCE) binds an authorization code to a secret the
+client generated. `dpop_jkt` binds it to the **key the resulting token will be
+bound to**, which closes the flow end to end.
+
+An attacker who intercepts an authorization code in the front channel cannot then
+redeem it with their own DPoP key. The code names the key permitted to redeem it.
 
 §10 notes they are complementary, and that `dpop_jkt` "only provides similar
 protections when a unique DPoP key is used for each authorization request".
@@ -49,13 +63,13 @@ protections when a unique DPoP key is used for each authorization request".
 ### Both mechanisms, because §10.1 requires both
 
 - `dpop_jkt` as an authorization request parameter, and in the PAR POST body.
-- A **DPoP header on the PAR request**, in which case the server "MUST further
+- A **DPoP header on the PAR request**, in which case the authorization server "MUST further
   behave as if the contained public key's thumbprint was provided using
   dpop_jkt".
 
 Supporting only the first would silently drop the binding for a client that
-attaches its DPoP header to every authorization-server request — which is
-precisely the client §10.1 exists to accommodate.
+attaches its DPoP header to every authorization-server request. That is precisely
+the client §10.1 exists to accommodate.
 
 And when both are present: "the authorization server MUST reject the request if
 the JWK Thumbprint in dpop_jkt does not match the public key in the DPoP header".
@@ -63,8 +77,8 @@ the JWK Thumbprint in dpop_jkt does not match the public key in the DPoP header"
 ### The mistake I made implementing it
 
 The redemption check went in after the PKCE block. That block returns early when
-a code carries a challenge — which is every code, since PKCE is required by
-default — so the check never ran.
+a code carries a challenge, which is every code, since PKCE is required by
+default. So the check never ran.
 
 The test caught it on the first execution. Reading the function did not, because
 the early return is four lines below where the eye stops. The mutation that moves
@@ -77,8 +91,9 @@ the check back to the wrong place is now part of the suite:
 
 ## The second defect: clock skew, wrong in both directions (August 2026)
 
-Re-checked because the row above said "partial" and nothing in the document said
-what the partial part was. An unexplained partial is a gap nobody has looked at.
+This was checked again because the row above said "partial", and nothing in the
+document said what the partial part was. An unexplained partial is a gap nobody
+has looked at.
 
 The requirement is one sentence carrying two opposed obligations:
 
@@ -97,9 +112,9 @@ Both were wrong, in opposite directions:
   says nothing about where the window sits. Future-dating does not lengthen the
   window; it moves it.
 
-A third problem fell out of fixing the second: `MaxAssertionLifetime` only bounds
-the window *forwards*, so an assertion minted an hour ago with `exp` two minutes
-out satisfied it completely — having been a usable credential for that hour.
+A third problem fell out of fixing the second. `MaxAssertionLifetime` only bounds
+the window *forwards*. So an assertion minted an hour ago, with `exp` two minutes
+out, satisfied it completely, having been a usable credential for that hour.
 
 
 `JsonWebToken.isActive()` carries the comment:
@@ -115,10 +130,10 @@ client says it should be.
 
 ### One of the three fixes was not yet doing anything
 
-Removing the stale-`iat` bound broke no test, while the other two each had one.
-A check that cannot be made to fail is not yet known to work, so it got the test
-it was missing (`TestAnAssertionIssuedLongAgoIsRefused`) before this was recorded
-as done.
+Removing the stale-`iat` bound broke no test, while the other two each had one. A
+check that cannot be made to fail is not yet known to work. So it got the test it
+was missing, `TestAnAssertionIssuedLongAgoIsRefused`, before this was recorded as
+done.
 
 `iat` stays OPTIONAL, as RFC 7523 §3 says. Every check is conditional on its
 presence, and `TestAnAssertionWithNoIssuedAtStillWorks` pins that.
@@ -127,44 +142,47 @@ presence, and `TestAnAssertionWithNoIssuedAtStillWorks` pins that.
 
 **Client assertion audience.** FAPI: "shall only accept its issuer identifier
 value... as a string in the `aud` claim received in client authentication
-assertions". Ours accepts three values — the issuer, the token endpoint, and the
-endpoint being called. That third one was added because a client authenticating
-at `/oauth2/par` naturally addresses its assertion to `/oauth2/par`, and refusing
-it broke PAR outright.
+assertions". Signari accepts three values: the issuer, the token endpoint, and the
+endpoint being called.
 
-Every accepted value names this server and nobody else, so the audience check
-still does its job. But a FAPI deployment would need the stricter form, and this
-is recorded as a mode rather than defended as equivalent.
+The third was added because a client authenticating at `/oauth2/par` naturally
+addresses its assertion to `/oauth2/par`, and refusing it broke PAR outright.
+
+Every accepted value names Signari and nobody else, so the audience check still
+does its job. But a FAPI deployment would need the stricter form, and this is
+recorded as a mode rather than defended as equivalent.
 
 **Refresh token rotation.** FAPI *prohibits* it; RFC 9700 §2.2.2 *requires*
-rotation or sender-constraining for public clients. There is no contradiction —
-FAPI mandates sender-constraining, which removes the need — but the two standards
-point opposite ways for a server supporting both worlds, and ours follows RFC
-9700 by default.
+rotation or sender-constraining for public clients. There is no contradiction,
+because FAPI mandates sender-constraining, which removes the need. But the two
+standards point opposite ways for a server supporting both worlds, and Signari
+follows RFC 9700 by default.
 
 ## Currency
 
-Re-verified August 2026 against
-<https://openid.net/specs/fapi-security-profile-2_0-final.html>: still **Final,
-22 February 2025**, no errata, and §5.3.2.1 still carries the same fourteen
-requirements. The profile has not moved; this review's version reference holds.
+This review was re-verified in August 2026 against
+<https://openid.net/specs/fapi-security-profile-2_0-final.html>. It is still
+**Final, 22 February 2025**, with no errata, and §5.3.2.1 still carries the same
+fourteen requirements. The profile has not moved, so this review's version
+reference holds.
 
 ## Verdict
 
 Two MUST-level defects. The first was also an RFC 9449 §10.1 MUST that had gone
-unnoticed through an earlier DPoP review — because that review checked the proof
-and the binding at the resource, and never asked what binds the *code*.
+unnoticed through an earlier DPoP review. That review checked the proof and the
+binding at the resource, and never asked what binds the *code*.
 
-The remaining FAPI gaps were profile modes: restrictions a FAPI deployment must
-turn on (confidential clients only, sender-constrained tokens only, single
-assertion audience), not behaviours that are wrong by default. They are now a
+The remaining FAPI gaps were profile modes, not behaviours that are wrong by
+default. They are restrictions a FAPI deployment must turn on (confidential
+clients only, sender-constrained tokens only, single assertion audience). They are
+now a
 [selectable profile](fapi2.md), held per client with `client set-profile`. The
 OpenID Foundation's test plan has not been run against it.
 
 ## The requirements this review had not listed (August 2026)
 
 The table above covers §5.3.2.1's authorization-server list. Reading the profile's
-section structure rather than working from the existing table showed three groups
+section structure, instead of working from the existing table, showed three groups
 missing from it entirely. All were checked against source.
 
 ### §5.3.2.1, two rows that were absent
@@ -176,20 +194,21 @@ missing from it entirely. All were checked against source.
 
 ### §5.3.4, the resource server requirements — none were listed
 
-We are a resource server for `/userinfo`, `/introspect` and the credential
-endpoint, so all five bind us.
+Signari is a resource server for `/userinfo`, `/introspect` and the credential
+endpoint, so all five bind it.
 
 
-Requirement 2 is the one worth dwelling on: it is a **shall not**, it is the
-cheapest of the five to get wrong, and getting it wrong is invisible until
-somebody reads an access log. Presenting the token in the header *and* the body
-is also rejected rather than resolved by precedence — two token values in one
-request is either a broken client or an attempt to have the check read one and
-the logic use the other.
+Requirement 2 is the one worth dwelling on. It is a **shall not**, and it is the
+cheapest of the five to get wrong. Getting it wrong is invisible until somebody
+reads an access log.
+
+Presenting the token in the header *and* the body is also rejected, not resolved
+by precedence. Two token values in one request mean a broken client, or an
+attempt to have the check read one and the logic use the other.
 
 ## §5.2 and §5.4, the sections this review had not opened
 
-The table above covers §5.3.2.1 and the addendum covers §5.3.4. Two more
+The table above covers §5.3.2.1, and the addendum covers §5.3.4. Two more
 normative sections bind a server.
 
 ### §5.2 Network layer protections
@@ -200,9 +219,10 @@ normative sections bind a server.
 | "shall set up TLS connections using TLS version 1.2 or later" | Go's default minimum is TLS 1.2; outbound calls use the standard library |
 | **§5.2.3: "Servers shall not support CORS for the authorization endpoint"** | **met, and tested** — `oidc.PathAuthorize` is deliberately absent from the CORS allow-list with a comment saying it must stay absent, and `TestTheAuthorizationEndpointNeverGetsCORS` holds it there. The same prohibition appears as RFC 9700 §2.6, which is where our comment cites it |
 
-The CORS rule is the one worth dwelling on: the authorization endpoint is reached
-by **navigation**, never by `fetch`. Any script that can read its response is
-reading a page that may already carry an authorization code.
+The Cross-Origin Resource Sharing (CORS) rule is the one worth dwelling on. The
+authorization endpoint is reached by **navigation**, never by `fetch`. Any script
+that can read its response is reading a page that may already carry an
+authorization code.
 
 ### §5.4 Cryptography and secrets
 
@@ -220,56 +240,57 @@ reading a page that may already carry an authorization code.
 
 FAPI's algorithm list is `PS256`, `ES256`, `EdDSA`. **RS256 is not on it.**
 
-We sign with ES256 by default and support PS256 and EdDSA, all three of which
-qualify. But `RS256` is also a supported signing algorithm, and
+Signari signs with ES256 by default, and supports PS256 and EdDSA, all three of
+which qualify. But `RS256` is also a supported signing algorithm, and
 `clientauth.allowedAlgs` accepts `RS256`/`RS384`/`RS512` for `private_key_jwt`
 assertions. A FAPI deployment must not use or accept those.
 
 That puts §5.4.1 in the same category as the three profile-mode rows already in
-the table above — public clients, mandatory sender-constraining, and global PAR:
-capabilities a FAPI deployment turns off rather than defaults we get wrong. It
-was simply never listed, which is the difference between a deviation somebody
+the table above: public clients, mandatory sender-constraining, and global PAR.
+They are capabilities a FAPI deployment turns off, not defaults Signari gets
+wrong. It was never listed, which is the difference between a deviation somebody
 chose and one nobody noticed.
 
 **What it would take:** the algorithm allow-lists are constants, and narrowing
-them is a one-line change per site. What is not one line is deciding whether to
-narrow them globally — which breaks every existing RS256 client — or per client,
-which needs a registration attribute and a migration. Recorded rather than
-changed, for the same reason as the other three.
+them is a one-line change per site. What is not one line is deciding where to
+narrow them. Narrowing them globally breaks every existing RS256 client. Narrowing
+them per client needs a registration attribute and a migration. This is recorded
+rather than changed, for the same reason as the other three.
 
 ## §5.4.1 key strength: the floor was not enforced (20 August 2026)
 
-Reviewed against **FAPI 2.0 Security Profile, Final, 22 February 2025**, with
-every normative keyword extracted by section — 92 uses, densest at §5.3.2.2
-(16), §5.3.2.1 (15) and §5.3.3.1 (15).
+This was reviewed against **FAPI 2.0 Security Profile, Final, 22 February 2025**,
+with every normative keyword extracted by section. There are 92 uses, densest at
+§5.3.2.2 (16), §5.3.2.1 (15) and §5.3.3.1 (15).
 
 > "RSA keys shall have a minimum length of 2048 bits."
 > "Elliptic curve keys shall have a minimum length of 224 bits."
 
-Nothing enforced this on a client's registered JWKS. A client could register a
-**1024-bit RSA public key** and authenticate with `private_key_jwt` indefinitely —
-a key below every recognised floor since NIST withdrew 1024-bit RSA in 2013, and
-one a well-resourced attacker can factor.
+Nothing enforced this on a client's registered JSON Web Key Set (JWKS). A client
+could register a **1024-bit RSA public key**, and authenticate with
+`private_key_jwt` indefinitely. That key is below every recognised floor since
+NIST withdrew 1024-bit RSA in 2013, and a well-resourced attacker can factor it.
 
 The client is the party harmed, which is precisely why the authorization server
-has to be the one checking: the client that registers a weak key is the client
+has to be the one checking. The client that registers a weak key is the client
 least likely to notice.
 
-It was also an inconsistency inside one codebase rather than a considered
-position. The same floor was already enforced on SAML encryption certificates
+It was also an inconsistency inside one codebase, not a considered position. The
+same floor was already enforced on Security Assertion Markup Language (SAML)
+encryption certificates
 (`internal/saml/encrypt.go:107`) and on certificate import in the CLI. Only the
 path that authenticates clients was missing it.
 
 **Enforced against the key that actually verified**, not by filtering the
-registered set up front. A client mid-rotation with one strong key and one legacy
-weak key keeps working on the strong one; a client that signed with the weak one
-gets an error naming the key type and the bit length, rather than the "no
-registered key verified it" message that would send an integrator to the wrong
+registered set up front. A client mid-rotation, with one strong key and one legacy
+weak key, keeps working on the strong one. A client that signed with the weak one
+gets an error naming the key type and the bit length. It does not get the "no
+registered key verified it" message, which would send an integrator to the wrong
 place.
 
-Elliptic curve keys need no separate gate in practice — `jose.ParseSigned` pins
-the algorithm list, and P-256 upward all clear 224 bits — but the check is
-written for both so the floor does not depend on that coincidence holding.
+Elliptic curve keys need no separate gate in practice: `jose.ParseSigned` pins the
+algorithm list, and P-256 upward all clear 224 bits. But the check is written for
+both, so the floor does not depend on that coincidence holding.
 
 ### §5.4.3, Handling Duplicate Key Identifiers — already satisfied
 
@@ -277,10 +298,11 @@ written for both so the floor does not depend on that coincidence holding.
 > other JWK attributes, such as `kty`, `use`, `alg`, etc., when selecting the
 > verification key"
 
-Our verifiers iterate candidate keys and attempt verification rather than
-committing to the first `kid` match, which is a strictly stronger selector than
-comparing `alg`: a key that produces a valid signature is the key that signed it.
-`internal/ssf/receive.go` filters on `kid` and then tries each match;
+Signari's verifiers try each candidate key, instead of committing to the first
+`kid` match. That is a strictly stronger selector than comparing `alg`: a key that
+produces a valid signature is the key that signed it.
+
+`internal/ssf/receive.go` filters on `kid` and then tries each match.
 `internal/clientauth/privatekeyjwt.go` tries every registered key. Both terminate
 on a verified signature, so a duplicate `kid` cannot cause a false rejection.
 
@@ -364,12 +386,12 @@ is better here, and now for a reason that was checked instead of assumed.
 ## Second turn: normative extraction, and the trap it started with (21 August 2026)
 
 The first pass read the profile section by section. This is a different method on
-the same document — extract every normative keyword mechanically, enumerate the
-requirements, and check them one at a time.
+the same document. It extracts every normative keyword mechanically, enumerates
+the requirements, and checks them one at a time.
 
 ### The extraction found zero requirements, and that was the finding
 
-An RFC 2119 extraction over this specification returns **nothing**. Not "few" —
+An RFC 2119 extraction over this specification returns **nothing**. Not "few":
 zero MUST, zero SHALL, zero SHOULD.
 
 FAPI 2.0 does not use RFC 2119. Its own notational conventions say so:
@@ -377,15 +399,17 @@ FAPI 2.0 does not use RFC 2119. Its own notational conventions say so:
 > The keywords "shall", "shall not", "should", "should not", "may", and "can" in
 > this document are to be interpreted as described in **ISO Directive Part 2**.
 
-**Lowercase.** An uppercase-only sweep — the one that works on every RFC and
-every OpenID Foundation specification reviewed in this repository — silently
-reports a security profile as containing no requirements at all.
+**Lowercase.** An uppercase-only sweep works on every RFC and every OpenID
+Foundation specification reviewed in this repository. Here, it silently reports a
+security profile as containing no requirements at all.
 
-Recorded because it is the fourth false negative from a search in this review
-cycle, and the most dangerous shape of one: not "the grep missed a file" but "the
-grep returned a clean, plausible, completely wrong zero". The earlier
-section-by-section pass was unaffected, because a human reading prose does not
-care about case — which is the argument for not replacing reading with tooling.
+This is recorded because it is the fourth false negative from a search in this
+review cycle, and the most dangerous shape of one. It is not "the grep missed a
+file" but "the grep returned a clean, plausible, completely wrong zero".
+
+The earlier section-by-section pass was unaffected, because a human reading prose
+does not care about case. That is the argument for not replacing reading with
+tooling.
 
 Re-run with ISO keywords: **94 normative uses, 67 distinct "shall" sentences, 25
 of them naming the authorization server.**
@@ -401,9 +425,9 @@ beginning "Clients ¶ shall support sender-constrained access tokens...". It
 requires a FAPI *client* to handle a `use_dpop_nonce` challenge. It places no
 obligation on the authorization server to issue one.
 
-Checked by pulling 2,200 characters of preceding context rather than trusting the
-sentence in isolation. A requirement extracted without its heading is a
-requirement whose subject is unknown.
+This was checked by pulling 2,200 characters of preceding context, instead of
+trusting the sentence in isolation. A requirement extracted without its heading is
+a requirement whose subject is unknown.
 
 ### Four server requirements checked concretely
 
@@ -417,12 +441,12 @@ requirement whose subject is unknown.
 
 The two lifetime ceilings were met by constants that **did not know they were
 FAPI requirements**. `codeTTL`'s comment reads "RFC 6749 recommends <= 10 minutes;
-short is free here" — true of RFC 6749, and one edit away from a silent
+short is free here". That is true of RFC 6749, and one edit away from a silent
 conformance break by somebody taking the RFC at its word.
 
 `TestFAPILifetimeCeilingsHold` now connects the constants to the profile. The
-mutation that raises `codeTTL` to RFC 6749's allowance fails it with the profile
-quoted.
+mutation that raises `codeTTL` to RFC 6749's allowance fails it, with the profile
+quoted:
 
 ```
 CAUGHT   raise codeTTL to RFC 6749's 10 minutes (FAPI §5.3.2.2 caps it at 60s)
@@ -430,9 +454,10 @@ CAUGHT   raise codeTTL to RFC 6749's 10 minutes (FAPI §5.3.2.2 caps it at 60s)
 
 ### Scope, stated so the test is read correctly
 
-FAPI is a profile a deployment opts into. Most of §5.3.2 is *restrictions* —
-confidential clients only, PAR mandatory, sender-constrained tokens only — that a
-general-purpose IdP correctly does not apply by default, and those remain profile
-modes rather than defects. The two lifetime rules are different in kind: ceilings
-we already sit under, where holding them costs nothing and losing them would be
-invisible.
+FAPI is a profile a deployment opts into. Most of §5.3.2 is *restrictions*:
+confidential clients only, PAR mandatory, sender-constrained tokens only. A
+general-purpose identity provider correctly does not apply them by default, and
+they remain profile modes rather than defects.
+
+The two lifetime rules are different in kind. They are ceilings Signari already
+sits under, where holding them costs nothing and losing them would be invisible.

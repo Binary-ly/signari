@@ -118,8 +118,8 @@ signari idp logout -slug corp -url https://idp.corp.example/logout
 
 The address is the provider's `end_session_endpoint`, its sign-out address. If you
 need to find it, `signari idp check` reads it from the provider's discovery
-document. At the provider, register `https://<this issuer>/logout/complete` as a
-post-logout redirect.
+document. At the provider, register `https://<this issuer>/logout/complete` as
+an address to return to after sign-out.
 
 After a sign-out, the browser goes to the provider with `client_id`,
 `post_logout_redirect_uri` and a `state`. It comes back to `/logout/complete`.
@@ -137,8 +137,8 @@ browser it came through. Signari does not keep the provider's `id_token`. So no
 confirm.
 
 For a SAML provider, the address is its SingleLogoutService, and the sign-out
-needs a signing key. See [single logout with an
-upstream](saml-source.md#single-logout-with-an-upstream).
+needs a signing key. See [signing out of a SAML
+provider](saml-source.md#single-logout-with-an-upstream).
 
 ## Why both OIDC channels
 

@@ -8,7 +8,9 @@ fragment, in a form posted to them, or with an ID token beside the code. That la
 one is called the "hybrid flow".
 
 Signari supports these "response modes" for applications being migrated in that
-cannot be changed first. It refuses, permanently, every response type that would
+cannot be changed first. Each mode can also carry the response signed, as a JSON
+Web Token (JWT). That is JWT-Secured Authorization Response Mode (JARM, see the
+[glossary](glossary.md#jarm)). It refuses, permanently, every response type that would
 put an access token in the browser.
 
 Hybrid is off for each application until you turn it on with

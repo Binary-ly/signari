@@ -161,7 +161,7 @@ approve access to their own account. A right-to-left override in it can make the
 screen read as something other than what it says.
 
 **`acr_values` holds the approval to them.** §8 has the provider authenticate the
-user "in line with the Client's requests regarding acr_values". So a request
+person "in line with the Client's requests regarding acr_values". So a request
 asking for multi-factor is not approved from a session that signed in with a
 password alone. The request stays pending, and the person is told to sign in
 again with their second factor and approve it.

@@ -30,8 +30,8 @@ signari resource remove -org <uuid> -resource https://api.example.com
 ```
 
 The Admin API has the same three: `GET`, `PUT` and `DELETE` on
-`/admin/organizations/{orgID}/resource-servers` (see [the Admin
-API](admin-api.md)).
+`/admin/organizations/{orgID}/resource-servers` (see
+[the Admin API](admin-api.md)).
 
 A resource is an absolute `http` or `https` URI with no fragment. It is compared
 byte for byte, exactly as a resource server compares the audience. Register it as

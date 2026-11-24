@@ -3,13 +3,14 @@
 ## Introduction
 
 When Ada signs out, Signari tells each of her applications from server to server.
-It sends a signed "logout token" to an address the application registered. This
-is OpenID Connect's "back-channel logout", described in [logout](logout.md). If an
+It sends a signed token, the `logout_token`, to an address the application
+registered. This is OpenID Connect's "back-channel logout", described in [signing
+out](logout.md). If an
 application accepts that token without checking it, the session it was meant to
 end lives on, and nobody notices.
 
 `signari logout-test` checks an application's back-channel address for you. It
-sends one valid logout token and nine faulty ones, and reports which of the faulty
+sends one valid token and nine faulty ones, and reports which of the faulty
 ones the application accepted. You run it against one application at a time.
 
 ## Running the check
@@ -34,7 +35,7 @@ work, and it fails silently in both directions. The identity provider records a
 handler that parsed nothing, verified nothing and deleted nothing. Every
 dashboard is green, and the session is still alive.
 
-Delivering a valid logout token and getting a 200 back is therefore close to
+Delivering a valid `logout_token` and getting a 200 back is therefore close to
 meaningless. An endpoint that returns 200 unconditionally passes it.
 
 What separates a working application from a decorative one is whether it
@@ -58,7 +59,7 @@ way:
 | replayed `jti` | a captured token can be used again |
 
 A "claim" is one statement inside a token (see the [glossary](glossary.md#claim)).
-In a logout token, `sub` names the person, `sid` names the session, and `jti` names
+In a `logout_token`, `sub` names the person, `sid` names the session, and `jti` names
 the token itself.
 
 ## What it looks like
@@ -104,6 +105,6 @@ The command signs its tokens with the instance's own active signing key. RS256
 (RSA with SHA-256) is preferred, falling back to ES256 (ECDSA with SHA-256). See
 [key rotation](key-rotation.md) for both.
 
-A logout endpoint is exactly the kind of lightly-maintained code path most likely
+A back-channel logout endpoint is exactly the kind of lightly-maintained code path most likely
 to support only RS256. Testing with a key it cannot verify would report a failure
 that is Signari's rather than the application's.

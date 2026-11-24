@@ -39,8 +39,8 @@ origin" means only the origins of the application's own redirect URIs may.
 RFC 9700 §2.6 says:
 
 > CORS **MUST NOT** be supported at the authorization endpoint, as the client
-> does not access this endpoint directly; instead, the client redirects the user
-> agent to it.
+> does not access this endpoint directly; instead, the client redirects the
+> user agent to it.
 
 The authorization endpoint is reached by navigation, never by `fetch`. Its
 response may already carry an authorization code. So a script that can read it

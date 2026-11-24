@@ -129,7 +129,7 @@ func (e manifestEntry) valid() error {
 	switch e.Kind {
 	case "user":
 		if e.Value != "signari" {
-			return fmt.Errorf("a user %q, and the installer makes signari alone", e.Value)
+			return fmt.Errorf("a user %q, and the only user the installer makes is signari", e.Value)
 		}
 	case "unit":
 		if e.Value != unitPath {
@@ -448,7 +448,7 @@ func uninstallCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f 
 	for i := range items {
 		it := &items[i]
 		if it.State != "planned" {
-			fmt.Fprintf(out, "  [kept] %s\n", it.What)
+			fmt.Fprintf(out, "  [kept] %s: %s\n", keptName(it), it.Note)
 			continue
 		}
 		if it.Kind == "dir" && it.Value == filepath.Dir(path) {
@@ -496,6 +496,12 @@ func uninstallCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f 
 	return nil
 }
 
+// keptName is an item that stays, named without the verb that would have
+// removed it.
+func keptName(it uninstallItem) string {
+	return strings.TrimPrefix(strings.TrimPrefix(it.What, "delete "), "drop ")
+}
+
 func printUninstallPlan(w io.Writer, items []uninstallItem) {
 	fmt.Fprintf(w, "\n  Removes\n")
 	n := 0
@@ -517,7 +523,7 @@ func printUninstallPlan(w io.Writer, items []uninstallItem) {
 	if len(kept) > 0 {
 		fmt.Fprintf(w, "\n  Keeps\n")
 		for _, it := range kept {
-			fmt.Fprintf(w, "    -  %s: %s\n", strings.TrimPrefix(strings.TrimPrefix(it.What, "delete "), "drop "), it.Note)
+			fmt.Fprintf(w, "    -  %s: %s\n", keptName(it), it.Note)
 		}
 	}
 }

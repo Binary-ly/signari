@@ -11,8 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"signari.dev/engine/internal/keys"
+	"signari.dev/engine/internal/store"
 	"signari.dev/engine/internal/tracing"
 )
+
+// beginEdit begins a transaction on the CLI's connection holding
+// core.config_version's row first (store.LockConfigVersion), for a command
+// whose transaction locks something before its first write: a row read with
+// SELECT ... FOR UPDATE, or an advisory lock. A read fires no trigger, so
+// migration 0307's, which takes the row before a write does anything, comes too
+// late for those: the transaction would hold its row and wait for the version's,
+// and the Admin API, `signari apply` and a receiver changing its stream take the
+// version's row first and then wait for that same row, and the two deadlock.
+func beginEdit(ctx context.Context, conn *pgx.Conn) (pgx.Tx, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.LockConfigVersion(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
+}
 
 // connectDB opens the one connection every command starts with.
 //

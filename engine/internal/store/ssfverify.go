@@ -11,19 +11,31 @@ import (
 	"signari.dev/engine/internal/ssf"
 )
 
-// MinVerificationInterval is the least time between a stream's verification
-// requests. It is published as §8.1.1's min_verification_interval, in the stream
-// configuration a receiver reads at GET /ssf/stream (httpapi/ssfmanage.go), and
-// docs/ssf-caep.md says it too.
+// MinVerificationInterval is how often a stream may ask for a verification:
+// once in each window of this length. It is the stream configuration's
+// min_verification_interval (§8.1.1, specs/ssf-1_0.txt:1742-1751), which the
+// stream management endpoint serves. The windows are the clock's (AllowRate),
+// so two requests this far apart are never refused, as the section's SHOULD NOT
+// asks, and two a moment apart either side of a window's edge are both
+// answered, which its MAY allows.
 const MinVerificationInterval = 30 * time.Second
 
 var (
 	// ErrStreamDisabled: a disabled stream "will not hold any events for later
 	// transmission", so a promise to send one would be false.
 	ErrStreamDisabled = errors.New("the stream is disabled")
-	// ErrVerificationTooSoon: asked within MinVerificationInterval.
+	// ErrVerificationTooSoon: asked again in a window that has had its one.
 	ErrVerificationTooSoon = errors.New("a verification was asked for too recently")
 )
+
+// VerificationTooSoon is ErrVerificationTooSoon with how long the window that
+// refused it has left, so a Retry-After can say when asking again succeeds
+// rather than the whole interval.
+type VerificationTooSoon struct{ RetryAfter time.Duration }
+
+func (e *VerificationTooSoon) Error() string { return ErrVerificationTooSoon.Error() }
+
+func (e *VerificationTooSoon) Unwrap() error { return ErrVerificationTooSoon }
 
 // QueueVerification puts a Verification Event on a receiver's own stream, for
 // the worker or the next poll. A paused stream holds it with everything else
@@ -54,7 +66,7 @@ func QueueVerification(ctx context.Context, tx pgx.Tx, clientID, streamID, state
 		return err
 	}
 	if !rate.Allowed {
-		return ErrVerificationTooSoon
+		return &VerificationTooSoon{RetryAfter: rate.RetryAfter}
 	}
 
 	if method == "poll" {

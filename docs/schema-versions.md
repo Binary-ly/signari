@@ -9,6 +9,12 @@ It is generated from the migrations the binary embeds, by `engine/internal/migra
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
 "compatible" lets you do during one, is in [Upgrading](upgrading.md).
 
+## 0307 cli_writes_take_the_version_first
+
+Not compatible with the release before: stop it before migrating.
+
+An operator CLI write takes core.config_version's row before anything else it locks, as every other writer that moves the version does, so a CLI write and an Admin API write to the same thing at once no longer deadlock. 0139's trigger ran after each statement, when the statement already held the rows it wrote and, through core.users' identifier trigger, its organisation's identifier lock; the Admin API, `signari apply` and a receiver changing its stream take the version's row first. Each then held what the other was waiting for, and PostgreSQL ended one of them a second later, as a 500 from the API or a failed command.
+
 ## 0306 wsfed_reply_url
 
 Compatible with the release before: its binary may still serve this schema.

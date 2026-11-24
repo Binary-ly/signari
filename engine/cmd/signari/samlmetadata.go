@@ -178,7 +178,8 @@ func idpRefreshSAML(ctx context.Context, conn *pgx.Conn, slug string, meta metad
 // refreshed runs a refresh, reports it, and for a dry run takes it back.
 func refreshed(ctx context.Context, conn *pgx.Conn, orgID string, notes []string, origin store.SAMLMetadataOrigin,
 	dryRun bool, detail map[string]any, apply func(pgx.Tx) ([]store.SAMLMetadataChange, error)) error {
-	tx, err := conn.Begin(ctx)
+	// Either refresh reads the provider's row FOR UPDATE before it writes (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}

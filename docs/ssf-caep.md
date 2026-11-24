@@ -163,10 +163,14 @@ These are the answers to a request that fails:
 | a disabled stream, which holds nothing and would never send it | `400` |
 | no credentials, or the wrong ones | `401` |
 | a stream that does not exist or belongs to another client | `404` |
-| a second request for a stream within 30 seconds | `429`, with `Retry-After` |
+| a second request for a stream in the same 30-second window | `429`, with `Retry-After` |
 
-A paused stream answers `204`, and holds the event with the rest of what it is
-holding. The 30 seconds is the stream's `min_verification_interval`.
+A paused stream answers `204` and holds the event with the rest of what it is
+holding. The 30 seconds is the stream's `min_verification_interval`. The windows
+are the clock's, starting on each minute and half minute, so two requests 30
+seconds apart are never refused, and two a moment apart on either side of a
+window's start are both answered. `Retry-After` is the seconds left in the window
+that refused the request.
 
 ## What a receiver can do with its stream
 

@@ -17,6 +17,11 @@ import (
 // nothing else does through this route (migration 0139). The CLI wrote every
 // table the Admin API does and moved the version in three commands out of
 // sixty, so a conditional write read before a CLI change applied over it.
+//
+// Before the statement, not after (0307): a trigger that runs after it finds
+// the rows the statement wrote already locked, and takes the version's row
+// second where the Admin API takes it first, so a CLI write and an API write
+// to the same row deadlocked.
 
 // notBumped are the core tables that carry no trigger, each with its reason.
 var notBumped = map[string]string{
@@ -34,9 +39,9 @@ func TestEveryCoreTableBumpsTheVersionOnACLIWrite(t *testing.T) {
 		   AND NOT EXISTS (
 		       SELECT 1 FROM pg_trigger tg JOIN pg_proc p ON p.oid = tg.tgfoid
 		        WHERE tg.tgrelid = c.oid AND p.proname = 'bump_config_version_for_cli'
-		          -- statement level (bit 0 clear), AFTER (bit 1 clear), and on
+		          -- statement level (bit 0 clear), BEFORE (bit 1 set), and on
 		          -- INSERT (bit 2), DELETE (bit 3) and UPDATE (bit 4) alike
-		          AND tg.tgtype & 1 = 0 AND tg.tgtype & 2 = 0
+		          AND tg.tgtype & 1 = 0 AND tg.tgtype & 2 = 2
 		          AND tg.tgtype & 28 = 28)`)
 	if err != nil {
 		t.Fatal(err)
@@ -67,13 +72,33 @@ func TestEveryCoreTableBumpsTheVersionOnACLIWrite(t *testing.T) {
 		t.Error("core.audit_events carries no trigger calling core.note_cli_audit(), so every " +
 			"CLI command that audits itself is recorded a second time")
 	}
+	// And the audit trail's append takes the version's row before the chain's
+	// lock in a CLI session (0307), as the Admin API does by taking it before it
+	// records: a CLI transaction that recorded before it wrote took the chain's
+	// lock first. A function made again from 0239's text would lose it.
+	for _, fn := range []string{"audit_append", "audit_append_many"} {
+		var first bool
+		if err := pool.QueryRow(context.Background(), `
+			SELECT position('core.config_version' IN prosrc) > 0
+			       AND position('core.config_version' IN prosrc) < position('pg_advisory_xact_lock' IN prosrc)
+			  FROM pg_proc WHERE proname = $1 AND pronamespace = 'core'::regnamespace`, fn).Scan(&first); err != nil {
+			t.Fatalf("reading core.%s: %v", fn, err)
+		}
+		if !first {
+			t.Errorf("core.%s takes the audit chain's lock without first taking core.config_version's "+
+				"row in a CLI session, so a CLI transaction that records before it writes deadlocks "+
+				"with an Admin API write that records", fn)
+		}
+	}
 
 	sort.Strings(missing)
 	for _, m := range missing {
-		t.Errorf("core.%s carries no statement-level AFTER INSERT OR UPDATE OR DELETE trigger "+
-			"calling core.bump_config_version_for_cli(), so a CLI edit to it moves no "+
-			"version and a stale conditional write applies over it. Add one in the "+
-			"migration that creates the table, or list it in notBumped with the reason", m)
+		t.Errorf("core.%s carries no statement-level BEFORE INSERT OR UPDATE OR DELETE trigger "+
+			"calling core.bump_config_version_for_cli(). With none, a CLI edit to it moves no "+
+			"version and a stale conditional write applies over it; with one that runs AFTER "+
+			"the statement, the CLI locks the rows it writes before the version's row, which "+
+			"the Admin API takes first, and the two deadlock (0307). Add one in the migration "+
+			"that creates the table, or list it in notBumped with the reason", m)
 	}
 }
 

@@ -64,7 +64,7 @@ must be `http`, and the host must be the *same* loopback host (`127.0.0.1` and
 |---|---|---|
 | Support PKCE | MUST | yes |
 | Enforce `code_verifier` when a challenge was sent | MUST | yes |
-| Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — see `protocol-review-oauth.md` |
+| Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — a `code_verifier` sent for a code whose authorization request had no `code_challenge` is refused with `invalid_request` |
 | Provide a way to detect PKCE support | MUST | `code_challenge_methods_supported` in metadata |
 | Prefer challenge methods that do not expose the verifier | SHOULD | S256 only; `plain` refused outright |
 | Detect constant PKCE challenge / nonce values | encouraged | challenges, yes; nonces, no — see below |

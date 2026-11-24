@@ -329,7 +329,7 @@ than claimed.
 | **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
 | **V7.4.3** option to end other sessions after a factor changes | **met** — a password change ends every session, this one included (`httpapi/passwordselfservice.go:180-187`), and `/account/sessions` ends any or all of them after any other change |
 | **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
-| **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
+| **V7.3.1** inactivity timeout | **not met** when this was written; an idle limit has since been built, `signari instance session-lifetime -idle`, off until it is set |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
 | **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
 | **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [security-inventories.md](security-inventories.md) |
@@ -371,7 +371,8 @@ superseded. The value also travels to applications in the CAEP event.
 
 ### What V7 leaves open
 
-V7.3.1 (inactivity timeout) is item **9f** and unchanged. V7.4.3 and V7.5.2 both
+V7.3.1 (inactivity timeout) was open when this was written. An idle limit was
+added in October 2026, and is off until an administrator sets it. V7.4.3 and V7.5.2 both
 describe a *page*, and when this was written the mechanism existed without one.
 The page has since shipped as `/account/sessions`, and both are met.
 
@@ -603,8 +604,10 @@ address.
   identity proofing, which is an IAL question rather than an AAL one.
 - **V6.3.5, V6.3.7** — notification of suspicious attempts and of credential
   changes. Passkey bind and removal now notify (NIST §4.1.2 and §4.5). Password
-  changes and unusual-location sign-ins do not. This is the same missing piece as
-  item **9l**: one notification address per account, so the channel is thin.
+  changes and unusual-location sign-ins did not, when this was written, and an
+  account had one notification address, so the channel was thin. Since then a
+  password change sends a notice, and a verified SMS number gives an account a
+  second channel that every security notice also goes to.
 
 ## ASVS status after this pass
 
@@ -1131,7 +1134,7 @@ and nothing had ever sent one.
 | V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
 | V14.2.5 web cache deception | met — no static-file handler that could serve a different valid file for a non-existent path |
 | V14.2.6 minimum data returned | met — userinfo returns only granted scopes' claims |
-| V14.2.7 retention classification | partial — classified, not time-expired; see 9p |
+| V14.2.7 retention classification | partial — classified, not time-expired |
 | V14.2.8 file metadata | n/a — no user file upload |
 | V14.3.1 client storage cleared | met by construction — `localStorage`, `sessionStorage` and `IndexedDB` appear **zero** times in anything this server serves |
 | V14.3.2 anti-caching headers | **six gaps, fixed** |
@@ -1474,7 +1477,7 @@ handler and is answered `401 login_required` rather than being refused earlier.
 That is the defence holding, and it is *one* mechanism deep where the rest of this
 package is two or three.
 
-**Fixed**: `requireJSONContentType` on all four. Signari's own `passkey.js`
+**Fixed**: `requireJSONContentType` on all four. Signari's own `/passkey.js`
 already sends `application/json`, so nothing legitimate changes.
 
 **Why a CSRF token was not added instead.** It would require the client script to
@@ -1530,7 +1533,7 @@ the engine's wiring. Read fresh, not trusted from the prior tally.
   against Signari's code as adversarial tests rather than read as a list. None
   applies, and in every case the reason is structural — a mechanism Signari does
   not have, or one whose unsafe shape is unrepresentable — rather than a patch it
-  happened to carry. The specific findings are in the local-only review notes.
+  happened to carry.
 
 **Verdict:** the ASVS controls most exposed to the recent rework are confirmed
 present in current code, and the four Aug-2026 security standards (ASVS 5.0.0,

@@ -132,9 +132,6 @@ violate by default.
 describes it as "the final version of SP 800-63, Revision 4". This review is
 against the right document.
 
-
-Full evidence, including the commands, is in `security-review-defaults.md`.
-
 ## The two SHALL NOTs this review had not covered (August 2026)
 
 §3.1.1.2 carries two prohibitions as well as the length floor. Revision 4 raised
@@ -353,7 +350,7 @@ What is not small is the decision around it:
 Getting that wrong makes enrolment fragile, in a way people experience
 immediately.
 
-It is recorded as open decision **9h**. It is the first NIST gap this review has
+It was recorded as an open decision. It is the first NIST gap this review has
 found that is a plain **SHALL** with no deviation argument behind it. That is
 unlike §3.2.2's rate limiting, where the deviation is deliberate and defensible.
 
@@ -383,14 +380,14 @@ and §5 (session management) have now each been read against source. The rest, �
 §7 and §8 — Security, Privacy and Customer Experience Considerations — are
 **informative** and carry no verifier SHALLs.
 
-When this was written, one SHALL was unmet: **§4.1.2.1's binding notification**
-(TODO 9h). It has since been closed for every authenticator, an SMS number
+When this was written, one SHALL was unmet: **§4.1.2.1's binding notification**.
+It has since been closed for every authenticator, an SMS number
 included. A number proved by its code is told to every channel the account has
 (`httpapi/enrol.go`, the `mail.smsotp.enrolled` notice). A number it replaced
 hears that its codes have moved.
 
 One deliberate deviation stands: **§3.2.2's consecutive-failure limit** for
-passwords (TODO 9e), taken to avoid a targeted denial of service. The
+passwords, taken to avoid a targeted denial of service. The
 authenticator half of §3.2.2 was recorded here as met, and it was not; October
 2026 corrects that above. Everything else in the normative sections is met, and
 says where.
@@ -516,8 +513,9 @@ owner to notice.
 `not_after > now()`. So an expired session is dead to a reader even before the
 sweep runs.
 
-**The inactivity timeout SHOULD is not met**, which is item **9f** and was already
-recorded. Reading §5.2 sharpens why it matters, without changing the verdict.
+**The inactivity timeout SHOULD is not met**, which was already recorded. It has
+since been built, and is off until it is set: see [reauthentication
+timeouts](#reauthentication-timeouts). Reading §5.2 sharpens why it matters, without changing the verdict.
 "Session activity SHALL reset the inactivity timeout". So the feature is not a
 second expiry column. It is a write on every authenticated request, and that is a
 cost worth deciding deliberately rather than adding by reflex.

@@ -2645,7 +2645,8 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	case stopped && current.Accepted() != nil:
 		return fmt.Errorf("SIGNARI_NEW_ROOT_KEY and SIGNARI_ACCEPTED_ROOT_KEY are both set. The " +
 			"first rotates a stopped deployment to a new key; the second finishes an online " +
-			"rotation the nodes are already part of (docs/key-rotation.md). Set one")
+			"rotation the nodes are already part of (\"Rotating the root key\" in docs/configuration.md " +
+			"has both). Set one")
 	case stopped:
 		old = current
 		next, err = keys.LoadRootKey(os.Getenv,
@@ -2675,7 +2676,7 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return fmt.Errorf("nothing to rotate to. With the deployment running: restart every node " +
 			"with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY to the old one, " +
 			"then run this with the same. Stopped: set SIGNARI_NEW_ROOT_KEY to the new key. " +
-			"docs/key-rotation.md has both")
+			"\"Rotating the root key\" in docs/configuration.md has both")
 	}
 
 	tx, err := conn.Begin(ctx)

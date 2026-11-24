@@ -199,8 +199,9 @@ a directory, and that needs a per-organisation switch that does not exist yet.
 ### An application asking for a new account
 
 An application can send people straight to the sign-up form. It adds
-`prompt=create` to its authorization request, the request that starts a sign-in
-([Initiating User Registration via OpenID Connect 1.0](https://openid.net/specs/openid-connect-prompt-create-1_0.html)).
+`prompt=create` to its authorization request, the request that starts a sign-in.
+OpenID Connect defines this value in version 1.0 of its
+[specification for starting registration](https://openid.net/specs/openid-connect-prompt-create-1_0.html).
 
 Where the application's organisation accepts self-signup, the request goes to
 `/signup` and is carried through the form. The **Sign in** link on the finished

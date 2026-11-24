@@ -63,7 +63,7 @@ this organisation's mail comes from id@acme.example
 
 In this example, the command checks four records:
 
-- Sender Policy Framework (SPF), which lists the servers allowed to send mail
+- Sender Policy Framework (SPF), which lists the machines allowed to send mail
   for the domain;
 - DomainKeys Identified Mail (DKIM), which publishes the key that the domain's
   mail is signed with;

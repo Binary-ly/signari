@@ -132,7 +132,9 @@ func instanceOrgDelete(ctx context.Context, conn *pgx.Conn, orgID, confirm strin
 		return nil
 	}
 
-	tx, err := conn.Begin(ctx)
+	// The census locks the organisation's row with a read, before anything is
+	// written (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}

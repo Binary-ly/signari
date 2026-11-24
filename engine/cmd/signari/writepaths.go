@@ -874,7 +874,8 @@ func instanceSessionLimit(ctx context.Context, conn *pgx.Conn, orgID string,
 	}
 
 	// Through the setter the Admin API uses, audited like the other settings.
-	tx, err := conn.Begin(ctx)
+	// The setter locks the organisation's row before it writes (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -933,7 +934,7 @@ func instancePasswordBinds(ctx context.Context, conn *pgx.Conn, orgID, policy st
 			store.PasswordBindsAllow, store.PasswordBindsRefuseWhenMFA, policy)
 	}
 
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter locks the organisation's row first
 	if err != nil {
 		return err
 	}
@@ -1421,7 +1422,7 @@ func userAssignYubico(ctx context.Context, conn *pgx.Conn, orgID, email, keyFile
 	if err != nil {
 		return err
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the person's key is locked before anything is written
 	if err != nil {
 		return err
 	}
@@ -1507,7 +1508,9 @@ func provedOTPCounter(seed []byte, hotp bool, p mfa.Params, code, next string) (
 func assignProvedOTP(ctx context.Context, conn *pgx.Conn, userID, userOrg string, seed []byte, hotp bool,
 	p mfa.Params, counter int64, root *keys.RootKey, via string) (bool, error) {
 
-	tx, err := conn.Begin(ctx)
+	// keys.LoadOrCreateSubjectKey locks the person's key before anything is
+	// written, as the Admin API's assignment does after the version's row.
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return false, err
 	}
@@ -1540,7 +1543,7 @@ func instanceRememberDevice(ctx context.Context, conn *pgx.Conn, orgID string, d
 	if orgID == "" || days < 0 {
 		return fmt.Errorf("give -org and -days, 0 to %d", store.MaxRememberDeviceDays)
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter locks the organisation's row first
 	if err != nil {
 		return err
 	}
@@ -1581,7 +1584,7 @@ func instanceNewDeviceNotice(ctx context.Context, conn *pgx.Conn, orgID, notice 
 	if orgID == "" || (notice != "on" && notice != "off") {
 		return fmt.Errorf("give -org and -notice on or off")
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter locks the organisation's row first
 	if err != nil {
 		return err
 	}
@@ -1618,7 +1621,8 @@ func instanceOrgStatus(ctx context.Context, conn *pgx.Conn, orgID, status string
 	if orgID == "" || (status != "active" && status != "suspended") {
 		return fmt.Errorf("give -org and -status active or suspended")
 	}
-	tx, err := conn.Begin(ctx)
+	// The organisation's row is locked by a read, before the write (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1668,7 +1672,7 @@ func instanceReauthWindow(ctx context.Context, conn *pgx.Conn, orgID string, win
 	if orgID == "" || window == 0 {
 		return fmt.Errorf("give -org and -window, e.g. -window 10m")
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter locks the organisation's row first
 	if err != nil {
 		return err
 	}
@@ -1708,7 +1712,7 @@ func instanceSessionLifetime(ctx context.Context, conn *pgx.Conn, orgID string, 
 	if persistent != "" && persistent != "on" && persistent != "off" {
 		return fmt.Errorf("-persistent is on or off, not %q", persistent)
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setters lock the organisation's row first
 	if err != nil {
 		return err
 	}
@@ -3508,7 +3512,7 @@ func migrationSourceAdd(ctx context.Context, conn *pgx.Conn, orgID, kind, name, 
 			return err
 		}
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter may lock the source's row before it writes
 	if err != nil {
 		return err
 	}
@@ -3689,7 +3693,9 @@ func ssfSetStatus(ctx context.Context, conn *pgx.Conn, orgID, clientID, status, 
 	if orgID == "" || clientID == "" || status == "" {
 		return fmt.Errorf("give -org, -client-id and -status (enabled, paused or disabled)")
 	}
-	tx, err := conn.Begin(ctx)
+	// The stream's row is locked by a read, before the write, and a receiver
+	// changing its stream takes the version's row first (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}

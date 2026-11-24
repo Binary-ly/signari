@@ -2464,7 +2464,9 @@ func keysRotate(ctx context.Context, conn *pgx.Conn, only string, rsaBits int, p
 		return err
 	}
 
-	tx, err := conn.Begin(ctx)
+	// keys.Rotate takes the rotation's advisory lock before it writes; the Admin
+	// API's rotation takes the version's row and then that lock (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -2590,7 +2592,8 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 			"docs/key-rotation.md has both")
 	}
 
-	tx, err := conn.Begin(ctx)
+	// Every sealed row is read FOR UPDATE before it is written (beginEdit).
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -2697,7 +2700,7 @@ func keysRetire(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return nil
 	}
 
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the rotation's advisory lock comes before the write
 	if err != nil {
 		return err
 	}
@@ -4157,8 +4160,13 @@ func importKeycloak(ctx context.Context, conn *pgx.Conn, path, orgID string, dry
 // that table has no statistics and the plan reads the whole organisation for each
 // person, so each doubling of an import took near four times as long (0.70).
 // Planned every time, a statement sees the table as it has grown.
+//
+// And the version's row first (beginEdit): an import sets people's attributes
+// through store.SetUserAttribute, which locks the person's key and attribute
+// rows with a read before it writes, and rather than prove of every importer
+// that some write always comes before, the row is taken before anything else.
 func beginImport(ctx context.Context, conn *pgx.Conn) (pgx.Tx, error) {
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -10747,7 +10755,7 @@ func clientSetExchange(ctx context.Context, conn *pgx.Conn, clientID string, may
 	if clientID == "" {
 		return fmt.Errorf("give -client-id")
 	}
-	tx, err := conn.Begin(ctx)
+	tx, err := beginEdit(ctx, conn) // the setter locks the client's row before it writes
 	if err != nil {
 		return err
 	}

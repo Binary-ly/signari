@@ -1,25 +1,42 @@
 # Shared Signals and CAEP
 
-Continuous Access Evaluation: relying parties subscribe to a stream of security
-events about subjects they have seen, and react as they arrive.
+## Introduction
+
+An access token stays valid until it expires, even after the session behind it ends.
+An application that trusts the token keeps letting the person in for the rest of
+the token's lifetime.
+
+Continuous access evaluation closes that gap. Applications subscribe to a stream of
+security events about people they have seen, and react as the events arrive. The
+Shared Signals Framework ([SSF](glossary.md#shared-signals)) carries the stream. The
+Continuous Access Evaluation Profile ([CAEP](glossary.md#caep)) defines events such
+as "this session was revoked".
+
+Signari is the "transmitter" that sends the events, and each application runs a
+"receiver" that takes them. You register a stream for an application with
+`signari ssf add-stream`, or through the Admin API.
 
 ## The argument
 
 An access token is valid until it expires. That is the whole security model of a
-bearer token, and it means a relying party keeps honouring one for its full
-lifetime after the session behind it was revoked, the password was changed, or
-the account was disabled. Short lifetimes narrow that window; they do not close
-it, and shortening them costs a token request every few minutes per user.
+bearer token. It means an application keeps honouring one for its full lifetime.
+That holds after the session behind it was revoked, the password was changed, or the
+account was disabled.
 
-CAEP closes it by **telling** the relying party. When a session is revoked here,
-every receiver that has seen that subject learns within seconds.
+Short lifetimes narrow that window, but they do not close it. Shortening them costs
+a token request every few minutes for each person.
 
-This project has made the same argument about logout from the start — that a
-logout nobody can prove happened is not a logout. CAEP is that argument applied
+CAEP closes it by **telling** the application. When a session is revoked here,
+every receiver that has seen that person learns within seconds.
+
+This project has made the same argument about sign-out from the start: a sign-out
+nobody can prove happened is not a sign-out. CAEP is that argument applied
 continuously instead of once.
 
-
 ## Registering a receiver
+
+Register a stream for an application's client, either pushed to the receiver's
+endpoint or polled by the receiver, then list the streams:
 
 ```sh
 # Push (RFC 8935): we POST each event to the receiver's endpoint.
@@ -33,18 +50,21 @@ signari ssf add-stream -org <org-uuid> -client-id <client> -poll
 signari ssf list
 ```
 
-There was no way to do this until recently: a stream could only be created by
-hand-written SQL, which is how it was first tested. A feature nobody can
-configure is one nobody uses.
+There was no way to do this until recently. A stream could only be created by
+hand-written SQL, which is how it was first tested. A feature nobody can configure
+is one nobody uses.
 
-A stream is registered in its client's own organisation: it carries events about
-the people who signed in to that client, so a stream named under another
-organisation would send them to a receiver that organisation never chose. The
-Admin API registers streams and changes their status the same way, at
+A stream is registered in its client's own organisation. It carries events about the
+people who signed in to that client. So a stream named under another organisation
+would send them to a receiver that organisation never chose.
+
+The Admin API registers streams and changes their status the same way, at
 `/admin/organizations/{orgID}/ssf-streams` and
-`/admin/clients/{clientID}/ssf-stream`; see [admin-api.md](admin-api.md).
+`/admin/clients/{clientID}/ssf-stream`. See the [Admin API reference](admin-api.md).
 
 ## Pausing and disabling a stream
+
+Pause a stream with a reason, enable it again, or disable it:
 
 ```sh
 signari ssf set-status -org <org-uuid> -client-id <client> -status paused -reason "receiver maintenance"
@@ -60,33 +80,37 @@ The three statuses are SSF 1.0 §8.1.2.1's, and each does what it says there:
 | `paused` | **held**, not sent | released when the stream is enabled again |
 | `disabled` | neither sent nor held | what it held is discarded |
 
-The status is read when an event is delivered, not only when it is queued, so an
-event queued a moment before a pause is held with the rest rather than sent.
+The status is read when an event is delivered, not only when it is queued. So an
+event queued a moment before a pause is held with the rest, rather than sent.
 
 The receiver is told. Pausing or disabling an enabled stream first queues a
-`stream-updated` event carrying the new status and your `-reason`, and enabling
-one sends another, as §8.1.5 requires. Its subject is the stream itself, in the
-`opaque` format with the stream's id. That notice is the one thing a paused or
-disabled stream still delivers, by push, or by poll: a poll receiver on a paused
-stream collects its `stream-updated` events and nothing else. Moving between
-`paused` and `disabled` sends nothing, because neither may transmit.
+`stream-updated` event, carrying the new status and your `-reason`. Enabling one
+sends another, as §8.1.5 requires. Its subject is the stream itself, in the `opaque`
+format with the stream's ID.
 
-There was no way to change a stream's status before: the column was read and
-nothing wrote it.
+That notice is the one thing a paused or disabled stream still delivers, by push or
+by poll. A poll receiver on a paused stream collects its `stream-updated` events and
+nothing else. Moving between `paused` and `disabled` sends nothing, because neither
+may transmit.
+
+There was no way to change a stream's status before: the column was read and nothing
+wrote it.
 
 ## Poll delivery (RFC 8936)
 
 Push assumes the receiver can accept an inbound HTTPS POST. A receiver behind a
-firewall, or an agent with no public address, cannot — and those are often the
-receivers that most want continuous signals. Poll inverts the direction: the
-receiver makes an authenticated request to `POST /ssf/poll`, we hand back the
-Security Event Tokens waiting for it, and it acknowledges the ones it has stored
-so we drop them.
+firewall, or an agent with no public address, cannot. And those are often the
+receivers that most want continuous signals.
+
+Poll inverts the direction. The receiver makes an authenticated request to
+`POST /ssf/poll`, and Signari hands back the Security Event Tokens (SETs) waiting
+for it. The receiver acknowledges the ones it has stored, so Signari drops them.
 
 A stream is push **or** poll, set when it is registered. A poll stream has no
-endpoint, so `-endpoint` and `-receiver-token` are refused with `-poll`: the
-receiver authenticates to us as its own OAuth client (HTTP Basic or mutual-TLS),
-which is a credential we already verify, rather than a token we would have pushed.
+endpoint, so `-endpoint` and `-receiver-token` are refused with `-poll`. The
+receiver authenticates to Signari as its own OAuth client, with HTTP Basic or mutual
+Transport Layer Security ([TLS](glossary.md#mutual-tls)). That is a credential Signari already verifies,
+rather than a token it would have pushed.
 
 The exchange, per §2.4:
 
@@ -96,22 +120,26 @@ Authorization: Basic <client creds>       "moreAvailable": false }
 { "maxEvents": 10, "ack": ["<jti>"] }
 ```
 
-`ack` names SETs from a previous poll; naming one deletes it. A SET handed over
-but not acknowledged is **redelivered** on the next poll — a receiver that
-crashed before storing an event does not lose it. Set `returnImmediately: false`
-to have us hold the connection briefly and return as soon as an event is queued,
-rather than answering with an empty set straight away.
+`ack` names SETs from a previous poll, and naming one deletes it. A SET handed over
+but not acknowledged is **redelivered** on the next poll. A receiver that crashed
+before storing an event does not lose it.
 
-The same event is minted the same way whichever direction it travels: one builder
-(`ssf.RevocationEvent`) is shared by the push worker and the poll handler, so a
+Set `returnImmediately: false` to have Signari hold the connection briefly, and
+return as soon as an event is queued. Otherwise it answers with an empty set
+straight away.
+
+The same event is minted the same way, whichever direction it travels. One builder
+(`ssf.RevocationEvent`) is shared by the push worker and the poll handler. So a
 receiver that later switches from push to poll sees no change in what a SET says.
-An abandoned poll stream cannot grow without bound — the janitor drops events that
+
+An abandoned poll stream cannot grow without bound. The janitor drops events that
 have waited far longer than any live receiver would leave them (30 days).
 
 ## Asking whether a stream works
 
-A quiet stream and a broken one look the same from the receiver's side, so a
-receiver can ask for an event (§8.1.4). `signari ssf list` shows each stream's id:
+A quiet stream and a broken one look the same from the receiver's side. So a
+receiver can ask for an event (§8.1.4). `signari ssf list` shows each stream's ID,
+and the receiver asks like this:
 
 ```
 POST /ssf/verify                     -> 204 No Content
@@ -119,11 +147,15 @@ Authorization: Basic <client creds>
 { "stream_id": "<id>", "state": "<anything>" }
 ```
 
-The receiver authenticates as it does to poll, as the stream's own client, with
-HTTP Basic or a certificate. The event is an ordinary SET: its `sub_id` is the
-stream, `{"format": "opaque", "id": "<stream_id>"}`, and its `state` is what the
-request sent. It travels by the stream's own delivery method, so `204` means it
-is queued and not that it arrived, and receiving it is the proof.
+The receiver authenticates as it does to poll: as the stream's own client, with HTTP
+Basic or a certificate. The event is an ordinary SET. Its `sub_id` is the stream,
+`{"format": "opaque", "id": "<stream_id>"}`, and its `state` is what the request
+sent.
+
+It travels by the stream's own delivery method. So `204` means it is queued, not
+that it arrived, and receiving it is the proof.
+
+These are the answers to a request that fails:
 
 | The request | The answer |
 |---|---|
@@ -133,14 +165,15 @@ is queued and not that it arrived, and receiving it is the proof.
 | a stream that does not exist or belongs to another client | `404` |
 | a second request for a stream within 30 seconds | `429`, with `Retry-After` |
 
-A paused stream answers `204` and holds the event with the rest of what it is
+A paused stream answers `204`, and holds the event with the rest of what it is
 holding. The 30 seconds is the stream's `min_verification_interval`.
 
 ## What a receiver can do with its stream
 
-An operator makes a stream and says where it delivers, because that decides who hears
-about whom. A receiver reads and changes the rest of its own, authenticating as it does
-to poll and to verify, as the stream's client with HTTP Basic or a certificate:
+An administrator makes a stream and says where it delivers, because that decides who
+hears about whom. A receiver reads and changes the rest of its own stream. It
+authenticates as it does to poll and to verify: as the stream's client, with HTTP
+Basic or a certificate.
 
 | Request | What it does |
 |---|---|
@@ -152,47 +185,53 @@ to poll and to verify, as the stream's client with HTTP Basic or a certificate:
 | `POST /ssf/subjects:add`, `:remove` | Says whether it wants to hear about a person |
 | `POST`, `DELETE /ssf/stream` | `403`. A stream is made and deleted with `signari ssf add-stream` or the Admin API |
 
-An event type this server does not understand is dropped from `events_requested`, as the
-specification says. A property the server supplies may be sent back but has to match, or
-the answer is `400`. A `delivery` that differs is `403`, whatever a receiver sends: a
-stolen client secret should not be enough to send people's events somewhere else.
+An event type Signari does not understand is dropped from `events_requested`, as the
+specification says. A property Signari supplies may be sent back, but it has to
+match, or the answer is `400`.
 
-Each change is in the audit trail as `ssf.stream_changed` and moves the configuration
-version, because it is a change to the operator's stream as well. `signari plan` will show
-it as drift from a file that says otherwise.
+A `delivery` that differs is `403`, whatever a receiver sends. A stolen client secret
+should not be enough to send people's events somewhere else.
+
+Each change is in the audit trail as `ssf.stream_changed`, and moves the
+configuration version, because it is a change to the administrator's stream as well.
+`signari plan` will show it as drift from a file that says otherwise.
 
 ### Subjects
 
-A stream carries events about the people its client has met, and that does not change.
-So adding a subject asks for nothing more: it takes back a removal. Removing one stops
-events about that person on this stream, push or poll, until it is added back. A person
-is named as this server's events name them, `{"format": "iss_sub", "iss", "sub"}`, or by
-`email`, or either under `user` in a `complex` subject.
+A stream carries events about the people its client has met, and that does not
+change. So adding a subject asks for nothing more: it takes back a removal. Removing
+one stops events about that person on this stream, push or poll, until it is added
+back.
 
-The answer is an empty `200` whoever the subject is, in any format, known or not. An answer
-that differed would tell a receiver who has an account here.
+A person is named as Signari's events name them,
+`{"format": "iss_sub", "iss", "sub"}`, or by `email`. Either can also be under
+`user` in a `complex` subject.
+
+The answer is an empty `200` whoever the subject is, in any format, known or not. An
+answer that differed would tell a receiver who has an account here.
 
 ## The token that was never sent
 
-`ssf_streams.auth_token` existed from the first migration, with a comment saying
-it "authenticates US to THEM" — and **nothing ever sent it**. RFC 8935 push
-delivery expects the transmitter to authenticate to the receiver, normally with a
-bearer token the receiver issued when the stream was configured. A receiver that
-required it answered 401, the outbox retried eight times, and the event was
-parked. Silently, and looking exactly like a receiver outage.
+`ssf_streams.auth_token` existed from the first migration, with a comment saying it
+"authenticates US to THEM". And **nothing ever sent it**.
 
-It is now read at delivery time and sent as `Authorization: Bearer`. Read at
-delivery rather than carried in the outbox payload, because a queue table is the
-last place a third party's credential should sit and rows there outlive the
-delivery by design. It is sealed with the root key, so a database backup does not
-hand it over.
+RFC 8935 push delivery expects the transmitter to authenticate to the receiver. It
+normally does that with a bearer token the receiver issued when the stream was
+configured. A receiver that required it answered 401, the outbox retried eight
+times, and the event was parked. Silently, and looking exactly like a receiver
+outage.
 
-A stream with no token still delivers. The SET is signed, so a receiver that
-chose not to issue one is not made less safe by its absence — and failing closed
-here would break every deployment that does not use stream tokens.
+It is now read at delivery time, and sent as `Authorization: Bearer`. It is read at
+delivery rather than carried in the outbox payload. A queue table is the last place
+a third party's credential should sit, and rows there outlive the delivery by
+design. It is sealed with the root key, so a database backup does not hand it over.
 
-Confirmed on the wire. This is the complete request a receiver saw after a user
-was deactivated through the admin API:
+A stream with no token still delivers. The SET is signed, so a receiver that chose
+not to issue one is not made less safe by its absence. And failing closed here would
+break every deployment that does not use stream tokens.
+
+Confirmed on the wire. This is the complete request a receiver saw after a person
+was deactivated through the Admin API:
 
 ```
 authorization: Bearer receiver-issued-token-abc123
@@ -215,33 +254,35 @@ event: session-revoked
 
 ## Decisions
 
-**Events are signed** (RFC 8417 Security Event Tokens). A receiver *acts* on
-them — an unsigned "this session is revoked" is a denial of service anybody can
-send.
+**Events are signed** (RFC 8417 Security Event Tokens). A receiver *acts* on them,
+so an unsigned "this session is revoked" is a denial of service anybody can send.
 
 **The audience is the receiver.** A SET with no audience, or the wrong one, is a
-token one receiver can forward to another — which is how one relying party ends
+token one receiver can forward to another. That is how one application ends
 another's sessions. Minting without an audience is refused outright.
 
-**The subject is `iss_sub`, never an email address.** A receiver matching on
-email is vulnerable to the same account confusion the federation code refuses;
-the subject identifier we issued is the only thing both sides agree on.
+**The subject is `iss_sub`, never an email address.** A receiver matching on email
+is vulnerable to the same account confusion the federation code refuses. The subject
+identifier Signari issued is the only thing both sides agree on.
 
-**`event_timestamp` is in seconds**, and is when the thing *happened* — not when
-the token was minted. Milliseconds here is a common silent interoperability bug:
-the receiver reads a date forty thousand years out and either rejects the event
-or orders it last forever.
+**`event_timestamp` is in seconds**, and is when the thing *happened*, not when the
+token was minted. Milliseconds here is a common silent interoperability bug. The
+receiver reads a date forty thousand years out, and either rejects the event or
+orders it last forever.
 
 **Subscriptions are an allow-list.** An empty subscription means *nothing*, not
-everything. A receiver that registered without naming event types has not asked
-to be told about session revocations, and sending them anyway discloses more
-about the user than that receiver was given.
+everything. A receiver that registered without naming event types has not asked to
+be told about session revocations. Sending them anyway discloses more about the
+person than that receiver was given.
 
-**Only events we actually emit are advertised.** A receiver subscribing to
-something we never send waits forever for a signal that will not come.
-Credential-change was once advertised and accepted in `ssf add-stream -events`
-while nothing emitted it, so a test now walks a person through each change and
-fails on any advertised event that never arrives. Four are offered:
+**Only events Signari actually emits are advertised.** A receiver subscribing to
+something Signari never sends waits forever for a signal that will not come.
+Credential-change was once advertised and accepted in `ssf add-stream -events` while
+nothing emitted it. So a test now walks a person through each change, and fails on
+any advertised event that never arrives.
+
+Four are offered. The account events come from Risk Incident Sharing and
+Coordination (RISC), a companion set of events to CAEP:
 
 | Event | Sent when |
 |---|---|
@@ -251,37 +292,39 @@ fails on any advertised event that never arrives. Four are offered:
 | RISC `account-enabled` | a deactivated account is reactivated, by whatever path |
 
 A credential change names itself with `credential_type` (`password`, `app`,
-`phone-sms`, `fido2-platform`, `fido2-roaming`), `change_type` (`create`,
-`update`, `delete`) and `initiating_entity`. An emailed code and a recovery code
-have no word in CAEP's list, so changing them says nothing. A sign-in that
-upgrades a stored hash is not a credential change, because the password is the
-one it was. `session-revoked` stays the default for `-events`; the other three
-have to be asked for.
+`phone-sms`, `fido2-platform`, `fido2-roaming`), `change_type` (`create`, `update`,
+`delete`) and `initiating_entity`. An emailed code and a recovery code have no word
+in CAEP's list, so changing them says nothing.
 
-**A stream hears of the people its client has met**: anyone with a session or
-a refresh token from that client, live or not. It has to include sessions that
-have ended, because deactivating somebody ends their sessions in the same
-transaction, and those are the applications that need telling.
+A sign-in that upgrades a stored hash is not a credential change, because the
+password is the one it was. `session-revoked` stays the default for `-events`. The
+other three have to be asked for.
 
-**`initiating_entity` is reported honestly** — `user`, `admin`, `policy` or
-`system`, mapped from the real termination reason. A receiver may treat an
-administrator revoking a session differently from a user signing out, and
-collapsing them throws away the distinction it would act on.
+**A stream hears of the people its client has met**: anyone with a session or a
+refresh token from that client, live or not. It has to include sessions that have
+ended. Deactivating somebody ends their sessions in the same transaction, and those
+are the applications that need telling.
 
-**Delivery reuses the existing outbox**: same retries, same capped backoff, same
-parked-failure reporting as back-channel logout. It drains independently, so a
-receiver that is down cannot hold up logout delivery to everybody else.
+**`initiating_entity` is reported honestly**: `user`, `admin`, `policy` or `system`,
+mapped from the real termination reason. A receiver may treat an administrator
+revoking a session differently from a person signing out. Collapsing them throws
+away the distinction it would act on.
 
-**Redirects are never followed.** The endpoint is configured; following one
-would let whoever controls it forward a signed security event somewhere we never
-approved.
+**Delivery reuses the existing outbox**: the same retries, the same capped backoff,
+and the same parked-failure reporting as Back-Channel Logout. It drains
+independently, so a receiver that is down cannot hold up sign-out delivery to
+everybody else.
+
+**Redirects are never followed.** The endpoint is configured. Following a redirect
+would let whoever controls it forward a signed security event somewhere Signari
+never approved.
 
 ## A bug worth recording
 
-The first version emitted these events from inside the back-channel logout loop
-— which only visits clients with a registered `backchannel_logout_uri`. A
-receiver that subscribed to security events but does not implement back-channel
-logout got **nothing at all, silently**.
+The first version emitted these events from inside the Back-Channel Logout loop,
+which only visits clients with a registered `backchannel_logout_uri`. A receiver
+that subscribed to security events, but does not implement Back-Channel Logout, got
+**nothing at all, silently**.
 
 They are different features for different audiences, and neither should be a
 prerequisite for the other. Events are now queued from the session participants
@@ -289,25 +332,31 @@ directly.
 
 ## `SIGNARI_CA_BUNDLE`
 
-Back-channel logout endpoints, SCIM targets and CAEP receivers are frequently
-internal services behind a private certificate authority. Without a way to trust
-one, what operators actually do is disable verification — so this adds a named
-authority to the trust store for every outbound call: deliveries, and the
-receiver's fetch of a transmitter's keys, which until October 2026 ignored it.
-It *adds* to the system pool, so trusting an internal CA does not quietly stop
-public endpoints from verifying.
+Back-Channel Logout endpoints, System for Cross-domain Identity Management
+([SCIM](glossary.md#scim)) targets and CAEP receivers are often internal services
+behind a private certificate authority. Without a way to trust one, what
+administrators actually do is disable verification.
+
+So this setting adds a named authority to the trust store for every outbound call.
+That covers deliveries, and the receiver's fetch of a transmitter's keys, which until
+October 2026 ignored it. It *adds* to the system pool, so trusting an internal
+authority does not quietly stop public endpoints from verifying.
 
 ---
 
+The rest of this page is the record of three reviews of Signari's receiver, kept as
+they were written. The receiver itself is described in [receiving Shared
+Signals](shared-signals-receiver.md).
+
 ## Adversarial re-review, August 2026
 
-Third pass over the receiver, this time against the **Shared Signals Framework
-1.0 Final** text pulled fresh rather than recalled, and with hostile input rather
-than one-field-wrong variations.
+This was the third pass over the receiver. It was made against the **Shared Signals
+Framework 1.0 Final** text, pulled fresh rather than recalled. It used hostile input,
+rather than one-field-wrong variations.
 
 Why this surface and not another: accepting one forged Security Event Token
 terminates a named person's sessions. Anybody who gets a SET past this code has a
-repeatable denial of service against any user in the organisation.
+repeatable denial of service against any person in the organisation.
 
 ### A real defect: `aud` may be a single string
 
@@ -315,23 +364,24 @@ repeatable denial of service against any user in the organisation.
 
 > The "aud" claim can be a single string or an array of strings.
 
-RFC 7519 §4.1.3 says the same for every JWT, and **three of the Shared Signals
-specification's own example SETs use the string form** — Figures 8, 9 and 10 all
-carry `"aud": "636C69656E745F6964"`.
+RFC 7519 §4.1.3 says the same for every JSON Web Token ([JWT](glossary.md#jwt)).
+And **three of the Shared Signals specification's own example SETs use the string
+form**: Figures 8, 9 and 10 all carry `"aud": "636C69656E745F6964"`.
 
 We parsed it as `[]string` only. The consequence is worse than a failed audience
-check: Go's `encoding/json` reports a type mismatch, so the **whole claim set**
-fails to unmarshal and the receiver answers `malformed claims`. An operator
-connecting a conformant transmitter is told their token is malformed, with
-nothing pointing at the audience, while every event is silently dropped.
+check. Go's `encoding/json` reports a type mismatch, so the **whole claim set** fails
+to unmarshal, and the receiver answers `malformed claims`. An administrator
+connecting a conformant transmitter is told their token is malformed, with nothing
+pointing at the audience, while every event is silently dropped.
 
 Fixed with a custom unmarshaller that accepts both forms, and the string form is
-still *checked* — `TestAStringAudienceNamingSomebodyElseIsStillRefused` exists so
-the fix cannot become "accept any string".
+still *checked*. `TestAStringAudienceNamingSomebodyElseIsStillRefused` exists so the
+fix cannot become "accept any string".
 
 This is the same defect class this review has hit before: **the base RFC and the
 profile were both consulted, and the permissive half of the base RFC was
-overlooked** because the profile's own examples were not read as test vectors.
+overlooked**. That happened because the profile's own examples were not read as
+test vectors.
 
 ### What the hostile inputs found
 
@@ -345,14 +395,14 @@ overlooked** because the profile's own examples were not read as test vectors.
 | `aud` array listing us among several | accepted (§4.1.8) |
 | Unknown top-level claims and unknown event-object fields | ignored (§4.2.3) |
 
-The last two matter as much as the refusals. §4.2.3 makes ignoring unknown fields
-a **MUST**, and it sits directly beside the rule that an unknown event *type* is
-refused — a pair that is easy to conflate into "reject anything unfamiliar",
-which would make every transmitter extension a breaking change.
+The last two matter as much as the refusals. Section 4.2.3 makes ignoring unknown
+fields a **MUST**. It sits directly beside the rule that an unknown event *type* is
+refused. That pair is often conflated into "reject anything unfamiliar", which would
+make every transmitter extension a breaking change.
 
 ### Which defences are actually load-bearing
 
-Mutation testing answered a question reading could not: of four guards in the
+Mutation testing answered a question reading could not. Of four guards in the
 verification path, **two are inherited from go-jose rather than enforced by us.**
 
 | Guard | Removing it breaks a test? |
@@ -362,27 +412,28 @@ verification path, **two are inherited from go-jose rather than enforced by us.*
 | Explicit algorithm allow-list excluding HS256 | **no** — go-jose refuses an HS256 signature against an ECDSA key on type grounds |
 | Exactly one signature | **no** — `JSONWebSignature.Verify` declines a multi-signature object and requires `VerifyMulti` |
 
-Both survivors were investigated rather than assumed. Neither is a hole: the
-attacks are refused either way, verified by actually mounting them. But the
-comments in the test file now say **which** check fires, because two of the tests
-originally implied our guard was doing work that the library was doing.
+Both survivors were investigated rather than assumed. Neither is a hole: the attacks
+are refused either way, verified by actually mounting them. But the comments in the
+test file now say **which** check fires. Two of the tests originally implied our
+guard was doing work that the library was doing.
 
 That distinction is not pedantry. A JOSE library change, or a future need for
-`VerifyMulti`, would make our guards the only thing standing — and nothing in the
-suite would have told us they had been decorative all along. This is the same
-failure this project has already found twice in its own comments, and finding it
-a third time in a *test* is the reason the mutation pass exists.
+`VerifyMulti`, would make our guards the only thing standing. And nothing in the
+suite would have told us they had been decorative all along. This is the same failure
+this project has already found twice in its own comments. Finding it a third time in
+a *test* is the reason the mutation pass exists.
 
 ---
 
 ## MUST-by-MUST sweep, August 2026: `critical_subject_members`
 
-The method that found three unmet requirements in OID4VCI — extract every `MUST`
-from the specification text and check each one against the code — applied to
-Shared Signals Framework 1.0 (29 August 2025, the current Final).
+This review used the method that found three unmet requirements in OpenID for
+Verifiable Credential Issuance ([OID4VCI](glossary.md#oid4vci)). The method extracts
+every `MUST` from the specification text, and checks each one against the code. It
+was applied to Shared Signals Framework 1.0 (29 August 2025, the current Final).
 
-94 `MUST` sentences; 49 of them touch streams, subjects or delivery. One was
-unmet, and the receiver contained no mention of it at all.
+94 `MUST` sentences; 49 of them touch streams, subjects or delivery. One was unmet,
+and the receiver contained no mention of it at all.
 
 ## §3.6 Receiver Subject Processing
 
@@ -398,42 +449,44 @@ and §7.1's metadata entry:
 > which, if present in a Subject Member in an event, MUST be interpreted by a
 > Receiver."
 
-We implemented neither. The receiver reads `format`, `iss`, `sub` and `email`,
-and silently ignored everything else.
+We implemented neither. The receiver reads `format`, `iss`, `sub` and `email`, and
+silently ignored everything else.
 
 ## Why this is a scope defect, not an authenticity one
 
-Every other check in this receiver asks *is this event genuine* — signature,
-issuer, audience, `jti`, `iat`, allowed event types. This one asks a different
-question: **do I understand what the event is about?**
+Every other check in this receiver asks *is this event genuine*: signature, issuer,
+audience, `jti`, `iat`, allowed event types. This one asks a different question:
+**do I understand what the event is about?**
 
 A transmitter marking a `device` member Critical is saying the event concerns one
-device rather than the whole account. Ignoring that member does not fail. It
-applies the right action to the wrong set of things — a session-revocation scoped
-to one laptop gets applied to every session the user has — and nothing anywhere
-reports that the blast radius was wrong.
+device, rather than the whole account. Ignoring that member does not fail. It
+applies the right action to the wrong set of things. A session-revocation scoped to
+one laptop gets applied to every session the person has, and nothing anywhere reports
+that the blast radius was wrong.
 
-That is the same silent-widening shape as the token-lifecycle defects found
-earlier in this codebase, arriving from a completely different direction. The
-common property is a constraint that was communicated and then not consulted.
+That is the same silent-widening shape as the token-lifecycle defects found earlier
+in this codebase, arriving from a completely different direction. The common
+property is a constraint that was communicated, and then not consulted.
 
 ## The implementation
 
 `critical_subject_members` is stored per source, not fetched live from the
-transmitter's metadata document — the same decision as `allowed_events`, for the
-same reason: what this receiver will act on is a local decision, and letting a
-remote document widen or narrow it at request time makes the security posture
-depend on somebody else's uptime and honesty.
+transmitter's metadata document. That is the same decision as `allowed_events`, for
+the same reason. What this receiver will act on is a local decision. Letting a remote
+document widen or narrow it at request time makes the security posture depend on
+somebody else's uptime and honesty.
 
-The check runs on the **raw** subject object rather than the parsed `Subject`,
-because the entire point is to notice members we do not model, and a parsed
-struct has already discarded them.
+The check runs on the **raw** subject object rather than the parsed `Subject`. The
+entire point is to notice members we do not model, and a parsed struct has already
+discarded them.
 
-`processableSubjectMembers` sits directly beside `subjectFrom`, since §3.6 turns
-on "unable to process": a member added to the parser without being added to that
-set would make us discard events we now understand perfectly well.
+`processableSubjectMembers` sits directly beside `subjectFrom`, since §3.6 turns on
+"unable to process". A member added to the parser without being added to that set
+would make us discard events we now understand perfectly well.
 
 ## Mutation results
+
+The mutation pass caught three changes, and one survived:
 
 ```
 CAUGHT   critical members never checked
@@ -442,47 +495,48 @@ CAUGHT   members we can process still discard
 SURVIVED check fires with nothing declared
 ```
 
-The survivor was an early return for the empty case — and it was genuinely
-redundant, not merely hard to test: ranging over an empty slice already does
-nothing, and indexing a nil map already reports "not present". It was **deleted**
-rather than kept and labelled.
+The survivor was an early return for the empty case, and it was genuinely redundant,
+not merely hard to test. Ranging over an empty slice already does nothing, and
+indexing a nil map already reports "not present". It was **deleted** rather than kept
+and labelled.
 
 That is worth distinguishing from the diagnostic-only branches elsewhere in this
 codebase, which survive mutation but earn their place by producing a better error
-message. This one produced nothing at all. A short-circuit that only restates
-what the loop does is weight without meaning.
+message. This one produced nothing at all. A short-circuit that only restates what the
+loop does is weight without meaning.
 
 ## The rest of the sweep
 
-The other 93 `MUST` sentences were checked and are met, including the ones most
-often skipped: explicit `typ` of `secevent+jwt` (§4.1.1), `iss` matching the
-stream configuration (§4.1), audience checking, and refusing a SET with no `jti`
-— without which there is no replay guard at all.
+The other 93 `MUST` sentences were checked, and are met. That includes the ones most
+often skipped. These are explicit `typ` of `secevent+jwt` (§4.1.1), `iss` matching
+the stream configuration (§4.1), audience checking, and refusing a SET with no
+`jti`. Without
+that last one there is no replay guard at all.
 
 ---
 
 ## Re-verified against current SSF 1.0 — 24 August 2026
 
-A deep pass on Shared Signals, the highest-consequence subsystem here: the worst
-defect ever found in this codebase lived in it — a `session-revoked` SET that
-verified perfectly and named nobody. `internal/ssf/receive.go` re-read against
-SSF 1.0 Final (29 August 2025, current).
+A deep pass on Shared Signals, the highest-consequence subsystem here. The worst
+defect ever found in this codebase lived in it: a `session-revoked` SET that verified
+perfectly and named nobody. `internal/ssf/receive.go` was re-read against SSF 1.0
+Final (29 August 2025, current).
 
 ### All three subject shapes are read
 
-The specification allows a subject to arrive three ways, and a receiver that
-handles only one silently ignores events about people it should be acting on.
+The specification allows a subject to arrive three ways. A receiver that handles only
+one silently ignores events about people it should be acting on.
 
-- **Top-level `sub_id`** (§3.1). Reading only the inside of the event object was
-  the defect above; a conformant transmitter putting the subject at the top level
-  had every event accepted and applied to nobody. Fixed in `beedd83`/`bbe776c`.
+- **Top-level `sub_id`** (§3.1). Reading only the inside of the event object was the
+  defect above. A conformant transmitter putting the subject at the top level had
+  every event accepted and applied to nobody. Fixed in `beedd83`/`bbe776c`.
 - **Complex subjects** (§3.3), resolved through the `user` member.
-- **`iss_sub`**, compared issuer-scoped — so "user-42 at transmitter.test" and
-  "user-42 at evil.test" are two different principals, not one.
+- **`iss_sub`**, compared issuer-scoped. So `user-42` at `transmitter.test` and
+  `user-42` at `evil.test` are two different principals, not one.
 
-Verified by decoding real transmitted tokens, not only fixtures of our own
-making — a receiver tested solely against its own encoder agrees with itself
-about a wire format both halves may be reading wrongly.
+Verified by decoding real transmitted tokens, not only fixtures of our own making. A
+receiver tested solely against its own encoder agrees with itself about a wire format
+both halves may be reading wrongly.
 
 ### Receiver rules re-verified against the current spec text
 
@@ -496,6 +550,6 @@ about a wire format both halves may be reading wrongly.
 - Per-type source authorization: a source allowed one event type may not smuggle
   another alongside it.
 
-**Verdict:** no new defect. The subsystem where the worst defect was found now
-reads all three subject shapes the specification defines, and every receiver-side
-MUST has been re-verified against the current SSF 1.0 text.
+**Verdict:** no new defect. The subsystem where the worst defect was found now reads
+all three subject shapes the specification defines. Every receiver-side MUST has been
+re-verified against the current SSF 1.0 text.

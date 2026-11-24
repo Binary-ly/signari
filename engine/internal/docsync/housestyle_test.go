@@ -637,11 +637,17 @@ var styleAllowed = []*regexp.Regexp{
 	// The name of Next.js's router, which a reader of that quickstart picks
 	// in Next.js's own setup.
 	regexp.MustCompile(`\bApp[ \t\n]+Router\b`),
+	// A Kubernetes operator is a kind of program, and Signari has one, the
+	// operator/ module. It is not a person running Signari. See also
+	// styleAllowedSpans, for "the operator" after it.
+	styleKubernetesOperator,
 }
 
 var (
-	styleQuoted  = regexp.MustCompile(`"[^"]*"|“[^”]*”`)
-	styleEndUser = regexp.MustCompile(`(?i)\bend-users?\b`)
+	styleKubernetesOperator = regexp.MustCompile(`(?i)\bKubernetes[ \t\n]+operators?\b`)
+	styleTheOperator        = regexp.MustCompile(`(?i)\bthe[ \t\n]+operators?\b`)
+	styleQuoted             = regexp.MustCompile(`"[^"]*"|“[^”]*”`)
+	styleEndUser            = regexp.MustCompile(`(?i)\bend-users?\b`)
 )
 
 func styleAllowedSpans(text string, expansions []*regexp.Regexp) [][2]int {
@@ -657,6 +663,14 @@ func styleAllowedSpans(text string, expansions []*regexp.Regexp) [][2]int {
 	for _, re := range expansions {
 		for _, m := range re.FindAllStringIndex(text, -1) {
 			spans = append(spans, [2]int{m[0], m[1]})
+		}
+	}
+	// Once a paragraph has named the Kubernetes operator, "the operator" in
+	// the rest of it is that program. Before the name, or as "an operator",
+	// it is still the person, and still a fault.
+	if k := styleKubernetesOperator.FindStringIndex(text); k != nil {
+		for _, m := range styleTheOperator.FindAllStringIndex(text[k[1]:], -1) {
+			spans = append(spans, [2]int{k[1] + m[0], k[1] + m[1]})
 		}
 	}
 	// "End-User" is the OpenID Connect specification's own word. It may stand
@@ -1314,7 +1328,7 @@ const styleCleanPage = "# A clean page\n" + // 1
 	"The protocols call an application a \"relying party\". A browser is a user agent. Back-Channel Logout keeps its name.\n" + // 7
 	"The Admin API takes an admin token. Run signari user create, then open /login\n" + // 8
 	"or read logout.md. A passkey has a relying party ID, and an authenticator app\n" + // 9
-	"shows a code. See [how Signari works](how-signari-works.md).\n" + // 10
+	"shows a code. See [how Signari works](how-signari-works.md). The Kubernetes operator deploys Signari, and the operator keeps it running.\n" + // 10
 	"\n" +
 	"> [!NOTE]\n" + // 12
 	"> A note points somewhere else.\n" +
@@ -1373,6 +1387,10 @@ func TestEachHouseStyleRuleNamesThePageLineAndRule(t *testing.T) {
 		{"One word per idea", "and an authenticator app", "and an app", 9},
 		{"One word per idea", "Signari signs people in.", "Signari signs people out at logout.", 5},
 		{"One word per idea", "Back-Channel Logout keeps", "back-channel logout keeps", 7},
+		// "the operator" is the Kubernetes operator only after the paragraph
+		// has named it, and "an operator" is a person even then.
+		{"One word per idea", "The Kubernetes operator deploys", "The chart deploys", 10},
+		{"One word per idea", "and the operator keeps", "and an operator keeps", 10},
 		{"Short sentences", "Signari signs people in.", "Signari signs people in to every application " +
 			"they use, at work and at home, with one account, one password and one second factor " +
 			"for all of them.", 5},

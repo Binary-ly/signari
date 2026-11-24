@@ -252,9 +252,11 @@ agent", "user code", "relying party ID", "Admin API", "admin token",
 "authenticator app", "wallet app", "Kerberos realm" and Next.js's "App Router". It
 allows the sign-out specifications by their titles, in their capitals:
 "Back-Channel Logout", "Front-Channel Logout", "RP-Initiated Logout" and "Single
-Logout". It allows the full name of each abbreviation in the glossary. It also
-allows a rejected word alone inside double quotes, when you explain it: a "relying
-party" is an application.
+Logout". It allows the "Kubernetes operator", a program, and "the operator" later in
+a paragraph that has named it. A person who runs Signari is still an administrator.
+It allows the full name of each abbreviation in the glossary. It also allows a rejected
+word alone inside double quotes, when you explain it: a "relying party" is an
+application.
 
 An abbreviation is spelled out when its full form sits next to it in brackets,
 before or after: OpenID Connect (OIDC), or OIDC (OpenID Connect). The test reads

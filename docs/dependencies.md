@@ -1,12 +1,20 @@
 # Third-party dependencies
 
+## Introduction
+
+This page lists every module the engine requires directly, at the version
+`engine/go.mod` pins, with what it does and why it is trusted. It also says how a
+module's origin is verified, how quickly a finding against one is fixed, and which
+components carry the most risk.
+
 OWASP ASVS 5.0.0 **V15.1.2** asks for "an inventory catalog, such as a software
 bill of materials (SBOM)... including verifying that components come from
 pre-defined, trusted, and continually maintained repositories", and **V15.1.1**
 for "risk based remediation time frames".
 
-`docs/security-scanning.md` covers the scanners. This covers what is being
-scanned, and why each thing is here at all.
+It is for an auditor who asks for that inventory, and for a contributor who is
+about to add a dependency. `docs/security-scanning.md` covers the scanners. This
+page covers what is being scanned, and why each thing is here at all.
 
 ## The number is the point
 
@@ -14,14 +22,14 @@ scanned, and why each thing is here at all.
 counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
-than luck: the QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec,
-the SD-JWT implementation, the RADIUS server, the flow language and the OTLP
-exporter are all written here rather than pulled in. Every dependency is a party
-that can change what this binary does.
+than luck. The QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec
+and the SD-JWT implementation are all written here, not pulled in. So are the
+RADIUS server, the flow language and the OTLP exporter. Every dependency is a party that can
+change what this binary does.
 
 The table below is every direct requirement in `engine/go.mod`, at the version
-pinned there. `TestEveryDirectDependencyIsListed` holds it to that, both ways,
-and holds the count above to the table. This page said thirteen while `go.mod`
+pinned there. `TestEveryDirectDependencyIsListed` holds it to that, both ways, and
+holds the count above to the table. This page once said thirteen, while `go.mod`
 named eighteen.
 
 ## Direct dependencies
@@ -55,20 +63,20 @@ named eighteen.
 
 ## How provenance is verified (V15.2.4, dependency confusion)
 
-Every module resolves through the public Go module proxy and is checked against
+Every module resolves through the public Go module proxy, and is checked against
 the public checksum database. `go.sum` pins a cryptographic hash for **every**
-module in the graph, direct and transitive, and a mismatch fails the build rather
-than warning.
+module in the graph, direct and transitive. A mismatch fails the build, instead of
+warning.
 
 There is **no `GOPRIVATE` and no `replace` directive**, so nothing resolves from
-a private or substitutable source — which is the condition a dependency-confusion
-attack needs. This is the rare requirement where Go's toolchain does the work and
+a private or substitutable source. That is the condition a dependency-confusion
+attack needs. This is the rare requirement where Go's toolchain does the work, and
 the correct action is to not undermine it.
 
 ## Remediation time frames (V15.1.1)
 
-Stated here because ASVS asks for them and because "we patch when we notice" is
-not a policy:
+They are stated here because ASVS asks for them, and because "we patch when we
+notice" is not a policy:
 
 | Severity of a finding against a dependency we use | Act within |
 |---|---|
@@ -78,17 +86,17 @@ not a policy:
 | Medium or low | next routine update |
 | No finding | review the graph quarterly regardless |
 
-**Reachability is the discriminator, and `govulncheck` supplies it** — it reports
+**Reachability is the discriminator, and `govulncheck` supplies it.** It reports
 whether a vulnerable *symbol* is actually called, not merely whether a vulnerable
-module is present. The distinction is what keeps the first row from becoming
-every row.
+module is present. The distinction is what keeps the first row from becoming every
+row.
 
 ## Risky components (V15.1.4) and dangerous functionality (V15.1.5)
 
-Named rather than left implicit. These are the places where a dependency failure
-or our own code has the widest blast radius:
+They are named here, not left implicit. These are the places where a dependency
+failure, or Signari's own code, has the widest blast radius:
 
-- **`go-jose`** — every token this server issues and verifies. A flaw here is a
+- **`go-jose`** — every token Signari issues and verifies. A flaw here is a
   full authentication bypass. It is also the dependency most likely to have one,
   because JOSE is the part of this stack with the worst historical record.
 - **`etree` + `goxmldsig`** — SAML. The attack classes (wrapping, XXE, key
@@ -102,13 +110,14 @@ or our own code has the widest blast radius:
 - **`internal/radius`** — parses UDP packets from the network, written here.
 - **`internal/ldapd`** — parses BER from the network, written here.
 
-The last two are ours, which is the point of listing them beside the others: the
-risk is the parsing of hostile input, not who wrote it.
+The last two are Signari's own, which is the point of listing them beside the
+others. The risk is the parsing of hostile input, not who wrote it.
 
 ## Regenerating an SBOM
 
 This document is the inventory. A machine-readable SBOM is generated rather than
-checked in, because one that is checked in is one that is stale:
+checked in, because one that is checked in is one that is stale. To generate one
+with CycloneDX:
 
 ```sh
 go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest

@@ -61,7 +61,7 @@ An application that wants a sign-out to end its own access revokes its refresh
 token, as RFC 7009 describes. Until October 2026 every grant ended with its
 session, so `offline_access` lasted only while the person stayed signed in.
 
-## Registering a client's sign-out
+## Registering an application's sign-out
 
 To register where the wiki's sign-out may send the browser, and the wiki's
 front-channel address, run:

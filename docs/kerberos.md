@@ -62,7 +62,7 @@ wrong with it
 A Kerberos realm named this way is the deployment's, and signs people in to its
 first organisation. That suits a deployment with one organisation.
 
-## A realm for each organisation
+## A Kerberos realm for each organisation
 
 Several organisations may each have a domain of their own. Each then registers its
 own Kerberos realm:

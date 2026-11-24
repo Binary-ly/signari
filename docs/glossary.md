@@ -178,7 +178,7 @@ phone. It lets them tell that the two requests are the same one. See
 
 **Signari term.** The first run of a new deployment, `signari bootstrap`. It makes
 the instance, the organisation, and a one-time link for the first person. See
-[every command](cli.md#instances-organisations-users).
+[every command](cli.md#instances-organisations-and-people).
 
 ### Brand
 

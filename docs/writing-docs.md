@@ -253,7 +253,8 @@ agent", "user code", "relying party ID", "Admin API", "admin token",
 allows the sign-out specifications by their titles, in their capitals:
 "Back-Channel Logout", "Front-Channel Logout", "RP-Initiated Logout" and "Single
 Logout". It allows the "Kubernetes operator", a program, and "the operator" later in
-a paragraph that has named it. A person who runs Signari is still an administrator.
+a paragraph that has named it. It allows OpenID Federation's "policy operator", a
+rule in a metadata policy. A person who runs Signari is still an administrator.
 It allows the full name of each abbreviation in the glossary. It also allows a rejected
 word alone inside double quotes, when you explain it: a "relying party" is an
 application.

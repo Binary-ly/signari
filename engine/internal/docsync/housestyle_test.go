@@ -637,6 +637,10 @@ var styleAllowed = []*regexp.Regexp{
 	// The name of Next.js's router, which a reader of that quickstart picks
 	// in Next.js's own setup.
 	regexp.MustCompile(`\bApp[ \t\n]+Router\b`),
+	// OpenID Federation calls each rule of a metadata policy a "policy
+	// operator" (§6.1.3), such as subset_of. It is the specification's word
+	// for a rule, not a person running Signari. Only the compound is allowed.
+	regexp.MustCompile(`(?i)\bpolicy[ \t\n]+operators?\b`),
 	// A Kubernetes operator is a kind of program, and Signari has one, the
 	// operator/ module. It is not a person running Signari. See also
 	// styleAllowedSpans, for "the operator" after it.
@@ -1328,7 +1332,7 @@ const styleCleanPage = "# A clean page\n" + // 1
 	"The protocols call an application a \"relying party\". A browser is a user agent. Back-Channel Logout keeps its name.\n" + // 7
 	"The Admin API takes an admin token. Run signari user create, then open /login\n" + // 8
 	"or read logout.md. A passkey has a relying party ID, and an authenticator app\n" + // 9
-	"shows a code. See [how Signari works](how-signari-works.md). The Kubernetes operator deploys Signari, and the operator keeps it running.\n" + // 10
+	"shows a code. See [how Signari works](how-signari-works.md). The Kubernetes operator deploys Signari, and the operator keeps it running. A policy operator trims a list.\n" + // 10
 	"\n" +
 	"> [!NOTE]\n" + // 12
 	"> A note points somewhere else.\n" +
@@ -1391,6 +1395,9 @@ func TestEachHouseStyleRuleNamesThePageLineAndRule(t *testing.T) {
 		// has named it, and "an operator" is a person even then.
 		{"One word per idea", "The Kubernetes operator deploys", "The chart deploys", 10},
 		{"One word per idea", "and the operator keeps", "and an operator keeps", 10},
+		// A "policy operator" is OpenID Federation's rule, and only the
+		// compound is: a bare "operator" is still the person.
+		{"One word per idea", "A policy operator trims", "An operator trims", 10},
 		{"Short sentences", "Signari signs people in.", "Signari signs people in to every application " +
 			"they use, at work and at home, with one account, one password and one second factor " +
 			"for all of them.", 5},

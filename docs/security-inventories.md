@@ -1,14 +1,22 @@
 # Security inventories
 
-OWASP ASVS 5.0 asks for several things to be written down in one place: which
-cryptography is in use, every way to authenticate, the session rules, what bounds a
-deployment's resources, and what data there is. Each of these was true before this
-page, in the code and scattered across reviews, and each was recorded as partial in
-[security-review-asvs.md](security-review-asvs.md) for that reason. Nothing here is a
-new rule. It is a list, with where each entry can be checked.
+## Introduction
 
-[logging-inventory.md](logging-inventory.md) and
-[egress-inventory.md](egress-inventory.md) are the two the standard asks for by name.
+The OWASP Application Security Verification Standard (ASVS) 5.0 asks for several
+things to be written down in one place. They are which cryptography is in use,
+every way to authenticate, the session rules, what bounds a deployment's
+resources, and what data there is. This page is that list, with where each entry
+can be checked.
+
+Each of these was true before this page, in the code and scattered across reviews.
+Each was recorded as partial in the [OWASP ASVS review](security-review-asvs.md)
+for that reason. Nothing here is a new rule.
+
+The page is for an auditor checking Signari against ASVS, and for an administrator
+who wants one page that says what Signari protects and how. Each section names the
+requirement it answers, such as V11.1. [What is logged](logging-inventory.md) and
+[every outbound connection](egress-inventory.md) are the two inventories the
+standard asks for by name.
 
 ## Cryptography (V11.1)
 
@@ -25,16 +33,17 @@ new rule. It is a list, with where each entry can be checked.
 | Webhook bodies | HMAC-SHA-256 | `engine/internal/hmacsig/` |
 | MD5 | Three sites, each required by a protocol it speaks to, and why each stays is in [security-review-asvs.md](security-review-asvs.md) | V11.4.1 there |
 
-Signing keys move from next to active to passive to retired on a schedule, and a
-passive key is retired once nothing can still be verifying against it. The root key is
-rotated with `signari keys rewrap-root`, which knows every sealed column by test
+Signing keys move from next to active to passive to retired on a schedule. A
+passive key is retired once nothing can still be verifying against it. The root key
+is rotated with `signari keys rewrap-root`, which knows every sealed column by test
 (`TestEveryEncryptedColumnIsClassified`), so that a rotation cannot orphan one.
-[fips.md](fips.md) says what changes under a validated module.
+[FIPS 140-3](fips.md) says what changes under a validated module.
 
 ## Ways to authenticate (V6.1, V6.3.4)
 
-Side by side, with what each is recorded as in a token's `amr`, which is what a policy
-can require or refuse: see [policy.md](policy.md).
+Here every way to authenticate is side by side, with what each is recorded as in a
+token's `amr` claim. That claim is what a policy can require or refuse: see
+[access policy](policy.md).
 
 | Pathway | Proves | `amr` |
 |---|---|---|
@@ -51,8 +60,8 @@ can require or refuse: see [policy.md](policy.md).
 | An external factor | What that service asserts | What it is registered with |
 
 No sign-in goes through the password form for `ldap`, `radius` or the `jwt-bearer`
-grant. Each has a page of its own: [ldap.md](ldap.md), [radius.md](radius.md) and
-[jwt-bearer.md](jwt-bearer.md).
+grant. Each has a page of its own: [LDAP](ldap.md), [RADIUS](radius.md) and [the
+jwt-bearer grant](jwt-bearer.md).
 
 ## Sessions (V7.1)
 
@@ -65,9 +74,10 @@ grant. Each has a page of its own: [ldap.md](ldap.md), [radius.md](radius.md) an
 
 Sessions are rows, read on every request and never cached, so ending one takes effect
 at once. A person signed in through a provider has a session here whose life is this
-table's and not the provider's, unless the provider says by back-channel logout that it
-has ended: see [social-login.md](social-login.md). Every session ends through one
-function, by test (`TestEverySessionEndsThroughTerminateSessions`).
+table's, not the provider's. The exception is when the provider says by back-channel
+logout that the session has ended: see [federated sign-in
+providers](social-login.md). Every session ends through one function, by test
+(`TestEverySessionEndsThroughTerminateSessions`).
 
 ## Who may do what (V8.1)
 
@@ -94,8 +104,9 @@ through the Admin API, as [the design](../README.md) sets out.
 | An organisation's tokens and sign-ins a minute | None until set | `signari instance org-budgets` |
 | Outbound request | 8,000 octets a URI or a header field, 5 seconds to connect and 10 to the first byte | Fixed |
 
-What the engine calls out to is in [egress-inventory.md](egress-inventory.md). What
-these numbers mean under load is in [performance.md](performance.md).
+What the engine calls out to is in [every outbound
+connection](egress-inventory.md). What these numbers mean under load is in
+[performance](performance.md).
 
 ## Data (V14.1)
 
@@ -107,10 +118,11 @@ these numbers mean under load is in [performance.md](performance.md).
 | Audit trail | Who did what, in classes `security`, `operational` and `profile` | Hash-chained and append-only | As kept: see [logging-inventory.md](logging-inventory.md) |
 | Configuration | Clients, policies, flows | In the clear, but for sealed secrets | Until removed |
 
-[configuration.md](configuration.md) lists every `SIGNARI_RETENTION_` setting. A person
-can export their own data at `/account/export` and delete their account at
-`/account/delete`. An operator has `GET /admin/subjects/{subjectID}/export` and
-`signari erase subject`: see [erasure.md](erasure.md).
+[Every environment variable](configuration.md) lists every `SIGNARI_RETENTION_`
+setting. A person can export their own data at `/account/export`, and delete their
+account at `/account/delete`. An administrator has
+`GET /admin/subjects/{subjectID}/export` and `signari erase subject`: see [erasing a
+subject](erasure.md).
 
 ## What a browser has to do (V3.1.1)
 

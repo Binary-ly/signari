@@ -241,6 +241,18 @@ This is every type the engine records, and so every type a subscription can name
 test in `internal/docsync` keeps three lists identical: this list, the one
 `events subscribe` checks against, and the types the code writes.
 
+The catalogue uses these abbreviations, each explained in the
+[glossary](glossary.md):
+
+- Proof Key for Code Exchange ([PKCE](glossary.md#pkce));
+- Security Assertion Markup Language ([SAML](glossary.md#saml));
+- System for Cross-domain Identity Management ([SCIM](glossary.md#scim));
+- Lightweight Directory Access Protocol ([LDAP](glossary.md#ldap));
+- JSON Web Token ([JWT](glossary.md#jwt));
+- OpenID for Verifiable Credential Issuance ([OID4VCI](glossary.md#oid4vci));
+- Remote Authentication Dial-In User Service ([RADIUS](glossary.md#radius));
+- User-Managed Access 2.0 ([UMA](glossary.md#uma)).
+
 | Area | Events |
 |---|---|
 | Sign-in | `login.succeeded`, `login.failed`, `provider.refused` (a [provider](extensibility.md#hooks-that-can-take-a-yes-back) took back a sign-in, an account, an application, a userinfo answer or an assertion, naming the hook and its reason), `desktop.login`, `session.logout`, `consent.withdrawn`, `prompt.answered`, `session.user_revoked`, `password.changed`, `password.breached`, `sms.refused` |

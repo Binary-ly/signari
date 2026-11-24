@@ -130,7 +130,8 @@ This recipe was verified end to end against nginx 1.31. An anonymous request was
 sent to sign in, and a signed-in request was served. A forged `X-Forwarded-User` was
 replaced with the real subject, and access was refused again after sign-out.
 
-Here is the server block for one protected application, n8n at `n8n.example.com`:
+Here is the nginx `server` block for one protected application, n8n at
+`n8n.example.com`:
 
 ```nginx
 server {

@@ -103,8 +103,8 @@ row breaks the chain at that row, like any other change.
 
 **Coverage.** 54 distinct event types, emitted from `internal/httpapi` (50 sites)
 and `internal/adminapi` (5). Authentication is covered in both directions:
-`login.succeeded` and `login.failed`, which is V16.3.1's actual requirement and
-the half most systems miss.
+`login.succeeded` and `login.failed`, which is V16.3.1's actual requirement. The
+failures are the half that is easy to leave out.
 
 Beyond authentication, the trail covers:
 

@@ -323,13 +323,13 @@ Verified live against the running engine:
 RSA-SHA1 is refused outright. Chosen-prefix collisions against SHA-1 are
 practical, and a warning nobody reads is not a control.
 
-## Logout propagation
+## Passing a sign-out on to SAML applications
 
 Signing out of Signari also signs the person out of the SAML applications.
 
-The SOAP binding is a "back channel", from server to server, and few providers
-offer it. So for most providers, propagation means walking the **browser** through
-each provider's sign-out endpoint in turn. Signari redirects to the first provider,
+The SOAP binding is a "back channel", from server to server, and a provider has to
+offer it. For a provider that does not, propagation means walking the **browser**
+through each provider's sign-out endpoint in turn. Signari redirects to the first provider,
 which ends its session and redirects back. Then Signari redirects to the second,
 and so on until the list is empty.
 
@@ -380,7 +380,7 @@ LogoutResponse coming back is not required to be. A response ends nothing,
 because the session is already gone. The worst a forged one achieves is moving
 Signari's bookkeeping past a provider it was about to notify. Even that costs a
 valid chain token, which the attacker does not have. Requiring a signature would
-instead strand the chain at every provider that answers unsigned, which most do.
+instead strand the chain at every provider that answers unsigned.
 
 ### With no browser
 

@@ -563,7 +563,7 @@ worth recording as carefully as a finding.
 | **V6.2.12** checked against breached passwords | met — `internal/passwords/breached.go` |
 | **V6.3.2** no default accounts | met — no migration seeds a user |
 | **V6.4.2** no password hints or secret questions | met — nothing of the kind exists |
-| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check TOTP implementations most often skip |
+| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check a TOTP code needs |
 | **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
 | **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
 | **V6.6.2** OOB codes bound to their request | met, November 2026 — the hash of the sign-in's attempt is kept beside each emailed or texted code (`store/codeattempt.go`); see below |

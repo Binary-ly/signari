@@ -34,9 +34,8 @@ Not available to you
 
 ## Access is decided live, not assigned
 
-Every other product in this field stores application access as an
-"assignment": a table saying Ada may use Payroll. Signari does not have that
-table, and the absence is deliberate.
+Signari does not store application access as an "assignment", a table saying Ada
+may use Payroll. It has no such table, and the absence is deliberate.
 
 The portal is rendered through the **access policy**, the same file that
 governs every other authorization decision. So a tile can depend on things an

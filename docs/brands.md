@@ -40,9 +40,8 @@ It takes effect on the next page render. No restart.
 
 ## Tokens, never CSS
 
-The obvious way to build this is a text box holding custom CSS, and that is what
-the other products offer. It is also stored cross-site scripting aimed at the
-worst page in the product.
+The obvious way to build this is a text box holding custom CSS. It is also stored
+cross-site scripting aimed at the worst page in the product.
 
 CSS can pull resources from anywhere. Attribute selectors with `url()`
 exfiltrate the page's own state a character at a time. And an administrator who

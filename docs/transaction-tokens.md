@@ -18,8 +18,6 @@ header.
 An application needs permission to exchange tokens, and the trust domain among its
 audiences, as [Configuration](#configuration) describes.
 
-## How "nobody else has this" was checked
-
 ## The problem
 
 An access token proves who asked **at the edge**. Six services deep, the seventh

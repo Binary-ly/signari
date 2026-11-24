@@ -75,8 +75,8 @@ as Signari does.
 The application can leave `client_id` out of the form, because the assertion's
 `sub` names the client. If it is sent, it has to be the same one.
 
-The audience check is the one most often skipped, because everything works
-without it right up until it matters. An application can legitimately talk to
+The audience check is the easiest to leave out, because everything works without
+it right up until it matters. An application can legitimately talk to
 several authorization servers. The audience check is the only thing stopping an
 assertion made for one being reused at another.
 

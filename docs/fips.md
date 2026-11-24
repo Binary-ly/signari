@@ -87,9 +87,8 @@ already contains.
 ## The two modes are not the same thing
 
 `GODEBUG=fips140=on` runs approved algorithms through the validated module, and
-**still allows** everything else. Almost anything passes. It is the mode most
-projects mean when they say they support FIPS, and as a claim it is close to
-meaningless.
+**still allows** everything else. Almost anything passes, so as a claim of FIPS
+support it is close to meaningless.
 
 `GODEBUG=fips140=only` makes algorithms that are not approved fail: with an
 error where the API allows one, and with a panic where it does not. That is the

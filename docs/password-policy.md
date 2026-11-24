@@ -114,9 +114,9 @@ which suffix matched.
 Signari also sends `Add-Padding: true`. Then anyone watching the connection
 cannot use the *response size* to narrow down which prefix was asked about.
 
-**An offline corpus is a first-class option.** Every comparable implementation
-requires an outbound call on the path of a password change. Plenty of
-deployments cannot make one, such as air-gapped networks and regulated
+**An offline corpus is a first-class option.** A check that needs an outbound
+call puts one on the path of every password change. Plenty of deployments cannot
+make one, such as air-gapped networks and regulated
 environments. Others treat any outbound call from the identity provider (IdP)
 as an item to review.
 
@@ -137,12 +137,12 @@ of `0`. Treating one as a match would refuse a password that is not in the
 corpus at all. The padding exists precisely so that responses are
 indistinguishable.
 
-## Re-checking, which nothing else does
+## Re-checking a password at sign-in
 
-Every comparable implementation checks a password once, at the moment it is
-chosen, and never again. Corpora only grow, so the control quietly expires the
-day after it ran. A password that was clean in January and turned up in a March
-leak is still treated as clean in December.
+A password checked only once, at the moment it is chosen, is never checked
+again. Corpora only grow, so that control quietly expires the day after it ran.
+A password that was clean in January and turned up in a March leak would still be
+treated as clean in December.
 
 Sign-in is the only moment the plaintext exists to check again.
 `SIGNARI_PASSWORD_BREACH_RECHECK_DAYS=30` re-consults the corpus at most once

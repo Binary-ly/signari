@@ -347,13 +347,13 @@ new `-method` keeps the key held.
 
 ## Apple, and the secret that expires
 
-Every other provider issues a client secret: a string you paste in and forget.
-Apple does not. Apple's client secret is a **JWT that you sign**, with an ECDSA
-(Elliptic Curve Digital Signature Algorithm) key downloaded once as a `.p8`
-file. It is valid for **at most six months**.
+A client secret is usually a string you paste in and forget. Apple's is not.
+Apple's client secret is a **JWT that you sign**, with an ECDSA (Elliptic Curve
+Digital Signature Algorithm) key downloaded once as a `.p8` file. It is valid for
+**at most six months**.
 
-So every Sign in with Apple integration in the world breaks twice a year. It
-fails as `invalid_client`, which reads as if the credentials are wrong rather
+So a Sign in with Apple integration breaks twice a year unless its secret is made
+again. It fails as `invalid_client`, which reads as if the credentials are wrong rather
 than expired, at a moment when nobody changed anything. The usual mitigation is
 a calendar reminder, and the usual outcome is that the reminder outlives
 whoever set it.

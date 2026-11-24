@@ -23,8 +23,8 @@ and so on), and what Signari does. Dated sections record later passes, and the
 defects they found.
 
 Revision checked: **4**, the current one. That matters more than usual here,
-because revision 4 changed the single number most implementations copied from
-revision 3.
+because revision 4 raised the minimum password length that revision 3 had set,
+and a number copied from revision 3 is now wrong.
 
 ## The defect: a floor from the previous revision
 
@@ -106,13 +106,13 @@ them. The test compared a string with itself and tripped its own guard.
 | NFC before hashing | SHOULD | **now yes**, in the Hasher |
 | Blocklist including breach corpora, dictionary words, and context-specific words such as the username | SHALL | yes — breach corpus, a common-word list, and a username/identity check |
 
-The compromise-detection row is worth dwelling on, because it is the one where the
-specification and the usual implementation diverge. §3.1.1.2 forbids periodic
-rotation *and* requires a forced change on evidence of compromise.
+The compromise-detection row is worth dwelling on, because it is the easiest to
+half-meet. §3.1.1.2 forbids periodic rotation *and* requires a forced change on
+evidence of compromise.
 
-Most implementations do the first and not the second. They rotate on a timer,
-which the standard prohibits. They never re-check a password that was clean when
-chosen, and appeared in a breach corpus a month later.
+Rotating on a timer breaks the first. Checking a password only when it is chosen
+misses the second: a password that was clean when chosen, and appeared in a breach
+corpus a month later, is never caught.
 
 `RecheckEvery` is the second. Sign-in is the only moment the plaintext exists to
 check again, and the corpus only grows.
@@ -121,8 +121,7 @@ check again, and the corpus only grows.
 
 One MUST-level defect from a stale revision, and one SHOULD implemented and then
 implemented properly. Eleven requirements were already right, including the two
-SHALL NOTs (composition rules, periodic rotation) that most password policies
-violate by default.
+SHALL NOTs, composition rules and periodic rotation.
 
 
 ---

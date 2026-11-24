@@ -64,9 +64,8 @@ certificate now needs one, or that flag.
 therefore a second implementation of that interface, one that speaks HTTP, rather
 than a second architecture.
 
-The comparable feature elsewhere in this field needs its own component, its own
-container image and its own lifecycle. That is because the core and the protocol
-servers are written in different languages. Ours is one binary, started with different flags.
+So an outpost needs no component, container image or lifecycle of its own. It is
+the same binary as the engine, started with different flags.
 
 ## What an outpost token is worth
 

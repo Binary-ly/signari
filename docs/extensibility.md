@@ -89,9 +89,7 @@ Three alternatives were considered and rejected:
   Go version and dependency graph. It cannot unload, and it shares an address
   space with the signing keys and password hashes.
 - **An embedded expression language** evaluated on the authentication path is
-  remote code execution with a configuration screen in front of it. The
-  highest-severity advisories in this field's recent history live in exactly that
-  surface.
+  remote code execution with a configuration screen in front of it.
 - **WebAssembly** is the strongest in-process option and the largest commitment.
   It needs a runtime dependency, plus a host-function application binary
   interface (ABI) that must be designed, versioned and supported forever. And the

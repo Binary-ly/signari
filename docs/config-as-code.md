@@ -394,9 +394,8 @@ plan refuses them.
 
 ## It plans before it applies
 
-The comparable feature elsewhere in this field applies YAML at startup. You
-learn what it did afterwards, by looking at what changed. Signari shows you the
-change first, as a plan like this one:
+A file applied at startup tells you what it did only afterwards, when you look at
+what changed. Signari shows you the change first, as a plan like this one:
 
 ```
 signari.yaml

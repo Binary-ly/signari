@@ -66,13 +66,17 @@ func escapeAngles(s string) string {
 // notes renders what each schema version did (6.22).
 func notes(all []Migration) []byte {
 	var b strings.Builder
+	// The link names the page by its title, as docs/writing-docs.md asks of
+	// every link. The house-style test skips this page because it is
+	// generated, so this is where its words are kept right.
 	b.WriteString("# Schema versions\n\n" +
+		"## Introduction\n\n" +
 		"Each release's binary expects one schema version and refuses to start against another, unless\n" +
 		"the migrations between them were each declared compatible with the release before. This page\n" +
 		"is what each version did, in its own words: the first paragraph of each migration's header.\n" +
 		"It is generated from the migrations the binary embeds, by `engine/internal/migrate`'s\n" +
 		"`TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what\n" +
-		"\"compatible\" lets you do during one, is in [upgrading.md](upgrading.md).\n\n")
+		"\"compatible\" lets you do during one, is in [Upgrading](upgrading.md).\n\n")
 	for i := len(all) - 1; i >= 0; i-- {
 		m := all[i]
 		fmt.Fprintf(&b, "## %04d %s\n\n", m.Version, m.Name)

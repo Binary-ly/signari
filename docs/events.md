@@ -1,6 +1,21 @@
 # Event subscriptions
 
-Telling other systems what happened here.
+## Introduction
+
+Other systems often need to know what happens in Signari, as it happens. A
+security monitoring system may want every failed sign-in, and a help desk may want
+to know when an administrator starts [support access](impersonation.md).
+
+An "event subscription" tells another system what happened here. Signari sends each
+event of the types you choose to a web address of yours, as a signed HTTP request
+called a "webhook". Every delivery goes through Signari's outbox, which tries again
+when a subscriber is down.
+
+You manage subscriptions with `signari events`, or through the Admin API.
+
+## Subscribe to events
+
+Subscribe a web address to the events you want with `signari events subscribe`:
 
 ```sh
 signari events subscribe -org <uuid> -name siem \
@@ -9,8 +24,11 @@ signari events subscribe -org <uuid> -name siem \
 ```
 
 The signing secret is printed **once**. It is stored sealed with the root key and
-never shown again, so a database copy is not a licence to forge events — an
-operator who loses it rotates rather than reads.
+never shown again, so a database copy is not a licence to forge events. An
+administrator who loses it rotates it, rather than reading it back.
+
+The other `signari events` commands list, test, rotate, enable and remove a
+subscription:
 
 ```sh
 signari events list   -org <uuid>
@@ -20,37 +38,44 @@ signari events enable -org <uuid> -name siem   # back on after ten failures swit
 signari events remove -org <uuid> -name siem
 ```
 
-The Admin API does the same under `/admin/organizations/{orgID}/event-subscriptions`
-(see [admin-api.md](admin-api.md)), and answers a new or rotated secret once in
+The Admin API does the same under
+`/admin/organizations/{orgID}/event-subscriptions`, as the [Admin API
+reference](admin-api.md) describes. It also returns a new or rotated secret once, in
 the same way.
 
-`-events` names types from the [catalogue](#event-catalogue). A name nothing
-records is refused, with the nearest one suggested: `login.failure` is answered
-with `login.failed`. Until October 2026 it was stored, and the subscription
-received nothing and looked configured. The test delivery's type, `signari.test`,
-is not recorded and is in no catalogue: it goes to the subscription named,
-whatever its filter.
+`-events` names types from the [catalogue](#event-catalogue). A name nothing records
+is refused, with the nearest one suggested: `login.failure` is answered with
+`login.failed`. Until October 2026 such a name was stored, and the subscription
+received nothing and looked configured.
+
+The test delivery's type, `signari.test`, is not recorded and is in no catalogue.
+It goes to the subscription named, whatever its filter.
 
 ## Deliveries go through the outbox
 
-Posting from the request path makes every sign-in as slow and as reliable as the
-slowest subscriber, and an event whose subscriber was down is simply lost. That
-is the failure mode of every "notification webhook" that is really a goroutine
+Signari could post each event from the request path, while it answers the request
+that caused the event. That would make every sign-in as slow, and as reliable, as
+the slowest subscriber. An event whose subscriber was down would be lost. That is
+the failure mode of every "notification webhook" that is really a background task
 and a hope.
 
-The outbox already had attempts, capped backoff and parking, because
-back-channel logout needed them. Events use the same machinery:
+Signari's "outbox" is a queue of deliveries, kept in the database. It already had
+attempts, a capped backoff between them, and "parking", which sets aside a delivery
+that keeps failing. Back-channel logout needed them. Events use the same machinery:
 
 - The event and the intent to deliver it **commit in the same transaction**. There
   is no window where the log says something happened and nothing was ever sent.
-- One outbox row **per (event, subscriber)**. A slow subscriber cannot hold up a
-  fast one, and a permanently failing one can be parked alone.
-- After 10 consecutive failures — roughly a day under capped backoff — the
-  subscription is **disabled with the reason recorded**, visible in
+- There is one outbox row **per (event, subscriber)**. A slow subscriber cannot
+  hold up a fast one, and a permanently failing one can be parked alone.
+- After 10 consecutive failures, roughly a day under capped backoff, the
+  subscription is **disabled with the reason recorded**. The reason is visible in
   `signari events list`. A subscription that stopped working is a fact, not a
   silence.
 
 ## Every delivery is signed
+
+Each delivery carries three headers, which say when it was signed, which event it
+is, and the event's type:
 
 ```
 Signari-Signature: t=1786972759,v1=<hex hmac-sha256>
@@ -58,23 +83,27 @@ Signari-Event-Id: ev_9f2a…
 Signari-Event-Type: login.failed
 ```
 
-`v1` is HMAC-SHA256 over **`<t>.<raw body>`** — the timestamp and the body joined
-by a full stop, with that subscription's secret.
+`v1` is HMAC-SHA256 over **`<t>.<raw body>`**: the timestamp and the body, joined
+by a full stop, with that subscription's secret. An HMAC is a hash-based message
+authentication code (MAC), which only a holder of the secret can make.
 
 **The timestamp is inside the MAC.** Signing only the body means a captured
-delivery can be replayed forever and a subscriber cannot tell a live event from
-last month's. With `t` covered, changing it invalidates the signature, so a
-subscriber can refuse anything older than a few minutes and mean it.
+delivery can be replayed forever. A subscriber then cannot tell a live event from
+last month's. With `t` covered, changing it invalidates the signature. So a
+subscriber can refuse anything older than a few minutes, and mean it.
 
 **The separator matters.** Without it, `(t=1, body="23")` and `(t=12, body="3")`
-produce the same MAC — a signature ambiguous about what it signed is not a
+produce the same MAC. A signature that is ambiguous about what it signed is not a
 signature.
 
 The scheme is deliberately the one Stripe uses. A subscriber's engineers have
-almost certainly implemented it before, and a verification routine somebody
-already got right is worth more than an original one.
+almost certainly implemented it before. A verification routine somebody already got
+right is worth more than an original one.
 
 ### Verifying a delivery
+
+A subscriber checks the timestamp, recomputes the MAC, and compares it with the
+signature in constant time. In Go, that looks like this:
 
 ```go
 func verify(secret, header string, body []byte, tolerance time.Duration) error {
@@ -119,79 +148,98 @@ func verify(secret, header string, body []byte, tolerance time.Duration) error {
 }
 ```
 
-Three things this depends on that are easy to get wrong:
+This depends on three things that are often got wrong:
 
-- **The RAW body.** Verify the bytes as received, before any JSON decode. Decode
-  and re-encode and the key order, spacing and number formatting are your
-  library's rather than ours, and a correct delivery fails to verify.
-- **Reject before parsing.** An unverified body is attacker-supplied input; a
+- **The RAW body.** Verify the bytes as received, before any JSON decode. If you
+  decode and re-encode, the key order, spacing and number formatting are your
+  library's, not Signari's, and a correct delivery fails to verify.
+- **Reject before parsing.** An unverified body is attacker-supplied input. A
   handler that decodes first has already acted on it.
-- **A tolerance you actually enforce.** A few minutes. Without one the timestamp
-  is decoration and a captured delivery replays forever.
+- **A tolerance you actually enforce.** A few minutes. Without one, the timestamp
+  is decoration, and a captured delivery replays forever.
 
-Signari's own implementation of this MAC is `Sign` in `internal/outbox`, exported
-so a test can call the same function the sender uses. Two implementations of one
-MAC is one implementation and one bug.
+Signari's own implementation of this MAC is `Sign` in `internal/outbox`. It is
+exported so that a test can call the same function the sender uses. Two
+implementations of one MAC is one implementation and one bug.
 
 ## The URL is treated as hostile
 
-A webhook URL is a place the identity provider will make a request, to an address
-somebody else chose. That is a proxy inside the trust boundary, and the classic
-use of one is to reach what the attacker cannot: `169.254.169.254` for cloud
-instance credentials, `127.0.0.1` for the admin API, `10.0.0.0/8` for the rest of
-the VPC.
+A webhook URL is a place where Signari will make a request, to an address somebody
+else chose. That makes it a proxy inside the trust boundary. The classic use of one
+is to reach what the attacker cannot: `169.254.169.254` for cloud instance
+credentials, `127.0.0.1` for the Admin API, or `10.0.0.0/8` for the rest of the
+virtual private cloud (VPC).
 
 So the check is **at dial time, not at save time**. Validating the hostname when
-the subscription is saved checks a *name*; the request is made to an *address*,
-and the two are joined by DNS, which the name's owner controls. A host that
-resolves publicly when checked and to `169.254.169.254` when dialled defeats any
-amount of URL parsing — that is DNS rebinding, and it is not exotic.
+the subscription is saved checks a *name*. The request is made to an *address*, and
+the two are joined by the Domain Name System (DNS), which the name's owner controls.
 
-Refused: loopback, RFC 1918, link-local, multicast, unspecified, unique-local
-IPv6, and the same addresses wearing an IPv4-mapped IPv6 shape (`::ffff:127.0.0.1`).
-Every redirect hop is dialled through the same check, and a redirect from https
-to http is refused outright.
+A host can resolve publicly when it is checked, and to `169.254.169.254` when it is
+dialled. That defeats any amount of URL parsing. It is called "DNS rebinding", and
+it is not exotic.
 
-`https` only, enforced by a CHECK constraint as well as at save time.
+These addresses are refused:
+
+- loopback;
+- RFC 1918 private addresses;
+- link-local;
+- multicast;
+- unspecified;
+- unique-local IPv6;
+- the same addresses wearing an IPv4-mapped IPv6 shape (`::ffff:127.0.0.1`).
+
+Every redirect hop is dialled through the same check, and a redirect from https to
+http is refused outright.
+
+The address must be `https` only, enforced by a CHECK constraint as well as at save
+time.
 
 ## The response is not an instruction
 
-Any 2xx is success; everything else is a failure, **including 410 Gone**. A
-subscriber that means "stop sending" says so by having its subscription removed
-(`signari events remove`).
-Treating a status code as an unsubscribe instruction lets anyone who can answer
-that URL turn the events off.
+Any 2xx answer is success, and everything else is a failure, **including 410
+Gone**. A subscriber that means "stop sending" says so by having its subscription
+removed (`signari events remove`). Treating a status code as an instruction to
+unsubscribe would let anyone who can answer that URL turn the events off.
 
 The body is drained and discarded. A webhook response is not an instruction, and
-reading one is how a subscriber starts driving the identity provider.
+reading one is how a subscriber starts driving Signari.
 
 ## At-least-once
 
-A network that eats the response after we sent it is indistinguishable from one
-that ate the request, and retrying is the only safe reading. `Signari-Event-Id`
-is stable across retries, so a subscriber can be idempotent without parsing the
-body.
+Signari delivers each event "at least once", so a subscriber can receive the same
+event more than once. A network that loses the response after Signari sent the
+request looks exactly like one that lost the request. Retrying is the only safe
+reading.
+
+`Signari-Event-Id` is stable across retries. A subscriber can use it to be
+"idempotent", ignoring a delivery it has already handled, without parsing the body.
 
 ## Which events
 
-Every audited event is publishable — the fan-out lives inside `audit.Write`, so
-no code path can record an event without it being deliverable. Dozens of places
-record events; a fan-out written at each is one missing from some of them, found
-by an operator whose alerting never fired for the one type that mattered.
+Every audited event can be published. The "fan-out", which queues an event for each
+subscription that wants it, lives inside `audit.Write`. So no code path can record
+an event without it being deliverable.
 
-Filtering is per subscription. `-events` empty means every event in the
-organisation, which is a choice an operator makes rather than a default they
-inherit. Matching is exact: subscribing to `login` does not quietly subscribe you
-to `login.failed`. To take a whole family, say so: `-events 'admin.*,login.failed'`
+Dozens of places record events. A fan-out written at each one would be missing from
+some of them. An administrator would find that out when their alerting never fired
+for the one type that mattered.
+
+Filtering is per subscription. An empty `-events` means every event in the
+organisation. That is a choice an administrator makes, not a default they inherit.
+
+Matching is exact: subscribing to `login` does not quietly subscribe you to
+`login.failed`. To take a whole family, say so. `-events 'admin.*,login.failed'`
 receives every event under `admin.` as well, including ones added in a later
-release. A family no event belongs to is refused, as a misspelt name is, because a
-subscription that can never fire looks exactly like a quiet one.
+release.
+
+A family no event belongs to is refused, as a misspelt name is. A subscription that
+can never fire looks exactly like a quiet one.
 
 ## Event catalogue
 
-Every type the engine records, and so every type a subscription can name. A
-test in `internal/docsync` keeps this list, the one `events subscribe` checks
-against, and the types the code writes identical.
+This is every type the engine records, and so every type a subscription can name. A
+test in `internal/docsync` keeps three lists identical: this list, the one
+`events subscribe` checks against, and the types the code writes.
 
 | Area | Events |
 |---|---|
@@ -210,14 +258,19 @@ against, and the types the code writes identical.
 | Authorization | `authz.decision`: one evaluation and its answer, for the share `SIGNARI_AUTHZ_DECISION_LOG` sets; none by default |
 | The instance | `keys.rotated` (each step of a rotation: a key published, a key promoted with the one it demoted and whether the wait was forced, or a key retired, with `via` saying whether `signari keys` or the Admin API took it, or `automatic` when the unattended rotator did, and `purpose` of `encryption` on a credential encryption key): in the audit trail, and delivered to no subscription, since it belongs to no organisation; subscribing to it is refused. `admin.signing_keys_rotated`, `admin.signing_keys_retired` and `admin.credential_encryption_key_rotated` record who asked the Admin API for a rotation or retirement |
 
-Not recorded, on purpose: each code issued or redeemed, each refresh, each
-client-credentials token. Every audit entry takes the chain's lock, and an entry
-per token would queue the issuance of every token behind it. A token's record is
-its decisions: the sign-in, the consent, a reused code or refresh token, a
-revocation.
+Some things are not recorded, on purpose: each code issued or redeemed, each
+refresh, and each client-credentials token. Every audit entry takes the chain's
+lock, so an entry per token would queue the issuance of every token behind it. A
+token's record is its decisions: the sign-in, the consent, a reused code or refresh
+token, and a revocation.
 
 
 ## Re-review against the Shared Signals Framework, August 2026
+
+Signari's [Shared Signals receiver](shared-signals-receiver.md) accepts Security
+Event Tokens (SETs) from another service. A SET is a signed [JSON Web Token
+(JWT)](glossary.md#jwt) that describes one security event. This section is the
+record of a review of that receiver, kept as it was written.
 
 Version checked first: **Shared Signals Framework Specification 1.0, published 29
 August 2025**. Current, and the version implemented against.
@@ -235,28 +288,28 @@ know about.
 > [RFC8417].
 
 RFC 8417 §2.2 on its own only makes `exp` NOT RECOMMENDED, and our code cited
-exactly that — then honoured the claim when present, refusing a SET whose expiry
-had passed. That was a deliberate earlier fix, and the comment recorded why: a
+exactly that. It then honoured the claim when present, refusing a SET whose expiry
+had passed. That was a deliberate earlier fix, and the comment recorded why. A
 transmitter that deliberately time-boxed an event had found us acting on it
 afterwards.
 
 Reasonable, and aimed at the wrong thing. **`exp` is not there to time-box an
 event. It is forbidden so that a SET cannot be shaped like an ID token.** Once
-that is the reason, honouring the claim is not enough — a SET with a comfortable
+that is the reason, honouring the claim is not enough. A SET with a comfortable
 future expiry is exactly as confusable as an expired one, and ours accepted it.
 
 **§4.1.2 — a top-level `sub` is forbidden, and we never checked.**
 
 > The JWT "sub" claim MUST NOT be present in any SET containing an SSF event.
 
-It sits under §4.1.3, *"Distinguishing SETs from other Kinds of JWTs — Of
-particular concern is the possibility that SETs are confused for other kinds of
-JWTs."* An SSF event names its subject in `sub_id`; a top-level `sub` is the
-shape of an ID token.
+It sits under §4.1.3, *"Distinguishing SETs from other Kinds of JWTs"*. That
+section opens: *"Of particular concern is the possibility that SETs are confused
+for other kinds of JWTs."* An SSF event names its subject in `sub_id`. A top-level `sub` is the shape
+of an ID token.
 
-We check `typ: secevent+jwt`, which is the primary confusion defence and which
+We check `typ: secevent+jwt`, which is the primary confusion defence, and which
 would already refuse an actual ID token. The profile adds these two because typ
-checking is not universal — defence in depth is its stated purpose, and we had
+checking is not universal. Defence in depth is its stated purpose, and we had
 implemented one layer of it and not the other two.
 
 Both are now refused outright. `Subject` is parsed as a `*string` so that
@@ -274,7 +327,7 @@ The previous review of this code checked it against RFC 8417 and RFC 8935 and
 found five defects. It did not check it against the **profile** that governs it,
 and the profile is where both of these live.
 
-An implementation of a profiled specification has two documents to satisfy, and
-the profile is the one that adds restrictions the base RFC calls optional. Citing
-the base RFC in a comment — as ours did, accurately — is what made the gap look
-like diligence.
+An implementation of a profiled specification has two documents to satisfy. The
+profile is the one that adds restrictions the base RFC calls optional. Citing the
+base RFC in a comment, as ours did, accurately, is what made the gap look like
+diligence.

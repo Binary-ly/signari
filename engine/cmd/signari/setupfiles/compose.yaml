@@ -1,0 +1,67 @@
+# Written by signari setup -compose. A later run of it leaves this file as it
+# is; the values it reads are in .env beside it, which setup fills only where
+# one is missing, so its passwords stay the ones the database was made with.
+#
+#   docker compose up -d --wait          start it, and wait until it is healthy
+#   docker compose logs setup            the first administrator's one-time link
+#   signari setup -check -compose .      what is set up, and what is missing
+#   signari uninstall -compose .         stop it and remove what setup made
+#
+# PostgreSQL's superuser is used by the one-shot setup service alone, which is
+# signari setup itself, run on every start and skipping what is done. The
+# engine serves as signari_engine, the role row-level security is written for,
+# with a password of its own, and reads the root key from a file mounted
+# read-only. Nothing is published but the engine's port, on PUBLISH, which is
+# loopback unless setup was told otherwise.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run signari setup -compose first}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  setup:
+    image: ${ENGINE_IMAGE:?run signari setup -compose first}
+    user: ${RUN_AS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${PROJECT_DIR}:${PROJECT_DIR}
+    command: ["setup", "-yes", "-superuser-dsn", "postgres://postgres@postgres:5432/postgres?sslmode=disable",
+      "-env-file", "${PROJECT_DIR}/signari.env", "-log-file", "${PROJECT_DIR}/setup.log", "-email", "${FIRST_EMAIL}"]
+    restart: "no"
+
+  engine:
+    image: ${ENGINE_IMAGE}
+    user: ${RUN_AS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    env_file: [signari.env]
+    command: ["serve"]
+    volumes:
+      - ${PROJECT_DIR}:${PROJECT_DIR}:ro
+    ports:
+      - ${PUBLISH}:8080
+    healthcheck:
+      test: ["CMD", "/signari", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

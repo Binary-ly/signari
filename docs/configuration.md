@@ -25,9 +25,9 @@ way it already had.
 
 | | |
 |---|---|
-| `SIGNARI_DSN` | PostgreSQL connection string. With no `sslmode` in it the driver's default is `prefer`, so a server that offers TLS gets it, on loopback too. To a database across a network, say `sslmode=verify-full`. To one on the same host, TLS protects nothing a local attacker could not already reach, and it cost a tenth of the throughput on the token and federated paths ([performance.md](performance.md#the-database-connection-november-2026)). Sign in as `signari_engine`, which the forced row-level security binds: a superuser or a `BYPASSRLS` role is bound by none of it, so `serve` refuses to start on one and `signari doctor` reports one as critical. `signari setup` writes this as `signari_engine`; [upgrading.md](upgrading.md#serving-as-signari_engine) says how to move a deployment that serves as a superuser |
+| `SIGNARI_DSN` | PostgreSQL connection string. With no `sslmode` in it the driver's default is `prefer`, so a server that offers TLS gets it, on loopback too. To a database across a network, say `sslmode=verify-full`. To one on the same host, TLS protects nothing a local attacker could not already reach, and it cost a tenth of the throughput on the token and federated paths ([measured in November 2026](performance.md#the-database-connection-november-2026)). Sign in as `signari_engine`, which the forced row-level security binds: a superuser or a `BYPASSRLS` role is bound by none of it, so `serve` refuses to start on one and `signari doctor` reports one as critical. `signari setup` writes this as `signari_engine`; [Serving as signari_engine](upgrading.md#serving-as-signari_engine) says how to move a deployment that serves as a superuser |
 | `SIGNARI_ALLOW_RLS_BYPASS` | `1` lets `serve` start when `SIGNARI_DSN` signs in as, or acts as, a superuser or a `BYPASSRLS` role, as `-allow-rls-bypass` does, with a warning at startup. Without it such a role is refused rather than warned about, since nothing in the database would then keep one organisation's rows from a query meant for another |
-| `SIGNARI_READ_DSN` | A replica for the Admin API's `GET /admin/audit-events`, and for nothing else. Absent, the primary answers, and it answers anyway if the replica does not. [high-availability.md](high-availability.md) says why it is only that |
+| `SIGNARI_READ_DSN` | A replica for the Admin API's `GET /admin/audit-events`, and for nothing else. Absent, the primary answers, and it answers anyway if the replica does not. [Running more than one instance](high-availability.md) says why it is only that |
 | `SIGNARI_ROOT_KEY` | 32 random bytes, base64. Seals every stored secret. Lose it and sealed data — RADIUS secrets, bind passwords, SCIM tokens, signing keys — cannot be read, and the engine refuses to start rather than run with keys it cannot unwrap |
 | `SIGNARI_ROOT_KEY_FILE` | A file holding the root key, instead of `SIGNARI_ROOT_KEY`: a mounted secret, so the key is not in the environment every child process inherits and a container runtime shows. Refused when its group or anybody else may read it, and when `SIGNARI_ROOT_KEY` is set as well. A Kubernetes secret volume is mode 0644 unless told otherwise, so mount it with `defaultMode: 0400` |
 | `SIGNARI_ISSUER` | The issuer URL. Must match an instance in the database |
@@ -131,7 +131,7 @@ rotated only when somebody remembered to run the command.
 
 Only in the `pkcs11` image, or a binary built with `CGO_ENABLED=1 -tags pkcs11`;
 any other build refuses `SIGNARI_PKCS11_MODULE` rather than ignoring it. See
-[signing-keys-in-a-module.md](signing-keys-in-a-module.md).
+[Signing keys in a hardware module or a key service](signing-keys-in-a-module.md).
 
 | | |
 |---|---|
@@ -154,7 +154,7 @@ process refuses to start: new keys are made in one place.
 
 | | |
 |---|---|
-| `SIGNARI_SCHEMA_FINGERPRINT` | The schema digest a release binary is pinned to, supplied as a **docker build argument** — never as an environment variable at run time. Setting it in the environment of a running engine does nothing. Unpinned, the engine compares the schema's shape only with the ledger in the same database, so a hand-patched database whose ledger row was rewritten along with it is accepted. `scripts/build-release.sh` passes it, and `signari version` prints what a binary is pinned to. See [schema-pinning.md](schema-pinning.md) |
+| `SIGNARI_SCHEMA_FINGERPRINT` | The schema digest a release binary is pinned to, supplied as a **docker build argument** — never as an environment variable at run time. Setting it in the environment of a running engine does nothing. Unpinned, the engine compares the schema's shape only with the ledger in the same database, so a hand-patched database whose ledger row was rewritten along with it is accepted. `scripts/build-release.sh` passes it, and `signari version` prints what a binary is pinned to. See [Pinning a build to its schema](schema-pinning.md) |
 
 Listed here because a control nobody knows exists is a control nobody uses, which
 is the same reason every runtime setting below is listed. It is separated because
@@ -173,12 +173,12 @@ effect at all.
 | `SIGNARI_ADMIN_ADDR` | Listen address for the admin API. Absent, it does not start |
 | `SIGNARI_ADMIN_RATE`, `SIGNARI_ADMIN_TOKEN_RATE` | The admin API's request rates, a second: everything arriving at the listener (default 100), and one token's share (default 50), each allowed a burst of twice. 1 to 100000, and one token cannot be allowed more than the listener; anything else stops the engine from starting rather than falling back to a default. A provisioning run larger than the defaults needed this; `GET /admin/system` reports what is in force |
 | `SIGNARI_METRICS_ADDR` | Listen address for `GET /metrics` in the Prometheus text format. Absent, nothing is collected and nothing is served. **Its own listener, like the admin API**: serving metrics from the public listener would publish request rates, error rates and sign-in failure counts to anyone who can reach the sign-in page, which for an identity provider is the internet. No label ever carries an identifier — see below |
-| `SIGNARI_OTLP_TRACES_ENDPOINT` | A collector's OTLP/HTTP traces URL, such as `http://localhost:4318/v1/traces`. Set, every request, the queries it runs and the calls it makes are sent there as spans; absent, nothing is recorded and nothing is installed. No span carries an identifier. See [tracing](tracing.md) |
+| `SIGNARI_OTLP_TRACES_ENDPOINT` | A collector's OTLP/HTTP traces URL, such as `http://localhost:4318/v1/traces`. Set, every request, the queries it runs and the calls it makes are sent there as spans; absent, nothing is recorded and nothing is installed. No span carries an identifier. See [Tracing](tracing.md) |
 | `SIGNARI_OTLP_HEADERS` | Headers sent with every export, as `name=value` pairs separated by commas: a collector's API key, usually. Refused with a plain `http://` collector anywhere but loopback, as the key would cross the network in clear |
 | `SIGNARI_TRACES_SAMPLE_RATIO` | The share of requests traced, from `0` to `1`, default `1`. A query or call is traced when its request is. Either of these two without an endpoint stops the engine from starting, as does a value it cannot read |
 | `SIGNARI_SHUTDOWN_DRAIN` | How long to keep serving after SIGTERM before the listener closes, default `5s`. `/readyz` answers 503 for this whole window, so whatever routes traffic here has time to take the node out of rotation before the socket goes. Set it above your readiness probe's interval; `0` disables it, which is right locally and wrong behind a load balancer |
 | `SIGNARI_SHUTDOWN_TIMEOUT` | How long in-flight requests may take to finish, default `20s`. Keep it **under** the orchestrator's grace period before SIGKILL — a timeout longer than the one that kills you never runs. Also caps the drain |
-| `SIGNARI_OUTPOST_LDAP_INSECURE` | `1` permits an LDAP outpost (`signari outpost run -kind-outpost ldap`) to listen without TLS, as `-ldap-insecure` does. Without it, an LDAP outpost given no `-tls-cert` refuses to start, because every simple bind carries a password. See [outposts](outposts.md#ldaps) |
+| `SIGNARI_OUTPOST_LDAP_INSECURE` | `1` permits an LDAP outpost (`signari outpost run -kind-outpost ldap`) to listen without TLS, as `-ldap-insecure` does. Without it, an LDAP outpost given no `-tls-cert` refuses to start, because every simple bind carries a password. See [LDAPS on an outpost](outposts.md#ldaps) |
 | `SIGNARI_ADMIN_CLIENT_CA` | A PEM file of the authorities whose client certificates the admin API admits. Set, nobody reaches it without one, whatever token they hold, so a token lifted from a console's environment opens nothing from elsewhere. Needs the listener on TLS, and the engine refuses to start without that rather than ask for nothing. Unset, a token alone admits |
 | `SIGNARI_ADMIN_CLIENT_CERT`, `SIGNARI_ADMIN_CLIENT_KEY` | The certificate and key a caller presents to such a listener: `signari api` and the commands with `-admin-url`, the console and the Terraform provider all read these two |
 | `SIGNARI_ADMIN_INSECURE` | `1` permits the admin API to serve plaintext HTTP. Without it, an admin listener configured with no `SIGNARI_TLS_CERT` refuses to start rather than putting a bearer token that can erase a subject on the wire in clear. Only reasonable bound to loopback behind a terminator you control |
@@ -257,7 +257,7 @@ short code, whether the call names it or not. The access log line does. Most
 handlers still log without the context, and their lines carry the id only where
 the call names it. A line names a person by the subject id when it must, never
 by username, email address or a certificate's subject, and a test holds every
-log call in the engine to that. See [logging-inventory.md](logging-inventory.md).
+log call in the engine to that. See [Logging inventory](logging-inventory.md).
 
 ## Database connections
 
@@ -267,7 +267,7 @@ log call in the engine to that. See [logging-inventory.md](logging-inventory.md)
 | `SIGNARI_DB_MIN_CONNS` | Connections the pool keeps open while idle. Default 0. Must not exceed the maximum |
 | `SIGNARI_DB_MAX_CONN_LIFETIME` | How long a connection lives before it is replaced, as a Go duration (`30m`). Default `1h` |
 | `SIGNARI_DB_MAX_CONN_IDLE` | How long an idle connection is kept, as a Go duration (`5m`). Default `30m` |
-| `SIGNARI_DB_WORKER_MAX_CONNS` | The most connections the background workers' own pool holds: the outbox, the janitor, the audit-sink pump and the key refresher. Default 3. It keeps none idle and takes its connection ages from the two settings above. A node opens up to this plus `SIGNARI_DB_MAX_CONNS`. See [connection-pooling.md](connection-pooling.md) |
+| `SIGNARI_DB_WORKER_MAX_CONNS` | The most connections the background workers' own pool holds: the outbox, the janitor, the audit-sink pump and the key refresher. Default 3. It keeps none idle and takes its connection ages from the two settings above. A node opens up to this plus `SIGNARI_DB_MAX_CONNS`. See [Connection pooling](connection-pooling.md) |
 
 The DSN's own `pool_max_conns`, `pool_min_conns`, `pool_max_conn_lifetime` and
 `pool_max_conn_idle_time` work too, and a variable here wins over them. A value
@@ -425,11 +425,11 @@ See [SMS](sms.md), including why it is the weakest factor offered here.
 
 | | |
 |---|---|
-| `SIGNARI_SMS_GATEWAY` | `twilio`, `webhook`, or `verify-webhook` for a service that makes, sends and checks codes itself ([sms](sms.md)). A misspelling is **fatal at startup**, not a silent fallback |
+| `SIGNARI_SMS_GATEWAY` | `twilio`, `webhook`, or `verify-webhook` for a service that makes, sends and checks codes itself ([SMS codes](sms.md)). A misspelling is **fatal at startup**, not a silent fallback |
 | `SIGNARI_SMS_FROM` | Sending number, or a Twilio messaging service SID |
 | `SIGNARI_SMS_TWILIO_SID`, `SIGNARI_SMS_TWILIO_TOKEN` | Twilio credentials |
 | `SIGNARI_SMS_WEBHOOK_URL`, `SIGNARI_SMS_WEBHOOK_AUTH` | For any other provider. Must be https: the body carries a live code |
-| `SIGNARI_SMS_VERIFY_URL`, `SIGNARI_SMS_VERIFY_AUTH` | For `verify-webhook`: the service's URL and the `Authorization` header sent to it. Must be https: a check carries a live code. The contract is in [sms](sms.md). Account notices then go by email only |
+| `SIGNARI_SMS_VERIFY_URL`, `SIGNARI_SMS_VERIFY_AUTH` | For `verify-webhook`: the service's URL and the `Authorization` header sent to it. Must be https: a check carries a live code. The contract is in [SMS codes](sms.md). Account notices then go by email only |
 | `SIGNARI_SMS_ALLOWED_PREFIXES` | Comma-separated E.164 prefixes of the countries you serve, such as `+1,+44`. A number outside the list cannot be enrolled and is sent nothing. Unset allows every country; `signari doctor` and the startup log both say so |
 | `SIGNARI_SMS_NUMBER_DAILY_LIMIT` | Messages one number may be sent per 24 hours, default `10`. Codes and account notices each get this many |
 | `SIGNARI_SMS_ORG_DAILY_LIMIT` | Messages one organisation may send per 24 hours, default `1000`. Codes and account notices each get this many. Raise it for a large organisation that uses SMS sign-in daily |
@@ -499,7 +499,7 @@ the interval. Until October 2026 there were no heads.
 ## Audit streaming
 
 Forwarding the audit trail to a logically separate system (ASVS V16.4.3). Off
-unless a destination is set; see [audit-streaming.md](audit-streaming.md).
+unless a destination is set; see [Audit streaming](audit-streaming.md).
 
 | Variable | Meaning |
 |---|---|
@@ -508,7 +508,7 @@ unless a destination is set; see [audit-streaming.md](audit-streaming.md).
 | `SIGNARI_AUDIT_SYSLOG_ADDR` | `host:port` of a syslog collector (TCP). Ignored if a webhook URL is also set |
 | `SIGNARI_AUDIT_SYSLOG_TLS` | `1` to wrap the syslog connection in TLS |
 | `SIGNARI_AUDIT_SYSLOG_HOSTNAME` | Hostname stamped into each RFC 5424 line (default `signari`) |
-| `SIGNARI_AUTHZ_DECISION_LOG` | The share of authorization evaluations recorded, from `0` to `1`, as `authz.decision` events. Absent, none are. Anything else stops the start. See [authorization.md](authorization.md#recording-decisions) |
+| `SIGNARI_AUTHZ_DECISION_LOG` | The share of authorization evaluations recorded, from `0` to `1`, as `authz.decision` events. Absent, none are. Anything else stops the start. See [recording decisions](authorization.md#recording-decisions) |
 
 ## Authenticator models (FIDO metadata)
 
@@ -568,7 +568,7 @@ See [EAP-TLS](eap-tls.md).
 
 ## Remote access (RDP, VNC, SSH in the browser)
 
-See [remote-access.md](remote-access.md).
+See [Remote access](remote-access.md).
 
 | | |
 |---|---|
@@ -586,17 +586,17 @@ See [remote-access.md](remote-access.md).
 | `SIGNARI_LDAP_ORG_ID` | Required with more than one organisation |
 | `SIGNARI_LDAP_USER_ATTR` | Attribute carrying the username |
 | `SIGNARI_LDAP_ANONYMOUS_SEARCH` | Permit anonymous search. Off by default |
-| `SIGNARI_LDAP_SEARCH_GROUP` | Group whose members may search the whole directory. **Empty means nobody**: everyone else who binds gets back only their own entry. Read by the engine's LDAP listener. An LDAP outpost ignores it and logs that it did: its group is recorded on its registration (`signari outpost search-group`) and enforced by the core. See [ldap.md](ldap.md#other-decisions) and [outposts](outposts.md#what-an-outpost-token-is-worth) |
-| `SIGNARI_LDAP_POSIX` | `1` publishes people as `posixAccount` and groups as `posixGroup`, for hosts that read their accounts from the directory. Read by the engine's LDAP listener and an LDAP outpost. See [ldap.md](ldap.md#posix-accounts) |
+| `SIGNARI_LDAP_SEARCH_GROUP` | Group whose members may search the whole directory. **Empty means nobody**: everyone else who binds gets back only their own entry. Read by the engine's LDAP listener. An LDAP outpost ignores it and logs that it did: its group is recorded on its registration (`signari outpost search-group`) and enforced by the core. See [other LDAP decisions](ldap.md#other-decisions) and [what an outpost token is worth](outposts.md#what-an-outpost-token-is-worth) |
+| `SIGNARI_LDAP_POSIX` | `1` publishes people as `posixAccount` and groups as `posixGroup`, for hosts that read their accounts from the directory. Read by the engine's LDAP listener and an LDAP outpost. See [POSIX accounts](ldap.md#posix-accounts) |
 | `SIGNARI_LDAP_POSIX_HOME` | A person's home directory, `{username}` replaced. Default `/home/{username}` |
 | `SIGNARI_LDAP_POSIX_SHELL` | Everybody's login shell. Default `/bin/bash` |
-| `SIGNARI_LDAP_WRITE_GROUP` | Group whose members may Add, Modify, Delete and Modify DN. **Empty means nobody**, and the directory stays read-only. Members can create accounts, set any password, and delete entries — see [ldap.md](ldap.md) |
+| `SIGNARI_LDAP_WRITE_GROUP` | Group whose members may Add, Modify, Delete and Modify DN. **Empty means nobody**, and the directory stays read-only. Members can create accounts, set any password, and delete entries — see [LDAP](ldap.md) |
 
 ## DPoP
 
 | Variable | Meaning |
 |---|---|
-| `SIGNARI_DPOP_NONCE` | `1` makes every DPoP proof carry a nonce this server issued. Needs the root key. See [dpop.md](dpop.md#server-nonces) |
+| `SIGNARI_DPOP_NONCE` | `1` makes every DPoP proof carry a nonce this server issued. Needs the root key. See [server nonces](dpop.md#server-nonces) |
 
 ## Device posture
 
@@ -691,7 +691,7 @@ internal, prefer listing their addresses here.
 
 | | |
 |---|---|
-| `SIGNARI_THEME_DIR` | A directory of `.html` files replacing the built-in sign-in pages. Read **once, at startup** — a half-written file is a normal state for a directory somebody is editing, and these are the pages people sign in through. A page here that fails validation is refused *individually*: that page falls back to the built-in one and a warning is logged, so a mistyped filename cannot lock every user out of every application. Validate before deploying with `signari theme check`, which exits non-zero. See [theming.md](theming.md) |
+| `SIGNARI_THEME_DIR` | A directory of `.html` files replacing the built-in sign-in pages. Read **once, at startup** — a half-written file is a normal state for a directory somebody is editing, and these are the pages people sign in through. A page here that fails validation is refused *individually*: that page falls back to the built-in one and a warning is logged, so a mistyped filename cannot lock every user out of every application. Validate before deploying with `signari theme check`, which exits non-zero. See [Theming](theming.md) |
 
 ## Duo
 
@@ -730,7 +730,7 @@ it was designed for.
 ## Password policy
 
 One gate every new password passes through — sign-up, recovery, admin, CLI. See
-[password-policy.md](password-policy.md).
+[Password policy](password-policy.md).
 
 | | |
 |---|---|
@@ -779,7 +779,7 @@ that password unverifiable, and its owner has to reset it.
 
 A third device posture source, feeding the same `device_managed` and
 `device_compliant` a policy already speaks. See
-[chrome-device-trust.md](chrome-device-trust.md).
+[Chrome Enterprise device trust](chrome-device-trust.md).
 
 | | |
 |---|---|
@@ -791,7 +791,7 @@ A third device posture source, feeding the same `device_managed` and
 
 ## Kerberos (SPNEGO)
 
-See [kerberos.md](kerberos.md). `signari kerberos check` proves a keytab before
+See [Kerberos](kerberos.md). `signari kerberos check` proves a keytab before
 a user meets it.
 
 | | |
@@ -804,7 +804,7 @@ a user meets it.
 
 ## Outposts
 
-Set on the OUTPOST, not the core. See [outposts.md](outposts.md).
+Set on the OUTPOST, not the core. See [Outposts](outposts.md).
 
 | | |
 |---|---|
@@ -812,7 +812,7 @@ Set on the OUTPOST, not the core. See [outposts.md](outposts.md).
 
 Outpost kinds: `ldap`, `radius`, `proxy`, and `desktop` — the last for a
 credential provider or PAM module, which may verify a second factor as well as a
-password. See [desktop-login.md](desktop-login.md).
+password. See [desktop and workstation sign-in](desktop-login.md).
 
 ## Metrics, and the label rule
 
@@ -843,7 +843,7 @@ one latency histogram across every route, and none of the backlog, provider,
 build or runtime series existed. Parked notices were briefly counted as pending
 too, so one of them made the oldest pending notice older by the second, forever.
 
-[`deploy/monitoring/`](../deploy/monitoring/README.md) has alert rules and a
+The [monitoring kit](../deploy/monitoring/README.md) has alert rules and a
 Grafana dashboard built on these series.
 
 The HTTP series covers the admin API as well as the protocol listener, under
@@ -887,7 +887,7 @@ access-controlled and erasable.
 
 ## FIPS 140-3
 
-No configuration; it is a build and runtime mode. See [fips.md](fips.md) for what
+No configuration; it is a build and runtime mode. See [FIPS 140-3](fips.md) for what
 works under it and what cannot.
 
 ## Test-only

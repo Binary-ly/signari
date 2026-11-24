@@ -45,6 +45,9 @@ var clientsOutsideSafedial = map[string]string{
 		"operator types",
 	"engine/internal/proxycheck/proxycheck.go": "a diagnostic run by hand against a URL the " +
 		"operator types",
+	"engine/cmd/signari/setupcompose.go": "signari healthcheck, a container's healthcheck asking the engine " +
+		"in the same container for /readyz on loopback, which safedial refuses by design; it follows no " +
+		"redirect and sends nothing",
 	"engine/cmd/signari/apiclient.go": "the operator's CLI calling the Admin API at the address they " +
 		"type, usually on their own network, which safedial refuses by design; not the engine making a " +
 		"request. It follows no redirect and sends its token in the clear only to loopback",

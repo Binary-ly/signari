@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -54,8 +55,16 @@ type setupFlags struct {
 	rootKeyFile, envFile           string
 	yes, dryRun, check, json       bool
 	printRootKey                   bool
-	// given are the flags set on the command line.
+	logFile                        string
+	// compose is the directory to write a compose project to, and image the
+	// engine image it runs (setupcompose.go).
+	compose, image string
+	// How TLS is ended for an https:// issuer (setuptls.go).
+	tls, tlsCert, tlsKey, trustedProxies string
+	// given are the flags set on the command line, and args their values, for
+	// the log.
 	given map[string]bool
+	args  map[string]string
 }
 
 // prompts says whether setup may ask: at a terminal, and not told otherwise.
@@ -84,6 +93,10 @@ type setupHost struct {
 	unitInstalled bool
 	interactive   bool
 	now           func() time.Time
+	// listeners are what listens on ports 443 and 80 here, and leLive where
+	// certbot keeps its certificates, for the TLS question (setuptls.go).
+	listeners func() []listener
+	leLive    string
 }
 
 // unitPath is where the installer writes signari's systemd unit.
@@ -102,7 +115,8 @@ func thisHost() setupHost {
 			_ = c.Close()
 			return true
 		},
-		interactive: atTerminal(), now: time.Now}
+		interactive: atTerminal(), now: time.Now,
+		listeners: func() []listener { return webListeners("/proc") }, leLive: "/etc/letsencrypt/live"}
 	if fi, err := os.Stat("/run/systemd/system"); err == nil && fi.IsDir() {
 		h.systemd = true
 	}
@@ -194,7 +208,14 @@ func suggestIssuer(h setupHost, addr string) string {
 // file, the terminal, or the default, which from records.
 type setupAnswers struct {
 	issuer, email, database, addr, rootKeyFile, envFile string
-	from                                                map[string]string
+	// tls is who ends TLS for an https:// issuer, proxy, files or none, with
+	// the files or the proxies it trusts; tlsWhy is what setup found that
+	// suggested it, and lineage the Let's Encrypt directory the files are
+	// copied from.
+	tls, tlsCert, tlsKey, trustedProxies, tlsWhy, lineage string
+	// compose is the compose project's directory, for -compose.
+	compose string
+	from    map[string]string
 }
 
 // setupDefault is the one table of defaults, read by the run that asks and the
@@ -207,7 +228,32 @@ func setupDefault(name string, h setupHost, a setupAnswers) string {
 	case "database":
 		return "signari"
 	case "addr":
+		// Serving HTTPS itself, on every address at the issuer's port;
+		// otherwise on loopback, for a proxy on this machine.
+		if a.tls == tlsFiles {
+			_, port := issuerHost(a.issuer)
+			return ":" + port
+		}
 		return "127.0.0.1:8080"
+	case "tls":
+		// What is here already says; with nothing found, a proxy in front,
+		// as the engine listens on loopback either way. A compose project
+		// publishes plain HTTP, for a proxy on the host.
+		if a.compose != "" {
+			return tlsProxy
+		}
+		mode, _, _, _ := h.detectTLS(a.issuer)
+		return mode
+	case "tls-cert", "tls-key":
+		if _, _, cert, key := h.detectTLS(a.issuer); cert != "" {
+			return map[string]string{"tls-cert": cert, "tls-key": key}[name]
+		}
+		return ""
+	case "trusted-proxies":
+		if a.compose != "" {
+			return composeTrustedProxies
+		}
+		return defaultTrustedProxies
 	case "root-key-file":
 		return filepath.Join(setupConfigDir(h.euid, h.getenv, h.home), rootKeyFileName)
 	case "env-file":
@@ -371,6 +417,13 @@ func resolveAnswers(f setupFlags, h setupHost, prior envFile, ask prompter, allo
 	if a.rootKeyFile == a.envFile {
 		return a, nil, usageError{fmt.Errorf("-root-key-file and -env-file are both %s", a.envFile)}
 	}
+	if err := resolveTLS(f, h, prior, ask, &a); err != nil {
+		return a, nil, err
+	}
+	// Where serve listens follows from who ends TLS, when nothing says.
+	if a.from["addr"] == "default" {
+		a.addr = setupDefault("addr", h, a)
+	}
 	return a, missing, nil
 }
 
@@ -394,6 +447,7 @@ type setupRun struct {
 	h   setupHost
 	out io.Writer
 	ask prompter
+	log *setupLog
 
 	prior   envFile
 	a       setupAnswers
@@ -425,6 +479,24 @@ type setupRun struct {
 	envBefore                                                                    []byte
 	madeDirs                                                                     []string
 	rootKeyText                                                                  string
+	// createdFiles are the other files this run made where none was: the
+	// certificate's copies, the certbot hook, the unit's drop-in.
+	createdFiles []string
+	// createdRoles says migration 0001 made signari_engine and the others in
+	// this run, as they were not there before it.
+	createdRoles bool
+	// inCompose says this run is a compose project's setup service: its env
+	// file sits beside the compose.yaml setup -compose wrote, whose manifest
+	// lists what the project is. manifest, when set, is where this run lists
+	// what it made instead of the default.
+	inCompose bool
+	manifest  string
+	// composeName is the compose project's name, for -compose.
+	composeName string
+
+	// The certificate serve is to serve, as checked.
+	cert        certFacts
+	certWarning string
 
 	link        string
 	linkExpires time.Time
@@ -438,23 +510,50 @@ func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setu
 		return usageError{errors.New("setup takes -superuser-dsn, a role that may create roles, once; -dsn " +
 			"names the engine's own connection, which setup makes and writes to the env file")}
 	}
-	// -addr has serve's default when it is not given, which is not setup's.
+	// -addr has serve's default when it is not given, which is not setup's, and
+	// -tls-cert and -tls-key serve's environment, which setup reads only when
+	// asked to.
 	if !f.given["addr"] {
 		f.addr = ""
+	}
+	if !f.given["tls-cert"] {
+		f.tlsCert = ""
+	}
+	if !f.given["tls-key"] {
+		f.tlsKey = ""
 	}
 	out := stdout
 	if f.json {
 		out = stderr
 	}
-	if f.check {
+	switch {
+	case f.check && f.compose != "":
+		return composeCheck(ctx, stdout, out, f)
+	case f.check:
 		return setupCheck(ctx, stdout, out, h, f)
+	case f.compose != "":
+		return composeSetup(ctx, stdout, out, h, f)
+	}
+	if f.image != "" {
+		return usageError{errors.New("-image names the engine image a compose project runs, and goes with -compose")}
 	}
 	r := &setupRun{f: f, h: h, out: out}
 	if f.prompts(h) {
 		r.ask = newTermPrompter(out)
 	}
+	// A dry run changes nothing, and so leaves no record either.
+	if !f.dryRun {
+		l, err := r.openLog()
+		if err != nil {
+			return err
+		}
+		r.log = l
+		defer r.log.close()
+	}
 	err := r.run(ctx)
 	r.close()
+	r.recordManifest()
+	r.logResult(err)
 	if f.json {
 		line, jerr := json.Marshal(r.result(err))
 		if jerr != nil {
@@ -479,6 +578,9 @@ func (r *setupRun) run(ctx context.Context) error {
 	if err := r.inspect(ctx); err != nil {
 		return err
 	}
+	r.logf("settled the address %s, the first administrator %s, the database %s on %s, listening on %s, "+
+		"the root key %s and the env file %s", r.a.issuer, cmp.Or(r.a.email, "-"), r.a.database, r.pgLine(),
+		r.a.addr, r.a.rootKeyFile, r.a.envFile)
 	r.plan()
 	r.printPlan()
 	pending := slices.ContainsFunc(r.steps, func(s setupStep) bool { return s.skip == "" && s.wait == "" })
@@ -545,10 +647,14 @@ func (r *setupRun) inspect(ctx context.Context) error {
 	if err := validFilePath(envPath); err != nil {
 		return usageError{fmt.Errorf("-env-file: %w", err)}
 	}
+	r.inCompose = composeProject(filepath.Dir(envPath))
 	if r.prior, err = readEnvFile(envPath); err != nil {
 		return err
 	}
 	if r.a, r.missing, err = resolveAnswers(r.f, r.h, r.prior, r.ask, r.f.dryRun); err != nil {
+		return err
+	}
+	if err := r.inspectTLS(); err != nil {
 		return err
 	}
 	if r.keyExists, err = rootKeyFileState(r.a.rootKeyFile); err != nil {
@@ -846,6 +952,9 @@ func (r *setupRun) plan() {
 			run: r.applyBootstrapSchema, skip: when(d.applied >= 1, "applied")},
 		{name: "root-key", what: "generate the root key into " + a.rootKeyFile, run: r.writeRootKey,
 			skip: when(r.keyExists, "it is there")},
+	}
+	r.steps = append(r.steps, r.tlsSteps()...)
+	r.steps = append(r.steps, []setupStep{
 		{name: "env-file", what: "write the env file " + a.envFile, run: r.writeEnvFile,
 			skip: when(r.envComplete(), "it holds every setting")},
 		{name: "engine-role", what: "give " + engineRole + " the env file's password, and sign in with it over TCP",
@@ -858,7 +967,7 @@ func (r *setupRun) plan() {
 		{name: "owner", what: "make " + r.adminName() + " the organisation's owner, " + ownerRole, run: r.grantOwner,
 			skip: when(d.owners > 0, "the organisation has an owner"), wait: when(d.owners == 0 && r.adminID == "",
 				ownerWait)},
-	}
+	}...)
 	for i := range r.steps {
 		r.steps[i].state = "planned"
 	}
@@ -887,7 +996,7 @@ func (r *setupRun) envComplete() bool {
 	if !r.prior.exists {
 		return false
 	}
-	for _, k := range envKeys {
+	for k := range r.envValues() {
 		if _, ok := r.prior.values[k]; !ok {
 			return false
 		}
@@ -909,8 +1018,25 @@ func (r *setupRun) firstAdminSkip() string {
 
 // envValues are the settings setup writes to the env file.
 func (r *setupRun) envValues() map[string]string {
-	return map[string]string{"SIGNARI_DSN": r.engineDSN, "SIGNARI_ROOT_KEY_FILE": r.a.rootKeyFile,
+	v := map[string]string{"SIGNARI_DSN": r.engineDSN, "SIGNARI_ROOT_KEY_FILE": r.a.rootKeyFile,
 		"SIGNARI_ISSUER": r.a.issuer, "SIGNARI_ADDR": r.a.addr}
+	for k, s := range r.a.tlsEnv() {
+		v[k] = s
+	}
+	return v
+}
+
+// pgLine names the PostgreSQL the run reached, and how.
+func (r *setupRun) pgLine() string {
+	switch {
+	case r.suConn != nil:
+		return fmt.Sprintf("PostgreSQL %s, %s", r.pg.version, r.su.desc)
+	case r.engineWorked:
+		return fmt.Sprintf("PostgreSQL %s, as %s", serverVersion(context.Background(), r.eng), engineRole)
+	case r.suErr != nil:
+		return "not reached: " + r.suErr.Error()
+	}
+	return "not reached"
 }
 
 func (r *setupRun) printPlan() {
@@ -927,15 +1053,7 @@ func (r *setupRun) printPlan() {
 		}
 		return ""
 	}
-	pgLine := "not reached"
-	switch {
-	case r.suConn != nil:
-		pgLine = fmt.Sprintf("PostgreSQL %s, %s", r.pg.version, r.su.desc)
-	case r.engineWorked:
-		pgLine = fmt.Sprintf("PostgreSQL %s, as %s", serverVersion(context.Background(), r.eng), engineRole)
-	case r.suErr != nil:
-		pgLine = "not reached: " + r.suErr.Error()
-	}
+	pgLine := r.pgLine()
 	email := r.a.email
 	if email == "" {
 		email = "-"
@@ -949,6 +1067,7 @@ func (r *setupRun) printPlan() {
 	fmt.Fprintf(w, "    %-16s %s%s\n", "database", r.a.database, from("database"))
 	fmt.Fprintf(w, "    %-16s %s\n", "PostgreSQL", pgLine)
 	fmt.Fprintf(w, "    %-16s %s%s\n", "listens on", r.a.addr, from("addr"))
+	fmt.Fprintf(w, "    %-16s %s%s\n", "TLS", r.a.tlsLine(), from("tls"))
 	fmt.Fprintf(w, "    %-16s %s%s\n", "root key", r.a.rootKeyFile, from("root-key-file"))
 	fmt.Fprintf(w, "    %-16s %s%s\n", "env file", r.a.envFile, from("env-file"))
 	fmt.Fprintf(w, "\n  Steps\n")
@@ -969,9 +1088,11 @@ func (r *setupRun) printPlan() {
 func (r *setupRun) execute(ctx context.Context) error {
 	for i := range r.steps {
 		s := &r.steps[i]
+		start := r.h.now()
 		if s.skip != "" {
 			s.state = "skipped"
 			fmt.Fprintf(r.out, "  [skip] %s: %s\n", s.what, s.skip)
+			r.logStep(*s, start, nil)
 			continue
 		}
 		err := s.run(ctx)
@@ -981,15 +1102,18 @@ func (r *setupRun) execute(ctx context.Context) error {
 			}
 			s.state = "waiting"
 			fmt.Fprintf(r.out, "  [wait] %s: %s\n", s.what, s.wait)
+			r.logStep(*s, start, nil)
 			continue
 		}
 		if err != nil {
 			s.state = "failed"
 			fmt.Fprintf(r.out, "  [failed] %s\n", s.what)
+			r.logStep(*s, start, err)
 			return fmt.Errorf("%s: %w", s.what, err)
 		}
 		s.state = "done"
 		fmt.Fprintf(r.out, "  [done] %s\n", s.what)
+		r.logStep(*s, start, nil)
 	}
 	if r.eng == nil {
 		return nil
@@ -1036,8 +1160,11 @@ func (r *setupRun) applyBootstrapSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = migrate.Up(ctx, conn, migrate.TierBootstrap, 0, r.migrationOptions())
-	return err
+	if _, err = migrate.Up(ctx, conn, migrate.TierBootstrap, 0, r.migrationOptions()); err != nil {
+		return err
+	}
+	r.createdRoles = !r.pg.roleExists
+	return nil
 }
 
 func (r *setupRun) migrationOptions() migrate.Options {
@@ -1245,6 +1372,15 @@ func (r *setupRun) undo() {
 				undone = append(undone, r.a.rootKeyFile)
 			}
 		}
+		for i := len(r.createdFiles) - 1; i >= 0; i-- {
+			if err := os.Remove(r.createdFiles[i]); err == nil {
+				undone = append(undone, r.createdFiles[i])
+				if r.createdFiles[i] == bindDropIn {
+					_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+				}
+			}
+		}
+		r.createdFiles = nil
 		for i := len(r.madeDirs) - 1; i >= 0; i-- {
 			if os.Remove(r.madeDirs[i]) == nil {
 				undone = append(undone, r.madeDirs[i])
@@ -1261,15 +1397,20 @@ func (r *setupRun) undo() {
 	}
 	if len(undone) > 0 {
 		fmt.Fprintf(r.out, "\n  Taken back, as this run made them: %s.\n", strings.Join(undone, "; "))
+		r.logf("undo took back %s", strings.Join(undone, "; "))
 	}
 	if len(kept) > 0 {
 		fmt.Fprintf(r.out, "  Kept: %s.\n", strings.Join(kept, "; "))
+		r.logf("undo kept %s", strings.Join(kept, "; "))
 	}
 	fmt.Fprintln(r.out, "  Running setup again goes on from where this stopped.")
 }
 
 // startCommand is how to start the engine with what setup wrote.
 func (r *setupRun) startCommand() string {
+	if r.inCompose || r.a.compose != "" {
+		return "docker compose up --detach --wait, in " + cmp.Or(r.a.compose, filepath.Dir(r.a.envFile))
+	}
 	if r.h.unitInstalled {
 		return "systemctl enable --now signari"
 	}
@@ -1314,30 +1455,23 @@ func (r *setupRun) printSummary() {
 		}
 	}
 	fmt.Fprintf(w, "  %-14s %s, which holds the engine's database\n%spassword: keep it 0600.\n", "Env file", r.a.envFile, pad)
+	if r.log != nil {
+		fmt.Fprintf(w, "  %-14s %s, what each run did, with no secret in it.\n", "Log", r.log.path)
+	}
 	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	if r.inCompose {
+		dir := filepath.Dir(r.a.envFile)
+		fmt.Fprintf(w, "  %-14s signari setup -check -compose %s\n", "Check it", dir)
+		r.printTLS(w, pad)
+		fmt.Fprintf(w, "  %-14s signari uninstall -compose %s, which keeps the database's\n%svolume and the "+
+			"root key unless given -drop-database and -delete-root-key.\n\n", "Remove it", dir, pad)
+		return
+	}
 	fmt.Fprintf(w, "  %-14s set -a; . %s; set +a; signari doctor\n", "Check it", r.a.envFile)
-	if u, err := url.Parse(r.a.issuer); err == nil && u.Scheme == "https" {
-		fmt.Fprintf(w, "  %-14s it listens on %s in plain HTTP: put a proxy that ends TLS for\n%s%s in front, and add\n%s"+
-			"SIGNARI_TRUSTED_PROXIES and SIGNARI_CLIENT_IP_SOURCE to the env\n%sfile (docs/configuration.md, behind a reverse proxy).\n",
-			"Behind TLS", r.a.addr, pad, u.Host, pad, pad)
-	}
-	if r.h.unitInstalled {
-		fmt.Fprintf(w, "  %-14s systemctl disable --now signari, then delete %s,\n%s%s, and the binary, %s.\n",
-			"Remove it", unitPath, pad, r.a.envFile, binaryPath())
-	} else {
-		fmt.Fprintf(w, "  %-14s stop signari serve, then delete %s and the binary,\n%s%s.\n", "Remove it",
-			r.a.envFile, pad, binaryPath())
-	}
-	fmt.Fprintf(w, "%sThe root key and the database %s are never deleted for you:\n", pad, r.a.database)
-	fmt.Fprintf(w, "%sonce you are sure, DROP DATABASE %s and delete %s.\n\n", pad, r.a.database, r.a.rootKeyFile)
-}
-
-// binaryPath is where this binary is, for the summary's way to remove it.
-func binaryPath() string {
-	if p, err := os.Executable(); err == nil {
-		return p
-	}
-	return "wherever this binary is"
+	r.printTLS(w, pad)
+	fmt.Fprintf(w, "  %-14s signari uninstall, which removes what the installer and setup made,\n%sas %s lists "+
+		"it. It keeps the root key and the database unless\n%sgiven -delete-root-key and -drop-database, each "+
+		"confirmed.\n\n", "Remove it", pad, manifestPath(r.h.euid, r.h.getenv, r.h.home), pad)
 }
 
 // rootKey is the root key's text, for -print-root-key.
@@ -1360,6 +1494,7 @@ type setupResult struct {
 	Email       string            `json:"email,omitempty"`
 	Database    string            `json:"database,omitempty"`
 	Addr        string            `json:"addr,omitempty"`
+	TLS         string            `json:"tls,omitempty"`
 	RootKeyFile string            `json:"root_key_file,omitempty"`
 	EnvFile     string            `json:"env_file,omitempty"`
 	Link        string            `json:"link,omitempty"`
@@ -1379,7 +1514,7 @@ type setupResultStep struct {
 
 func (r *setupRun) result(err error) setupResult {
 	res := setupResult{OK: err == nil, DryRun: r.f.dryRun, Issuer: r.a.issuer, Email: r.a.email,
-		Database: r.a.database, Addr: r.a.addr, RootKeyFile: r.a.rootKeyFile, EnvFile: r.a.envFile,
+		Database: r.a.database, Addr: r.a.addr, TLS: r.a.tls, RootKeyFile: r.a.rootKeyFile, EnvFile: r.a.envFile,
 		Link: r.link, Steps: []setupResultStep{}}
 	for _, m := range r.missing {
 		res.Missing = append(res.Missing, "-"+m)
@@ -1510,6 +1645,15 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 				return kerr
 			}
 			add(true, "root key "+keyPath, "")
+		}
+	}
+	if cert := env.values["SIGNARI_TLS_CERT"]; cert != "" {
+		host, _ := issuerHost(env.values["SIGNARI_ISSUER"])
+		facts, warning, terr := checkTLSFiles(cert, env.values["SIGNARI_TLS_KEY"], host, h.now())
+		if terr != nil {
+			add(false, "the TLS certificate "+cert, terr.Error())
+		} else {
+			add(true, "the TLS certificate "+cert+", valid until "+facts.notAfter.UTC().Format("2 Jan 2006"), warning)
 		}
 	}
 	dsn := env.values["SIGNARI_DSN"]

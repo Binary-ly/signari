@@ -30,17 +30,28 @@
 # Anywhere else it says so, and prints how to run Signari with Docker, or to
 # build it with Go, whichever is here.
 #
+# With --docker, on any machine with Docker and git, macOS and ARM among them,
+# it instead clones the release's source at its tag, builds the engine image,
+# runs that image's `signari setup -compose` to write a compose project to
+# --dir (asking at the terminal as setup does), starts it with docker compose
+# and waits until it is healthy, then prints the first administrator's link.
+#
+# Each run but a dry run appends what it did to install.log, 0600 and with no
+# password in it: in /var/log/signari as root, else in $XDG_STATE_HOME/signari
+# or ~/.local/state/signari. setup keeps its own setup.log beside it.
+#
 # Options:
 #   --version vX.Y.Z           the release to install (default: the latest)
 #   --dry-run                  print every command instead of running it
-#   --docker                   print how to run the Docker Compose stack instead
+#   --docker                   build the release's image and run it with Docker Compose
+#   --dir PATH                 with --docker: the compose project's directory (default ~/signari)
 #   --yes                      passed to setup: ask nothing, take the defaults
 #   --issuer URL               passed to setup: the address people will reach it at
 #   --email ADDRESS            passed to setup: the first administrator's
 #   --superuser-dsn URL        passed to setup, with no password in it (PGPASSWORD)
 #   --superuser-dsn-file PATH  passed to setup
 #   --database NAME            passed to setup
-#   --addr HOST:PORT           passed to setup
+#   --addr HOST:PORT           passed to setup; with --docker, where its port is published
 #   --help
 #
 # It talks to GitHub alone, and to Sigstore when cosign checks the signature:
@@ -66,12 +77,14 @@ SU_DSN=""
 SU_DSN_FILE=""
 DATABASE=""
 ADDR=""
+DIR=""
 TMP=""
 OS=""
 ARCH=""
 ASSET=""
 SUM=""
 BIN=""
+LOG=""
 
 say() {
   printf '%s\n' "$*"
@@ -83,7 +96,104 @@ warn() {
 
 die() {
   warn "$*"
+  log "failed: $*"
   exit 1
+}
+
+# log appends a line to install.log, once log_open has found where.
+log() {
+  if [ -n "$LOG" ]; then
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG" 2>/dev/null || true
+  fi
+}
+
+# log_open starts this run's record in install.log, beside the setup.log that
+# signari setup keeps: /var/log/signari as root, else the user's state
+# directory. It is 0600 and holds no password: one in a URL among the options
+# is replaced. A dry run writes none, and a log that cannot be written is said
+# and gone without.
+log_open() {
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  mask=077
+  if [ "$(id -u)" = 0 ]; then
+    dir=/var/log/signari
+    mask=027
+  else
+    case ${XDG_STATE_HOME:-} in
+      /*) dir="$XDG_STATE_HOME/signari" ;;
+      *) dir="$HOME/.local/state/signari" ;;
+    esac
+  fi
+  made_dir=0
+  made_log=0
+  [ -d "$dir" ] || made_dir=1
+  [ -e "$dir/install.log" ] || made_log=1
+  if ! (umask "$mask" && mkdir -p "$dir" && umask 077 && true >>"$dir/install.log") 2>/dev/null ||
+    ! chmod 600 "$dir/install.log" 2>/dev/null; then
+    warn "could not write $dir/install.log, so this run keeps no log"
+    return 0
+  fi
+  LOG="$dir/install.log"
+  log "==== install.sh by $(id -un 2>/dev/null || id -u) on $(uname -n 2>/dev/null), options:$(unsecret "$@")"
+  if [ "$made_dir" = 1 ]; then record dir "$dir"; fi
+  if [ "$made_log" = 1 ]; then record log "$dir/install.log"; fi
+}
+
+# manifest_path is where the installer and setup list what they make, for
+# signari uninstall to remove exactly that: in /var/lib/signari as root, a
+# directory root alone may write, and not in /etc/signari, which belongs to the
+# service's user; else in the user's state directory.
+manifest_path() {
+  if [ "$(id -u)" = 0 ]; then
+    printf '%s' /var/lib/signari/install.manifest
+  else
+    case ${XDG_STATE_HOME:-} in
+      /*) printf '%s' "$XDG_STATE_HOME/signari/install.manifest" ;;
+      *) printf '%s' "$HOME/.local/state/signari/install.manifest" ;;
+    esac
+  fi
+}
+
+# record adds one thing this run made to the manifest, which is replaced whole
+# or not at all, and is 0600 in a 0700 directory.
+record() {
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  m=$(manifest_path)
+  line="$1 $2"
+  if [ -f "$m" ] && grep -Fxq -- "$line" "$m"; then
+    return 0
+  fi
+  if ! (
+    umask 077
+    mkdir -p "$(dirname "$m")" || exit 1
+    {
+      if [ -f "$m" ]; then
+        cat "$m"
+      else
+        printf '%s\n' "# What the Signari installer and signari setup made on this machine, one thing" \
+          "# a line. signari uninstall removes these and nothing else."
+      fi
+      printf '%s\n' "$line"
+    } >"$m.tmp.$$" && mv -f "$m.tmp.$$" "$m"
+  ); then
+    warn "could not record $2 in $m, so signari uninstall will not remove it"
+    return 0
+  fi
+  log "recorded $line in $m"
+}
+
+# unsecret prints its words with the password of any URL among them replaced.
+unsecret() {
+  if [ "$#" = 0 ]; then
+    printf ' none'
+  fi
+  for word in "$@"; do
+    printf ' %s' "$(printf '%s' "$word" | sed 's#\([a-z][a-z0-9+.-]*://[^:/@]*\):[^@/]*@#\1:…@#g')"
+  done
 }
 
 have() {
@@ -119,14 +229,15 @@ usage: sh install.sh [options]      or      curl -fsSL https://signari.dev/insta
 
   --version vX.Y.Z           the release to install (default: the latest)
   --dry-run                  print every command instead of running it
-  --docker                   print how to run the Docker Compose stack instead
+  --docker                   build the release's image and run it with Docker Compose
+  --dir PATH                 with --docker: the compose project's directory (default ~/signari)
   --yes                      passed to setup: ask nothing, take the defaults
   --issuer URL               passed to setup: the address people will reach it at
   --email ADDRESS            passed to setup: the first administrator's
   --superuser-dsn URL        passed to setup, with no password in it (PGPASSWORD)
   --superuser-dsn-file PATH  passed to setup
   --database NAME            passed to setup
-  --addr HOST:PORT           passed to setup
+  --addr HOST:PORT           passed to setup; with --docker, where its port is published
 
 The comment at the top of the script says what it does, step by step.
 EOF
@@ -158,6 +269,8 @@ parse_args() {
       --database=*) DATABASE=${1#*=}; shift ;;
       --addr) need_value "$@"; ADDR=$2; shift 2 ;;
       --addr=*) ADDR=${1#*=}; shift ;;
+      --dir) need_value "$@"; DIR=$2; shift 2 ;;
+      --dir=*) DIR=${1#*=}; shift ;;
       -h | --help) usage; exit 0 ;;
       *) die "$1 is not an option this installer takes (--help lists them)" ;;
     esac
@@ -203,6 +316,7 @@ resolve_version() {
     esac
     check_version
     say "Signari $VERSION"
+    log "release $VERSION, as --version named it"
     return 0
   fi
   have curl || die "curl is needed to download the release"
@@ -212,6 +326,7 @@ resolve_version() {
   VERSION=${latest##*/}
   check_version
   say "Signari $VERSION, the latest release (--version $VERSION installs this one again)"
+  log "release $VERSION, the latest"
 }
 
 sha256_of() {
@@ -246,6 +361,7 @@ download() {
     run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/$ASSET.sigstore.json" "$base/$ASSET.sigstore.json" ||
       die "could not download $base/$ASSET.sigstore.json, which cosign needs to check the signature"
   fi
+  log "downloaded $ASSET and SHA256SUMS from $base"
 }
 
 # verify refuses the download unless SHA256SUMS names it with its SHA-256, and,
@@ -271,13 +387,16 @@ verify() {
       "the release's. Nothing was installed."
   fi
   say "checked: $ASSET has the SHA-256 the release's SHA256SUMS gives"
+  log "checked the SHA-256 of $ASSET, $SUM"
   if have cosign; then
     if ! out=$(cosign verify-blob "$TMP/$ASSET" --bundle "$TMP/$ASSET.sigstore.json" \
       --certificate-oidc-issuer "$SIGNER_ISSUER" --certificate-identity-regexp "$SIGNER" 2>&1); then
       die "cosign could not verify that the release workflow signed $ASSET. Nothing was installed. $out"
     fi
     say "checked: cosign verified the release workflow's signature on $ASSET"
+    log "cosign verified the release workflow's signature on $ASSET"
   else
+    log "cosign is not installed, so the signature was not checked"
     say "checked by SHA-256 alone: cosign is not installed. With it, this would also prove the"
     say "release workflow signed the binary, not only that it is the file the release lists."
   fi
@@ -292,13 +411,16 @@ install_binary() {
   BIN="$bindir/signari"
   if [ "$DRY_RUN" != 1 ] && [ -x "$BIN" ] && [ "$(sha256_of "$BIN" 2>/dev/null)" = "$SUM" ]; then
     say "$BIN is $VERSION already"
+    log "skip: $BIN is $VERSION already"
   else
     run mkdir -p "$bindir" || die "could not make $bindir"
     run install -m 0755 "$TMP/$ASSET" "$BIN" || die "could not install $BIN"
     if [ "$DRY_RUN" != 1 ]; then
       say "installed $BIN"
+      log "installed $BIN"
     fi
   fi
+  record binary "$BIN"
   case ":$PATH:" in
     *":$bindir:"*) ;;
     *) say "$bindir is not on your PATH: add it in your shell's profile, export PATH=\"$bindir:\$PATH\"" ;;
@@ -360,8 +482,9 @@ RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# No capabilities. To listen on a port below 1024, set both of these to
-# CAP_NET_BIND_SERVICE.
+# No capabilities. To listen on a port below 1024, both of these need
+# CAP_NET_BIND_SERVICE, which signari setup adds in a drop-in of its own when
+# Signari serves HTTPS itself on such a port.
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
@@ -375,6 +498,8 @@ WantedBy=multi-user.target
 EOF
   install -m 0644 "$TMP/signari.service" "$unit" || die "could not write $unit"
   say "wrote $unit"
+  log "wrote $unit"
+  record unit "$unit"
 }
 
 # As root under systemd: the service's own user, its directory and its unit.
@@ -391,9 +516,13 @@ service() {
     fi
     run useradd --system --user-group --no-create-home --home-dir /nonexistent --shell "$nologin" signari ||
       die "could not make the signari system user"
+    log "made the signari system user"
+    record user signari
   fi
   if [ ! -d /etc/signari ]; then
     run install -d -m 0750 -o signari -g signari /etc/signari || die "could not make /etc/signari"
+    log "made /etc/signari, 0750, for the signari user"
+    record dir /etc/signari
   fi
   write_unit
   run systemctl daemon-reload || warn "systemctl daemon-reload failed; run it before starting signari"
@@ -427,9 +556,11 @@ run_setup() {
     say "Signari $VERSION is installed at $BIN, and has no setup command: it came in a later"
     say "release. Set this one up as its README's quick start says:"
     say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+    log "skip: $VERSION has no setup command, so it is set up by hand"
     return 0
   fi
   say ""
+  log "running $BIN$(unsecret "$@"), which keeps its own setup.log beside this one"
   if [ -t 0 ]; then
     "$BIN" "$@"
   elif tty_usable; then
@@ -446,8 +577,10 @@ run_setup() {
   status=$?
   if [ "$status" != 0 ]; then
     warn "setup stopped (exit $status): do what it says, then run it again, $BIN setup, or this script"
+    log "failed: setup exited $status"
     exit "$status"
   fi
+  log "setup finished"
   if [ -f /etc/systemd/system/signari.service ] && [ "$(id -u)" = 0 ]; then
     for f in /etc/signari/root.key /etc/signari/signari.env; do
       owner=$(stat -c %U "$f" 2>/dev/null || echo signari)
@@ -456,6 +589,100 @@ run_setup() {
       fi
     done
   fi
+}
+
+# docker_install builds the release's engine image from its source, has that
+# image's signari setup -compose write a compose project to --dir, starts it,
+# and waits until it is healthy: the way to run Signari where there is no
+# release binary, macOS and ARM among them. Nothing is published but the
+# engine's port, on loopback.
+docker_install() {
+  have docker || die "--docker needs Docker: install it (https://docs.docker.com/get-docker/), then run this again"
+  docker compose version >/dev/null 2>&1 || die "--docker needs Docker Compose version 2, as docker compose"
+  have git || die "--docker needs git, to fetch the source of $VERSION"
+  if [ -n "$SU_DSN" ] || [ -n "$SU_DSN_FILE" ] || [ -n "$DATABASE" ]; then
+    die "--docker runs its own PostgreSQL, so it takes no --superuser-dsn, --superuser-dsn-file or --database"
+  fi
+  DIR=${DIR:-$HOME/signari}
+  case $DIR in
+    /*) ;;
+    *) DIR="$(pwd)/$DIR" ;;
+  esac
+  image="signari:$VERSION"
+  if [ "$DRY_RUN" = 1 ]; then
+    TMP="${TMPDIR:-/tmp}/signari-install"
+  else
+    TMP=$(mktemp -d 2>/dev/null || mktemp -d -t signari) || die "could not make a temporary directory"
+    trap 'rm -rf "$TMP"' EXIT
+    trap 'rm -rf "$TMP"; exit 130' INT TERM
+  fi
+  say "building $image from the source of $VERSION"
+  run git clone --quiet --depth 1 --branch "$VERSION" "https://github.com/$REPO" "$TMP/src" ||
+    die "could not fetch the source of $VERSION from https://github.com/$REPO"
+  run docker build --quiet --tag "$image" "$TMP/src/engine" || die "could not build $image"
+  log "built $image from the source of $VERSION"
+  if [ "$DRY_RUN" != 1 ] && ! docker run --rm "$image" help setup 2>&1 | grep -q -- '-compose'; then
+    say ""
+    say "Signari $VERSION has no setup -compose: it came in a later release."
+    log "skip: $VERSION has no setup -compose"
+    offer_docker
+    return 0
+  fi
+  if [ ! -d "$DIR" ]; then
+    run mkdir -p "$DIR" || die "could not make $DIR"
+    if [ "$DRY_RUN" != 1 ]; then
+      (umask 077 && printf '%s\n' "# What the Signari installer and signari setup made on this machine, one thing" \
+        "# a line. signari uninstall removes these and nothing else." "dir $DIR" >"$DIR/install.manifest") ||
+        warn "could not record $DIR in $DIR/install.manifest"
+    fi
+  fi
+  set -- setup -compose "$DIR" -image "$image"
+  if [ -n "$ISSUER" ]; then set -- "$@" -issuer "$ISSUER"; fi
+  if [ -n "$EMAIL" ]; then set -- "$@" -email "$EMAIL"; fi
+  if [ -n "$ADDR" ]; then set -- "$@" -addr "$ADDR"; fi
+  say ""
+  # The project's files belong to whoever runs this, and so do its containers.
+  if [ "$YES" != 1 ] && { [ -t 0 ] || tty_usable; }; then
+    if [ "$DRY_RUN" = 1 ]; then
+      show docker run --rm -it --user "$(id -u):$(id -g)" -v "$DIR:$DIR" "$image" "$@"
+    else
+      docker run --rm -it --user "$(id -u):$(id -g)" -v "$DIR:$DIR" "$image" "$@" </dev/tty
+    fi
+  else
+    run docker run --rm --user "$(id -u):$(id -g)" -v "$DIR:$DIR" "$image" "$@" -yes
+  fi
+  status=$?
+  if [ "$status" != 0 ]; then
+    log "failed: setup -compose exited $status"
+    die "setup -compose stopped (exit $status): do what it says, then run this again"
+  fi
+  log "wrote the compose project in $DIR"
+  say "starting it, and waiting until it is healthy"
+  run docker compose --project-directory "$DIR" up --detach --wait ||
+    die "the project did not become healthy; docker compose --project-directory $DIR logs says why"
+  log "started the compose project in $DIR"
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  link=$(docker compose --project-directory "$DIR" logs --no-log-prefix setup 2>/dev/null |
+    grep -o 'https\{0,1\}://[^ "]*/signup?invite=[^ "]*' | tail -n 1)
+  issuer=$(sed -n "s/^SIGNARI_ISSUER='\(.*\)'$/\1/p" "$DIR/signari.env")
+  say ""
+  say "Signari is running in Docker, from $DIR."
+  say ""
+  say "  Address      $issuer"
+  if [ -n "$link" ]; then
+    say "  First admin  sets a password here, once, within 72 hours:"
+    say "               $link"
+  else
+    say "  First admin  docker compose --project-directory $DIR logs setup shows the state of the link"
+  fi
+  say "  Root key     $DIR/root.key: copy it off this machine now. Without it the signing keys"
+  say "               and every sealed secret are lost, whatever backup of the volume you hold."
+  say "  Stop it      docker compose --project-directory $DIR stop"
+  say "  Remove it    signari uninstall -compose $DIR where the signari binary is; without it,"
+  say "               docker compose --project-directory $DIR down, then delete $DIR, and"
+  say "               docker volume rm signari_pgdata to delete the database too."
 }
 
 offer_docker() {
@@ -523,6 +750,11 @@ elsewhere() {
   say "Signari $VERSION has no binary for $OS-$ARCH: the release has one for linux-amd64 alone."
   offered=0
   if have docker; then
+    say ""
+    say "Docker is here: run this again with --docker, and it builds the release's image and"
+    say "runs it with Docker Compose, its own PostgreSQL beside it:"
+    say ""
+    say "  curl -fsSL https://signari.dev/install | sh -s -- --docker"
     offer_docker
     offered=1
   fi
@@ -544,14 +776,16 @@ main() {
   if [ "$DRY_RUN" = 1 ]; then
     say "dry run: every command is printed, and none is run"
   fi
+  log_open "$@"
   detect_platform
   resolve_version
   if [ "$DOCKER" = 1 ]; then
-    have docker || warn "docker is not installed here; these are the commands for where it is"
-    offer_docker
+    docker_install
+    log "result ok"
     return 0
   fi
   if [ "$OS-$ARCH" != linux-amd64 ]; then
+    log "no release binary for $OS-$ARCH"
     elsewhere
   fi
   download
@@ -559,6 +793,7 @@ main() {
   install_binary
   service
   run_setup
+  log "result ok"
 }
 
 main "$@"

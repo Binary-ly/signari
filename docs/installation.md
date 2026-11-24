@@ -34,10 +34,48 @@ It asks only what it cannot detect, in this order:
    Choose it carefully, because applications refuse tokens from any other
    address.
 2. The first administrator's email address.
-3. Which PostgreSQL to use. If one is running on the same machine, it is found
+3. For an `https://` address, who ends Transport Layer Security (TLS). See
+   [Who ends TLS](#who-ends-tls).
+4. Which PostgreSQL to use. If one is running on the same machine, it is found
    for you. Otherwise, give a connection URL for a PostgreSQL role that can
    create roles.
-4. Whether to go ahead with the plan it shows you.
+5. Whether to go ahead with the plan it shows you.
+
+### Who ends TLS
+
+People reach an `https://` address over TLS, the encryption HTTPS is made of. Either
+a reverse proxy in front of Signari ends TLS, or Signari serves HTTPS itself.
+Setup looks at the machine first, and offers what it finds:
+
+- When a program already listens on port 443 or 80, setup takes it to be a
+  proxy and offers `proxy`.
+- When Let's Encrypt has a certificate for the address's host, in
+  `/etc/letsencrypt/live`, setup offers `files`.
+- Otherwise, it offers `proxy`.
+
+With `proxy`, Signari listens on `127.0.0.1:8080` in plain HTTP. It believes the
+`X-Forwarded-For` header from the proxies `-trusted-proxies` names, which is
+`127.0.0.1` and `::1` unless you say otherwise. Point the proxy at that address.
+
+With `files`, Signari serves HTTPS itself on port 443 with the certificate and
+key you give, `-tls-cert` and `-tls-key`. Setup refuses a certificate whose key
+is not its own, which does not name the host, or which has expired. It warns
+when one expires within 14 days.
+
+Signari reads its certificate only when it starts. For a Let's Encrypt
+certificate, setup copies the certificate and key into `/etc/signari/tls/` for
+the service, and installs a certbot hook. After each renewal, the hook copies
+the new certificate and restarts the service. When you give files of your own,
+restart the service after you renew them.
+
+With `none`, setup writes no TLS setting. Signari serves plain HTTP until you add
+a certificate or a proxy.
+
+You can answer in advance, for example for a proxy on another machine:
+
+```sh
+signari setup -tls proxy -trusted-proxies 10.0.0.5
+```
 
 ### What it does
 
@@ -66,6 +104,33 @@ after an interruption finishes the job without repeating it.
 The superuser's credentials are never stored. The environment file holds the
 `signari_engine` role's connection, not the superuser's.
 
+### What it records
+
+Each run of setup adds a record of what it did to a log file. When a run fails,
+setup prints the last 15 lines of the log and where it is. Read the whole log to
+see every earlier run as well:
+
+```sh
+less /var/log/signari/setup.log
+```
+
+In this example, the log is the one root's runs write. When you run setup as
+yourself, the log is `~/.local/state/signari/setup.log`, or under
+`$XDG_STATE_HOME/signari` when that is set. `-log-file` names another.
+
+Each run starts with a header line. It gives the time, the release, who ran
+setup and on which machine, and the flags it was given. Then there is one line
+for each step: `done`, `skip`, `wait` or `fail`, how long the step took, and what
+it did or found.
+
+The log holds no secret, and only its owner can read it. The database
+passwords, the root key and the token in the first administrator's link are
+each written as `…`. A dry run and `-check` change nothing, so they add nothing
+to the log.
+
+The installer keeps its own log beside setup's, `install.log`. It records the
+release it chose, the checks it made and what it installed.
+
 ### How downloads are checked
 
 The installer downloads the release program and its `SHA256SUMS` file, and
@@ -83,8 +148,8 @@ systemctl status signari
 ### Platforms
 
 Release programs exist today for Linux on x86-64 only. On any other platform,
-the installer offers to use Docker or to build Signari from source instead.
-Both are described below.
+run the installer with `--docker`, or build Signari from source. Both are
+described below.
 
 ## Answering without questions
 
@@ -123,9 +188,69 @@ signari setup -check
 
 ## With Docker
 
-The Signari repository includes a Docker Compose file, `deploy/docker-compose.yml`,
-for running Signari on one computer. It builds Signari from source, and starts
-PostgreSQL beside it. You need Docker with Compose version 2.
+On macOS, on ARM, or on any machine where you would rather use containers, the
+installer can run Signari with Docker Compose. You need Docker with Compose
+version 2, and git:
+
+```sh
+curl -fsSL https://signari.dev/install | sh -s -- --docker
+```
+
+In this example, the installer fetches the release's source and builds the
+Signari image from it. That image's `signari setup -compose` then writes a
+compose project to `~/signari`, asking what it needs as setup does. The
+installer starts the project, waits until it is healthy, and prints the first
+administrator's one-time link. `--dir` puts the project somewhere else.
+
+No image is published yet, so the installer always builds one. The build takes a
+few minutes the first time.
+
+### The compose project
+
+The project is a directory of four files, each written only when it is missing,
+so that running setup again keeps every password:
+
+| File | Holds |
+|---|---|
+| `compose.yaml` | PostgreSQL 17, a one-shot `setup` service and the Signari server, each with a healthcheck |
+| `.env` | The project's settings, and the PostgreSQL superuser's generated password |
+| `signari.env` | The server's settings, with `signari_engine`'s own generated password |
+| `root.key` | The root key, mounted read-only into the server |
+
+The `setup` service is `signari setup` itself, run on every start. It uses the
+superuser once, and the server runs as `signari_engine`. The database is in a
+Docker volume, `signari_pgdata`. The server's port is published on
+`127.0.0.1:8080` unless you give another with `--addr`.
+
+You can write a project yourself, where the `signari` program is installed:
+
+```sh
+signari setup -compose ~/signari -email you@example.com
+```
+
+Then start it from its directory:
+
+```sh
+cd ~/signari && docker compose up --detach --wait
+```
+
+To see what is set up, run the check, which looks inside the project's own
+network:
+
+```sh
+signari setup -check -compose ~/signari
+```
+
+`signari uninstall -compose ~/signari` stops the project and removes what setup
+wrote. It keeps the database's volume, the root key and the files that hold the
+passwords, unless you give `-drop-database` and `-delete-root-key`, as in
+[Removing Signari](#removing-signari).
+
+### The development stack
+
+The Signari repository also includes a Docker Compose file for development,
+`deploy/docker-compose.yml`. It builds Signari from source, and starts
+PostgreSQL beside it.
 
 Start the server and its database, and create the first organisation and person:
 
@@ -208,14 +333,14 @@ The link works once. Running setup again before anyone has used it prints a new
 one.
 
 People must reach Signari over HTTPS, because the issuer is an `https://`
-address. Either give the server a certificate with `SIGNARI_TLS_CERT` and
-`SIGNARI_TLS_KEY`, or put a reverse proxy in front of it that holds one. See
+address. The summary's `TLS` line says what setup chose, and what is left for
+you to do. For a proxy, see
 [behind a reverse proxy](configuration.md#behind-a-reverse-proxy) for the
-settings a proxy needs.
+settings it needs.
 
 To check that the deployment is sound, run `signari doctor` with the same
 settings the server uses. It lists anything wrong, with how to fix it. See
-[doctor](doctor.md).
+[what doctor checks](doctor.md).
 
 ## Back up the root key
 
@@ -235,6 +360,61 @@ neither is any use without the other.
 Keep a second copy somewhere a database failure cannot reach, such as a password
 manager. [Backup and restore](runbook-backup-restore.md) explains how to back up
 the key and the database together, and how to test a restore.
+
+## Removing Signari
+
+The installer and setup each list what they make, as they make it, in a
+"manifest": a file `signari uninstall` reads to remove exactly those things and
+nothing else. It is `/var/lib/signari/install.manifest` when root ran them, and
+`~/.local/state/signari/install.manifest` otherwise.
+
+To see what would go, without removing anything:
+
+```sh
+signari uninstall -dry-run
+```
+
+To remove it, run the command without `-dry-run`. It prints the same plan, and
+asks before it removes anything:
+
+```sh
+signari uninstall
+```
+
+In this example, uninstall stops and disables the service and removes its unit,
+the environment file, the certificate copies and the certbot hook, the logs, the
+program and the `signari` system account. A directory goes once it is empty, so a
+file you put there yourself keeps it.
+
+### The root key and the database
+
+Uninstall keeps the root key and the database unless you ask for them by name.
+Each is one half of the same backup, as [Back up the root key](#back-up-the-root-key)
+explains.
+
+To remove both, give `-delete-root-key` and `-drop-database`. At a terminal,
+uninstall asks you to type the key file's path and the database's name:
+
+```sh
+signari uninstall -delete-root-key -drop-database
+```
+
+In this example, uninstall drops the database before it deletes the key. If the
+database cannot be dropped, the key stays. The roles setup made in PostgreSQL go
+with the database, unless another database still uses them.
+
+With no terminal, such as in a script, give `-yes`. The first run prints a code
+and stops. Run it again with the code to go ahead:
+
+```sh
+signari uninstall -yes -delete-root-key -drop-database -confirm <code>
+```
+
+> [!WARNING]
+> Deleting the root key and keeping the database leaves its secrets unreadable
+> for good, so uninstall asks you to type a sentence saying so.
+
+What uninstall keeps stays listed in the manifest, so a later run can remove it.
 
 ## Next steps
 

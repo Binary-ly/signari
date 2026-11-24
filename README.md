@@ -10,10 +10,10 @@ beside it.
 > **Status: v0.1.0, the first release.** It runs, it is tested, and it is neither
 > certified nor independently audited yet. The OpenID Foundation's conformance plans
 > run whole in CI (`.github/workflows/conformance.yml`) and the suite has a runbook
-> here ([docs/runbook-public-conformance.md](docs/runbook-public-conformance.md)),
-> but certification has not been obtained. Read
-> [docs/security-review-asvs.md](docs/security-review-asvs.md) and
-> [docs/fips.md](docs/fips.md) before trusting it with anything that matters.
+> here ([exposing a deployment for conformance](docs/runbook-public-conformance.md)),
+> but certification has not been obtained. Read the
+> [OWASP ASVS 5.0 review](docs/security-review-asvs.md) and the
+> [FIPS 140-3 notes](docs/fips.md) before trusting it with anything that matters.
 
 ## Two pieces, one database
 
@@ -110,7 +110,7 @@ host networking, which Docker Desktop has from version 4.34 once "Enable host
 networking" is turned on under Settings, Resources, Network. The certificate under
 `deploy/tls` is for development and signed by a CA nobody else trusts. A data volume
 made before the engine served as `signari_engine` needs that role's password set once,
-as [deploy/postgres-init/20-engine-role.sh](deploy/postgres-init/20-engine-role.sh) says.
+as the [script that makes the role](deploy/postgres-init/20-engine-role.sh) says.
 
 ### From source
 
@@ -123,32 +123,32 @@ go build -o signari ./cmd/signari
 The root key seals every stored secret and is not kept in the database it
 protects. Lose it and the sealed data — signing keys, bind passwords, RADIUS
 secrets — cannot be recovered, so copy it off the machine once setup has made
-it. See [docs/configuration.md](docs/configuration.md) for every setting and
-[docs/runbook-backup-restore.md](docs/runbook-backup-restore.md) for why a
+it. See [the configuration reference](docs/configuration.md) for every setting and
+[Backup and restore](docs/runbook-backup-restore.md) for why a
 database backup alone is worthless.
 
-For the console, see [admin/README.md](admin/README.md). For Kubernetes, see
-[deploy/helm/signari/README.md](deploy/helm/signari/README.md).
+For the console, see [the console's guide](admin/README.md). For Kubernetes, see
+the [Helm chart](deploy/helm/signari/README.md).
 
 ## Documentation
 
-**[docs/README.md](docs/README.md)** indexes all ninety-odd pages by task.
+**[The documentation home](docs/README.md)** indexes all ninety-odd pages by task.
 The three you will reach for first:
 
 | | |
 |---|---|
-| [docs/configuration.md](docs/configuration.md) | Every environment variable |
-| [docs/cli.md](docs/cli.md) | Every command |
-| [docs/doctor.md](docs/doctor.md) | Whether this deployment is sound |
+| [Configuration](docs/configuration.md) | Every environment variable |
+| [Command reference](docs/cli.md) | Every command |
+| [Doctor](docs/doctor.md) | Whether this deployment is sound |
 
 Those three cannot rot: the engine's `internal/docsync` package fails the build
 when a command or a setting exists in code and not on its page.
 
 ## Contributing
 
-Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says what a
+Issues and pull requests are welcome. The [contributing guide](CONTRIBUTING.md) says what a
 pull request needs and how a first contribution signs the Contributor License
-Agreement; vulnerabilities go privately, as [SECURITY.md](SECURITY.md) explains.
+Agreement; vulnerabilities go privately, as the [security policy](SECURITY.md) explains.
 
 ## Licence
 
@@ -156,5 +156,5 @@ Agreement; vulnerabilities go privately, as [SECURITY.md](SECURITY.md) explains.
 talking to it over OIDC is use, not derivation, the same way running PostgreSQL
 does not license your schema. The obligation applies to modifying Signari itself
 and offering that modified version to others over a network. See
-[NOTICE.md](NOTICE.md), which also covers commercial licensing and the
+the [licensing notice](NOTICE.md), which also covers commercial licensing and the
 contribution terms that make it possible.

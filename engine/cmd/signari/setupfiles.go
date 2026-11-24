@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -212,6 +213,11 @@ func rootKeyFileState(path string) (exists bool, err error) {
 // writes them.
 var envKeys = []string{"SIGNARI_DSN", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ISSUER", "SIGNARI_ADDR"}
 
+// envOrder is every setting setup may write, in that order: the four it
+// always does, then those the TLS chosen needs (setuptls.go).
+var envOrder = append(slices.Clone(envKeys), "SIGNARI_TLS_CERT", "SIGNARI_TLS_KEY", "SIGNARI_TRUSTED_PROXIES",
+	"SIGNARI_CLIENT_IP_SOURCE")
+
 // envFile is an env file as setup reads one: its lines, kept as written, and
 // the settings in them.
 type envFile struct {
@@ -289,15 +295,21 @@ const envHeader = `# Signari's settings, written by signari setup. signari serve
 // missing and changes nothing else. added names those it added. A setting the
 // file holds with another value is the caller's to refuse before this.
 func (e envFile) render(want map[string]string) (content string, added []string, err error) {
+	return e.renderKeys(envOrder, fmt.Sprintf(envHeader, e.path), want)
+}
+
+// renderKeys is render for a file of other settings, in order, opened by
+// header when it is new: the compose project's .env (setupcompose.go).
+func (e envFile) renderKeys(order []string, header string, want map[string]string) (content string, added []string, err error) {
 	var b strings.Builder
 	if e.exists {
 		for _, l := range e.lines {
 			b.WriteString(l + "\n")
 		}
 	} else {
-		fmt.Fprintf(&b, envHeader, e.path)
+		b.WriteString(header)
 	}
-	for _, k := range envKeys {
+	for _, k := range order {
 		v, ok := want[k]
 		if !ok {
 			continue

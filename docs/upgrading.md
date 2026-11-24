@@ -24,12 +24,12 @@ allowed to keep running against it, and everything else is rolled back by
 restoring the backup taken before the upgrade.
 
 What each schema version changed, and whether the release before may keep
-serving it, is in [schema-versions.md](schema-versions.md). Read the versions
+serving it, is in [Schema versions](schema-versions.md). Read the versions
 between the one `migrate status` reports and the one the new binary expects.
 
 ## The order
 
-1. Back up: [runbook-backup-restore.md](runbook-backup-restore.md). That backup
+1. Back up: [Backup and restore](runbook-backup-restore.md). That backup
    is the rollback for any migration that is not compatible.
 2. Run `signari migrate up` with the **new** binary, once. Two at once take
    turns.
@@ -199,4 +199,4 @@ The fingerprint a migration recorded is compared only under the PostgreSQL
 major version that computed it, because a catalogue may render the same schema
 differently in another. After a major upgrade, `migrate status` says the ledger
 is not compared, and the comparison resumes with the next migration. See
-[schema-pinning.md](schema-pinning.md).
+[Pinning a build to its schema](schema-pinning.md).

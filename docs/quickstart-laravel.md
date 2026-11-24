@@ -62,8 +62,9 @@ says who signed in. For a certificate your machine does not trust, set
 
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/laravel-quickstart/Dockerfile) as `demo-laravel`, at
-`http://localhost:8095/login`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8095/login`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d

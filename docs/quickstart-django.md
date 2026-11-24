@@ -51,8 +51,9 @@ trust, give requests the certificate with `REQUESTS_CA_BUNDLE=<file.pem>`.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/django-quickstart/Dockerfile) as `demo-django`, the public client
 `demo-django` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
-`http://localhost:8093/login/`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8093/login/`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d

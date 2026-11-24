@@ -104,18 +104,25 @@ in to:
 
 ```sh
 git clone https://github.com/Binary-ly/signari && cd signari/deploy
-export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
-  SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
+cat > .env <<EOF
+SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
+SIGNARI_FIRST_EMAIL=you@example.com
+SIGNARI_TLS_CERT=/tls/engine.crt
+SIGNARI_TLS_KEY=/tls/engine.key
+EOF
 docker compose --profile first-run --profile demo up -d
 docker compose logs bootstrap     # the one-time link
 ```
 
-Open the link, set a password, and sign in at `http://localhost:8097/login`. The same
-profile runs the Express, Next.js, Django, Spring Boot and Laravel quickstarts on ports
-8091 to 8095; each guide's "In compose" section says which. The demo applications use
-host networking, which Docker Desktop has from version 4.34 once "Enable host
+Keep `.env`: every later start needs the same root key. Open the link, set a
+password, and sign in at `http://localhost:8097/login`. The same profile runs the
+Express, Next.js, Django, Spring Boot and Laravel quickstarts on ports 8091 to 8095;
+each guide's "In compose" section says which. The demo applications use host
+networking, which Docker Desktop has from version 4.34 once "Enable host
 networking" is turned on under Settings, Resources, Network. The certificate under
-`deploy/tls` is for development and signed by a CA nobody else trusts. A data volume
+`deploy/tls` is for development, so your browser warns about it once: accept it
+for `localhost`, and do not add its CA to your system's trusted authorities.
+[Your first application](docs/first-application.md) walks through all of it. A data volume
 made before the engine served as `signari_engine` needs that role's password set once,
 as the [script that makes the role](deploy/postgres-init/20-engine-role.sh) says.
 

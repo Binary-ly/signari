@@ -16,9 +16,10 @@ that would otherwise fail silently:
 - `issuer` — the public https URL clients reach the engine at. It is the `iss`
   claim in every token; changing it later breaks every relying party.
 - `secret.dsn` — the engine's PostgreSQL DSN, as `signari_engine`. The engine
-  refuses to start as a superuser or a `BYPASSRLS` role, which no organisation's
-  row-level security binds (`SIGNARI_ALLOW_RLS_BYPASS=1` under `extraEnv` starts
-  it anyway, with a warning).
+  refuses to start as a superuser, a `BYPASSRLS` role or one that may `SET ROLE`
+  to either, which would hand a compromised engine powers over the database
+  server it never needs (`SIGNARI_ALLOW_RLS_BYPASS=1` under `extraEnv` starts it
+  anyway, with a warning).
 - `secret.rootKey` — 32 random bytes, base64 (`head -c 32 /dev/urandom | base64`).
   A generated-on-boot key would invalidate every stored signing key on restart,
   so it must be supplied and stable.

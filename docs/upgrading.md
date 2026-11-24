@@ -124,17 +124,34 @@ author's to rule out.
 
 ## Serving as signari_engine
 
-From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN` signs
-in as, or acts as, a superuser or a role with `BYPASSRLS`. PostgreSQL's own words:
-"Superusers and roles with the BYPASSRLS attribute always bypass the row security
-system", so no organisation's policy binds such a role, and a query that leaves
-out its organisation reads every organisation's rows. v0.1.0's README and its compose
-file both served that way. Run `signari doctor` before you upgrade: it reports
-such a role as critical, and that is the deployment this section is for.
+From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN`, or
+`SIGNARI_READ_DSN` when the Admin API has a read replica, signs in as, acts as or
+may `SET ROLE` to a superuser or a role with `BYPASSRLS`. The reason is not
+row-level security: the engine's own role, `signari_engine`, reads every
+organisation by design. It is that a superuser can run programs and read files on
+the database server (`COPY ... PROGRAM`, `pg_read_server_files`), change the
+server's configuration (`ALTER SYSTEM`) and reach every database on the cluster,
+the console's admin schema among them, and a `BYPASSRLS` role passes every
+row-level policy on every table it may read. The engine needs none of that, so
+serving as either hands a compromised engine, or one SQL injection, powers it
+never uses. v0.1.0's README and its compose file both served as a superuser.
 
-Move it to `signari_engine`, which migration 0001 made and which the policies are
-written for, in either of two ways. Either way, keep the superuser for
-`signari migrate bootstrap` alone.
+v0.1.0's `signari doctor` cannot see this, so check before you upgrade with the
+connection the engine serves with now:
+
+```sh
+psql "$SIGNARI_DSN" -Atc "SELECT rolname FROM pg_roles WHERE (rolsuper OR rolbypassrls)
+  AND (rolname IN (session_user, current_user) OR pg_has_role(session_user, oid, 'SET'))"
+```
+
+In this example, nothing printed means the upgrade does not affect you. Any role
+it prints is one `serve` would refuse, and this section is for that deployment.
+From the release after v0.1.0, `signari doctor` reports the same thing as
+critical.
+
+Move it to `signari_engine`, which migration 0001 made, in either of two ways.
+Either way, keep the superuser for `signari migrate bootstrap` alone, and grant
+`signari_engine` no role it could `SET ROLE` to.
 
 **With `signari setup`**, against the database you have, on the machine that
 runs it. It reaches PostgreSQL as you over the local socket, or, run as root, as

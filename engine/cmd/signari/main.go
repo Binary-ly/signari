@@ -559,11 +559,13 @@ func run(args []string) (err error) {
 	adminInsecure := fs.Bool("admin-insecure", os.Getenv("SIGNARI_ADMIN_INSECURE") == "1",
 		"serve the admin API over plaintext HTTP (requires no -tls-cert; only safe on loopback behind a trusted terminator)")
 	// Refused unless asked for by name, as -admin-insecure is: a superuser or a
-	// BYPASSRLS role is bound by no organisation's row-level security, and
-	// serving as one is what every quick start here did until November 2026.
+	// BYPASSRLS role hands a compromised engine powers over the database server
+	// it never needs, and serving as one is what every quick start here did
+	// until November 2026.
 	allowRLSBypass := fs.Bool("allow-rls-bypass", os.Getenv("SIGNARI_ALLOW_RLS_BYPASS") == "1",
-		"`serve`: start even when the database role is a superuser or has BYPASSRLS, which no organisation's "+
-			"row-level security binds (or SIGNARI_ALLOW_RLS_BYPASS=1); serve as signari_engine instead")
+		"`serve`: start even when the database role (SIGNARI_DSN's, or SIGNARI_READ_DSN's) is a superuser, has "+
+			"BYPASSRLS or may SET ROLE to one, powers over the database server the engine never needs (or "+
+			"SIGNARI_ALLOW_RLS_BYPASS=1); serve as signari_engine instead")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -2865,30 +2867,56 @@ func serveAddr(flagValue string, given bool, getenv func(string) string) string 
 	return flagValue
 }
 
-// rlsBypassGate refuses to serve as a role row-level security does not bind,
-// unless allowed by name, and then says so once, loudly. The same answer as
-// `signari doctor`'s database finding, from the same query.
-func rlsBypassGate(ctx context.Context, conn *pgx.Conn, allow bool, log *slog.Logger) error {
+// rlsBypassGate refuses to serve as a privileged database role, unless
+// allowed by name, and then says so once, loudly. The same answer as `signari
+// doctor`'s database finding, from the same query. Its name is the flag's.
+//
+// Not because row-level security would bind the engine otherwise: it reads
+// every organisation by design (core.is_engine(), migration 0018). Because a
+// superuser, a BYPASSRLS role, or a role that may SET ROLE to either hands a
+// compromised engine, or one SQL injection, powers the engine never needs:
+// running programs and reading files on the database server (COPY ... PROGRAM,
+// pg_read_server_files), changing its configuration (ALTER SYSTEM), every
+// database on the cluster and the console's admin schema. setting names the
+// connection for the message: SIGNARI_DSN, or SIGNARI_READ_DSN's pool.
+func rlsBypassGate(ctx context.Context, conn *pgx.Conn, setting string, allow bool, log *slog.Logger) error {
 	session, current, err := doctor.ConnectionRoles(ctx, conn)
 	if err != nil {
-		return fmt.Errorf("reading which role the engine signs in as: %w", err)
+		return fmt.Errorf("reading which role %s signs in as: %w", setting, err)
 	}
-	role, unbound := doctor.UnboundRole(session, current)
+	role, privileged := doctor.PrivilegedRole(session, current)
 	switch {
-	case !unbound:
+	case !privileged:
 		return nil
 	case allow:
-		log.Warn("SERVING AS A ROLE ROW-LEVEL SECURITY DOES NOT BIND: the database connection signs in as, or acts as, "+
-			role.Name+", "+role.Kind()+", so a query that leaves out its organisation reads every tenant's rows. "+
-			"-allow-rls-bypass or SIGNARI_ALLOW_RLS_BYPASS=1 asked for this; serve as signari_engine instead.",
-			"role", role.Name)
+		log.Warn("SERVING AS A PRIVILEGED DATABASE ROLE: "+setting+" signs in as, acts as or may become "+
+			role.Name+", "+role.Kind()+", which hands a compromised engine powers it never needs over the "+
+			"database server. -allow-rls-bypass or SIGNARI_ALLOW_RLS_BYPASS=1 asked for this; serve as "+
+			"signari_engine instead.", "role", role.Name, "setting", setting)
 		return nil
 	}
-	return fmt.Errorf("not serving: the database connection signs in as, or acts as, %s, %s, which no "+
-		"organisation's row-level security binds, so a query that leaves out its organisation would read every "+
-		"tenant's rows. Serve as signari_engine: `signari setup` arranges it against this database and writes "+
-		"SIGNARI_DSN for it, and docs/upgrading.md says how by hand. To serve this way regardless, give "+
-		"-allow-rls-bypass or set SIGNARI_ALLOW_RLS_BYPASS=1", role.Name, role.Kind())
+	return fmt.Errorf("not serving: %s signs in as, acts as or may become %s, %s, which would hand a "+
+		"compromised engine, or one SQL injection, powers it never needs: running programs and reading files on "+
+		"the database server, changing its configuration, and reaching every database on the cluster. Serve as "+
+		"signari_engine, with no role it may SET ROLE to: `signari setup` arranges it against this database and "+
+		"writes SIGNARI_DSN for it, and docs/upgrading.md says how by hand. To serve this way regardless, give "+
+		"-allow-rls-bypass or set SIGNARI_ALLOW_RLS_BYPASS=1", setting, role.Name, role.Kind())
+}
+
+// readPoolGate holds SIGNARI_READ_DSN, the Admin API's read replica, to what
+// rlsBypassGate holds SIGNARI_DSN to: it is a second way into the same data,
+// and a superuser there is as much a superuser as on the primary.
+func readPoolGate(ctx context.Context, readDSN string, allow bool, log *slog.Logger) error {
+	cfg, err := pgx.ParseConfig(readDSN)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_READ_DSN: %w", err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_READ_DSN: %w", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return rlsBypassGate(ctx, conn, "SIGNARI_READ_DSN", allow, log)
 }
 
 func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure, allowRLSBypass bool) error {
@@ -2918,9 +2946,16 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	if err := migrate.Verify(ctx, conn); err != nil {
 		return err
 	}
-	// And as a role the organisations' row-level security binds.
-	if err := rlsBypassGate(ctx, conn, allowRLSBypass, log); err != nil {
+	// And as a role with no power over the database server it does not need,
+	// on both of its connections: the Admin API's read replica, when it has
+	// one, is checked here, before anything else is started, as the primary is.
+	if err := rlsBypassGate(ctx, conn, "SIGNARI_DSN", allowRLSBypass, log); err != nil {
 		return err
+	}
+	if readDSN := os.Getenv("SIGNARI_READ_DSN"); readDSN != "" && adminAddr != "" {
+		if err := readPoolGate(ctx, readDSN, allowRLSBypass, log); err != nil {
+			return err
+		}
 	}
 	// And under GODEBUG=fips140=only, nothing configured that the module would
 	// refuse by panicking a request (3.11).

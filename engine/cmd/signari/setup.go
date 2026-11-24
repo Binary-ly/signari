@@ -674,8 +674,9 @@ func (r *setupRun) inspect(ctx context.Context) error {
 			return fmt.Errorf("%s: %w", r.prior.path, err)
 		}
 		if login != engineRole {
-			return fmt.Errorf("%s says SIGNARI_DSN signs in as %s, and setup has the engine serve as %s, the role "+
-				"row-level security is written for: change it there, or give -env-file for a new file",
+			return fmt.Errorf("%s says SIGNARI_DSN signs in as %s, and setup has the engine serve as %s, which "+
+				"holds no power over the database server it does not need: change it there, or give -env-file for a "+
+				"new file",
 				r.prior.path, login, engineRole)
 		}
 		r.engineDSN, r.password, r.engineHost = dsn, password, host
@@ -916,8 +917,14 @@ func (r *setupRun) refuseWhatWouldFail(ctx context.Context) error {
 		return nil
 	}
 	if r.pg.roleSuper || r.pg.roleBypass {
-		return fmt.Errorf("%s is a superuser or may bypass row-level security, so the policies would bind nothing "+
-			"it does: ALTER ROLE %s NOSUPERUSER NOBYPASSRLS, then run setup again", engineRole, engineRole)
+		return fmt.Errorf("%s is a superuser or has BYPASSRLS, powers over the database server the engine never "+
+			"needs, and serve would refuse it: ALTER ROLE %s NOSUPERUSER NOBYPASSRLS, then run setup again",
+			engineRole, engineRole)
+	}
+	if r.pg.roleReaches != "" {
+		return fmt.Errorf("%s may SET ROLE to %s, which is a superuser or has BYPASSRLS, so one statement gives "+
+			"the engine powers it never needs, and serve would refuse it: REVOKE %s FROM %s, then run setup again",
+			engineRole, r.pg.roleReaches, r.pg.roleReaches, engineRole)
 	}
 	if !r.passwordOK && r.pg.roleVerifier != "" && len(r.pg.roleElsewhere) > 0 {
 		return fmt.Errorf("%s already has a password, and the database(s) %s use the role, so a new one would "+
@@ -1683,7 +1690,7 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 		return err
 	}
 	add(!privileged, "the engine signs in as "+session, when(privileged,
-		"it, or "+current+", is a superuser or may bypass row-level security"))
+		"it, or "+current+", is a superuser, has BYPASSRLS or may SET ROLE to one, which serve refuses"))
 	if err := migrate.Verify(ctx, conn); err != nil {
 		add(false, "the schema", err.Error())
 		return report()

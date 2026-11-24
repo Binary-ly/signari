@@ -19,7 +19,7 @@ services:
       # The console's role, made with this password on first start; see postgres-init/.
       SIGNARI_ADMIN_DB_PASSWORD: ${SIGNARI_ADMIN_DB_PASSWORD:-devconsole}
       # The engine's, likewise: the engine serves as signari_engine, never as the
-      # superuser above, which no organisation's row-level security binds.
+      # superuser above, whose powers over the database server it never needs.
       SIGNARI_ENGINE_DB_PASSWORD: ${SIGNARI_ENGINE_DB_PASSWORD:-devengine}
     healthcheck:
       # The engine must not start against a database that is still initialising:

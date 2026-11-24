@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 )
@@ -24,9 +25,10 @@ import (
 // The PostgreSQL half of `signari setup`. A superuser's connection is used for
 // three things -- the database, migration 0001 and the engine role's password
 // -- and nothing else, and is never written anywhere. Everything after runs as
-// signari_engine, the role the engine then serves as: the one role every
-// organisation's row-level security policy exempts (migration 0018), and one
-// that, unlike a superuser, the policies still bind wherever it does not.
+// signari_engine, the role the engine then serves as: it reads every
+// organisation by design, as every organisation's policy lets it through
+// (migration 0018), and unlike a superuser it holds no power over the database
+// server beyond its own tables (doctor.Role says which powers).
 
 // engineRole is the role migration 0001 makes for the engine.
 const engineRole = "signari_engine"
@@ -194,6 +196,9 @@ type pgFacts struct {
 	roleExists bool
 	roleSuper  bool
 	roleBypass bool
+	// roleReaches is a superuser or BYPASSRLS role signari_engine may SET ROLE
+	// to, which serve refuses as it refuses one of those (doctor.Role).
+	roleReaches string
 	// roleVerifier is signari_engine's stored password, "" for none.
 	roleVerifier string
 	// roleElsewhere are the other databases signari_engine owns or holds
@@ -232,6 +237,13 @@ func readPGFacts(ctx context.Context, su *pgx.Conn, database string) (pgFacts, e
 		p.roleExists = true
 		if verifier != nil {
 			p.roleVerifier = *verifier
+		}
+		err := su.QueryRow(ctx, `SELECT r.rolname FROM pg_catalog.pg_roles r
+			WHERE (r.rolsuper OR r.rolbypassrls) AND r.rolname <> $1
+			  AND pg_catalog.pg_has_role($1, r.oid, 'SET')
+			ORDER BY r.rolsuper DESC, r.rolname LIMIT 1`, engineRole).Scan(&p.roleReaches)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return p, err
 		}
 		rows, err := su.Query(ctx, `
 			SELECT DISTINCT d.datname FROM pg_catalog.pg_shdepend s
@@ -599,12 +611,14 @@ func setEnginePassword(ctx context.Context, su *pgx.Conn, verifier string) error
 	return err
 }
 
-// roleAttrs reads whether the role this connection signed in as, or acts as,
-// is a superuser or may bypass row-level security.
+// roleAttrs reads whether the role this connection signed in as, acts as or
+// may become is privileged, as serve judges it: the same query, the same
+// answer (doctor.ConnectionRoles, doctor.PrivilegedRole).
 func roleAttrs(ctx context.Context, conn *pgx.Conn) (session, current string, privileged bool, err error) {
-	err = conn.QueryRow(ctx, `
-		SELECT session_user, current_user,
-		       (SELECT bool_or(rolsuper OR rolbypassrls) FROM pg_catalog.pg_roles
-		         WHERE rolname IN (session_user, current_user))`).Scan(&session, &current, &privileged)
-	return
+	s, c, err := doctor.ConnectionRoles(ctx, conn)
+	if err != nil {
+		return "", "", false, err
+	}
+	_, privileged = doctor.PrivilegedRole(s, c)
+	return s.Name, c.Name, privileged, nil
 }

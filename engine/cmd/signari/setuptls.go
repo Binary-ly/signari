@@ -448,8 +448,7 @@ func (r *setupRun) tlsCopyDir() string {
 // serviceOwner is the user the service runs as, by the directory the
 // installer made for it, and whether there is one other than root.
 func (r *setupRun) serviceOwner() (uid, gid int, ok bool) {
-	uid, gid, ok = dirOwner(setupConfigDir(r.h.euid, r.h.getenv, r.h.home))
-	return uid, gid, ok && uid != 0
+	return serviceAccount(setupConfigDir(r.h.euid, r.h.getenv, r.h.home))
 }
 
 // inspectTLS reads the certificate and key the engine is to serve, refusing
@@ -549,12 +548,13 @@ func (r *setupRun) copyTLS(_ context.Context) error {
 	if err := mkdirAllRecorded(dir, setupDirMode(r.h.euid), &r.madeDirs); err != nil {
 		return err
 	}
-	// The copies take the owner of their directory (writeFileAtomic), so the
-	// directory is the service's first.
-	if uid, gid, ok := r.serviceOwner(); ok {
-		if owner, _, _ := dirOwner(dir); owner != uid {
-			if err := os.Chown(dir, uid, gid); err != nil {
-				return fmt.Errorf("giving %s to the service's user: %w", dir, err)
+	// The copies go to the account the directory names (writeFileAtomic), so
+	// it is root:signari first, as /etc/signari is: the service reads them and
+	// replaces none.
+	if _, gid, ok := r.serviceOwner(); ok {
+		if _, group, _ := dirOwner(dir); group != gid {
+			if err := os.Chown(dir, 0, gid); err != nil {
+				return fmt.Errorf("giving %s to the service's group: %w", dir, err)
 			}
 		}
 	}

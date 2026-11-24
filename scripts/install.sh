@@ -1,13 +1,19 @@
 #!/bin/sh
-# Signari's installer, served as https://signari.dev/install.
+# signari-install-script
 #
-#   curl -fsSL https://signari.dev/install | sh
-#   curl -fsSL https://signari.dev/install | sh -s -- --yes --issuer https://login.example.com --email you@example.com
+# Signari's installer, fetched from the repository until https://signari.dev
+# serves it (INSTALL_URL below is the one line to change when it does):
 #
-# Read it before you run it. Download it, read it, see what it would do, then
-# run it:
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --yes --issuer https://login.example.com --email you@example.com
 #
-#   curl -fsSL https://signari.dev/install -o install.sh
+# The second line above marks the real script: a page served in its place,
+# such as a parked domain's HTML, lacks it, and nothing in this file can refuse
+# to run when this file is not what arrived. Read it before you run it.
+# Download it, check that line, see what it would do, then run it:
+#
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh -o install.sh
+#   sed -n 2p install.sh           # signari-install-script
 #   less install.sh
 #   sh install.sh --dry-run        # every command it would run, and none run
 #   sh install.sh
@@ -21,7 +27,8 @@
 #      nothing unless the bundle shows the release workflow signed it too.
 #      There is no option to skip either check
 #   3. installs it to /usr/local/bin as root, else to ~/.local/bin
-#   4. as root under systemd, makes a signari system user, /etc/signari (0750)
+#   4. as root under systemd, makes a signari system user, /etc/signari
+#      (root:signari 0750)
 #      and a hardened unit, signari.service, which it does not start
 #   5. runs `signari setup`, which asks at the terminal what it cannot work out
 #      (through /dev/tty when this script's input is the pipe), and with no
@@ -43,6 +50,7 @@
 # Options:
 #   --version vX.Y.Z           the release to install (default: the latest)
 #   --dry-run                  print every command instead of running it
+#   --allow-downgrade          install a release older than the one installed
 #   --docker                   build the release's image and run it with Docker Compose
 #   --dir PATH                 with --docker: the compose project's directory (default ~/signari)
 #   --yes                      passed to setup: ask nothing, take the defaults
@@ -61,6 +69,9 @@
 # short part way defines some of them and runs nothing.
 
 REPO="Binary-ly/signari"
+# Where this script is fetched from. The repository's copy until
+# https://signari.dev serves the script itself, with no page in its place.
+INSTALL_URL="https://raw.githubusercontent.com/$REPO/main/scripts/install.sh"
 RELEASES="https://github.com/$REPO/releases"
 ARCHIVES="https://github.com/$REPO/archive/refs/tags"
 # Who signs a release (.github/workflows/release.yml), as SECURITY.md checks it.
@@ -68,6 +79,8 @@ SIGNER='^https://github\.com/Binary-ly/signari/\.github/workflows/release\.yml@r
 SIGNER_ISSUER="https://token.actions.githubusercontent.com"
 
 DRY_RUN=0
+ALLOW_DOWNGRADE=0
+REPLACED=0
 DOCKER=0
 YES=0
 VERSION=""
@@ -224,11 +237,12 @@ run() {
 }
 
 usage() {
+  printf 'usage: sh install.sh [options]      or      curl -fsSL %s | sh -s -- [options]\n' "$INSTALL_URL"
   cat <<'EOF'
-usage: sh install.sh [options]      or      curl -fsSL https://signari.dev/install | sh -s -- [options]
 
   --version vX.Y.Z           the release to install (default: the latest)
   --dry-run                  print every command instead of running it
+  --allow-downgrade          install a release older than the one installed
   --docker                   build the release's image and run it with Docker Compose
   --dir PATH                 with --docker: the compose project's directory (default ~/signari)
   --yes                      passed to setup: ask nothing, take the defaults
@@ -255,6 +269,7 @@ parse_args() {
       --version) need_value "$@"; VERSION=$2; shift 2 ;;
       --version=*) VERSION=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
       --docker) DOCKER=1; shift ;;
       --yes | -y) YES=1; shift ;;
       --issuer) need_value "$@"; ISSUER=$2; shift 2 ;;
@@ -402,6 +417,18 @@ verify() {
   fi
 }
 
+# version_lt says whether release $1 is older than release $2, each vX.Y.Z.
+version_lt() {
+  awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) exit 0
+      if (x[i] + 0 > y[i] + 0) exit 1
+    }
+    exit 1
+  }'
+}
+
 install_binary() {
   if [ "$(id -u)" = 0 ]; then
     bindir=/usr/local/bin
@@ -409,6 +436,19 @@ install_binary() {
     bindir="$HOME/.local/bin"
   fi
   BIN="$bindir/signari"
+  # Never back to an older release unless asked: its schema may be behind the
+  # database's, which it would refuse to serve.
+  if [ -x "$BIN" ] && [ "$ALLOW_DOWNGRADE" != 1 ]; then
+    have_v=$("$BIN" version 2>/dev/null | awk '$1 == "version" {print $2; exit}')
+    case $have_v in
+      v[0-9]*)
+        if version_lt "$VERSION" "$have_v"; then
+          die "$BIN is $have_v, newer than $VERSION, so nothing was installed: give --allow-downgrade to" \
+            "install $VERSION over it, once you know its schema is not behind the database's"
+        fi
+        ;;
+    esac
+  fi
   if [ "$DRY_RUN" != 1 ] && [ -x "$BIN" ] && [ "$(sha256_of "$BIN" 2>/dev/null)" = "$SUM" ]; then
     say "$BIN is $VERSION already"
     log "skip: $BIN is $VERSION already"
@@ -418,6 +458,7 @@ install_binary() {
     if [ "$DRY_RUN" != 1 ]; then
       say "installed $BIN"
       log "installed $BIN"
+      REPLACED=1
     fi
   fi
   record binary "$BIN"
@@ -441,7 +482,7 @@ write_unit() {
     return 0
   fi
   cat >"$TMP/signari.service" <<EOF
-# Written by the Signari installer (https://signari.dev/install). A later run
+# Written by the Signari installer ($INSTALL_URL). A later run
 # replaces this file while that first line is here; take it out to keep edits.
 [Unit]
 Description=Signari identity provider
@@ -503,8 +544,9 @@ EOF
 }
 
 # As root under systemd: the service's own user, its directory and its unit.
-# The directory is made for the user, and setup, run as root, gives a file it
-# makes there to the directory's owner, so the service can read its own key.
+# The directory is root:signari 0750: the service can read what is in it and
+# replace none of it. setup, run as root, gives a file it makes there to the
+# account named as the directory's group, so the service can read its own key.
 service() {
   if [ "$(id -u)" != 0 ] || [ ! -d /run/systemd/system ]; then
     return 0
@@ -520,8 +562,8 @@ service() {
     record user signari
   fi
   if [ ! -d /etc/signari ]; then
-    run install -d -m 0750 -o signari -g signari /etc/signari || die "could not make /etc/signari"
-    log "made /etc/signari, 0750, for the signari user"
+    run install -d -m 0750 -o root -g signari /etc/signari || die "could not make /etc/signari"
+    log "made /etc/signari, root:signari 0750"
     record dir /etc/signari
   fi
   write_unit
@@ -553,9 +595,11 @@ run_setup() {
   # A release from before setup existed (v0.1.0) installs, and is set up by hand.
   if ! "$BIN" help setup >/dev/null 2>&1; then
     say ""
-    say "Signari $VERSION is installed at $BIN, and has no setup command: it came in a later"
-    say "release. Set this one up as its README's quick start says:"
+    say "Signari $VERSION is installed at $BIN, and has no setup command, which comes in the"
+    say "release after v0.1.0. Set this one up by hand, as its README's quick start says:"
     say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+    say "or, to use signari setup before that release, build main from source:"
+    say "https://github.com/$REPO/blob/main/docs/installation.md#from-source"
     log "skip: $VERSION has no setup command, so it is set up by hand"
     return 0
   fi
@@ -739,8 +783,9 @@ offer_source() {
   say "  go build -o signari ./cmd/signari"
   say "  ./signari setup"
   say ""
-  say "A release from before setup existed, as v0.1.0 is, has no setup command: follow that"
-  say "release's README instead, at https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+  say "v0.1.0 has no setup command, which comes in the release after it: build main instead"
+  say "(--branch main) to use it, or follow v0.1.0's README, at"
+  say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
 }
 
 # elsewhere says plainly that there is no binary here, and offers what can run
@@ -754,7 +799,7 @@ elsewhere() {
     say "Docker is here: run this again with --docker, and it builds the release's image and"
     say "runs it with Docker Compose, its own PostgreSQL beside it:"
     say ""
-    say "  curl -fsSL https://signari.dev/install | sh -s -- --docker"
+    say "  curl -fsSL $INSTALL_URL | sh -s -- --docker"
     offer_docker
     offered=1
   fi
@@ -793,6 +838,13 @@ main() {
   install_binary
   service
   run_setup
+  # A running service goes on running the binary it started with.
+  if [ "$REPLACED" = 1 ] && have systemctl && systemctl is-active --quiet signari 2>/dev/null; then
+    say ""
+    say "signari.service is still running the release it started with: restart it to run $VERSION,"
+    say "  systemctl restart signari"
+    log "the service is active and runs the release it started with; it needs a restart"
+  fi
   log "result ok"
 }
 

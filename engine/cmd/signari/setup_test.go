@@ -346,6 +346,35 @@ func TestTheEnvFileIsWhatServeReads(t *testing.T) {
 	if err != nil || len(added) != 1 || added[0] != "SIGNARI_ADDR" || !strings.Contains(filled, "SIGNARI_SMTP_HOST=") {
 		t.Errorf("filling one missing setting: %v, added %v:\n%s", err, added, filled)
 	}
+	// A setting left blank, such as a SIGNARI_DSN= somebody emptied, is
+	// missing, and its line is written again in place with the value: one line
+	// for it, and the rest of the file as it was.
+	blank := back
+	blank.values = map[string]string{}
+	for k, v := range back.values {
+		blank.values[k] = v
+	}
+	blank.values["SIGNARI_DSN"] = ""
+	blank.lines = nil
+	for _, l := range back.lines {
+		if strings.HasPrefix(l, "SIGNARI_DSN=") {
+			l = "SIGNARI_DSN="
+		}
+		blank.lines = append(blank.lines, l)
+	}
+	refilled, added, err := blank.render(want)
+	if err != nil || len(added) != 1 || added[0] != "SIGNARI_DSN" ||
+		strings.Count(refilled, "SIGNARI_DSN=") != 1 || !strings.Contains(refilled, "SIGNARI_DSN='"+want["SIGNARI_DSN"]+"'\n") {
+		t.Errorf("filling a blanked SIGNARI_DSN: %v, added %v:\n%s", err, added, refilled)
+	}
+	if strings.Index(refilled, "SIGNARI_DSN=") > strings.Index(refilled, "SIGNARI_ROOT_KEY_FILE=") {
+		t.Errorf("the blanked line was not written again where it stood:\n%s", refilled)
+	}
+	r := &setupRun{prior: blank, engineDSN: want["SIGNARI_DSN"], a: setupAnswers{rootKeyFile: want["SIGNARI_ROOT_KEY_FILE"],
+		issuer: want["SIGNARI_ISSUER"], addr: want["SIGNARI_ADDR"]}}
+	if r.envComplete() {
+		t.Error("an env file with SIGNARI_DSN blank reads as complete, so the step that writes it would be skipped")
+	}
 	conflict := map[string]string{}
 	for k, v := range want {
 		conflict[k] = v
@@ -414,6 +443,25 @@ func TestTheEngineDSN(t *testing.T) {
 		if got := engineDSN(parse(given), 5433, "signari", "PW"); got != want {
 			t.Errorf("from %s:\n  got  %s\n  want %s", given, got, want)
 		}
+	}
+
+	// A space in a value is written %20, not +, which pgx 5.11 and later read
+	// as a +; a + is %2B; and pgx reads both back as they were given.
+	su := parse("postgres://postgres@db.example.com/x?sslmode=require&options=-c%20search_path%3Dauth&application_name=a+b")
+	got := engineDSN(su, 5432, "signari", "PW")
+	if strings.Contains(got, "+") || !strings.Contains(got, "options=-c%20search_path%3Dauth") ||
+		!strings.Contains(got, "application_name=a%2Bb") {
+		t.Errorf("the engine DSN writes its query as %s", got)
+	}
+	cfg, err := pgx.ParseConfig(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RuntimeParams["options"] != "-c search_path=auth" || cfg.RuntimeParams["application_name"] != "a+b" {
+		t.Errorf("pgx reads the engine DSN's query as %v", cfg.RuntimeParams)
+	}
+	if strings.Contains(su.desc, "+") || !strings.Contains(su.desc, "%20") {
+		t.Errorf("the superuser is named %s", su.desc)
 	}
 }
 
@@ -770,10 +818,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	h := testHost(t)
 	pgPassword := "pgpassword-" + hex.EncodeToString(tail)
 	h.getenv = func(k string) string { return map[string]string{"PGPASSWORD": pgPassword}[k] }
-	run := func() setupResult {
+	runWith := func(f setupFlags) setupResult {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if err := setupCmd(ctx, &stdout, &stderr, h, flags); err != nil {
+		if err := setupCmd(ctx, &stdout, &stderr, h, f); err != nil {
 			t.Fatalf("setup: %v\n%s", err, stderr.String())
 		}
 		var res setupResult
@@ -782,6 +830,7 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 		}
 		return res
 	}
+	run := func() setupResult { t.Helper(); return runWith(flags) }
 	states := func(res setupResult) map[string]string {
 		m := map[string]string{}
 		for _, s := range res.Steps {
@@ -886,6 +935,35 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 		WHERE i.issuer = $1`, issuer).Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	// Before that, somebody invited later, through the Admin API, signs up
+	// first. A run that names nobody makes nobody the owner: the
+	// organisation's first invitation, bootstrap's, says who the first
+	// administrator is, and the later one's holder is not them.
+	if _, err := db.Exec(ctx, `INSERT INTO core.invitations (org_id, token_hash, email, created_at, expires_at)
+		VALUES ($1::uuid, sha256(gen_random_uuid()::text::bytea), 'later@example.test', now() + interval '1 second',
+		        now() + interval '1 day')`, org); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO core.users (org_id, email, user_handle)
+		VALUES ($1::uuid, 'later@example.test', sha256('l'::bytea) || sha256($1::text::bytea))`, org); err != nil {
+		t.Fatal(err)
+	}
+	unnamed := flags
+	unnamed.email, unnamed.given, unnamed.args = "", map[string]bool{}, map[string]string{}
+	for k, v := range flags.given {
+		if k != "email" {
+			unnamed.given[k], unnamed.args[k] = v, flags.args[k]
+		}
+	}
+	if got := states(runWith(unnamed))["owner"]; got != "waiting" {
+		t.Errorf("with a later invitee signed up and the first administrator not, the owner's step is %s", got)
+	}
+	var anyOwner int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM core.admin_role_bindings WHERE org_id = $1::uuid
+		AND role = 'org-owner'`, org).Scan(&anyOwner); err != nil || anyOwner != 0 {
+		t.Fatalf("%d org-owner bindings after a run that named nobody, with only a later invitee signed up (%v)",
+			anyOwner, err)
+	}
 	if _, err := db.Exec(ctx, `INSERT INTO core.users (org_id, email, user_handle)
 		VALUES ($1::uuid, 'first@example.test', sha256('h'::bytea) || sha256($1::text::bytea))`, org); err != nil {
 		t.Fatal(err)
@@ -901,6 +979,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	}
 	if owners != 1 {
 		t.Errorf("%d org-owner bindings for the first person, want 1", owners)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM core.admin_role_bindings WHERE org_id = $1::uuid
+		AND role = 'org-owner'`, org).Scan(&anyOwner); err != nil || anyOwner != 1 {
+		t.Errorf("%d org-owner bindings in the organisation, want the first person's alone (%v)", anyOwner, err)
 	}
 	discard.Reset()
 	if err := setupCmd(ctx, &discard, &discard, h, check); err != nil {
@@ -935,8 +1017,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 			t.Errorf("the log holds %s:\n%s", what, logged)
 		}
 	}
-	for want, n := range map[string]int{"==== signari setup": 4, "result ok": 4, "done  database": 1,
-		"skip  database": 3, "done  first-admin": 1, "invite=…": 1, "wait  owner": 2, "done  owner": 1,
+	// Five runs: the first, the second, the one that names nobody while a later
+	// invitee has an account, the third and the fourth.
+	for want, n := range map[string]int{"==== signari setup": 5, "result ok": 5, "done  database": 1,
+		"skip  database": 4, "done  first-admin": 1, "invite=…": 1, "wait  owner": 3, "done  owner": 1,
 		"skip  owner": 1} {
 		if got := strings.Count(logged, want); got != n {
 			t.Errorf("the log has %q %d times, want %d:\n%s", want, got, n, logged)
@@ -990,6 +1074,26 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	if err := admin.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = $1`,
 		engineRole).Scan(&roles); err != nil || roles != 1 {
 		t.Errorf("uninstall dropped %s, which it did not make: %v", engineRole, err)
+	}
+}
+
+// A service that is running is told to restart, not to start: it goes on
+// running the binary and the settings it started with, so an upgrade, or an
+// env file the run changed, takes effect only once it restarts.
+func TestARunningServiceIsToldToRestart(t *testing.T) {
+	r := &setupRun{h: setupHost{unitInstalled: true}, a: setupAnswers{envFile: "/etc/signari/signari.env"}}
+	if got := r.startCommand(); got != "systemctl enable --now signari" {
+		t.Errorf("a service that is not running: %q", got)
+	}
+	r.h.serviceActive = true
+	if got := r.startCommand(); got != "systemctl restart signari" {
+		t.Errorf("a running service: %q", got)
+	}
+	var out bytes.Buffer
+	r.out = &out
+	r.printSummary()
+	if !strings.Contains(out.String(), "Restart it") || strings.Contains(out.String(), "Start it") {
+		t.Errorf("the summary for a running service:\n%s", out.String())
 	}
 }
 

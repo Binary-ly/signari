@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"signari.dev/engine/internal/doctor"
 	"signari.dev/engine/internal/keys"
 	"signari.dev/engine/internal/migrate"
 )
@@ -24,14 +25,16 @@ import (
 // The PostgreSQL half of `signari setup`. A superuser's connection is used for
 // three things -- the database, migration 0001 and the engine role's password
 // -- and nothing else, and is never written anywhere. Everything after runs as
-// signari_engine, the role the engine then serves as: the one role every
-// organisation's row-level security policy exempts (migration 0018), and one
-// that, unlike a superuser, the policies still bind wherever it does not.
+// signari_engine, the role the engine then serves as: it reads every
+// organisation by design, as every organisation's policy lets it through
+// (migration 0018), and unlike a superuser it holds no power over the database
+// server beyond its own tables (doctor.Role says which powers).
 
 // engineRole is the role migration 0001 makes for the engine.
 const engineRole = "signari_engine"
 
-// pgSuperuser is a way to reach PostgreSQL as a role that may create roles.
+// pgSuperuser is a way to reach PostgreSQL as a superuser, which migration
+// 0001 needs and setup checks for (setupRun.inspectServer).
 type pgSuperuser struct {
 	cfg *pgx.ConnConfig
 	// query is what a URL the operator gave asked of the connection (sslmode,
@@ -81,15 +84,17 @@ func superuserFromURL(u *url.URL) (*pgSuperuser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the superuser URL: %w", err)
 	}
-	q := u.Query()
+	// Read as pgx reads it, so a + in a value stays a +, and written back the
+	// same way (encodeQuery).
+	q := queryValues(u.RawQuery)
 	// Named without its password, wherever the URL carried one.
 	shown := *u
 	if shown.User != nil {
 		shown.User = url.User(shown.User.Username())
 	}
-	sq := shown.Query()
+	sq := queryValues(shown.RawQuery)
 	sq.Del("password")
-	shown.RawQuery = sq.Encode()
+	shown.RawQuery = encodeQuery(sq)
 	return &pgSuperuser{cfg: cfg, query: q, desc: "at " + shown.String(), socket: strings.HasPrefix(cfg.Host, "/")}, nil
 }
 
@@ -194,6 +199,9 @@ type pgFacts struct {
 	roleExists bool
 	roleSuper  bool
 	roleBypass bool
+	// roleReaches is a superuser or BYPASSRLS role signari_engine may SET ROLE
+	// to, which serve refuses as it refuses one of those (doctor.Role).
+	roleReaches string
 	// roleVerifier is signari_engine's stored password, "" for none.
 	roleVerifier string
 	// roleElsewhere are the other databases signari_engine owns or holds
@@ -232,6 +240,13 @@ func readPGFacts(ctx context.Context, su *pgx.Conn, database string) (pgFacts, e
 		p.roleExists = true
 		if verifier != nil {
 			p.roleVerifier = *verifier
+		}
+		err := su.QueryRow(ctx, `SELECT r.rolname FROM pg_catalog.pg_roles r
+			WHERE (r.rolsuper OR r.rolbypassrls) AND r.rolname <> $1
+			  AND pg_catalog.pg_has_role($1, r.oid, 'SET')
+			ORDER BY r.rolsuper DESC, r.rolname LIMIT 1`, engineRole).Scan(&p.roleReaches)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return p, err
 		}
 		rows, err := su.Query(ctx, `
 			SELECT DISTINCT d.datname FROM pg_catalog.pg_shdepend s
@@ -410,10 +425,13 @@ type dbFacts struct {
 	orgID   string
 	peopled bool
 	// linkUntil is when the latest open one-time link expires, and linkEmail
-	// whom it is for; lastEmail is whom the latest link was for, open or not.
-	linkUntil time.Time
-	linkEmail string
-	lastEmail string
+	// whom it is for. firstEmail is whom the organisation's first invitation
+	// was for: bootstrap's own, made with the organisation, before anybody
+	// could invite anyone else, and the one setup reissues to the same address.
+	// It, and never a later invitation's, says who the first administrator is.
+	linkUntil  time.Time
+	linkEmail  string
+	firstEmail string
 	// owners counts the organisation's org-owner bindings: the role that is
 	// every administrative permission in it, which the console and the Admin
 	// API read a person's rights from (adminapi.Roles).
@@ -505,8 +523,11 @@ func readDBFacts(ctx context.Context, conn *pgx.Conn, issuer string) (dbFacts, e
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return d, err
 		}
+		// The first, by when it was made: a later invitation, from the Admin API
+		// or the console, is somebody else's, and making its holder the
+		// organisation's owner would hand them every right in it.
 		err = conn.QueryRow(ctx, `SELECT coalesce(email, '') FROM core.invitations WHERE org_id = $1::uuid
-			ORDER BY created_at DESC LIMIT 1`, d.orgID).Scan(&d.lastEmail)
+			ORDER BY created_at, id LIMIT 1`, d.orgID).Scan(&d.firstEmail)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return d, err
 		}
@@ -554,8 +575,36 @@ func engineDSN(su *pgSuperuser, port int, database, password string) string {
 		q.Set("sslmode", "disable")
 	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword(engineRole, password),
-		Host: net.JoinHostPort(host, strconv.Itoa(p)), Path: "/" + database, RawQuery: q.Encode()}
+		Host: net.JoinHostPort(host, strconv.Itoa(p)), Path: "/" + database, RawQuery: encodeQuery(q)}
 	return u.String()
+}
+
+// queryValues reads a URL's query as pgx 5.11 and later read a connection
+// URL's: percent-escapes undone, and a + kept as a +, where url.ParseQuery
+// would take it for a space.
+func queryValues(raw string) url.Values {
+	q := url.Values{}
+	for _, kv := range strings.Split(raw, "&") {
+		if kv == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(kv, "=")
+		if uk, err := url.PathUnescape(k); err == nil {
+			k = uk
+		}
+		if uv, err := url.PathUnescape(v); err == nil {
+			v = uv
+		}
+		q.Add(k, v)
+	}
+	return q
+}
+
+// encodeQuery writes q so that any pgx reads it back as it is: a space as
+// %20, not url.Values.Encode's +, which pgx 5.11 and later read as a +. A +
+// in a value is %2B either way.
+func encodeQuery(q url.Values) string {
+	return strings.ReplaceAll(q.Encode(), "+", "%20")
 }
 
 // isLoopback says whether host is this machine's loopback.
@@ -593,12 +642,14 @@ func setEnginePassword(ctx context.Context, su *pgx.Conn, verifier string) error
 	return err
 }
 
-// roleAttrs reads whether the role this connection signed in as, or acts as,
-// is a superuser or may bypass row-level security.
+// roleAttrs reads whether the role this connection signed in as, acts as or
+// may become is privileged, as serve judges it: the same query, the same
+// answer (doctor.ConnectionRoles, doctor.PrivilegedRole).
 func roleAttrs(ctx context.Context, conn *pgx.Conn) (session, current string, privileged bool, err error) {
-	err = conn.QueryRow(ctx, `
-		SELECT session_user, current_user,
-		       (SELECT bool_or(rolsuper OR rolbypassrls) FROM pg_catalog.pg_roles
-		         WHERE rolname IN (session_user, current_user))`).Scan(&session, &current, &privileged)
-	return
+	s, c, err := doctor.ConnectionRoles(ctx, conn)
+	if err != nil {
+		return "", "", false, err
+	}
+	_, privileged = doctor.PrivilegedRole(s, c)
+	return s.Name, c.Name, privileged, nil
 }

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -24,9 +26,10 @@ import (
 // then moved into place. The root key is moved by a hard link, which fails when
 // the name is taken, so no run and no race can replace a key that may already
 // have sealed something. Both are 0600, and, when root runs setup, belong to the
-// owner of the directory they are made in: a /etc/signari made for the service's
-// own user gives that user its key, so a later run as root does not leave the
-// service unable to read a file root made.
+// service's account, read from the directory they are made in: the installer
+// makes /etc/signari root:signari 0750, so the service can read what is in it
+// and replace none of it, and a file root makes there is the signari account's,
+// so a later run as root does not leave the service unable to read it.
 
 // setupFileNames are the defaults for -root-key-file and -env-file.
 const (
@@ -56,6 +59,35 @@ func setupDirMode(euid int) fs.FileMode {
 	return 0o700
 }
 
+// serviceAccount is the account a file root makes in dir is given: dir's
+// owner when that is not root, as an older installer made /etc/signari, else
+// the account named as dir's group, as useradd --user-group pairs them, which
+// the installer's root:signari /etc/signari is.
+func serviceAccount(dir string) (uid, gid int, ok bool) {
+	uid, gid, ok = dirOwner(dir)
+	switch {
+	case !ok:
+		return 0, 0, false
+	case uid != 0:
+		return uid, gid, true
+	case gid == 0:
+		return 0, 0, false
+	}
+	g, err := user.LookupGroupId(strconv.Itoa(gid))
+	if err != nil {
+		return 0, 0, false
+	}
+	u, err := user.Lookup(g.Name)
+	if err != nil || u.Gid != g.Gid {
+		return 0, 0, false
+	}
+	n, err := strconv.Atoi(u.Uid)
+	if err != nil || n == 0 {
+		return 0, 0, false
+	}
+	return n, gid, true
+}
+
 // errFileExists is a file setup was to create and found already there.
 var errFileExists = errors.New("the file is already there")
 
@@ -79,6 +111,16 @@ func writeFileAtomic(path string, data []byte, create bool, euid int, made *[]st
 		_ = f.Close()
 		return err
 	}
+	// Given to the service on the open file, before a byte is written, so
+	// there is no moment the name is root's and nothing a rename could race.
+	if euid == 0 {
+		if uid, gid, ok := serviceAccount(dir); ok {
+			if err := f.Chown(uid, gid); err != nil {
+				_ = f.Close()
+				return fmt.Errorf("giving %s to the service's account: %w", path, err)
+			}
+		}
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
@@ -89,13 +131,6 @@ func writeFileAtomic(path string, data []byte, create bool, euid int, made *[]st
 	}
 	if err := f.Close(); err != nil {
 		return err
-	}
-	if euid == 0 {
-		if uid, gid, ok := dirOwner(dir); ok && uid != 0 {
-			if err := os.Chown(tmp, uid, gid); err != nil {
-				return fmt.Errorf("giving %s to the owner of %s: %w", path, dir, err)
-			}
-		}
 	}
 	if create {
 		switch err := os.Link(tmp, path); {
@@ -300,21 +335,20 @@ func (e envFile) render(want map[string]string) (content string, added []string,
 
 // renderKeys is render for a file of other settings, in order, opened by
 // header when it is new: the compose project's .env (setupcompose.go).
+//
+// A setting the file names with no value, such as a SIGNARI_DSN= somebody
+// blanked, is missing, as serve reads it: its line is written again in place,
+// with the value, rather than kept beside a second line that a reader of the
+// file could take either way. Treated as present, it kept setup from writing
+// the password it had just given signari_engine anywhere.
 func (e envFile) renderKeys(order []string, header string, want map[string]string) (content string, added []string, err error) {
-	var b strings.Builder
-	if e.exists {
-		for _, l := range e.lines {
-			b.WriteString(l + "\n")
-		}
-	} else {
-		b.WriteString(header)
-	}
+	fill := map[string]bool{}
 	for _, k := range order {
 		v, ok := want[k]
 		if !ok {
 			continue
 		}
-		if have, ok := e.values[k]; ok {
+		if have := e.values[k]; have != "" {
 			if have != v {
 				return "", nil, fmt.Errorf("%s says %s=%s, and setup would write %s", e.path, k, have, v)
 			}
@@ -323,8 +357,26 @@ func (e envFile) renderKeys(order []string, header string, want map[string]strin
 		if !envSafe(v) {
 			return "", nil, fmt.Errorf("%s=%s cannot be written to an env file: it holds a quote or a line break", k, v)
 		}
-		fmt.Fprintf(&b, "%s='%s'\n", k, v)
+		fill[k] = true
 		added = append(added, k)
+	}
+	var b strings.Builder
+	if e.exists {
+		for _, l := range e.lines {
+			if m := envLine.FindStringSubmatch(strings.TrimSpace(l)); m != nil && fill[m[1]] {
+				fmt.Fprintf(&b, "%s='%s'\n", m[1], want[m[1]])
+				delete(fill, m[1])
+				continue
+			}
+			b.WriteString(l + "\n")
+		}
+	} else {
+		b.WriteString(header)
+	}
+	for _, k := range order {
+		if fill[k] {
+			fmt.Fprintf(&b, "%s='%s'\n", k, want[k])
+		}
 	}
 	return b.String(), added, nil
 }

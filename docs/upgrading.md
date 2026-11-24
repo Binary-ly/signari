@@ -124,17 +124,34 @@ author's to rule out.
 
 ## Serving as signari_engine
 
-From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN` signs
-in as, or acts as, a superuser or a role with `BYPASSRLS`. PostgreSQL's own words:
-"Superusers and roles with the BYPASSRLS attribute always bypass the row security
-system", so no organisation's policy binds such a role, and a query that leaves
-out its organisation reads every organisation's rows. v0.1.0's README and its compose
-file both served that way. Run `signari doctor` before you upgrade: it reports
-such a role as critical, and that is the deployment this section is for.
+From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN`, or
+`SIGNARI_READ_DSN` when the Admin API has a read replica, signs in as, acts as or
+may `SET ROLE` to a superuser or a role with `BYPASSRLS`. The reason is not
+row-level security: the engine's own role, `signari_engine`, reads every
+organisation by design. It is that a superuser can run programs and read files on
+the database server (`COPY ... PROGRAM`, `pg_read_server_files`), change that
+database server's configuration (`ALTER SYSTEM`) and reach every database on the
+cluster, the console's `admin` schema among them, and a `BYPASSRLS` role passes every
+row-level policy on every table it may read. The engine needs none of that, so
+serving as either hands a compromised engine, or one SQL injection, powers it
+never uses. v0.1.0's README and its compose file both served as a superuser.
 
-Move it to `signari_engine`, which migration 0001 made and which the policies are
-written for, in either of two ways. Either way, keep the superuser for
-`signari migrate bootstrap` alone.
+v0.1.0's `signari doctor` cannot see this, so check before you upgrade with the
+connection the engine serves with now:
+
+```sh
+psql "$SIGNARI_DSN" -Atc "SELECT rolname FROM pg_roles WHERE (rolsuper OR rolbypassrls)
+  AND (rolname IN (session_user, current_user) OR pg_has_role(session_user, oid, 'SET'))"
+```
+
+In this example, nothing printed means the upgrade does not affect you. Any role
+it prints is one `serve` would refuse, and this section is for that deployment.
+From the release after v0.1.0, `signari doctor` reports the same thing as
+critical.
+
+Move it to `signari_engine`, which migration 0001 made, in either of two ways.
+Either way, keep the superuser for `signari migrate bootstrap` alone, and grant
+`signari_engine` no role it could `SET ROLE` to.
 
 **With `signari setup`**, against the database you have, on the machine that
 runs it. It reaches PostgreSQL as you over the local socket, or, run as root, as
@@ -180,6 +197,43 @@ Debian's and Ubuntu's own `host all all 127.0.0.1/32 scram-sha-256` line does.
 For the compose stack, a data volume made before the engine served as
 `signari_engine` needs the role's password set once. The header of
 `deploy/postgres-init/20-engine-role.sh` gives the command.
+
+### With the Helm chart
+
+A release whose `SIGNARI_DSN` is a superuser's, as the chart's migrations needed
+before `migrations.superuserDsnSecretKey`, moves in three steps. First, as that
+superuser, give `signari_engine` a password:
+
+```sh
+psql 'postgres://postgres@db:5432/signari' -c '\password signari_engine'
+```
+
+Then put the superuser's data source name (DSN) in the Secret under its own key, `BOOTSTRAP_DSN`,
+and `SIGNARI_DSN` as `signari_engine`, keeping the root key you serve with now:
+
+```sh
+kubectl create secret generic signari-secrets --dry-run=client -o yaml \
+  --from-literal=SIGNARI_DSN='postgres://signari_engine:<that password>@db:5432/signari?sslmode=require' \
+  --from-literal=BOOTSTRAP_DSN='postgres://postgres:<its password>@db:5432/signari?sslmode=require' \
+  --from-literal=SIGNARI_ROOT_KEY='<the root key you serve with now>' \
+  --from-literal=SIGNARI_ROOT_KEY_REF=k8s | kubectl apply -f -
+```
+
+Last, upgrade with the migration Job reading the superuser's DSN from that key:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values \
+  --set secret.existingSecret=signari-secrets --set migrations.superuserDsnSecretKey=BOOTSTRAP_DSN
+```
+
+In this example, the Secret is one you manage. A release that kept its DSN inline
+moves to a Secret of its own the same way, since the Secret the chart makes from
+inline values has no key for the superuser's DSN. Until you can move it, the
+override starts the engine as before, with a warning:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values --set-string extraEnv.SIGNARI_ALLOW_RLS_BYPASS=1
+```
 
 Until you have moved it, `SIGNARI_ALLOW_RLS_BYPASS=1`, or `serve -allow-rls-bypass`,
 starts the engine as before, with a warning at startup, and `signari doctor`

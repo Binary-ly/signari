@@ -9,8 +9,9 @@
 #
 # PostgreSQL's superuser is used by the one-shot setup service alone, which is
 # signari setup itself, run on every start and skipping what is done. The
-# engine serves as signari_engine, the role row-level security is written for,
-# with a password of its own, and reads the root key from a file mounted
+# engine serves as signari_engine, which holds no power over the database
+# server it does not need, with a password of its own, and reads the root key
+# from a file mounted
 # read-only. Nothing is published but the engine's port, on PUBLISH, which is
 # loopback unless setup was told otherwise.
 services:

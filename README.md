@@ -67,7 +67,7 @@ message, not a warning nobody reads. `signari doctor` reports the rest.
 On a Linux server with PostgreSQL 16 or newer:
 
 ```sh
-curl -fsSL https://signari.dev/install | sh
+curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh
 ```
 
 The script downloads the release and installs it only if it matches the
@@ -79,15 +79,22 @@ for that administrator and where it put the root key. To give the answers up
 front and be asked nothing:
 
 ```sh
-curl -fsSL https://signari.dev/install | sh -s -- --yes --issuer https://login.example.com --email you@example.com
+curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --yes --issuer https://login.example.com --email you@example.com
 ```
 
-To read the script first, `curl -fsSL https://signari.dev/install -o install.sh`,
-and `sh install.sh --dry-run` prints every command it would run. Running either
-again is safe: a step already done is skipped, and `signari setup -check` says
-what is set up and what is missing. The engine serves as `signari_engine`, with
-a password setup generates, and never as a superuser, which row-level security
-does not bind.
+> [!NOTE]
+> `signari setup` comes in the release after v0.1.0. Until that release is out,
+> the script installs v0.1.0 and points you at that release's own setup steps. To
+> use `signari setup` today, build `main` [from source](docs/installation.md#from-source).
+
+To read the script first, download it with
+`curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh -o install.sh`,
+and `sh install.sh --dry-run` prints every command it would run. Its second line
+is `# signari-install-script`, so a page that lacks that line is not the script.
+Running either again is safe: a step already done is skipped, and
+`signari setup -check` says what is set up and what is missing. The engine serves
+as `signari_engine`, with a password setup generates, and never as a superuser,
+whose powers over the database server the engine never needs.
 
 ### With Docker
 

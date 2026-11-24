@@ -691,8 +691,9 @@ func removeItem(ctx context.Context, h setupHost, f uninstallFlags, it *uninstal
 	return remove(it.Value)
 }
 
-// uninstallSuperuser reaches PostgreSQL as a role that may drop databases:
-// the one given, else the PostgreSQL on this machine, as setup finds it.
+// uninstallSuperuser reaches PostgreSQL as a superuser, to drop the database
+// and the roles: the one given, else the PostgreSQL on this machine, as setup
+// finds it.
 func uninstallSuperuser(ctx context.Context, h setupHost, f uninstallFlags) (*pgx.Conn, error) {
 	su, err := superuserFromFlags(setupFlags{superuserDSN: f.superuserDSN, superuserDSNFile: f.superuserDSNFile})
 	if err != nil {
@@ -702,7 +703,7 @@ func uninstallSuperuser(ctx context.Context, h setupHost, f uninstallFlags) (*pg
 		su = localPostgres(h)
 	}
 	if su == nil {
-		return nil, errors.New("give -superuser-dsn (or -superuser-dsn-file) for a role that may drop databases: " +
+		return nil, errors.New("give -superuser-dsn (or -superuser-dsn-file) for a PostgreSQL superuser: " +
 			"there is no PostgreSQL on this machine to use")
 	}
 	su.cfg.Database = "postgres"

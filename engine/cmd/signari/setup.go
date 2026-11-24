@@ -91,6 +91,9 @@ type setupHost struct {
 	postgresUID   int
 	systemd       bool
 	unitInstalled bool
+	// serviceActive says the installer's service is running now: it runs the
+	// binary and the settings it started with, so it is restarted, not started.
+	serviceActive bool
 	interactive   bool
 	now           func() time.Time
 	// listeners are what listens on ports 443 and 80 here, and leLive where
@@ -122,6 +125,11 @@ func thisHost() setupHost {
 	}
 	if _, err := os.Stat(unitPath); err == nil {
 		h.unitInstalled = true
+		if h.systemd {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			h.serviceActive = exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "signari.service").Run() == nil
+			cancel()
+		}
 	}
 	if peerSupported && h.euid == 0 {
 		if u, err := user.Lookup("postgres"); err == nil {
@@ -507,7 +515,7 @@ type setupRun struct {
 // reads.
 func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setupFlags) error {
 	if f.given["dsn"] {
-		return usageError{errors.New("setup takes -superuser-dsn, a role that may create roles, once; -dsn " +
+		return usageError{errors.New("setup takes -superuser-dsn, a superuser's URL, once; -dsn " +
 			"names the engine's own connection, which setup makes and writes to the env file")}
 	}
 	// -addr has serve's default when it is not given, which is not setup's, and
@@ -674,8 +682,9 @@ func (r *setupRun) inspect(ctx context.Context) error {
 			return fmt.Errorf("%s: %w", r.prior.path, err)
 		}
 		if login != engineRole {
-			return fmt.Errorf("%s says SIGNARI_DSN signs in as %s, and setup has the engine serve as %s, the role "+
-				"row-level security is written for: change it there, or give -env-file for a new file",
+			return fmt.Errorf("%s says SIGNARI_DSN signs in as %s, and setup has the engine serve as %s, which "+
+				"holds no power over the database server it does not need: change it there, or give -env-file for a "+
+				"new file",
 				r.prior.path, login, engineRole)
 		}
 		r.engineDSN, r.password, r.engineHost = dsn, password, host
@@ -716,16 +725,18 @@ func (r *setupRun) inspect(ctx context.Context) error {
 }
 
 // settleFirstAdmin finds whom the first administrator is, now the database
-// has been read: the address given, else the one the earlier link was for,
-// else the person at the terminal, and their account once they have one. It is
-// needed only while nobody can sign in yet or nobody owns the organisation.
+// has been read: the address given, else the one the organisation's first
+// invitation was for, bootstrap's, else the person at the terminal, and their
+// account once they have one. Never a later invitation's: whoever was invited
+// after the first administrator is not who setup makes the owner. It is needed
+// only while nobody can sign in yet or nobody owns the organisation.
 func (r *setupRun) settleFirstAdmin(ctx context.Context) error {
 	d := r.db
 	if d.firstAdminDone(r.h.now()) && d.owners > 0 {
 		return nil
 	}
-	if r.a.email == "" && d.lastEmail != "" {
-		r.a.email, r.a.from["email"] = d.lastEmail, "the earlier link"
+	if r.a.email == "" && d.firstEmail != "" {
+		r.a.email, r.a.from["email"] = d.firstEmail, "the first administrator's link"
 	}
 	if r.a.email == "" {
 		switch q := setupQuestions["email"]; {
@@ -788,18 +799,18 @@ func (r *setupRun) reachSuperuser(ctx context.Context) error {
 			}
 			_ = conn.Close(ctx)
 		} else if r.ask == nil {
-			return fmt.Errorf("give -superuser-dsn (or -superuser-dsn-file) for a role that may create roles: "+
+			return fmt.Errorf("give -superuser-dsn (or -superuser-dsn-file) for a PostgreSQL superuser: "+
 				"the PostgreSQL on this machine did not let setup in %s: %w", local.desc, err)
 		} else {
 			fmt.Fprintf(r.out, "\n  The PostgreSQL on this machine did not let setup in %s:\n  %v\n", local.desc, err)
 		}
 	}
 	if r.ask == nil {
-		return errors.New("give -superuser-dsn (or -superuser-dsn-file) for a role that may create roles: " +
+		return errors.New("give -superuser-dsn (or -superuser-dsn-file) for a PostgreSQL superuser: " +
 			"there is no PostgreSQL on this machine, no socket in /var/run/postgresql or /tmp and nothing on " +
 			"127.0.0.1:5432. Install PostgreSQL 16 or newer, or name one elsewhere")
 	}
-	typed, err := r.ask.ask("A PostgreSQL URL for a role that may create roles",
+	typed, err := r.ask.ask("A URL for a PostgreSQL superuser, such as postgres",
 		"Used once, never stored: e.g. postgres://postgres@db.example.com/postgres", "", validSuperuserURL)
 	if err != nil {
 		return err
@@ -914,8 +925,14 @@ func (r *setupRun) refuseWhatWouldFail(ctx context.Context) error {
 		return nil
 	}
 	if r.pg.roleSuper || r.pg.roleBypass {
-		return fmt.Errorf("%s is a superuser or may bypass row-level security, so the policies would bind nothing "+
-			"it does: ALTER ROLE %s NOSUPERUSER NOBYPASSRLS, then run setup again", engineRole, engineRole)
+		return fmt.Errorf("%s is a superuser or has BYPASSRLS, powers over the database server the engine never "+
+			"needs, and serve would refuse it: ALTER ROLE %s NOSUPERUSER NOBYPASSRLS, then run setup again",
+			engineRole, engineRole)
+	}
+	if r.pg.roleReaches != "" {
+		return fmt.Errorf("%s may SET ROLE to %s, which is a superuser or has BYPASSRLS, so one statement gives "+
+			"the engine powers it never needs, and serve would refuse it: REVOKE %s FROM %s, then run setup again",
+			engineRole, r.pg.roleReaches, r.pg.roleReaches, engineRole)
 	}
 	if !r.passwordOK && r.pg.roleVerifier != "" && len(r.pg.roleElsewhere) > 0 {
 		return fmt.Errorf("%s already has a password, and the database(s) %s use the role, so a new one would "+
@@ -991,13 +1008,14 @@ func when(cond bool, why string) string {
 	return ""
 }
 
-// envComplete says whether the env file holds every setting setup writes.
+// envComplete says whether the env file holds every setting setup writes,
+// each with a value: a blanked one is missing, as serve reads it.
 func (r *setupRun) envComplete() bool {
 	if !r.prior.exists {
 		return false
 	}
 	for k := range r.envValues() {
-		if _, ok := r.prior.values[k]; !ok {
+		if r.prior.values[k] == "" {
 			return false
 		}
 	}
@@ -1300,7 +1318,12 @@ func (r *setupRun) firstAdmin(ctx context.Context) error {
 	r.link, r.linkExpires = out.Link, out.Expires
 	if out.Link == "" {
 		r.db.peopled = true
+		return nil
 	}
+	// Now, not only in the summary: the link is stored hashed, so a step after
+	// this one failing would otherwise leave nobody with it.
+	fmt.Fprintf(r.out, "  The first administrator's link, which works once, until %s:\n    %s\n",
+		out.Expires.UTC().Format("2 Jan 2006 15:04 UTC"), out.Link)
 	return nil
 }
 
@@ -1411,6 +1434,9 @@ func (r *setupRun) startCommand() string {
 	if r.inCompose || r.a.compose != "" {
 		return "docker compose up --detach --wait, in " + cmp.Or(r.a.compose, filepath.Dir(r.a.envFile))
 	}
+	if r.h.serviceActive {
+		return "systemctl restart signari"
+	}
 	if r.h.unitInstalled {
 		return "systemctl enable --now signari"
 	}
@@ -1458,7 +1484,14 @@ func (r *setupRun) printSummary() {
 	if r.log != nil {
 		fmt.Fprintf(w, "  %-14s %s, what each run did, with no secret in it.\n", "Log", r.log.path)
 	}
-	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	if r.h.serviceActive {
+		// It is running what it started with: an upgraded binary, or an env
+		// file this run changed, takes effect only once it restarts.
+		fmt.Fprintf(w, "\n  %-14s %s: it is running, on the binary and settings it started\n%swith.\n",
+			"Restart it", r.startCommand(), "                 ")
+	} else {
+		fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	}
 	if r.inCompose {
 		dir := filepath.Dir(r.a.envFile)
 		fmt.Fprintf(w, "  %-14s signari setup -check -compose %s\n", "Check it", dir)
@@ -1681,7 +1714,7 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 		return err
 	}
 	add(!privileged, "the engine signs in as "+session, when(privileged,
-		"it, or "+current+", is a superuser or may bypass row-level security"))
+		"it, or "+current+", is a superuser, has BYPASSRLS or may SET ROLE to one, which serve refuses"))
 	if err := migrate.Verify(ctx, conn); err != nil {
 		add(false, "the schema", err.Error())
 		return report()

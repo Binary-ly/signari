@@ -18,7 +18,7 @@ schedule, or after a key is exposed.
 
 > [!NOTE]
 > With a hardware security module (HSM) configured, each of these keys is made in
-> it. See [signing-keys-in-a-module.md](signing-keys-in-a-module.md).
+> it. See [signing keys in a hardware module](signing-keys-in-a-module.md).
 
 ## Rotate a signing key
 

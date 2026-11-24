@@ -19,8 +19,8 @@ signs with it when asked. The private half is never in this process, in the
 database or in a backup of either.
 
 > [!NOTE]
-> Every setting on this page is listed in
-> [configuration.md](configuration.md#signing-keys-in-a-hardware-module).
+> Every setting on this page is listed in the [configuration
+> reference](configuration.md#signing-keys-in-a-hardware-module).
 
 ## A PKCS#11 module
 
@@ -91,7 +91,7 @@ configured are the mistake a second switch would allow. A test fails if any of
 those paths makes a key any other way.
 
 Every node, and every `signari` command that touches keys, needs the same
-settings ([configuration.md](configuration.md#signing-keys-in-a-hardware-module)).
+settings ([configuration](configuration.md#signing-keys-in-a-hardware-module)).
 `signari keys list` says where each key is, in its `HELD IN` column: `pkcs11`,
 `vault-transit`, or `database` for one sealed under the root key.
 

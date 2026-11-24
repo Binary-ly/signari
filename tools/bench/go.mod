@@ -4,8 +4,8 @@ go 1.26.10
 
 require (
 	github.com/go-asn1-ber/asn1-ber v1.5.8
-	github.com/go-ldap/ldap/v3 v3.4.14
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/go-ldap/ldap/v3 v3.4.15
+	github.com/jackc/pgx/v5 v5.13.0
 )
 
 require (

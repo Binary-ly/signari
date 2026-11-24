@@ -16,18 +16,20 @@ Service (RADIUS). Ada signs in to all three with the same account.
 
 ## The short answer
 
-Find the row that describes your application or device:
+Find the row that describes your application or device. Its settings usually name
+the protocol, in words such as OpenID Connect (OIDC) or Lightweight Directory
+Access Protocol (LDAP):
 
 | Your application or device is… | Use | Guide |
 |---|---|---|
 | A web application you are writing yourself | OpenID Connect | [Your first application](first-application.md), then the framework guides such as [Go](quickstart-go.md) |
-| Software whose settings mention "OpenID Connect (OIDC)" or "OAuth" | OpenID Connect | [Your first application](first-application.md) |
+| Software whose settings mention "OpenID Connect", "OIDC" or "OAuth" | OpenID Connect | [Your first application](first-application.md) |
 | A mobile application, or a web page that runs entirely in the browser | OpenID Connect, as a public client | [Quickstart: a Go application](quickstart-go.md), which covers the public-client case |
 | A program that calls an API with no person present | OAuth 2.0 client credentials | [Client authentication](client-authentication.md) |
 | A television, a command-line tool or another device with no browser | The OAuth device flow | [Device authorization grant](device-flow.md) |
 | Business software whose settings mention "SAML" | SAML 2.0 | [SAML 2.0](saml.md) |
 | SharePoint, or an older .NET application federated to ADFS | WS-Federation | [WS-Federation](ws-federation.md) |
-| Software that asks for a Lightweight Directory Access Protocol (LDAP) server, a "bind DN" or a "base DN" | LDAP | [LDAP](ldap.md) |
+| Software that asks for an "LDAP server", a "bind DN" or a "base DN" | LDAP | [LDAP](ldap.md) |
 | A VPN, a wifi controller or a network switch | RADIUS | [RADIUS](radius.md), and [EAP-TLS](eap-tls.md) for certificates |
 | Software that should have accounts created and removed for you | System for Cross-domain Identity Management (SCIM) | [SCIM provisioning](scim.md) |
 | Computers already signed in to a Windows domain or FreeIPA realm | Kerberos | [Kerberos](kerberos.md) |

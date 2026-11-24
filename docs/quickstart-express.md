@@ -66,15 +66,16 @@ It trusts the development CA under `deploy/tls` through `NODE_EXTRA_CA_CERTS`.
 
 1. **Discovery.** `client.discovery` reads `/.well-known/openid-configuration` and
    refuses an issuer there that is not the one configured.
-2. **The redirect out.** `/login` makes a fresh `state`, `nonce` and PKCE verifier
-   for this one sign-in and sends `code_challenge_method=S256`. Signari requires
+2. **The redirect out.** `/login` makes a fresh `state`, `nonce` and Proof Key for
+   Code Exchange (PKCE) verifier for this one sign-in and sends `code_challenge_method=S256`. Signari requires
    PKCE of every client by default, confidential ones included.
 3. **The callback.** It takes the `state` back once and refuses one it does not
    hold. `authorizationCodeGrant` sends the code and the verifier, authenticating
    with `client_secret_basic`, and checks the ID token's issuer, audience, expiry
    and nonce.
 4. **The signature too.** openid-client does not check an ID token's signature by
-   default. OpenID Connect lets a client trust the TLS connection to the token
+   default. OpenID Connect lets a client trust the Transport Layer Security (TLS)
+   connection to the token
    endpoint instead (Core, section 3.1.3.7). This example turns on
    `enableNonRepudiationChecks`, so the signature is checked against `jwks_uri` as
    well.
@@ -83,8 +84,8 @@ A public client has no secret: leave `CLIENT_SECRET` unset, register it with
 `-public`, and the example authenticates with its `client_id` alone. PKCE is then its
 only proof.
 
-When something is refused, the message is the server's own. What each one means is in
-[troubleshooting.md](troubleshooting.md).
+When something is refused, the message is Signari's own. What each one means is in
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 

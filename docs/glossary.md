@@ -44,7 +44,7 @@ access](admin-tokens.md).
 
 ### AGPL
 
-**General term.** The GNU Affero General Public License, Signari's licence. If you
+**General term.** GNU Affero General Public License: Signari's licence. If you
 change Signari and let others use your changed version over a network, you must
 offer them its source. Applications that sign in through Signari are not affected.
 
@@ -83,7 +83,7 @@ layer](authorization.md).
 ### Back-channel logout
 
 **General term.** Signari telling an application directly, from server to server,
-that a person's session has ended. See [logout](logout.md).
+that a person's session has ended. See [signing out](logout.md).
 
 ### Bind
 
@@ -496,13 +496,13 @@ engine](extensibility.md).
 ### Provisioning
 
 **General term.** Creating, changing and removing accounts in other applications
-automatically, as people join, move and leave. See [provisioning users
-out](provisioning.md).
+automatically, as people join, move and leave. See [provisioning to other
+services](provisioning.md).
 
 ### Public client
 
 **General term.** An application that runs on a person's own device, such as a
-mobile app, and so cannot keep a secret. It proves itself with PKCE alone. See
+mobile application, and so cannot keep a secret. It proves itself with PKCE alone. See
 [how Signari works](how-signari-works.md#application).
 
 ## R

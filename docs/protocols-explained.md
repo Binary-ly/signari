@@ -10,8 +10,9 @@ You rarely choose the protocol yourself. The application has usually chosen
 already, and its settings page tells you which one it speaks. Your job is to
 recognise it, then register the application in Signari the matching way.
 
-At Acme, the wiki speaks OpenID Connect, the chat application speaks SAML, and
-the VPN speaks RADIUS. Ada signs in to all three with the same account.
+At Acme, the wiki speaks OpenID Connect, and the chat application speaks Security
+Assertion Markup Language (SAML). The VPN speaks Remote Authentication Dial-In User
+Service (RADIUS). Ada signs in to all three with the same account.
 
 ## The short answer
 
@@ -20,18 +21,18 @@ Find the row that describes your application or device:
 | Your application or device is… | Use | Guide |
 |---|---|---|
 | A web application you are writing yourself | OpenID Connect | [Your first application](first-application.md), then the framework guides such as [Go](quickstart-go.md) |
-| Software whose settings mention "OpenID Connect", "OIDC" or "OAuth" | OpenID Connect | [Your first application](first-application.md) |
-| A mobile app, or a web page that runs entirely in the browser | OpenID Connect, as a public client | [Quickstart: a Go application](quickstart-go.md), which covers the public-client case |
+| Software whose settings mention "OpenID Connect (OIDC)" or "OAuth" | OpenID Connect | [Your first application](first-application.md) |
+| A mobile application, or a web page that runs entirely in the browser | OpenID Connect, as a public client | [Quickstart: a Go application](quickstart-go.md), which covers the public-client case |
 | A program that calls an API with no person present | OAuth 2.0 client credentials | [Client authentication](client-authentication.md) |
 | A television, a command-line tool or another device with no browser | The OAuth device flow | [Device authorization grant](device-flow.md) |
 | Business software whose settings mention "SAML" | SAML 2.0 | [SAML 2.0](saml.md) |
 | SharePoint, or an older .NET application federated to ADFS | WS-Federation | [WS-Federation](ws-federation.md) |
-| Software that asks for an "LDAP server", a "bind DN" or a "base DN" | LDAP | [LDAP](ldap.md) |
+| Software that asks for a Lightweight Directory Access Protocol (LDAP) server, a "bind DN" or a "base DN" | LDAP | [LDAP](ldap.md) |
 | A VPN, a wifi controller or a network switch | RADIUS | [RADIUS](radius.md), and [EAP-TLS](eap-tls.md) for certificates |
-| Software that should have accounts created and removed for you | SCIM | [SCIM provisioning](scim.md) |
+| Software that should have accounts created and removed for you | System for Cross-domain Identity Management (SCIM) | [SCIM provisioning](scim.md) |
 | Computers already signed in to a Windows domain or FreeIPA realm | Kerberos | [Kerberos](kerberos.md) |
 | An internal tool with no sign-in of its own | Forward authentication, through your reverse proxy | [Forward authentication](forward-auth.md) |
-| A Windows or Linux login screen, or a kiosk | An outpost | [Desktop and workstation login](desktop-login.md) |
+| A Windows or Linux sign-in screen, or a kiosk | An outpost | [Desktop and workstation sign-in](desktop-login.md) |
 
 If the application speaks more than one, choose OpenID Connect. It is the most
 modern of the ways to sign in, and the OpenID Foundation's conformance plans run
@@ -106,9 +107,10 @@ SCIM](scim-source.md).
 ## Kerberos
 
 Kerberos is how Windows domains and FreeIPA realms sign people in to their
-computers. A person signed in that way already holds a Kerberos "ticket". Through
-SPNEGO, their browser shows that ticket to Signari, and they sign in with no
-password and no prompt. See [Kerberos](kerberos.md).
+computers. A person signed in that way already holds a Kerberos "ticket". Their
+browser shows that ticket to Signari through Simple and Protected GSS-API
+Negotiation Mechanism (SPNEGO). They sign in with no password and no prompt. See
+[Kerberos](kerberos.md).
 
 ## Applications that speak none of these
 
@@ -139,13 +141,13 @@ application or a partner asks for one by name:
 
 | Standard | What it is for | Guide |
 |---|---|---|
-| CIBA | Approving a request on your phone, started by someone else, such as a call centre | [Backchannel authentication](ciba.md) |
-| OID4VCI | Issuing digital credentials into a person's wallet app | [OID4VCI](oid4vci.md) |
-| OpenID4VP | Signing in by showing a credential from a wallet app | [Signing in with a wallet](wallet-sign-in.md) |
+| Client-Initiated Backchannel Authentication (CIBA) | Approving a request on your phone, started by someone else, such as a call centre | [Backchannel authentication](ciba.md) |
+| OpenID for Verifiable Credential Issuance (OID4VCI) | Issuing digital credentials into a person's wallet app | [OID4VCI](oid4vci.md) |
+| OpenID for Verifiable Presentations (OpenID4VP) | Signing in by showing a credential from a wallet app | [Signing in with a wallet](wallet-sign-in.md) |
 | OpenID Federation | Trusting other organisations' servers through a shared authority | [OpenID Federation](openid-federation.md) |
-| UMA 2.0 | Letting a person share their own resources with someone else | [UMA 2.0](uma.md) |
+| User-Managed Access (UMA) 2.0 | Letting a person share their own resources with someone else | [UMA 2.0](uma.md) |
 | AuthZEN | Asking "may this person do this?" through a standard API | [The authorization layer](authorization.md) |
-| Shared Signals and CAEP | Telling applications at once when a session or an account changes | [Shared Signals and CAEP](ssf-caep.md) |
+| Shared Signals and Continuous Access Evaluation Profile (CAEP) | Telling applications at once when a session or an account changes | [Shared Signals and CAEP](ssf-caep.md) |
 
 [Emerging standards](emerging-standards.md) lists every draft standard Signari
 implements, with the status of each.

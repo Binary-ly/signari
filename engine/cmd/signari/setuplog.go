@@ -47,17 +47,24 @@ type setupLog struct {
 	f       *os.File
 	now     func() time.Time
 	secrets []string
+	// created says this run made the file, and madeDirs the directories it
+	// made for it, for the manifest (uninstall.go).
+	created  bool
+	madeDirs []string
 }
 
 // openSetupLog opens path to append to, making its directory, and keeps the
 // file 0600. A symbolic link there is refused rather than followed.
 func openSetupLog(path string, euid int, now func() time.Time) (*setupLog, error) {
-	if err := mkdirAllRecorded(filepath.Dir(path), setupDirMode(euid), nil); err != nil {
+	l := &setupLog{path: path, now: now}
+	if err := mkdirAllRecorded(filepath.Dir(path), setupDirMode(euid), &l.madeDirs); err != nil {
 		return nil, err
 	}
-	if fi, err := os.Lstat(path); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+	fi, err := os.Lstat(path)
+	if err == nil && fi.Mode()&fs.ModeSymlink != 0 {
 		return nil, fmt.Errorf("%s is a symbolic link, and setup appends only to a file of its own", path)
 	}
+	l.created = errors.Is(err, fs.ErrNotExist)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600) // #nosec G304 G703 -- the operator names the file
 	if err != nil {
 		return nil, err
@@ -66,7 +73,8 @@ func openSetupLog(path string, euid int, now func() time.Time) (*setupLog, error
 		_ = f.Close()
 		return nil, err
 	}
-	return &setupLog{path: path, f: f, now: now}, nil
+	l.f = f
+	return l, nil
 }
 
 // secret adds values never to be written, longest first, so a secret that

@@ -301,6 +301,62 @@ Keep a second copy somewhere a database failure cannot reach, such as a password
 manager. [Backup and restore](runbook-backup-restore.md) explains how to back up
 the key and the database together, and how to test a restore.
 
+## Removing Signari
+
+The installer and setup each list what they make, as they make it, in a
+"manifest": a file `signari uninstall` reads to remove exactly those things and
+nothing else. It is `/var/lib/signari/install.manifest` when root ran them, and
+`~/.local/state/signari/install.manifest` otherwise.
+
+To see what would go, without removing anything:
+
+```sh
+signari uninstall -dry-run
+```
+
+To remove it, run the command without `-dry-run`. It prints the same plan, and
+asks before it removes anything:
+
+```sh
+signari uninstall
+```
+
+In this example, uninstall stops and disables the service and removes its unit,
+the environment file, the certificate copies and the certbot hook, the logs, the
+program and the `signari` system user. A directory goes once it is empty, so a
+file you put there yourself keeps it.
+
+### The root key and the database
+
+Uninstall keeps the root key and the database unless you ask for them by name.
+Each is one half of the same backup, as [Back up the root key](#back-up-the-root-key)
+explains.
+
+To remove both, give `-delete-root-key` and `-drop-database`. At a terminal,
+uninstall asks you to type the key file's path and the database's name:
+
+```sh
+signari uninstall -delete-root-key -drop-database
+```
+
+In this example, uninstall drops the database before it deletes the key. If the
+database cannot be dropped, the key stays. The roles setup made in PostgreSQL go
+with the database, unless another database still uses them.
+
+With no terminal, such as in a script, give `-yes`. The first run prints a code
+and stops. Run it again with the code to go ahead:
+
+```sh
+signari uninstall -yes -delete-root-key -drop-database -confirm <code>
+```
+
+> [!WARNING]
+> Deleting the root key and keeping the database leaves every secret in the
+> database unreadable for good. Uninstall then asks you to type a sentence
+> that says so, instead of a code.
+
+What uninstall keeps stays listed in the manifest, so a later run can remove it.
+
 ## Next steps
 
 - [Your first application](first-application.md): register an application and

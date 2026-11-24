@@ -140,6 +140,7 @@ const usageText = `usage: signari <command> [flags]
 
 first run:
   setup                take a machine with PostgreSQL to a deployment a person can sign in to
+  uninstall            remove what the installer and setup made here; the root key and database on request
 
 schema:
   migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
@@ -583,7 +584,7 @@ func run(args []string) (err error) {
 		"registered here that is that service itself; every person is linked to it by their identifier there")
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
-	dryRun := fs.Bool("dry-run", false, "report what would be imported, retired or set up, and change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what would be imported, retired, set up or removed, and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm, publishing its first key if it has none "+
 		"(default: all in use); `client set-alg`: what signs the client's tokens, one the instance holds a key for")
 	rsaBits := fs.Int("rsa-bits", 0, "`keys rotate -alg`: the size of the RSA key published, 2048, 3072 or 4096 "+
@@ -613,7 +614,9 @@ func run(args []string) (err error) {
 	eraseConfirm := fs.String("confirm", "",
 		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
 			"`restore finalize`: repeat the database's name; it signs everybody out. "+
-			"`instance org-delete`: the code its first run printed")
+			"`instance org-delete`: the code its first run printed. "+
+			"`uninstall`: the code its first run printed, or the sentence it gave for deleting the root key "+
+			"and keeping the database")
 	eraseDeactivate := fs.Bool("deactivate", false,
 		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
@@ -679,8 +682,8 @@ func run(args []string) (err error) {
 	echPublicName := fs.String("public-name", "",
 		"`ech new`: the DNS name sent in the clear in place of the one asked for; the server needs a certificate for it")
 	echConfigID := fs.Int("config-id", -1, "`ech new`: 0 to 255, the id clients name this key by; random when not given")
-	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script; `setup`: one JSON "+
-		"result line on stdout, the progress on stderr, and no questions")
+	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script; `setup`, `uninstall`: "+
+		"one JSON result line on stdout, the progress on stderr, and no questions")
 	// `signari setup` (setup.go). Its database connection is a superuser's,
 	// once, never -dsn's: that is the engine's own, which setup makes.
 	superuserDSN := fs.String("superuser-dsn", "", "`setup`: a URL for a PostgreSQL role that may create roles, "+
@@ -695,7 +698,8 @@ func run(args []string) (err error) {
 	setupEnvFile := fs.String("env-file", "", "`setup`: the env file serve starts from, written 0600 (default "+
 		"signari.env beside the root key's default)")
 	setupYes := fs.Bool("yes", false, "`setup`: ask nothing and take the defaults; a needed answer with none is "+
-		"an error naming its flag. Also when there is no terminal, or CI is set")
+		"an error naming its flag. Also when there is no terminal, or CI is set. `uninstall`: remove what it "+
+		"lists without asking; the root key and the database still need -confirm")
 	setupCheckOnly := fs.Bool("check", false, "`setup`: say what is set up and what is missing, and change "+
 		"nothing; exits 0 when complete, 2 when not, 1 when it cannot tell")
 	printRootKey := fs.Bool("print-root-key", false, "`setup`: print the root key in the summary, to copy "+
@@ -705,6 +709,10 @@ func run(args []string) (err error) {
 		"from what listens on 443 and 80 and from Let's Encrypt's certificates when not given")
 	setupTrustedProxies := fs.String("trusted-proxies", "", "`setup -tls proxy`: the proxies whose "+
 		"X-Forwarded-For it believes, written as SIGNARI_TRUSTED_PROXIES (default 127.0.0.1,::1)")
+	uninstallDeleteKey := fs.Bool("delete-root-key", false, "`uninstall`: delete the root key setup made too, confirmed; "+
+		"without it nothing sealed in the database opens again")
+	uninstallDropDB := fs.Bool("drop-database", false, "`uninstall`: drop the database setup made too, confirmed, "+
+		"and the roles migration 0001 made once no other database uses them")
 	setupLogFile := fs.String("log-file", "", "`setup`: the log each run appends to, 0600 and holding no secret "+
 		"(default /var/log/signari/setup.log for root, else setup.log under $XDG_STATE_HOME/signari/, failing "+
 		"that ~/.local/state/signari/)")
@@ -1365,6 +1373,15 @@ func run(args []string) (err error) {
 			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
 			logFile: *setupLogFile, tls: *setupTLS, tlsCert: *tlsCert, tlsKey: *tlsKey,
 			trustedProxies: *setupTrustedProxies, given: given, args: args})
+	// `uninstall` removes what the installer and setup recorded making
+	// (uninstall.go), reaching PostgreSQL as setup does only to drop the
+	// database it was asked to.
+	case "uninstall":
+		uctx, ucancel := commandContext(runFor)
+		defer ucancel()
+		return uninstallCmd(uctx, os.Stdout, os.Stderr, thisHost(), uninstallFlags{dryRun: *dryRun, yes: *setupYes,
+			json: *doctorJSON, deleteRootKey: *uninstallDeleteKey, dropDatabase: *uninstallDropDB, confirm: *eraseConfirm,
+			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

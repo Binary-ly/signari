@@ -942,6 +942,55 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 			t.Errorf("the log has %q %d times, want %d:\n%s", want, got, n, logged)
 		}
 	}
+
+	// The runs listed what they made, and uninstall takes it away (B14): the
+	// files, the log and their directories, and, confirmed by the code, the
+	// database and the root key. The roles were the cluster's before setup
+	// ran, so they are neither listed nor dropped.
+	m, err := readManifest(manifestPath(h.euid, h.getenv, h.home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, e := range m.entries {
+		listed[e.Kind+" "+e.Value] = true
+	}
+	for _, want := range []string{"root-key " + keyPath, "env-file " + envPath, "log " + logPath,
+		"dir " + filepath.Dir(keyPath), "dir " + filepath.Dir(logPath),
+		"database " + name + " " + dsnServer(env.values["SIGNARI_DSN"])} {
+		if !listed[want] {
+			t.Errorf("the manifest lacks %q: %v", want, m.entries)
+		}
+	}
+	for e := range listed {
+		if strings.HasPrefix(e, "roles") {
+			t.Errorf("the manifest lists %s, which were there before setup ran", e)
+		}
+	}
+	uf := uninstallFlags{yes: true, deleteRootKey: true, dropDatabase: true, superuserDSNFile: dsnFile}
+	res, _, err := runUninstall(t, h, uf)
+	if exitCode(err) != 2 || res.Confirm == "" {
+		t.Fatalf("uninstall of the key and the database, unconfirmed: %v, %+v", err, res)
+	}
+	uf.confirm = res.Confirm
+	if res, out, err := runUninstall(t, h, uf); err != nil || !res.OK {
+		t.Fatalf("uninstall: %v, %+v\n%s", err, res, out)
+	}
+	for _, p := range []string{keyPath, envPath, logPath, filepath.Dir(keyPath), filepath.Dir(logPath)} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s is still there after uninstall", p)
+		}
+	}
+	var dbThere bool
+	if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = $1)`,
+		name).Scan(&dbThere); err != nil || dbThere {
+		t.Errorf("the database is still there after uninstall -drop-database: %v", err)
+	}
+	var roles int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = $1`,
+		engineRole).Scan(&roles); err != nil || roles != 1 {
+		t.Errorf("uninstall dropped %s, which it did not make: %v", engineRole, err)
+	}
 }
 
 func mustRead(t *testing.T, path string) string {

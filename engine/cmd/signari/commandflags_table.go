@@ -310,6 +310,7 @@ var commandFlags = map[string][]string{
 	"trust-mark list":                 {"o"},
 	"trust-mark owners":               {"trust-mark-file"},
 	"trust-mark revoke":               {"trust-mark-reason", "trust-mark-sub", "trust-mark-type"},
+	"uninstall":                       {"confirm", "delete-root-key", "drop-database", "dry-run", "json", "superuser-dsn", "superuser-dsn-file", "yes"},
 	"uma approve":                     {"expires-in", "relation", "uma-request"},
 	"uma deny":                        {"uma-request"},
 	"uma requests":                    {"o", "org"},

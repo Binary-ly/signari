@@ -470,6 +470,9 @@ type setupRun struct {
 	// createdFiles are the other files this run made where none was: the
 	// certificate's copies, the certbot hook, the unit's drop-in.
 	createdFiles []string
+	// createdRoles says migration 0001 made signari_engine and the others in
+	// this run, as they were not there before it.
+	createdRoles bool
 
 	// The certificate serve is to serve, as checked.
 	cert        certFacts
@@ -521,6 +524,7 @@ func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setu
 	}
 	err := r.run(ctx)
 	r.close()
+	r.recordManifest()
 	r.logResult(err)
 	if f.json {
 		line, jerr := json.Marshal(r.result(err))
@@ -1127,8 +1131,11 @@ func (r *setupRun) applyBootstrapSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = migrate.Up(ctx, conn, migrate.TierBootstrap, 0, r.migrationOptions())
-	return err
+	if _, err = migrate.Up(ctx, conn, migrate.TierBootstrap, 0, r.migrationOptions()); err != nil {
+		return err
+	}
+	r.createdRoles = !r.pg.roleExists
+	return nil
 }
 
 func (r *setupRun) migrationOptions() migrate.Options {
@@ -1422,23 +1429,9 @@ func (r *setupRun) printSummary() {
 	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
 	fmt.Fprintf(w, "  %-14s set -a; . %s; set +a; signari doctor\n", "Check it", r.a.envFile)
 	r.printTLS(w, pad)
-	if r.h.unitInstalled {
-		fmt.Fprintf(w, "  %-14s systemctl disable --now signari, then delete %s,\n%s%s, and the binary, %s.\n",
-			"Remove it", unitPath, pad, r.a.envFile, binaryPath())
-	} else {
-		fmt.Fprintf(w, "  %-14s stop signari serve, then delete %s and the binary,\n%s%s.\n", "Remove it",
-			r.a.envFile, pad, binaryPath())
-	}
-	fmt.Fprintf(w, "%sThe root key and the database %s are never deleted for you:\n", pad, r.a.database)
-	fmt.Fprintf(w, "%sonce you are sure, DROP DATABASE %s and delete %s.\n\n", pad, r.a.database, r.a.rootKeyFile)
-}
-
-// binaryPath is where this binary is, for the summary's way to remove it.
-func binaryPath() string {
-	if p, err := os.Executable(); err == nil {
-		return p
-	}
-	return "wherever this binary is"
+	fmt.Fprintf(w, "  %-14s signari uninstall, which removes what the installer and setup made,\n%sas %s lists "+
+		"it. It keeps the root key and the database unless\n%sgiven -delete-root-key and -drop-database, each "+
+		"confirmed.\n\n", "Remove it", pad, manifestPath(r.h.euid, r.h.getenv, r.h.home), pad)
 }
 
 // rootKey is the root key's text, for -print-root-key.

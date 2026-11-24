@@ -118,6 +118,10 @@ log_open() {
       *) dir="$HOME/.local/state/signari" ;;
     esac
   fi
+  made_dir=0
+  made_log=0
+  [ -d "$dir" ] || made_dir=1
+  [ -e "$dir/install.log" ] || made_log=1
   if ! (umask "$mask" && mkdir -p "$dir" && umask 077 && true >>"$dir/install.log") 2>/dev/null ||
     ! chmod 600 "$dir/install.log" 2>/dev/null; then
     warn "could not write $dir/install.log, so this run keeps no log"
@@ -125,6 +129,53 @@ log_open() {
   fi
   LOG="$dir/install.log"
   log "==== install.sh by $(id -un 2>/dev/null || id -u) on $(uname -n 2>/dev/null), options:$(unsecret "$@")"
+  if [ "$made_dir" = 1 ]; then record dir "$dir"; fi
+  if [ "$made_log" = 1 ]; then record log "$dir/install.log"; fi
+}
+
+# manifest_path is where the installer and setup list what they make, for
+# signari uninstall to remove exactly that: in /var/lib/signari as root, a
+# directory root alone may write, and not in /etc/signari, which belongs to the
+# service's user; else in the user's state directory.
+manifest_path() {
+  if [ "$(id -u)" = 0 ]; then
+    printf '%s' /var/lib/signari/install.manifest
+  else
+    case ${XDG_STATE_HOME:-} in
+      /*) printf '%s' "$XDG_STATE_HOME/signari/install.manifest" ;;
+      *) printf '%s' "$HOME/.local/state/signari/install.manifest" ;;
+    esac
+  fi
+}
+
+# record adds one thing this run made to the manifest, which is replaced whole
+# or not at all, and is 0600 in a 0700 directory.
+record() {
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  m=$(manifest_path)
+  line="$1 $2"
+  if [ -f "$m" ] && grep -Fxq -- "$line" "$m"; then
+    return 0
+  fi
+  if ! (
+    umask 077
+    mkdir -p "$(dirname "$m")" || exit 1
+    {
+      if [ -f "$m" ]; then
+        cat "$m"
+      else
+        printf '%s\n' "# What the Signari installer and signari setup made on this machine, one thing" \
+          "# a line. signari uninstall removes these and nothing else."
+      fi
+      printf '%s\n' "$line"
+    } >"$m.tmp.$$" && mv -f "$m.tmp.$$" "$m"
+  ); then
+    warn "could not record $2 in $m, so signari uninstall will not remove it"
+    return 0
+  fi
+  log "recorded $line in $m"
 }
 
 # unsecret prints its words with the password of any URL among them replaced.
@@ -358,6 +409,7 @@ install_binary() {
       log "installed $BIN"
     fi
   fi
+  record binary "$BIN"
   case ":$PATH:" in
     *":$bindir:"*) ;;
     *) say "$bindir is not on your PATH: add it in your shell's profile, export PATH=\"$bindir:\$PATH\"" ;;
@@ -436,6 +488,7 @@ EOF
   install -m 0644 "$TMP/signari.service" "$unit" || die "could not write $unit"
   say "wrote $unit"
   log "wrote $unit"
+  record unit "$unit"
 }
 
 # As root under systemd: the service's own user, its directory and its unit.
@@ -453,10 +506,12 @@ service() {
     run useradd --system --user-group --no-create-home --home-dir /nonexistent --shell "$nologin" signari ||
       die "could not make the signari system user"
     log "made the signari system user"
+    record user signari
   fi
   if [ ! -d /etc/signari ]; then
     run install -d -m 0750 -o signari -g signari /etc/signari || die "could not make /etc/signari"
     log "made /etc/signari, 0750, for the signari user"
+    record dir /etc/signari
   fi
   write_unit
   run systemctl daemon-reload || warn "systemctl daemon-reload failed; run it before starting signari"

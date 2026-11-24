@@ -56,6 +56,8 @@ type setupFlags struct {
 	yes, dryRun, check, json       bool
 	printRootKey                   bool
 	logFile                        string
+	// How TLS is ended for an https:// issuer (setuptls.go).
+	tls, tlsCert, tlsKey, trustedProxies string
 	// given are the flags set on the command line, and args their values, for
 	// the log.
 	given map[string]bool
@@ -88,6 +90,10 @@ type setupHost struct {
 	unitInstalled bool
 	interactive   bool
 	now           func() time.Time
+	// listeners are what listens on ports 443 and 80 here, and leLive where
+	// certbot keeps its certificates, for the TLS question (setuptls.go).
+	listeners func() []listener
+	leLive    string
 }
 
 // unitPath is where the installer writes signari's systemd unit.
@@ -106,7 +112,8 @@ func thisHost() setupHost {
 			_ = c.Close()
 			return true
 		},
-		interactive: atTerminal(), now: time.Now}
+		interactive: atTerminal(), now: time.Now,
+		listeners: func() []listener { return webListeners("/proc") }, leLive: "/etc/letsencrypt/live"}
 	if fi, err := os.Stat("/run/systemd/system"); err == nil && fi.IsDir() {
 		h.systemd = true
 	}
@@ -198,7 +205,12 @@ func suggestIssuer(h setupHost, addr string) string {
 // file, the terminal, or the default, which from records.
 type setupAnswers struct {
 	issuer, email, database, addr, rootKeyFile, envFile string
-	from                                                map[string]string
+	// tls is who ends TLS for an https:// issuer, proxy, files or none, with
+	// the files or the proxies it trusts; tlsWhy is what setup found that
+	// suggested it, and lineage the Let's Encrypt directory the files are
+	// copied from.
+	tls, tlsCert, tlsKey, trustedProxies, tlsWhy, lineage string
+	from                                                  map[string]string
 }
 
 // setupDefault is the one table of defaults, read by the run that asks and the
@@ -211,7 +223,25 @@ func setupDefault(name string, h setupHost, a setupAnswers) string {
 	case "database":
 		return "signari"
 	case "addr":
+		// Serving HTTPS itself, on every address at the issuer's port;
+		// otherwise on loopback, for a proxy on this machine.
+		if a.tls == tlsFiles {
+			_, port := issuerHost(a.issuer)
+			return ":" + port
+		}
 		return "127.0.0.1:8080"
+	case "tls":
+		// What is here already says; with nothing found, a proxy in front,
+		// as the engine listens on loopback either way.
+		mode, _, _, _ := h.detectTLS(a.issuer)
+		return mode
+	case "tls-cert", "tls-key":
+		if _, _, cert, key := h.detectTLS(a.issuer); cert != "" {
+			return map[string]string{"tls-cert": cert, "tls-key": key}[name]
+		}
+		return ""
+	case "trusted-proxies":
+		return defaultTrustedProxies
 	case "root-key-file":
 		return filepath.Join(setupConfigDir(h.euid, h.getenv, h.home), rootKeyFileName)
 	case "env-file":
@@ -375,6 +405,13 @@ func resolveAnswers(f setupFlags, h setupHost, prior envFile, ask prompter, allo
 	if a.rootKeyFile == a.envFile {
 		return a, nil, usageError{fmt.Errorf("-root-key-file and -env-file are both %s", a.envFile)}
 	}
+	if err := resolveTLS(f, h, prior, ask, &a); err != nil {
+		return a, nil, err
+	}
+	// Where serve listens follows from who ends TLS, when nothing says.
+	if a.from["addr"] == "default" {
+		a.addr = setupDefault("addr", h, a)
+	}
 	return a, missing, nil
 }
 
@@ -430,6 +467,13 @@ type setupRun struct {
 	envBefore                                                                    []byte
 	madeDirs                                                                     []string
 	rootKeyText                                                                  string
+	// createdFiles are the other files this run made where none was: the
+	// certificate's copies, the certbot hook, the unit's drop-in.
+	createdFiles []string
+
+	// The certificate serve is to serve, as checked.
+	cert        certFacts
+	certWarning string
 
 	link        string
 	linkExpires time.Time
@@ -443,9 +487,17 @@ func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setu
 		return usageError{errors.New("setup takes -superuser-dsn, a role that may create roles, once; -dsn " +
 			"names the engine's own connection, which setup makes and writes to the env file")}
 	}
-	// -addr has serve's default when it is not given, which is not setup's.
+	// -addr has serve's default when it is not given, which is not setup's, and
+	// -tls-cert and -tls-key serve's environment, which setup reads only when
+	// asked to.
 	if !f.given["addr"] {
 		f.addr = ""
+	}
+	if !f.given["tls-cert"] {
+		f.tlsCert = ""
+	}
+	if !f.given["tls-key"] {
+		f.tlsKey = ""
 	}
 	out := stdout
 	if f.json {
@@ -567,6 +619,9 @@ func (r *setupRun) inspect(ctx context.Context) error {
 		return err
 	}
 	if r.a, r.missing, err = resolveAnswers(r.f, r.h, r.prior, r.ask, r.f.dryRun); err != nil {
+		return err
+	}
+	if err := r.inspectTLS(); err != nil {
 		return err
 	}
 	if r.keyExists, err = rootKeyFileState(r.a.rootKeyFile); err != nil {
@@ -864,6 +919,9 @@ func (r *setupRun) plan() {
 			run: r.applyBootstrapSchema, skip: when(d.applied >= 1, "applied")},
 		{name: "root-key", what: "generate the root key into " + a.rootKeyFile, run: r.writeRootKey,
 			skip: when(r.keyExists, "it is there")},
+	}
+	r.steps = append(r.steps, r.tlsSteps()...)
+	r.steps = append(r.steps, []setupStep{
 		{name: "env-file", what: "write the env file " + a.envFile, run: r.writeEnvFile,
 			skip: when(r.envComplete(), "it holds every setting")},
 		{name: "engine-role", what: "give " + engineRole + " the env file's password, and sign in with it over TCP",
@@ -876,7 +934,7 @@ func (r *setupRun) plan() {
 		{name: "owner", what: "make " + r.adminName() + " the organisation's owner, " + ownerRole, run: r.grantOwner,
 			skip: when(d.owners > 0, "the organisation has an owner"), wait: when(d.owners == 0 && r.adminID == "",
 				ownerWait)},
-	}
+	}...)
 	for i := range r.steps {
 		r.steps[i].state = "planned"
 	}
@@ -905,7 +963,7 @@ func (r *setupRun) envComplete() bool {
 	if !r.prior.exists {
 		return false
 	}
-	for _, k := range envKeys {
+	for k := range r.envValues() {
 		if _, ok := r.prior.values[k]; !ok {
 			return false
 		}
@@ -927,8 +985,12 @@ func (r *setupRun) firstAdminSkip() string {
 
 // envValues are the settings setup writes to the env file.
 func (r *setupRun) envValues() map[string]string {
-	return map[string]string{"SIGNARI_DSN": r.engineDSN, "SIGNARI_ROOT_KEY_FILE": r.a.rootKeyFile,
+	v := map[string]string{"SIGNARI_DSN": r.engineDSN, "SIGNARI_ROOT_KEY_FILE": r.a.rootKeyFile,
 		"SIGNARI_ISSUER": r.a.issuer, "SIGNARI_ADDR": r.a.addr}
+	for k, s := range r.a.tlsEnv() {
+		v[k] = s
+	}
+	return v
 }
 
 // pgLine names the PostgreSQL the run reached, and how.
@@ -972,6 +1034,7 @@ func (r *setupRun) printPlan() {
 	fmt.Fprintf(w, "    %-16s %s%s\n", "database", r.a.database, from("database"))
 	fmt.Fprintf(w, "    %-16s %s\n", "PostgreSQL", pgLine)
 	fmt.Fprintf(w, "    %-16s %s%s\n", "listens on", r.a.addr, from("addr"))
+	fmt.Fprintf(w, "    %-16s %s%s\n", "TLS", r.a.tlsLine(), from("tls"))
 	fmt.Fprintf(w, "    %-16s %s%s\n", "root key", r.a.rootKeyFile, from("root-key-file"))
 	fmt.Fprintf(w, "    %-16s %s%s\n", "env file", r.a.envFile, from("env-file"))
 	fmt.Fprintf(w, "\n  Steps\n")
@@ -1273,6 +1336,15 @@ func (r *setupRun) undo() {
 				undone = append(undone, r.a.rootKeyFile)
 			}
 		}
+		for i := len(r.createdFiles) - 1; i >= 0; i-- {
+			if err := os.Remove(r.createdFiles[i]); err == nil {
+				undone = append(undone, r.createdFiles[i])
+				if r.createdFiles[i] == bindDropIn {
+					_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+				}
+			}
+		}
+		r.createdFiles = nil
 		for i := len(r.madeDirs) - 1; i >= 0; i-- {
 			if os.Remove(r.madeDirs[i]) == nil {
 				undone = append(undone, r.madeDirs[i])
@@ -1349,11 +1421,7 @@ func (r *setupRun) printSummary() {
 	}
 	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
 	fmt.Fprintf(w, "  %-14s set -a; . %s; set +a; signari doctor\n", "Check it", r.a.envFile)
-	if u, err := url.Parse(r.a.issuer); err == nil && u.Scheme == "https" {
-		fmt.Fprintf(w, "  %-14s it listens on %s in plain HTTP: put a proxy that ends TLS for\n%s%s in front, and add\n%s"+
-			"SIGNARI_TRUSTED_PROXIES and SIGNARI_CLIENT_IP_SOURCE to the env\n%sfile (docs/configuration.md, behind a reverse proxy).\n",
-			"Behind TLS", r.a.addr, pad, u.Host, pad, pad)
-	}
+	r.printTLS(w, pad)
 	if r.h.unitInstalled {
 		fmt.Fprintf(w, "  %-14s systemctl disable --now signari, then delete %s,\n%s%s, and the binary, %s.\n",
 			"Remove it", unitPath, pad, r.a.envFile, binaryPath())
@@ -1393,6 +1461,7 @@ type setupResult struct {
 	Email       string            `json:"email,omitempty"`
 	Database    string            `json:"database,omitempty"`
 	Addr        string            `json:"addr,omitempty"`
+	TLS         string            `json:"tls,omitempty"`
 	RootKeyFile string            `json:"root_key_file,omitempty"`
 	EnvFile     string            `json:"env_file,omitempty"`
 	Link        string            `json:"link,omitempty"`
@@ -1412,7 +1481,7 @@ type setupResultStep struct {
 
 func (r *setupRun) result(err error) setupResult {
 	res := setupResult{OK: err == nil, DryRun: r.f.dryRun, Issuer: r.a.issuer, Email: r.a.email,
-		Database: r.a.database, Addr: r.a.addr, RootKeyFile: r.a.rootKeyFile, EnvFile: r.a.envFile,
+		Database: r.a.database, Addr: r.a.addr, TLS: r.a.tls, RootKeyFile: r.a.rootKeyFile, EnvFile: r.a.envFile,
 		Link: r.link, Steps: []setupResultStep{}}
 	for _, m := range r.missing {
 		res.Missing = append(res.Missing, "-"+m)
@@ -1543,6 +1612,15 @@ func setupCheck(ctx context.Context, stdout, out io.Writer, h setupHost, f setup
 				return kerr
 			}
 			add(true, "root key "+keyPath, "")
+		}
+	}
+	if cert := env.values["SIGNARI_TLS_CERT"]; cert != "" {
+		host, _ := issuerHost(env.values["SIGNARI_ISSUER"])
+		facts, warning, terr := checkTLSFiles(cert, env.values["SIGNARI_TLS_KEY"], host, h.now())
+		if terr != nil {
+			add(false, "the TLS certificate "+cert, terr.Error())
+		} else {
+			add(true, "the TLS certificate "+cert+", valid until "+facts.notAfter.UTC().Format("2 Jan 2006"), warning)
 		}
 	}
 	dsn := env.values["SIGNARI_DSN"]

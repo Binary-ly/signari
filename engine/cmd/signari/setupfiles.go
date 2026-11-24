@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -212,6 +213,11 @@ func rootKeyFileState(path string) (exists bool, err error) {
 // writes them.
 var envKeys = []string{"SIGNARI_DSN", "SIGNARI_ROOT_KEY_FILE", "SIGNARI_ISSUER", "SIGNARI_ADDR"}
 
+// envOrder is every setting setup may write, in that order: the four it
+// always does, then those the TLS chosen needs (setuptls.go).
+var envOrder = append(slices.Clone(envKeys), "SIGNARI_TLS_CERT", "SIGNARI_TLS_KEY", "SIGNARI_TRUSTED_PROXIES",
+	"SIGNARI_CLIENT_IP_SOURCE")
+
 // envFile is an env file as setup reads one: its lines, kept as written, and
 // the settings in them.
 type envFile struct {
@@ -297,7 +303,7 @@ func (e envFile) render(want map[string]string) (content string, added []string,
 	} else {
 		fmt.Fprintf(&b, envHeader, e.path)
 	}
-	for _, k := range envKeys {
+	for _, k := range envOrder {
 		v, ok := want[k]
 		if !ok {
 			continue

@@ -542,8 +542,9 @@ func run(args []string) (err error) {
 	name := fs.String("name", "", "instance display name")
 	addr := fs.String("addr", ":8080", "listen address for `serve`, or SIGNARI_ADDR; `setup`: the one it writes "+
 		"to the env file, 127.0.0.1:8080 unless given")
-	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS")
-	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key")
+	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS. "+
+		"`setup`: the one it writes to the env file, checked against the issuer's host")
+	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key; `setup`: the certificate's")
 	adminAddr := fs.String("admin-addr", os.Getenv("SIGNARI_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
 	// The admin API served plaintext until this existed, which put a bearer token
 	// carrying every write privilege on the wire in clear. TLS is now the default
@@ -699,6 +700,11 @@ func run(args []string) (err error) {
 		"nothing; exits 0 when complete, 2 when not, 1 when it cannot tell")
 	printRootKey := fs.Bool("print-root-key", false, "`setup`: print the root key in the summary, to copy "+
 		"it off this machine; never printed otherwise")
+	setupTLS := fs.String("tls", "", "`setup`, for an https:// issuer: who ends TLS, proxy (one in front, Signari "+
+		"on loopback), files (Signari serves HTTPS itself, with -tls-cert and -tls-key) or none; worked out "+
+		"from what listens on 443 and 80 and from Let's Encrypt's certificates when not given")
+	setupTrustedProxies := fs.String("trusted-proxies", "", "`setup -tls proxy`: the proxies whose "+
+		"X-Forwarded-For it believes, written as SIGNARI_TRUSTED_PROXIES (default 127.0.0.1,::1)")
 	setupLogFile := fs.String("log-file", "", "`setup`: the log each run appends to, 0600 and holding no secret "+
 		"(default /var/log/signari/setup.log for root, else setup.log under $XDG_STATE_HOME/signari/, failing "+
 		"that ~/.local/state/signari/)")
@@ -1357,7 +1363,8 @@ func run(args []string) (err error) {
 			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, database: *setupDatabase,
 			addr: *addr, rootKeyFile: *setupRootKeyFile, envFile: *setupEnvFile, yes: *setupYes,
 			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
-			logFile: *setupLogFile, given: given, args: args})
+			logFile: *setupLogFile, tls: *setupTLS, tlsCert: *tlsCert, tlsKey: *tlsKey,
+			trustedProxies: *setupTrustedProxies, given: given, args: args})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

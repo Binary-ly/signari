@@ -34,10 +34,48 @@ It asks only what it cannot detect, in this order:
    Choose it carefully, because applications refuse tokens from any other
    address.
 2. The first administrator's email address.
-3. Which PostgreSQL to use. If one is running on the same machine, it is found
+3. For an `https://` address, who ends Transport Layer Security (TLS). See
+   [Who ends TLS](#who-ends-tls).
+4. Which PostgreSQL to use. If one is running on the same machine, it is found
    for you. Otherwise, give a connection URL for a PostgreSQL role that can
    create roles.
-4. Whether to go ahead with the plan it shows you.
+5. Whether to go ahead with the plan it shows you.
+
+### Who ends TLS
+
+People reach an `https://` address over TLS, the encryption HTTPS is made of. Either
+a reverse proxy in front of Signari ends TLS, or Signari serves HTTPS itself.
+Setup looks at the machine first, and offers what it finds:
+
+- When a program already listens on port 443 or 80, setup takes it to be a
+  proxy and offers `proxy`.
+- When Let's Encrypt has a certificate for the address's host, in
+  `/etc/letsencrypt/live`, setup offers `files`.
+- Otherwise, it offers `proxy`.
+
+With `proxy`, Signari listens on `127.0.0.1:8080` in plain HTTP. It believes the
+`X-Forwarded-For` header from the proxies `-trusted-proxies` names, which is
+`127.0.0.1` and `::1` unless you say otherwise. Point the proxy at that address.
+
+With `files`, Signari serves HTTPS itself on port 443 with the certificate and
+key you give, `-tls-cert` and `-tls-key`. Setup refuses a certificate whose key
+is not its own, which does not name the host, or which has expired. It warns
+when one expires within 14 days.
+
+Signari reads its certificate only when it starts. For a Let's Encrypt
+certificate, setup copies the certificate and key into `/etc/signari/tls/` for
+the service, and installs a certbot hook. After each renewal, the hook copies
+the new certificate and restarts the service. When you give files of your own,
+restart the service after you renew them.
+
+With `none`, setup writes no TLS setting. Signari serves plain HTTP until you add
+a certificate or a proxy.
+
+You can answer in advance, for example for a proxy on another machine:
+
+```sh
+signari setup -tls proxy -trusted-proxies 10.0.0.5
+```
 
 ### What it does
 
@@ -235,10 +273,10 @@ The link works once. Running setup again before anyone has used it prints a new
 one.
 
 People must reach Signari over HTTPS, because the issuer is an `https://`
-address. Either give the server a certificate with `SIGNARI_TLS_CERT` and
-`SIGNARI_TLS_KEY`, or put a reverse proxy in front of it that holds one. See
+address. The summary's `TLS` line says what setup chose, and what is left for
+you to do. For a proxy, see
 [behind a reverse proxy](configuration.md#behind-a-reverse-proxy) for the
-settings a proxy needs.
+settings it needs.
 
 To check that the deployment is sound, run `signari doctor` with the same
 settings the server uses. It lists anything wrong, with how to fix it. See

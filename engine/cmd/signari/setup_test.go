@@ -26,11 +26,13 @@ import (
 )
 
 // testHost is a machine with nothing on it setup could find: no PostgreSQL,
-// no terminal, no name, no systemd.
+// no terminal, no name, no systemd, no proxy and no certificate, run by a user
+// who is not root, so that no default puts a file in /etc or /var/log even
+// where the suite runs as root.
 func testHost(t *testing.T) setupHost {
 	t.Helper()
 	home := t.TempDir()
-	return setupHost{goos: "linux", goarch: "amd64", euid: os.Geteuid(), getenv: func(string) string { return "" },
+	return setupHost{goos: "linux", goarch: "amd64", euid: 1000, getenv: func(string) string { return "" },
 		home: home, fqdn: func() string { return "" }, resolves: func(string) bool { return false },
 		tcpOpen: func(string) bool { return false }, postgresUID: -1, now: time.Now}
 }
@@ -110,14 +112,21 @@ func TestAskingAndNotAskingSettleTheSameAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("asking: %v", err)
 			}
-			if len(ask.asked) != 2 {
-				t.Errorf("asked %v; want the address and the email, and nothing that has a default but those", ask.asked)
+			// The address, the email, and for an https:// address who ends TLS
+			// (B5); nothing else that has a default.
+			questions := 2
+			if strings.HasPrefix(c.issuer, "https://") {
+				questions = 3
+			}
+			if len(ask.asked) != questions {
+				t.Errorf("asked %v; want %d questions", ask.asked, questions)
 			}
 			if without.issuer != c.issuer || with.issuer != c.issuer {
 				t.Errorf("issuer %q without asking and %q with, want %q", without.issuer, with.issuer, c.issuer)
 			}
 			for _, pair := range [][2]string{{without.email, with.email}, {without.database, with.database},
-				{without.addr, with.addr}, {without.rootKeyFile, with.rootKeyFile}, {without.envFile, with.envFile}} {
+				{without.addr, with.addr}, {without.rootKeyFile, with.rootKeyFile}, {without.envFile, with.envFile},
+				{without.tls, with.tls}, {without.trustedProxies, with.trustedProxies}} {
 				if pair[0] != pair[1] {
 					t.Errorf("without asking %q, with %q", pair[0], pair[1])
 				}

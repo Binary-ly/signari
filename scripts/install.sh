@@ -419,8 +419,9 @@ RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# No capabilities. To listen on a port below 1024, set both of these to
-# CAP_NET_BIND_SERVICE.
+# No capabilities. To listen on a port below 1024, both of these need
+# CAP_NET_BIND_SERVICE, which signari setup adds in a drop-in of its own when
+# Signari serves HTTPS itself on such a port.
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

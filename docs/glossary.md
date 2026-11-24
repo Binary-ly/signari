@@ -320,8 +320,9 @@ credential. See [issuing credentials to wallets](oid4vci.md).
 ### Crypto-shredding
 
 **General term.** Making data unreadable by destroying the key it was encrypted
-with, instead of finding and deleting every copy. See [erasing a
-person](erasure.md).
+with, instead of finding and deleting every copy. It reaches only copies whose
+key is gone too, so a backup that still holds the key stays readable. See
+[erasing a person](erasure.md).
 
 ### CSRF
 
@@ -339,9 +340,11 @@ review](security-review-cwe-top25.md).
 
 ### Deactivate
 
-**Signari term.** Turning a person's account off. Signari refuses them at every
-application from the next request, and keeps their account. See [how Signari
-works](how-signari-works.md#person-and-group).
+**Signari term.** Turning a person's account off. Signari refuses them from the
+next request, ends their sessions, and tells the applications that listen. It
+keeps their account. An application's own session, or an access token it checks
+itself, lasts until it ends or expires: five minutes by default, for the token.
+See [how Signari works](how-signari-works.md#person-and-group).
 
 ### Device flow
 
@@ -441,8 +444,9 @@ usually a URL. See [SAML 2.0](saml.md).
 
 ### Erasure
 
-**Signari term.** Removing a person by destroying the key their data was encrypted
-with, so it stays unreadable even in old backups. See [erasing a
+**Signari term.** Removing a person's account, and destroying the key their data
+was encrypted with. A backup taken before the erasure still holds that key, which
+the root key opens, until the backup is deleted. See [erasing a
 person](erasure.md).
 
 ### ES256
@@ -1265,7 +1269,8 @@ sign-in. See [theming](theming.md).
 ### TLS
 
 **General term.** Transport Layer Security: the encryption behind every `https://`
-address. Signari serves sign-in only over it. See
+address. Signari's issuer must be an `https://` address, except on `localhost`.
+See
 [installation](installation.md).
 
 ### Token

@@ -9,7 +9,8 @@ domain, of who they are.
 
 Signari can accept that ticket. Through the Simple and Protected GSS-API
 Negotiation Mechanism ([SPNEGO](glossary.md#spnego)), the browser presents it, and
-signing in becomes no interaction at all: no password, no prompt. [Which protocol
+the person types no password. Under the default sign-in flow, someone with a
+second factor enrolled is still asked for it after the ticket. [Which protocol
 do I need?](protocols-explained.md#kerberos) explains Kerberos in plain words.
 
 You give Signari a "keytab", the file that holds the service's Kerberos keys. You

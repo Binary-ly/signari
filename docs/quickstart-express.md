@@ -53,8 +53,9 @@ checking off.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/express-quickstart/Dockerfile) as `demo-express`, the public
 client `demo-express` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
-`http://localhost:8091/login`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8091/login`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d

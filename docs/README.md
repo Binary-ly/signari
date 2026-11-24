@@ -46,7 +46,7 @@ page.
 | [Laravel](quickstart-laravel.md) | A Laravel application signing people in, its library kept to Laravel's session and checked for state first |
 | [Schema versions](schema-versions.md) | What each schema version changed, newest first, generated from the migrations |
 | [Connection pooling](connection-pooling.md) | The two pools a node opens, and running behind PgBouncer |
-| [Running more than one instance](high-availability.md) | Several servers on one database and one issuer, with no leader election, cache invalidation or sticky sessions to arrange |
+| [Running several copies of Signari](high-availability.md) | Several servers on one database and one issuer, with no leader election, cache invalidation or sticky sessions to arrange |
 | [Kubernetes and other artefacts](deployment-artefacts.md) | The Helm chart, and what is deliberately not built |
 | [Backup and restore](runbook-backup-restore.md) | Backup and restore, and why the root key changes everything |
 | [Running the conformance suite](runbook-public-conformance.md) | Exposing a deployment to the OIDF conformance suite |

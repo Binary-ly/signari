@@ -22,13 +22,14 @@ import (
 // one. That single choice is what makes erasure possible without deleting rows:
 //
 //	destroy this key  ->  every ciphertext belonging to that person becomes
-//	                      permanently unreadable, everywhere, including in
-//	                      backups taken before the erasure
+//	                      permanently unreadable in the database and in
+//	                      every backup taken after the erasure
 //
-// This is crypto-shredding, and it is the only mechanism that erases data from
-// backups you have already written. Deleting rows does not: yesterday's backup
-// still has them, and a restore silently resurrects a person who asked to be
-// forgotten.
+// This is crypto-shredding. It does not reach a backup taken before the
+// erasure: that backup still holds this key, wrapped under the root key, which
+// opens it (LoadSubjectKey), and the account's rows in the clear. Such a backup
+// is erased only by deleting it, and restoring one brings the person back, so
+// erase them again after a restore.
 //
 // The corollary is deliberate and worth stating: an erased subject's TOTP secret
 // is GONE. They cannot sign in with it, and no operator can recover it. That is

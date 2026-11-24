@@ -48,7 +48,7 @@ Open `http://127.0.0.1:8080/login`, sign in, and the page says who signed in.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/go-quickstart/Dockerfile) as `demo`, the public client `demo` of
 [deploy/demo/client.yaml](../deploy/demo/client.yaml), at `http://localhost:8097/login`.
-The [README](../README.md#quick-start) gives the commands. It trusts the development CA
+[Your first application](first-application.md) gives the commands. It trusts the development CA
 under `deploy/tls` through `SSL_CERT_FILE`. The same profile runs the Express, Next.js,
 Django, Spring Boot and Laravel quickstarts beside it, on ports 8091 to 8095.
 

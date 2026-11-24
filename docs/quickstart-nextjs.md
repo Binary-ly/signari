@@ -49,8 +49,9 @@ give Node the certificate with `NODE_EXTRA_CA_CERTS=<file.pem>`.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/nextjs-quickstart/Dockerfile) as `demo-nextjs`, the public client
 `demo-nextjs` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
-`http://localhost:8092/login`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8092/login`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d

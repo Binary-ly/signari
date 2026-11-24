@@ -1,4 +1,4 @@
-# Running more than one instance
+# Running several copies of Signari
 
 ## Introduction
 
@@ -6,18 +6,19 @@ One Signari server is a single point of failure. When it stops, nobody can sign
 in anywhere. To survive that, you run several copies of Signari behind a load
 balancer.
 
-Every instance connects to the same PostgreSQL and serves the same issuer. There
+Every copy connects to the same PostgreSQL and serves the same issuer, so they
+are one [instance](how-signari-works.md#instance-and-issuer) between them. There
 is no leader election to configure, no cache to invalidate, and no sticky
-sessions to arrange at the load balancer. This page explains what the instances
+sessions to arrange at the load balancer. This page explains what the copies
 share, and what had to change before two of them were as safe as one.
 
-## Starting a second instance
+## Starting a second copy
 
-Each instance needs the same database, root key and issuer. Start each one like
+Each copy needs the same database, root key and issuer. Start each one like
 this:
 
 ```sh
-# Instance A and instance B, same DSN, same root key, same issuer.
+# Copy A and copy B, same DSN, same root key, same issuer.
 SIGNARI_DSN=… SIGNARI_ROOT_KEY=… SIGNARI_ISSUER=https://id.example.com \
   signari serve -addr 0.0.0.0:8080
 ```
@@ -25,12 +26,12 @@ SIGNARI_DSN=… SIGNARI_ROOT_KEY=… SIGNARI_ISSUER=https://id.example.com \
 ## What was already shared, and what was not
 
 Signing keys, sessions, authorization codes, refresh families, consent, device
-codes and audit all live in the database. So two instances agree about them
-without doing anything. This was verified: both instances serve identical `kid`s,
+codes and audit all live in the database. So two copies agree about them
+without doing anything. This was verified: both copies serve identical `kid`s,
 and a token minted by one verifies at the other.
 
 The "janitor" is the background job that ends expired sessions and purges spent
-authorization codes. It coordinates with a transaction-scoped advisory lock. One instance sweeps, and the others record
+authorization codes. It coordinates with a transaction-scoped advisory lock. One copy sweeps, and the others record
 `Skipped`. A node that dies mid-pass releases the lock by rolling back, rather
 than leaving the janitor wedged.
 
@@ -46,24 +47,24 @@ outage is worked through and nobody waits on it.
 
 ## The measurement
 
-With the old limit, 40 sign-in attempts against one instance and against two
-gave this:
+With the old limit, 40 sign-in attempts against one copy and against two gave
+this:
 
 ```
                      40 sign-in attempts
-one instance         26 allowed, 14 refused
-two instances        40 allowed,  0 refused      ← the limit stopped binding
+one copy             26 allowed, 14 refused
+two copies           40 allowed,  0 refused      ← the limit stopped binding
 ```
 
-Every instance added for availability multiplied the brute-force budget by one. A
+Every copy added for availability multiplied the brute-force budget by one. A
 deployment that scales out to survive traffic quietly weakens the defence that
 matters most. Nothing about it looks wrong from inside either process.
 
 After the fix, the same attempts gave this:
 
 ```
-one instance         20 allowed, 20 refused
-two instances        20 allowed, 20 refused      ← the same number either way
+one copy             20 allowed, 20 refused
+two copies           20 allowed, 20 refused      ← the same number either way
 ```
 
 ## It was also global, which is a separate bug
@@ -74,7 +75,7 @@ script. Meanwhile, guessing spread across many accounts was never counted per
 account at all.
 
 Both fall out of the same fix: counters keyed by what is being limited, held
-where every instance can see them:
+where every copy can see them:
 
 | key | limit | stops |
 |---|---|---|
@@ -148,7 +149,7 @@ an unlimited guessing window.
 A CAPTCHA is a puzzle that tells a person from a script. Adaptive mode counts
 failures per address, and shows the puzzle after a threshold.
 
-That counter was a map in process memory. So with N instances, an attacker needed
+That counter was a map in process memory. So with N copies, an attacker needed
 N times the failures before any single one escalated. With an even spread across
 a load balancer, **none of them ever would.** Adaptive mode silently stopped being
 adaptive.
@@ -156,12 +157,12 @@ adaptive.
 It now uses the same shared counters. `internal/captcha` gained an interface
 rather than a database dependency. It is small and pure, and should stay testable
 without one. So the caller supplies an implementation backed by whatever every
-instance can see.
+copy can see.
 
 Two properties are tested, because both can be got wrong:
 
 ```
-three failures split across two instances → both instances see three
+three failures split across two copies → both copies see three
 five reads of the counter                 → still three
 ```
 
@@ -174,10 +175,10 @@ about to fail for the same reason, and adding a puzzle to it helps nobody.
 
 ## Policy propagation
 
-Every instance asks the database which access policy is in force on every
-decision. That is one indexed row: the document's digest, and the document itself
-only when the digest has changed. So a new rule applies on the next request, on
-every instance, and no two instances enforce different versions.
+Every copy asks the database which access policy is in force on every decision.
+That is one indexed row: the document's digest, and the document itself only when
+the digest has changed. So a new rule applies on the next request, on every copy,
+and no two copies enforce different versions.
 
 This page used to describe a 30-second reload timer, measured at five seconds in
 practice and judged small enough. The judgement was wrong for this case. A rule
@@ -185,7 +186,7 @@ can say `deny: true`, and this engine never serves a security-negative decision
 from a snapshot.
 
 A deny rule written to shut a client out must work on the next request. It must
-not wait up to half a minute on whichever instance the attacker's request happens
+not wait up to half a minute on whichever copy the attacker's request happens
 to reach. Parsing is still memoised, so the cost is the digest query, not a
 parse.
 
@@ -193,7 +194,7 @@ parse.
 
 The "outbox" is the queue of notices Signari delivers to other services, such as
 sign-out notices and security events. The claim was already right:
-`FOR UPDATE SKIP LOCKED` divides the work, so two instances never deliver the
+`FOR UPDATE SKIP LOCKED` divides the work, so two copies never deliver the
 same notice. The
 previous version of this page said otherwise, and that was wrong.
 
@@ -212,16 +213,16 @@ transaction across 32 calls in a row. Each kind of delivery has a goroutine of i
 own, so a receiver that is down holds up nothing but its own kind. Each drains
 until its queue is empty, rather than taking one batch every two seconds.
 
-Keeping the two instances apart after the locks are released is the other half.
+Keeping the two copies apart after the locks are released is the other half.
 Claiming pushes `next_attempt_at` forward by a lease. Without that, committing in
 order to deliver outside a transaction hands the same rows straight to the other
-instance.
+copy.
 
 `attempts` is deliberately not incremented on claim. A crash between claiming and
 recording is not the application failing to answer. Charging it as one would
 march a perfectly reachable receiver toward being parked.
 
-This was tested. Two instances draining at once deliver each notice exactly once.
+This was tested. Two copies draining at once deliver each notice exactly once.
 A row being delivered is not locked, and a slow receiver does not delay the
 others.
 
@@ -241,18 +242,18 @@ The boundaries now live in one place, and the policy stays with each caller. The
 security-event drain has its own test at that level, which is what it lacked.
 Lacking it is exactly why nothing said it was still wrong.
 
-## What running two instances actually found
+## What running two copies actually found
 
 **The audit chain forked whenever two events were written at once.** Two entries
 claiming the same predecessor is indistinguishable from a deleted entry. So
 verification reported tampering on data nobody had touched.
 
-It was never specific to more than one instance, since two concurrent sign-ins
-do the same thing. But two instances made it frequent enough to notice. See [the
+It was never specific to more than one copy, since two concurrent sign-ins do
+the same thing. But two copies made it frequent enough to notice. See [the
 audit chain fork](audit-chain-fork.md).
 
-That is the argument for this whole exercise. The bug was in a single-instance
-code path, and only running the deployment shape Signari intends to support
+That is the argument for this whole exercise. The bug was in a single-copy code
+path, and only running the deployment shape Signari intends to support
 surfaced it.
 
 ## Configuration read once at startup
@@ -318,14 +319,14 @@ It is that and nothing else, on purpose:
   would carry a version the primary has moved past. `If-Match` exists so that an
   apply cannot overwrite a change it never saw.
 
-## More instances on one machine
+## More copies on one machine
 
 This measures client credentials against one database, with 16 workers shared
-between one load generator per instance. It is the median of two runs, with
+between one load generator per copy. It is the median of two runs, with
 everything on one 8-core laptop under other load:
 
 ```
-instances   tokens/s    errors
+copies      tokens/s    errors
 1           2,864       0
 2           2,657       0
 4           2,969       0
@@ -333,14 +334,14 @@ instances   tokens/s    errors
 
 The numbers are flat, because the machine is what ran out. The engines,
 PostgreSQL and the load generators were sharing eight cores. So this says that a
-second and a fourth instance cost nothing in coordination. That is what they
+second and a fourth copy cost nothing in coordination. That is what they
 should cost, as nothing is shared between them but the database. It does not say
 how far they scale, which needs hosts of their own.
 
 ## What this still does not do
 
 Issuer aliases were read once at startup, which made a retired alias go on being
-accepted until every instance restarted. They are now read per request, like
+accepted until every copy restarted. They are now read per request, like
 every other decision about what to accept.
 
 The three gaps listed when this page was written were policy cache coherence,

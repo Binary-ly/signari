@@ -23,19 +23,28 @@ git clone https://github.com/Binary-ly/signari.git
 cd signari/deploy
 ```
 
-Start Signari, its database and the example applications. Use your own email
-address in place of `you@example.com`:
+> [!NOTE]
+> The example applications use Docker's host networking, so they reach Signari at
+> the same address your browser does. Docker Desktop supports it from version
+> 4.34, once you turn it on. Sign in to your Docker account in Docker Desktop
+> first. Then turn on **Enable host networking** under **Settings**,
+> **Resources**, **Network**, and press **Apply and restart**. Docker Engine on
+> Linux needs no setting.
+
+Write Signari's settings to a file called `.env` in this folder, where
+`docker compose` reads them. Use your own email address in place of
+`you@example.com`:
 
 ```sh
-export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
-  SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
-docker compose --profile first-run --profile demo up -d
+cat > .env <<EOF
+SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
+SIGNARI_FIRST_EMAIL=you@example.com
+SIGNARI_TLS_CERT=/tls/engine.crt
+SIGNARI_TLS_KEY=/tls/engine.key
+EOF
 ```
 
-The first time, Docker builds Signari and six example applications from source.
-That can take several minutes.
-
-In this example, the first line sets three things:
+In this example, the file sets four settings:
 
 - `SIGNARI_ROOT_KEY` is a new random "root key", the secret Signari encrypts its
   own keys with;
@@ -43,28 +52,51 @@ In this example, the first line sets three things:
 - `SIGNARI_TLS_CERT` and `SIGNARI_TLS_KEY` let Signari serve HTTPS, with a
   certificate made for development.
 
-The second line starts everything. Signari runs at `https://localhost:8099`. The
-example applications run at `http://localhost:8097` and on ports 8091 to 8095.
+Keep the file. Signari cannot read its own keys under a different root key, so
+every later start needs this one.
 
-> [!NOTE]
-> The example applications use Docker's host networking, so they reach Signari at
-> the same address your browser does. Docker Desktop supports this from version
-> 4.34, once **Enable host networking** is turned on under **Settings**,
-> **Resources**, **Network**.
+Start Signari, its database and the example applications:
 
-## 2. Trust the development certificate
+```sh
+docker compose --profile first-run --profile demo up -d
+```
 
-Signari's certificate is signed by a certificate authority made for development,
-`deploy/tls/ca.crt`. Your browser does not know that authority, so it warns you
-about `https://localhost:8099`.
+The first time, Docker builds Signari and six example applications from source.
+That can take several minutes.
 
-Add `deploy/tls/ca.crt` to the certificates your browser or your operating system
-trusts, for as long as you follow this tutorial.
+Signari runs at `https://localhost:8099`. The example applications run at
+`http://localhost:8097` and on ports 8091 to 8095.
+
+## 2. Accept the development certificate
+
+Signari serves HTTPS with a certificate made for development, signed by a
+certificate authority in `deploy/tls/ca.crt`. Your browser does not know that
+authority, so the first time you open `https://localhost:8099` it warns you that
+the connection is not private.
+
+For this tutorial it is safe to go on, because `localhost` is your own computer.
+Each browser words it differently:
+
+- in Chrome, press **Advanced**, then **Proceed to localhost (unsafe)**;
+- in Edge, press **Advanced**, then **Continue to localhost (unsafe)**;
+- in Firefox, press **Advanced**, then **Accept the Risk and Continue**;
+- in Safari, press **Show Details**, then **visit this website**.
+
+Your browser makes an exception for this one certificate at this one address.
+The example applications need no exception, because each is given
+`tls/ca.crt` to trust.
+
+If your browser offers no way to go on, another project has left it a rule to
+accept only trusted certificates for `localhost`. In Chrome, delete that rule:
+open `chrome://net-internals/#hsts` and enter `localhost` under **Delete domain
+security policies**.
 
 > [!WARNING]
-> Remove that certificate when you finish. The development server's private key
-> is published in the repository, so while your computer trusts it, any program
-> can pose as `https://localhost`.
+> Do not add `tls/ca.crt` to your computer's trusted authorities. Its private key
+> was made on another computer, so whoever holds that key could then pose as any
+> website to yours. The development certificate's own key is in the repository,
+> so use it only for this tutorial. A real server needs a certificate of its own,
+> as [Installation](installation.md) describes.
 
 ## 3. Create your account
 
@@ -85,8 +117,8 @@ The first person, you@example.com, finishes setting up here, once, within 72h0m0
 ```
 
 Open the link in your browser. The page is called **Create your account**. Choose
-a password of at least eight characters, and press **Create account**. The next
-page says that your address can now sign in.
+a password of at least 15 characters, such as four unrelated words, and press
+**Create account**. The next page says that your address can now sign in.
 
 ## 4. Sign in to the example application
 
@@ -228,11 +260,18 @@ Stop everything you started:
 docker compose --profile first-run --profile demo down
 ```
 
-The database is kept for next time. Start it again with the same
-`SIGNARI_ROOT_KEY`, because Signari cannot read its own keys under a different
-one. To delete the database as well, add `-v` to the command above.
+The database is kept for next time, and the root key is kept in `.env`. Start
+everything again, in the `deploy` folder, with the command from step 1:
 
-Remember to remove the development certificate you trusted in step 2.
+```sh
+docker compose --profile first-run --profile demo up -d
+```
+
+Signari reads the same root key from `.env`, so it can read its own keys. Your
+account is still there, so the bootstrap service prints no new link.
+
+To delete the database as well, add `-v` to the `down` command. Then delete
+`.env` too, since its root key has nothing left to open.
 
 ## If something goes wrong
 

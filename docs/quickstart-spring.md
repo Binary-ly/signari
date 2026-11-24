@@ -50,8 +50,9 @@ truststore with `keytool -importcert` and start Java with
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/spring-quickstart/Dockerfile) as `demo-spring`, the public client
 `demo-spring` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), with
-`CLIENT_AUTH=none`, at `http://localhost:8094/`. With the exports the
-[README](../README.md#quick-start) gives:
+`CLIENT_AUTH=none`, at `http://localhost:8094/`. With the settings that [Your
+first application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d

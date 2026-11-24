@@ -29,9 +29,13 @@ active, as part of the erasure.
 Signari erases a person in two parts, in one transaction.
 
 First, it destroys the key their data is encrypted with. Everything sealed with
-it becomes permanently unreadable, including in every backup taken before the
-erasure, which is the part row deletion cannot give you. Destroying the key this
-way is called a "shred".
+it becomes permanently unreadable in the database, and in every backup taken
+after the erasure. Destroying the key this way is called a "shred".
+
+A backup taken before the erasure is different. It still holds the person's key,
+wrapped under the root key, and the root key opens it. It also holds their
+account, in the clear. The erasure reaches that backup only when the backup is
+deleted, so keep backups no longer than your promises about erasure allow.
 
 Second, it removes their account. They are signed out everywhere, and each
 application they used is told. Then the account, and every row keyed by it, is

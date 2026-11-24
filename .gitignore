@@ -8,3 +8,5 @@ signari_dev
 /engine/signari.cdx.json
 /engine/signari.image.cdx.json
 /tools/bench/bench
+# The settings Your first application writes, its root key among them.
+/deploy/.env

@@ -1,0 +1,124 @@
+# The compose target, end to end: build the engine image, have its
+# `signari setup -compose` write a project, start it, sign its first
+# administrator up, then check it, run setup again and remove it. Docker does
+# not run on the pod the rest of the suite runs on, so this is where the
+# compose target is tested.
+name: compose
+
+on:
+  pull_request:
+    paths:
+      - engine/cmd/signari/setup*.go
+      - engine/cmd/signari/setupfiles/**
+      - engine/cmd/signari/uninstall*.go
+      - engine/Dockerfile
+      - scripts/install.sh
+      - .github/workflows/compose.yml
+  push:
+    branches: [main]
+    paths:
+      - engine/cmd/signari/setup*.go
+      - engine/cmd/signari/setupfiles/**
+      - engine/cmd/signari/uninstall*.go
+      - engine/Dockerfile
+      - scripts/install.sh
+      - .github/workflows/compose.yml
+
+permissions: {}
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: engine/go.mod
+          cache-dependency-path: engine/go.sum
+
+      - name: Build the engine image, and the CLI that checks and removes the project
+        run: |
+          docker build --tag signari:ci engine
+          (cd engine && go build -o "$RUNNER_TEMP/signari" ./cmd/signari)
+          echo "DIR=$RUNNER_TEMP/project" >> "$GITHUB_ENV"
+
+      - name: setup -compose writes the project
+        run: |
+          mkdir -p "$DIR"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$DIR:$DIR" signari:ci \
+            setup -compose "$DIR" -image signari:ci -email ada@example.com -yes -json | tee "$RUNNER_TEMP/first.json"
+          jq -e '.ok and ([.steps[].state] | all(. == "done"))' "$RUNNER_TEMP/first.json"
+          test "$(stat -c %a "$DIR/.env" "$DIR/signari.env" "$DIR/root.key" | sort -u)" = 600
+
+      - name: It starts, and becomes healthy
+        run: docker compose --project-directory "$DIR" up --detach --wait --wait-timeout 300
+
+      - name: Discovery answers 200
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/.well-known/openid-configuration)
+          test "$code" = 200
+
+      - name: Before anybody has signed in, -check exits 2
+        run: |
+          status=0
+          "$RUNNER_TEMP/signari" setup -check -compose "$DIR" || status=$?
+          test "$status" = 2
+
+      - name: The first administrator sets a password with the link
+        run: |
+          link=$(docker compose --project-directory "$DIR" logs --no-log-prefix setup |
+            grep -o 'http://[^ "]*/signup?invite=[^ "]*' | tail -n 1)
+          test -n "$link"
+          jar="$RUNNER_TEMP/cookies"
+          csrf=$(curl -fsS -c "$jar" "$link" | grep -o '<input[^>]*csrf_token[^>]*>' | head -n 1 |
+            sed -n 's/.*value="\([^"]*\)".*/\1/p')
+          test -n "$csrf"
+          curl -fsS -b "$jar" -c "$jar" -o /dev/null --data-urlencode "csrf_token=$csrf" \
+            --data-urlencode "invite=${link##*invite=}" --data-urlencode "email=ada@example.com" \
+            --data-urlencode "password=a long passphrase for the compose job" http://localhost:8080/signup
+
+      - name: The setup service, run again, makes them the owner, and -check exits 0
+        run: |
+          docker compose --project-directory "$DIR" run --rm -T setup
+          grep -q 'done  owner' "$DIR/setup.log"
+          "$RUNNER_TEMP/signari" setup -check -compose "$DIR"
+
+      - name: A second setup -compose, and another start, change nothing
+        run: |
+          state() {
+            (cd "$DIR" && sha256sum compose.yaml .env signari.env root.key)
+            docker compose --project-directory "$DIR" exec -T postgres psql -U postgres -d signari -Atc \
+              "SELECT concat_ws(' ', (SELECT version FROM core.config_version WHERE id),
+                 (SELECT count(*) FROM core.audit_events), (SELECT count(*) FROM core.admin_role_bindings),
+                 (SELECT rolpassword FROM pg_authid WHERE rolname = 'signari_engine'))"
+          }
+          before=$(state)
+          docker run --rm --user "$(id -u):$(id -g)" -v "$DIR:$DIR" signari:ci \
+            setup -compose "$DIR" -image signari:ci -yes -json | tee "$RUNNER_TEMP/second.json"
+          jq -e '.ok and ([.steps[].state] | all(. == "skipped"))' "$RUNNER_TEMP/second.json"
+          docker compose --project-directory "$DIR" run --rm -T setup
+          test "$before" = "$(state)"
+
+      - name: uninstall keeps the volume and the root key, and removes them when asked and confirmed
+        run: |
+          "$RUNNER_TEMP/signari" uninstall -compose "$DIR" -yes
+          test -f "$DIR/root.key" && test -f "$DIR/.env"
+          docker volume inspect signari_pgdata > /dev/null
+          status=0
+          out=$("$RUNNER_TEMP/signari" uninstall -compose "$DIR" -yes -delete-root-key -drop-database -json) || status=$?
+          test "$status" = 2
+          "$RUNNER_TEMP/signari" uninstall -compose "$DIR" -yes -delete-root-key -drop-database \
+            -confirm "$(printf '%s' "$out" | jq -r .confirm)"
+          test ! -e "$DIR"
+          ! docker volume inspect signari_pgdata > /dev/null 2>&1
+
+      - name: The project's logs, when a step failed
+        if: failure()
+        run: |
+          docker compose --project-directory "$DIR" logs || true
+          cat "$DIR/setup.log" || true

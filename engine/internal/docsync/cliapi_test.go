@@ -388,6 +388,7 @@ var cliAPI = map[string]string{
 	"i18n list":       reads,
 	"i18n status":     reads,
 	"i18n keys":       reads,
+	"healthcheck":     reads,
 	"webauthn policy": "PUT /admin/organizations/{orgID}/webauthn-policy",
 	"webauthn show":   reads,
 	"duo set":         "PUT /admin/organizations/{orgID}/duo",

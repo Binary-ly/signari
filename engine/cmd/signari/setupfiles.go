@@ -295,15 +295,21 @@ const envHeader = `# Signari's settings, written by signari setup. signari serve
 // missing and changes nothing else. added names those it added. A setting the
 // file holds with another value is the caller's to refuse before this.
 func (e envFile) render(want map[string]string) (content string, added []string, err error) {
+	return e.renderKeys(envOrder, fmt.Sprintf(envHeader, e.path), want)
+}
+
+// renderKeys is render for a file of other settings, in order, opened by
+// header when it is new: the compose project's .env (setupcompose.go).
+func (e envFile) renderKeys(order []string, header string, want map[string]string) (content string, added []string, err error) {
 	var b strings.Builder
 	if e.exists {
 		for _, l := range e.lines {
 			b.WriteString(l + "\n")
 		}
 	} else {
-		fmt.Fprintf(&b, envHeader, e.path)
+		b.WriteString(header)
 	}
-	for _, k := range envOrder {
+	for _, k := range order {
 		v, ok := want[k]
 		if !ok {
 			continue

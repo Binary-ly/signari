@@ -56,6 +56,9 @@ type setupFlags struct {
 	yes, dryRun, check, json       bool
 	printRootKey                   bool
 	logFile                        string
+	// compose is the directory to write a compose project to, and image the
+	// engine image it runs (setupcompose.go).
+	compose, image string
 	// How TLS is ended for an https:// issuer (setuptls.go).
 	tls, tlsCert, tlsKey, trustedProxies string
 	// given are the flags set on the command line, and args their values, for
@@ -210,7 +213,9 @@ type setupAnswers struct {
 	// suggested it, and lineage the Let's Encrypt directory the files are
 	// copied from.
 	tls, tlsCert, tlsKey, trustedProxies, tlsWhy, lineage string
-	from                                                  map[string]string
+	// compose is the compose project's directory, for -compose.
+	compose string
+	from    map[string]string
 }
 
 // setupDefault is the one table of defaults, read by the run that asks and the
@@ -232,7 +237,11 @@ func setupDefault(name string, h setupHost, a setupAnswers) string {
 		return "127.0.0.1:8080"
 	case "tls":
 		// What is here already says; with nothing found, a proxy in front,
-		// as the engine listens on loopback either way.
+		// as the engine listens on loopback either way. A compose project
+		// publishes plain HTTP, for a proxy on the host.
+		if a.compose != "" {
+			return tlsProxy
+		}
 		mode, _, _, _ := h.detectTLS(a.issuer)
 		return mode
 	case "tls-cert", "tls-key":
@@ -241,6 +250,9 @@ func setupDefault(name string, h setupHost, a setupAnswers) string {
 		}
 		return ""
 	case "trusted-proxies":
+		if a.compose != "" {
+			return composeTrustedProxies
+		}
 		return defaultTrustedProxies
 	case "root-key-file":
 		return filepath.Join(setupConfigDir(h.euid, h.getenv, h.home), rootKeyFileName)
@@ -473,6 +485,14 @@ type setupRun struct {
 	// createdRoles says migration 0001 made signari_engine and the others in
 	// this run, as they were not there before it.
 	createdRoles bool
+	// inCompose says this run is a compose project's setup service: its env
+	// file sits beside the compose.yaml setup -compose wrote, whose manifest
+	// lists what the project is. manifest, when set, is where this run lists
+	// what it made instead of the default.
+	inCompose bool
+	manifest  string
+	// composeName is the compose project's name, for -compose.
+	composeName string
 
 	// The certificate serve is to serve, as checked.
 	cert        certFacts
@@ -506,8 +526,16 @@ func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setu
 	if f.json {
 		out = stderr
 	}
-	if f.check {
+	switch {
+	case f.check && f.compose != "":
+		return composeCheck(ctx, stdout, out, f)
+	case f.check:
 		return setupCheck(ctx, stdout, out, h, f)
+	case f.compose != "":
+		return composeSetup(ctx, stdout, out, h, f)
+	}
+	if f.image != "" {
+		return usageError{errors.New("-image names the engine image a compose project runs, and goes with -compose")}
 	}
 	r := &setupRun{f: f, h: h, out: out}
 	if f.prompts(h) {
@@ -619,6 +647,7 @@ func (r *setupRun) inspect(ctx context.Context) error {
 	if err := validFilePath(envPath); err != nil {
 		return usageError{fmt.Errorf("-env-file: %w", err)}
 	}
+	r.inCompose = composeProject(filepath.Dir(envPath))
 	if r.prior, err = readEnvFile(envPath); err != nil {
 		return err
 	}
@@ -1379,6 +1408,9 @@ func (r *setupRun) undo() {
 
 // startCommand is how to start the engine with what setup wrote.
 func (r *setupRun) startCommand() string {
+	if r.inCompose || r.a.compose != "" {
+		return "docker compose up --detach --wait, in " + cmp.Or(r.a.compose, filepath.Dir(r.a.envFile))
+	}
 	if r.h.unitInstalled {
 		return "systemctl enable --now signari"
 	}
@@ -1427,6 +1459,14 @@ func (r *setupRun) printSummary() {
 		fmt.Fprintf(w, "  %-14s %s, what each run did, with no secret in it.\n", "Log", r.log.path)
 	}
 	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	if r.inCompose {
+		dir := filepath.Dir(r.a.envFile)
+		fmt.Fprintf(w, "  %-14s signari setup -check -compose %s\n", "Check it", dir)
+		r.printTLS(w, pad)
+		fmt.Fprintf(w, "  %-14s signari uninstall -compose %s, which keeps the database's\n%svolume and the "+
+			"root key unless given -drop-database and -delete-root-key.\n\n", "Remove it", dir, pad)
+		return
+	}
 	fmt.Fprintf(w, "  %-14s set -a; . %s; set +a; signari doctor\n", "Check it", r.a.envFile)
 	r.printTLS(w, pad)
 	fmt.Fprintf(w, "  %-14s signari uninstall, which removes what the installer and setup made,\n%sas %s lists "+

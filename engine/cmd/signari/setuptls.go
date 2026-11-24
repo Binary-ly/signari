@@ -133,10 +133,11 @@ func listeningOn(table string, ports ...int) map[string]int {
 			continue
 		}
 		p, err := strconv.ParseUint(hexPort, 16, 16)
-		if err != nil || !want[int(p)] {
+		port := int(p) // #nosec G115 -- ParseUint of 16 bits is at most 65535
+		if err != nil || !want[port] {
 			continue
 		}
-		out[f[9]] = int(p)
+		out[f[9]] = port
 	}
 	return out
 }

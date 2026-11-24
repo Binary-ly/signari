@@ -190,7 +190,7 @@ func (m installManifest) write(euid int) error {
 // recordManifest adds what this run made, and is still there, to the
 // manifest. A failed run records too: what it kept, the database first.
 func (r *setupRun) recordManifest() {
-	if r.f.dryRun || r.f.check {
+	if r.f.dryRun || r.f.check || r.inCompose {
 		return
 	}
 	there := func(p string) bool { _, err := os.Lstat(p); return err == nil }
@@ -225,10 +225,13 @@ func (r *setupRun) recordManifest() {
 	if r.createdRoles {
 		add = append(add, manifestEntry{"roles", strings.Join(engineRoles, " ")})
 	}
+	if r.a.compose != "" {
+		add = append(add, manifestEntry{"compose", r.a.compose + " " + r.composeName})
+	}
 	if len(add) == 0 {
 		return
 	}
-	path := manifestPath(r.h.euid, r.h.getenv, r.h.home)
+	path := cmp.Or(r.manifest, manifestPath(r.h.euid, r.h.getenv, r.h.home))
 	m, err := readManifest(path)
 	if err == nil {
 		for _, e := range add {
@@ -258,6 +261,8 @@ func dsnServer(dsn string) string {
 type uninstallFlags struct {
 	dryRun, yes, json, deleteRootKey, dropDatabase bool
 	confirm, superuserDSN, superuserDSNFile        string
+	// compose is a compose project's directory, whose manifest is in it.
+	compose string
 }
 
 // uninstallItem is one line of the plan, and what became of it.
@@ -268,6 +273,8 @@ type uninstallItem struct {
 	// State is planned, removed, kept, gone (it was not there) or failed.
 	State string `json:"state"`
 	Note  string `json:"note,omitempty"`
+	// Destroys says it cannot be had back: the root key, or a database.
+	Destroys bool `json:"destroys,omitempty"`
 }
 
 // uninstallPhase orders the removals: the service stopped before what it
@@ -313,6 +320,12 @@ func uninstallPlan(m installManifest, f uninstallFlags) []uninstallItem {
 			if !f.dropDatabase {
 				it.State, it.Note = "kept", "they go with the database"
 			}
+		case "compose":
+			dir, project, _ := strings.Cut(e.Value, " ")
+			it.What = "stop the compose project " + project + " in " + dir + " and remove its containers"
+			if f.dropDatabase {
+				it.What += " and its database's volume, " + project + "_pgdata"
+			}
 		case "log":
 			it.What = "delete the log " + e.Value
 		case "binary":
@@ -324,6 +337,15 @@ func uninstallPlan(m installManifest, f uninstallFlags) []uninstallItem {
 		default:
 			it.What = "delete " + e.Value
 		}
+		// A compose project's database stays in its volume, and its passwords
+		// in .env and signari.env, which setup -compose reads back to run it
+		// again.
+		if f.compose != "" && !f.dropDatabase && (e.Kind == "env-file" ||
+			(e.Kind == "file" && filepath.Base(e.Value) == ".env")) {
+			it.State, it.Note = "kept", "it holds the passwords of the database kept in the volume"
+		}
+		it.Destroys = it.State == "planned" && (e.Kind == "root-key" || e.Kind == "database" ||
+			(e.Kind == "compose" && f.dropDatabase))
 		items = append(items, it)
 	}
 	return items
@@ -336,7 +358,7 @@ func uninstallCode(path string, items []uninstallItem) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "signari uninstall\n%s\n", path)
 	for _, it := range items {
-		if it.State != "planned" || (it.Kind != "root-key" && it.Kind != "database") {
+		if !it.Destroys {
 			continue
 		}
 		fmt.Fprintf(h, "%s %s\n", it.Kind, it.Value)
@@ -363,6 +385,13 @@ func uninstallCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f 
 		out = stderr
 	}
 	path := manifestPath(h.euid, h.getenv, h.home)
+	if f.compose != "" {
+		dir, err := filepath.Abs(f.compose)
+		if err != nil {
+			return err
+		}
+		path = filepath.Join(dir, manifestName)
+	}
 	var items []uninstallItem
 	code := ""
 	defer func() {
@@ -497,21 +526,30 @@ func printUninstallPlan(w io.Writer, items []uninstallItem) {
 // for what cannot be had back, to -confirm: the code a first run prints, or
 // the sentence for deleting the root key while keeping the database.
 func confirmUninstall(out io.Writer, h setupHost, f uninstallFlags, path string, items []uninstallItem, code *string) error {
+	// The database by its name, or a compose project's by the project's.
+	dbName := func(it uninstallItem) string {
+		if it.Kind == "compose" {
+			_, project, _ := strings.Cut(it.Value, " ")
+			return project
+		}
+		name, _, _ := strings.Cut(it.Value, " ")
+		return name
+	}
 	var key, database string
 	for _, it := range items {
 		switch {
-		case it.Kind == "root-key" && it.State == "planned":
+		case it.Kind == "root-key" && it.Destroys:
 			key = it.Value
-		case it.Kind == "database" && it.State == "planned":
-			database, _, _ = strings.Cut(it.Value, " ")
+		case it.Destroys:
+			database = dbName(it)
 		}
 	}
 	keptDB := ""
 	if key != "" && database == "" {
 		keptDB = "the database"
 		for _, it := range items {
-			if it.Kind == "database" {
-				keptDB, _, _ = strings.Cut(it.Value, " ")
+			if it.Kind == "database" || it.Kind == "compose" {
+				keptDB = dbName(it)
 			}
 		}
 	}
@@ -618,9 +656,27 @@ func removeItem(ctx context.Context, h setupHost, f uninstallFlags, it *uninstal
 		return dropDatabase(ctx, h, f, it)
 	case "roles":
 		return dropRoles(ctx, h, f, it, items)
+	case "compose":
+		// By the project's name, which needs no compose.yaml: a run that kept
+		// the volume deleted that file, and a later one removes the volume.
+		_, project, _ := strings.Cut(it.Value, " ")
+		out, err := exec.CommandContext(ctx, "docker", "compose", "-p", project, "down", "--remove-orphans").CombinedOutput() // #nosec G204 -- docker, for the project the manifest lists
+		if err != nil {
+			return fmt.Errorf("docker compose down: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		if !f.dropDatabase {
+			it.State, it.Note = "kept", "its containers are gone; its database stays in the volume "+project+
+				"_pgdata, for -drop-database to remove"
+			return nil
+		}
+		out, err = exec.CommandContext(ctx, "docker", "volume", "rm", "--force", project+"_pgdata").CombinedOutput() // #nosec G204 -- the project's own volume
+		if err != nil {
+			return fmt.Errorf("docker volume rm %s_pgdata: %v: %s", project, err, strings.TrimSpace(string(out)))
+		}
+		return nil
 	case "root-key":
 		for _, other := range items {
-			if other.Kind == "database" && other.State == "failed" {
+			if (other.Kind == "database" || other.Kind == "compose") && other.State == "failed" {
 				it.State, it.Note = "kept", "the database it opens could not be dropped"
 				return nil
 			}

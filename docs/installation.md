@@ -148,8 +148,8 @@ systemctl status signari
 ### Platforms
 
 Release programs exist today for Linux on x86-64 only. On any other platform,
-the installer offers to use Docker or to build Signari from source instead.
-Both are described below.
+run the installer with `--docker`, or build Signari from source. Both are
+described below.
 
 ## Answering without questions
 
@@ -188,9 +188,69 @@ signari setup -check
 
 ## With Docker
 
-The Signari repository includes a Docker Compose file, `deploy/docker-compose.yml`,
-for running Signari on one computer. It builds Signari from source, and starts
-PostgreSQL beside it. You need Docker with Compose version 2.
+On macOS, on ARM, or on any machine where you would rather use containers, the
+installer can run Signari with Docker Compose. You need Docker with Compose
+version 2, and git:
+
+```sh
+curl -fsSL https://signari.dev/install | sh -s -- --docker
+```
+
+In this example, the installer fetches the release's source and builds the
+Signari image from it. That image's `signari setup -compose` then writes a
+compose project to `~/signari`, asking what it needs as setup does. The
+installer starts the project, waits until it is healthy, and prints the first
+administrator's one-time link. `--dir` puts the project somewhere else.
+
+No image is published yet, so the installer always builds one. The build takes a
+few minutes the first time.
+
+### The compose project
+
+The project is a directory of four files, each written only when it is missing,
+so that running setup again keeps every password:
+
+| File | Holds |
+|---|---|
+| `compose.yaml` | PostgreSQL 17, a one-shot `setup` service and the Signari server, each with a healthcheck |
+| `.env` | The project's settings, and the PostgreSQL superuser's generated password |
+| `signari.env` | The server's settings, with `signari_engine`'s own generated password |
+| `root.key` | The root key, mounted read-only into the server |
+
+The `setup` service is `signari setup` itself, run on every start. It uses the
+superuser once, and the server runs as `signari_engine`. The database is in a
+Docker volume, `signari_pgdata`. The server's port is published on
+`127.0.0.1:8080` unless you give another with `--addr`.
+
+You can write a project yourself, where the `signari` program is installed:
+
+```sh
+signari setup -compose ~/signari -email you@example.com
+```
+
+Then start it from its directory:
+
+```sh
+cd ~/signari && docker compose up --detach --wait
+```
+
+To see what is set up, run the check, which looks inside the project's own
+network:
+
+```sh
+signari setup -check -compose ~/signari
+```
+
+`signari uninstall -compose ~/signari` stops the project and removes what setup
+wrote. It keeps the database's volume, the root key and the files that hold the
+passwords, unless you give `-drop-database` and `-delete-root-key`, as in
+[Removing Signari](#removing-signari).
+
+### The development stack
+
+The Signari repository also includes a Docker Compose file for development,
+`deploy/docker-compose.yml`. It builds Signari from source, and starts
+PostgreSQL beside it.
 
 Start the server and its database, and create the first organisation and person:
 

@@ -141,6 +141,7 @@ const usageText = `usage: signari <command> [flags]
 first run:
   setup                take a machine with PostgreSQL to a deployment a person can sign in to
   uninstall            remove what the installer and setup made here; the root key and database on request
+  healthcheck          exit 0 when the engine on this machine answers /readyz with 200, for a container
 
 schema:
   migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
@@ -709,6 +710,11 @@ func run(args []string) (err error) {
 		"from what listens on 443 and 80 and from Let's Encrypt's certificates when not given")
 	setupTrustedProxies := fs.String("trusted-proxies", "", "`setup -tls proxy`: the proxies whose "+
 		"X-Forwarded-For it believes, written as SIGNARI_TRUSTED_PROXIES (default 127.0.0.1,::1)")
+	setupCompose := fs.String("compose", "", "`setup`: write a compose project that runs Signari and its own "+
+		"PostgreSQL in containers to this directory, instead of setting up this machine; with -check, check "+
+		"one. `uninstall`: the project to remove, by the manifest in it")
+	setupImage := fs.String("image", "", "`setup -compose`: the engine image the project runs (default the "+
+		"one install.sh --docker builds, signari:<release>)")
 	uninstallDeleteKey := fs.Bool("delete-root-key", false, "`uninstall`: delete the root key setup made too, confirmed; "+
 		"without it nothing sealed in the database opens again")
 	uninstallDropDB := fs.Bool("drop-database", false, "`uninstall`: drop the database setup made too, confirmed, "+
@@ -1372,7 +1378,15 @@ func run(args []string) (err error) {
 			addr: *addr, rootKeyFile: *setupRootKeyFile, envFile: *setupEnvFile, yes: *setupYes,
 			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
 			logFile: *setupLogFile, tls: *setupTLS, tlsCert: *tlsCert, tlsKey: *tlsKey,
-			trustedProxies: *setupTrustedProxies, given: given, args: args})
+			trustedProxies: *setupTrustedProxies, compose: *setupCompose, image: *setupImage, given: given,
+			args: args})
+	// For a container's healthcheck: the engine's image has no shell or curl.
+	case "healthcheck":
+		addrGiven := false
+		fs.Visit(func(f *flag.Flag) { addrGiven = addrGiven || f.Name == "addr" })
+		hctx, hcancel := commandContext(runFor)
+		defer hcancel()
+		return healthcheck(hctx, os.Stdout, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert)
 	// `uninstall` removes what the installer and setup recorded making
 	// (uninstall.go), reaching PostgreSQL as setup does only to drop the
 	// database it was asked to.
@@ -1381,7 +1395,7 @@ func run(args []string) (err error) {
 		defer ucancel()
 		return uninstallCmd(uctx, os.Stdout, os.Stderr, thisHost(), uninstallFlags{dryRun: *dryRun, yes: *setupYes,
 			json: *doctorJSON, deleteRootKey: *uninstallDeleteKey, dropDatabase: *uninstallDropDB, confirm: *eraseConfirm,
-			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile})
+			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, compose: *setupCompose})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

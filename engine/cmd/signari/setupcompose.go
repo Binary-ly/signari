@@ -426,11 +426,13 @@ func healthcheck(ctx context.Context, w io.Writer, addr, tlsCert string) error {
 	}
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+net.JoinHostPort(host, port)+"/readyz", nil)
+	// Only ever this machine's engine: the host is loopback unless -addr names
+	// another of this machine's addresses, and the path is fixed.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+net.JoinHostPort(host, port)+"/readyz", nil) // #nosec G704 -- serve's own listen address, a fixed path
 	if err != nil {
 		return err
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- the request above, redirects refused
 	if err != nil {
 		return fmt.Errorf("the engine at %s did not answer: %w", net.JoinHostPort(host, port), err)
 	}

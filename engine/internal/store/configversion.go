@@ -10,14 +10,25 @@ import (
 // LockConfigVersion takes core.config_version's row in tx, before anything
 // else a configuration write locks.
 //
-// A transaction that will move the version and write an audit record holds
-// two locks: the row, and the audit chain's advisory lock (audit.Write). Taken
-// in opposite orders by two transactions, they deadlock. A CLI write takes the
-// row at its first statement, through migration 0139's trigger, and the chain
-// lock after, so the row-first order is the one every writer keeps: the Admin
-// API's mutate, `signari apply` and anything else that bumps the version
-// itself call this before they write. The Admin API took the chain lock first
-// and the row at the end, and deadlocked with the CLI.
+// Every writer that moves the version takes this row before any other lock, so
+// no two of them can each hold what the other waits for. A transaction that
+// moves the version holds the row and more besides: the rows it writes, an
+// organisation's identifier lock (core.users' trigger), the audit chain's
+// advisory lock (audit.Write). Two that take the row and one of those in
+// opposite orders deadlock, and PostgreSQL ends one of them a second later.
+//
+// So the Admin API's mutate, `signari apply` and anything else that bumps the
+// version itself call this before they write. A CLI statement takes the row
+// before it does anything, through migration 0307's trigger, which runs before
+// the statement, and core.audit_append takes it before the chain's lock in a
+// CLI session. A read fires no trigger: a CLI transaction that locks a row with
+// SELECT ... FOR UPDATE, or takes an advisory lock, before its first write
+// calls this first too.
+//
+// Twice it was otherwise. The Admin API took the chain lock inside fn and the
+// row at the end (4.25). Then 0139's trigger ran after the statement, when the
+// rows it wrote were already held, and a CLI write and an Admin API write to
+// the same client, provider or organisation deadlocked.
 func LockConfigVersion(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM core.config_version WHERE id = true FOR UPDATE`); err != nil {
 		return fmt.Errorf("locking the configuration version: %w", err)

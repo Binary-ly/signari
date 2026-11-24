@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
 	"signari.dev/engine/internal/ssf"
+	"signari.dev/engine/internal/store"
 )
 
 func (f *tokenFixture) verifyStream(t *testing.T, secret, body string) *httptest.ResponseRecorder {
@@ -73,6 +75,9 @@ func TestAReceiverGetsItsStateBack(t *testing.T) {
 	if rec := f.verifyStream(t, secret, string(body)); rec.Code != http.StatusNoContent {
 		t.Fatalf("the request answered %d %q", rec.Code, rec.Body.String())
 	}
+	// The second request below comes a moment after this one, and the windows
+	// are the clock's: across an edge it lands in a fresh one (fillNextWindow).
+	fillNextWindow(t, f.pool, "ssf-verify:"+streamID, store.MinVerificationInterval, 1)
 	status, got := f.poll(t, secret, `{"returnImmediately":true}`)
 	if status != http.StatusOK || len(got.Sets) != 1 {
 		t.Fatalf("the poll answered %d with %d SETs", status, len(got.Sets))
@@ -95,6 +100,13 @@ func TestAReceiverGetsItsStateBack(t *testing.T) {
 	rec := f.verifyStream(t, secret, string(body))
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Errorf("a second request at once answered %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	// How long the window that refused it has left, which is never more than the
+	// interval and never nothing.
+	if s, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil || s < 1 ||
+		s > int(store.MinVerificationInterval.Seconds()) {
+		t.Errorf("Retry-After is %q, want whole seconds from 1 to %d", rec.Header().Get("Retry-After"),
+			int(store.MinVerificationInterval.Seconds()))
 	}
 }
 

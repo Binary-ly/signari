@@ -149,12 +149,19 @@ func TestAHostsRulesAreDeclared(t *testing.T) {
 }
 
 func TestApplyRegistersUpdatesAndPrunesProxyHosts(t *testing.T) {
-	ctx, pool, org := applyFixture(t)
+	ctx, pool, _ := applyFixture(t)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// In an organisation of its own, since it prunes. In the shared one, a file
+	// naming everything the organisation held still named no provider, so the
+	// prune switched off every provider there, and deleted any client made since
+	// it read the organisation -- other packages' fixtures, locked while this
+	// transaction held the configuration version's row. Three times in two days
+	// that was the other half of a deadlock that failed a test somewhere else.
+	org := freshOrg(t, ctx, tx)
 
 	host := fmt.Sprintf("app-%d.example.com", time.Now().UnixNano())
 	state := func() (bool, bool) {
@@ -187,32 +194,9 @@ func TestApplyRegistersUpdatesAndPrunesProxyHosts(t *testing.T) {
 		t.Fatal("enabled: false in the file did not disable the host")
 	}
 
-	// Pruning deletes whatever the file does not name, so the file names
-	// everything this organisation holds except this test's host -- the prune
-	// then removes that host and nothing another test is using.
-	current, err := read(ctx, tx, org)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keep := &File{}
-	for _, g := range current.groups {
-		keep.Groups = append(keep.Groups, g)
-	}
-	for _, c := range current.clients {
-		keep.Clients = append(keep.Clients, c)
-	}
-	for _, s := range current.samlProviders {
-		keep.SAMLProviders = append(keep.SAMLProviders, s)
-	}
-	for _, r := range current.radiusClients {
-		keep.RADIUSClients = append(keep.RADIUSClients, r)
-	}
-	for name, h := range current.proxyHosts {
-		if name != host {
-			keep.ProxyHosts = append(keep.ProxyHosts, h)
-		}
-	}
-	apply(keep, true)
+	// Pruning deletes whatever the file does not name, and the organisation
+	// holds nothing but the host.
+	apply(&File{}, true)
 	if ok, _ := state(); ok {
 		t.Fatal("-prune left a host the file no longer names")
 	}

@@ -163,6 +163,34 @@ func clearOfWindowEdge(t *testing.T, window time.Duration) time.Time {
 	return time.Now()
 }
 
+// fillNextWindow charges the window after key's latest to limit, so that a
+// request which should be refused is, whichever of the two clock-aligned
+// windows it lands in. For a test whose second request follows its first by a
+// moment and must be paced: when the two straddle a window's edge the second
+// lands in a fresh window and is let through, which failed the emailed-code and
+// SSF verification tests about one run in a few hundred. Cheaper than
+// clearOfWindowEdge, which waits most of a window, and it cannot miss.
+func fillNextWindow(t *testing.T, pool *pgxpool.Pool, key string, window time.Duration, limit int) {
+	t.Helper()
+	ctx := context.Background()
+	tag, err := pool.Exec(ctx, `
+		INSERT INTO core.rate_limits (bucket_key, window_start, count)
+		SELECT bucket_key, window_start + make_interval(secs => $2), $3
+		  FROM core.rate_limits WHERE bucket_key = $1
+		 ORDER BY window_start DESC LIMIT 1
+		ON CONFLICT (bucket_key, window_start) DO UPDATE SET count = GREATEST(core.rate_limits.count, EXCLUDED.count)`,
+		key, window.Seconds(), limit)
+	if err != nil {
+		t.Fatalf("filling the window after %s's: %v", key, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("%s has no window to fill the next one after", key)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM core.rate_limits WHERE bucket_key = $1`, key)
+	})
+}
+
 // windowTurned explains a budget assertion that failed because a
 // clock-aligned window ended between start and now, which empties every
 // bucket the test had charged.

@@ -90,9 +90,9 @@ it is signal.
 
 | rule | count | assessment |
 |---|---|---|
-| G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, SAML status URNs. No secrets. Excluded by flag rather than 17 annotations. |
+| G101 hardcoded credentials | 17 | **False.** Substring matches on protocol constants — `TypLogoutToken = "logout+jwt"`, `PathToken = "/oauth2/token"`, Security Assertion Markup Language (SAML) status URNs. No secrets. Excluded by flag rather than 17 annotations. |
 | G710 open redirect | 11 | **Guarded, in a different function.** Taint analysis cannot follow the validation. Each site checked by hand — see below. |
-| G304 file inclusion | 7 | TLS certificate, key, CA-bundle, client-JWKS, policy-file and GeoIP-database paths from operator configuration. Someone who can set them can already read any file the process can. |
+| G304 file inclusion | 7 | Transport Layer Security (TLS) certificate, key, CA-bundle, client-JWKS, policy-file and GeoIP-database paths from the administrator's configuration. Someone who can set them can already read any file the process can. |
 | G703 path traversal | 4 | `SIGNARI_CA_BUNDLE`, `SIGNARI_GEOIP_DB`, `SIGNARI_GEOIP_ASN_DB` and the policy file path, same reasoning. |
 | G203 no auto-escape | 1 | `template.URL` on the `otpauth://` enrolment URI. Deliberate: `html/template`'s URL sanitiser rewrites unknown schemes to `#ZgotmplZ`, producing a dead QR link with no error anywhere. It only bypasses the *URL* sanitiser — contextual attribute escaping still applies — and the scheme is fixed. |
 
@@ -102,12 +102,12 @@ it is signal.
 |---|---|
 | `flow.go:916` | `resumeAfterSignIn` → `parkedReturn`, local paths only, tested |
 | `flow.go:975` | `oauth.ErrorRedirect`, reached only on `DispositionRedirect`, which is set only for a *registered* `redirect_uri` — asserted by the conformance preflight |
-| `flow.go:1120,1123,1129` | post-logout URI checked against `client_post_logout_redirect_uris` **for that client**; chain URLs come from registered SLO endpoints |
+| `flow.go:1120,1123,1129` | `post_logout_redirect_uri` checked against `client_post_logout_redirect_uris` **for that client**; chain URLs come from registered SLO endpoints |
 | `forwardauth.go:240` | `validateProxyRedirect` — `core.proxy_hosts` allow-list |
 | `federation.go:125` | the provider's own authorize endpoint, from registration/discovery |
 | `federation.go:348` | `validFederationReturn` → `parkedReturn`, stored server-side at flow start |
 | `samlchain.go:200` | `core.saml_slo_urls`, https-constrained by a CHECK |
-| `samlchain.go:228` | the already-validated post-logout target, stored when the chain began |
+| `samlchain.go:228` | the already-validated sign-out target, stored when the chain began |
 | `consent.go:183` | a relative path on this origin |
 
 The pattern is deliberate. Validation happens once, in a named function with
@@ -127,11 +127,12 @@ Eight `#nosec` annotations, each with the reason at the site:
   authenticator app implements it. HMAC-SHA1 is unaffected by the collision
   attacks that retired SHA-1 for signatures, and choosing SHA-256 would produce
   codes Google Authenticator cannot generate.
-- **`InsecureSkipVerify` in `internal/proxycheck`** — operator-selected via
+- **`InsecureSkipVerify` in `internal/proxycheck`** — administrator-selected via
   `-insecure`, and the report prints a line saying so whenever it is on.
 - **md5 and HMAC-MD5 in `internal/radius`** — RFC 2865 specifies MD5 for the
   Response Authenticator and RFC 3579 specifies HMAC-MD5 for
-  Message-Authenticator. There is no version of RADIUS that uses anything else,
+  Message-Authenticator. There is no version of Remote Authentication Dial-In User Service
+  (RADIUS) that uses anything else,
   and the HMAC is precisely what defends against the MD5 collision attack
   (CVE-2024-3596) that the bare construction is vulnerable to.
 - **Three integer conversions** bounded by their inputs.
@@ -175,7 +176,7 @@ module:
 | advisory | package | why it mattered here |
 |---|---|---|
 | GO-2026-6599, GO-2026-6600 | `html/template` | every page we render |
-| GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6617 | `net/http` (HTTP/2) | memory, CPU and crash in the server; malformed framing accepted by the transport |
+| GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6617 | `net/http` (HTTP/2) | memory, CPU and crash in an HTTP/2 server; malformed framing accepted by the transport |
 | GO-2026-6605, GO-2026-6613 | `net/http` (HTTP/1) | connection desynchronisation around CONNECT |
 | GO-2026-6608 | `net/textproto`, `mime/multipart` | header-size limit bypass on every request |
 | GO-2026-6609 | `net/http` | unbounded Range header parsing |
@@ -222,7 +223,7 @@ was traced to its source by hand. None is a defect in shipped code. By rule:
 | `go/email-injection` | 1 (critical) | Headers are built, not interpolated: CR and LF are stripped from every header value, the subject is RFC 2047 encoded, the recipient must parse as an address, and `net/smtp` refuses a line break in `MAIL` and `RCPT` itself. The HTML part is `html/template`. |
 | `go/clear-text-logging` | 43 | Each logs a client id, a grant type, a scope name or an error. A client id is not a secret. CodeQL taints the whole `Authorization` header the id was parsed from, secret included, and none of the errors carries the presented secret: client authentication's are fixed strings ("the client secret did not match"). `SecretRef.String` prints the reference (`$NAME` or a path), never the value, and a password-hash cost refusal names only the costs. |
 | `go/weak-sensitive-data-hashing` | 17 | MD5 and SHA-1 to verify the hashes of a directory being migrated off, never to make one, and a password that verifies is rehashed with Argon2id at once; and the MD5 constructions RFC 2865 §5.2 and RFC 2548 specify for RADIUS. |
-| `go/unvalidated-url-redirection` | 11 | Every destination is registered or checked: a client's registered `redirect_uri`, login page or post-logout URI; a configured SAML logout endpoint; `validateProxyRedirect` against `core.proxy_hosts`; `parkedReturn`, which takes only a single-slash path on this origin; a return target sealed server-side. The eleventh is the benchmark's own test upstream. The section above has the same sites as gosec saw them. |
+| `go/unvalidated-url-redirection` | 11 | Every destination is registered or checked: a client's registered `redirect_uri`, sign-in page or `post_logout_redirect_uri`; a configured SAML sign-out endpoint; `validateProxyRedirect` against `core.proxy_hosts`; `parkedReturn`, which takes only a single-slash path on this origin; a return target sealed server-side. The eleventh is the benchmark's own test upstream. The section above has the same sites as gosec saw them. |
 | `go/reflected-xss` | 6 | Each is the `Write` of a response-writer wrapper passing bytes through (tracing, metrics, recovery, the access log, the token endpoint's status recorder, the form-redirect writer). The page the form-redirect writer composes escapes every value with `html.EscapeString`, under `default-src 'none'`. |
 | `go/uncontrolled-allocation-size` | 6 | A list sized by `limit`, which `pageParams` caps at 200. |
 | `go/allocation-size-overflow` | 3 | Sums of the lengths of things already in memory: a rendered page, an audit record's detail map. |
@@ -373,13 +374,13 @@ and each was traced to its source instead of being added to the total:
   deadline; it now has one.
 - **G115 ×3** in `internal/radius/authorization.go` — `taggedInteger` splits a
   three-octet RFC 2868 value into bytes on purpose, and is called with constants.
-- **G705** — the trust-mark endpoint writes a JWT under its own media type with
+- **G705** — the trust-mark endpoint writes a JSON Web Token (JWT) under its own media type with
   `nosniff`; no browser renders it as HTML.
 - **G117, G203, G204, G301, G306** — a protocol field named `access_token`;
   catalogue text marked safe only after every value is escaped; `kadmin` argv
   with no shell; ejected theme templates and a QR image written world-readable,
   none of them secrets.
-- **G710 rose to 14** with the logout chain, federation return and Duo: every
+- **G710 rose to 14** with the sign-out chain, federation return and Duo: every
   destination again resolves through a registered value, configuration, or the
   same-origin check in `parkedReturn`.
 
@@ -430,19 +431,19 @@ its value comes from, and nine went away:
   md5-crypt (4.09) now carries the same annotation as the other foreign-hash
   verifiers in `foreign.go`.
 - **The command line, 74 new and 111 in all.** Every `G304` and `G703` in `cmd/signari` is a
-  path the operator names with a flag, or a secret file the operator's
+  path the administrator names with a flag, or a secret file the administrator's
   configuration names. The Admin API refuses such a file outright, and the command
   line refuses one that an engine setting names. Most of the jump is gosec's
   `G703` ignoring the `#nosec G304` already on eighteen of these lines. The two
-  `G704` are the command line's Admin API client calling the address the operator
+  `G704` are the command line's Admin API client calling the address the administrator
   gave.
 - **Nine new open-redirect sites**, of four kinds:
   - The request's own routed path, sent back as a GET so the session cookie comes
     with it: `saml.go`, `samlartifactrequest.go` and `wsfed.go`.
   - A configured address: an external factor's URL, or an upstream's SLO endpoint.
-  - The post-logout target, checked against the client's registered URIs. It is
+  - The sign-out target, checked against the client's registered URIs. It is
     then either carried through the upstream under the root key's MAC
-    (`upstreamlogout.go`) or stored server-side when the logout began
+    (`upstreamlogout.go`) or stored server-side when the sign-out began
     (`samlsourcelogout.go`).
   - A fixed path: `/authorize` on this origin. The forward-auth callback is built
     from the host `validateProxyRedirect` accepted.
@@ -557,7 +558,7 @@ rest were real:
 | | |
 |---|---|
 | `PurgeSAMLSourceState` | written the same day and never wired into the janitor |
-| `GrantedScopes`, `WithdrawConsent` | **a missing feature** — nothing let a user see or revoke an application's access |
+| `GrantedScopes`, `WithdrawConsent` | **a missing feature** — nothing let a person see or revoke an application's access |
 | `Why` (geoip) | `SIGNARI_GEOIP_DB` could be set to an unusable path, every impossible-travel check would report "not checked", and nothing said so |
 | `ConstantTimeCodeEqual`, `FamilySize`, `HasEmailOTP`, `LoadEmailOTP` | speculative helpers, deleted |
 
@@ -571,7 +572,7 @@ found either:
 
 - **The consent screen showed the client id.** `client create -name` was
   accepted and discarded — the INSERT wrote `$1` (the id) into `display_name`.
-  Every client ever created asked for a user's trust under a name like
+  Every client ever created asked for a person's trust under a name like
   `a7f3-crm-prod`.
 - **The consent POST read `client_id` from its own form field** while the
   authoritative value sat in the parked authorization query beside it. Two

@@ -56,7 +56,7 @@ GSS-API Negotiation Mechanism (SPNEGO).
 | `github.com/jcmturner/gofork` | v1.7.6 | ASN.1 for Kerberos messages | required by gokrb5; named directly only by a Kerberos test |
 | `github.com/google/uuid` | v1.6.0 | UUID parsing | checks that an imported subject or an organisation id is a canonical UUID |
 | `github.com/openwall/yescrypt-go` | v1.0.0 | yescrypt (`$y$`) verification | the scheme author's own Go module, held to libxcrypt's output by `yescrypt_test.go`; verifies hashes imported from `/etc/shadow`, which are rehashed on a successful sign-in |
-| `github.com/oschwald/maxminddb-golang/v2` | v2.5.0 | GeoIP database reader | reads an operator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
+| `github.com/oschwald/maxminddb-golang/v2` | v2.5.0 | GeoIP database reader | reads an administrator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
 | `go.opentelemetry.io/otel` | v1.47.0 | OpenTelemetry API: attributes, propagation, semantic conventions | the OpenTelemetry project; imported by `internal/tracing` alone, which a test holds |
 | `go.opentelemetry.io/otel/trace` | v1.47.0 | OpenTelemetry tracing API | as above |
 | `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |
@@ -64,7 +64,7 @@ GSS-API Negotiation Mechanism (SPNEGO).
 | `golang.org/x/sync` | v0.25.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
 | `golang.org/x/term` | v0.48.0 | whether stdin and stdout are a terminal, and reading a line without echo | Go project, already in the graph at an older version and needing nothing beyond `golang.org/x/sys`, which it was; `signari setup` asks only at a terminal, which a check of the file mode cannot tell from `/dev/null`, and reads a superuser's password without echoing it |
 | `golang.org/x/text` | v0.44.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
-| `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | operator-supplied input only, never a request |
+| `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | administrator-supplied input only, never a request |
 
 ## How provenance is verified (V15.2.4, dependency confusion)
 

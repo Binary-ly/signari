@@ -111,7 +111,8 @@ SCIM](scim-source.md).
 Kerberos is how Windows domains and FreeIPA realms sign people in to their
 computers. A person signed in that way already holds a Kerberos "ticket". Their
 browser shows that ticket to Signari through Simple and Protected GSS-API
-Negotiation Mechanism (SPNEGO). They sign in with no password and no prompt. See
+Negotiation Mechanism (SPNEGO). They sign in with no password. Someone with a
+second factor enrolled is still asked for it, under the default sign-in flow. See
 [Kerberos](kerberos.md).
 
 ## Applications that speak none of these

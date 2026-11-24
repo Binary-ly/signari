@@ -31,10 +31,11 @@ know, so it stops on its own page instead. The usual causes are `http` against
 **Fix.** Register the exact address the application sends. The browser's address
 bar shows the request Signari refused, and its `redirect_uri` parameter is the
 address to register. For a new application, give it to `-redirect` in
-`signari client create`. For one already registered, add it with
-`signari apply` and a file that lists it under `redirect_uris`
-([configuration as code](config-as-code.md)), or with the Admin API's
-`PATCH /admin/clients/{id}`.
+`signari client create`. For one already registered, use `signari apply` and a
+file that lists it under `redirect_uris` ([configuration as
+code](config-as-code.md)), or the Admin API's `PATCH /admin/clients/{id}`. Both
+replace the whole list, so give every address the application uses, the new one
+among them.
 
 **How to confirm.** Start the sign-in again from the application. Signari shows its
 sign-in page instead of the error.
@@ -175,7 +176,7 @@ address nobody registered.
 | `client is disabled` | Re-enable it: `PATCH /admin/clients/{id}` with `{"enabled": true}` |
 | `this organisation is suspended` | Reactivate it: `signari instance org-status`, or `PATCH /admin/organizations/{id}` |
 | `redirect_uri is required` | Send it |
-| `redirect_uri is not registered for this client` | Register it exactly, with its scheme, host, port and path; there is no prefix or wildcard match. `PATCH /admin/clients/{id}` with `redirect_uris`, or `signari apply` |
+| `redirect_uri is not registered for this client` | Register it exactly, with its scheme, host, port and path; there is no prefix or wildcard match. `PATCH /admin/clients/{id}` with `redirect_uris`, or `signari apply`, each of which replaces the whole list, so include the addresses already registered |
 
 Once the client and its redirect URI are known, refusals go back to the
 application as `error` and `error_description`:

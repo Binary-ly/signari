@@ -25,8 +25,11 @@ Applications compare the issuer character by character. To them,
 they refuse its tokens. Choose the issuer once, and write it the same way
 everywhere.
 
-Each running Signari server serves one instance. When the database holds more
-than one, `SIGNARI_ISSUER` says which one to serve.
+A running Signari server serves one instance unless you name more. When the
+database holds more than one, `SIGNARI_ISSUER` says which one to serve.
+`SIGNARI_ADDITIONAL_ISSUERS` can name others to serve beside it, each at its own
+host. See [several instances in one
+process](configuration.md#several-instances-in-one-process).
 
 ## Organisation
 
@@ -73,6 +76,9 @@ See [groups](groups.md).
 
 When Ada leaves, an administrator deactivates her. Signari checks this on every
 request and never remembers an earlier yes, so it refuses her from the next one.
+It also ends her sessions, and tells the applications that listen. An
+application's own session, or an access token it checks itself, lasts until it
+ends or expires.
 
 ## Signing in
 
@@ -103,8 +109,9 @@ chooses.
 ## Tokens
 
 A "token" is a short piece of text that Signari gives an application. Signari's ID
-tokens are "JWTs" (JSON Web Tokens), and so are its access tokens unless an
-application asks otherwise. A JWT is signed data: anyone holding it can read it,
+tokens are "JWTs" (JSON Web Tokens). So are its access tokens, unless an
+administrator gives an application opaque ones with
+`signari client set-token-format`. A JWT is signed data: anyone holding it can read it,
 but only Signari can make it. That is how an application can check a token is
 genuine without asking Signari.
 
@@ -170,9 +177,11 @@ losing the root key loses every one of those secrets.
 The "console" is Signari's web interface for administrators. It shows people,
 applications, groups and settings, and lets you change them.
 
-The "Admin API" is the set of web addresses that make every change. The console
-uses it, the `signari` command line can use it, and so can your own automation.
-It listens on its own address, separate from the sign-in pages, so you can keep it
+The "Admin API" is a set of web addresses for making changes. The console makes
+its changes through it, and so can your own automation. Most `signari` commands
+write to the database directly instead. Some go through the Admin API when given
+`-admin-url`, and `signari api` sends it any request. It listens on its own
+address, separate from the sign-in pages, so you can keep it
 on a private network. Each caller needs a token that says what it may change. See
 [the Admin API](admin-api.md).
 

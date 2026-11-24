@@ -67,7 +67,7 @@ The forwarder makes these promises:
   2026 each node read the same cursor and sent the same batch. A deployment of N
   nodes sent every event N times. The lag is `signari_audit_stream_lag_events`.
 - **Fail-safe.** A sink error leaves the cursor where it was, and the batch retries
-  on the next tick, not lost. The lag is visible (the copy falls behind), not silent
+  on the next tick instead of being lost. The lag is visible (the copy falls behind), not silent
   (events vanish).
 - **Guarded against server-side request forgery (SSRF).** A webhook URL that
   resolves into the private network is refused at startup. It is the same

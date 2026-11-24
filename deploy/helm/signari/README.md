@@ -26,10 +26,22 @@ that would otherwise fail silently:
 
 ## Install
 
+`signari_engine`, the role the engine signs in as, has no password until you give
+it one: migration 0001 creates it without one, on purpose, and leaves one that is
+already there as it is. So first, as a superuser, create it with a password on
+the database the chart will use:
+
+```sh
+psql 'postgres://postgres@db:5432/signari' -c 'CREATE ROLE signari_engine LOGIN' -c '\password signari_engine'
+```
+
+`\password` asks twice and sends only the password's hash. Then install, with
+that password in the engine's DSN:
+
 ```sh
 helm install signari ./deploy/helm/signari \
   --set issuer=https://auth.example.com \
-  --set secret.dsn='postgres://signari_engine:pass@db:5432/signari?sslmode=require' \
+  --set secret.dsn='postgres://signari_engine:<that password>@db:5432/signari?sslmode=require' \
   --set secret.rootKey="$(head -c 32 /dev/urandom | base64)"
 ```
 
@@ -38,11 +50,12 @@ This way the migration Job has only the engine's DSN, which cannot apply migrati
 first, or keep a superuser DSN in a Secret of your own, as below.
 
 For production, manage the Secret yourself and reference it, so the root key and
-DSN never sit in a values file or Helm release history:
+DSN never sit in a values file or Helm release history. Create `signari_engine`
+with its password first, as above, then:
 
 ```sh
 kubectl create secret generic signari-secrets \
-  --from-literal=SIGNARI_DSN=postgres://signari_engine:...@db:5432/signari \
+  --from-literal=SIGNARI_DSN=postgres://signari_engine:<that password>@db:5432/signari \
   --from-literal=BOOTSTRAP_DSN=postgres://postgres:...@db:5432/signari \
   --from-literal=SIGNARI_ROOT_KEY=... \
   --from-literal=SIGNARI_ROOT_KEY_REF=k8s

@@ -198,6 +198,43 @@ For the compose stack, a data volume made before the engine served as
 `signari_engine` needs the role's password set once. The header of
 `deploy/postgres-init/20-engine-role.sh` gives the command.
 
+### With the Helm chart
+
+A release whose `SIGNARI_DSN` is a superuser's, as the chart's migrations needed
+before `migrations.superuserDsnSecretKey`, moves in three steps. First, as that
+superuser, give `signari_engine` a password:
+
+```sh
+psql 'postgres://postgres@db:5432/signari' -c '\password signari_engine'
+```
+
+Then put the superuser's DSN in the Secret under its own key, `BOOTSTRAP_DSN`,
+and `SIGNARI_DSN` as `signari_engine`, keeping the root key you serve with now:
+
+```sh
+kubectl create secret generic signari-secrets --dry-run=client -o yaml \
+  --from-literal=SIGNARI_DSN='postgres://signari_engine:<that password>@db:5432/signari?sslmode=require' \
+  --from-literal=BOOTSTRAP_DSN='postgres://postgres:<its password>@db:5432/signari?sslmode=require' \
+  --from-literal=SIGNARI_ROOT_KEY='<the root key you serve with now>' \
+  --from-literal=SIGNARI_ROOT_KEY_REF=k8s | kubectl apply -f -
+```
+
+Last, upgrade with the migration Job reading the superuser's DSN from that key:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values \
+  --set secret.existingSecret=signari-secrets --set migrations.superuserDsnSecretKey=BOOTSTRAP_DSN
+```
+
+In this example, the Secret is one you manage. A release that kept its DSN inline
+moves to a Secret of its own the same way, since the Secret the chart makes from
+inline values has no key for the superuser's DSN. Until you can move it, the
+override starts the engine as before, with a warning:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values --set-string extraEnv.SIGNARI_ALLOW_RLS_BYPASS=1
+```
+
 Until you have moved it, `SIGNARI_ALLOW_RLS_BYPASS=1`, or `serve -allow-rls-bypass`,
 starts the engine as before, with a warning at startup, and `signari doctor`
 goes on reporting it.

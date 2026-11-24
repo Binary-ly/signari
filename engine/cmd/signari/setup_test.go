@@ -1017,8 +1017,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 			t.Errorf("the log holds %s:\n%s", what, logged)
 		}
 	}
-	for want, n := range map[string]int{"==== signari setup": 4, "result ok": 4, "done  database": 1,
-		"skip  database": 3, "done  first-admin": 1, "invite=…": 1, "wait  owner": 2, "done  owner": 1,
+	// Five runs: the first, the second, the one that names nobody while a later
+	// invitee has an account, the third and the fourth.
+	for want, n := range map[string]int{"==== signari setup": 5, "result ok": 5, "done  database": 1,
+		"skip  database": 4, "done  first-admin": 1, "invite=…": 1, "wait  owner": 3, "done  owner": 1,
 		"skip  owner": 1} {
 		if got := strings.Count(logged, want); got != n {
 			t.Errorf("the log has %q %d times, want %d:\n%s", want, got, n, logged)

@@ -502,6 +502,55 @@ func TestTheVerifierIsTheOneRFC7677Authenticates(t *testing.T) {
 	}
 }
 
+// The log holds what a person needs after a failed run and no secret (B8):
+// a password in a flag's URL, a secret inside an error, and the link's token
+// are each replaced, and the file is 0600 under the state directory.
+func TestTheSetupLogHoldsNoSecret(t *testing.T) {
+	h := testHost(t)
+	r := &setupRun{h: h, out: &bytes.Buffer{}, f: setupFlags{args: map[string]string{
+		"superuser-dsn": "postgres://postgres:flag-password@db.example.com/postgres", "yes": "true",
+		"email": "ada@example.com"}}}
+	l, err := r.openLog()
+	if err != nil || l == nil {
+		t.Fatalf("opening the default log: %v", err)
+	}
+	r.log = l
+	if want := filepath.Join(h.home, ".local", "state", "signari", setupLogName); l.path != want {
+		t.Errorf("the log is %s, want %s", l.path, want)
+	}
+	r.password, r.rootKeyText = "engine-password-1", "root-key-text-1"
+	r.link = "https://login.example.com/signup?invite=token-text-1"
+	r.logStep(setupStep{name: "engine-role", what: "give it a password", state: "failed"}, h.now(),
+		errors.New("refused postgres://signari_engine:engine-password-1@127.0.0.1/signari"))
+	r.logStep(setupStep{name: "first-admin", what: "create the instance", state: "done"}, h.now(), nil)
+	r.logStep(setupStep{name: "owner", what: "make the owner", state: "waiting", wait: ownerWait}, h.now(), nil)
+	r.logf("the key was %s", r.rootKeyText)
+	l.close()
+	info, err := os.Stat(l.path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the log is %v (%v), want 0600", info, err)
+	}
+	got := mustRead(t, l.path)
+	for _, secret := range []string{"flag-password", "engine-password-1", "root-key-text-1", "token-text-1"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("the log holds %q:\n%s", secret, got)
+		}
+	}
+	for _, want := range []string{"==== signari setup", "-email ada@example.com", " -yes",
+		"postgres://postgres:…@db.example.com", "fail  engine-role", "done  first-admin",
+		"signup?invite=…", "wait  owner"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the log lacks %q:\n%s", want, got)
+		}
+	}
+	if lines := strings.Count(got, "\n"); lines != 6 {
+		t.Errorf("%d lines, want the header's two, three steps and one more:\n%s", lines, got)
+	}
+	if tail := l.tail(2); len(tail) != 2 || !strings.Contains(tail[1], "the key was …") {
+		t.Errorf("the log's last two lines are %q", tail)
+	}
+}
+
 // A dry run prints the plan and changes nothing: no file, no directory, on a
 // machine with no PostgreSQL to read either.
 func TestADryRunChangesNothing(t *testing.T) {
@@ -516,6 +565,9 @@ func TestADryRunChangesNothing(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Errorf("a dry run made %v", entries)
+	}
+	if entries, _ := os.ReadDir(h.home); len(entries) != 0 {
+		t.Errorf("a dry run left %v in the home directory, where its log would be", entries)
 	}
 	for _, want := range []string{"Plan", "create the database signari", "generate the root key",
 		"Dry run: nothing was changed", "not reached: give -superuser-dsn"} {
@@ -547,7 +599,8 @@ func TestARunWithNoPostgreSQLNamesTheFlag(t *testing.T) {
 	h := testHost(t)
 	dir := t.TempDir()
 	f := setupFlags{email: "you@example.com", yes: true, envFile: filepath.Join(dir, envFileName),
-		rootKeyFile: filepath.Join(dir, rootKeyFileName), given: map[string]bool{"yes": true}}
+		rootKeyFile: filepath.Join(dir, rootKeyFileName), given: map[string]bool{"yes": true},
+		args: map[string]string{"yes": "true"}}
 	var out bytes.Buffer
 	err := setupCmd(context.Background(), &out, &out, h, f)
 	if err == nil || !strings.HasPrefix(err.Error(), "give -superuser-dsn") || exitCode(err) != 2 {
@@ -555,6 +608,16 @@ func TestARunWithNoPostgreSQLNamesTheFlag(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Errorf("a run refused before it began made %v", entries)
+	}
+	// It says where its log is, with the log's last lines, which end on why.
+	logPath := filepath.Join(h.home, ".local", "state", "signari", setupLogName)
+	if !strings.Contains(out.String(), "The last lines of the log, "+logPath) ||
+		!strings.Contains(out.String(), "result failed: give -superuser-dsn") {
+		t.Errorf("a failed run's output lacks the log's path and last lines:\n%s", out.String())
+	}
+	if got := mustRead(t, logPath); !strings.Contains(got, "==== signari setup") ||
+		!strings.Contains(got, "flags -yes") {
+		t.Errorf("the log of a failed run:\n%s", got)
 	}
 	f.given = map[string]bool{"dsn": true}
 	if err := setupCmd(context.Background(), &out, &out, h, f); exitCode(err) != 2 || !strings.Contains(fmt.Sprint(err), "-superuser-dsn") {
@@ -667,21 +730,37 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name)
 	})
 	dir := t.TempDir()
-	dsnFile := filepath.Join(dir, "superuser")
-	if err := os.WriteFile(dsnFile, []byte(dsn), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	tail := make([]byte, 6)
 	if _, err := rand.Read(tail); err != nil {
 		t.Fatal(err)
 	}
+	// The superuser's URL carries a password, which the log must not. A server
+	// that trusts the suite's connections, as its own does, never asks for it;
+	// one that does was given a password already, which is kept.
+	suDSN := dsn
+	if u, err := url.Parse(dsn); err == nil && u.User != nil {
+		if _, has := u.User.Password(); !has {
+			u.User = url.UserPassword(u.User.Username(), "dsn-file-password-"+hex.EncodeToString(tail))
+			suDSN = u.String()
+		}
+	}
+	dsnFile := filepath.Join(dir, "superuser")
+	if err := os.WriteFile(dsnFile, []byte(suDSN), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	issuer := "https://setup-" + hex.EncodeToString(tail) + ".test"
 	keyPath, envPath := filepath.Join(dir, "conf", rootKeyFileName), filepath.Join(dir, "conf", envFileName)
+	logPath := filepath.Join(dir, "log", setupLogName)
 	flags := setupFlags{issuer: issuer, email: "First@Example.test", superuserDSNFile: dsnFile, database: name,
-		rootKeyFile: keyPath, envFile: envPath, yes: true, json: true,
+		rootKeyFile: keyPath, envFile: envPath, yes: true, json: true, logFile: logPath,
 		given: map[string]bool{"issuer": true, "email": true, "superuser-dsn-file": true, "database": true,
-			"root-key-file": true, "env-file": true, "yes": true, "json": true}}
+			"root-key-file": true, "env-file": true, "yes": true, "json": true, "log-file": true},
+		args: map[string]string{"issuer": issuer, "email": "First@Example.test", "superuser-dsn-file": dsnFile,
+			"database": name, "root-key-file": keyPath, "env-file": envPath, "yes": "true", "json": "true",
+			"log-file": logPath}}
 	h := testHost(t)
+	pgPassword := "pgpassword-" + hex.EncodeToString(tail)
+	h.getenv = func(k string) string { return map[string]string{"PGPASSWORD": pgPassword}[k] }
 	run := func() setupResult {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
@@ -826,6 +905,33 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	}
 	if after := snapshot(); after != before {
 		t.Errorf("the fourth run changed something:\nbefore %s\nafter  %s", before, after)
+	}
+
+	// Four runs in the log, each step's outcome in it, and none of the
+	// secrets any run knew (B8).
+	info, err := os.Stat(logPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the log: %v, %v; want 0600", info, err)
+	}
+	logged := mustRead(t, logPath)
+	su, _ := url.Parse(suDSN)
+	suPassword, _ := su.User.Password()
+	for what, secret := range map[string]string{"the engine's password": password,
+		"the root key": strings.TrimSpace(mustRead(t, keyPath)), "the link's token": linkToken(first.Link),
+		"the superuser's password": suPassword, "PGPASSWORD": pgPassword,
+		"the superuser DSN file": strings.TrimSpace(suDSN)} {
+		if secret == "" {
+			t.Errorf("%s is empty, so the log was not checked for it", what)
+		} else if strings.Contains(logged, secret) {
+			t.Errorf("the log holds %s:\n%s", what, logged)
+		}
+	}
+	for want, n := range map[string]int{"==== signari setup": 4, "result ok": 4, "done  database": 1,
+		"skip  database": 3, "done  first-admin": 1, "invite=…": 1, "wait  owner": 2, "done  owner": 1,
+		"skip  owner": 1} {
+		if got := strings.Count(logged, want); got != n {
+			t.Errorf("the log has %q %d times, want %d:\n%s", want, got, n, logged)
+		}
 	}
 }
 

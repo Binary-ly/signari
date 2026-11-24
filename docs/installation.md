@@ -66,6 +66,33 @@ after an interruption finishes the job without repeating it.
 The superuser's credentials are never stored. The environment file holds the
 `signari_engine` role's connection, not the superuser's.
 
+### What it records
+
+Each run of setup adds a record of what it did to a log file. When a run fails,
+setup prints the last 15 lines of the log and where it is. Read the whole log to
+see every earlier run as well:
+
+```sh
+less /var/log/signari/setup.log
+```
+
+In this example, the log is the one root's runs write. When you run setup as
+yourself, the log is `~/.local/state/signari/setup.log`, or under
+`$XDG_STATE_HOME/signari` when that is set. `-log-file` names another.
+
+Each run starts with a header line. It gives the time, the release, who ran
+setup and on which machine, and the flags it was given. Then there is one line
+for each step: `done`, `skip`, `wait` or `fail`, how long the step took, and what
+it did or found.
+
+The log holds no secret, and only its owner can read it. The database
+passwords, the root key and the token in the first administrator's link are
+each written as `…`. A dry run and `-check` change nothing, so they add nothing
+to the log.
+
+The installer keeps its own log beside setup's, `install.log`. It records the
+release it chose, the checks it made and what it installed.
+
 ### How downloads are checked
 
 The installer downloads the release program and its `SHA256SUMS` file, and

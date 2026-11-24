@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -54,8 +55,11 @@ type setupFlags struct {
 	rootKeyFile, envFile           string
 	yes, dryRun, check, json       bool
 	printRootKey                   bool
-	// given are the flags set on the command line.
+	logFile                        string
+	// given are the flags set on the command line, and args their values, for
+	// the log.
 	given map[string]bool
+	args  map[string]string
 }
 
 // prompts says whether setup may ask: at a terminal, and not told otherwise.
@@ -394,6 +398,7 @@ type setupRun struct {
 	h   setupHost
 	out io.Writer
 	ask prompter
+	log *setupLog
 
 	prior   envFile
 	a       setupAnswers
@@ -453,8 +458,18 @@ func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setu
 	if f.prompts(h) {
 		r.ask = newTermPrompter(out)
 	}
+	// A dry run changes nothing, and so leaves no record either.
+	if !f.dryRun {
+		l, err := r.openLog()
+		if err != nil {
+			return err
+		}
+		r.log = l
+		defer r.log.close()
+	}
 	err := r.run(ctx)
 	r.close()
+	r.logResult(err)
 	if f.json {
 		line, jerr := json.Marshal(r.result(err))
 		if jerr != nil {
@@ -479,6 +494,9 @@ func (r *setupRun) run(ctx context.Context) error {
 	if err := r.inspect(ctx); err != nil {
 		return err
 	}
+	r.logf("settled the address %s, the first administrator %s, the database %s on %s, listening on %s, "+
+		"the root key %s and the env file %s", r.a.issuer, cmp.Or(r.a.email, "-"), r.a.database, r.pgLine(),
+		r.a.addr, r.a.rootKeyFile, r.a.envFile)
 	r.plan()
 	r.printPlan()
 	pending := slices.ContainsFunc(r.steps, func(s setupStep) bool { return s.skip == "" && s.wait == "" })
@@ -913,6 +931,19 @@ func (r *setupRun) envValues() map[string]string {
 		"SIGNARI_ISSUER": r.a.issuer, "SIGNARI_ADDR": r.a.addr}
 }
 
+// pgLine names the PostgreSQL the run reached, and how.
+func (r *setupRun) pgLine() string {
+	switch {
+	case r.suConn != nil:
+		return fmt.Sprintf("PostgreSQL %s, %s", r.pg.version, r.su.desc)
+	case r.engineWorked:
+		return fmt.Sprintf("PostgreSQL %s, as %s", serverVersion(context.Background(), r.eng), engineRole)
+	case r.suErr != nil:
+		return "not reached: " + r.suErr.Error()
+	}
+	return "not reached"
+}
+
 func (r *setupRun) printPlan() {
 	w := r.out
 	from := func(name string) string {
@@ -927,15 +958,7 @@ func (r *setupRun) printPlan() {
 		}
 		return ""
 	}
-	pgLine := "not reached"
-	switch {
-	case r.suConn != nil:
-		pgLine = fmt.Sprintf("PostgreSQL %s, %s", r.pg.version, r.su.desc)
-	case r.engineWorked:
-		pgLine = fmt.Sprintf("PostgreSQL %s, as %s", serverVersion(context.Background(), r.eng), engineRole)
-	case r.suErr != nil:
-		pgLine = "not reached: " + r.suErr.Error()
-	}
+	pgLine := r.pgLine()
 	email := r.a.email
 	if email == "" {
 		email = "-"
@@ -969,9 +992,11 @@ func (r *setupRun) printPlan() {
 func (r *setupRun) execute(ctx context.Context) error {
 	for i := range r.steps {
 		s := &r.steps[i]
+		start := r.h.now()
 		if s.skip != "" {
 			s.state = "skipped"
 			fmt.Fprintf(r.out, "  [skip] %s: %s\n", s.what, s.skip)
+			r.logStep(*s, start, nil)
 			continue
 		}
 		err := s.run(ctx)
@@ -981,15 +1006,18 @@ func (r *setupRun) execute(ctx context.Context) error {
 			}
 			s.state = "waiting"
 			fmt.Fprintf(r.out, "  [wait] %s: %s\n", s.what, s.wait)
+			r.logStep(*s, start, nil)
 			continue
 		}
 		if err != nil {
 			s.state = "failed"
 			fmt.Fprintf(r.out, "  [failed] %s\n", s.what)
+			r.logStep(*s, start, err)
 			return fmt.Errorf("%s: %w", s.what, err)
 		}
 		s.state = "done"
 		fmt.Fprintf(r.out, "  [done] %s\n", s.what)
+		r.logStep(*s, start, nil)
 	}
 	if r.eng == nil {
 		return nil
@@ -1261,9 +1289,11 @@ func (r *setupRun) undo() {
 	}
 	if len(undone) > 0 {
 		fmt.Fprintf(r.out, "\n  Taken back, as this run made them: %s.\n", strings.Join(undone, "; "))
+		r.logf("undo took back %s", strings.Join(undone, "; "))
 	}
 	if len(kept) > 0 {
 		fmt.Fprintf(r.out, "  Kept: %s.\n", strings.Join(kept, "; "))
+		r.logf("undo kept %s", strings.Join(kept, "; "))
 	}
 	fmt.Fprintln(r.out, "  Running setup again goes on from where this stopped.")
 }
@@ -1314,6 +1344,9 @@ func (r *setupRun) printSummary() {
 		}
 	}
 	fmt.Fprintf(w, "  %-14s %s, which holds the engine's database\n%spassword: keep it 0600.\n", "Env file", r.a.envFile, pad)
+	if r.log != nil {
+		fmt.Fprintf(w, "  %-14s %s, what each run did, with no secret in it.\n", "Log", r.log.path)
+	}
 	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
 	fmt.Fprintf(w, "  %-14s set -a; . %s; set +a; signari doctor\n", "Check it", r.a.envFile)
 	if u, err := url.Parse(r.a.issuer); err == nil && u.Scheme == "https" {

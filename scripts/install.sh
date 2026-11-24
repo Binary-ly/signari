@@ -30,6 +30,10 @@
 # Anywhere else it says so, and prints how to run Signari with Docker, or to
 # build it with Go, whichever is here.
 #
+# Each run but a dry run appends what it did to install.log, 0600 and with no
+# password in it: in /var/log/signari as root, else in $XDG_STATE_HOME/signari
+# or ~/.local/state/signari. setup keeps its own setup.log beside it.
+#
 # Options:
 #   --version vX.Y.Z           the release to install (default: the latest)
 #   --dry-run                  print every command instead of running it
@@ -72,6 +76,7 @@ ARCH=""
 ASSET=""
 SUM=""
 BIN=""
+LOG=""
 
 say() {
   printf '%s\n' "$*"
@@ -83,7 +88,53 @@ warn() {
 
 die() {
   warn "$*"
+  log "failed: $*"
   exit 1
+}
+
+# log appends a line to install.log, once log_open has found where.
+log() {
+  if [ -n "$LOG" ]; then
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG" 2>/dev/null || true
+  fi
+}
+
+# log_open starts this run's record in install.log, beside the setup.log that
+# signari setup keeps: /var/log/signari as root, else the user's state
+# directory. It is 0600 and holds no password: one in a URL among the options
+# is replaced. A dry run writes none, and a log that cannot be written is said
+# and gone without.
+log_open() {
+  if [ "$DRY_RUN" = 1 ]; then
+    return 0
+  fi
+  mask=077
+  if [ "$(id -u)" = 0 ]; then
+    dir=/var/log/signari
+    mask=027
+  else
+    case ${XDG_STATE_HOME:-} in
+      /*) dir="$XDG_STATE_HOME/signari" ;;
+      *) dir="$HOME/.local/state/signari" ;;
+    esac
+  fi
+  if ! (umask "$mask" && mkdir -p "$dir" && umask 077 && true >>"$dir/install.log") 2>/dev/null ||
+    ! chmod 600 "$dir/install.log" 2>/dev/null; then
+    warn "could not write $dir/install.log, so this run keeps no log"
+    return 0
+  fi
+  LOG="$dir/install.log"
+  log "==== install.sh by $(id -un 2>/dev/null || id -u) on $(uname -n 2>/dev/null), options:$(unsecret "$@")"
+}
+
+# unsecret prints its words with the password of any URL among them replaced.
+unsecret() {
+  if [ "$#" = 0 ]; then
+    printf ' none'
+  fi
+  for word in "$@"; do
+    printf ' %s' "$(printf '%s' "$word" | sed 's#\([a-z][a-z0-9+.-]*://[^:/@]*\):[^@/]*@#\1:…@#g')"
+  done
 }
 
 have() {
@@ -203,6 +254,7 @@ resolve_version() {
     esac
     check_version
     say "Signari $VERSION"
+    log "release $VERSION, as --version named it"
     return 0
   fi
   have curl || die "curl is needed to download the release"
@@ -212,6 +264,7 @@ resolve_version() {
   VERSION=${latest##*/}
   check_version
   say "Signari $VERSION, the latest release (--version $VERSION installs this one again)"
+  log "release $VERSION, the latest"
 }
 
 sha256_of() {
@@ -246,6 +299,7 @@ download() {
     run curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/$ASSET.sigstore.json" "$base/$ASSET.sigstore.json" ||
       die "could not download $base/$ASSET.sigstore.json, which cosign needs to check the signature"
   fi
+  log "downloaded $ASSET and SHA256SUMS from $base"
 }
 
 # verify refuses the download unless SHA256SUMS names it with its SHA-256, and,
@@ -271,13 +325,16 @@ verify() {
       "the release's. Nothing was installed."
   fi
   say "checked: $ASSET has the SHA-256 the release's SHA256SUMS gives"
+  log "checked the SHA-256 of $ASSET, $SUM"
   if have cosign; then
     if ! out=$(cosign verify-blob "$TMP/$ASSET" --bundle "$TMP/$ASSET.sigstore.json" \
       --certificate-oidc-issuer "$SIGNER_ISSUER" --certificate-identity-regexp "$SIGNER" 2>&1); then
       die "cosign could not verify that the release workflow signed $ASSET. Nothing was installed. $out"
     fi
     say "checked: cosign verified the release workflow's signature on $ASSET"
+    log "cosign verified the release workflow's signature on $ASSET"
   else
+    log "cosign is not installed, so the signature was not checked"
     say "checked by SHA-256 alone: cosign is not installed. With it, this would also prove the"
     say "release workflow signed the binary, not only that it is the file the release lists."
   fi
@@ -292,11 +349,13 @@ install_binary() {
   BIN="$bindir/signari"
   if [ "$DRY_RUN" != 1 ] && [ -x "$BIN" ] && [ "$(sha256_of "$BIN" 2>/dev/null)" = "$SUM" ]; then
     say "$BIN is $VERSION already"
+    log "skip: $BIN is $VERSION already"
   else
     run mkdir -p "$bindir" || die "could not make $bindir"
     run install -m 0755 "$TMP/$ASSET" "$BIN" || die "could not install $BIN"
     if [ "$DRY_RUN" != 1 ]; then
       say "installed $BIN"
+      log "installed $BIN"
     fi
   fi
   case ":$PATH:" in
@@ -375,6 +434,7 @@ WantedBy=multi-user.target
 EOF
   install -m 0644 "$TMP/signari.service" "$unit" || die "could not write $unit"
   say "wrote $unit"
+  log "wrote $unit"
 }
 
 # As root under systemd: the service's own user, its directory and its unit.
@@ -391,9 +451,11 @@ service() {
     fi
     run useradd --system --user-group --no-create-home --home-dir /nonexistent --shell "$nologin" signari ||
       die "could not make the signari system user"
+    log "made the signari system user"
   fi
   if [ ! -d /etc/signari ]; then
     run install -d -m 0750 -o signari -g signari /etc/signari || die "could not make /etc/signari"
+    log "made /etc/signari, 0750, for the signari user"
   fi
   write_unit
   run systemctl daemon-reload || warn "systemctl daemon-reload failed; run it before starting signari"
@@ -427,9 +489,11 @@ run_setup() {
     say "Signari $VERSION is installed at $BIN, and has no setup command: it came in a later"
     say "release. Set this one up as its README's quick start says:"
     say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+    log "skip: $VERSION has no setup command, so it is set up by hand"
     return 0
   fi
   say ""
+  log "running $BIN$(unsecret "$@"), which keeps its own setup.log beside this one"
   if [ -t 0 ]; then
     "$BIN" "$@"
   elif tty_usable; then
@@ -446,8 +510,10 @@ run_setup() {
   status=$?
   if [ "$status" != 0 ]; then
     warn "setup stopped (exit $status): do what it says, then run it again, $BIN setup, or this script"
+    log "failed: setup exited $status"
     exit "$status"
   fi
+  log "setup finished"
   if [ -f /etc/systemd/system/signari.service ] && [ "$(id -u)" = 0 ]; then
     for f in /etc/signari/root.key /etc/signari/signari.env; do
       owner=$(stat -c %U "$f" 2>/dev/null || echo signari)
@@ -544,14 +610,17 @@ main() {
   if [ "$DRY_RUN" = 1 ]; then
     say "dry run: every command is printed, and none is run"
   fi
+  log_open "$@"
   detect_platform
   resolve_version
   if [ "$DOCKER" = 1 ]; then
     have docker || warn "docker is not installed here; these are the commands for where it is"
     offer_docker
+    log "printed the Docker commands"
     return 0
   fi
   if [ "$OS-$ARCH" != linux-amd64 ]; then
+    log "no release binary for $OS-$ARCH"
     elsewhere
   fi
   download
@@ -559,6 +628,7 @@ main() {
   install_binary
   service
   run_setup
+  log "result ok"
 }
 
 main "$@"

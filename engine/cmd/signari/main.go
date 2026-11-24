@@ -699,6 +699,9 @@ func run(args []string) (err error) {
 		"nothing; exits 0 when complete, 2 when not, 1 when it cannot tell")
 	printRootKey := fs.Bool("print-root-key", false, "`setup`: print the root key in the summary, to copy "+
 		"it off this machine; never printed otherwise")
+	setupLogFile := fs.String("log-file", "", "`setup`: the log each run appends to, 0600 and holding no secret "+
+		"(default /var/log/signari/setup.log for root, else setup.log under $XDG_STATE_HOME/signari/, failing "+
+		"that ~/.local/state/signari/)")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
@@ -1346,15 +1349,15 @@ func run(args []string) (err error) {
 	// reaches PostgreSQL as a superuser, once, and writes signari_engine's DSN
 	// to the env file (setup.go).
 	case "setup":
-		given := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+		given, args := map[string]bool{}, map[string]string{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name], args[f.Name] = true, f.Value.String() })
 		sctx, scancel := commandContext(runFor)
 		defer scancel()
 		return setupCmd(sctx, os.Stdout, os.Stderr, thisHost(), setupFlags{issuer: *issuer, email: *email,
 			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, database: *setupDatabase,
 			addr: *addr, rootKeyFile: *setupRootKeyFile, envFile: *setupEnvFile, yes: *setupYes,
 			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
-			given: given})
+			logFile: *setupLogFile, given: given, args: args})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database

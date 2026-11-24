@@ -33,7 +33,8 @@ import (
 // engineRole is the role migration 0001 makes for the engine.
 const engineRole = "signari_engine"
 
-// pgSuperuser is a way to reach PostgreSQL as a role that may create roles.
+// pgSuperuser is a way to reach PostgreSQL as a superuser, which migration
+// 0001 needs and setup checks for (setupRun.inspectServer).
 type pgSuperuser struct {
 	cfg *pgx.ConnConfig
 	// query is what a URL the operator gave asked of the connection (sslmode,

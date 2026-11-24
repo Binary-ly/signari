@@ -507,7 +507,7 @@ type setupRun struct {
 // reads.
 func setupCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f setupFlags) error {
 	if f.given["dsn"] {
-		return usageError{errors.New("setup takes -superuser-dsn, a role that may create roles, once; -dsn " +
+		return usageError{errors.New("setup takes -superuser-dsn, a superuser's URL, once; -dsn " +
 			"names the engine's own connection, which setup makes and writes to the env file")}
 	}
 	// -addr has serve's default when it is not given, which is not setup's, and
@@ -791,18 +791,18 @@ func (r *setupRun) reachSuperuser(ctx context.Context) error {
 			}
 			_ = conn.Close(ctx)
 		} else if r.ask == nil {
-			return fmt.Errorf("give -superuser-dsn (or -superuser-dsn-file) for a role that may create roles: "+
+			return fmt.Errorf("give -superuser-dsn (or -superuser-dsn-file) for a PostgreSQL superuser: "+
 				"the PostgreSQL on this machine did not let setup in %s: %w", local.desc, err)
 		} else {
 			fmt.Fprintf(r.out, "\n  The PostgreSQL on this machine did not let setup in %s:\n  %v\n", local.desc, err)
 		}
 	}
 	if r.ask == nil {
-		return errors.New("give -superuser-dsn (or -superuser-dsn-file) for a role that may create roles: " +
+		return errors.New("give -superuser-dsn (or -superuser-dsn-file) for a PostgreSQL superuser: " +
 			"there is no PostgreSQL on this machine, no socket in /var/run/postgresql or /tmp and nothing on " +
 			"127.0.0.1:5432. Install PostgreSQL 16 or newer, or name one elsewhere")
 	}
-	typed, err := r.ask.ask("A PostgreSQL URL for a role that may create roles",
+	typed, err := r.ask.ask("A URL for a PostgreSQL superuser, such as postgres",
 		"Used once, never stored: e.g. postgres://postgres@db.example.com/postgres", "", validSuperuserURL)
 	if err != nil {
 		return err

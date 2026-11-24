@@ -689,7 +689,7 @@ func run(args []string) (err error) {
 		"one JSON result line on stdout, the progress on stderr, and no questions")
 	// `signari setup` (setup.go). Its database connection is a superuser's,
 	// once, never -dsn's: that is the engine's own, which setup makes.
-	superuserDSN := fs.String("superuser-dsn", "", "`setup`: a URL for a PostgreSQL role that may create roles, "+
+	superuserDSN := fs.String("superuser-dsn", "", "`setup`, `uninstall`: a URL for a PostgreSQL superuser, "+
 		"used once and never stored, with no password in it (PGPASSWORD, or -superuser-dsn-file); found on "+
 		"this machine when not given")
 	superuserDSNFile := fs.String("superuser-dsn-file", "", "`setup`: a file holding that URL, which may carry "+

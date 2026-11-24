@@ -458,9 +458,9 @@ application they signed in to is sent a Back-Channel Logout notice, with `reason
 of applications to tell before anyone was told.
 
 It is **not** `signari erase subject`. Deleting removes the row and everything
-cascading from it. It does not destroy the subject's data-encryption key, so
-ciphertext already written to backups stays readable. Crypto-shredding, destroying
-that key, is a separate and deliberate act. See [erasing a subject](erasure.md).
+cascading from it. It does not destroy the subject's data-encryption key, so the
+key stays in the database, and ciphertext sealed under it stays readable.
+Crypto-shredding, destroying that key, is a separate and deliberate act. See [erasing a subject](erasure.md).
 
 ### `modify DN` and `deleteoldrdn`
 

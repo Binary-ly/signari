@@ -324,7 +324,11 @@ A restore does not bring back these:
 
 - **Undelivered sign-out notices** past their retry budget. Check the console's
   screen of sign-out deliveries after a restore.
-- **Anything erased.** A "crypto-shredded" subject, a person whose key was
-  destroyed by an [erasure](erasure.md), stays unreadable in every backup,
-  including ones taken before the erasure. That is the feature working, not a
-  restore failure. See `internal/keys/subject.go`.
+- **A person erased before the backup was taken.** The [erasure](erasure.md)
+  destroyed their key and removed their account first, so the backup holds
+  neither. That is the feature working, not a restore failure.
+
+A backup taken *before* an erasure is different. It still holds the person's
+account, and their key, wrapped under the root key that opens it. Restoring it
+brings them back, so erase them again with `signari erase subject` after the
+restore.

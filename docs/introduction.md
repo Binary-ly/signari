@@ -31,8 +31,10 @@ In practice, Signari:
   authenticator app;
 - signs people in once for every application, which is called "single sign-on";
 - tells each application who signed in, and which groups they belong to;
-- refuses a person at every application from the moment an administrator
-  deactivates them, and tells the applications that ask to be told;
+- refuses a person from the next request after an administrator deactivates
+  them, and tells the applications that listen. An application's own session, or
+  an access token it checks itself, lasts until it ends or expires. For an
+  access token, that is five minutes by default;
 - creates and removes accounts in other applications as people join and leave;
 - keeps a record of who did what, linked so that an edit afterwards shows.
 
@@ -81,8 +83,9 @@ To run Signari, you need:
 - a Linux server, or a computer with Docker, to run it on;
 - PostgreSQL 16 or later, for its database;
 - a web address for people to sign in at, such as `https://login.example.com`;
-- a Transport Layer Security (TLS) certificate for that address, because Signari
-  serves sign-in only over HTTPS.
+- a Transport Layer Security (TLS) certificate for that address, for Signari or
+  for a proxy in front of it. Signari's address must start with `https://`,
+  except on `localhost`.
 
 To try it on your own computer first, you need Docker and a copy of the Signari
 repository. [Your first application](first-application.md) starts everything for

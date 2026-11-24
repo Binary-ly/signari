@@ -1,8 +1,20 @@
 # UMA 2.0
 
-User-Managed Access 2.0 Grant for OAuth 2.0 Authorization — Kantara
-Recommendation, 7 January 2018 — plus Federated Authorization for the permission
-endpoint.
+## Introduction
+
+Sometimes a person wants to share something they own, such as a document, with
+someone else. User-Managed Access ([UMA](glossary.md#uma)) 2.0 is a standard for
+that, built on [OAuth 2.0](glossary.md#oauth-20). The application that holds the
+document asks Signari what a caller would need. The caller then comes back to
+Signari for a token that carries exactly that.
+
+Signari implements the User-Managed Access 2.0 Grant for OAuth 2.0 Authorization
+(Kantara Recommendation, 7 January 2018). It also implements Federated
+Authorization for the permission endpoint. Every request is decided by the same
+policy engine as the rest of Signari.
+
+You give an application the UMA grant with the command line. Approval by the
+owner of a resource is set for each organisation.
 
 ## What it adds to OAuth, in one sentence
 
@@ -11,34 +23,43 @@ an opaque ticket describing it, and let the caller come back with that ticket fo
 a token scoped to exactly those permissions — so the resource server never holds
 the policy.
 
-    client -> RS        (no token, or not enough)
-    RS     -> AS        POST /uma2/permission   {resource, scopes}  -> ticket
-    RS     -> client    401 + WWW-Authenticate: UMA as_uri=..., ticket=...
-    client -> AS        grant_type=urn:...:uma-ticket, ticket=...   -> RPT
-    client -> RS        Authorization: Bearer <RPT>
+The "resource server" (RS) is the API that holds the protected resource. The
+"authorization server" (AS) is Signari. The messages go like this:
 
-The client exchanging the ticket needs the grant, which defaults to off:
-`signari client set-grants -client-id <id> -grant-types
-urn:ietf:params:oauth:grant-type:uma-ticket`. Until October 2026 `set-grants`
-refused this grant type, so no client could be given it.
+```
+client -> RS        (no token, or not enough)
+RS     -> AS        POST /uma2/permission   {resource, scopes}  -> ticket
+RS     -> client    401 + WWW-Authenticate: UMA as_uri=..., ticket=...
+client -> AS        grant_type=urn:...:uma-ticket, ticket=...   -> RPT
+client -> RS        Authorization: Bearer <RPT>
+```
+
+The client exchanging the ticket needs the grant, which defaults to off. Until October 2026
+`set-grants` refused this grant type, so no client could be given it. To give a
+client the grant:
+
+```sh
+signari client set-grants -client-id <id> -grant-types urn:ietf:params:oauth:grant-type:uma-ticket
+```
 
 ## The decision comes from the existing policy engine
 
-`internal/authzen` — the same policy decision point that answers
-`/access/v1/evaluation`. UMA is a way of *asking*; it is not a second opinion
-about who may do what. A separate engine behind this endpoint would be a second
-answer to the same question, and the two would eventually disagree about
+Each decision is made by `internal/authzen`, the same policy decision point that
+answers `/access/v1/evaluation`. UMA is a way of *asking*. It is not a second
+opinion about who may do what. A separate engine behind this endpoint would be a
+second answer to the same question. The two would eventually disagree about
 something that matters.
 
-This is the same argument that has CIBA sharing the device flow's polling code.
+This is the same argument that has Client-Initiated Backchannel Authentication
+([CIBA](ciba.md)) sharing the device flow's polling code.
 
 ## The requesting party
 
-Until August 2026 this server answered from policy alone and treated the
-**client** as the requesting party. That made the UMA grant a decorated
-client-credentials exchange — which works, and is not what UMA is for. The point
-of UMA is that a resource owner writes policy about a **person** this server may
-never have provisioned.
+The "requesting party" is whoever is asking for access. Until August 2026, this
+server answered from policy alone, and treated the **client** as the requesting
+party. That made the UMA grant a decorated client-credentials exchange, which
+works, and is not what UMA is for. The point of UMA is that a "resource owner"
+writes policy about a **person** this server may never have provisioned.
 
 There are now three ways a request can carry one:
 
@@ -49,76 +70,91 @@ There are now three ways a request can carry one:
 | pushed claims (§3.3.1) | the client sends `claim_token`, an ID token this server issued |
 
 Once a requesting party is established, the policy decision is made about
-**them** — `subject: {type: "user", id: ...}` — and the RPT's `sub` is theirs.
-Leaving the client id in `sub` after going to the trouble of establishing who was
-asking would produce a token saying the application asked for itself.
+**them**, as `subject: {type: "user", id: ...}`. The requesting party token (RPT),
+the access token this grant issues, then has their `sub`. Leaving the client ID in
+`sub`, after finding out who was asking, would produce a token saying the
+application asked for itself.
 
 ## Pushed claims (§3.3.1)
 
-    claim_token=<id token>
-    claim_token_format=http://openid.net/specs/openid-connect-core-1_0.html#IDToken
+A client pushes an ID token with these two parameters:
 
-**Only ID tokens this server issued, to this client.** §3.3.1 notes that "the
+```
+claim_token=<id token>
+claim_token_format=http://openid.net/specs/openid-connect-core-1_0.html#IDToken
+```
+
+**Only ID tokens this server issued, to this client**. UMA's §3.3.1 notes that "the
 client and authorization server together might need to establish proper audience
-restrictions for the claim token prior to claims pushing" and provides no
-protocol for doing so with a third party. Accepting an assertion from an
-arbitrary issuer would mean accepting whoever the client chose to believe — and
-the client is the party asking for access.
+restrictions for the claim token prior to claims pushing". It provides no protocol
+for doing so with a third party. Accepting an assertion from an arbitrary issuer
+would mean accepting whoever the client chose to believe. And the client is the
+party asking for access.
 
-So the audience check is the restriction, made concrete: an ID token whose `aud`
-is a different client is refused. Without that a client could push a token it
-picked up from a log, a referrer header, or another application it also operates,
-and be treated as acting for that person.
+So the audience check is the restriction, made concrete. An ID token whose `aud`
+is a different client is refused. Without that, a client could push a token it
+picked up from a log, a referrer header, or another application it also operates.
+It would then be treated as acting for that person.
 
-Expiry **is** enforced here, which is worth noting because
-`VerifyIDTokenAudience` deliberately does not enforce it — that function exists
-for `id_token_hint` at logout, where an expired token is the normal case. Here it
-is not: an expired ID token proves somebody authenticated at some point, and this
-grant is about who is asking now.
+Expiry **is** enforced here. That is worth noting, because `VerifyIDTokenAudience`
+deliberately does not enforce it. That function exists for `id_token_hint` at
+sign-out, where an expired token is the normal case. Here it is not. An expired ID
+token proves somebody authenticated at some point, and this grant is about who is
+asking now.
 
 ### The encoding
 
 §3.3.1: "It MUST be base64url encoded unless specified otherwise by the claim
-token format." The ID Token format specifies nothing, so strictly the value is a
-base64url-encoded JWT. In practice clients send the raw compact serialisation.
+token format."
 
-Both are accepted, and they are **distinguishable rather than guessed at**: a
-compact JWS has exactly two dots and base64url has no dot in its alphabet, so no
-input is validly both. A parser that tried one and fell back to the other on
-failure would be a different and worse thing.
+The ID Token format specifies nothing, so strictly the value is a
+base64url-encoded JSON Web Token ([JWT](glossary.md#jwt)). In practice, clients
+send the raw compact serialisation.
+
+Both are accepted, and they are **distinguishable rather than guessed at**. A
+compact JSON Web Signature (JWS) has exactly two dots, and base64url has no dot in
+its alphabet. So no input is validly both. A parser that tried one and fell back
+to the other on failure would be a different and worse thing.
 
 ## Interactive claims gathering (§3.3.2, §3.3.3)
 
-    GET  /uma2/claims?client_id=&ticket=&claims_redirect_uri=&state=
-    POST /uma2/claims        (the confirmation)
+In claims gathering, the client sends the person's browser to Signari, which asks
+them to sign in and confirm. It takes two requests:
+
+```
+GET  /uma2/claims?client_id=&ticket=&claims_redirect_uri=&state=
+POST /uma2/claims        (the confirmation)
+```
 
 ### Why it is two requests
 
-§5.1 is unusually specific:
+§5.1 is unusually specific about cross-site request forgery (CSRF):
 
 > The authorization server **MUST** implement CSRF protection for its claims
 > interaction endpoint **and ensure that a malicious client cannot obtain
 > authorization without the awareness and involvement of the requesting party.**
 
-Read the second half. A token alone does not satisfy it. If the `GET` redeemed
-the ticket and redirected, then
+Read the second half. A token alone does not satisfy it. Suppose the `GET`
+redeemed the ticket and redirected. Then an image like this in an email spends the
+victim's identity while the page is loading:
 
-    <img src="https://as.example/uma2/claims?client_id=...&ticket=...">
+```html
+<img src="https://as.example/uma2/claims?client_id=...&ticket=...">
+```
 
-in an email spends the victim's identity while the page is loading. Their only
-evidence is a broken image.
+Their only evidence is a broken image.
 
-So the `GET` renders what is being asked and the `POST` acts on it. That is the
-"awareness and involvement" half; the CSRF token is the other half, and neither
+So the `GET` renders what is being asked, and the `POST` acts on it. That is the
+"awareness and involvement" half. The CSRF token is the other half, and neither
 substitutes for the other.
 
-The ticket is **read** on the `GET`, not redeemed. §3.3.1 spends a ticket when
-the client "presents" it here, and the presentation that counts is the one the
-person acts on — spending it on the `GET` means a page reload, or a browser
+The ticket is **read** on the `GET`, not redeemed. UMA's §3.3.1 spends a ticket
+when the client "presents" it here, and the presentation that counts is the one
+the person acts on. Spending it on the `GET` would mean that a page reload, or a browser
 prefetching the link, destroys the request before anybody decided anything.
 
-The confirmation form carries only a **handle** and the CSRF token. The ticket
-and the redirect URI come from the interaction row, so a submission cannot carry
+The confirmation form carries only a **handle** and the CSRF token. The ticket and
+the redirect URI come from the interaction row. So a submission cannot carry
 values the person was never shown.
 
 ### `claims_redirect_uris` are not `redirect_uris`
@@ -130,29 +166,35 @@ values the person was never shown.
 > parties to pre-registered redirection URIs defined in [RFC6749] unless such
 > URIs are also pre-registered specifically as claims redirection URIs.
 
-    signari client set-claims-redirects -client-id web \
-      -claims-redirect-uris https://app.example/uma/return
+A client's claims redirection URIs are registered with their own command:
+
+```sh
+signari client set-claims-redirects -client-id web \
+  -claims-redirect-uris https://app.example/uma/return
+```
 
 They are a separate column and a separate list, even when they are the same host.
 An RFC 6749 redirect URI carries a resource **owner** back from authorizing their
-own resources; this one carries a **requesting party** — a stranger to the
-resource owner — back to a client that may be nobody's.
+own resources. This one carries a **requesting party**, a stranger to the resource
+owner, back to a client that may be nobody's.
 
-**Every client must pre-register.** §3.3.2 makes that a SHOULD for all clients
-and a MUST for public ones; this server takes the SHOULD, with no configuration
-to relax it. The specification's "REQUIRED if the client has pre-registered no
-claims redirection URI" describes a server that will accept an unregistered URI,
-and that server has an open redirect whose payload is a permission ticket bound
-to whoever just signed in.
+**Every client must pre-register.** §3.3.2 makes that a SHOULD for all clients and
+a MUST for public ones. This server takes the SHOULD, with no configuration to
+relax it.
 
-Matching is RFC 3986 §6.2.1 Simple String Comparison, as §3.3.2 names — no
+The specification's "REQUIRED if the client has pre-registered no claims
+redirection URI" describes a server that will accept an unregistered URI. That
+server has an open redirect, whose payload is a permission ticket bound to
+whoever signed in a moment before.
+
+Matching is RFC 3986 §6.2.1 Simple String Comparison, as §3.3.2 names. There is no
 normalisation, and **no loopback exception**. RFC 8252's ephemeral-port allowance
-is about native apps receiving an authorization code and has nothing to say about
-this parameter; adding it "for consistency" would widen a redirect target on the
-strength of a rule that does not apply.
+is about native applications receiving an authorization code. It has nothing to
+say about this parameter. Adding it "for consistency" would widen a redirect
+target on the strength of a rule that does not apply.
 
 Omitting `claims_redirect_uri` is permitted only when exactly one is registered.
-Registering a second changes that, and `set-claims-redirects` says so — a client
+Registering a second changes that, and `set-claims-redirects` says so. A client
 relying on the single-URI default starts being refused the moment a second is
 added.
 
@@ -165,7 +207,7 @@ NOT** automatically redirect the user agent to the invalid redirection URI."
 
 Both faults render a page on this origin. Nothing is redirected.
 
-The person is also asked to sign in **after** those checks, not before: somebody
+The person is also asked to sign in **after** those checks, not before. Somebody
 who signs in and is then told the request was invalid has typed their password
 for an attacker's benefit.
 
@@ -173,12 +215,12 @@ for an attacker's benefit.
 
 §3.3.3: it "MUST be present if and only if the client provided it". So a client
 that sent an empty `state` gets an empty one back, and one that sent none gets
-none — which is why the interaction row records *whether* there was a state, not
+none. That is why the interaction row records *whether* there was a state, not
 only its value.
 
 ## The three refusals (§3.3.6)
 
-§3.3.4 leaves the choice to the implementation. The rule here:
+§3.3.4 leaves the choice to the implementation. The rule here is this:
 
 | situation | answer |
 |---|---|
@@ -187,32 +229,32 @@ only its value.
 | identified, and this org offers owner intervention | `request_submitted` — a human can still say yes |
 | identified, and it does not | `request_denied` — **final**, and honestly so |
 
-`request_denied` is final by design. Asking the same question again cannot
-produce a different answer, and telling a client to poll for a decision nobody
-will be asked to make is worse than a refusal it can act on.
+`request_denied` is final by design. Asking the same question again cannot produce
+a different answer. Telling a client to poll for a decision nobody will be asked
+to make is worse than a refusal it can act on.
 
 ### "Can identify somebody" is a per-client fact
 
-The obvious rule — *unidentified always means `need_info`* — is wrong for the
-machine-to-machine deployments this grant served before claims gathering existed,
-where policy is written about **clients** and the client genuinely is the
-requesting party. Sending one of those a `redirect_user` hint invites it to
-redirect a user that does not exist, and §3.3.6 says so itself:
+The tempting rule is that *unidentified always means `need_info`*. It is wrong for
+the machine-to-machine deployments this grant served before claims gathering
+existed. There, policy is written about **clients**, and the client genuinely is
+the requesting party. Sending one of those a `redirect_user` hint invites it to
+redirect a person who does not exist, and §3.3.6 says so itself:
 
 > If the requesting party is not an end-user, then no client action is possible
 > on receiving the hint.
 
 **Registered claims redirection URIs are the switch.** They are the deployment
-saying, per client, "this one acts for people" — set explicitly with
+saying, per client, "this one acts for people". They are set explicitly with
 `signari client set-claims-redirects`, not inferred. Every client that existed
 before this feature keeps the answer it used to get.
 
 ### Both hints, when there are hints at all
 
 `need_info` carries **both** `required_claims` and `redirect_user`. §3.3.6
-requires "either ... or both", and this server cannot tell whether a client with
-claims redirection registered has a browser in front of it right now — so
-sending only the redirect would leave a headless retry with nothing to act on.
+requires "either ... or both". This server cannot tell whether a client with
+claims redirection registered has a browser in front of it right now. So sending
+only the redirect would leave a headless retry with nothing to act on.
 
 ### A bad claim token is `need_info`, not `invalid_grant`
 
@@ -222,82 +264,91 @@ sending only the redirect would leave a headless retry with nothing to act on.
 > succeed, for example, **a provided claim token was invalid or expired, or had an
 > incorrect format**.
 
-So an expired or wrongly-formatted `claim_token` is answered with a fresh ticket
-and `required_claims` naming what would work. `invalid_grant` would tell the
-client its **ticket** was bad, when the ticket was fine.
+So an expired or wrongly-formatted `claim_token` is answered with a fresh ticket,
+and `required_claims` naming what would work. `invalid_grant` would tell the client
+its **ticket** was bad, when the ticket was fine.
 
 Two faults deliberately do **not** get that treatment: a token whose signature
 does not verify, and one whose audience is another client. Those are not "we need
-more information" — they are a client presenting a credential it should not have,
-and answering with an invitation to retry dresses that up as a recoverable
-mistake.
+more information". They are a client presenting a credential it should not have.
+Answering with an invitation to retry dresses that up as a recoverable mistake.
 
 ### Ticket chaining and single use
 
 §3.3.6 says every `need_info` and `request_submitted` response carries a ticket
 whose "value MUST NOT be the same as the one the client used to make its
-request", while §3.3.1 says tickets are single-use.
+request". And §3.3.1 says tickets are single-use.
 
 Those are not in tension. Each poll **spends** its ticket and receives the next
-one; the chain is what makes polling possible without ever replaying a ticket.
-Successors carry the predecessor's permissions **verbatim** — re-deriving them
+one. The chain is what makes polling possible without ever replaying a ticket.
+
+Successors carry the predecessor's permissions **verbatim**. Re-deriving them
 would let what is being asked for change between a refusal and the retry it
-invites, so a client told "you need X" could return and be granted Y.
+invites. A client told "you need X" could then return and be granted Y.
 
 A ticket that carries an identity is also **bound to the client that gathered
-it**. The interaction proved who the requesting party is *to one client*; letting
-a second present the successor would hand it somebody else's proof.
+it**. The interaction proved who the requesting party is *to one client*. Letting
+a second client present the successor would hand it somebody else's proof.
 
 ## Resource-owner intervention
 
-    signari uma settings -org <id> -owner-intervention -poll-interval 30s
-    signari uma requests -org <id>
-    signari uma approve -uma-request <id> -relation viewer
-    signari uma deny    -uma-request <id>
+An administrator can turn on owner intervention for an organisation, list the
+pending requests, and approve or deny each one:
 
-**Off by default.** §3.3.4 makes `request_submitted` conditional on capability,
-not preference: a server may answer it only "if [it] has a way to notify the
+```sh
+signari uma settings -org <id> -owner-intervention -poll-interval 30s
+signari uma requests -org <id>
+signari uma approve -uma-request <id> -relation viewer
+signari uma deny    -uma-request <id>
+```
+
+**Off by default**. UMA's §3.3.4 makes `request_submitted` conditional on
+capability, not preference. A server may answer it only "if [it] has a way to notify the
 resource owner about the ... resource request and seek an added policy covering
 it". With nobody being asked, a refusal stays `request_denied`.
 
 ### Approval grants a relation
 
-The obvious implementation records "request 7 is approved" and lets the next poll
-find it. That builds a second, parallel authorization store: access invisible to
-`signari authz check`, absent from every policy graph, and revocable only through
-a mechanism nobody else uses.
+The tempting implementation records "request 7 is approved", and lets the next
+poll find it. That builds a second, parallel authorization store. Its access would
+be invisible to `signari authz check`, absent from every policy graph, and
+revocable only through a mechanism nobody else uses.
 
 So approving **grants a relation in the authorization model**, and the next poll
-passes policy on its own with no special case anywhere. The pending row records
-that a decision was made and what was granted; the access itself lives where all
+passes policy on its own, with no special case anywhere. The pending row records
+that a decision was made, and what was granted. The access itself lives where all
 the other access lives.
 
-`uma requests` prints which relations would satisfy each request, because the
-compiled model is the only place that answer exists and reading one is not a
-reasonable thing to ask of somebody approving a request.
+`uma requests` prints which relations would satisfy each request. The compiled
+model is the only place that answer exists, and reading one is not a reasonable
+thing to ask of somebody approving a request.
 
 `uma approve` **refuses** a relation that would not satisfy *every* scope asked
-for. Granting one that covers three of four leaves the client polling forever
-against a decision somebody believes they made, and the pending row would say
+for. Granting one that covers three of four leaves the client polling forever,
+against a decision somebody believes they made. The pending row would say
 `approved`.
 
 `-expires-in 720h` grants it for thirty days instead of until revoked. Access
 someone needed for a project then ends without anyone having to remember it.
 
-Denial reaches the client on its next poll, as `request_denied`. There is no way
-to tell it sooner — the ticket flow is the only channel the protocol has.
+Denial reaches the client on its next poll, as `request_denied`. There is no way to
+tell it sooner, because the ticket flow is the only channel the protocol has.
 
-Pending requests expire after seven days and the janitor sweeps them. Unlike
-everything else it sweeps, a lingering row here is a liability rather than
-clutter: a pending request is a standing offer to grant access, and somebody
-approving a month-old one is approving a context they cannot remember.
+Pending requests expire after seven days, and the janitor, Signari's background
+clean-up, sweeps them. Unlike everything else it sweeps, a lingering row here is a
+liability, not clutter. A pending request is a standing offer to grant access.
+Somebody approving a month-old one is approving a context they cannot remember.
 
 ## Discovery
 
-    GET /.well-known/uma2-configuration
+Signari publishes its UMA discovery document at this address:
 
-§2 requires the document at that exact path and requires it to conform to RFC
-8414. It is built from the **same builder** that answers
+```
+GET /.well-known/uma2-configuration
+```
+
+§2 requires the document at that exact path, and requires it to conform to
+RFC 8414. It is built from the **same builder** that answers
 `/.well-known/openid-configuration`, plus:
 
 - `claims_interaction_endpoint` — §2's static value. §3.3.2 assumes it is
@@ -316,129 +367,156 @@ presents the permission ticket to either the token endpoint or the claims
 interaction endpoint, or when the permission ticket expires, whichever occurs
 first."*
 
-Three consequences implemented deliberately:
+Three consequences are implemented deliberately:
 
 1. The `UPDATE … WHERE redeemed_at IS NULL AND expires_at > now() RETURNING` is
    the read. The row is spent by the same statement that discovers it, so two
    concurrent presentations cannot both succeed.
 2. **A refused request spends the ticket too.** Presentation invalidates, not
-   *successful* presentation — otherwise a client can grind one ticket against
+   *successful* presentation. Otherwise a client can grind one ticket against
    policy while claims change underneath it.
-3. The claims interaction endpoint spends it as well, which is the clause's
-   other half — and it spends it on the `POST`, not the `GET`. See above.
+3. The claims interaction endpoint spends it as well, which is the clause's other
+   half. It spends it on the `POST`, not the `GET`. See above.
 
 Tickets are stored as SHA-256, like every other credential here. A ticket is a
 bearer credential from the moment the resource server receives it until the
-client spends it, travelling through a 401 header and back through a token
+client spends it. It travels through a 401 header and back through a token
 request, so it passes any number of proxies and logs.
 
 ## Registering resources (Federated Authorization §3)
 
 A resource server puts a resource under this server's protection at the resource
-registration endpoint, and a permission then names it by the id it was given alone:
+registration endpoint. A permission then names it by the ID it was given alone.
+These are the requests:
 
-    POST   /uma2/resource_set        {"resource_scopes": ["read"], "type": "document", "name": "Q3 report"}
-                                      -> 201, Location, {"_id": "...", "user_access_policy_uri": "..."}
-    GET    /uma2/resource_set        -> ["_id", ...]
-    GET    /uma2/resource_set/{id}   -> the description, with _id
-    PUT    /uma2/resource_set/{id}   the whole description again -> {"_id": "..."}
-    DELETE /uma2/resource_set/{id}   -> 204
-    POST   /uma2/permission          {"resource_id": "<_id>", "resource_scopes": ["read"]}
+```
+POST   /uma2/resource_set        {"resource_scopes": ["read"], "type": "document", "name": "Q3 report"}
+                                  -> 201, Location, {"_id": "...", "user_access_policy_uri": "..."}
+GET    /uma2/resource_set        -> ["_id", ...]
+GET    /uma2/resource_set/{id}   -> the description, with _id
+PUT    /uma2/resource_set/{id}   the whole description again -> {"_id": "..."}
+DELETE /uma2/resource_set/{id}   -> 204
+POST   /uma2/permission          {"resource_id": "<_id>", "resource_scopes": ["read"]}
+```
 
 Each needs a **protection API access token** (PAT): an access token with the scope
-`uma_protection`, issued to the resource server. Who granted it is the **resource
-owner**. A person who signed in to the resource server and agreed owns what it
-registers with their PAT; a PAT by the client credentials grant registers for the
-organisation. A resource server reads, replaces and deletes only what it registered
-for that owner, and anything else is a 404, as a resource that is not there is. The
-client needs the `uma_protection` scope among its scopes, and the client credentials
-grant for an organisation's PAT.
+`uma_protection`, issued to the resource server. Whoever granted it is the
+**resource owner**.
+
+A person who signed in to the resource server and agreed owns what it registers
+with their PAT. A PAT by the client credentials grant registers for the
+organisation. A resource server reads, replaces and deletes only what it
+registered for that owner. Anything else is a 404, as a resource that is not there
+is. The client needs the `uma_protection` scope among its scopes, and the client
+credentials grant for an organisation's PAT.
 
 **`type` is required here**, and names a type of the organisation's authorization
-model, because the model is what decides who may reach a resource: `"document 42"`
-and `"invoice 42"` are different things. Every scope must be an action the model
-defines for that type, or no permission on it could ever be given and nothing would
-say why. A registered resource keeps its type, since what it has been shared as is
-relations on an object of that type; deregistering it removes those relations with
+model. The model is what decides who may reach a resource, and `"document 42"` and
+`"invoice 42"` are different things. Every scope must be an action the model
+defines for that type. Otherwise no permission on it could ever be given, and
+nothing would say why.
+
+A registered resource keeps its type, since what it has been shared as is
+relations on an object of that type. Deregistering it removes those relations with
 it. Other HTTP methods are answered `405` with `unsupported_method_type`.
 
-At the permission endpoint, a `resource_id` with no `resource_type` must be one this
-resource server registered, each scope one it registered for it, or the answer is
-`invalid_resource_id` or `invalid_scope` (§4.3). One request names one owner's
-resources (§4), the owner its PAT stands for: a person's PAT asks about what that
-person registered, and an organisation's about what the organisation did. The
-endpoint takes a PAT and nothing else, as §1.3 has it ("MUST use OAuth and require a
-valid PAT to secure its protection API endpoints"): a client's own credentials, which
-it took until November 2026, are answered `401`. A resource server that sent them
-gets an organisation's PAT by the client credentials grant with the same credentials
-and sends that instead.
+At the permission endpoint, a `resource_id` with no `resource_type` must be one
+this resource server registered. Each scope must be one it registered for it.
+Otherwise the answer is `invalid_resource_id` or `invalid_scope` (§4.3).
 
-`resource_type` is ours, and not in the specification. Given, it names an object of
-the model that was never registered, which is how this server answered before it had
-registration, and still does for a resource server that keeps its resources to
-itself.
+One request names one owner's resources (§4), the owner its PAT stands for. A
+person's PAT asks about what that person registered, and an organisation's about
+what the organisation did.
+
+The endpoint takes a PAT and nothing else, as §1.3 has it ("MUST use OAuth and
+require a valid PAT to secure its protection API endpoints"). A client's own
+credentials, which it took until November 2026, are answered `401`. A resource
+server that sent them gets an organisation's PAT by the client credentials grant,
+with the same credentials, and sends that instead.
+
+`resource_type` is this server's own, and not in the specification. When it is
+given, it names an object of the model that was never registered. That is how this
+server answered before it had registration. It still does, for a resource server
+that keeps its resources to itself.
 
 ### What a person shares
 
-A person's registered resources are listed at `/account/resources`, linked from their
-account page, and the `user_access_policy_uri` a registration answers. Each can be shared with somebody
-by address, as one of the relations the model gives its type, and the sharing
-stopped; a share is a relation on the resource's object, so the requesting party's
-decision at the token endpoint is the model's, as for anything else. The model's
-author decides what each relation lets somebody do; the owner decides who holds one.
-A share made by an administrator to a group or a client is listed nowhere on that
-page and is not the owner's to remove. Each share and its removal are audited
-(`uma.resource_shared`, `uma.resource_unshared`).
+A person's registered resources are listed at `/account/resources`, which their
+account page links to. That page is also the `user_access_policy_uri` a
+registration answers.
+
+Each resource can be shared with somebody by address, as one of the relations the
+model gives its type, and the sharing can be stopped. A share is a relation on the
+resource's object. So the requesting party's decision at the token endpoint is the
+model's, as for anything else.
+
+The model's author decides what each relation lets somebody do. The owner decides
+who holds one. A share made by an administrator to a group or a client is listed
+nowhere on that page, and is not the owner's to remove. Each share and its removal
+are audited (`uma.resource_shared`, `uma.resource_unshared`).
 
 ## Upgrading an RPT (§3.3.5.1)
 
-A client holding an RPT can send it along with a new ticket as `rpt`, and the token it
-gets holds both. The response says `"upgraded": true` when that happened. Without it the
-client treats the new RPT as not holding the old one's permissions, as §3.3.5 requires,
-so a token that cannot be upgraded is not an error: the client gets its new RPT and is
-told nothing was carried.
+A client holding an RPT can send it along with a new ticket as `rpt`, and the
+token it gets holds both. The response says `"upgraded": true` when that happened.
 
-§3.3.1 says the RPT presented "MAY be expired", which is what makes this worth care. An
-upgrade gives everything it carries a new lifetime, so copying permissions forward would
-let one that was taken away go on being renewed for as long as the client kept asking.
-**So each is decided again**, by the same decision point as the ticket's, and if any is
-refused nothing is upgraded: §3.3.5.1 has the server add the previous RPT's permissions,
-and part of them is not that.
+Without it, the client treats the new RPT as not holding the old one's
+permissions, as §3.3.5 requires. So a token that cannot be upgraded is not an
+error. The client gets its new RPT, and is told nothing was carried.
 
-It has to be this client's RPT, for this requesting party and this resource server,
-bound to the same key if it is bound to one, and not revoked. §1.2 has an RPT unique to
-all of those, and a token moved between them has proved nothing to the second. The
-RPT replaced is revoked, as §3.3.5.1 says it SHOULD be.
+§3.3.1 says the RPT presented "MAY be expired", which is what makes this worth
+care. An upgrade gives everything it carries a new lifetime. So copying
+permissions forward would let one that was taken away go on being renewed, for as
+long as the client kept asking.
+
+**So each is decided again**, by the same decision point as the ticket's. If any is
+refused, nothing is upgraded: §3.3.5.1 has the authorization server add the
+previous RPT's permissions, and part of them is not that.
+
+It has to be this client's RPT, for this requesting party and this resource
+server. It must be bound to the same key if it is bound to one, and not revoked.
+UMA's §1.2 has an RPT unique to all of those, and a token moved between them has proved
+nothing to the second. The RPT replaced is revoked, as §3.3.5.1 says it SHOULD be.
 
 ## Binding an RPT with DPoP
 
-§5.3 leaves proof of possession to a profile. A [DPoP](dpop.md) proof on the token
-request binds an RPT as it binds any other token: `cnf.jkt`, and `token_type` `DPoP`.
+§5.3 leaves proof of possession to a profile. A Demonstrating Proof of Possession
+([DPoP](dpop.md)) proof on the token request binds an RPT as it binds any other
+token: `cnf.jkt`, and `token_type` `DPoP`.
 
 ## Remembering a person (§3.3.5)
 
-The claims interaction has a box: remember this for the application for a month. A person
-who ticks it gets a **persisted claims token** issued to the client alongside the next
-RPT, and the client can send it as `pct` to say who is asking without sending them through
-the screen again. A person who does not tick it gets none, which is what §6.2 recommends:
-ask before keeping anything across authorization processes.
+The claims interaction has a box: remember this for the application for a month.
+A person who ticks it gets a **persisted claims token** (PCT), issued to the client
+alongside the next RPT. The client can send it as `pct`, to say who is asking
+without sending them through the screen again.
 
-A PCT works as a refresh token works, with no interaction behind the next token, so it is
-kept the same way. It is stored as a hash and holds no claims, only who it was about,
-because those are this server's own records and are read when it is used. It is good for
-the client it was issued to and no other, as §5.2 requires. It stops at its month, when
-the client revokes it (`token_type_hint=pct`, §3.7), when the person is deactivated, and
-when they are signed out everywhere, which is a thing they are told happened and would not
-be true with one of these left over. The person sees the application on their connected
-applications page (`/account/connected`), with the day it stops acting for them, and
-removing it there ends its PCTs with its other grants; an administrator sees the same as
+A person who does not tick it gets none, which is what §6.2 recommends: ask before
+keeping anything across authorization processes.
+
+A PCT works as a refresh token works, with no interaction behind the next token,
+so it is kept the same way. It is stored as a hash, and holds no claims, only who
+it was about. That is because those are this server's own records, and are read
+when it is used. It is good for the client it was issued to and no other, as §5.2
+requires.
+
+A PCT stops at the end of its month. It also stops when the client revokes it
+(`token_type_hint=pct`, §3.7), and when the person is deactivated. It stops when
+they are signed out everywhere, too. They are told that happened, which would not
+be true with one of these left over.
+
+The person sees the application on their connected applications page
+(`/account/connected`), with the day it stops acting for them. Removing it there
+ends its PCTs with its other grants. An administrator sees the same as
 `persisted_claims_until` from the Admin API, and can remove it the same way.
 
-It says who is asking and nothing else: every permission is still decided, and the
-resource owner's policy applies to a remembered person as to anybody. A request that
-gathers one identity and presents a PCT for another is refused, because it has named two
-people and this server will not pick. §5.2 has the client make a best effort that the
-person using it now is the person the token was issued for, which only the client can do.
+It says who is asking, and nothing else. Every permission is still decided, and
+the resource owner's policy applies to a remembered person as to anybody.
+
+A request that gathers one identity and presents a PCT for another is refused. It
+has named two people, and this server will not pick. UMA's §5.2 has the client make a
+best effort that the person using it now is the person the token was issued for.
+Only the client can do that.
 
 ## Still not implemented
 

@@ -444,6 +444,25 @@ func TestTheEngineDSN(t *testing.T) {
 			t.Errorf("from %s:\n  got  %s\n  want %s", given, got, want)
 		}
 	}
+
+	// A space in a value is written %20, not +, which pgx 5.11 and later read
+	// as a +; a + is %2B; and pgx reads both back as they were given.
+	su := parse("postgres://postgres@db.example.com/x?sslmode=require&options=-c%20search_path%3Dauth&application_name=a+b")
+	got := engineDSN(su, 5432, "signari", "PW")
+	if strings.Contains(got, "+") || !strings.Contains(got, "options=-c%20search_path%3Dauth") ||
+		!strings.Contains(got, "application_name=a%2Bb") {
+		t.Errorf("the engine DSN writes its query as %s", got)
+	}
+	cfg, err := pgx.ParseConfig(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RuntimeParams["options"] != "-c search_path=auth" || cfg.RuntimeParams["application_name"] != "a+b" {
+		t.Errorf("pgx reads the engine DSN's query as %v", cfg.RuntimeParams)
+	}
+	if strings.Contains(su.desc, "+") || !strings.Contains(su.desc, "%20") {
+		t.Errorf("the superuser is named %s", su.desc)
+	}
 }
 
 // pg_hba.conf is judged as the server judges it: the first line that matches

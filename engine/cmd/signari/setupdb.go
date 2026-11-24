@@ -83,15 +83,17 @@ func superuserFromURL(u *url.URL) (*pgSuperuser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the superuser URL: %w", err)
 	}
-	q := u.Query()
+	// Read as pgx reads it, so a + in a value stays a +, and written back the
+	// same way (encodeQuery).
+	q := queryValues(u.RawQuery)
 	// Named without its password, wherever the URL carried one.
 	shown := *u
 	if shown.User != nil {
 		shown.User = url.User(shown.User.Username())
 	}
-	sq := shown.Query()
+	sq := queryValues(shown.RawQuery)
 	sq.Del("password")
-	shown.RawQuery = sq.Encode()
+	shown.RawQuery = encodeQuery(sq)
 	return &pgSuperuser{cfg: cfg, query: q, desc: "at " + shown.String(), socket: strings.HasPrefix(cfg.Host, "/")}, nil
 }
 
@@ -572,8 +574,36 @@ func engineDSN(su *pgSuperuser, port int, database, password string) string {
 		q.Set("sslmode", "disable")
 	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword(engineRole, password),
-		Host: net.JoinHostPort(host, strconv.Itoa(p)), Path: "/" + database, RawQuery: q.Encode()}
+		Host: net.JoinHostPort(host, strconv.Itoa(p)), Path: "/" + database, RawQuery: encodeQuery(q)}
 	return u.String()
+}
+
+// queryValues reads a URL's query as pgx 5.11 and later read a connection
+// URL's: percent-escapes undone, and a + kept as a +, where url.ParseQuery
+// would take it for a space.
+func queryValues(raw string) url.Values {
+	q := url.Values{}
+	for _, kv := range strings.Split(raw, "&") {
+		if kv == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(kv, "=")
+		if uk, err := url.PathUnescape(k); err == nil {
+			k = uk
+		}
+		if uv, err := url.PathUnescape(v); err == nil {
+			v = uv
+		}
+		q.Add(k, v)
+	}
+	return q
+}
+
+// encodeQuery writes q so that any pgx reads it back as it is: a space as
+// %20, not url.Values.Encode's +, which pgx 5.11 and later read as a +. A +
+// in a value is %2B either way.
+func encodeQuery(q url.Values) string {
+	return strings.ReplaceAll(q.Encode(), "+", "%20")
 }
 
 // isLoopback says whether host is this machine's loopback.

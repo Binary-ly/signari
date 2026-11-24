@@ -67,52 +67,36 @@ That can take several minutes.
 Signari runs at `https://localhost:8099`. The example applications run at
 `http://localhost:8097` and on ports 8091 to 8095.
 
-## 2. Trust the development certificate
+## 2. Accept the development certificate
 
-Signari's certificate is signed by a certificate authority made for development,
-`deploy/tls/ca.crt`. Your browser does not know that authority, so it warns you
-about `https://localhost:8099`.
+Signari serves HTTPS with a certificate made for development, signed by a
+certificate authority in `deploy/tls/ca.crt`. Your browser does not know that
+authority, so the first time you open `https://localhost:8099` it warns you that
+the connection is not private.
 
-Tell your computer to trust that authority, for as long as you follow this
-tutorial. Run the commands for your system in the `deploy` folder.
+For this tutorial it is safe to go on, because `localhost` is your own computer.
+Each browser words it differently:
 
-On macOS, this adds the authority to the system keychain:
+- in Chrome, press **Advanced**, then **Proceed to localhost (unsafe)**;
+- in Edge, press **Advanced**, then **Continue to localhost (unsafe)**;
+- in Firefox, press **Advanced**, then **Accept the Risk and Continue**;
+- in Safari, press **Show Details**, then **visit this website**.
 
-```sh
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain tls/ca.crt
-```
+Your browser makes an exception for this one certificate at this one address.
+The example applications need no exception, because each is given
+`tls/ca.crt` to trust.
 
-On Debian or Ubuntu, this adds it to the system's authorities:
-
-```sh
-sudo cp tls/ca.crt /usr/local/share/ca-certificates/signari-development.crt
-sudo update-ca-certificates
-```
-
-On Fedora, this does the same:
-
-```sh
-sudo cp tls/ca.crt /etc/pki/ca-trust/source/anchors/signari-development.crt
-sudo update-ca-trust
-```
-
-Firefox on Linux keeps its own list of authorities. Import `tls/ca.crt` there
-too, under **Settings**, **Privacy & Security**, **View Certificates**,
-**Authorities**.
-
-On Windows, in PowerShell run as administrator, this adds it to the trusted
-root authorities:
-
-```powershell
-certutil -addstore -f Root tls\ca.crt
-```
-
-Restart your browser, so that it reads the new list.
+If your browser offers no way to go on, another project has left it a rule to
+accept only trusted certificates for `localhost`. In Chrome, delete that rule:
+open `chrome://net-internals/#hsts` and enter `localhost` under **Delete domain
+security policies**.
 
 > [!WARNING]
-> Remove that authority when you finish, as step 7 shows. The development
-> certificate's private key is published in the repository. While your computer
-> trusts the authority, any program can pose as `https://localhost`.
+> Do not add `tls/ca.crt` to your computer's trusted authorities. Its private key
+> was made on another computer, so whoever holds that key could then pose as any
+> website to yours. The development certificate's own key is in the repository,
+> so use it only for this tutorial. A real server needs a certificate of its own,
+> as [Installation](installation.md) describes.
 
 ## 3. Create your account
 
@@ -288,38 +272,6 @@ account is still there, so the bootstrap service prints no new link.
 
 To delete the database as well, add `-v` to the `down` command. Then delete
 `.env` too, since its root key has nothing left to open.
-
-When you have finished with the tutorial, remove the development authority you
-trusted in step 2.
-
-On macOS:
-
-```sh
-sudo security remove-trusted-cert -d tls/ca.crt
-sudo security delete-certificate -c signari-conformance-ca /Library/Keychains/System.keychain
-```
-
-On Debian or Ubuntu:
-
-```sh
-sudo rm /usr/local/share/ca-certificates/signari-development.crt
-sudo update-ca-certificates --fresh
-```
-
-On Fedora:
-
-```sh
-sudo rm /etc/pki/ca-trust/source/anchors/signari-development.crt
-sudo update-ca-trust
-```
-
-In Firefox on Linux, delete **signari-conformance-ca** under **Authorities**.
-
-On Windows, in PowerShell run as administrator:
-
-```powershell
-certutil -delstore Root signari-conformance-ca
-```
 
 ## If something goes wrong
 

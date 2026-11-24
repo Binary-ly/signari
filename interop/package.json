@@ -5,6 +5,6 @@
   "description": "Cross-language conformance checks: verify tokens minted by the Go engine with an independent JOSE implementation.",
   "dependencies": {
     "jose": "^5.9.6",
-    "ws": "^8.21.3"
+    "ws": "^8.23.0"
   }
 }

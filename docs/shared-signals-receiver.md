@@ -43,11 +43,12 @@ The Admin API registers sources the same way, at
 `/admin/organizations/{orgID}/ssf-sources`. See the [Admin API
 reference](admin-api.md).
 
-## The half everybody skips
+## Receiving is the harder half
 
-Every implementation that does Shared Signals **transmits**: "a session was revoked
-here, tell the applications". That is the simpler half, and the one that demos well.
-
+**Transmitting** is the simpler half of Shared Signals: "a session was revoked
+here, tell the applications". Receiving means acting on another service's word
+about your own people, so everything on this page is about checking that word
+before acting on it.
 
 ## Conformance review against RFC 8417 and RFC 8935, August 2026
 
@@ -147,7 +148,7 @@ audience check is.
 | The token | Answer |
 |---|---|
 | `iss` and `aud` match one source | verified against that source, and the subject is resolved in its organisation only |
-| `aud` lists several audiences that reach two organisations' sources | `400 invalid_audience`, and nothing is acted on. An event addressed to two tenants names nobody in particular |
+| `aud` lists several audiences that reach two organisations' sources | `400 invalid_audience`, and nothing is acted on. An event addressed to two organisations names nobody in particular |
 | `aud` names a recipient here that does not accept this `iss` | `400 invalid_issuer`, RFC 8935 §2.4's "the SET Issuer is invalid for the SET Recipient" |
 | `aud` names no recipient here | `400 invalid_audience`, "the SET Audience does not correspond to the SET Recipient" |
 
@@ -209,9 +210,13 @@ larger than the SET format, and the boundary was nowhere stated.
 
 **Transmitting.** Streams exist: `core.ssf_streams` carries `endpoint_url`,
 `events_requested`, `auth_token` and a `status`. SETs are delivered through
-`internal/outbox`, with its retry, capped backoff and parked-failure handling. They
-are **administered locally**, not through §8.1.1's Stream Configuration Endpoint. A
-receiver cannot create, read or update its own stream by HTTP.
+`internal/outbox`, with its retry, capped backoff and parked-failure handling. A
+stream is **created by an administrator**, with `signari ssf add-stream` or the
+Admin API. Through §8.1.1's Stream Configuration Endpoint, `/ssf/stream`, a
+receiver can read its own stream and change what it asks for, and a request to
+create or delete one is answered `403`. It can also ask for a verification event
+at `POST /ssf/verify`. See [what a receiver can do with its
+stream](ssf-caep.md#what-a-receiver-can-do-with-its-stream).
 
 **Receiving.** `POST /ssf/receive` accepts SETs from a configured source. We do not
 act as a stream-managing receiver. Nothing here creates a stream against a foreign
@@ -226,15 +231,15 @@ verification.
 | §6.1.1 Push delivery over HTTP | implemented, both directions |
 | §6.1.2 Poll delivery | implemented **as transmitter** (`POST /ssf/poll`); this receiver does not pull from an upstream queue |
 | §7.1 / §7.2 Transmitter configuration metadata | implemented — served at `/.well-known/ssf-configuration` |
-| §8.1.1 Stream Configuration Endpoint | **not implemented** — streams are configured by an operator |
-| §8.1.4 Verification (the verification event and its `state` echo) | **not implemented** |
+| §8.1.1 Stream Configuration Endpoint | implemented **as transmitter**, for reading and changing a stream (`GET`, `PATCH` and `PUT /ssf/stream`); creating and deleting one is `403`, because streams are created by an administrator. This receiver does not call another transmitter's endpoint |
+| §8.1.4 Verification (the verification event and its `state` echo) | implemented **as transmitter** (`POST /ssf/verify`); this receiver never requests verification |
 
 So §8.1.4's receiver SHALL, "the Event Receiver SHALL confirm that the value for
 `state` is as expected", does not bind us, because we never request verification.
 
 That is a scope statement rather than an excuse. A deployment that expects to
-negotiate a stream with us over the wire, or to verify one, will find those
-endpoints absent. Until now nothing here said so.
+create a stream with us over the wire is refused, because an administrator creates
+it. Until now nothing here said so.
 
 This is the same rule the rest of this project follows: advertise exactly what is
 built, and say plainly what is not. User-Managed Access ([UMA](glossary.md#uma))
@@ -247,14 +252,7 @@ The converse failure is as real, and this page had it. A table still said "not
 implemented" for two sections that had since been built, which costs a reader a
 capability they already have.
 
-
-Re-checked August 2026: `Profile.java:177` carries
-`SSF("Shared Signals Framework", Type.EXPERIMENTAL)`, and `kc/ssf/` contains
-`core`, `services` and `transmitter` — with §8.1.1 stream configuration endpoints
-(`SsfAdminResource`, `CreateStreamRequest`, `AddSubjectRequest`).
-
-
-## Point 3, done properly: every normative clause, against the spec text
+## Every normative clause, against the spec text
 
 The specification was parsed rather than remembered: OpenID Shared Signals Framework
 1.0, Standards Track (Final), **29 August 2025**. Every RFC 2119 keyword was
@@ -290,8 +288,7 @@ because our sources are configured by an administrator, rather than discovered.
 
 **Conclusion: the receiver holds up.** Every receiver-side MUST in SSF 1.0 Final is
 implemented. The profile's central concern, §4.1.3, "the possibility that SETs are
-confused for other kinds of JWTs", is covered by all three of its checks. Most
-implementations stop at one.
+confused for other kinds of JWTs", is covered by all three of its checks.
 
 ### The transmitter: we were undiscoverable, and now are not
 
@@ -312,13 +309,18 @@ Two details from §7.1 decided the shape:
 
 Implemented in `internal/ssf/metadata.go`, served at `internal/httpapi/ssfmetadata.go`.
 
-**What is deliberately absent, and why absence is the honest answer.** The §8
-management endpoints are omitted: `configuration_endpoint`, `status_endpoint`,
-`add_subject_endpoint` and `remove_subject_endpoint`. So is `authorization_schemes`.
-That is because this engine's streams are administered by its administrator.
+**What was absent, and why absence was the honest answer.** When this was written,
+the §8 management endpoints were omitted: `configuration_endpoint`,
+`status_endpoint`, `add_subject_endpoint` and `remove_subject_endpoint`. They did
+not exist yet. `verification_endpoint` came first, since it changes nothing about a
+stream ([asking whether a stream works](ssf-caep.md#asking-whether-a-stream-works)).
+All five are advertised now that each one works. A receiver can read and change its
+own stream through them, but not create or delete one.
 
-`verification_endpoint` is the exception, since it changes nothing about a stream
-([asking whether a stream works](ssf-caep.md#asking-whether-a-stream-works)).
+`authorization_schemes` is still omitted. A receiver authenticates to these
+endpoints as its stream's client, with HTTP Basic or a certificate, and neither is
+the access token that §7.1.1's OAuth example describes.
+
 Advertising a configuration endpoint that 404s is worse than advertising nothing:
 the receiver's next move is to call it. This is the rule the project adopted after
 OpenID Connect ([OIDC](glossary.md#oidc)) discovery once advertised three endpoints
@@ -331,8 +333,8 @@ than ALL and wider than NONE.
 
 Omitting is explicitly conformant ("If not provided, the Transmitter behavior in this
 regard is unspecified"). `ALL` would promise events about every person in the
-directory. `NONE` would direct the receiver to an add-subject endpoint we do not
-offer.
+directory. `NONE` would tell the receiver it hears about nobody until it adds them,
+and adding a person its client has not met opens nothing here.
 
 **The issuer is published verbatim, including a development `http` one.** §7.1 calls
 for https. But it also says the value "MUST be identical to the `iss` claim value in
@@ -344,7 +346,7 @@ the scheme sentence by breaking the `iss` sentence. It would make us unsubscriba
 rather than more secure. §7.2 puts the receiver in charge of noticing: "Receivers
 SHOULD ensure that the Issuer URL... uses the https scheme."
 
-**§7.2.1's path case is handled**, which most implementations skip. For an issuer
+**§7.2.1's path case is handled.** For an issuer
 with a path component, the document belongs at
 `/.well-known/ssf-configuration/issuer1`, not at the bare path. The rule exists for
 hosting many organisations on one host. A transmitter serving only the bare path is
@@ -362,10 +364,11 @@ event.
 
 Stated here so the gaps are visible rather than discovered:
 
-- **The §8 stream management API**: creating, updating and deleting streams over
-  HTTP. Streams here are created by the administrator instead. That is a deliberate
-  choice about who may subscribe to events, rather than a missing endpoint. See
-  [Shared Signals and CAEP](ssf-caep.md).
+- **Calling a transmitter's §8 stream management API**, to create, update or
+  delete a stream over HTTP. A source here is registered by an administrator
+  instead. As a transmitter, Signari lets a receiver read and change its own
+  stream, but not create one: that is a deliberate choice about who may subscribe
+  to events. See [Shared Signals and CAEP](ssf-caep.md).
 - **The legacy Apple SSE CAEP profile**, which predates the final specification.
 - **RISC's other events**, such as `identifier-changed` and the recovery family.
   They are recorded with `no handler` rather than acted on.
@@ -528,8 +531,8 @@ leaves no trace anywhere to notice it by.
 
 ### What was done
 
-**The event body still wins when it carries a subject.** Most transmitters in the
-field still use the in-event shape. And `subjectFrom` already makes the argument
+**The event body still wins when it carries a subject**, because a transmitter
+using the pre-1.0 in-event shape puts it there. And `subjectFrom` already makes the argument
 about `sub_id` versus `subject`: *"a receiver that only understands one silently
 ignores half the transmitters in the world."* Preferring the top level would have
 moved the blind spot, rather than removed it.
@@ -577,8 +580,8 @@ is what makes precedence not matter.
 
 ## Reading the sections nobody had opened (21 August 2026)
 
-The protocol-review notes had already concluded, from six second passes, that **"the
-risk is unread sections, not misread ones"**. Every finding came from a section a
+Six second passes had already led to one conclusion: **"the risk is unread
+sections, not misread ones"**. Every finding came from a section a
 first pass never opened, and none from code a first pass read and misjudged.
 
 That is a claim you can act on mechanically, rather than by re-reading everything.
@@ -658,7 +661,7 @@ it looks like. There is now a test, and the mutation that returns 400 fails it.
 
 Its receiver-facing MUST NOT concerns what a receiver may infer from a 204 to an *add
 subject* request. We never call one: `add_subject_endpoint` appears in this codebase
-only as a field we publish as a transmitter.
+only as an endpoint Signari serves as a transmitter.
 
 The mutation pass for these sections caught all four changes:
 
@@ -668,3 +671,272 @@ CAUGHT   fall back to device/session/tenant when `user` is absent
 CAUGHT   mark every complex member processable (drops the §3.6 valve)
 CAUGHT   answer 400 for an event about a subject we cannot resolve
 ```
+
+## Re-review against the Shared Signals Framework, August 2026
+
+Signari's Shared Signals receiver accepts Security
+Event Tokens (SETs) from another service. A SET is a signed [JSON Web Token
+(JWT)](glossary.md#jwt) that describes one security event. This section is the
+record of a review of that receiver, kept as it was written.
+
+Version checked first: **Shared Signals Framework Specification 1.0, published 29
+August 2025**. Current, and the version implemented against.
+
+### Two defects, both the same mistake
+
+The receiver was written against **RFC 8417 alone**. The Shared Signals Framework
+is a *profile* of RFC 8417, and it is stricter in two places our code did not
+know about.
+
+**§4.1.7 — `exp` is forbidden, not merely discouraged.**
+
+> The "exp" claim MUST NOT be used in SETs. The purpose is defense in depth
+> against confusion with other JWTs, as described in Sections 4.5 and 4.6 of
+> [RFC8417].
+
+RFC 8417 §2.2 on its own only makes `exp` NOT RECOMMENDED, and our code cited
+exactly that. It then honoured the claim when present, refusing a SET whose expiry
+had passed. That was a deliberate earlier fix, and the comment recorded why. A
+transmitter that deliberately time-boxed an event had found us acting on it
+afterwards.
+
+Reasonable, and aimed at the wrong thing. **`exp` is not there to time-box an
+event. It is forbidden so that a SET cannot be shaped like an ID token.** Once
+that is the reason, honouring the claim is not enough. A SET with a comfortable
+future expiry is exactly as confusable as an expired one, and ours accepted it.
+
+**§4.1.2 — a top-level `sub` is forbidden, and we never checked.**
+
+> The JWT "sub" claim MUST NOT be present in any SET containing an SSF event.
+
+It sits under §4.1.3, *"Distinguishing SETs from other Kinds of JWTs"*. That
+section opens: *"Of particular concern is the possibility that SETs are confused
+for other kinds of JWTs."* An SSF event names its subject in `sub_id`. A top-level `sub` is the shape
+of an ID token.
+
+We check `typ: secevent+jwt`, which is the primary confusion defence, and which
+would already refuse an actual ID token. The profile adds these two because typ
+checking is not universal. Defence in depth is its stated purpose, and we had
+implemented one layer of it and not the other two.
+
+Both are now refused outright. `Subject` is parsed as a `*string` so that
+`"sub": ""` is distinguishable from an absent claim: an empty string is still a
+`sub` claim.
+
+| Mutation | Test that caught it |
+|---|---|
+| Honour `exp` instead of refusing it | `TestASETCarryingExpIsRefused` |
+| Allow a top-level `sub` | `TestASETCarryingATopLevelSubIsRefused` |
+
+### The lesson worth keeping
+
+The previous review of this code checked it against RFC 8417 and RFC 8935 and
+found five defects. It did not check it against the **profile** that governs it,
+and the profile is where both of these live.
+
+An implementation of a profiled specification has two documents to satisfy. The
+profile is the one that adds restrictions the base RFC calls optional. Citing the
+base RFC in a comment, as ours did, accurately, is what made the gap look like
+diligence.
+
+## Adversarial re-review, August 2026
+
+This was the third pass over the receiver. It was made against the **Shared Signals
+Framework 1.0 Final** text, pulled fresh rather than recalled. It used hostile input,
+rather than one-field-wrong variations.
+
+Why this surface and not another: accepting one forged Security Event Token
+terminates a named person's sessions. Anybody who gets a SET past this code has a
+repeatable denial of service against any person in the organisation.
+
+### A real defect: `aud` may be a single string
+
+§4.1.8, verbatim:
+
+> The "aud" claim can be a single string or an array of strings.
+
+RFC 7519 §4.1.3 says the same for every JSON Web Token ([JWT](glossary.md#jwt)).
+And **three of the Shared Signals specification's own example SETs use the string
+form**: Figures 8, 9 and 10 all carry `"aud": "636C69656E745F6964"`.
+
+We parsed it as `[]string` only. The consequence is worse than a failed audience
+check. Go's `encoding/json` reports a type mismatch, so the **whole claim set** fails
+to unmarshal, and the receiver answers `malformed claims`. An administrator
+connecting a conformant transmitter is told their token is malformed, with nothing
+pointing at the audience, while every event is silently dropped.
+
+Fixed with a custom unmarshaller that accepts both forms, and the string form is
+still *checked*. `TestAStringAudienceNamingSomebodyElseIsStillRefused` exists so the
+fix cannot become "accept any string".
+
+This is the same defect class this review has hit before: **the base RFC and the
+profile were both consulted, and the permissive half of the base RFC was
+overlooked**. That happened because the profile's own examples were not read as
+test vectors.
+
+### What the hostile inputs found
+
+| Attack | Result |
+|---|---|
+| `alg: none` | refused |
+| HS256 signed with the transmitter's **public key** as the secret | refused |
+| A *configured* transmitter signing in another configured transmitter's name | refused |
+| Two signatures, one legitimate and one attacker's, over one payload | refused |
+| Payload that is `"a string"`, `[1,2,3]`, `null`, or truncated | refused |
+| `aud` array listing us among several | accepted (§4.1.8) |
+| Unknown top-level claims and unknown event-object fields | ignored (§4.2.3) |
+
+The last two matter as much as the refusals. Section 4.2.3 makes ignoring unknown
+fields a **MUST**. It sits directly beside the rule that an unknown event *type* is
+refused. That pair is often conflated into "reject anything unfamiliar", which would
+make every transmitter extension a breaking change.
+
+### Which defences are actually load-bearing
+
+Mutation testing answered a question reading could not. Of four guards in the
+verification path, **two are inherited from go-jose rather than enforced by us.**
+
+| Guard | Removing it breaks a test? |
+|---|---|
+| `iss` pinned to the source configuration | **yes** |
+| `jwk` / `jku` / `x5u` self-supplied keys refused | **yes** |
+| Explicit algorithm allow-list excluding HS256 | **no** — go-jose refuses an HS256 signature against an ECDSA key on type grounds |
+| Exactly one signature | **no** — `JSONWebSignature.Verify` declines a multi-signature object and requires `VerifyMulti` |
+
+Both survivors were investigated rather than assumed. Neither is a hole: the attacks
+are refused either way, verified by actually mounting them. But the comments in the
+test file now say **which** check fires. Two of the tests originally implied our
+guard was doing work that the library was doing.
+
+That distinction is not pedantry. A JOSE library change, or a future need for
+`VerifyMulti`, would make our guards the only thing standing. And nothing in the
+suite would have told us they had been decorative all along. This is the same failure
+this project has already found twice in its own comments. Finding it a third time in
+a *test* is the reason the mutation pass exists.
+
+## MUST-by-MUST sweep, August 2026: `critical_subject_members`
+
+This review used the method that found three unmet requirements in OpenID for
+Verifiable Credential Issuance ([OID4VCI](glossary.md#oid4vci)). The method extracts
+every `MUST` from the specification text, and checks each one against the code. It
+was applied to Shared Signals Framework 1.0 (29 August 2025, the current Final).
+
+94 `MUST` sentences; 49 of them touch streams, subjects or delivery. One was unmet,
+and the receiver contained no mention of it at all.
+
+### §3.6 Receiver Subject Processing
+
+> "An SSF Receiver MUST make a best effort to process all members from a Subject
+> in an SSF event. The Transmitter Configuration Metadata (Section 7.1) defined
+> below MAY define certain members within a Complex Subject to be Critical. **An
+> SSF Receiver MUST discard any event that contains a Subject with a Critical
+> member that it is unable to process.**"
+
+and §7.1's metadata entry:
+
+> `critical_subject_members` — "An array of member names in a Complex Subject
+> which, if present in a Subject Member in an event, MUST be interpreted by a
+> Receiver."
+
+We implemented neither. The receiver reads `format`, `iss`, `sub` and `email`, and
+silently ignored everything else.
+
+### Why this is a scope defect, not an authenticity one
+
+Every other check in this receiver asks *is this event genuine*: signature, issuer,
+audience, `jti`, `iat`, allowed event types. This one asks a different question:
+**do I understand what the event is about?**
+
+A transmitter marking a `device` member Critical is saying the event concerns one
+device, rather than the whole account. Ignoring that member does not fail. It
+applies the right action to the wrong set of things. A session-revocation scoped to
+one laptop gets applied to every session the person has, and nothing anywhere reports
+that the blast radius was wrong.
+
+That is the same silent-widening shape as the token-lifecycle defects found earlier
+in this codebase, arriving from a completely different direction. The common
+property is a constraint that was communicated, and then not consulted.
+
+### The implementation
+
+`critical_subject_members` is stored per source, not fetched live from the
+transmitter's metadata document. That is the same decision as `allowed_events`, for
+the same reason. What this receiver will act on is a local decision. Letting a remote
+document widen or narrow it at request time makes the security posture depend on
+somebody else's uptime and honesty.
+
+The check runs on the **raw** subject object rather than the parsed `Subject`. The
+entire point is to notice members we do not model, and a parsed struct has already
+discarded them.
+
+`processableSubjectMembers` sits directly beside `subjectFrom`, since §3.6 turns on
+"unable to process". A member added to the parser without being added to that set
+would make us discard events we now understand perfectly well.
+
+### Mutation results
+
+The mutation pass caught three changes, and one survived:
+
+```
+CAUGHT   critical members never checked
+CAUGHT   absent critical member still discards
+CAUGHT   members we can process still discard
+SURVIVED check fires with nothing declared
+```
+
+The survivor was an early return for the empty case, and it was genuinely redundant,
+not merely hard to test. Ranging over an empty slice already does nothing, and
+indexing a nil map already reports "not present". It was **deleted** rather than kept
+and labelled.
+
+That is worth distinguishing from the diagnostic-only branches elsewhere in this
+codebase, which survive mutation but earn their place by producing a better error
+message. This one produced nothing at all. A short-circuit that only restates what the
+loop does is weight without meaning.
+
+### The rest of the sweep
+
+The other 93 `MUST` sentences were checked, and are met. That includes the ones most
+often skipped. These are explicit `typ` of `secevent+jwt` (§4.1.1), `iss` matching
+the stream configuration (§4.1), audience checking, and refusing a SET with no
+`jti`. Without
+that last one there is no replay guard at all.
+
+## Re-verified against current SSF 1.0 — 24 August 2026
+
+A deep pass on Shared Signals, the highest-consequence subsystem here. The worst
+defect ever found in this codebase lived in it: a `session-revoked` SET that verified
+perfectly and named nobody. `internal/ssf/receive.go` was re-read against SSF 1.0
+Final (29 August 2025, current).
+
+### All three subject shapes are read
+
+The specification allows a subject to arrive three ways. A receiver that handles only
+one silently ignores events about people it should be acting on.
+
+- **Top-level `sub_id`** (§3.1). Reading only the inside of the event object was the
+  defect above. A conformant transmitter putting the subject at the top level had
+  every event accepted and applied to nobody. Fixed in `beedd83`/`bbe776c`.
+- **Complex subjects** (§3.3), resolved through the `user` member.
+- **`iss_sub`**, compared issuer-scoped. So `user-42` at `transmitter.test` and
+  `user-42` at `evil.test` are two different principals, not one.
+
+Verified by decoding real transmitted tokens, not only fixtures of our own making. A
+receiver tested solely against its own encoder agrees with itself about a wire format
+both halves may be reading wrongly.
+
+### Receiver rules re-verified against the current spec text
+
+- §4.1.2 `sub` MUST NOT be present, §4.1.7 `exp` MUST NOT — both refused, both for
+  the stated defence-in-depth against JWT confusion (a SET carrying `sub`+`exp` is
+  shaped like an ID token).
+- §3.1.4 a subject MUST refer to exactly one principal — refused both within an
+  event and across the top-level `sub_id`-vs-event-`subject` levels.
+- §3.6 a Critical member the receiver cannot interpret → discard rather than act
+  on a scope we are ignoring.
+- Per-type source authorization: a source allowed one event type may not smuggle
+  another alongside it.
+
+**Verdict:** no new defect. The subsystem where the worst defect was found now reads
+all three subject shapes the specification defines. Every receiver-side MUST has been
+re-verified against the current SSF 1.0 text.

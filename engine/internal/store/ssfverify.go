@@ -12,8 +12,9 @@ import (
 )
 
 // MinVerificationInterval is the least time between a stream's verification
-// requests. §8.1.2 would have it published as min_verification_interval, in a
-// stream configuration this engine does not serve, so docs/ssf-caep.md says it.
+// requests. It is published as §8.1.1's min_verification_interval, in the stream
+// configuration a receiver reads at GET /ssf/stream (httpapi/ssfmanage.go), and
+// docs/ssf-caep.md says it too.
 const MinVerificationInterval = 30 * time.Second
 
 var (

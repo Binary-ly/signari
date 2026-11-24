@@ -70,7 +70,7 @@ provider needs, which is also the list of who is being let in.
 
 **Nothing else on any page is off-origin.** No fonts, no analytics, no CDN
 scripts, no remote images. The thirty-three engine pages use a system font stack.
-The admin console serves Instrument Sans from `admin/public/fonts/instrument-sans/`
+The console serves Instrument Sans from `admin/public/fonts/instrument-sans/`
 specifically so that Filament's default font provider, which resolves to the Bunny
 Fonts CDN, is not used.
 
@@ -79,8 +79,8 @@ for any `src` or `href` with a scheme in it.
 
 It was not true of the console until November 2026, and only the sign-in page had
 been looked at. Filament's default avatar provider drew the administrator's avatar
-at ui-avatars.com, with their initials in the address, on every screen with a
-user menu.
+at ui-avatars.com, with their initials in the address, on every screen with an
+account menu.
 
 The console now draws it as a data URI, and its test reads a signed-in screen as
 well. The console's content policy is `default-src 'self'` with `data:` images.
@@ -91,12 +91,14 @@ violation, and no request to another origin.
 ## Operator-configured destinations
 
 An administrator names these. That does not make them safe to dial wherever they
-point. A stored setting can be changed by anyone holding the right admin scope,
+point. A stored setting can be changed by anyone holding the right Admin API scope,
 and a name can start resolving somewhere else after it was saved.
 
 So every HTTP destination here goes through `safedial` too. One that really is
 internal is named in `SIGNARI_OUTBOUND_ALLOW_PRIVATE` (see
-[configuration](configuration.md#internal-destinations)).
+[configuration](configuration.md#internal-destinations)). The table uses three
+abbreviations: Lightweight Directory Access Protocol (LDAP), System for
+Cross-domain Identity Management (SCIM), and Transport Layer Security (TLS).
 
 | Destination | Package | Notes |
 |---|---|---|

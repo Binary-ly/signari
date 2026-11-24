@@ -20,7 +20,9 @@ why it had not been met: nothing in the engine was missing, and nothing failed.
 ## The two layers, which are not the same thing
 
 Signari logs at two layers, with different guarantees. Conflating them is the
-mistake this document exists to prevent.
+mistake this document exists to prevent. The table compares them, including what
+the Lightweight Directory Access Protocol (LDAP) and Remote Authentication Dial-In
+User Service (RADIUS) listeners write.
 
 | | Diagnostic log | Audit trail |
 |---|---|---|
@@ -39,12 +41,12 @@ diagnostic log is not evidence, and is not treated as any.
 
 ## Layer 1 — the diagnostic log
 
-**Personal data.** Until October 2026, Lightweight Directory Access Protocol
-(LDAP) binds and RADIUS logins logged the username they were given, valid or not.
+**Personal data.** Until October 2026, LDAP binds and RADIUS sign-ins logged the
+username they were given, valid or not.
 An LDAP write refusal logged the bound DN, and an EAP-TLS refusal the
 certificate's subject.
 
-They now log none of it. The audit trail records each bind and login by subject,
+They now log none of it. The audit trail records each bind and sign-in by subject,
 and an EAP-TLS refusal names the certificate by its serial.
 `TestNoLogLineNamesAPerson` reads every log call in the engine. It fails on a
 `username`, `email`, `upn`, `bound_dn` or similar key, or on a certificate's
@@ -114,7 +116,7 @@ Beyond authentication, the trail covers:
 - System for Cross-domain Identity Management (SCIM) provisioning.
 - Security Assertion Markup Language (SAML) and WS-Fed issuance.
 - RAC sessions and User-Managed Access (UMA) decisions.
-- Admin mutations.
+- Changes made through the Admin API.
 - Account recovery requests and cancellations.
 
 **The command line is covered too.** Every `signari` command that changes
@@ -146,7 +148,7 @@ rewrite a row. It is not a database trigger refusing `UPDATE`.
 
 **Personal data.** Kept out by rule rather than by encryption. Rows name people by
 subject id, never by address, and `detail` is clear JSON that must carry nothing
-personal. A test follows a person through the admin API, from creation to
+personal. A test follows a person through the Admin API, from creation to
 erasure, and fails if any identifier they had reaches the trail.
 
 A `detail_enc` column, meant for personal detail sealed under the subject's key,

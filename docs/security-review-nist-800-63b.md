@@ -11,8 +11,8 @@ RFC 9700 governs OAuth; **NIST SP 800-63B, Digital Identity Guidelines —
 Authentication and Authenticator Management** governs the authentication itself.
 This is the second half of the security-standard review.
 
-The standard has its own words. A "credential service provider" (CSP) keeps the
-accounts, and a "subscriber" is the person who holds one. A "verifier" checks that
+The standard has its own words. The organisation that keeps the accounts is the
+"CSP", and a "subscriber" is the person who holds one. A "verifier" checks that
 a person controls their authenticators, and here that is Signari. Three
 "authentication assurance levels", AAL1 to AAL3, say how much confidence a
 sign-in gives.
@@ -198,10 +198,10 @@ regenerated or removed by an administrator. A success resets the count, so it
 really is *consecutive*.
 
 A wrong code is charged only to the authenticator it could have been: six digits
-to the app, twenty recovery-code characters to the codes. A right code presented a
+to the authenticator app, twenty recovery-code characters to the codes. A right code presented a
 second time is refused as a replay, and charged to nothing, since it is no guess.
 
-Until October 2026 a replayed code counted toward disabling the app. So replaying
+Until October 2026 a replayed code counted toward disabling the authenticator app. So replaying
 a code somebody watched being typed was a way to switch the factor off
 (`TestAReplayedAuthenticatorCodeIsRefusedAndChargedToNothing`).
 
@@ -473,7 +473,7 @@ that mailbox, it reached nobody who mattered.
 
 There was no way to make the request. `store.DeleteCredential` was written, given
 an ownership check and a last-credential guard, and tested. It **had no caller
-anywhere in the tree**: no route, no CLI path, no admin path. Registering a
+anywhere in the tree**: no route, no CLI path, no Admin API path. Registering a
 passkey was possible; removing one was not.
 
 **The notification added the day before made it worse by naming it.** That notice
@@ -490,10 +490,10 @@ end.
 - **The last credential cannot be removed** — `ErrWouldLockOut`, enforced in the
   store where the count and the delete share one transaction, because two
   concurrent requests each seeing "two remain" would otherwise leave zero.
-- **Another user's credential cannot be removed**, and the answer is the same 404
+- **Another person's credential cannot be removed**, and the answer is the same 404
   whether it does not exist or belongs to somebody else. Distinguishing them
   would confirm which uuids are real.
-- **CSRF is required.** Kill-checked: with the guard removed, a request carrying
+- **A cross-site request forgery (CSRF) token is required.** Kill-checked: with the guard removed, a request carrying
   only a session cookie removes a passkey. Stripping a factor is exactly what a
   cross-origin post would want, and the account it targets is one the attacker
   already knows is signed in somewhere.

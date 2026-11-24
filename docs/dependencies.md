@@ -23,8 +23,9 @@ counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
 than luck. The QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec
-and the SD-JWT implementation are all written here, not pulled in. So are the
-RADIUS server, the flow language and the OTLP exporter. Every dependency is a party that can
+and the JSON Web Token (JWT) code for Selective Disclosure JWT (SD-JWT) are all
+written here, not pulled in. So are the Remote Authentication Dial-In User Service (RADIUS) server,
+the flow language and the OTLP exporter. Every dependency is a party that can
 change what this binary does.
 
 The table below is every direct requirement in `engine/go.mod`, at the version
@@ -33,6 +34,10 @@ holds the count above to the table. This page once said thirteen, while `go.mod`
 named eighteen.
 
 ## Direct dependencies
+
+The table uses three more abbreviations: Security Assertion Markup Language
+(SAML), Lightweight Directory Access Protocol (LDAP), and Simple and Protected
+GSS-API Negotiation Mechanism (SPNEGO).
 
 | Module | Version | What it does | Why it is trusted |
 |---|---|---|---|
@@ -103,8 +108,8 @@ failure, or Signari's own code, has the widest blast radius:
   confusion) are the reason `internal/saml/decode.go` refuses constructs *before*
   either library sees the document rather than trusting their configuration.
 - **`gokrb5`** — parses attacker-supplied tickets from the network.
-- **`crypto11` + `miekg/pkcs11`**, in the `pkcs11` build — they load the HSM
-  vendor's module into this process. It is C, it runs with the engine's
+- **`crypto11` + `miekg/pkcs11`**, in the `pkcs11` build — they load the hardware
+  security module (HSM) vendor's module into this process. It is C, it runs with the engine's
   privileges, and nothing here can check it; choosing a module is choosing to
   trust its vendor that far.
 - **`internal/radius`** — parses UDP packets from the network, written here.

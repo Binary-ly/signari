@@ -63,7 +63,7 @@ protections when a unique DPoP key is used for each authorization request".
 ### Both mechanisms, because §10.1 requires both
 
 - `dpop_jkt` as an authorization request parameter, and in the PAR POST body.
-- A **DPoP header on the PAR request**, in which case the server "MUST further
+- A **DPoP header on the PAR request**, in which case the authorization server "MUST further
   behave as if the contained public key's thumbprint was provided using
   dpop_jkt".
 
@@ -276,7 +276,8 @@ has to be the one checking. The client that registers a weak key is the client
 least likely to notice.
 
 It was also an inconsistency inside one codebase, not a considered position. The
-same floor was already enforced on SAML encryption certificates
+same floor was already enforced on Security Assertion Markup Language (SAML)
+encryption certificates
 (`internal/saml/encrypt.go:107`) and on certificate import in the CLI. Only the
 path that authenticates clients was missing it.
 

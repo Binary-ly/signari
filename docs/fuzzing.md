@@ -17,6 +17,11 @@ checking how hostile input is tested.
 
 ## The targets
 
+Among the protocols the targets read are the Lightweight Directory Access Protocol
+(LDAP), Remote Authentication Dial-In User Service (RADIUS) and System for
+Cross-domain Identity Management (SCIM). Others read Proof Key for Code Exchange
+(PKCE) verifiers and Demonstrating Proof of Possession (DPoP) proofs.
+
 Each target ends in an answer for any input and, where there is one, holds a
 property as well:
 

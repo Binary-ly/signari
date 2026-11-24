@@ -75,8 +75,9 @@ the interoperable default as well as the FIPS configuration.
 
 Core OpenID Connect (OIDC) is unaffected: the authorization code flow, token
 issue and verification, sessions, refresh, introspection and revocation. So are
-the JSON Web Key Set (JWKS), Demonstrating Proof of Possession (DPoP), mutual TLS
-(mTLS), Pushed Authorization Requests (PAR) and the device flow.
+the JSON Web Key Set (JWKS), Demonstrating Proof of Possession (DPoP), mutual
+Transport Layer Security (TLS), Pushed Authorization Requests (PAR) and the device
+flow.
 
 Where a feature cannot work, the reason is the same every time. A protocol or a
 stored format mandates an algorithm the module refuses. No amount of care on our
@@ -113,10 +114,11 @@ SHA256` enrols new authenticator apps with SHA-256, and `signari user assign-otp
 -totp-algorithm SHA256` assigns a hardware token that computes it.
 
 Not every authenticator app computes SHA-256. One that does not shows codes that
-never match, so choose apps or tokens that state it. Each credential keeps the
+never match, so choose authenticator apps or tokens that state it. Each credential keeps the
 algorithm it was enrolled with.
 
-**Consequence: no SHA-1 codes.** Use SHA-256 apps or tokens, or WebAuthn, which
+**Consequence: no SHA-1 codes.** Use SHA-256 authenticator apps or tokens, or
+WebAuthn, which
 is unaffected: passkeys are ECDSA P-256 or RSA with SHA-256, and pass cleanly. A
 YubiKey's Yubico OTP (`user assign-otp -yubico`) is unaffected too. Each OTP is
 one AES-128 block, decrypted inside the module, and it is checked under
@@ -127,7 +129,8 @@ authenticator as a second factor. It says how many, because none of them could
 finish signing in. Move them to a SHA-256 authenticator or a passkey, and remove
 the factor (`DELETE /admin/users/{id}/factors/totp`) first.
 
-While an organisation still enrols SHA-1 apps, its enrolment page says why it
+While an organisation still enrols SHA-1 authenticator apps, its enrolment page
+says why it
 cannot add one, instead of showing a secret no code could confirm. `signari
 doctor` warns as well.
 
@@ -186,7 +189,8 @@ authentication, instead of hash import, works.
 
 Imported hashes the module refuses fail with an error that says to reset the
 password. They are phpass and WordPress (MD5), MD5-crypt and Apache's apr1,
-yescrypt, and the LDAP `{SSHA}`, `{SHA}`, `{SMD5}` and `{MD5}` schemes. PBKDF2
+yescrypt, and the Lightweight Directory Access Protocol (LDAP) `{SSHA}`, `{SHA}`,
+`{SMD5}` and `{MD5}` schemes. PBKDF2
 imports with SHA-1 or a salt shorter than 128 bits, as many Django salts are,
 fail the same way.
 
@@ -245,8 +249,8 @@ were:
 - An opaque access token's handle.
 - A refresh token's successor, kept for a client with a retry window.
 - A wallet presentation waiting for the browser.
-- The AES-GCM step of reading an encrypted assertion from an upstream SAML
-  provider.
+- The AES-GCM step of reading an encrypted assertion from an upstream Security
+  Assertion Markup Language (SAML) provider.
 
 All four were added after the October measurement above, and each was opt-in, so
 it did not show. They now let the module make the nonce, in the same stored
@@ -254,7 +258,7 @@ layout. Tests re-run themselves under `fips140=only` to seal and open them.
 
 ### SAML assertion encryption — `internal/saml`
 
-Security Assertion Markup Language (SAML) assertion encryption had two problems,
+SAML assertion encryption had two problems,
 and both are now resolved. The package still fails its tests under
 `fips140=only`, though, because those tests cover the default configuration as
 well as the FIPS one. Encrypted SAML **works** under FIPS; it has to be

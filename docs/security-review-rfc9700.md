@@ -223,7 +223,7 @@ the single signature, embedded key material and the kid/alg pinning, and **not
 `typ`**. Every other path checks it.
 
 That function reads an `id_token_hint` at the end-session endpoint. Its answer
-decides which client's registered post-logout URIs apply, and whether the sign-out
+decides which client's registered `post_logout_redirect_uri` values apply, and whether the sign-out
 confirmation prompt is skipped. RP-Initiated Logout accepts a verified hint in
 place of asking the person. So any token Signari signed whose claims unmarshal
 into `IDTokenClaims` was accepted as an ID token.
@@ -308,7 +308,8 @@ attacks by construction, not by a check that could be forgotten.
 
 - **No request object is fetched from a URL.** `request_uri_parameter_supported`
   is false, because we fetch no remote request object — an SSRF surface we
-  decline to open. The only `request_uri` accepted is a PAR handle, which is an
+  decline to open. The only `request_uri` accepted is a Pushed Authorization
+  Requests (PAR) handle, which is an
   opaque database reference and not a URL. RFC 9126 §5 confirms `false` is the
   correct advertisement for a PAR-supporting server; the metadata comment says
   so. Since November 2026 an inline `request` JWT is taken, signed by a key the
@@ -320,7 +321,8 @@ attacks by construction, not by a check that could be forgotten.
   act on. Forward auth does no path-based authorization whatsoever: it verifies a
   session-bound cookie and sets identity headers, and the protected application
   authorizes for itself.
-- **SAML source trust keys are explicit PEM configuration**
+- **Security Assertion Markup Language (SAML) source trust keys are explicit PEM
+  configuration**
   (`internal/delegated`, `internal/saml/inbound.go`), never lifted from imported
   metadata where a `use` attribute could quietly disable verification. Unsolicited
   IdP-initiated responses are refused unless `AllowUnsolicited` is set for that

@@ -20,6 +20,10 @@ standard asks for by name.
 
 ## Cryptography (V11.1)
 
+Each row names a use, the cryptography it gets, and where to check it. The seed of
+a time-based one-time password (TOTP) is among the values sealed under the root
+key.
+
 | Use | What | Where |
 |---|---|---|
 | Signing tokens | ES256 by default, RS256 always available. ES384, ES512, RS384, RS512, PS256, PS384, PS512 and EdDSA by choice. Symmetric algorithms are refused everywhere, by test | `engine/internal/keys/keys.go` |
@@ -60,8 +64,9 @@ token's `amr` claim. That claim is what a policy can require or refuse: see
 | An external factor | What that service asserts | What it is registered with |
 
 No sign-in goes through the password form for `ldap`, `radius` or the `jwt-bearer`
-grant. Each has a page of its own: [LDAP](ldap.md), [RADIUS](radius.md) and [the
-jwt-bearer grant](jwt-bearer.md).
+grant. Each has a page of its own: [Lightweight Directory Access Protocol
+(LDAP)](ldap.md), [Remote Authentication Dial-In User Service (RADIUS)](radius.md)
+and [the jwt-bearer grant](jwt-bearer.md).
 
 ## Sessions (V7.1)
 
@@ -74,8 +79,8 @@ jwt-bearer grant](jwt-bearer.md).
 
 Sessions are rows, read on every request and never cached, so ending one takes effect
 at once. A person signed in through a provider has a session here whose life is this
-table's, not the provider's. The exception is when the provider says by back-channel
-logout that the session has ended: see [federated sign-in
+table's, not the provider's. The exception is when the provider says, by
+OpenID Connect Back-Channel Logout, that the session has ended: see [federated sign-in
 providers](social-login.md). Every session ends through one function, by test
 (`TestEverySessionEndsThroughTerminateSessions`).
 

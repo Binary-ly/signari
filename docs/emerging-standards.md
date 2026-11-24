@@ -16,6 +16,10 @@ specification was reviewed and what the review found. Most findings came from
 
 ## The specifications
 
+Several build on the JSON Web Token (JWT), such as Selective Disclosure JWT
+(SD-JWT). Others are User-Managed Access (UMA) and, in the later sections,
+Client-Initiated Backchannel Authentication (CIBA).
+
 | package | specification | version and status | currency verified | reviewed in depth |
 |---|---|---|---|---|
 | `internal/authzen` | AuthZEN Authorization API | **1.0 Final**, 11 Jan 2026 | yes | **yes** — one conformance defect; re-verified Aug 2026 against the Final text: all five §10.1 endpoints at their default paths, and the §6.2 deny wire format now pinned |
@@ -30,7 +34,8 @@ specification was reviewed and what the review found. Most findings came from
 | — | FAPI 2.0 Security Profile | **Final**, 22 Feb 2025, no errata | yes | **yes** — two MUST-level defects |
 
 Ten specifications. All ten currency-verified against the publisher, and all ten
-now put through a full review-and-mutate pass. The last three — OID4VCI, OpenID
+now put through a full review-and-mutate pass. The last three — OpenID for
+Verifiable Credential Issuance (OID4VCI), OpenID
 Federation and SSF — were the ones that had been reviewed by reading only, and
 mutating them found eight untested guarantees that reading had passed over,
 including the two below.
@@ -159,7 +164,9 @@ gained `omitempty` — turned out to be an instance of something general, so the
 whole tree was swept for it: every boolean serialised with `omitempty`, where
 `false` and "absent" mean different things to the receiver.
 
-Five sites. Four are correct by construction and one needed a test:
+Five sites, in the OpenID Connect (OIDC) metadata, the System for Cross-domain
+Identity Management (SCIM) client, the ID token and AuthZEN. Four are correct by
+construction and one needed a test:
 
 | Site | Verdict |
 |---|---|
@@ -328,8 +335,8 @@ worth noticing: nothing would fail if the tag were removed.
 
 **SSF** — 13 MUST NOTs. The sharp one for a transmitter is "New event types MUST
 use the top-level `sub_id` claim and MUST NOT use the `subject` field in the
-events claim". Signari defines no new event types. It emits the standard CAEP
-set, and for those its transmitter deliberately populates both keys with the same
+events claim". Signari defines no new event types. It emits the standard
+Continuous Access Evaluation Profile (CAEP) set, and for those its transmitter deliberately populates both keys with the same
 value, for pre-1.0 receiver compatibility. The same specification's §3.1.4
 permits that, and the receiver-side ambiguity check enforces that the two cannot
 disagree.
@@ -793,10 +800,11 @@ against current code in this pass:
   more than 10s in the future rejected, and a max-assertion-lifetime bound — the
   two MUSTs an earlier pass found broken in both directions and fixed.
 - **§5.4.1** client key-strength floors (RSA and EC minimums).
-- Sender-constraining conveyed via `cnf` (`jkt` for DPoP, `x5t#S256` for mTLS).
+- Sender-constraining conveyed via `cnf` (`jkt` for Demonstrating Proof of
+  Possession (DPoP), `x5t#S256` for mTLS).
 
-FAPI is a profile a deployment opts into. Its restrictions (confidential-only, PAR
-mandatory, sender-constrained-only) are profile modes a general-purpose identity
+FAPI is a profile a deployment opts into. Its restrictions (confidential-only,
+Pushed Authorization Requests (PAR) mandatory, sender-constrained-only) are profile modes a general-purpose identity
 provider correctly does not force by default. The two lifetime rules are ceilings
 Signari sits under, where holding them costs nothing.
 

@@ -12,7 +12,8 @@ released 30 May 2025. It was confirmed current from the project's own release
 list (the `latest` tag is a bleeding-edge build, not a release). Requirements were
 taken from the published CSV, not from a summary.
 
-ASVS 5.0 introduced a **new chapter, V10 "OAuth and OIDC"** — 36 requirements —
+OpenID Connect (OIDC) is the layer on OAuth 2.0 that says who signed in. ASVS 5.0
+introduced a **new chapter, V10 "OAuth and OIDC"** — 36 requirements —
 which is the first time this standard has covered an authorization server
 directly. Together with V9 "Self-contained Tokens" (7) that is 43 requirements
 aimed squarely at what this product is.
@@ -20,8 +21,7 @@ aimed squarely at what this product is.
 This page walks every one of them. Signari is an **authorization server and
 OpenID Provider**, and is also an **OIDC client** for social sign-in and inbound
 federation, so both sides apply. The OAuth-client sections apply only to that
-inbound path. OIDC is OpenID Connect, the layer on OAuth 2.0 that says who signed
-in. Later sections, dated from 21 August 2026, sweep the other chapters until all
+inbound path. Later sections, dated from 21 August 2026, sweep the other chapters until all
 345 requirements are covered.
 
 It is for an auditor or a security reviewer who needs the evidence behind each
@@ -208,7 +208,8 @@ would reintroduce the attack through the parameter meant to prevent it.
   closed V10.3.2 and V10.4.15. See
   [rich authorization requests](rich-authorization-requests.md).
 - **V10.4.13 and V10.4.14** are L3 requirements met as capabilities rather than
-  as mandates. Making PAR and sender-constrained tokens compulsory for every
+  as mandates. Making Pushed Authorization Requests (PAR) and sender-constrained
+tokens compulsory for every
   client is a deployment decision, not a code change, and forcing it would break
   every client that does not do them yet.
 
@@ -258,8 +259,8 @@ has to mean.
 
 ### V9.1.2, turned from a review into a standing check
 
-This engine parses signed tokens in eight places: access tokens, ID tokens, DPoP
-proofs, SSF events, federation trust chains, upstream OIDC, Apple client secrets,
+This engine parses signed tokens in eight places: access tokens, ID tokens,
+Demonstrating Proof of Possession (DPoP) proofs, SSF events, federation trust chains, upstream OIDC, Apple client secrets,
 `private_key_jwt`, ABCA attestations. Each passes its own allowlist to
 `jose.ParseSigned`, which is the right shape — the library makes the list
 mandatory, so it cannot be forgotten.
@@ -512,7 +513,7 @@ the point.
 
 MD5 appears in three places, each annotated at the call site:
 
-- **`radius/packet.go`** — RFC 2865 §5.2 specifies MD5 for the User-Password
+- **`radius/packet.go`** — RFC 2865 §5.2 specifies MD5 for the `User-Password`
   keystream and RFC 3579 §3.2 specifies HMAC-MD5 for Message-Authenticator.
   Neither is optional: an access point that expects RFC 2865 will not interoperate
   with anything else. HMAC-MD5 is also not affected by the collision attacks that
@@ -585,8 +586,8 @@ address.
 
 - ~~**V6.6.2** — codes bound to the *original authentication request*~~ —
   **met, November 2026** (`specs/asvs-5.0.0.txt:2528-2530`). Codes were bound to
-  the **user**, so one issued during one sign-in could be spent in another, and an
-  LDAP bind or the desktop sign-in took a texted or emailed code sent for a
+  the **person**, so one issued during one sign-in could be spent in another, and a
+  Lightweight Directory Access Protocol (LDAP) bind or the desktop sign-in took a texted or emailed code sent for a
   browser's sign-in. Now the sign-in's pending token names an attempt, and the
   hash of that attempt is kept beside the emailed or texted code. A password reset
   uses its link as the attempt, and an emailed first-factor code uses the request
@@ -1061,7 +1062,7 @@ All six now call `htmlPageHeaders`.
 ### The pages that must NOT use the helper, and why that is written down
 
 Four pages exist to leave this origin: the SAML POST binding, `form_post`,
-WS-Federation and front-channel logout. `htmlPageHeaders` sets `form-action 'self'`
+WS-Federation and Front-Channel Logout. `htmlPageHeaders` sets `form-action 'self'`
 and no `script-src`, which would stop each from doing the one thing it is for.
 
 So they do not use it, and `renderBare` takes their policy as a parameter. It used
@@ -1454,7 +1455,8 @@ Three mechanisms were standing in for the token, and two of them are sound:
 - **`SameSite=Lax`** — the session cookie is not sent on a cross-site POST at
   all, so such a request arrives unauthenticated.
 - **WebAuthn's own origin binding** — a page on another origin cannot produce a
-  credential or an assertion for this relying party's ID; the browser enforces it.
+  credential or an assertion for Signari's relying party ID; the browser enforces
+  it.
 - **`corsNone` for these paths** — a cross-origin `fetch` gets no
   `Access-Control-Allow-Origin` and is refused at preflight.
 
@@ -1508,7 +1510,7 @@ the engine's wiring. Read fresh, not trusted from the prior tally.
   to every policy, and `htmlPageHeaders` gives every directly-written HTML response
   a CSP + `Cache-Control: no-store` + framing refusal. The `form_post` bridge keeps
   its per-response nonce. Intact.
-- **V6/login CSRF.** `POST /login` is `rateLimitedLogin`, which calls `checkCSRF(r)`
+- **V6/sign-in CSRF.** `POST /login` is `rateLimitedLogin`, which calls `checkCSRF(r)`
   **before** the rate limiter (so a forged cross-site post cannot spend a victim's
   rate budget), and `renderLoginStatus` mints the token into the form. The gate is
   in the caller, not `handleLoginPost` — verified after a false alarm from reading

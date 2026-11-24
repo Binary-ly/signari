@@ -57,7 +57,7 @@ percent-encodes the RelayState it appends. It is the same class as the other
 eleven.
 
 Checking it did surface something real, though: `RelayState` was bounded on the
-single sign-on (SSO) path and not on the single logout (SLO) path. That mattered
+single sign-on (SSO) path, and not on the Single Logout (SLO) path. That mattered
 little while every response went out as a form field. It matters now that it goes
 in a URL. Browsers and proxies silently truncate an oversized value there, and the
 provider then receives a RelayState it never sent. It is now bounded at the
@@ -65,7 +65,7 @@ specification's 80 bytes on both.
 
 Two of the first run's findings were **real** and are fixed:
 
-**G124 — CSRF cookie was not `HttpOnly`**. A cross-site request forgery (CSRF)
+**G124 — cross-site request forgery (CSRF) cookie was not `HttpOnly`**. A CSRF
 token is sometimes kept in a readable cookie, so that a script can copy it into a
 header. Nothing here does: the token is rendered into the form server-side. So
 script access bought nothing and cost real defence. A cross-site scripting (XSS)

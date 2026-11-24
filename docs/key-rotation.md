@@ -175,9 +175,9 @@ Passive keys must stay published for 24h0m0s (the 24h0m0s floor for token lifeti
 
 A passive key's "dwell" is how long it stays published after it stops signing.
 24 hours is a **floor**, derived from token lifetimes. Access and ID tokens live
-five minutes. "Logout tokens", which tell an application a session has ended, and
-security event tokens live less. Refresh tokens are opaque: they are looked up by
-hash, never signed.
+five minutes. A "logout" token, which tells an application that a session has
+ended, lives less, and so does a security event token. Refresh tokens are opaque:
+they are looked up by hash, never signed.
 
 OpenID for Verifiable Credential Issuance (OID4VCI) broke that reasoning. A
 verifiable credential is signed with the same `oidc` key. Its lifetime is an

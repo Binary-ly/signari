@@ -105,8 +105,8 @@ shipped, because **it cannot work**. When somebody types a wrong code, there is 
 record to charge it to, since Signari cannot know which one they were aiming at.
 
 It would have been a column nothing increments and a function nothing calls. That
-is the exact defect this project keeps finding in itself, as
-`security-scanning.md` describes.
+is the exact defect this project keeps finding in itself, as [security
+scanning](security-scanning.md) describes.
 
 ## What is checked, in what order
 

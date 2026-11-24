@@ -1,10 +1,10 @@
-# Proving back-channel logout works
+# Proving sign-out works
 
 ## Introduction
 
 When Ada signs out, Signari tells each of her applications from server to server.
 It sends a signed token, the `logout_token`, to an address the application
-registered. This is OpenID Connect's "back-channel logout", described in [signing
+registered. This is OpenID Connect's Back-Channel Logout, described in [signing
 out](logout.md). If an
 application accepts that token without checking it, the session it was meant to
 end lives on, and nobody notices.
@@ -24,16 +24,16 @@ signari logout-test -rp-url https://app.example.com/backchannel-logout \
 ```
 
 In this example, `-rp-url` is the address the application registered for
-back-channel logout, its `backchannel_logout_uri`. When you leave out `-issuer`,
+Back-Channel Logout, its `backchannel_logout_uri`. When you leave out `-issuer`,
 the command uses the issuer in `SIGNARI_ISSUER`.
 
-## The check everyone runs, and why it proves nothing
+## The obvious check, and why it proves nothing
 
-Back-channel logout is the part of OpenID Connect (OIDC) that most often does not
-work, and it fails silently in both directions. The identity provider records a
-200 and considers the session ended. The application returns that 200 from a
-handler that parsed nothing, verified nothing and deleted nothing. Every
-dashboard is green, and the session is still alive.
+Back-Channel Logout is a part of OpenID Connect (OIDC) that fails silently, in both
+directions. The identity provider records a 200 and considers the session ended.
+The application returns that 200 from a handler that parsed nothing, verified
+nothing and deleted nothing. Every dashboard is green, and the session is still
+alive.
 
 Delivering a valid `logout_token` and getting a 200 back is therefore close to
 meaningless. An endpoint that returns 200 unconditionally passes it.
@@ -48,13 +48,13 @@ way:
 
 | Probe | What accepting it means |
 |---|---|
-| wrong audience | any client's logout token ends this application's sessions |
+| wrong audience | any client's `logout_token` ends this application's sessions |
 | wrong issuer | a token from another identity provider ends sessions here |
-| no `events` claim | an ID token can be replayed as a logout |
-| `events` without the logout event | a token for some other event ends a session |
+| no `events` claim | an ID token can be replayed as a sign-out |
+| `events` without the Back-Channel Logout event | a token for some other event ends a session |
 | contains a `nonce` | prohibited precisely so an ID token cannot be presented as one |
 | expired | the replay window never closes |
-| neither `sub` nor `sid` | success is reported for a logout that ended nothing |
+| neither `sub` nor `sid` | success is reported for a sign-out that ended nothing |
 | broken signature | anyone who can reach the endpoint can end any session |
 | replayed `jti` | a captured token can be used again |
 
@@ -64,8 +64,7 @@ the token itself.
 
 ## What it looks like
 
-An application that returns 200 to everything, as a great many of them do, gets
-this result:
+An application that returns 200 to everything gets this result:
 
 ```
   [ok  ] a valid logout token               HTTP 200
@@ -103,8 +102,8 @@ to assume otherwise.
 
 The command signs its tokens with the instance's own active signing key. RS256
 (RSA with SHA-256) is preferred, falling back to ES256 (ECDSA with SHA-256). See
-[key rotation](key-rotation.md) for both.
+[rotating signing keys](key-rotation.md) for both.
 
-A back-channel logout endpoint is exactly the kind of lightly-maintained code path most likely
-to support only RS256. Testing with a key it cannot verify would report a failure
+A Back-Channel Logout endpoint is often a lightly maintained code path, and it may
+support only RS256. Testing with a key it cannot verify would report a failure
 that is Signari's rather than the application's.

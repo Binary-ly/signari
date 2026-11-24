@@ -144,7 +144,7 @@ Signari also checks each of these in Duo's answer:
 | | |
 |---|---|
 | algorithm | fixed at HS512, never read from the header — `alg: none` is refused |
-| issuer | `https://<api-host>/oauth/v1/token`; another Duo tenant is not ours |
+| issuer | `https://<api-host>/oauth/v1/token`; another Duo account is not ours |
 | audience | this integration's client id |
 | expiry | required — a token with no `exp` would be a permanent second factor |
 | `auth_result.status` | a `deny` from Duo is a refusal, not a successful exchange |
@@ -171,7 +171,7 @@ so an accepted token is two implementations agreeing:
 |---|---|
 | password → Duo | 303 to the prompt, challenge recorded, **no session yet** |
 | callback | `acr: 2`, `amr: [pwd, mfa]`, `mfa.duo_succeeded` audited |
-| Duo answers about another user | 400, no session |
+| Duo answers about another person | 400, no session |
 | Duo is down, fail closed | 400, honest message |
 | Duo is down, fail open, no other factor | signed in, `amr: [pwd]` only |
 | keys checked at `duo set` | wrong secret refused before anything is stored |

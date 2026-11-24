@@ -78,11 +78,11 @@ starting with the name in the clear.
 This was measured in November 2026, with the engine holding two keys, and a
 client that read the ClientHello off the wire through a relay:
 
-| Client's configuration | On the wire | The server saw | Result |
+| Client's configuration | On the wire | Signari saw | Result |
 |---|---|---|---|
 | The published key's | the public name | the real name | ECH accepted, TLS 1.3, discovery 200 |
 | The previous key's | the public name | the real name | ECH accepted |
-| A key the server does not hold | the public name | — | refused, retry configuration offered: exactly the published one |
+| A key Signari does not hold | the public name | — | refused, retry configuration offered: exactly the published one |
 | TLS 1.2, no ECH | the real name | — | `protocol version not supported` |
 
 The configuration encoder reads and writes RFC 9848's own example (Figure 1) byte

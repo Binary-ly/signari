@@ -40,8 +40,8 @@ them that no authorization code had been bound to a DPoP key.
 
 The mutual Transport Layer Security (TLS) variants have been run as well, with
 self-signed client certificates and with ones issued by a certificate authority
-(CA). They had the same one failure. `deploy/conformance/README.md` has the
-numbers and how to repeat them. The profile is not certified.
+(CA). They had the same one failure. [OIDF conformance
+testing](../deploy/conformance/README.md) has the numbers and how to repeat them. The profile is not certified.
 
 ## What a client has to be
 

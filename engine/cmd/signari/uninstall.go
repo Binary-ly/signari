@@ -448,7 +448,7 @@ func uninstallCmd(ctx context.Context, stdout, stderr io.Writer, h setupHost, f 
 	for i := range items {
 		it := &items[i]
 		if it.State != "planned" {
-			fmt.Fprintf(out, "  [kept] %s: %s\n", keptName(it), it.Note)
+			fmt.Fprintf(out, "  [kept] %s: %s\n", keptName(*it), it.Note)
 			continue
 		}
 		if it.Kind == "dir" && it.Value == filepath.Dir(path) {

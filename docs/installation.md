@@ -340,7 +340,7 @@ settings it needs.
 
 To check that the deployment is sound, run `signari doctor` with the same
 settings the server uses. It lists anything wrong, with how to fix it. See
-[doctor](doctor.md).
+[what doctor checks](doctor.md).
 
 ## Back up the root key
 
@@ -383,7 +383,7 @@ signari uninstall
 
 In this example, uninstall stops and disables the service and removes its unit,
 the environment file, the certificate copies and the certbot hook, the logs, the
-program and the `signari` system user. A directory goes once it is empty, so a
+program and the `signari` system account. A directory goes once it is empty, so a
 file you put there yourself keeps it.
 
 ### The root key and the database
@@ -411,9 +411,8 @@ signari uninstall -yes -delete-root-key -drop-database -confirm <code>
 ```
 
 > [!WARNING]
-> Deleting the root key and keeping the database leaves every secret in the
-> database unreadable for good. Uninstall then asks you to type a sentence
-> that says so, instead of a code.
+> Deleting the root key and keeping the database leaves its secrets unreadable
+> for good, so uninstall asks you to type a sentence saying so.
 
 What uninstall keeps stays listed in the manifest, so a later run can remove it.
 

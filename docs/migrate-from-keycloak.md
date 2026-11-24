@@ -6,19 +6,18 @@ When you move from Keycloak to Signari, you should not have to touch every
 application that signs people in through it. People should keep their passwords,
 and applications should keep their client secrets.
 
-`signari import keycloak` reads a Keycloak realm export, and writes it into one
-Signari organisation. A "realm" is Keycloak's word for an organisation. People keep
-their password hashes, and applications keep their client IDs, secrets and redirect
-URIs. So the move can be a Domain Name System (DNS) change, instead of a change to
-every application.
+`signari import keycloak` reads an export of one Keycloak "realm", Keycloak's word
+for an organisation, and writes it into one Signari organisation. People keep their
+password hashes, and applications keep their client IDs, secrets and redirect URIs.
+So the move can be a Domain Name System (DNS) change, instead of a change to every
+application.
 
-You export the realm on the Keycloak host, then run the import from the command
-line.
+You export on the Keycloak host, then run the import from the command line.
 
-## Export and import a realm
+## Export and import an organisation
 
-Export the realm on the Keycloak host, then preview the import with `-dry-run`
-before you run it:
+Export the organisation on the Keycloak host, then preview the import with
+`-dry-run` before you run it:
 
 ```sh
 # On the Keycloak host:
@@ -44,7 +43,10 @@ The point of importing a secret, rather than issuing a new one, is that the
 application does not have to be touched. Migration becomes a DNS change, instead of
 a change to every downstream application.
 
-The realm's other contents also come across:
+The export's other contents also come across. In this table, one-time passwords
+(OTP) are the codes from an authenticator: a time-based one-time password (TOTP)
+or a counter-based one (HOTP). Security Assertion Markup Language
+([SAML](saml.md)) is an older way for business software to sign people in.
 
 | In the realm | Here |
 |---|---|
@@ -55,10 +57,6 @@ The realm's other contents also come across:
 | Links to an upstream provider | Kept, where a provider with the same slug as the realm's alias is registered here first. A person whose only way in is such a link is imported with no password |
 | Attributes | Written where the organisation declares an attribute of that name |
 | SAML clients | Service providers, with the HTTPS ACS URLs and the NameID format (`email`, `persistent`, `transient`), and each person's persistent NameID (see below) |
-
-In this table, one-time passwords (OTP) are the codes from an authenticator: a
-time-based one (TOTP) or a counter-based one (HOTP). SAML is Security Assertion
-Markup Language, described in [SAML 2.0](saml.md).
 
 **Everything else is named in the report** under `not carried`, with the reason.
 The report names:
@@ -76,8 +74,8 @@ left behind and listed apart.
 
 A SAML client whose NameID format is `username` is skipped and named, not brought
 across as another format. Keycloak sends the username in that format, and no format
-here does. Every account at the service provider is keyed on the NameID. So another
-value would point them at a subject the provider has never seen.
+here does. Every account at the SAML application is keyed on the NameID. So another
+value would point them at a subject the application has never seen.
 
 A client that states no format is skipped too. Keycloak sends such a client the
 format its request asks for. When the request asks for none, Keycloak sends the
@@ -90,15 +88,15 @@ changes at cutover, the application meets every person as a stranger, and makes
 them a second account. Three such values come across:
 
 - **The subject.** Keycloak sends the person's ID as `sub`, and an account here
-  sends its own ID. An imported person is given the realm's ID as theirs.
-- **The passkey user handle.** An authenticator returns the handle a passkey was
-  registered under. Both kinds of sign-in refuse a passkey whose handle is not the
-  account's. Keycloak registers a passkey under the person's ID. An imported person
+  sends its own ID. An imported person is given the ID Keycloak gave them as theirs.
+- **The passkey's handle.** An authenticator returns the handle (`userHandle`) a
+  passkey was registered under. Both kinds of sign-in refuse a passkey whose handle
+  is not the account's. Keycloak registers a passkey under the person's ID. An imported person
   with passkeys is given that handle.
 - **The persistent NameID.** Keycloak keeps the NameID each SAML client knows a
   person by in the attribute `saml.persistent.name.id.for.<client>`, or
-  `saml.persistent.name.id.for.*` for every client. Each one is kept for the
-  service provider here that is sent persistent NameIDs.
+  `saml.persistent.name.id.for.*` for every client. Each one is kept for the SAML
+  application here that is sent persistent NameIDs.
 
 Each of these is kept only when nobody here holds it. A person already here,
 matched by address, keeps the ID they have. They take the handle only if none of
@@ -153,7 +151,7 @@ Keycloak calls the client credentials grant **"service accounts"**
 (`serviceAccountsEnabled`). A client may have it alongside the browser flow, or on
 its own.
 
-The importer read that field off the realm export and dropped it. Every imported
+The importer read that field off the export and dropped it. Every imported
 client was written with `grant_types` hardcoded to `authorization_code` +
 `refresh_token`. Two cases came out wrong, in opposite directions:
 

@@ -21,6 +21,23 @@ and its entry says how.
 - A batch's walks take their first level from the rows of the step they share, so a
   hundred documents in one deep folder cost that step and one walk up the folders:
   46 to 162 batches a second at one client.
+- **A CLI write and an Admin API write at once no longer deadlock.** The operator CLI
+  took the configuration version's row after the rows it wrote; the Admin API,
+  `signari apply` and an SSF receiver changing its stream take it before. So a
+  command and an API write to the same client, provider or organisation, or adding
+  two people to one organisation, could each hold what the other waited for, and
+  PostgreSQL ended one of them a second later: a 500 from the API, or a failed
+  command. Every CLI write now takes the version's row first. Migration 0307 runs
+  the version's trigger before each statement rather than after it, and in a CLI
+  session the audit trail's append takes the row before its own lock. The commands
+  that lock a row by reading it before they write take the row themselves.
+- Migration 0307 is not compatible with the release before, since it changes the
+  triggers on tables that release writes: stop it before migrating, as
+  `docs/schema-versions.md` says, and keep the backup `docs/upgrading.md` asks for,
+  which is the way back.
+- An SSF verification refused for coming too soon says in `Retry-After` how long its
+  window has left, not the whole 30 seconds, and `docs/ssf-caep.md` says how the
+  windows fall.
 
 ## v0.1.0 — 2026-11-22
 

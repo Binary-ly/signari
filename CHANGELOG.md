@@ -35,6 +35,21 @@ and its entry says how.
 - The compose stack's engine serves as `signari_engine`, with a password an init
   script gives it on a fresh volume; a volume made before needs it set once, as
   `deploy/postgres-init/20-engine-role.sh` says.
+- **pgx 5.13.0**, past two advisories against the PostgreSQL driver: SQL injection in
+  simple-protocol batches (GHSA-j38q-h3ph-jjpq, before 5.12.0) and `require_auth` /
+  `channel_binding` enforcement skipped by a server that omits AuthenticationOk
+  (GHSA-95fj-3fxw-g62g). Neither path was in use: the engine's queries do not run in
+  the simple protocol, which `signari doctor` reports as critical, and nothing sets
+  `require_auth`. **Check your `SIGNARI_DSN`**: pgx now parses connection strings as
+  libpq does, so in a URL a `+` in a query value is a literal plus, a repeated parameter
+  takes its last value, and an IPv6 host must be in brackets.
+- **go-ldap 3.4.15 refuses a malformed filter** it used to repair silently, such as an
+  unclosed `(&(a=b)x`. An LDAP directory source whose user filter (`-filter`) was
+  malformed now fails its sync with the parser's error, instead of searching with a
+  different filter than the one written.
+- Also cbor 2.10.0 (stale map entries after a null key or value), etree 1.8.1,
+  maxminddb 2.9.1 (a crafted database could exhaust memory), and the operator's
+  Kubernetes libraries (0.37.2) and controller-runtime (0.25.3).
 - **Releases are signed.** `.github/workflows/release.yml` rebuilds each published
   release from its tag and, only if the binary comes out byte-identical, signs the
   binary and its SBOM with cosign and records SLSA build provenance. v0.1.0 was

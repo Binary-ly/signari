@@ -42,13 +42,13 @@ GSS-API Negotiation Mechanism (SPNEGO).
 | Module | Version | What it does | Why it is trusted |
 |---|---|---|---|
 | `github.com/go-jose/go-jose/v4` | v4.1.9 | JOSE: JWS, JWE, JWK | the reference Go JOSE library, maintained by the go-jose org after the Square handover; the crypto this whole product rests on |
-| `github.com/jackc/pgx/v5` | v5.10.0 | PostgreSQL driver | the de-facto Go Postgres driver; parameterized queries are its default idiom |
+| `github.com/jackc/pgx/v5` | v5.13.0 | PostgreSQL driver | the de-facto Go Postgres driver; parameterized queries are its default idiom |
 | `github.com/go-webauthn/webauthn` | v0.18.2 | WebAuthn ceremonies | the maintained successor to duo-labs/webauthn |
-| `github.com/fxamacker/cbor/v2` | v2.9.4 | CBOR, for an ISO mdoc presented over OID4VP and its COSE signatures | already in the graph through the WebAuthn module, whose attestations are CBOR; named directly by `internal/oid4vp` since the mdoc verifier, where it decodes with duplicate map keys refused and nesting, arrays and maps bounded (`mdoc.go`) |
+| `github.com/fxamacker/cbor/v2` | v2.10.0 | CBOR, for an ISO mdoc presented over OID4VP and its COSE signatures | already in the graph through the WebAuthn module, whose attestations are CBOR; named directly by `internal/oid4vp` since the mdoc verifier, where it decodes with duplicate map keys refused and nesting, arrays and maps bounded (`mdoc.go`) |
 | `github.com/eclipse-keypont/crypto11` | v1.6.8 | PKCS#11 keys as `crypto.Signer`, for signing keys in a hardware module | compiled only into the `pkcs11` build (`-tags pkcs11`, cgo), so the default binary carries none of it. Thales wrote it, and it moved to this path from `github.com/ThalesGroup/crypto11`, whose `go.mod` at v1.6.7 says so; it brings `github.com/miekg/pkcs11`, the binding to the C interface, `github.com/thales-e-security/pool` and `github.com/pkg/errors`, all three in that build alone |
-| `github.com/beevik/etree` | v1.7.0 | XML tree, for SAML | used only after `scanForUnsafeConstructs` has refused DOCTYPE and comments |
+| `github.com/beevik/etree` | v1.8.1 | XML tree, for SAML | used only after `scanForUnsafeConstructs` has refused DOCTYPE and comments |
 | `github.com/russellhaering/goxmldsig` | v1.6.1 | XML signatures | the standard Go XML-DSig implementation |
-| `github.com/go-ldap/ldap/v3` | v3.4.14 | LDAP **client**, for directory sync | our LDAP *server* is written here; this is only the outbound side |
+| `github.com/go-ldap/ldap/v3` | v3.4.15 | LDAP **client**, for directory sync | our LDAP *server* is written here; this is only the outbound side |
 | `github.com/go-asn1-ber/asn1-ber` | v1.5.8 | BER encoding | transitive requirement of the LDAP client, also used by our server |
 | `github.com/jcmturner/gokrb5/v8` | v8.4.4 | Kerberos / SPNEGO | the only maintained pure-Go Kerberos implementation |
 | `github.com/jcmturner/goidentity/v6` | v6.0.1 | identity type used by gokrb5 | comes with the above |
@@ -56,7 +56,7 @@ GSS-API Negotiation Mechanism (SPNEGO).
 | `github.com/jcmturner/gofork` | v1.7.6 | ASN.1 for Kerberos messages | required by gokrb5; named directly only by a Kerberos test |
 | `github.com/google/uuid` | v1.6.0 | UUID parsing | checks that an imported subject or an organisation id is a canonical UUID |
 | `github.com/openwall/yescrypt-go` | v1.0.0 | yescrypt (`$y$`) verification | the scheme author's own Go module, held to libxcrypt's output by `yescrypt_test.go`; verifies hashes imported from `/etc/shadow`, which are rehashed on a successful sign-in |
-| `github.com/oschwald/maxminddb-golang/v2` | v2.5.0 | GeoIP database reader | reads an administrator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
+| `github.com/oschwald/maxminddb-golang/v2` | v2.9.1 | GeoIP database reader | reads an administrator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
 | `go.opentelemetry.io/otel` | v1.47.0 | OpenTelemetry API: attributes, propagation, semantic conventions | the OpenTelemetry project; imported by `internal/tracing` alone, which a test holds |
 | `go.opentelemetry.io/otel/trace` | v1.47.0 | OpenTelemetry tracing API | as above |
 | `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |

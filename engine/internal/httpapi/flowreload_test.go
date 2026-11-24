@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"signari.dev/engine/internal/flow"
 )
@@ -31,6 +32,7 @@ func (failedRows) Scan(...any) error                            { return nil }
 func (failedRows) Values() ([]any, error)                       { return nil, nil }
 func (failedRows) RawValues() [][]byte                          { return nil }
 func (failedRows) Conn() *pgx.Conn                              { return nil }
+func (failedRows) TypeMap() *pgtype.Map                         { return nil }
 
 type failingReader struct{}
 

@@ -1,9 +1,17 @@
 # Admin API reference
 
-Generated from [admin-openapi.json](admin-openapi.json), which the router draws, by
-`engine/internal/sdkgen`; do not edit it by hand. What each operation is for, and the
-rules around it, are in [admin-api.md](admin-api.md). Every write takes `If-Match` and is
-refused with `412` when the configuration moved since the version it names.
+## Introduction
+
+This page lists every operation of the Admin API, with the scope it needs, the
+fields it takes and the fields it answers. It is generated from [the published
+OpenAPI document](admin-openapi.json), which the router draws, by
+`engine/internal/sdkgen`, so do not edit it by hand.
+
+What each operation is for, and the rules around it, are in [the Admin
+API](admin-api.md). Every write takes `If-Match` and is refused with `412` when the
+configuration moved since the version it names.
+
+## Sections
 
 | Section | Operations |
 |---|---|

@@ -242,7 +242,7 @@ cases give the groups a person ends up in, nesting included.
 ## Where it is asked
 
 The policy is asked at every way into an application, keyed by its client ID or
-its SAML entity ID. The table names some grants by their abbreviations:
+its Security Assertion Markup Language (SAML) entity ID. The table names some grants by their abbreviations:
 Client-Initiated Backchannel Authentication ([CIBA](ciba.md)), User-Managed
 Access ([UMA](uma.md)) and OpenID for Verifiable Credential Issuance
 ([OID4VCI](oid4vci.md)). An RPT is UMA's requesting party token. The policy is
@@ -308,7 +308,7 @@ tests:
 ```
 
 Suppose a server needs such a grant for an application restricted by network.
-Put the restriction in a rule for the client the browser uses, and give the
+Put the restriction in a rule for the client the browser uses, and give that
 server a client of its own. Here "client" is the protocol's word for an
 application's registration.
 

@@ -281,7 +281,7 @@ SAML's "Single Logout" carries a sign-out between Signari and an upstream, in
 either direction. A SAML "binding" is the way a message travels, such as a
 browser redirect.
 
-Single Logout needs a sign-out address and a signing key. The sign-out address
+It needs a sign-out address and a signing key. The sign-out address
 is read from the upstream's metadata, or set with
 `signari idp logout -slug corp -url <its SingleLogoutService>`. With both,
 sign-out goes both ways on the HTTP-Redirect binding.

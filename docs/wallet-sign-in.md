@@ -6,12 +6,16 @@ Some people carry digital credentials in a wallet on their phone, such as an
 identity card or a mobile driving licence. A person can sign in with a
 credential from their digital identity wallet.
 
-Signari acts as a "verifier" under OpenID for Verifiable Presentations 1.0
-([OpenID4VP](glossary.md#openid4vp)). It asks the wallet for one credential,
+Signari acts as a "verifier" under OpenID for Verifiable Presentations
+([OpenID4VP](glossary.md#openid4vp)) 1.0. It asks the wallet for one credential,
 checks what comes back, and signs in the person a claim of that credential
-identifies. The credential is one SD-JWT VC or one ISO mdoc, such as a mobile
-driving licence ([below](#an-iso-mdoc)). An SD-JWT VC is built on a Selective
-Disclosure JSON Web Token ([SD-JWT](glossary.md#sd-jwt)).
+identifies.
+
+The credential is one of two kinds. The first is built on a JSON Web Token (JWT)
+whose holder can reveal some claims and keep others hidden. That is a Selective
+Disclosure JWT ([SD-JWT](glossary.md#sd-jwt)), and the credential is an SD-JWT
+VC. The second is an ISO mdoc, such as a mobile driving licence
+([below](#an-iso-mdoc)).
 
 You set it up with `signari idp add -kind oid4vp`, or through the
 [Admin API](admin-api.md).

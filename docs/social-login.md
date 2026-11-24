@@ -234,7 +234,7 @@ asks for one in Signari or is refused.
 
 A provider that supports OpenID Connect
 [Back-Channel Logout](glossary.md#back-channel-logout) can tell Signari when a
-person signs out there. It sends a "logout token", a signed message naming the
+person signs out there. It sends a `logout_token`, a signed message naming the
 person, to this address:
 
 ```
@@ -244,14 +244,15 @@ https://<issuer>/login/callback/<slug>/backchannel-logout
 At the provider, Signari is registered as an application. Register that address
 as the application's back-channel logout URI.
 
-A valid logout token ends every session the person has in Signari. A session
+A valid `logout_token` ends every session the person has in Signari. A session
 does not record which provider it came through. And a person signed out at the
 provider who keeps a session in Signari is what this exists to stop.
 
 It is a `POST` from the provider, with no cookie and no person present, so the
 token is the whole of the authentication. Its signature is always checked
 against the provider's own keys. It must name Signari's application, and carry the
-logout event, a `jti`, no `nonce`, and an `iat` under five minutes old. The `jti`
+`http://schemas.openid.net/event/backchannel-logout` event, a `jti`, no `nonce`,
+and an `iat` under five minutes old. The `jti`
 is the token's unique identifier, and the `iat` is the time it was issued. A
 provider with no fixed issuer cannot use it.
 

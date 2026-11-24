@@ -68,7 +68,7 @@ key has been destroyed by an [erasure](erasure.md).
 A credential appears as being there, never as its value. These are left out:
 
 - the hash of a password, of a session cookie, or of a recovery or one-time code;
-- a sealed authenticator-app secret;
+- a sealed secret for an authenticator application;
 - the wrapped key itself.
 
 `withheld` names each column left out of each table.
@@ -80,7 +80,7 @@ the file ends up.
 
 The rule is by type rather than by list. Every binary column is withheld except
 public key material: a passkey's credential ID, public key and authenticator
-model, and the account's WebAuthn user handle.
+model, and the account's WebAuthn `userHandle`.
 
 A text column that holds a credential, such as a password hash, is withheld by
 name. A test fails when a column whose name sounds like a credential is neither

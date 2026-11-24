@@ -90,8 +90,9 @@ organisation's device authority:
 SIGNARI_DEVICE_CA=/etc/signari/device-ca.pem
 ```
 
-The device presents a [mutual TLS](glossary.md#mutual-tls) (mTLS) certificate
-issued by the organisation's device authority. The private key lives on the
+The device presents a certificate over mutual Transport Layer Security (TLS),
+often written [mTLS](glossary.md#mutual-tls). The certificate is issued by the
+organisation's device authority. The private key lives on the
 machine, usually in hardware. Somebody who knows a header name cannot copy it
 into a request.
 

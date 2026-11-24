@@ -930,8 +930,10 @@ dedicated one fail if the check is removed.
 ## Currency of the emerging standards, August 2026
 
 These were checked against the publishers rather than against notes, because a
-review is only as current as the text it was written from. SD-JWT VC is
-SD-JWT-based Verifiable Digital Credentials, built on [SD-JWT](glossary.md#sd-jwt):
+review is only as current as the text it was written from. One row is built on a
+JSON Web Token (JWT) with selective disclosure, a Selective Disclosure JWT
+([SD-JWT](glossary.md#sd-jwt)). It is SD-JWT VC, SD-JWT-based Verifiable Digital
+Credentials:
 
 | | version we implement | published | verdict |
 |---|---|---|---|

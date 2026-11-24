@@ -203,7 +203,7 @@ people went in, everyone else was removed, and the group kept everything it
 already granted.
 
 If you want an upstream group to reach an application, let the source create the
-group. Then [release](groups.md#release-is-an-allow-list-per-client) the group to
+group. Then [release](groups.md#release-is-an-allow-list-per-application) the group to
 the application.
 
 ### Two deliberate asymmetries with /Users
@@ -300,10 +300,10 @@ the same audit record, the same refusals.
   errors, and an operation that never ran has no line.
 - `version` is ignored, since ETags are not supported.
 
-## The enterprise user extension
+## The enterprise extension
 
 `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` is kept in the
-organisation's own [attributes for people](admin-api.md), so declare the ones you want
+organisation's own [attributes for people](admin-api.md#attributes-of-people), so declare the ones you want
 with `PUT /admin/organizations/{orgID}/attributes`:
 
 | Extension attribute | User attribute |

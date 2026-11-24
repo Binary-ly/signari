@@ -48,7 +48,7 @@ The first is long-lived and reusable. The second, the "proof of possession"
 once, offline, while the instance proves liveness on every call. It is also the
 reason `typ` matters so much, as described below.
 
-## Decisions we made that the draft leaves open
+## Decisions the draft leaves open
 
 **Symmetric attester keys are refused.** §4 permits an attestation to be "signed
 or integrity protected with a Message Authentication Code". Signari accepts

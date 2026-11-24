@@ -48,9 +48,6 @@ Level 3 added three signals:
 They are in [WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/), a Candidate
 Recommendation dated **26 May 2026**.
 
-## Who else implements it
-
-
 ## Conformance review against WebAuthn L3, August 2026
 
 This was reviewed against the specification's text. The dictionaries match

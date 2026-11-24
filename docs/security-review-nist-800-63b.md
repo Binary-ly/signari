@@ -51,7 +51,7 @@ every account may lower it to `MinLengthWithMFA`; one that does not, may not.
 Getting that wrong in the permissive direction means single-factor passwords below
 a SHALL. So the default is the number that is safe without knowing.
 
-## The second defect, which I introduced while fixing the first
+## The second defect, introduced while fixing the first
 
 §3.1.1.2 also says:
 

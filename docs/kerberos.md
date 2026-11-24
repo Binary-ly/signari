@@ -197,7 +197,7 @@ Admin API. A Kerberos realm registered before they existed has neither.
 Forwarding a ticket to the engine (GSS delegation) is not offered. A forwarded
 credential is a person's ticket-granting ticket, and nothing here would use one.
 
-## The three ways a realm is used
+## The three ways a Kerberos realm is used
 
 Signari can use a Kerberos realm in three ways:
 

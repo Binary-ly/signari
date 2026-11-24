@@ -37,7 +37,7 @@ change reaches them.
 Each is optional: none is contacted unless an administrator configures the
 feature.
 
-## Destinations the browser reaches — not the server
+## Destinations the browser reaches — not the engine
 
 Everything above is the engine opening a connection. This section is different.
 It is the **person's browser** fetching something from a third party, while they
@@ -65,8 +65,8 @@ version of it that lives here.
 
 What bounds it: a captcha is **off unless an administrator configures one**, and
 it is never on the sign-in path by default. The provider is the administrator's
-choice, including the choice not to have one. `docs/captcha.md` has the CSP each
-provider needs, which is also the list of who is being let in.
+choice, including the choice not to have one. [CAPTCHA](captcha.md) has the CSP
+each provider needs, which is also the list of who is being let in.
 
 **Nothing else on any page is off-origin.** No fonts, no analytics, no CDN
 scripts, no remote images. The thirty-three engine pages use a system font stack.
@@ -88,7 +88,7 @@ So a fourth default of the kind is refused by the browser, rather than found by
 reading. Every one of its 23 screens was swept in headless Chrome with no
 violation, and no request to another origin.
 
-## Operator-configured destinations
+## Destinations an administrator configures
 
 An administrator names these. That does not make them safe to dial wherever they
 point. A stored setting can be changed by anyone holding the right Admin API scope,

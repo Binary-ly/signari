@@ -131,7 +131,7 @@ all:
 ```
 
 A rule can name only an attribute the organisation has
-[declared](admin-api.md#user-attributes), and not one declared as `personal`.
+[declared](admin-api.md#attributes-of-people), and not one declared as `personal`.
 Storing a policy that names any other is refused. An undeclared name is a typo
 nobody could meet. A personal value is sealed under its subject's key, and would
 be opened for every decision.
@@ -312,7 +312,7 @@ Put the restriction in a rule for the client the browser uses, and give that
 server a client of its own. Here "client" is the protocol's word for an
 application's registration.
 
-## Verified against the running server
+## Verified against a running engine
 
 This is what a person saw under a rule requiring a `security-cleared` group:
 

@@ -1,4 +1,4 @@
-# Provisioning users out
+# Provisioning to other services
 
 ## Introduction
 
@@ -101,7 +101,7 @@ A filter that accidentally matches nothing produces a plan to deprovision
 everybody. That plan is identical to a correct plan for a company that has
 genuinely all left. Nothing in the data distinguishes them, so the limit does.
 
-## Accounts we did not create are never touched
+## Accounts Signari did not create are never touched
 
 A directory always contains accounts that Signari did not create, such as
 service accounts, contractors and the founder's original account. They are

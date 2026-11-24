@@ -145,7 +145,7 @@ Both members are `omitempty`, so an unbound token carries no `cnf` at all, rathe
 than an empty object. A resource server checking for the claim must not be told
 "yes, and it is blank".
 
-## Enforced at this server's own resources
+## Enforced at Signari's own resources
 
 A "resource server" is the protocol's word for an API that accepts tokens.
 RFC 8705 §3 puts the other half on the resource:

@@ -1,4 +1,4 @@
-# Extending the engine
+# Extending Signari with your own service
 
 ## Introduction
 

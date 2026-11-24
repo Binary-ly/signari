@@ -47,7 +47,7 @@ Signari answers SAML at these addresses:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /saml/metadata` | what the service provider imports |
+| `GET /saml/metadata` | what the application imports |
 | `GET /saml/sso` | HTTP-Redirect binding |
 | `POST /saml/sso` | HTTP-POST binding |
 | `POST /saml/artifact` | the artifact resolution service, SOAP; see [the Artifact binding](#the-artifact-binding) |
@@ -488,7 +488,7 @@ Rule 2 is the one that stops classic wrapping. Its test uses distinct IDs on
 purpose, so that the duplicate-ID rule cannot be what passes it. Without rule 2,
 that document has one valid signature and no duplicate IDs, and it is accepted.
 
-### Service providers with an EC key
+### Applications with an EC key
 
 A provider whose certificate holds a P-256 elliptic-curve (EC) key can sign with
 `ecdsa-sha256`, on either binding. The signature value is r and s as two 32-byte
@@ -576,7 +576,7 @@ signari saml add-sp ... -slo https://sp.test/slo -slo-binding HTTP-POST
 ```
 
 `HTTP-Artifact` is the third binding; see [sign-out by
-artifact](#logout-by-artifact). A provider that registered both is answered on
+artifact](#sign-out-by-artifact). A provider that registered both is answered on
 whichever binding it used.
 
 The redirect-bound response was checked with **openssl**, against the certificate
@@ -685,7 +685,7 @@ Nothing here can make the values unique. Two people who share a value share an
 account at that provider. Set it before people sign in, or expect them to arrive
 there as new accounts.
 
-## What a service provider asks of the sign-in
+## What an application asks of the sign-in
 
 An application can ask how strongly the person signed in, with
 `RequestedAuthnContext`. It is held to the session on every request, as
@@ -822,7 +822,7 @@ is what happens to one:
   requests has to sign the `AuthnRequest` itself, as on the POST binding. A
   signature on the answer around it does not count.
 
-### Logout by artifact
+### Sign-out by artifact
 
 A sign-out can go both ways by artifact. A provider's `LogoutRequest` or
 `LogoutResponse` comes as `SAMLart` to the sign-out service. It is fetched from the

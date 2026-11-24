@@ -1,4 +1,4 @@
-# Logout
+# Signing out
 
 ## Introduction
 

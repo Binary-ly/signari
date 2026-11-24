@@ -239,7 +239,7 @@ content_type:  application/secevent+jwt
 body:          eyJhbGciOiJFUzI1NiIs...   (ES256-signed SET)
 ```
 
-## Verified against the running server
+## Verified against a running engine
 
 Sign in to a client with a registered stream, sign out, and the receiver gets:
 

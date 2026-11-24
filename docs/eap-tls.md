@@ -1,4 +1,4 @@
-# EAP-TLS: certificate-based wifi and network login
+# Certificate wifi and network sign-in (EAP-TLS)
 
 ## Introduction
 
@@ -45,7 +45,7 @@ signari radius add-client -org <uuid> -name "office-ap" \
 ```
 
 
-## The one login method phishing cannot touch
+## The one sign-in method phishing cannot touch
 
 There is no password anywhere in this flow. The person's identity is their
 certificate, and they authenticate by holding its private key. There is nothing
@@ -98,7 +98,7 @@ packet exceeded 4096 bytes. Signari silently dropped it, exactly as a real
 access point would. The failure was in the harness, and finding that out required
 running it.
 
-## A valid certificate is not a login
+## A valid certificate is not a sign-in
 
 The TLS layer proves two things: the certificate chains to a configured
 authority, and the supplicant holds the private key. Neither says whether the

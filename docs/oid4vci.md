@@ -158,7 +158,7 @@ copies to the holder defeats it entirely, so the output says so.
 code MUST be short lived, and it is redeemed within seconds of being scanned.
 
 A front desk with no shell mints the same offer at
-`POST /admin/users/{userID}/credential-offers` in the [Admin API](admin-api.md#users).
+`POST /admin/users/{userID}/credential-offers` in the [Admin API](admin-api.md#people).
 The Admin API also defines credentials, and trusts `x5c` roots, under the
 organisation (`credential-configurations`, `credential-proof-roots`). It answers
 the transaction code beside the offer only so the caller can send it by another

@@ -214,7 +214,7 @@ ALLOWED user:bo may read document:42
   through: document:42#viewer <- folder:reports#viewer <- folder:a#owner
 ```
 
-## Conformance review against the Final spec, August 2026
+## Conformance review against the Final specification, August 2026
 
 This review read the **full text** of Authorization API 1.0, not a summary. It
 found two defects:
@@ -307,7 +307,7 @@ caller's half.
 
 The cost is that this is not a programming language. That is the trade.
 
-### Time windows are on our clock
+### Time windows are on Signari's clock
 
 A time restriction an application can lie about is a comment. `zone` is
 **required** whenever `from`/`to` are set, because "09:00" without one is nine
@@ -770,7 +770,7 @@ and then hostile input was sent, rather than one-field-wrong variations.
 It found two defects. Both were about conformance rather than compromise, and
 one of them had a real integrity consequence.
 
-### 1. We refused the forward compatibility the specification requires
+### 1. Signari refused the forward compatibility the specification requires
 
 Section 10.1.1 says, verbatim:
 

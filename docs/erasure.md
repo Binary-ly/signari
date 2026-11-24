@@ -1,4 +1,4 @@
-# Erasing a subject
+# Erasing a person
 
 ## Introduction
 

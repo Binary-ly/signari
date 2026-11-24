@@ -275,7 +275,7 @@ for DTDs (document type definitions) and entities. It must hold one `Assertion`
 and nothing else, and gets every check of the assertion after that. A second
 assertion, whether inside the ciphertext or beside it, is refused.
 
-## Single logout with an upstream
+## Single Logout with an upstream
 
 SAML's "Single Logout" carries a sign-out between Signari and an upstream, in
 either direction. A SAML "binding" is the way a message travels, such as a

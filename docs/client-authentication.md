@@ -84,7 +84,7 @@ Signari accepts both its issuer and its token endpoint URL as `aud`.
 Implementations differ about which to use. Rejecting one would break real
 applications for no gain, since either value names Signari and nobody else.
 
-## Verified against the running server
+## Verified against a running engine
 
 These six requests were sent to a running Signari, and each got the answer shown:
 

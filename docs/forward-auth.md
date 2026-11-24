@@ -558,7 +558,7 @@ Rules are read on every request, and take effect on commit. A disabled host open
 nothing, whatever its rules say. A host is held by one organisation, so no
 organisation can write rules for another's application.
 
-## What the app receives
+## What the application receives
 
 On every `200`, the application receives these headers:
 

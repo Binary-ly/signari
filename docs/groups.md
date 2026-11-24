@@ -77,7 +77,7 @@ remove alice from oncall
 access immediately means ending the person's session. Saying so is the difference
 between an administrator who knows that and one who assumes removal was instant.
 
-### Release is an allow-list, per client
+### Release is an allow-list, per application
 
 Asking for the `groups` scope is not enough. A "scope" is a short name an
 application asks for, which brings certain claims with it. An administrator must

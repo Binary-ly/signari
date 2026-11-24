@@ -55,7 +55,7 @@ Linking it again is refused, rather than taken as a move.
 
 The Admin API does the same under the person, at `PUT` and
 `DELETE /admin/users/{userID}/identity-links/{slug}` (see
-[the Admin API](admin-api.md#users)). It registers the issuer itself at
+[the Admin API](admin-api.md#people)). It registers the issuer itself at
 `POST /admin/organizations/{orgID}/identity-providers`.
 
 `idp add-issuer` and `idp assertions` are two commands because they are two

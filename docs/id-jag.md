@@ -1,4 +1,4 @@
-# Cross-app access
+# Cross-application access (ID-JAG)
 
 ## Introduction
 

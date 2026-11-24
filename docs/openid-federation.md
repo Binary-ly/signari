@@ -157,7 +157,7 @@ Entity Statements, from the subject up to a Trust Anchor. Validating it is what
 turns "this server published a statement about itself" into "an authority I
 already trust vouches for this server".
 
-### The step that is easy to get backwards
+### The step that is often done backwards
 
 §10.2 verifies ES[0], the subject's own Entity Configuration, **twice**. The two
 checks do entirely different work:
@@ -459,12 +459,12 @@ them.
 All seven standard policy operators of §6.1.3.1 are now implemented, along with
 §6.1.4.1 resolution and §6.1.4.2 application.
 
-#### What the operators actually do
+#### What the policy operators actually do
 
 The recurring surprise is that the names suggest checks, and several of them are
 transformations:
 
-| Operator | Action | Merge of two superiors' values |
+| Policy operator | Action | Merge of two superiors' values |
 |---|---|---|
 | `value` | Assigns. `null` **removes** the parameter | Must be **equal**, else a policy error |
 | `add` | Union into the parameter; initialises it if absent | Union |
@@ -518,7 +518,7 @@ So a superior's assigned values are judged by that same superior's policy. The
 other order also "works" on any policy the assignment happens to satisfy. That is
 why it needs a test that specifically contradicts it.
 
-#### Unknown operators
+#### Unknown policy operators
 
 §6.1.3.2 splits these two ways, and both halves matter:
 

@@ -129,7 +129,7 @@ then treats the factor as equivalent everywhere in the code. That is worse than
 not writing it down, because the documentation buys the confidence and the code
 spends it.
 
-## So the weakness is in the data, not just the prose
+## So the weakness is in the data, not only the prose
 
 The `amr` value is **`sms`**, never `otp`. The session and the audit record both
 say so:

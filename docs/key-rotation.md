@@ -1,4 +1,4 @@
-# Key rotation, and the reload that made it mean something
+# Rotating signing keys
 
 ## Introduction
 

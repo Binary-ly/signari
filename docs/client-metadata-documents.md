@@ -1,4 +1,4 @@
-# Clients known by their URL
+# Applications known by their URL
 
 ## Introduction
 
@@ -92,8 +92,8 @@ application and ride on its name. The draft leaves that to Signari to refuse
 (§8.1).
 
 A native application with a custom scheme is refused for the same reason, because
-anybody can claim a scheme. Register one like that yourself, as [A client somebody
-registered](#a-client-somebody-registered) describes.
+anybody can claim a scheme. Register one like that yourself, as [an application somebody
+registered](#an-application-somebody-registered) describes.
 
 **Keys.** `token_endpoint_auth_method` is `none` for a public client, the default.
 Or it is `private_key_jwt`, with `jwks` or `jwks_uri` in the document. An
@@ -119,7 +119,7 @@ may start a sign-in, and what a person agreed to is ended the usual ways. There 
 no attempt to notice a changed key and revoke anything, which the draft leaves
 open (§8.4.1).
 
-## A client somebody registered
+## An application somebody registered
 
 An application created in Signari stays as it was made. Create one with an https
 `client_id`, and no document is ever read for it, whatever the rules say. That is

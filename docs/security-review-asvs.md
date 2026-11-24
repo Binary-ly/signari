@@ -376,7 +376,7 @@ added in October 2026, and is off until an administrator sets it. V7.4.3 and V7.
 describe a *page*, and when this was written the mechanism existed without one.
 The page has since shipped as `/account/sessions`, and both are met.
 
-## V8 Authorization: the tenant boundary, audited by enumeration (21 August 2026)
+## V8 Authorization: the organisation boundary, audited by enumeration (21 August 2026)
 
 V8.4.1 — "multi-tenant applications use cross-tenant controls to ensure consumer
 operations will never affect tenants with which they do not have permissions to
@@ -400,7 +400,7 @@ The FORCE half is the subtle one. Core tables are owned by `signari_engine`, and
 So those seven carried a policy that read as protection and did nothing for the
 engine — not by decision, but by a database default.
 
-### A claim I made and had to withdraw
+### A claim that had to be withdrawn
 
 The first version of this finding said the console could reach other
 organisations' rows in the eleven unprotected tables. **That was wrong.** Checking the roles
@@ -477,7 +477,7 @@ succeed by querying the wrong schema.
 | **V11.1.x** documented key policy and inventory | **met, November 2026** — [security-inventories.md](security-inventories.md) |
 | **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
 
-### V11.2.3: we were generating the weaker key
+### V11.2.3: Signari was generating the weaker key
 
 > "Verify that all cryptographic primitives utilize a minimum of 128-bits of
 > security based on the algorithm, key size, and configuration. For example, a

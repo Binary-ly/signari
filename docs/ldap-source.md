@@ -102,7 +102,7 @@ The left of each pair is an LDAP attribute, matched in any case. The right is a
 declared attribute, or `email` or `name`, which replace what the flavour reads
 for those two.
 
-An attribute has to be [declared](admin-api.md#user-attributes) first, through
+An attribute has to be [declared](admin-api.md#attributes-of-people) first, through
 the Admin API or a configuration file. Its declaration decides its type, and
 whether it is sealed. `-attribute-map ""` clears the map, and
 `PATCH .../directories/{slug}` takes the same thing as `attribute_map`. Only an

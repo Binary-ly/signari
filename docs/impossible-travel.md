@@ -26,7 +26,7 @@ policies:
     message: This sign-in came from an unexpected place. Contact support.
 ```
 
-## Verified against the running server
+## Verified against a running engine
 
 These are two sign-ins checked against a running Signari, one refused and one
 allowed:

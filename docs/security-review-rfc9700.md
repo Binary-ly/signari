@@ -26,7 +26,7 @@ defect this review found, and the section after its table explains it.
 | No open redirectors | MUST NOT | no forwarding of arbitrary query-supplied URIs |
 | Avoid forwarding user credentials on redirect (§4.12) | MUST | credentials are never placed in a redirect |
 
-### The defect: native apps could not use Signari at all
+### The defect: native applications could not use Signari at all
 
 RFC 9700 §4.1.3 says this, immediately after it mandates exact matching:
 
@@ -88,7 +88,7 @@ needs a human looking at how often it happens. A repeated `nonce` is not tracked
 | Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values, each one a resource server the client's organisation registered ([resource indicators](resource-indicators.md)); until October 2026 any http(s) URI was accepted |
 | **Resource server MUST refuse a token not meant for it** | **MUST** | **was missing — now enforced** |
 
-### The second defect: we did not enforce audience against ourselves
+### The second defect: audience was not enforced at Signari's own resource
 
 `VerifyAccessTokenAny` checked signature, `typ`, `iss`, `sub`, `exp`, `iat` and
 `jti`, and never looked at `aud`. Meanwhile the mint path sets the audience to the

@@ -82,7 +82,7 @@ The test skips comment lines, because `cors.go` names the header in prose to
 record why it is absent. A check that cannot tell an explanation from an
 implementation would force the explanation to be deleted.
 
-## Verified against a live server
+## Verified against a running engine
 
 These requests were made against a live Signari:
 

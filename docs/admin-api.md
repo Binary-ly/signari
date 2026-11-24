@@ -564,7 +564,7 @@ redefine one would be a setting that changes nothing.
 | `PUT /admin/clients/{clientID}/group-release` | `{"only_groups": ["staff", "admins"]}` tells the application of a person's membership of those groups from its next token, and `{"only_groups": []}` of every group, as `signari group release` does. A group the organisation does not have is `400 unknown_group`, naming it, rather than a release that tells nothing. The application must still ask for the `groups` scope. Audited `admin.group_release_set`; `clients:write`, and `privileged-users:write` for an application designated for the Admin API; honours `If-Match` |
 | `DELETE /admin/clients/{clientID}/group-release` | Tell the application of no group from its next token; `404 not_released` when it was told of none. Audited `admin.group_release_removed`, scoped as the `PUT` |
 
-### Users
+### People
 
 | | |
 |---|---|
@@ -582,7 +582,7 @@ redefine one would be a setting that changes nothing.
 | `POST /admin/invitations` | `org_id`, and optionally `email` (bind it to one address), `groups` (names the new account joins), `expires_in_seconds` (seven days by default, at most ninety) and `send`. Without `send` the response carries the `link`, once: only its hash is kept. With `send` it needs `email`, and the engine mails the link through the outbox, so the response has no link and neither does the outbox: the token is made as the mail goes out, again for each retry, so the newest mail is the one that works. Every group must exist and be one the token may act on (400 `no_such_group` otherwise, the same for a group outside a narrowed token), and a group whose members may impersonate needs `privileged-users:write` (403 `privileged_target`), as adding a member does. `users:write`. Audited `admin.invitation_created` |
 | `DELETE /admin/invitations/{invitationID}` | Revoke an open one, so its link stops working at once; 404 for one used, revoked, expired or in another organisation. Audited `admin.invitation_revoked`, `via: admin_api` |
 
-### User attributes
+### Attributes of people
 
 An attribute is a field an administrator defines on a person. It is declared per
 organisation, before anything can be stored in it:

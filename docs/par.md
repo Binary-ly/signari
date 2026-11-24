@@ -41,7 +41,7 @@ straight to Signari, and from an authenticated client. What the browser carries
 is a handle that gives one code and expires in five minutes. It means nothing to
 anyone who captures it after use.
 
-## Verified against the running server
+## Verified against a running engine
 
 These requests were sent to a running Signari, and each got the answer shown:
 
@@ -161,7 +161,7 @@ applications.
 
 ---
 
-## Two properties worth knowing
+## Three properties worth knowing
 
 - **The `request_uri` lifetime is a fixed five minutes**, not configurable, and it
   covers the whole sign-in. A person has that long from the application's redirect

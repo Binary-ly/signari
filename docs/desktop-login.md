@@ -1,4 +1,4 @@
-# Desktop and workstation login
+# Desktop and workstation sign-in
 
 ## Introduction
 

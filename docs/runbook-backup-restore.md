@@ -227,7 +227,7 @@ ended.
 
 `restore finalize` ends every one of those sessions, and every "refresh family":
 the line of refresh tokens that one application holds for one session. It queues
-a back-channel logout and a Continuous Access Evaluation Profile
+a Back-Channel Logout notice and a Continuous Access Evaluation Profile
 ([CAEP](glossary.md#caep)) session-revoked event for each application that wants
 one, and records `restore.finalized`.
 
@@ -319,8 +319,8 @@ old cookie is signed in again. Run `restore finalize`, and it is not:
   again. A session ended after the dump is live again. `signari restore finalize`,
   above, ends them all. This page once said that everyone signs in again, which is
   not what happens: a restore of a copy brought back its nine live sessions.
-- **Undelivered logout notices** past their retry budget. Check the console's
-  logout-delivery screen after a restore.
+- **Undelivered sign-out notices** past their retry budget. Check the console's
+  screen of sign-out deliveries after a restore.
 - **Anything erased.** A "crypto-shredded" subject, a person whose key was
   destroyed by an [erasure](erasure.md), stays unreadable in every backup,
   including ones taken before the erasure. That is the feature working, not a

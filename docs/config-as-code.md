@@ -503,9 +503,9 @@ file has two ways to give them one, and neither is writing it in:
 
 ### Secrets issued at the far end
 
-A provisioning target's `token` (System for Cross-domain Identity Management,
-[SCIM](glossary.md#scim)) or `credentials` (Google, Entra) is
-issued by the system at the far end. The engine cannot mint one, so it is always
+A provisioning target's secret is issued by the system at the far end. For a
+System for Cross-domain Identity Management ([SCIM](glossary.md#scim)) target it
+is the `token`, and for a Google or Entra target the `credentials`. The engine cannot mint one, so it is always
 named by reference, in the same way. A target cannot be created without it. On a
 target that exists, it is compared and followed when given, and left as it is
 when left out.
@@ -514,10 +514,14 @@ A SCIM target's `base_url` changes only with its `token` in the same file. The
 token held was issued for the old address. Moved without a new one, it would be
 sent to whoever answers at the new address.
 
-Some other secrets are named by reference in the same way. They are a directory
-source's `password` (Lightweight Directory Access Protocol,
-[LDAP](glossary.md#ldap)) or `credentials` (Google, Entra), Duo's `secret`, and
-the migration source's `client_secret`:
+Some other secrets are named by reference in the same way:
+
+- a directory source's `password`, for a Lightweight Directory Access Protocol
+  ([LDAP](glossary.md#ldap)) directory, or its `credentials`, for Google or Entra;
+- Duo's `secret`;
+- the migration source's `client_secret`.
+
+Each is held to its credentials when it moves:
 
 - A directory source moves to another `url`, `bind_dn`, `impersonate` or `domain`
   only with its credentials given again.
@@ -568,8 +572,8 @@ key that seals everything to whoever runs that URL. It would be one approval in 
 pull request away.
 
 The Admin API refuses a file that names a secret by reference, dry run or not,
-with `400 secret_reference`. Read there, the reference would read the server's
-environment. Without one, the API's apply answers the minted secrets once.
+with `400 secret_reference`. Read there, the reference would read the engine's
+own environment. Without one, the API's apply answers the minted secrets once.
 
 ### Changes that need the root key
 
@@ -607,12 +611,12 @@ The file covers all of these:
 - Groups, and the groups each is inside (`member_of`).
 - OAuth and OpenID Connect ([OIDC](glossary.md#oidc)) clients, their redirect
   URIs, and their names in other languages (`localized_names`).
-- SAML service providers and their assertion consumer service (ACS) URLs, the
-  addresses that receive a sign-in.
+- SAML applications, which SAML calls "service providers", and their assertion
+  consumer service (ACS) URLs, the addresses that receive a sign-in.
 - Remote Authentication Dial-In User Service ([RADIUS](glossary.md#radius))
   clients, and RADIUS group authorizations.
 - Protected hosts.
-- Declared scopes, user attributes and resource servers.
+- Declared scopes, attributes of people, and resource servers.
 - The sign-up rule, claim mappers and prompts.
 - The access policy, the sign-in flows and the authorization model.
 - Dynamic registration, and the WebAuthn policy.

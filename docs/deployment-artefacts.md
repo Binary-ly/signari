@@ -8,7 +8,8 @@ computer. This page lists each of those "artefacts", what it deploys, and how it
 was tested.
 
 Each is configured where its platform expects. The Helm chart takes Helm values,
-the Kubernetes operator takes a resource, and the Docker Compose stack takes
+the Kubernetes controller in `operator/` takes a resource, and the Docker Compose
+stack takes
 environment variables and profiles.
 
 ## Helm chart — shipped
@@ -28,7 +29,7 @@ hook makes the instance the engine serves.
 
 It was validated with `helm lint` and `helm template`, and installed on kind in
 November 2026. That run found that no pod could start, because the image named
-its user. It also found that the engine never became ready, because nothing made
+its `USER`. It also found that the engine never became ready, because nothing made
 its instance. Both are fixed. Continuous integration (CI) now installs and
 upgrades the chart on kind whenever the chart or the engine changes
 (`.github/workflows/helm.yml`). See `deploy/helm/signari/README.md`.
@@ -42,7 +43,7 @@ chart a data source name ([DSN](glossary.md#dsn)).
 
 `admin/Dockerfile` builds the console as two images: Laravel under php-fpm (the
 default target), and nginx in front of it (`--target web`). Both run as an
-unprivileged user.
+unprivileged system account.
 
 `.env` never goes into either. A developer's admin token and database password
 live there, and an image is something you push somewhere. The console reads its
@@ -81,7 +82,7 @@ The chart has the console too, off unless `console.enabled`. It runs:
 
 - one pod with both containers;
 - a migration Job after the engine's;
-- `signari_admin` as its database user;
+- `signari_admin` as its database role;
 - its own pod name, since on the engine's it would sit behind the engine's
   Service.
 
@@ -97,10 +98,10 @@ that run.
 
 ## Kubernetes operator — configuration as a resource
 
-`operator/` keeps an organisation's configuration file applied (see [the
-operator's own guide](../operator/README.md)). A `SignariConfig` resource holds
-the file that `signari apply` reads. The operator plans it through the Admin API,
-and applies it with the planned version as `If-Match`.
+`operator/` keeps an organisation's configuration file applied (see [its own
+guide](../operator/README.md)). It is a Kubernetes controller. A `SignariConfig`
+resource holds the file that `signari apply` reads. The controller plans it
+through the Admin API, and applies it with the planned version as `If-Match`.
 
 Every `resyncSeconds` it plans again, so a change made from the console or the
 command-line interface (CLI) is put back. What an apply mints goes into a Secret
@@ -112,7 +113,7 @@ express, and a CronJob of `signari apply` expresses badly. A CronJob gives an
 apply on a schedule rather than on a change, with nowhere to say what it refused.
 
 The rest stays where it works. Migrations stay in the Helm hook, and key rotation
-and the janitor stay as `signari` CLI verbs run as CronJobs. The operator is a Go
+and the janitor stay as `signari` CLI verbs run as CronJobs. `operator/` is a Go
 module of its own, like the Terraform provider, so the engine takes no Kubernetes
 dependency. It never touches the database.
 
@@ -122,7 +123,7 @@ Signari is a conformant OpenID Connect ([OIDC](glossary.md#oidc)) and OAuth2
 provider. The value of standards conformance is precisely that clients do not need
 a vendor software development kit (SDK).
 
-Any certified OIDC relying-party library works against it unchanged:
+Any certified OIDC library for applications works against it unchanged:
 
 - `openid-client` (Node);
 - `authlib` / `oauthlib` (Python);
@@ -137,9 +138,9 @@ A Signari-branded SDK would mostly re-wrap those. A wrapper around a certified
 library is a place for bugs the library already fixed.
 
 Where a first-party artefact genuinely helps is the Admin API: registering
-clients, users and providers. That is Signari-specific and not covered by any
+clients, people and providers. That is Signari-specific and not covered by any
 OIDC library, and it is the thing to build first if an SDK is wanted. This is
-recorded rather than stubbed, for the same reason as the operator: three
+recorded rather than stubbed, for the same reason as the controller above: three
 half-SDKs are worse than the standard libraries that already work.
 
 ## A first run with something to sign in to

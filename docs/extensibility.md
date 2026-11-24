@@ -246,10 +246,10 @@ same page a deactivated account does.
 ## The `user_create` hook
 
 It is asked before an account is made for somebody new. That person is signing
-themselves up, arriving from an identity provider, or arriving with a Kerberos
-ticket at a realm that creates accounts. It is told `org_id`, `email` and `source`, which is
-`signup`, `federation` or `kerberos`. For a realm that strips itself off, `email`
-holds the bare name.
+themselves up, arriving from an identity provider, or arriving with a ticket from
+a Kerberos realm that creates accounts. It is told `org_id`, `email` and
+`source`, which is `signup`, `federation` or `kerberos`. For a Kerberos realm that
+strips itself off, `email` holds the bare name.
 
 It is not asked about what an administrator does. That covers an invitation, the
 Admin API, `signari user create`, System for Cross-domain Identity Management
@@ -278,7 +278,7 @@ there, and no protocol claim can be set.
 
 It is asked when a Security Assertion Markup Language ([SAML](glossary.md#saml))
 assertion is built. It is told `subject`, `entity_id` and `org_id`. A refusal is
-told to the service provider as a policy refusal is.
+told to the SAML application as a policy refusal is.
 
 The answer may add attributes by the same list and the same rule as `userinfo`.
 A value that is a list becomes several attribute values. On any other hook a list

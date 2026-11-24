@@ -373,8 +373,10 @@ A sign-out                                                  p50  4 ms      p99 1
 100,000 people read in from a directory  11.8 s, then 2.1 s with nothing to do, one run
 ```
 
-CIBA is Client-Initiated Backchannel Authentication ([CIBA](glossary.md#ciba)),
-and TOTP is a time-based one-time password ([TOTP](glossary.md#totp)).
+In the table, Client-Initiated Backchannel Authentication
+([CIBA](glossary.md#ciba)) is a sign-in that the person approves on another
+device. A time-based one-time password ([TOTP](glossary.md#totp)) is the code an
+authenticator app shows.
 
 The two lines with no rate are the one request of a sign-in, with the password
 hash before it kept out of the time. A pushed request and a device start are
@@ -501,7 +503,7 @@ See [configuration](configuration.md).
 
 ## The sign-in page, November 2026
 
-On a sign-in through an upstream provider, the same profile put 6% of the server's
+On a sign-in through an upstream provider, the same profile put 6% of the engine's
 CPU in one decision. On every render of the sign-in page, it decided whether the
 sign-in flow takes an emailed code. That answer depends on the flow alone, and a
 loaded flow now keeps it once worked out.
@@ -549,7 +551,7 @@ The harness is [the bench tool](../tools/bench/README.md), in `tools/bench`. It
 runs full flows, reports latency percentiles, and counts load shed separately from
 failures.
 
-That distinction matters. A 429 is the server working, and counting it as a
+That distinction matters. A 429 is the engine working, and counting it as a
 failure hides whether anything is actually broken. Until October 2026 the harness
 was a file in a session scratchpad that nobody else could run.
 

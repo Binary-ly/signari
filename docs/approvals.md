@@ -7,9 +7,9 @@ at once. A single stolen or mistaken credential should not be enough to make
 them.
 
 An organisation can have those changes wait until somebody else approves them.
-This is "multi-user approval for high-value flows", requirement V2.3.5 of the
-Application Security Verification Standard ([ASVS](security-review-asvs.md))
-5.0.0. You turn it on in the organisation's settings, with `approvals_required`.
+This meets requirement V2.3.5 of the Application Security Verification Standard
+([ASVS](security-review-asvs.md)) 5.0.0, on approval by more than one person for
+high-value flows. You turn it on in the organisation's settings, with `approvals_required`.
 
 ## Which changes can wait
 

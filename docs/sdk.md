@@ -10,9 +10,9 @@ Both are generated from the Admin API's OpenAPI document, a standard
 machine-readable description of the API. The document is
 [the Admin API's OpenAPI description](admin-openapi.json), `admin-openapi.json`,
 drawn from the router itself. Each library has one method per operation the
-server registers, typed by the schemas the document carries.
+engine registers, typed by the schemas the document carries.
 
-A route added to the server, or a field added to one, is in the document from
+A route added to the engine, or a field added to one, is in the document from
 then on. A test fails until the clients are made again. The same document is
 rendered as the [Admin API reference](admin-api-reference.md): every operation,
 the scope it needs, and the fields it takes and answers.
@@ -70,16 +70,16 @@ try {
 - **It is named for the operation.** `operationId` `patch_users_userID`
   becomes `PatchUsersUserID` in Go and `patchUsersUserID` in TypeScript. Path
   parameters come first and are escaped. The body follows, then the options.
-- **It answers the configuration version.** The server reports it as the
+- **It answers the configuration version.** The engine reports it as the
   `ETag`. Send it back with `IfMatch` / `ifMatch`. Then a write over a
   deployment that moved since is refused with `412`, instead of overwriting the
   other change. See [conditional writes](admin-api.md#conditional-writes).
 - **A request's fields are all optional.** That lets one type serve a partial
   update. In Go each field is a pointer, set with `Ptr`. A field left nil is not
   sent, so a `PATCH` changes only what it names.
-- **A refusal is an error carrying the server's reason.** It holds the status,
+- **A refusal is an error carrying the engine's reason.** It holds the status,
   the `error` code, the `detail`, and on a `412` both versions.
-- **It waits out the arrival limit.** The server answers `429` with
+- **It waits out the arrival limit.** The engine answers `429` with
   `Retry-After` before it authenticates a request, so nothing was done. The
   client waits as asked, up to thirty seconds a time, and sends the same request
   again, up to eight times.

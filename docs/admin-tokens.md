@@ -133,8 +133,8 @@ Minting, rotating and revoking are each audited: `admin.token_created`,
 
 ## Narrowing a token to named objects
 
-You can restrict a token to particular clients, groups or user attributes, not
-only to a scope and an organisation. A continuous integration (CI) job that
+You can restrict a token to particular clients, groups or attributes of people,
+not only to a scope and an organisation. A continuous integration (CI) job that
 deploys one application should not hold a credential able to disable the payroll
 system.
 

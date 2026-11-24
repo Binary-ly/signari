@@ -3,7 +3,7 @@
 ## Introduction
 
 One Signari server is a single point of failure. When it stops, nobody can sign
-in anywhere. To survive that, you run several copies of the server behind a load
+in anywhere. To survive that, you run several copies of Signari behind a load
 balancer.
 
 Every instance connects to the same PostgreSQL and serves the same issuer. There
@@ -192,7 +192,7 @@ parse.
 ## Outbox delivery: correct, and holding a connection for four minutes
 
 The "outbox" is the queue of notices Signari delivers to other services, such as
-logout notices and security events. The claim was already right:
+sign-out notices and security events. The claim was already right:
 `FOR UPDATE SKIP LOCKED` divides the work, so two instances never deliver the
 same notice. The
 previous version of this page said otherwise, and that was wrong.
@@ -218,7 +218,7 @@ order to deliver outside a transaction hands the same rows straight to the other
 instance.
 
 `attempts` is deliberately not incremented on claim. A crash between claiming and
-recording is not the relying party failing to answer. Charging it as one would
+recording is not the application failing to answer. Charging it as one would
 march a perfectly reachable receiver toward being parked.
 
 This was tested. Two instances draining at once deliver each notice exactly once.
@@ -227,13 +227,13 @@ others.
 
 ### The twin that kept the bug
 
-There are two drains, one for logout notices and one for security events. They
+There are two drains, one for sign-out notices and one for security events. They
 were written independently on purpose, with a comment saying a shared helper would
 invite one to be tuned for the other.
 
 That reasoning was sound about **policy**: how long to back off, what to log,
 which receiver to call. It was not sound about **mechanism**, and the cost
-arrived immediately. The transaction-boundary fix went into the logout drain, and
+arrived immediately. The transaction-boundary fix went into the sign-out drain, and
 its twin kept the bug. Duplicated mechanism means a correctness fix has to be
 remembered twice.
 

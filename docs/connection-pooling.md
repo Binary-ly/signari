@@ -35,12 +35,12 @@ Each engine node opens two pools:
 | Workers | the outbox, the janitor, the audit-sink pump, the key refresher | `SIGNARI_DB_WORKER_MAX_CONNS`, default 3, none kept idle |
 
 A node opens up to the sum. When nothing sits in between, multiply that by the
-number of nodes. Keep the result below the server's `max_connections`, less its
+number of nodes. Keep the result below PostgreSQL's `max_connections`, less its
 reserved connections.
 
 The workers used to share the request pool. A burst of sign-ins then left the
-outbox waiting for a connection to deliver the logout notices that end sessions
-at other applications. A long janitor pass held connections that requests were
+outbox waiting for a connection to deliver the sign-out notices that end
+sessions at other applications. A long janitor pass held connections that requests were
 waiting for. Since October 2026 the workers have their own pool, so neither can
 starve the other.
 

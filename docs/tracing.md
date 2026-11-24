@@ -61,7 +61,7 @@ Calls to other servers are traced for every client `internal/safedial` builds.
 That is every call to an address somebody else chose:
 
 - extension providers and webhooks;
-- logout and security-event delivery, and audit streaming;
+- sign-out and security-event delivery, and audit streaming;
 - System for Cross-domain Identity Management ([SCIM](glossary.md#scim));
 - CAPTCHA and Duo verification;
 - the FIDO metadata service, and the SMS gateway;
@@ -71,7 +71,8 @@ That is every call to an address somebody else chose:
 - the Entra directory and provisioning.
 
 A call made while serving a request is a child of that request's span. One made
-by a background worker, such as the outbox delivering a logout notice, is a root
+by a background worker, such as the outbox delivering a sign-out notice, is a
+root
 of its own.
 
 The background workers' queries are not traced. They have no request to belong
@@ -108,7 +109,7 @@ as long as somebody else decides. That is outside the boundary that
 `subjects/{id}/erase` works on. So no span carries:
 
 - a URL, a path or a query string;
-- a client id, a user id, an organisation id, an email address or a session;
+- a client ID, a person's ID, an organisation ID, an email address or a session;
 - an address, the caller's or the destination's;
 - SQL text (the function that ran it is named instead) or a query's arguments;
 - an error message (a PostgreSQL `DETAIL` quotes the row that clashed);

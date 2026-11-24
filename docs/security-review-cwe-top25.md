@@ -1,10 +1,22 @@
 # The 2025 CWE Top 25, against this code
 
-MITRE's 2025 list of the most dangerous software weaknesses, each read against the
-engine (Go) and the console (PHP), November 2026. The list is MITRE's 2025 Top 25
-page; each entry names where it is held, by file and line, or why it does not
-apply. Seven of the twenty-five are memory-safety weaknesses, which neither
-language can have in code written here.
+## Introduction
+
+The Common Weakness Enumeration (CWE) is a catalogue of the kinds of mistake that
+make software unsafe, each with a number such as CWE-79. MITRE manages it, and
+publishes a yearly list of the 25 most dangerous software weaknesses.
+
+This page reads each entry of MITRE's 2025 list against the engine (Go) and the
+console (PHP), as of November 2026. The list is MITRE's 2025 Top 25 page. Each
+entry names where it is held, by file and line, or why it does not apply. Seven of
+the twenty-five are memory-safety weaknesses, which neither language can have in
+code written here.
+
+It is for a security reviewer or an auditor who wants to check Signari against a
+common baseline. Each row is a claim you can check, by opening the file at the
+line it names. [How it was done](#how-it-was-done) gives the method.
+
+## The twenty-five
 
 | Rank | CWE | Here |
 |---|---|---|
@@ -38,6 +50,7 @@ language can have in code written here.
 
 Each entry was read against the code, not the documentation: the citation is
 where it is held. The memory-safety entries were checked by the absence of what
-would bring them in (`import "C"`, `unsafe`), not assumed from the language. Where
-an entry rests on a guard test, the test is named, so a change that breaks it fails
-the build rather than this page going stale.
+would bring them in (`import "C"`, `unsafe`), not assumed from the language.
+
+Where an entry rests on a guard test, the test is named. A change that breaks the
+guard then fails the build, instead of this page going stale.

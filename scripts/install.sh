@@ -27,7 +27,8 @@
 #      nothing unless the bundle shows the release workflow signed it too.
 #      There is no option to skip either check
 #   3. installs it to /usr/local/bin as root, else to ~/.local/bin
-#   4. as root under systemd, makes a signari system user, /etc/signari (0750)
+#   4. as root under systemd, makes a signari system user, /etc/signari
+#      (root:signari 0750)
 #      and a hardened unit, signari.service, which it does not start
 #   5. runs `signari setup`, which asks at the terminal what it cannot work out
 #      (through /dev/tty when this script's input is the pipe), and with no
@@ -512,8 +513,9 @@ EOF
 }
 
 # As root under systemd: the service's own user, its directory and its unit.
-# The directory is made for the user, and setup, run as root, gives a file it
-# makes there to the directory's owner, so the service can read its own key.
+# The directory is root:signari 0750: the service can read what is in it and
+# replace none of it. setup, run as root, gives a file it makes there to the
+# account named as the directory's group, so the service can read its own key.
 service() {
   if [ "$(id -u)" != 0 ] || [ ! -d /run/systemd/system ]; then
     return 0
@@ -529,8 +531,8 @@ service() {
     record user signari
   fi
   if [ ! -d /etc/signari ]; then
-    run install -d -m 0750 -o signari -g signari /etc/signari || die "could not make /etc/signari"
-    log "made /etc/signari, 0750, for the signari user"
+    run install -d -m 0750 -o root -g signari /etc/signari || die "could not make /etc/signari"
+    log "made /etc/signari, root:signari 0750"
     record dir /etc/signari
   fi
   write_unit

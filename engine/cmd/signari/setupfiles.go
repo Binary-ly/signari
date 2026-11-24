@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"signari.dev/engine/internal/keys"
@@ -24,9 +26,10 @@ import (
 // then moved into place. The root key is moved by a hard link, which fails when
 // the name is taken, so no run and no race can replace a key that may already
 // have sealed something. Both are 0600, and, when root runs setup, belong to the
-// owner of the directory they are made in: a /etc/signari made for the service's
-// own user gives that user its key, so a later run as root does not leave the
-// service unable to read a file root made.
+// service's account, read from the directory they are made in: the installer
+// makes /etc/signari root:signari 0750, so the service can read what is in it
+// and replace none of it, and a file root makes there is the signari account's,
+// so a later run as root does not leave the service unable to read it.
 
 // setupFileNames are the defaults for -root-key-file and -env-file.
 const (
@@ -56,6 +59,35 @@ func setupDirMode(euid int) fs.FileMode {
 	return 0o700
 }
 
+// serviceAccount is the account a file root makes in dir is given: dir's
+// owner when that is not root, as an older installer made /etc/signari, else
+// the account named as dir's group, as useradd --user-group pairs them, which
+// the installer's root:signari /etc/signari is.
+func serviceAccount(dir string) (uid, gid int, ok bool) {
+	uid, gid, ok = dirOwner(dir)
+	switch {
+	case !ok:
+		return 0, 0, false
+	case uid != 0:
+		return uid, gid, true
+	case gid == 0:
+		return 0, 0, false
+	}
+	g, err := user.LookupGroupId(strconv.Itoa(gid))
+	if err != nil {
+		return 0, 0, false
+	}
+	u, err := user.Lookup(g.Name)
+	if err != nil || u.Gid != g.Gid {
+		return 0, 0, false
+	}
+	n, err := strconv.Atoi(u.Uid)
+	if err != nil || n == 0 {
+		return 0, 0, false
+	}
+	return n, gid, true
+}
+
 // errFileExists is a file setup was to create and found already there.
 var errFileExists = errors.New("the file is already there")
 
@@ -79,6 +111,16 @@ func writeFileAtomic(path string, data []byte, create bool, euid int, made *[]st
 		_ = f.Close()
 		return err
 	}
+	// Given to the service on the open file, before a byte is written, so
+	// there is no moment the name is root's and nothing a rename could race.
+	if euid == 0 {
+		if uid, gid, ok := serviceAccount(dir); ok {
+			if err := f.Chown(uid, gid); err != nil {
+				_ = f.Close()
+				return fmt.Errorf("giving %s to the service's account: %w", path, err)
+			}
+		}
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
@@ -89,13 +131,6 @@ func writeFileAtomic(path string, data []byte, create bool, euid int, made *[]st
 	}
 	if err := f.Close(); err != nil {
 		return err
-	}
-	if euid == 0 {
-		if uid, gid, ok := dirOwner(dir); ok && uid != 0 {
-			if err := os.Chown(tmp, uid, gid); err != nil {
-				return fmt.Errorf("giving %s to the owner of %s: %w", path, dir, err)
-			}
-		}
 	}
 	if create {
 		switch err := os.Link(tmp, path); {

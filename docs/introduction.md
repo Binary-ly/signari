@@ -52,7 +52,7 @@ applications' own data, and it does not replace the permissions inside each
 application. The wiki still decides who may edit which page.
 
 > [!NOTE]
-> Signari is at its first release, v0.1.0. It is tested, but not yet certified or
+> Signari is at v0.2.0, its second release. It is tested, but not yet certified or
 > independently audited. Read the [security review](security-review-asvs.md)
 > before you trust it with anything that matters.
 

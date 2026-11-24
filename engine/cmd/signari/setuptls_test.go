@@ -224,7 +224,7 @@ func TestTheCertbotHookCopiesAndRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"#!/bin/sh\n", `[ "${RENEWED_LINEAGE:-}" = "/etc/letsencrypt/live/login.example.com" ] || exit 0`,
-		"install -m 0600 -o 997 -g 996", `mv -f "/etc/signari/tls/.$name.new" "/etc/signari/tls/$name"`,
+		`install -m 0600 -o "997" -g "996"`, `mv -f "/etc/signari/tls/.$name.new" "/etc/signari/tls/$name"`,
 		"systemctl try-restart signari.service"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the hook lacks %q:\n%s", want, text)

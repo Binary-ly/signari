@@ -11,7 +11,7 @@ set -eu
 [ "${RENEWED_LINEAGE:-}" = "{{.Lineage}}" ] || exit 0
 umask 077
 for name in fullchain.pem privkey.pem; do
-  install -m 0600 -o {{.UID}} -g {{.GID}} "$RENEWED_LINEAGE/$name" "{{.Dir}}/.$name.new"
+  install -m 0600 -o "{{.UID}}" -g "{{.GID}}" "$RENEWED_LINEAGE/$name" "{{.Dir}}/.$name.new"
   mv -f "{{.Dir}}/.$name.new" "{{.Dir}}/$name"
 done
 systemctl try-restart signari.service

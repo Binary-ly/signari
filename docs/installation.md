@@ -19,15 +19,18 @@ again, it skips whatever is already done.
 On a Linux server, run the installer:
 
 ```sh
-curl -fsSL https://signari.dev/install | sh
+curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh
 ```
 
 The installer downloads the `signari` program, checks it, and then runs
-`signari setup`, which asks its questions and does the work.
+`signari setup`, which asks its questions and does the work. Neither of them
+starts Signari. You do that once setup has finished, as
+[Start Signari](#start-signari) shows.
 
 ### What it asks
 
-It asks only what it cannot detect, in this order:
+It asks these questions, in this order. Where it detected an answer, it offers
+that one:
 
 1. The address people will use to sign in, such as `https://login.example.com`.
    This becomes the "issuer", the address every token Signari makes carries.
@@ -37,8 +40,8 @@ It asks only what it cannot detect, in this order:
 3. For an `https://` address, who ends Transport Layer Security (TLS). See
    [Who ends TLS](#who-ends-tls).
 4. Which PostgreSQL to use. If one is running on the same machine, it is found
-   for you. Otherwise, give a connection URL for a PostgreSQL role that can
-   create roles.
+   for you. Otherwise, give a connection URL for a PostgreSQL superuser, such as
+   `postgres`.
 5. Whether to go ahead with the plan it shows you.
 
 ### Who ends TLS
@@ -79,24 +82,36 @@ signari setup -tls proxy -trusted-proxies 10.0.0.5
 
 ### What it does
 
-Once you agree to the plan, it does these steps in order:
+Before it shows you the plan, setup runs its pre-flight checks: the checks it
+makes before it changes anything. Once you agree to the plan, it does these
+steps in order:
 
-1. Runs its pre-flight checks: the checks it makes before it changes anything.
-2. Creates the database.
-3. Applies migration 0001 as the PostgreSQL superuser. This creates Signari's
+1. Creates the database.
+2. Applies migration 0001 as the PostgreSQL superuser. This creates Signari's
    database roles, including `signari_engine`.
-4. Gives `signari_engine` a newly generated password. From then on, the engine
-   runs as `signari_engine`, never as a superuser.
-5. Applies the remaining migrations as `signari_engine`.
-6. Generates the "root key", the secret that encrypts everything sensitive
+3. Generates the "root key", the secret that encrypts everything sensitive
    Signari stores. It writes the key to a file that only its owner can read:
-   `/etc/signari/root.key` when run as root, and a file under
-   `~/.config/signari/` otherwise.
-7. Creates the instance, the organisation, and a one-time link for the first
+   `/etc/signari/root.key` when run as root, and `~/.config/signari/root.key`
+   otherwise.
+4. When Signari serves HTTPS itself, settles its certificate. A Let's Encrypt
+   certificate is copied into `/etc/signari/tls/`, with a certbot hook for its
+   renewals. A port below 1024 gets a setting that lets the service listen
+   there. See [Who ends TLS](#who-ends-tls).
+5. Writes the settings `signari serve` needs to an environment file:
+   `/etc/signari/signari.env` when run as root, and
+   `~/.config/signari/signari.env` otherwise.
+6. Gives `signari_engine` a newly generated password, and signs in with it. From
+   then on, the engine runs as `signari_engine`, never as a superuser.
+7. Applies the remaining migrations as `signari_engine`.
+8. Creates the instance, the organisation, and a one-time link for the first
    administrator. The link works for 72 hours.
-8. Writes the settings `signari serve` needs to an environment file,
-   `/etc/signari/signari.env`.
-9. Prints a summary of what it did.
+9. Makes the first administrator the organisation's owner, `org-owner`. Until
+   they have used the link, they have no account, so this step waits for a
+   later run. See [Become the owner](#become-the-owner).
+10. Prints a summary of what it did.
+
+When `XDG_CONFIG_HOME` is set, the two files that are otherwise under
+`~/.config/signari/` go under `$XDG_CONFIG_HOME/signari/` instead.
 
 It is safe to run again. A step that is already done is skipped, so a second run
 after an interruption finishes the job without repeating it.
@@ -138,12 +153,8 @@ refuses a program whose SHA-256 checksum does not match. When `cosign` is
 installed, it also checks the release's Sigstore signature, which proves the
 program was built and signed by Signari's own release workflow.
 
-Run as root on a machine with systemd, it also installs a `signari` service, so
-the engine starts on boot. You can check it is running:
-
-```sh
-systemctl status signari
-```
+Run as root on a machine with systemd, the installer also writes a `signari`
+service, but does not start it. [Start Signari](#start-signari) shows how.
 
 ### Platforms
 
@@ -157,17 +168,20 @@ For automation, such as a provisioning script, give the installer every answer
 at once. With `--yes`, it never stops to ask:
 
 ```sh
-curl -fsSL https://signari.dev/install | sh -s -- --yes --issuer https://login.example.com --email you@example.com
+curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --yes --issuer https://login.example.com --email you@example.com
 ```
 
 If you already have the `signari` program, you can run its setup yourself. It
-asks only what it cannot detect, as above:
+asks the same questions, as above:
 
 ```sh
 signari setup
 ```
 
-With `-yes` and the two answers it cannot detect, it never asks anything:
+With `-yes`, it never asks anything, and takes the answer it detected for each
+question. Only the first administrator's email has no such answer, so give
+`-email`. Give `-issuer` as well, unless the address setup works out is the one
+you want. With no PostgreSQL on this machine, give `-superuser-dsn` too:
 
 ```sh
 signari setup -yes -issuer https://login.example.com -email you@example.com
@@ -193,7 +207,7 @@ installer can run Signari with Docker Compose. You need Docker with Compose
 version 2, and git:
 
 ```sh
-curl -fsSL https://signari.dev/install | sh -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --docker
 ```
 
 In this example, the installer fetches the release's source and builds the
@@ -252,13 +266,23 @@ The Signari repository also includes a Docker Compose file for development,
 `deploy/docker-compose.yml`. It builds Signari from source, and starts
 PostgreSQL beside it.
 
-Start the engine and its database, and create the first organisation and person:
+Download the repository, and write the stack's settings to `deploy/.env`, where
+`docker compose` reads them:
 
 ```sh
 git clone https://github.com/Binary-ly/signari.git
 cd signari/deploy
-export SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64) SIGNARI_FIRST_EMAIL=you@example.com \
-  SIGNARI_TLS_CERT=/tls/engine.crt SIGNARI_TLS_KEY=/tls/engine.key
+cat > .env <<EOF
+SIGNARI_ROOT_KEY=$(head -c 32 /dev/urandom | base64)
+SIGNARI_FIRST_EMAIL=you@example.com
+SIGNARI_TLS_CERT=/tls/engine.crt
+SIGNARI_TLS_KEY=/tls/engine.key
+EOF
+```
+
+Start the engine and its database, and create the first organisation and person:
+
+```sh
 docker compose --profile first-run up -d
 ```
 
@@ -273,10 +297,10 @@ The compose file groups its services into "profiles", which you turn on with
 
 | Profile | Starts | Address |
 |---|---|---|
-| none | PostgreSQL, the migrations, and the Signari server | `https://localhost:8099` |
+| none | PostgreSQL, the migrations, and the engine. On a database with no instance yet, the engine stops at once, so the first start needs `first-run` | `https://localhost:8099`, with `SIGNARI_TLS_CERT` and `SIGNARI_TLS_KEY` set |
 | `first-run` | A first run: the instance, the organisation and the one-time link | |
 | `console` | The web console for administrators | `http://localhost:8098/admin` |
-| `demo` | Six example applications to sign in to | `http://localhost:8097`, and ports 8091 to 8095 |
+| `demo` | Six example applications to sign in to, registered from `deploy/demo/client.yaml`. Give `first-run` with it, since their registration waits for the first run | `http://localhost:8097`, and ports 8091 to 8095 |
 
 The `console` profile needs an Admin API token and an administrator account
 first. [Deployment artefacts](deployment-artefacts.md) gives the commands.
@@ -287,8 +311,8 @@ first. [Deployment artefacts](deployment-artefacts.md) gives the commands.
 > impersonate it. Use the installer or the [Helm chart](deployment-artefacts.md)
 > for a real deployment.
 
-Keep the value of `SIGNARI_ROOT_KEY` you exported. The engine needs the same key
-every time it starts.
+Keep `deploy/.env`. The engine needs the same root key every time it starts, and
+the file is where `docker compose` finds it.
 
 ## From source
 
@@ -323,20 +347,80 @@ After a successful setup, you have:
 - a PostgreSQL database holding Signari's tables, with the `signari_engine` role
   that the engine runs as;
 - the root key, in a file only its owner can read;
-- the engine's settings, in `/etc/signari/signari.env`;
+- the engine's settings, in `/etc/signari/signari.env`, or in
+  `~/.config/signari/signari.env` when you did not run setup as root;
 - an instance whose issuer is the address you chose, with its first signing keys;
 - one organisation, with no people in it yet;
 - a one-time link for the first administrator, good for 72 hours.
 
-Open the link in a browser and choose a password. That makes the first account.
-The link works once. Running setup again before anyone has used it prints a new
-one.
+Signari is not running yet. Finish in this order: start it, put TLS or a proxy
+in front of it, and then open the link.
+
+### Start Signari
+
+The summary's `Start it` line gives the command for this machine. With the
+installer's service, run this as root:
+
+```sh
+systemctl enable --now signari
+```
+
+In this example, `enable` starts Signari each time the machine boots, and
+`--now` starts it now as well. Check that it is running:
+
+```sh
+systemctl status signari
+```
+
+Without the service, load the environment file and run `signari serve`, as the
+summary shows. For a setup run as yourself, that is:
+
+```sh
+set -a; . ~/.config/signari/signari.env; set +a; signari serve
+```
+
+With `--docker`, the installer has started the compose project already.
+
+### Put TLS or a proxy in front
 
 People must reach Signari over HTTPS, because the issuer is an `https://`
 address. The summary's `TLS` line says what setup chose, and what is left for
 you to do. For a proxy, see
 [behind a reverse proxy](configuration.md#behind-a-reverse-proxy) for the
 settings it needs.
+
+### Open the link
+
+Open the link in a browser and choose a password of at least 15 characters, such
+as four unrelated words. That makes the first account. The link works once, and is stored only as a hash, so nobody can show it again.
+
+If you lose it before it is used, run `signari bootstrap` with the environment
+file loaded. It withdraws the old link and prints a new one:
+
+```sh
+set -a; . /etc/signari/signari.env; set +a
+signari bootstrap -issuer "$SIGNARI_ISSUER" -email you@example.com
+```
+
+In this example, the first line loads the settings setup wrote, as root.
+`-email` is the first administrator's address, the same one you gave setup.
+
+### Become the owner
+
+The first account can sign in, but holds no role in the organisation yet. Once
+the link has been used, run setup again, with the same flags as before:
+
+```sh
+signari setup
+```
+
+Setup then makes that person the organisation's owner, `org-owner`, which gives
+every right in the console and the Admin API. It does this only when the person
+is unambiguous: the only account, or the one you name with `-email`. It never
+hands the role to anybody once the organisation has an owner. The summary's
+`Owner` line also gives the `signari role grant` command that does the same.
+
+### Check the deployment
 
 To check that the deployment is sound, run `signari doctor` with the same
 settings the engine uses. It lists anything wrong, with how to fix it. See

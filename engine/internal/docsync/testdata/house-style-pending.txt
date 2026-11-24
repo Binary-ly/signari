@@ -12,29 +12,14 @@
 # on 24 November 2026 after the docs integration pass. Several lines stay for a
 # reason that is not a fault to fix: a verbatim quotation of a specification or
 # of code (security-review-asvs, -fapi2, -nist-800-63b, security-scanning,
-# passkey-signals), a real name ("user handle" in WebAuthn, Apple's "App ID",
-# CWE-639's title), or a heading another page still links to by its old anchor
-# (kerberos, from cli.md).
+# passkey-signals), or a real name ("user handle" in WebAuthn, Apple's "App ID",
+# CWE-639's title).
 docs/README.md: Introduction first
 docs/README.md: One word per idea
 docs/README.md: Abbreviations
 docs/admin-tokens.md: One word per idea
-docs/cli.md: Introduction first
-docs/cli.md: One word per idea
-docs/cli.md: Abbreviations
-docs/cli.md: Titles as link text
-docs/configuration.md: Introduced code
-docs/configuration.md: One word per idea
-docs/configuration.md: Abbreviations
-docs/configuration.md: Titles as link text
 docs/data-export.md: One word per idea
 docs/directory-sync.md: One word per idea
-docs/doctor.md: One word per idea
-docs/doctor.md: Abbreviations
-docs/doctor.md: Titles as link text
-docs/installation.md: One word per idea
-docs/installation.md: Abbreviations
-docs/kerberos.md: One word per idea
 docs/migrate-from-authentik.md: One word per idea
 docs/migrate-from-keycloak.md: One word per idea
 docs/migrate-from-okta.md: One word per idea
@@ -51,10 +36,3 @@ docs/security-review-nist-800-63b.md: One word per idea
 docs/security-scanning.md: One word per idea
 docs/social-login.md: One word per idea
 docs/tracing.md: One word per idea
-docs/troubleshooting.md: One word per idea
-docs/troubleshooting.md: Short sentences
-docs/troubleshooting.md: Abbreviations
-docs/troubleshooting.md: Titles as link text
-docs/upgrading.md: No stacked code
-docs/upgrading.md: One word per idea
-docs/upgrading.md: Titles as link text

@@ -8,8 +8,8 @@ their own server, and some keep it in the browser. Applications that speak
 [SAML](saml.md) (Security Assertion Markup Language) are told in another way
 again.
 
-Signari therefore runs several mechanisms when somebody signs out, because no one
-of them reaches everything. It reports on each one separately.
+So when somebody signs out, Signari tells their applications in several ways at
+once, and reports on each way separately.
 
 You register where an application's sign-out leads with
 `signari client set-logout`. To send people on to sign out of the identity

@@ -510,5 +510,5 @@ What uninstall keeps stays listed in the manifest, so a later run can remove it.
   and an application are.
 - [Configuration](configuration.md): every setting the engine reads.
 - [Upgrading](upgrading.md): moving to a new release.
-- [Running more than one instance](high-availability.md), when one server is not
-  enough.
+- [Running several copies of Signari](high-availability.md), when one server is
+  not enough.

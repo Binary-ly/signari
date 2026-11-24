@@ -129,7 +129,7 @@
     - [Checking a deployment](doctor.md)
     - [Upgrading](upgrading.md)
     - [Backing up and restoring](runbook-backup-restore.md)
-    - [Running more than one instance](high-availability.md)
+    - [Running several copies of Signari](high-availability.md)
     - [Connection pooling](connection-pooling.md)
     - [Kubernetes and other artefacts](deployment-artefacts.md)
     - [Helm chart](../deploy/helm/signari/README.md)

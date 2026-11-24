@@ -14,8 +14,8 @@ on:
       - engine/Dockerfile
       - scripts/install.sh
       - .github/workflows/compose.yml
+  # Every branch, as ci.yml runs, but only when what this tests changed.
   push:
-    branches: [main]
     paths:
       - engine/cmd/signari/setup*.go
       - engine/cmd/signari/setupfiles/**
@@ -23,6 +23,7 @@ on:
       - engine/Dockerfile
       - scripts/install.sh
       - .github/workflows/compose.yml
+  workflow_dispatch:
 
 permissions: {}
 

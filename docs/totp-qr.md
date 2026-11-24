@@ -1,93 +1,70 @@
 # TOTP enrolment: the QR code
 
-The enrolment page shows a scannable QR code, with the key still available for
-manual entry behind a `Can't scan it?` disclosure.
+## Introduction
 
-This was an acknowledged gap for a long time — the page printed a base32 secret
-and asked people to type it. Most expect to point a camera at a square, and the
-ones who do not expect it often cannot manage 32 characters on a phone keyboard.
+An authenticator app on a phone can be a person's second factor. By default, it
+shows a six-digit code that changes every 30 seconds, called a time-based
+one-time password (TOTP). To make those codes, the authenticator app needs a
+secret that it shares with Signari.
 
-## Why the encoder is in this repo
+Signari's enrolment page shows that secret as a Quick Response (QR) code to scan.
+The key is still available for manual entry, behind a `Can't scan it?`
+disclosure.
 
-The obvious library, `github.com/skip2/go-qrcode`, is archived and has not been
-touched since 2020. An unmaintained dependency in an identity provider — to
-render, of all things, the enrolment secret for the second factor — is a worse
-trade than ~450 lines that are exhaustively checked against a reference.
+People set up their own authenticator app from their account, at
+`/account/mfa/totp`.
 
-Scope is deliberately narrow: **byte mode, error correction level M, versions 1
-to 12**. That covers every `otpauth://` URI this product produces (they run
-90–160 bytes; version 12 holds 288) and nothing else. Anything wider would be
-paths nothing here exercises.
+## Why a QR code
 
-## How it is known to be right
+This was an acknowledged gap for a long time. The page printed a base32 secret
+and asked people to type it. Most people expect to point a camera at a square.
+The ones who do not expect it often cannot manage 32 characters on a phone
+keyboard.
 
-Not by inspection. Three independent checks, because this is exactly the kind of
-code that produces a plausible-looking square while being wrong:
+## Enrolment never disturbs the factor you already have
 
-**1. Module-for-module against Python's `qrcode`**, across six inputs × all eight
-masks. Two things had to be pinned for that comparison to mean anything:
+The secret shown on the setup page is stored as an enrolment in progress, apart
+from any authenticator the account already has. That one keeps working until
+the new code is confirmed.
 
-- the reference is forced into single-segment **byte mode**. Left alone it
-  switches to alphanumeric for uppercase input — a denser, equally valid encoding
-  of different bits, which would show up as a difference that is not an error.
-- the **mask is fixed** on both sides, because selection is a separate question
-  (below).
+So an abandoned setup page changes nothing. A setup page somebody else sent you
+to cannot turn your second factor off.
 
-**2. Penalty scores match the reference's scorer exactly**, for every mask.
+Opening the page is a GET and stores nothing at all. A GET is what a link from
+any other site can make a signed-in browser send.
 
-**3. OpenCV's detector decodes the rendered image** back to the original URI.
-That is the property an operator actually cares about — a camera pointed at it
-recovers the secret.
+Confirming a replacement tells the account holder by email, and by text message
+where a verified number exists.
 
-### What the checks caught
+Starting and confirming both need a sign-in from the last ten minutes. An older
+session is sent to sign in again, and brought back to the page. Both are refused
+outright in an [impersonation session](impersonation.md). Confirming replaces
+the authenticator and deletes the recovery codes, so a stolen cookie must not be
+enough to do it.
 
-**Reversed format bits.** The 15-bit format field is written least-significant
-bit first along each arm; I had it most-significant first. The result had
-flawless finder patterns, correct timing, a perfect data region — and **no
-scanner on earth could read it**, because the format field is how a decoder
-learns which mask to undo. Every version failed to decode; one bit-order fix made
-all of them pass. Reading the code would not have found this.
+## Removing it
 
-**Penalty rule 3 over-counted at the edges.** The standard states the finder-like
-pattern as one *eleven*-module window (`10111010000` / `00001011101`). I had
-implemented it as a seven-module pattern plus a separate look outwards, treating
-off-symbol positions as light — so every near-edge occurrence scored. Totals came
-out around 1000 instead of ~300, and a worse mask won: a valid symbol that is
-harder to scan, which is the one failure this scoring exists to prevent. Fixed,
-and the scores now match the reference exactly.
+`/account/security` lists the authenticator app with the person's other sign-in
+methods. It removes the authenticator app under the same recent-sign-in rule.
 
-### Where we differ from the reference, on purpose
+The holder is told on every channel they have, and the removal is audited as
+`mfa.totp_removed`. When it was their last second factor, the recovery codes go
+with it.
 
-Python's `qrcode` sometimes scores mask 2 lowest and then returns mask 5 anyway —
-a quirk in its selection, not its scoring. The standard says the lowest penalty
-wins, which is what this package does. So the tests compare **scores**, not the
-chosen mask, and compare **matrices only with the mask pinned**.
-
-## Rendering
-
-SVG, inline. No image encoder, no rasterising, no blurring when a browser scales
-it — and it can be inlined, which matters because the enrolment page carries a
-Content-Security-Policy that forbids external sources.
-
-The background is drawn explicitly white. On a dark-themed page a transparent
-background puts dark modules on dark and the symbol simply does not scan.
-
-It is inserted with `template.HTML`, which turns off escaping. That is only safe
-while the SVG is built entirely from integers and literals, so the property is
-asserted rather than argued: `TestSVGContainsNothingButGeneratedMarkup` feeds
-`</svg><script>alert(1)</script>...` through the encoder and requires the output
-to contain exactly four opening and four closing brackets — the `<svg>`,
-`<rect/>`, `<path/>` and `</svg>` this package emits, and nothing else.
+Until October 2026, only an administrator could remove one. So somebody who had
+moved to a new phone was asked at every sign-in for an authenticator they no
+longer had.
 
 ## Failure behaviour
 
 If the QR code cannot be built, the page still renders with the key for manual
-entry and logs a warning. Losing the ability to turn on a second factor is a far
-worse outcome than losing the square.
+entry, and logs a warning. Losing the ability to turn on a second factor is a
+far worse outcome than losing the square.
 
 ## Verified end to end
 
-Against the running engine, using only what the QR code carries:
+This was verified against the running engine, using only what the QR code
+carries:
 
 ```
 GET  /account/mfa/totp         -> introduction and a button; nothing is stored
@@ -100,28 +77,81 @@ POST /account/mfa/totp         -> "Two-factor authentication is on", 10 recovery
 The secret read out of the QR code matched the one shown for manual entry, and
 the code derived from it was accepted.
 
-## Enrolment never disturbs the factor you already have
+## Why the encoder is in this repo
 
-The secret shown on the setup page is stored as an enrolment in progress, apart
-from any authenticator the account already has. That one keeps working until the
-new code is confirmed; an abandoned setup page changes nothing, and a setup page
-somebody else sent you to cannot turn your second factor off. Opening the page is
-a GET and stores nothing at all, because a GET is what a link from any other site
-can make a signed-in browser send. Confirming a replacement tells the account
-holder by email (and SMS, where a verified number exists).
+The obvious library, `github.com/skip2/go-qrcode`, is archived and has not been
+touched since 2020. It would be an unmaintained dependency in an identity
+provider, rendering the enrolment secret for the second factor, of all things.
+That is a worse trade than ~450 lines that are exhaustively checked against a
+reference.
 
-Starting and confirming both need a sign-in from the last ten minutes. An older
-session is sent to sign in again and brought back to the page. Both are refused
-outright in an [impersonation session](impersonation.md). Confirming replaces
-the authenticator and deletes the recovery codes, so a stolen cookie must not
-be enough to do it.
+Scope is deliberately narrow: **byte mode, error correction level M, versions 1
+to 12**. That covers every `otpauth://` address Signari produces, and nothing
+else. Those addresses run 90–160 bytes, and version 12 holds 288. Anything wider
+would be paths nothing here exercises.
 
-## Removing it
+## How it is known to be right
 
-`/account/security` lists the authenticator app with the person's other sign-in
-methods, and removes it under the same recent-sign-in rule. The holder is told
-on every channel they have, the removal is audited as `mfa.totp_removed`, and
-when it was their last second factor the recovery codes go with it. Until
-October 2026 only an administrator could remove one, so somebody who had moved
-to a new phone was asked at every sign-in for an authenticator they no longer
-had.
+Not by inspection. This is exactly the kind of code that produces a
+plausible-looking square while being wrong. So there are three independent
+checks.
+
+**1. Module-for-module against Python's `qrcode`**, across six inputs × all
+eight masks. Two things had to be pinned for that comparison to mean anything:
+
+- the reference is forced into single-segment **byte mode**. Left alone, it
+  switches to alphanumeric for uppercase input. That is a denser, equally valid
+  encoding of different bits, which would show up as a difference that is not
+  an error.
+- the **mask is fixed** on both sides, because selection is a separate question
+  (below).
+
+**2. Penalty scores match the reference's scorer exactly**, for every mask.
+
+**3. OpenCV's detector decodes the rendered image** back to the original
+address. That is the property an administrator actually cares about: a camera
+pointed at it recovers the secret.
+
+### What the checks caught
+
+**Reversed format bits.** The 15-bit format field is written least-significant
+bit first along each arm. The first version had it most-significant first. The
+result had flawless finder patterns, correct timing and a perfect data region.
+Yet **no scanner on earth could read it**, because the format field is how a
+decoder learns which mask to undo. Every version failed to decode, and one
+bit-order fix made all of them pass. Reading the code would not have found this.
+
+**Penalty rule 3 over-counted at the edges.** The standard states the
+finder-like pattern as one *eleven*-module window (`10111010000` /
+`00001011101`). The first version implemented it as a seven-module pattern plus
+a separate look outwards, treating off-symbol positions as light. So every
+near-edge occurrence scored.
+
+Totals came out around 1000 instead of ~300, and a worse mask won. That gave a
+valid symbol that is harder to scan, which is the one failure this scoring
+exists to prevent. It is fixed, and the scores now match the reference exactly.
+
+### Where we differ from the reference, on purpose
+
+Python's `qrcode` sometimes scores mask 2 lowest, and then returns mask 5
+anyway. That is a quirk in its selection, not its scoring. The standard says the
+lowest penalty wins, which is what this package does. So the tests compare
+**scores**, not the chosen mask, and compare **matrices only with the mask
+pinned**.
+
+## Rendering
+
+The code is drawn as Scalable Vector Graphics (SVG), inline. There is no image
+encoder, no rasterising, and no blurring when a browser scales it. It can also be
+inlined, which matters because the enrolment page carries a
+Content-Security-Policy that forbids external sources.
+
+The background is drawn explicitly white. On a dark-themed page, a transparent
+background puts dark modules on dark, and the symbol does not scan.
+
+It is inserted with `template.HTML`, which turns off escaping. That is only safe
+while the SVG is built entirely from integers and literals. So the property is
+asserted, not argued. `TestSVGContainsNothingButGeneratedMarkup` feeds
+`</svg><script>alert(1)</script>...` through the encoder. It requires the output
+to contain exactly four opening and four closing brackets: the `<svg>`,
+`<rect/>`, `<path/>` and `</svg>` this package emits, and nothing else.

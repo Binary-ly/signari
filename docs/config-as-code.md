@@ -505,10 +505,10 @@ file has two ways to give them one, and neither is writing it in:
 
 A provisioning target's secret is issued by the system at the far end. For a
 System for Cross-domain Identity Management ([SCIM](glossary.md#scim)) target it
-is the `token`, and for a Google or Entra target the `credentials`. The engine cannot mint one, so it is always
-named by reference, in the same way. A target cannot be created without it. On a
-target that exists, it is compared and followed when given, and left as it is
-when left out.
+is the `token`, and for a Google or Entra target the `credentials`. The engine
+cannot mint one, so it is always named by reference, in the same way. A target
+cannot be created without it. On a target that exists, it is compared and
+followed when given, and left as it is when left out.
 
 A SCIM target's `base_url` changes only with its `token` in the same file. The
 token held was issued for the old address. Moved without a new one, it would be
@@ -521,7 +521,7 @@ Some other secrets are named by reference in the same way:
 - Duo's `secret`;
 - the migration source's `client_secret`.
 
-Each is held to its credentials when it moves:
+Each points somewhere new only with its secret given again:
 
 - A directory source moves to another `url`, `bind_dn`, `impersonate` or `domain`
   only with its credentials given again.

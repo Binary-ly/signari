@@ -1,13 +1,19 @@
 #!/bin/sh
-# Signari's installer, served as https://signari.dev/install.
+# signari-install-script
 #
-#   curl -fsSL https://signari.dev/install | sh
-#   curl -fsSL https://signari.dev/install | sh -s -- --yes --issuer https://login.example.com --email you@example.com
+# Signari's installer, fetched from the repository until https://signari.dev
+# serves it (INSTALL_URL below is the one line to change when it does):
 #
-# Read it before you run it. Download it, read it, see what it would do, then
-# run it:
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --yes --issuer https://login.example.com --email you@example.com
 #
-#   curl -fsSL https://signari.dev/install -o install.sh
+# The second line above marks the real script: a page served in its place,
+# such as a parked domain's HTML, lacks it, and nothing in this file can refuse
+# to run when this file is not what arrived. Read it before you run it.
+# Download it, check that line, see what it would do, then run it:
+#
+#   curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh -o install.sh
+#   sed -n 2p install.sh           # signari-install-script
 #   less install.sh
 #   sh install.sh --dry-run        # every command it would run, and none run
 #   sh install.sh
@@ -61,6 +67,9 @@
 # short part way defines some of them and runs nothing.
 
 REPO="Binary-ly/signari"
+# Where this script is fetched from. The repository's copy until
+# https://signari.dev serves the script itself, with no page in its place.
+INSTALL_URL="https://raw.githubusercontent.com/$REPO/main/scripts/install.sh"
 RELEASES="https://github.com/$REPO/releases"
 ARCHIVES="https://github.com/$REPO/archive/refs/tags"
 # Who signs a release (.github/workflows/release.yml), as SECURITY.md checks it.
@@ -224,8 +233,8 @@ run() {
 }
 
 usage() {
+  printf 'usage: sh install.sh [options]      or      curl -fsSL %s | sh -s -- [options]\n' "$INSTALL_URL"
   cat <<'EOF'
-usage: sh install.sh [options]      or      curl -fsSL https://signari.dev/install | sh -s -- [options]
 
   --version vX.Y.Z           the release to install (default: the latest)
   --dry-run                  print every command instead of running it
@@ -441,7 +450,7 @@ write_unit() {
     return 0
   fi
   cat >"$TMP/signari.service" <<EOF
-# Written by the Signari installer (https://signari.dev/install). A later run
+# Written by the Signari installer ($INSTALL_URL). A later run
 # replaces this file while that first line is here; take it out to keep edits.
 [Unit]
 Description=Signari identity provider
@@ -553,9 +562,11 @@ run_setup() {
   # A release from before setup existed (v0.1.0) installs, and is set up by hand.
   if ! "$BIN" help setup >/dev/null 2>&1; then
     say ""
-    say "Signari $VERSION is installed at $BIN, and has no setup command: it came in a later"
-    say "release. Set this one up as its README's quick start says:"
+    say "Signari $VERSION is installed at $BIN, and has no setup command, which comes in the"
+    say "release after v0.1.0. Set this one up by hand, as its README's quick start says:"
     say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+    say "or, to use signari setup before that release, build main from source:"
+    say "https://github.com/$REPO/blob/main/docs/installation.md#from-source"
     log "skip: $VERSION has no setup command, so it is set up by hand"
     return 0
   fi
@@ -739,8 +750,9 @@ offer_source() {
   say "  go build -o signari ./cmd/signari"
   say "  ./signari setup"
   say ""
-  say "A release from before setup existed, as v0.1.0 is, has no setup command: follow that"
-  say "release's README instead, at https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
+  say "v0.1.0 has no setup command, which comes in the release after it: build main instead"
+  say "(--branch main) to use it, or follow v0.1.0's README, at"
+  say "https://github.com/$REPO/blob/$VERSION/README.md#quick-start"
 }
 
 # elsewhere says plainly that there is no binary here, and offers what can run
@@ -754,7 +766,7 @@ elsewhere() {
     say "Docker is here: run this again with --docker, and it builds the release's image and"
     say "runs it with Docker Compose, its own PostgreSQL beside it:"
     say ""
-    say "  curl -fsSL https://signari.dev/install | sh -s -- --docker"
+    say "  curl -fsSL $INSTALL_URL | sh -s -- --docker"
     offer_docker
     offered=1
   fi

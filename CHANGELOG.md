@@ -21,10 +21,12 @@ and its entry says how.
   second run changes nothing; `-dry-run` prints the plan, `-check` exits 0 when
   everything is there and 2 when not, and `-json` prints one line for a script.
   See `docs/cli.md`.
-- **A one-line installer**, `scripts/install.sh`, served as
-  `https://signari.dev/install`: it installs a release only once its SHA-256, and
+- **A one-line installer**, `scripts/install.sh`, fetched from the repository
+  (`https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh`)
+  until signari.dev serves it: it installs a release only once its SHA-256, and
   with cosign its signature, match, makes the systemd service as root, and runs
-  `signari setup`.
+  `signari setup` on a release that has it. v0.1.0 does not, so until the next
+  release the script installs v0.1.0 and points to its manual steps.
 - `serve` takes its listen address from `SIGNARI_ADDR` when `-addr` is not given.
 - The compose stack's engine serves as `signari_engine`, with a password an init
   script gives it on a fresh volume; a volume made before needs it set once, as

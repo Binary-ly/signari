@@ -1075,6 +1075,26 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	}
 }
 
+// A service that is running is told to restart, not to start: it goes on
+// running the binary and the settings it started with, so an upgrade, or an
+// env file the run changed, takes effect only once it restarts.
+func TestARunningServiceIsToldToRestart(t *testing.T) {
+	r := &setupRun{h: setupHost{unitInstalled: true}, a: setupAnswers{envFile: "/etc/signari/signari.env"}}
+	if got := r.startCommand(); got != "systemctl enable --now signari" {
+		t.Errorf("a service that is not running: %q", got)
+	}
+	r.h.serviceActive = true
+	if got := r.startCommand(); got != "systemctl restart signari" {
+		t.Errorf("a running service: %q", got)
+	}
+	var out bytes.Buffer
+	r.out = &out
+	r.printSummary()
+	if !strings.Contains(out.String(), "Restart it") || strings.Contains(out.String(), "Start it") {
+		t.Errorf("the summary for a running service:\n%s", out.String())
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

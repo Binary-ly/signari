@@ -91,6 +91,9 @@ type setupHost struct {
 	postgresUID   int
 	systemd       bool
 	unitInstalled bool
+	// serviceActive says the installer's service is running now: it runs the
+	// binary and the settings it started with, so it is restarted, not started.
+	serviceActive bool
 	interactive   bool
 	now           func() time.Time
 	// listeners are what listens on ports 443 and 80 here, and leLive where
@@ -122,6 +125,11 @@ func thisHost() setupHost {
 	}
 	if _, err := os.Stat(unitPath); err == nil {
 		h.unitInstalled = true
+		if h.systemd {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			h.serviceActive = exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "signari.service").Run() == nil
+			cancel()
+		}
 	}
 	if peerSupported && h.euid == 0 {
 		if u, err := user.Lookup("postgres"); err == nil {
@@ -1426,6 +1434,9 @@ func (r *setupRun) startCommand() string {
 	if r.inCompose || r.a.compose != "" {
 		return "docker compose up --detach --wait, in " + cmp.Or(r.a.compose, filepath.Dir(r.a.envFile))
 	}
+	if r.h.serviceActive {
+		return "systemctl restart signari"
+	}
 	if r.h.unitInstalled {
 		return "systemctl enable --now signari"
 	}
@@ -1473,7 +1484,14 @@ func (r *setupRun) printSummary() {
 	if r.log != nil {
 		fmt.Fprintf(w, "  %-14s %s, what each run did, with no secret in it.\n", "Log", r.log.path)
 	}
-	fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	if r.h.serviceActive {
+		// It is running what it started with: an upgraded binary, or an env
+		// file this run changed, takes effect only once it restarts.
+		fmt.Fprintf(w, "\n  %-14s %s: it is running, on the binary and settings it started\n%swith.\n",
+			"Restart it", r.startCommand(), "                 ")
+	} else {
+		fmt.Fprintf(w, "\n  %-14s %s\n", "Start it", r.startCommand())
+	}
 	if r.inCompose {
 		dir := filepath.Dir(r.a.envFile)
 		fmt.Fprintf(w, "  %-14s signari setup -check -compose %s\n", "Check it", dir)

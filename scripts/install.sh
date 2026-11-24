@@ -50,6 +50,7 @@
 # Options:
 #   --version vX.Y.Z           the release to install (default: the latest)
 #   --dry-run                  print every command instead of running it
+#   --allow-downgrade          install a release older than the one installed
 #   --docker                   build the release's image and run it with Docker Compose
 #   --dir PATH                 with --docker: the compose project's directory (default ~/signari)
 #   --yes                      passed to setup: ask nothing, take the defaults
@@ -78,6 +79,8 @@ SIGNER='^https://github\.com/Binary-ly/signari/\.github/workflows/release\.yml@r
 SIGNER_ISSUER="https://token.actions.githubusercontent.com"
 
 DRY_RUN=0
+ALLOW_DOWNGRADE=0
+REPLACED=0
 DOCKER=0
 YES=0
 VERSION=""
@@ -239,6 +242,7 @@ usage() {
 
   --version vX.Y.Z           the release to install (default: the latest)
   --dry-run                  print every command instead of running it
+  --allow-downgrade          install a release older than the one installed
   --docker                   build the release's image and run it with Docker Compose
   --dir PATH                 with --docker: the compose project's directory (default ~/signari)
   --yes                      passed to setup: ask nothing, take the defaults
@@ -265,6 +269,7 @@ parse_args() {
       --version) need_value "$@"; VERSION=$2; shift 2 ;;
       --version=*) VERSION=${1#*=}; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
       --docker) DOCKER=1; shift ;;
       --yes | -y) YES=1; shift ;;
       --issuer) need_value "$@"; ISSUER=$2; shift 2 ;;
@@ -412,6 +417,18 @@ verify() {
   fi
 }
 
+# version_lt says whether release $1 is older than release $2, each vX.Y.Z.
+version_lt() {
+  awk -v a="${1#v}" -v b="${2#v}" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) exit 0
+      if (x[i] + 0 > y[i] + 0) exit 1
+    }
+    exit 1
+  }'
+}
+
 install_binary() {
   if [ "$(id -u)" = 0 ]; then
     bindir=/usr/local/bin
@@ -419,6 +436,19 @@ install_binary() {
     bindir="$HOME/.local/bin"
   fi
   BIN="$bindir/signari"
+  # Never back to an older release unless asked: its schema may be behind the
+  # database's, which it would refuse to serve.
+  if [ -x "$BIN" ] && [ "$ALLOW_DOWNGRADE" != 1 ]; then
+    have_v=$("$BIN" version 2>/dev/null | awk '$1 == "version" {print $2; exit}')
+    case $have_v in
+      v[0-9]*)
+        if version_lt "$VERSION" "$have_v"; then
+          die "$BIN is $have_v, newer than $VERSION, so nothing was installed: give --allow-downgrade to" \
+            "install $VERSION over it, once you know its schema is not behind the database's"
+        fi
+        ;;
+    esac
+  fi
   if [ "$DRY_RUN" != 1 ] && [ -x "$BIN" ] && [ "$(sha256_of "$BIN" 2>/dev/null)" = "$SUM" ]; then
     say "$BIN is $VERSION already"
     log "skip: $BIN is $VERSION already"
@@ -428,6 +458,7 @@ install_binary() {
     if [ "$DRY_RUN" != 1 ]; then
       say "installed $BIN"
       log "installed $BIN"
+      REPLACED=1
     fi
   fi
   record binary "$BIN"
@@ -807,6 +838,13 @@ main() {
   install_binary
   service
   run_setup
+  # A running service goes on running the binary it started with.
+  if [ "$REPLACED" = 1 ] && have systemctl && systemctl is-active --quiet signari 2>/dev/null; then
+    say ""
+    say "signari.service is still running the release it started with: restart it to run $VERSION,"
+    say "  systemctl restart signari"
+    log "the service is active and runs the release it started with; it needs a restart"
+  fi
   log "result ok"
 }
 

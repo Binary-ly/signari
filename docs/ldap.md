@@ -449,7 +449,7 @@ failure this whole design is against. The client asked for the entry to be gone,
 a later search would not find it, and the row would still be there.
 
 The person's sessions are ended first, in the same transaction. So each
-application they signed in to is sent a back-channel logout notice, with `reason`
+application they signed in to is sent a Back-Channel Logout notice, with `reason`
 `user_deleted`. Letting the delete cascade the sessions away would remove the list
 of applications to tell before anyone was told.
 

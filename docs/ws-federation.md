@@ -2,7 +2,8 @@
 
 ## Introduction
 
-WS-Federation is an older Microsoft protocol for signing in, much like SAML.
+WS-Federation is an older Microsoft protocol for signing in, much like Security
+Assertion Markup Language ([SAML](glossary.md#saml)).
 Signari speaks its "passive requestor profile", the part used by web browsers.
 SharePoint and Windows Identity Foundation applications use it. So does anything
 federated to Active Directory Federation Services (ADFS) before SAML 2.0 was the
@@ -13,13 +14,13 @@ need?](protocols-explained.md#ws-federation) explains it in plain words.
 choose**. It is here so that moving off ADFS does not have to mean rewriting
 every application first.
 
-You register a WS-Federation application exactly as you register a SAML service
-provider. There is nothing else to configure.
+You register a WS-Federation application exactly as you register a SAML
+application. There is nothing else to configure.
 
 ## Configuration
 
-There is none beyond registering the application as a SAML service provider.
-This command registers a SharePoint intranet:
+There is none beyond registering the application as a SAML application. This
+command registers a SharePoint intranet:
 
 ```sh
 signari saml add-sp -org <uuid> \
@@ -178,8 +179,8 @@ the browser lets it. The browser does not send a session cookie that is
 `SameSite=Lax` or `Strict` in a frame from another site. An application with such a
 cookie keeps its session until the session runs out.
 
-And the page is not shown at all when the session also holds a SAML service
-provider with single logout. That provider's chain takes the browser from one
+And the page is not shown at all when the session also holds a SAML application
+with Single Logout. That application's chain takes the browser from one
 provider to the next instead. In that case the OpenID Connect applications' frames
 are not shown either. Until November 2026, nothing was sent at all.
 

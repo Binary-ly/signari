@@ -127,8 +127,9 @@ verifier.
 
 The source range is part of the credential, not a convenience. RADIUS has no
 handshake and no certificate. So only the address and the secret tell a real
-switch from anybody who can send a User Datagram Protocol (UDP) packet. `0.0.0.0/0` is refused at registration, and a secret under
-16 characters is refused too.
+switch from anybody who can send a UDP packet, the plain network message RADIUS
+travels in. `0.0.0.0/0` is refused at registration, and a secret under 16
+characters is refused too.
 
 Signari answers Access-Request only. Accounting and change-of-authorization are
 separate protocols with separate risks. Answering a code Signari does not
@@ -161,10 +162,10 @@ So this server:
   at all**, and never reaches the credential checker.
 - **Always emits** `Message-Authenticator`, **first**, in every response.
 
-The real answer is RADIUS over TLS (RFC 6614), which removes the attacker's
-position entirely. That is a deployment decision. Run this on a network segment
-you trust, or in front of a Transport Layer Security ([TLS](glossary.md#tls))
-terminator.
+The real answer is RADIUS over Transport Layer Security
+([TLS](glossary.md#tls)), in RFC 6614, which removes the attacker's position
+entirely. That is a deployment decision. Run this on a network segment you trust,
+or in front of a TLS terminator.
 
 ## Other decisions
 
@@ -180,8 +181,9 @@ that answers yes or no to each guess.
 whoever is typing. Telling "no such person" apart from "wrong password" would turn
 the network sign-in screen into an oracle for which accounts exist.
 
-**Empty passwords are rejected** before the credential checker, matching the
-[LDAP](ldap.md) shim's rule about unauthenticated binds.
+**Empty passwords are rejected** before the credential checker. That matches the
+rule of the Lightweight Directory Access Protocol ([LDAP](ldap.md)) shim about
+unauthenticated binds.
 
 **A fixed set of workers answers, and only a device can make them work.** The
 loop reading the socket checks the source and the Message-Authenticator. Only a
@@ -233,9 +235,9 @@ outstanding request's is discarded with no reply, as RFC 3748 requires.
 **A zero-length attribute is refused.** It would not advance the parse cursor, so
 the loop would spin forever on a packet an attacker sends once.
 
-**A request means one thing.** One with a second User-Name, a second
-User-Password or a second State is rejected. Until October 2026, only a second
-User-Name was. With two passwords, the first was checked. So a request carrying
+**A request means one thing.** One with a second `User-Name`, a second
+`User-Password` or a second `State` is rejected. Until October 2026, only a second
+`User-Name` was. With two passwords, the first was checked. So a request carrying
 the right one first, and anything after it, was accepted. A proxy that read the
 other would have checked something else.
 

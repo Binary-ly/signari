@@ -8,8 +8,9 @@ partner's entity ID, its endpoints and its certificates. Typing those in by hand
 is slow, and a mistake in them is hard to see.
 
 Signari can register a partner from what it publishes about itself instead. It
-works for both roles. One is a [service provider](saml.md) that Signari signs
-people in to, such as Acme's chat application. The other is an
+works for both roles. One is a [SAML application](saml.md) that Signari signs
+people in to, such as Acme's chat application. SAML calls it a "service
+provider". The other is an
 [upstream](saml-source.md) identity provider that Signari signs people in
 through. Signari checks the document as carefully as it checks a sign-in
 response.
@@ -20,7 +21,7 @@ Admin API.
 ## Register a partner from its metadata
 
 A federation often publishes one document that holds many partners' metadata,
-called an "aggregate". These commands register a service provider from a URL, an
+called an "aggregate". These commands register a SAML application from a URL, an
 upstream from a file, and one entity out of a federation's aggregate:
 
 ```sh
@@ -39,7 +40,7 @@ signari saml add-sp -org <uuid> -metadata https://mdq.example.org/aggregate.xml 
 
 The same fields go in the Admin API's two registration routes. Give `metadata`,
 the document, or `metadata_url`, with `metadata_signer` or `metadata_unsigned`.
-The first route, for service providers, also takes `metadata_encrypt`.
+The first route, for SAML applications, also takes `metadata_encrypt`.
 
 ## A document is a decision
 
@@ -102,7 +103,7 @@ and win.
 ## Reading it again
 
 A partner changes its metadata from time to time. These commands show what a
-refresh of a service provider would change, refresh it, and refresh an upstream:
+refresh of a SAML application would change, refresh it, and refresh an upstream:
 
 ```sh
 signari saml refresh-sp -entity-id https://sp.example.com/saml -dry-run

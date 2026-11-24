@@ -8,7 +8,8 @@ proves that it holds the key. That is [EAP-TLS](glossary.md#eap-tls): the
 Extensible Authentication Protocol (EAP) carrying a Transport Layer Security
 (TLS) handshake. It suits company laptops on Acme's office wifi.
 
-Signari answers EAP-TLS on its RADIUS listener. It checks the certificate against
+Signari answers EAP-TLS on its Remote Authentication Dial-In User Service
+([RADIUS](radius.md)) listener. It checks the certificate against
 the authority that issued it. Then it checks that the person the certificate names
 still has an active account. For people with no certificate, Signari can also
 check a password inside an encrypted tunnel.
@@ -58,8 +59,8 @@ language.
 ## What this actually is
 
 EAP-TLS is a complete TLS handshake, with client authentication. It is carried
-inside EAP packets, which are carried inside RADIUS attributes, over the User
-Datagram Protocol (UDP). The access point understands none of it, and only
+inside EAP packets, which are carried inside RADIUS attributes, over UDP. The
+access point understands none of it, and only
 forwards it.
 
 The handshake is run by `crypto/tls`, not reimplemented. Everything in
@@ -218,8 +219,8 @@ working.
 
 Some people have no certificate. For them, the supplicant can make a TLS tunnel to
 Signari and check Signari's certificate. Then it sends the person's name and
-password inside the tunnel. To turn this on, set the tunnel methods beside the
-server certificate and key:
+password inside the tunnel. To turn this on, set the tunnel methods beside
+Signari's certificate and key:
 
 ```sh
 SIGNARI_EAP_TUNNELS=ttls,peap     # with SIGNARI_EAP_TLS_CERT and SIGNARI_EAP_TLS_KEY
@@ -244,7 +245,7 @@ traffic flows once the person is in.
 - **Off unless set**. It is a password method, and the certificate is the only
   thing standing between a person's password and whoever answers in its place.
   A supplicant that is not set to check the certificate sends the password to
-  anyone. Configure every supplicant with the issuing CA and the server name.
+  anyone. Configure every supplicant with the issuing CA and Signari's server name.
 - **Certificates first.** With EAP-TLS on as well (`SIGNARI_EAP_CLIENT_CA`),
   EAP-TLS is offered first. A supplicant without a certificate refuses it,
   naming the methods it would rather use. It is then offered the first of those

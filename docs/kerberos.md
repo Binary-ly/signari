@@ -303,8 +303,8 @@ to list principals would be a large amount of protocol code with one consumer.
 administrator already uses. Its absence is reported plainly, instead of producing
 an empty list that looks like an empty realm.
 
-**LDAP is usually the better route.** Active Directory and FreeIPA both publish the
-same principals over the Lightweight Directory Access Protocol (LDAP). They give
+**The Lightweight Directory Access Protocol (LDAP) is usually the better route.**
+Active Directory and FreeIPA both publish the same principals over LDAP. They give
 far richer attributes, and an immutable identifier this engine already
 understands. See [LDAP as a source](ldap-source.md). The kadmin path exists for a
 realm that has neither: MIT Kerberos on its own.

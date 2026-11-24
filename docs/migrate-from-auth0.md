@@ -6,8 +6,8 @@ When you move from Auth0 to Signari, people should be able to sign in on the fir
 day without choosing a new password. Auth0's export holds no passwords, so each
 person has to come across with some other way to sign in.
 
-`signari import auth0` reads Auth0's JSON export of its users, and creates each
-person in one Signari organisation. Their password can be checked with Auth0 at
+`signari import auth0` reads Auth0's JSON export of the people in it, and creates
+each person in one Signari organisation. Their password can be checked with Auth0 at
 their first sign-in, or they can be linked to a provider they already sign in
 through.
 
@@ -16,7 +16,7 @@ source](password-migration.md) or a provider.
 
 ## Export and import the people
 
-Export the users from Auth0 as JSON, set up a migration source, then preview the
+Export the people from Auth0 as JSON, set up a migration source, then preview the
 import before you run it:
 
 ```sh

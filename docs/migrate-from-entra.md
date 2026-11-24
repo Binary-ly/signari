@@ -6,18 +6,18 @@ When you move from Microsoft Entra ID to Signari, people should be able to sign 
 on the first day without choosing a new password. Entra ID exports no passwords,
 so each person has to come across with some other way to sign in.
 
-`signari import entra` reads a list of Entra ID's users, and creates them in one
-Signari organisation. Each account keeps the person's object ID as its own ID, so an
+`signari import entra` reads a list of the people in Entra ID, and creates them in
+one Signari organisation. Each account keeps the person's object ID as its own ID, so an
 application that knew them by it keeps knowing them. People sign in through Entra
 ID while the move lasts, or have their password checked at their first sign-in.
 
 You run the import from the command line, after registering Entra ID as a provider
 or setting up a [migration source](password-migration.md).
 
-## Download the users and import them
+## Download the people and import them
 
-Download the users from Entra ID, register Entra ID as a provider, then preview the
-import before you run it:
+Download the list of people from Entra ID, register Entra ID as a provider, then
+preview the import before you run it:
 
 ```sh
 # Either: Users > All users > Download users in the Microsoft Entra admin
@@ -39,13 +39,13 @@ providers](social-login.md) describes.
 
 Two files are read:
 
-- the admin center's **Download users** comma-separated values (CSV) file, whose
-  columns include `userPrincipalName`, `objectId` and `accountEnabled`;
-- Graph's user resources as JSON, either a list of them or an object holding the
+- the comma-separated values (CSV) file that the first comment above downloads,
+  whose columns include `userPrincipalName`, `objectId` and `accountEnabled`;
+- Graph's `user` resources as JSON, either a list of them or an object holding the
   list under `value`.
 
-The preview download takes its columns from whatever the user list shows. So it is
-read only when those three columns are among them.
+The preview download takes its columns from whatever the portal's list shows. So it
+is read only when those three columns are among them.
 
 Graph sends `accountEnabled` only when asked for. A listing without it is refused,
 so that nobody disabled there is enabled here.
@@ -83,7 +83,7 @@ else's account.
 
 ## What comes across
 
-Each field of a user becomes this in Signari:
+Each field of a person's record becomes this in Signari:
 
 | In Entra ID | Here |
 |---|---|
@@ -104,5 +104,5 @@ Some things cannot come across:
 - **Passwords**, as above.
 - **Other columns and properties**, such as `jobTitle`, `department` or
   `officeLocation`. Each is counted in the report by name.
-- **Groups, roles and application assignments.** A user download does not hold
-  them.
+- **Groups, roles and application assignments.** A download of the people does not
+  hold them.

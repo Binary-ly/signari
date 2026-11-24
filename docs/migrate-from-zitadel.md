@@ -66,14 +66,15 @@ Some things in the export cannot come across:
 - **[OpenID Connect (OIDC)](glossary.md#oidc) and API applications.** Zitadel
   writes an application into its export without its client ID or secret. So it
   cannot be recreated with the ID the application already uses. Each one is named
-  in the report with its redirect URIs and post-logout URIs. Register it with
+  in the report with its redirect URIs, and the URIs it returns people to after
+  they sign out. Register it with
   `signari client create -client-id <the ID it uses>`.
-- **The subject.** Zitadel sends each person's user ID as `sub`. That ID is a
+- **The subject.** Zitadel sends each person's ID as `sub`. That ID is a
   number written as text. An account's ID here, which is what Signari sends, is a
   universally unique identifier (UUID). An application that keyed its accounts on
   `sub` meets every person as a stranger. The report says how many people this
   applies to.
-- **Machine users.** They sign in with a key or a secret, and neither is exported.
+- **Machine accounts.** They sign in with a key or a secret, and neither is exported.
   Register whatever uses one as a client.
 - **Administrative roles**, such as `ORG_OWNER` and project roles held as a member.
   Nothing is granted here by having held them. Each person's roles are named, so

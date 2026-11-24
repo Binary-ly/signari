@@ -3,12 +3,12 @@
 ## Introduction
 
 When you move from Okta to Signari, people should be able to sign in on the first
-day without choosing a new password. Okta has no export file, and its users API
-does not give out passwords. So each person has to come across with some other way
+day without choosing a new password. Okta has no export file, and its API does not
+give out passwords. So each person has to come across with some other way
 to sign in.
 
-`signari import okta` reads the people from a file you save from Okta's users
-API, and creates them in one Signari organisation. Their password can be checked
+`signari import okta` reads the people from a file you save from Okta's API, and
+creates them in one Signari organisation. Their password can be checked
 with Okta at their first sign-in, or they can sign in through Okta while the move
 lasts.
 
@@ -17,8 +17,8 @@ source](password-migration.md) or a provider.
 
 ## Save the people and import them
 
-List the people with Okta's users API into one file, set up a migration source,
-then preview the import before you run it:
+List the people with Okta's `GET /api/v1/users` into one file, set up a migration
+source, then preview the import before you run it:
 
 ```sh
 # Okta has no export file: list the people with its users API,
@@ -31,8 +31,8 @@ signari import okta -file okta-users.json -org <uuid> -dry-run
 signari import okta -file okta-users.json -org <uuid>
 ```
 
-The file holds User objects as the users API lists them: the pages one after
-another, or one User to a line.
+The file holds Okta's `User` objects as `GET /api/v1/users` lists them: the pages
+one after another, or one `User` to a line.
 
 A dry run is the import itself, run in a transaction that is rolled back. Run it
 again whenever you like. It duplicates nothing.
@@ -68,7 +68,7 @@ else's account.
 
 ## What comes across
 
-Each field of a User becomes this in Signari:
+Each field of a `User` becomes this in Signari:
 
 | In Okta | Here |
 |---|---|
@@ -92,5 +92,5 @@ Some things cannot come across:
   `id` Okta gave a person meets them as a stranger, until it is told the new one.
 - **Other profile fields**, such as `mobilePhone`, `title` or a custom one. Each is
   counted in the report by name.
-- **Groups, factors and applications.** The users API does not list them with a
-  person.
+- **Groups, factors and applications.** `GET /api/v1/users` does not list them
+  with a person.

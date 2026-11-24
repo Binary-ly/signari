@@ -85,7 +85,7 @@ Once you agree to the plan, it does these steps in order:
 2. Creates the database.
 3. Applies migration 0001 as the PostgreSQL superuser. This creates Signari's
    database roles, including `signari_engine`.
-4. Gives `signari_engine` a newly generated password. From then on, the server
+4. Gives `signari_engine` a newly generated password. From then on, the engine
    runs as `signari_engine`, never as a superuser.
 5. Applies the remaining migrations as `signari_engine`.
 6. Generates the "root key", the secret that encrypts everything sensitive
@@ -139,7 +139,7 @@ installed, it also checks the release's Sigstore signature, which proves the
 program was built and signed by Signari's own release workflow.
 
 Run as root on a machine with systemd, it also installs a `signari` service, so
-the server starts on boot. You can check it is running:
+the engine starts on boot. You can check it is running:
 
 ```sh
 systemctl status signari
@@ -214,12 +214,12 @@ so that running setup again keeps every password:
 |---|---|
 | `compose.yaml` | PostgreSQL 17, a one-shot `setup` service and the Signari server, each with a healthcheck |
 | `.env` | The project's settings, and the PostgreSQL superuser's generated password |
-| `signari.env` | The server's settings, with `signari_engine`'s own generated password |
-| `root.key` | The root key, mounted read-only into the server |
+| `signari.env` | The engine's settings, with `signari_engine`'s own generated password |
+| `root.key` | The root key, mounted read-only into the engine |
 
 The `setup` service is `signari setup` itself, run on every start. It uses the
-superuser once, and the server runs as `signari_engine`. The database is in a
-Docker volume, `signari_pgdata`. The server's port is published on
+superuser once, and the engine runs as `signari_engine`. The database is in a
+Docker volume, `signari_pgdata`. The engine's port is published on
 `127.0.0.1:8080` unless you give another with `--addr`.
 
 You can write a project yourself, where the `signari` program is installed:
@@ -252,7 +252,7 @@ The Signari repository also includes a Docker Compose file for development,
 `deploy/docker-compose.yml`. It builds Signari from source, and starts
 PostgreSQL beside it.
 
-Start the server and its database, and create the first organisation and person:
+Start the engine and its database, and create the first organisation and person:
 
 ```sh
 git clone https://github.com/Binary-ly/signari.git
@@ -269,7 +269,7 @@ docker compose logs bootstrap
 ```
 
 The compose file groups its services into "profiles", which you turn on with
-`--profile`. Without one, it starts only the database and the server:
+`--profile`. Without one, it starts only the database and the engine:
 
 | Profile | Starts | Address |
 |---|---|---|
@@ -287,7 +287,7 @@ first. [Deployment artefacts](deployment-artefacts.md) gives the commands.
 > impersonate it. Use the installer or the [Helm chart](deployment-artefacts.md)
 > for a real deployment.
 
-Keep the value of `SIGNARI_ROOT_KEY` you exported. The server needs the same key
+Keep the value of `SIGNARI_ROOT_KEY` you exported. The engine needs the same key
 every time it starts.
 
 ## From source
@@ -321,9 +321,9 @@ Then run its setup, which asks its questions and does the rest, as on a server:
 After a successful setup, you have:
 
 - a PostgreSQL database holding Signari's tables, with the `signari_engine` role
-  that the server runs as;
+  that the engine runs as;
 - the root key, in a file only its owner can read;
-- the server's settings, in `/etc/signari/signari.env`;
+- the engine's settings, in `/etc/signari/signari.env`;
 - an instance whose issuer is the address you chose, with its first signing keys;
 - one organisation, with no people in it yet;
 - a one-time link for the first administrator, good for 72 hours.
@@ -339,13 +339,15 @@ you to do. For a proxy, see
 settings it needs.
 
 To check that the deployment is sound, run `signari doctor` with the same
-settings the server uses. It lists anything wrong, with how to fix it. See
+settings the engine uses. It lists anything wrong, with how to fix it. See
 [what doctor checks](doctor.md).
 
 ## Back up the root key
 
-The root key encrypts every secret Signari stores: its signing keys, the secrets
-behind people's authenticator apps, RADIUS secrets and directory passwords.
+The root key encrypts every secret Signari stores. These include its signing keys,
+the secrets behind people's authenticator apps and directory passwords. They also
+include the secrets of Remote Authentication Dial-In User Service (RADIUS)
+devices.
 Signari never stores the root key in the database it protects. A database backup
 that contained its own key would protect nothing.
 
@@ -355,7 +357,7 @@ neither is any use without the other.
 > [!WARNING]
 > Lose the root key, and every secret Signari sealed with it is gone for good.
 > No token it signed can be checked, and every authenticator app stops working.
-> Keep a copy of the key outside the server today, beside your database backups.
+> Keep a copy of the key off this machine today, beside your database backups.
 
 Keep a second copy somewhere a database failure cannot reach, such as a password
 manager. [Backup and restore](runbook-backup-restore.md) explains how to back up
@@ -363,7 +365,7 @@ the key and the database together, and how to test a restore.
 
 ## Removing Signari
 
-The installer and setup each list what they make, as they make it, in a
+The installer and setup each list what they make, as they make it. The list is a
 "manifest": a file `signari uninstall` reads to remove exactly those things and
 nothing else. It is `/var/lib/signari/install.manifest` when root ran them, and
 `~/.local/state/signari/install.manifest` otherwise.
@@ -381,9 +383,9 @@ asks before it removes anything:
 signari uninstall
 ```
 
-In this example, uninstall stops and disables the service and removes its unit,
-the environment file, the certificate copies and the certbot hook, the logs, the
-program and the `signari` system account. A directory goes once it is empty, so a
+In this example, uninstall stops and disables the service and removes its unit.
+It also removes the environment file, the certificate copies, the certbot hook,
+the logs, the program and the `signari` system account. A directory goes once it is empty, so a
 file you put there yourself keeps it.
 
 ### The root key and the database
@@ -422,7 +424,7 @@ What uninstall keeps stays listed in the manifest, so a later run can remove it.
   sign in to it.
 - [How Signari works](how-signari-works.md): what an instance, an organisation
   and an application are.
-- [Configuration](configuration.md): every setting the server reads.
+- [Configuration](configuration.md): every setting the engine reads.
 - [Upgrading](upgrading.md): moving to a new release.
 - [Running more than one instance](high-availability.md), when one server is not
   enough.

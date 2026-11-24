@@ -9,7 +9,7 @@ problem it finds, it says what is wrong, why it matters and what to do.
 
 It exits with a non-zero status when it finds anything critical, so a deploy
 script or a scheduled job can stop on it. Run it with the same settings the
-server uses:
+engine uses:
 
 ```sh
 signari doctor           # exit 1 if anything critical is found
@@ -19,13 +19,14 @@ signari doctor           # exit 1 if anything critical is found
 
 Every feature here ships with something that proves that feature works.
 `proxy check` proves the forward-auth route is actually protected. `scim verify`
-proves a deprovisioned user is gone from the downstream app. `policy test` proves
+proves a deprovisioned person is gone from the downstream application. `policy test` proves
 the rules match their stated intent. Each answers one question well.
 
-None of them answers the question an operator has on the first day, which is **is
+None of them answers the question an administrator has on the first day, which is **is
 this deployment sound**. That question spans configuration nobody checks until it
 fails at the worst moment: an issuer served over plaintext, a root key nobody set,
-a SAML provider whose logout is silently refused, recovery email that goes to a log
+a Security Assertion Markup Language (SAML) provider whose sign-out is silently
+refused, recovery email that goes to a log
 file where nobody will read it.
 
 ## Output
@@ -58,7 +59,7 @@ Findings first, ranked, each with what is wrong, why it matters, and what to do:
 Two properties of that output are deliberate.
 
 **Every finding carries a fix.** A checker that prints `TLS: warning` teaches an
-operator to ignore it. There is a test (`TestEveryFindingCarriesAFix`) that fails
+administrator to ignore it. There is a test (`TestEveryFindingCarriesAFix`) that fails
 if a finding above `info` has no `Fix` line.
 
 **A clean run still prints `checked:`.** "No findings" and "nothing ran" have
@@ -99,20 +100,20 @@ reasons to block a release tonight.
 | issuer | plaintext on loopback | info — how everyone develops |
 | issuer | trailing slash | warning — `iss` is compared exactly |
 | root key | neither `SIGNARI_ROOT_KEY` nor `..._REF` set | critical |
-| database | the role `SIGNARI_DSN` signs in as, or acts as, is a superuser or has `BYPASSRLS` | critical — "Superusers and roles with the BYPASSRLS attribute always bypass the row security system", forced or not, so no organisation's policy binds the engine and a query that leaves out its organisation reads every tenant's rows. `serve` reads the same variable and refuses to start on the same answer, from the same query, unless `-allow-rls-bypass` or `SIGNARI_ALLOW_RLS_BYPASS=1` says otherwise; this finding is how a deployment that does so is still told. Serve as `signari_engine`, which `signari setup` sets up ([Serving as signari_engine](upgrading.md#serving-as-signari_engine)); until November 2026 every quick start here served as a superuser |
-| admin API | token shorter than 32 characters | critical |
-| admin API | no token at all | *not a finding* — the API is off unless an address is given |
+| database | the role `SIGNARI_DSN` signs in as, or acts as, is a superuser or has `BYPASSRLS` | critical — "Superusers and roles with the BYPASSRLS attribute always bypass the row security system", forced or not, so no organisation's policy binds the engine and a query that leaves out its organisation reads every organisation's rows. `serve` reads the same variable and refuses to start on the same answer, from the same query, unless `-allow-rls-bypass` or `SIGNARI_ALLOW_RLS_BYPASS=1` says otherwise; this finding is how a deployment that does so is still told. Serve as `signari_engine`, which `signari setup` sets up ([Serving as signari_engine](upgrading.md#serving-as-signari_engine)); until November 2026 every quick start here served as a superuser |
+| `admin API` | token shorter than 32 characters | critical |
+| `admin API` | no token at all | *not a finding* — the API is off unless an address is given |
 | mail | no `SMTP_HOST`/`MAIL_FROM` | warning — nobody can recover an account |
 | keys | none, or none active | critical |
 | keys | no active RS256 | info — SAML needs one, most SPs cannot verify ECDSA |
 | clients | plaintext redirect URI on a non-loopback host | critical |
-| clients | enabled client not requiring PKCE | warning |
+| clients | enabled client not requiring Proof Key for Code Exchange (PKCE) | warning |
 | clients | hybrid-flow exemption past the review date `client set-hybrid` recorded | warning — the date was demanded and, until October 2026, never mentioned again |
 | clients | signing algorithm (`client set-alg`) with no active key on its instance | critical — its tokens cannot be minted |
 | claim mappers | `required_scope` neither standard nor declared by the organisation | warning — the claim is released to nobody |
 | providers | an enabled extension provider with no signing secret | warning — it is called without `Signari-Signature` and cannot tell this engine's calls from anybody's; `provider rotate` gives it one |
-| saml | logout URL registered but no SP certificate | warning — every logout from it is refused |
-| federation | generic OIDC provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
+| saml | sign-out URL registered but no SP certificate | warning — every sign-out from it is refused |
+| federation | generic OpenID Connect (OIDC) provider allows sign-up with untrusted email verification | info — sign-up will always refuse |
 | flows | a stored sign-in flow that does not load | critical — the organisation runs the last flow that did, or the built-in one |
 | flows | a sign-in flow that refuses a passkey sign-in where people hold passkeys, or a provider sign-in where a provider is enabled | warning — a sign-in's proving stage must be the proof presented, so a flow naming only `password` refuses both; see [a sign-in's proving stage](flows.md#a-sign-ins-proving-stage-is-the-proof-presented) |
 | authorization | a stored model that does not load | critical — the engine evaluates the stored copy, so that organisation's decisions are failing |
@@ -125,8 +126,8 @@ reasons to block a release tonight.
 | theme | a loaded language is incomplete | warning — that language's pages render half in English |
 
 The theme checks exist because a refused override's symptom is a page that looks
-*normal*. The server does not stop for one — it serves the built-in and logs —
-so without this the only evidence scrolled past at startup, and an operator
+*normal*. Signari does not stop for one — it serves the built-in and logs —
+so without this the only evidence scrolled past at startup, and an administrator
 staring at a stock sign-in form cannot tell "refused" from "wrong directory"
 from "I edited the wrong file". `signari theme check` catches it earlier still.
 

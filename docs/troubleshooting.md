@@ -4,7 +4,7 @@
 
 When something goes wrong, Signari says so in words, and those words are the
 quickest way to the cause. Each entry on this page starts from what you see,
-quoted exactly as the server writes it, then gives the cause and the fix.
+quoted exactly as Signari writes it, then gives the cause and the fix.
 
 Search this page for the message you have. If it is not here, search for it in
 Signari's source. Every refusal is a literal string there, and most sit next to a
@@ -110,15 +110,15 @@ time.
 whose name starts `__Host-` only from a secure address: `https://`, or
 `http://localhost`. If Signari is served over plain HTTP at any other address, or
 the browser blocks its cookies, the cookie never comes back. When Signari starts
-without TLS, it warns about exactly this: `no TLS configured: browsers will refuse
+without Transport Layer Security (TLS), it warns about exactly this: `no TLS configured: browsers will refuse
 to store the __Host- session cookie over plaintext on any host except localhost,
 so sign-in will silently fail to persist.`
 
 **Fix.** Serve Signari over HTTPS. Give it a certificate with `SIGNARI_TLS_CERT`
 and `SIGNARI_TLS_KEY`, or put a reverse proxy that holds one in front of it. Make
 the issuer the `https://` address, and allow cookies for Signari's address in the
-browser. If the message appeared only once, after the page was left open across a
-browser restart, sign in again: Signari has already given the page a new cookie.
+browser. If the message appeared only once, after the page stayed open across a
+browser restart, sign in again. Signari has already given the page a new cookie.
 
 **How to confirm.** In the browser's developer tools, the cookies for Signari's
 address include `__Host-signari_csrf`, and `__Host-signari_session` once you have
@@ -127,7 +127,7 @@ signed in. The form signs you in.
 The full list of what Signari refuses, and where, is in [An application cannot
 sign anyone in](#an-application-cannot-sign-anyone-in) below.
 
-## The server will not start
+## Signari will not start
 
 **`issuer must be https (got "http://…"); set SIGNARI_INSECURE_ISSUER=1 only for local testing`**
 The issuer is what every token names and every application checks, so it is
@@ -136,7 +136,7 @@ reach. Use `SIGNARI_INSECURE_ISSUER=1` only for a local test.
 
 **`no instance found -- run signari instance create -issuer … first`** and
 **`this database has 3 instances; set SIGNARI_ISSUER to name the one to serve`**
-An engine serves one instance. With none, make one. With several, the server
+An engine serves one instance. With none, make one. With several, Signari
 will not guess which is meant, because tokens minted under the wrong issuer
 are refused by every application. Set `SIGNARI_ISSUER` to one of those listed.
 
@@ -163,7 +163,7 @@ is bound to loopback behind a terminator you control.
 
 ### At the authorization request
 
-These six are shown on the server's own page and are **never sent to the
+These six are shown on Signari's own page and are **never sent to the
 application**. Until the client and its `redirect_uri` are known to belong
 together, redirecting would hand the error, and anything after it, to an
 address nobody registered.
@@ -182,7 +182,7 @@ application as `error` and `error_description`:
 
 | `error_description` | Cause and fix |
 |---|---|
-| `code_challenge is required` | Every client requires PKCE by default, confidential ones included. Send a `code_challenge`. For a confidential client that truly cannot, `signari client set-pkce -client-id <id> -require-pkce=false`. A public client cannot opt out |
+| `code_challenge is required` | Every client requires Proof Key for Code Exchange (PKCE) by default, confidential ones included. Send a `code_challenge`. For a confidential client that truly cannot, `signari client set-pkce -client-id <id> -require-pkce=false`. A public client cannot opt out |
 | `code_challenge_method is required and must be S256` | `plain` is refused. Hash the verifier with SHA-256 |
 | `code_challenge must be 43-128 characters of base64url without padding` | Encode the SHA-256 of the verifier as base64url, no `=` |
 | `client may not use the authorization_code grant` | The client's grants do not include it. `signari client set-grants` |
@@ -196,7 +196,7 @@ application as `error` and `error_description`:
 | `invalid_grant`: `authorization code is unknown or expired`, or `authorization code has expired` | Codes are short-lived and single-use. Exchange the code as soon as the browser returns |
 | `invalid_grant`: `authorization code has already been used` | The code was redeemed twice, often by a retry or a second tab. Start the sign-in again |
 | `invalid_grant`: `redirect_uri does not match the one used in the authorization request` | Send the same `redirect_uri` to both, byte for byte |
-| `invalid_grant`: `code_verifier is invalid` | The verifier is not the one whose challenge was sent. Keep it per sign-in attempt, not per user |
+| `invalid_grant`: `code_verifier is invalid` | The verifier is not the one whose challenge was sent. Keep it per sign-in attempt, not per person |
 
 ### The application refuses the ID token
 
@@ -214,7 +214,7 @@ application as `error` and `error_description`:
 
 **`Incorrect username or password.`**
 This message is deliberately the same for an unknown account, a wrong password
-and a deactivated one, so that it does not tell anyone which addresses exist.
+and a deactivated one. That way it does not tell anyone which addresses exist.
 Look at the account instead, with `GET /admin/users?email=<address>`:
 
 - `status` `deactivated`, `locked` or `pending` (a sign-up waiting for approval);
@@ -224,8 +224,8 @@ Look at the account instead, with `GET /admin/users?email=<address>`:
   (`login_free_attempts` and `login_max_delay_s` in the organisation's settings).
 
 **`the passkey was not accepted`**
-The passkey was registered under another relying party ID, or under a user
-handle that is not the account's. A passkey belongs to the host name it was
+The passkey was registered under another relying party ID, or under a WebAuthn
+`userHandle` that is not the account's. A passkey belongs to the host name it was
 made at. An imported one works only when this deployment serves the same
 relying party ID, and when the account kept the handle it was registered
 under. See [what applications know people by](migrate-from-keycloak.md#what-applications-know-people-by).

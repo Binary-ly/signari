@@ -56,6 +56,9 @@ $ signari-161 verify
 schema ok
 ```
 
+Against a database whose newer migrations are not compatible, it refuses, and
+says what to do:
+
 ```
 $ signari-161 verify
 signari: the database is at 163, ahead of this binary (161), and migration
@@ -125,7 +128,7 @@ From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN` signs
 in as, or acts as, a superuser or a role with `BYPASSRLS`. PostgreSQL's own words:
 "Superusers and roles with the BYPASSRLS attribute always bypass the row security
 system", so no organisation's policy binds such a role, and a query that leaves
-out its organisation reads every tenant's rows. v0.1.0's README and its compose
+out its organisation reads every organisation's rows. v0.1.0's README and its compose
 file both served that way. Run `signari doctor` before you upgrade: it reports
 such a role as critical, and that is the deployment this section is for.
 
@@ -135,7 +138,7 @@ written for, in either of two ways. Either way, keep the superuser for
 
 **With `signari setup`**, against the database you have, on the machine that
 runs it. It reaches PostgreSQL as you over the local socket, or, run as root, as
-the `postgres` system user; elsewhere, give `-superuser-dsn-file` a file holding a
+the `postgres` system account; elsewhere, give `-superuser-dsn-file` a file holding a
 superuser's URL. It needs the root key you serve with now in a file, since a new
 key would open none of the signing keys already sealed. For the v0.1.0 quick
 start's database:

@@ -142,8 +142,8 @@ are refused by every application. Set `SIGNARI_ISSUER` to one of those listed.
 
 **`schema version mismatch: database is at 190, this binary expects 195 -- run signari migrate up`**
 The binary is newer than the database. Run `signari migrate up` with the new
-binary, as `signari_engine`, before it serves. See [upgrading.md](upgrading.md),
-and [schema-versions.md](schema-versions.md) for what each version changes. A
+binary, as `signari_engine`, before it serves. See [Upgrading and rolling back](upgrading.md),
+and [Schema versions](schema-versions.md) for what each version changes. A
 database *ahead* of the binary is served only when every migration since was
 declared compatible with the release before.
 
@@ -151,7 +151,7 @@ declared compatible with the release before.
 The root key seals signing keys, OTP seeds and personal attributes, and is
 never stored in the database it protects. Generate one with
 `head -c 32 /dev/urandom | base64`, and keep it where the database's backups
-are not. See [configuration.md](configuration.md), which also covers
+are not. See [the configuration reference](configuration.md), which also covers
 `SIGNARI_ROOT_KEY_FILE` and rotating it.
 
 **`the admin API will not serve plaintext: pass -tls-cert and -tls-key, or -admin-insecure …`**
@@ -228,14 +228,14 @@ The passkey was registered under another relying party ID, or under a user
 handle that is not the account's. A passkey belongs to the host name it was
 made at. An imported one works only when this deployment serves the same
 relying party ID, and when the account kept the handle it was registered
-under. See [migrate-from-keycloak.md](migrate-from-keycloak.md#what-applications-know-people-by).
+under. See [what applications know people by](migrate-from-keycloak.md#what-applications-know-people-by).
 
 ## The Admin API refuses a request
 
 | Status, `error` | Cause and fix |
 |---|---|
 | `412 precondition_failed` | The configuration moved since the version sent as `If-Match`: `expected_version` and `current_version` name both. Read the object again, decide again, and send the new version. Never retry blindly with `current_version`, which is the lost update the precondition exists to stop |
-| `429 rate_limited` | Too many requests arrived at once. The request was turned away before it was read, so nothing was done. Wait `Retry-After` seconds and send it again. The clients in [sdk.md](sdk.md) and the Terraform provider do this |
-| `403 insufficient_scope` | The token lacks the scope the operation names in [admin-api-reference.md](admin-api-reference.md), or is scoped to another organisation |
+| `429 rate_limited` | Too many requests arrived at once. The request was turned away before it was read, so nothing was done. Wait `Retry-After` seconds and send it again. The [Admin API clients](sdk.md) and the Terraform provider do this |
+| `403 insufficient_scope` | The token lacks the scope the operation names in the [Admin API reference](admin-api-reference.md), or is scoped to another organisation |
 | `403 privileged_target` | The target may impersonate others, or is in a group that may; the token also needs `privileged-users:write` |
 | `401` | No usable bearer token: missing, revoked or expired |

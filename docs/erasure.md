@@ -82,7 +82,7 @@ signari erase subject -subject-id <uuid> -confirm <uuid> -deactivate
 
 Every session the account holds ends in the same transaction. Before the account
 is deleted, each application it signed in to is sent a
-[back-channel logout](glossary.md#back-channel-logout) notice.
+[Back-Channel Logout](glossary.md#back-channel-logout) notice.
 
 ## A person who never enrolled a second factor
 

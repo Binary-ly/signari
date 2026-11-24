@@ -22,9 +22,9 @@ defect this review found, and the section after its table explains it.
 | Requirement | Level | Signari |
 |---|---|---|
 | Exact string matching of redirect URIs | MUST | yes — `HasRedirectURI`, byte equality |
-| **Variable port numbers for loopback native apps** | **MUST** | **was missing — now implemented** |
+| **Variable port numbers for loopback native applications** | **MUST** | **was missing — now implemented** |
 | No open redirectors | MUST NOT | no forwarding of arbitrary query-supplied URIs |
-| Avoid forwarding user credentials on redirect (§4.12) | MUST | credentials are never placed in a redirect |
+| Avoid forwarding a person's credentials on redirect (§4.12) | MUST | credentials are never placed in a redirect |
 
 ### The defect: native applications could not use Signari at all
 
@@ -78,7 +78,7 @@ needs a human looking at how often it happens. A repeated `nonce` is not tracked
 
 | Requirement | Level | Signari |
 |---|---|---|
-| Sender-constrain access tokens (mTLS or DPoP) | SHOULD | both: RFC 8705 `x5t#S256` and RFC 9449 `jkt` |
+| Sender-constrain access tokens (mTLS or Demonstrating Proof of Possession (DPoP)) | SHOULD | both: RFC 8705 `x5t#S256` and RFC 9449 `jkt` |
 | Public-client refresh tokens sender-constrained **or** rotated | MUST | rotation with reuse detection (`store/refresh.go`) |
 
 ## §2.3 Access token privilege restriction
@@ -124,11 +124,11 @@ wildcard: RFC 9068 §4 requires the claim.
 |---|---|---|
 | Resource owner password credentials grant | MUST NOT | refused in `ValidateGrantType` |
 | Enforce client authentication where feasible | SHOULD | yes, and shared across every direct-request endpoint |
-| Asymmetric client authentication available | RECOMMENDED | `private_key_jwt` and mutual TLS |
+| Asymmetric client authentication available | RECOMMENDED | `private_key_jwt` and mutual Transport Layer Security (TLS) |
 | Publish authorization server metadata | RECOMMENDED | RFC 8414 discovery |
 | Clients must not influence `client_id` | SHOULD NOT | dynamic registration assigns it; the request cannot choose it |
 | Authorization responses never over unencrypted connections | MUST | `ValidateRedirectURI` refuses non-loopback `http` |
-| **CORS MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — CORS is served from an explicit allow-list in `cors.go`, and the authorization endpoint is not on it |
+| **Cross-Origin Resource Sharing (CORS) MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — CORS is served from an explicit allow-list in `cors.go`, and the authorization endpoint is not on it |
 
 ## §4 attack-specific countermeasures
 
@@ -141,7 +141,7 @@ wildcard: RFC 9068 §4 requires the claim.
 | §4.4 Mix-up | RFC 9207 `iss` in the authorization response | yes, on by default |
 | §4.5 Code injection | PKCE required by default | yes |
 | §4.6 Access token injection | no implicit grant; code flow only | yes |
-| §4.7 CSRF | double-submit `__Host-` cookie, constant-time compare | yes |
+| §4.7 Cross-site request forgery (CSRF) | double-submit `__Host-` cookie, constant-time compare | yes |
 | §4.8 PKCE downgrade | verifier refused without a challenge | fixed this session |
 | §4.10.1 Stolen token misuse | DPoP and mTLS sender-constraining | yes |
 | §4.10.2 Audience restriction | enforced at our own resource | fixed above |

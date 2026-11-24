@@ -151,11 +151,11 @@ below would be a bypass if it were permissive:
 | Principal | |
 |---|---|
 | `alice@EXAMPLE.COM` | → `alice@example.com` (or `alice` with `SIGNARI_KERBEROS_STRIP_REALM=1`) |
-| `alice@PARTNER.EXAMPLE`, with `-trust-realms PARTNER.EXAMPLE` | → `alice@partner.example`, and never `alice`: stripping both would hand this realm's alice to the other |
-| `alice@PARTNER.EXAMPLE` | **refused.** A ticket from another realm is not a user of this one, even where a trust exists |
+| `alice@PARTNER.EXAMPLE`, with `-trust-realms PARTNER.EXAMPLE` | → `alice@partner.example`, and never `alice`: stripping both would hand this Kerberos realm's alice to the other |
+| `alice@PARTNER.EXAMPLE` | **refused.** A ticket from another Kerberos realm does not name a person of this one, even where a trust exists |
 | `alice/admin@EXAMPLE.COM` | **refused.** An administrative principal is not the person who shares its first component |
 | `HTTP/host@EXAMPLE.COM` | **refused.** A service principal is not a person |
-| `alice` | **refused.** No realm, and guessing one is guessing who vouched for them |
+| `alice` | **refused.** No Kerberos realm, and guessing one is guessing who vouched for them |
 
 ## A ticket does not create an account
 
@@ -205,7 +205,7 @@ Signari can use a Kerberos realm in three ways:
 |---|---|
 | **SPNEGO** | A domain-joined browser signs in with no interaction |
 | **Password backend** | A password typed at the sign-in form is verified against the KDC, at every sign-in |
-| **Directory sync** | Accounts are created from the realm's principals |
+| **Directory sync** | Accounts are created from the Kerberos realm's principals |
 
 ### Password backend
 

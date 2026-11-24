@@ -111,7 +111,7 @@ The portal reads three flags:
 
 | Flag | |
 |---|---|
-| `-launch-url` | Where the portal sends the user. Must be https |
+| `-launch-url` | Where the portal sends the person. Must be https |
 | `-logo-url` | Optional, https only |
 | `-portal-hidden` | Keep this client off the portal entirely |
 

@@ -102,9 +102,9 @@ Cross-domain Identity Management (SCIM), and Transport Layer Security (TLS).
 
 | Destination | Package | Notes |
 |---|---|---|
-| SMTP host | `mail` | **refuses to send at all** if the server does not offer STARTTLS. Not HTTP; dialled directly |
+| SMTP host | `mail` | **refuses to send at all** if the mail server does not offer STARTTLS. Not HTTP; dialled directly |
 | LDAP/AD directory | `directory/ldapsource`, `delegated/ldapbind` | TLS with `MinVersion` 1.2; `InsecureSkipVerify` deliberately absent. Not HTTP; a directory is internal by nature and is dialled directly |
-| SMS gateway | `sms/gateway` | `safedial`; a loopback webhook URL is allowed because the operator wrote that address down |
+| SMS gateway | `sms/gateway` | `safedial`; a loopback webhook URL is allowed because an administrator wrote that address down |
 | Duo API host | `duo` | `safedial` |
 | SCIM target | `scim/client` | `safedial`, with `SIGNARI_SCIM_CA_BUNDLE` as its roots when set |
 | SSF transmitter keys | `ssf/receive` | `safedial`; fetched when a token names a key id not yet seen, which the sender chooses |
@@ -113,10 +113,10 @@ Cross-domain Identity Management (SCIM), and Transport Layer Security (TLS).
 | Old provider behind delegated sign-in | `delegated` | `safedial`; the request carries a password |
 | FIDO metadata mirror | `fidomds` | `safedial` |
 | OpenID Federation trust anchors | `oidfed/fetch` | `safedial`, plus intermediates discovered while resolving a chain |
-| A service provider's artifact resolution service | `httpapi/samlartifactrequest` | `safedial`, https only, no redirect followed. Anybody can bring an artifact, which is what makes the call, so it goes only to the address registered under the index the artifact names, for the provider whose SourceID it carries, and once per artifact. See [saml](saml.md#requests-by-artifact) |
+| A Security Assertion Markup Language (SAML) application's artifact resolution service | `httpapi/samlartifactrequest` | `safedial`, https only, no redirect followed. Anybody can bring an artifact, which is what makes the call, so it goes only to the address registered under the index the artifact names, for the provider whose SourceID it carries, and once per artifact. See [saml](saml.md#requests-by-artifact) |
 | Outpost callbacks | `outpost` | the outpost agent calling its own engine; not a request the engine makes |
-| A URL passed to `signari proxycheck` / logout test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the server |
-| Vault or OpenBao transit engine | `keys` | named only by `SIGNARI_VAULT_ADDR`, and not `safedial`, as the server is the operator's own, usually on their network. Plain http is refused except to loopback, since the token goes with every request. Makes and reads signing keys and asks for signatures; nothing private comes back. See [signing keys in a module](signing-keys-in-a-module.md) |
+| A URL passed to `signari proxycheck` / sign-out test | `proxycheck`, `logouttest` | diagnostics, run by hand, not by the engine |
+| Vault or OpenBao transit engine | `keys` | named only by `SIGNARI_VAULT_ADDR`, and not `safedial`, as that server is the administrator's own, usually on their network. Plain http is refused except to loopback, since the token goes with every request. Makes and reads signing keys and asks for signatures; nothing private comes back. See [signing keys in a module](signing-keys-in-a-module.md) |
 | OpenTelemetry collector | `tracing` | named only by `SIGNARI_OTLP_TRACES_ENDPOINT`, and not `safedial`, as a collector is usually on loopback or the cluster network. Receives spans, which carry no identifier, and nothing is read back but a status. See [tracing](tracing.md) |
 
 `TestEveryOutboundClientIsSafedialsOrListed` keeps this true. A client built
@@ -131,7 +131,7 @@ provider is *defined* by connecting to places its applications name.
 | Destination | Chosen by | Fetched when |
 |---|---|---|
 | `backchannel_logout_uri` | the client, at registration | a session ends |
-| Webhook endpoint | an operator, per subscription | an event fires |
+| Webhook endpoint | an administrator, per subscription | an event fires |
 | Federation entity statements | the trust chain | resolving a chain |
 
 ### What bounds it
@@ -202,7 +202,7 @@ firewall, and this document is what they need to write it.
 | SMTP | 15 s default, connection closed after each message |
 | Captcha verification | 5 s — "a provider that takes ten seconds has already cost more than it is worth" |
 | guacd handshake | 10 s |
-| Back-channel logout / webhooks | retried with capped backoff, up to 10 attempts, then **parked** so an undelivered event is visible rather than silently dropped |
+| Back-Channel Logout / webhooks | retried with capped backoff, up to 10 attempts, then **parked** so an undelivered event is visible rather than silently dropped |
 | Admin token touch | 3 s, out of band |
 | Span export | 10 s a batch; a batch the collector does not take is dropped, not retried |
 | Transit engine | 10 s a call, a minute to make a key; a signature that fails fails the request that needed it, and is not retried |

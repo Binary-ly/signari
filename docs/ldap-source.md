@@ -78,7 +78,7 @@ where it stopped:
 | Step | Means |
 |---|---|
 | `connect` | No server could be reached, or TLS failed |
-| `bind` | The server answered and refused the credentials |
+| `bind` | The directory answered and refused the credentials |
 | `search` | The bind worked and the search failed or found nobody, so the base DN or the filter is wrong |
 | `identity` | An entry has no value for what this flavour tracks people by, so the flavour is wrong for this server |
 
@@ -141,7 +141,7 @@ deactivated, one created, and the person locked out of everything they owned.
 
 So each flavour tracks people by an identifier that does not change:
 
-| Flavour | Identifier | Login | Name | Disabled |
+| Flavour | Identifier | Sign-in name | Name | Disabled |
 |---|---|---|---|---|
 | `openldap` | `entryUUID` | `uid` | `cn` | — |
 | `ad` | `objectGUID` (hex) | `sAMAccountName` | `displayName` | `userAccountControl & 0x2` |
@@ -166,7 +166,7 @@ private CA, over `ldaps://`.
 
 | | |
 |---|---|
-| three users, first sync | 3 creates |
+| three people, first sync | 3 creates |
 | immediate re-sync | **proposes nothing** — no churn |
 | rename + move to another OU (`uid`, `cn`, `mail`, DN all change) | **one update**, not a delete plus a create |
 | server `sizelimit` smaller than the directory | **error**, not a short list |

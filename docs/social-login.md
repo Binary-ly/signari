@@ -44,7 +44,7 @@ Web Token ([JWT](glossary.md#jwt)) and Security Assertion Markup Language
 | `discord` | Consumer accounts with no domain ownership behind them |
 | `twitch` | Needs `user:read:email` *and* a claims parameter before it returns an address |
 | `linkedin` | Issuer and userinfo are on different hosts, which is unusual and correct |
-| `slack` | Scoped to the workspace the app is installed in |
+| `slack` | Scoped to the workspace the Slack application is installed in |
 | `atlassian` | Needs `audience=api.atlassian.com` and `prompt=consent` |
 | `oidc` | Anything else with a discovery document |
 | `oauth2` | Anything else, with no ID token: see [below](#a-provider-with-no-id-token) |
@@ -242,7 +242,7 @@ https://<issuer>/login/callback/<slug>/backchannel-logout
 ```
 
 At the provider, Signari is registered as an application. Register that address
-as the application's back-channel logout URI.
+as the application's Back-Channel Logout URI.
 
 A valid `logout_token` ends every session the person has in Signari. A session
 does not record which provider it came through. And a person signed out at the

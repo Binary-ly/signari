@@ -251,7 +251,7 @@ asked here:
 | | |
 |---|---|
 | the authorization endpoint, the portal, remote access | when the person signs in |
-| SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the service provider as `RequestDenied`; WS-Federation answers `403` |
+| SAML and WS-Federation | in the one function that signs the assertion for both. A SAML refusal goes back to the SAML application as `RequestDenied`; WS-Federation answers `403` |
 | the device grant and CIBA | when the person presses approve. A refusal is recorded as a denial, so the waiting device or client is told `access_denied` rather than left polling |
 | every refresh | before the new tokens are minted. A refusal is `invalid_grant`, and the refresh token is **not** revoked: lifting the rule, or restoring the membership, restores the grant |
 | token exchange, the jwt-bearer grant, UMA (once a person is identified), transaction tokens and the OID4VCI pre-authorized code | before the token is minted. Who the person is is checked as for a refresh; **where they are is not met**, so a network, device or travel condition refuses (`unobserved: true` in a test case). The factors are those of the session behind an exchanged token; the others have none, so **a rule requiring MFA refuses them**. A `scope` rule is matched against the scope the token will carry, not the request's parameter: the client's whole registration when a jwt-bearer request names none or for a pre-authorized code, which has no scope parameter, and the ticket's permissions (`document:42#read`) for an RPT. A refusal is `invalid_grant`; a refused pre-authorized code is not spent. The person must also be in the client's organisation |

@@ -45,7 +45,7 @@ it rather than take a tick on trust.
 | V9.1.1 | Validate signature before accepting contents | ✅ `verifiedPayload` returns the payload only after `tok.Verify`; every caller unmarshals from that return value, so no path reads claims first |
 | V9.1.2 | Algorithm allowlist, no `none`, no symmetric/asymmetric confusion | ✅ the list is `RS256, ES256, PS256, EdDSA` — asymmetric only, `none` absent. The check that matters is the next one: `if string(key.Algorithm()) != h.Algorithm` pins the algorithm to the **key's** declared one rather than the header's, which is what actually defeats alg confusion; an allow-list alone does not |
 | V9.1.3 | Key material from pre-configured sources; reject `jku`, `x5u`, `jwk` | ✅ refused explicitly, and tested (`TestATokenCannotSupplyItsOwnKey`) |
-| V9.2.1 | Honour `nbf`/`exp` | ✅ **`exp` fail-closed** — `c.Expiry == 0` is treated as expired, not as absent. **`nbf` is checked exactly where externally-minted JWTs arrive**: `private_key_jwt` client assertions (`privatekeyjwt.go:204`, bounded by `MaxClockSkew`). Our own access tokens carry no `nbf`, so there is nothing to honour there. On the SSF receive path `exp` is not merely checked but **forbidden**, per SSF §4.1.7 |
+| V9.2.1 | Honour `nbf`/`exp` | ✅ **`exp` fail-closed** — `c.Expiry == 0` is treated as expired, not as absent. **`nbf` is checked exactly where an externally-minted JSON Web Token (JWT) arrives**: `private_key_jwt` client assertions (`privatekeyjwt.go:204`, bounded by `MaxClockSkew`). Our own access tokens carry no `nbf`, so there is nothing to honour there. On the SSF receive path `exp` is not merely checked but **forbidden**, per SSF §4.1.7 |
 | V9.2.2 | Validate token **type** and purpose | ✅ checked inside the shared verifier against a value the caller names, so a single-purpose token cannot be presented elsewhere — `at+jwt`, `secevent+jwt`, `logout+jwt` |
 | V9.2.3 | Accept only tokens whose audience is this service | ✅, and the **issuer** check beside it is now tested too — it had survived mutation against the whole suite, and on this server aliased issuers share a key set, so `iss` is the only thing separating them |
 | V9.2.4 | Audience restriction when one key serves several audiences | ✅ `audience := []string{c.ClientID}; if len(resources) > 0 { audience = resources }` — RFC 8707 resources become the audience, the client id the fallback only when none were requested |
@@ -58,13 +58,13 @@ provider, which OIDC calls the "relying party".
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.2.1 | CSRF defence on the code flow (PKCE or `state`) | ✅ both, and the `state` half is **now tested** — nothing referenced `ConsumeFederatedLogin` or `core.federated_logins` before. Single-use (`DELETE … RETURNING`), bound to the originating browser by a cookie hash compared in constant time, and — the subtle part — the comparison happens **after** the row is destroyed, so a wrong binding still burns the state rather than leaving it to be ground against. All three tested; dropping the binding comparison fails the second |
+| V10.2.1 | Cross-site request forgery (CSRF) defence on the code flow (Proof Key for Code Exchange (PKCE) or `state`) | ✅ both, and the `state` half is **now tested** — nothing referenced `ConsumeFederatedLogin` or `core.federated_logins` before. Single-use (`DELETE … RETURNING`), bound to the originating browser by a cookie hash compared in constant time, and — the subtle part — the comparison happens **after** the row is destroyed, so a wrong binding still burns the state rather than leaving it to be ground against. All three tested; dropping the binding comparison fails the second |
 | V10.2.2 | Mix-up defence across several authorization servers | ✅ `discovery.go:60` — `strings.TrimSuffix(d.Issuer,"/") != strings.TrimSuffix(issuer,"/")` refuses a discovery document that declares an issuer other than the one asked for (RFC 8414 §3.3), and the id_token's `iss` is compared to the configured issuer again at `client.go:252` |
-| V10.5.1 | ID Token replay — `nonce` | ✅ generated per login with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers **"nonce from a different login (replay)"** and **"no nonce at all"** |
-| V10.5.2 | Identify the user by a claim that cannot be reassigned | ✅ the external identity is keyed `UNIQUE (provider_id, subject)` (migration 0022), so it is the issuer-and-subject pair rather than an address. An email is reassignable — a departed employee's address handed to their replacement would otherwise take over the account |
-| V10.5.3 | Reject metadata whose issuer does not match | ✅ `discovery.go:60`, the same check OID4VCI §12.2.3 and OpenID Federation §9 both state |
+| V10.5.1 | ID Token replay — `nonce` | ✅ generated per sign-in with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers `nonce from a different login (replay)` and `no nonce at all` |
+| V10.5.2 | Identify the person by a claim that cannot be reassigned | ✅ the external identity is keyed `UNIQUE (provider_id, subject)` (migration 0022), so it is the issuer-and-subject pair rather than an address. An email is reassignable — a departed employee's address handed to their replacement would otherwise take over the account |
+| V10.5.3 | Reject metadata whose issuer does not match | ✅ `discovery.go:60`, the same check OpenID for Verifiable Credential Issuance (OID4VCI) §12.2.3 and OpenID Federation §9 both state |
 | V10.5.4 | ID Token `aud` equals our client id | ✅ `audienceContains` handles both the string and array forms, and `TestAudienceArrayIsHandled` plus the "audience is a different application" attack case cover it |
-| V10.5.5 | Back-channel logout: `typ`, and DoS through forced logout | **provider side yes; client side not implemented.** We *send* logout tokens explicitly typed `logout+jwt` (asserted in `outbox/logouttoken_test.go`) and the forced-logout DoS is handled at V10.6.2. We do **not** receive OIDC back-channel logout from upstream federation providers — there is no such route. The equivalent need is met by a different mechanism: `/ssf/receive` accepts CAEP `session-revoked`, which ends the local session. Recorded as a boundary rather than a tick, because a ✅ here would claim a receiver we do not have |
+| V10.5.5 | Back-Channel Logout: `typ`, and denial of service through a forced sign-out | **provider side yes; client side since October 2026.** We *send* each `logout_token` explicitly typed `logout+jwt` (asserted in `outbox/logouttoken_test.go`), and the forced sign-out is handled at V10.6.2. When this was written, Signari did not receive OIDC Back-Channel Logout from upstream federation providers, and `/ssf/receive`, which accepts Continuous Access Evaluation Profile (CAEP) `session-revoked`, met the need instead. Since October 2026 an upstream provider's `logout_token` is received at `/login/callback/{slug}/backchannel-logout`: its signature is checked against the provider's keys, and it must carry the `http://schemas.openid.net/event/backchannel-logout` event, a `jti` used once, no `nonce` and a recent `iat`. Its `typ` is not required (see [signing in through another provider](social-login.md)) |
 
 ## V10.3 — resource server
 
@@ -75,7 +75,7 @@ that accepts access tokens.
 |---|---|---|
 | V10.3.1 | Accept only tokens whose audience is this service | ✅ `AudienceAccepted` gates `/userinfo` and the credential endpoint. Verified by mutation against the **whole** suite: making it return true unconditionally fails `TestATokenForAnotherResourceIsRefused` and `TestAudienceRestrictionIsEnforcedAgainstOurselves` |
 | V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three. The **scope** half is now tested at `/oauth2/userinfo`, and it needed to be: the handler gates `email`, `profile` and `groups` individually, and no test varied the scope — so nothing established that a claim is actually **withheld**. A test asking for everything and receiving everything passes identically against a handler that ignores scope; only asking for less proves the difference. Releasing `email` unconditionally now fails `TestUserinfoWithholdsClaimsTheScopeDidNotGrant` |
-| V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is `core.users.id`, a `uuid NOT NULL DEFAULT gen_random_uuid()` — verified in the schema, not inferred from the code that reads it |
+| V10.3.3 | Identify the person by a non-reassignable claim | ✅ `sub` is `core.users.id`, a `uuid NOT NULL DEFAULT gen_random_uuid()` — verified in the schema, not inferred from the code that reads it |
 | V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ `ACRFromAMR` derives the context from the factors **actually used**, and `FlowDemandsMFA` is consulted per authorization request rather than frozen at sign-in — a live password-only session is stepped up when `acr_values` demands it |
 | V10.3.5 (L3) | Sender-constrained tokens | ✅ both, with 7 tests across `dpoprefresh_test.go` and `mtlsrefresh_test.go` covering the bound key refusing a different key, refusing no proof at all, and still working with the right one |
 
@@ -147,7 +147,7 @@ and the clause no longer has the branch.
 | | Requirement | Verdict |
 |---|---|---|
 | V10.6.1 | Only `code`, `ciba`, `id_token`, `id_token code`; never `token` | ✅ `response_types_supported` is `["code"]` alone, and the authorize endpoint refuses anything containing `token` outright — an access token must never cross the front channel |
-| V10.6.2 | **Mitigate denial of service through forced logout** | ❌ → fixed, and tested. The distinction that carries it is *verified* versus *present*: `logoutconfirm_test.go` asserts an **unverified** `id_token_hint` does not skip the confirmation, which is the case that would otherwise reintroduce the attack through the parameter meant to prevent it |
+| V10.6.2 | **Mitigate denial of service through a forced sign-out** | ❌ → fixed, and tested. The distinction that carries it is *verified* versus *present*: `logoutconfirm_test.go` asserts an **unverified** `id_token_hint` does not skip the confirmation, which is the case that would otherwise reintroduce the attack through the parameter meant to prevent it |
 
 V10.6.2, verbatim:
 
@@ -198,9 +198,9 @@ would reintroduce the attack through the parameter meant to prevent it.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.7.1 | Consent to each authorization request | ✅ and the hard case is covered: `authorization_details` **always** prompt, which neither stored consent nor the first-party exemption can bypass — a user who approved the scope `payments` approved a capability, never a payment. `TestAuthorizationDetailsAlwaysPromptEvenForAFirstPartyClient` |
+| V10.7.1 | Consent to each authorization request | ✅ and the hard case is covered: `authorization_details` **always** prompt, which neither stored consent nor the first-party exemption can bypass — a person who approved the scope `payments` approved a capability, never a payment. `TestAuthorizationDetailsAlwaysPromptEvenForAFirstPartyClient` |
 | V10.7.2 | Clear information about what is being consented to | ✅ `scopeDescriptions` maps each scope to a human sentence and the screen renders `{Name, Description}` pairs, so a person is not asked to approve the string `groups` |
-| V10.7.3 | User can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
+| V10.7.3 | A person can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
 
 ## What this sweep leaves open
 
@@ -326,13 +326,13 @@ than claimed.
 | **V7.2.3** CSPRNG, ≥128 bits | **exceeded** — `newSID` is 32 bytes from `crypto/rand`, 256 bits, and the sid and cookie token are two independent values |
 | **V7.2.4** new token on authentication **and the current one terminated** | **was half met** — fixed, below |
 | **V7.4.1** termination disallows further use | met — every lookup filters `revoked_at IS NULL` |
-| **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
+| **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a person's account kills every session *instantly*, with no sweep and no window |
 | **V7.4.3** option to end other sessions after a factor changes | **met** — a password change ends every session, this one included (`httpapi/passwordselfservice.go:180-187`), and `/account/sessions` ends any or all of them after any other change |
 | **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
 | **V7.3.1** inactivity timeout | **not met** when this was written; an idle limit has since been built, `signari instance session-lifetime -idle`, off until it is set |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
-| **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
-| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [security-inventories.md](security-inventories.md) |
+| **V7.5.2** people can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [the security inventories](security-inventories.md) |
 
 ### V7.2.4: the half that was missing
 
@@ -406,7 +406,7 @@ The first version of this finding said the console could reach other
 organisations' rows in the eleven unprotected tables. **That was wrong.** Checking the roles
 instead of assuming them shows why:
 
-| Role | Reaches `core` | BYPASSRLS | Login |
+| Role | Reaches `core` | BYPASSRLS | `LOGIN` |
 |---|---|---|---|
 | `signari_admin` (the Laravel console) | **no grants at all** — 15 views in `core_v1` | no | yes |
 | `signari_maintenance` | full DML | **yes**, deliberately | **no** — `SET ROLE` only |
@@ -450,14 +450,14 @@ succeed by querying the wrong schema.
 
 | Requirement | Status |
 |---|---|
-| **V8.2.1** function-level access restricted to explicit permissions | met — `Principal.Can`, and every admin route checks a scope |
+| **V8.2.1** function-level access restricted to explicit permissions | met — `Principal.Can`, and every Admin API route checks a scope |
 | **V8.2.2** data-specific access, IDOR/BOLA | met — `MayActOn` on both the create path and the update path, which the comment there notes is the whole point: "a boundary that holds for creates and not for edits is worse than no boundary" |
 | **V8.3.1** enforced at a trusted service layer | met |
 | **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
-| **V8.4.1** cross-tenant controls | met, and now uniform |
-| **V8.1.x** documentation of the rules | **met, November 2026** — [security-inventories.md](security-inventories.md) says where each boundary is enforced and which page holds its rules |
-| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get a user attribute only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [admin-tokens.md](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound SCIM sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
-| **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
+| **V8.4.1** cross-organisation controls | met, and now uniform |
+| **V8.1.x** documentation of the rules | **met, November 2026** — [the security inventories](security-inventories.md) says where each boundary is enforced and which page holds its rules |
+| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get an attribute of a person only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [Admin API access](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound System for Cross-domain Identity Management (SCIM) sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
+| **V8.2.4 / V8.4.2** adaptive controls, layered administrative access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the administrative interfaces specifically |
 
 ## V11 Cryptography: twenty-four requirements (21 August 2026)
 
@@ -466,7 +466,7 @@ succeed by querying the wrong schema.
 | **V11.2.1** industry-validated implementations | met — Go's standard library and `x/crypto`; no hand-rolled primitives |
 | **V11.2.3** minimum 128 bits of security | **was not met for generated RSA keys** — fixed, below |
 | **V11.2.4** constant-time comparison | met — `subtle.ConstantTimeCompare` on every secret comparison, and `hmac.Equal` where a MAC is compared |
-| **V11.3.1** no insecure block modes or weak padding | met for encryption — AES-GCM everywhere, RSA-OAEP for SAML key transport. See the RS256 note below |
+| **V11.3.1** no insecure block modes or weak padding | met for encryption — AES-GCM everywhere, RSA-OAEP for Security Assertion Markup Language (SAML) key transport. See the RS256 note below |
 | **V11.3.2** approved ciphers such as AES-GCM | met — `cipher.NewGCM` in `keys/store.go`, `keys/subject.go`, `saml/encrypt.go` |
 | **V11.3.3** encrypted data protected against modification | met — GCM is authenticated encryption, so this is the same fact as V11.3.2 |
 | **V11.4.1** approved hash functions; no MD5 | met, with three protocol-mandated exceptions, below |
@@ -474,7 +474,7 @@ succeed by querying the wrong schema.
 | **V11.4.3** collision-resistant hashes ≥256 bits for signatures | met — SHA-256 and above throughout; SHA-1 refused on inbound SAML |
 | **V11.5.1** CSPRNG, ≥128 bits of entropy | **exceeded** — `crypto/rand`, 256 bits for session and device codes |
 | **V11.6.1** approved algorithms for key generation and signatures | met — P-256, Ed25519, RSA |
-| **V11.1.x** documented key policy and inventory | **met, November 2026** — [security-inventories.md](security-inventories.md) |
+| **V11.1.x** documented key policy and inventory | **met, November 2026** — [the security inventories](security-inventories.md) |
 | **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
 
 ### V11.2.3: Signari was generating the weaker key
@@ -561,13 +561,13 @@ worth recording as carefully as a finding.
 | **V6.2.8** verified exactly as received | met — `argon2.IDKey([]byte(password), ...)` takes it verbatim; the only `ToLower` is inside the guessability *estimator* and never reaches the hash |
 | **V6.2.5** no composition rules | met |
 | **V6.2.12** checked against breached passwords | met — `internal/passwords/breached.go` |
-| **V6.3.2** no default accounts | met — no migration seeds a user |
+| **V6.3.2** no default accounts | met — no migration seeds an account |
 | **V6.4.2** no password hints or secret questions | met — nothing of the kind exists |
-| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check a TOTP code needs |
+| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. A time-based one-time password (TOTP) carries `lastUsed`, the highest counter already accepted, which is the replay check a TOTP code needs |
 | **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
 | **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
 | **V6.6.2** OOB codes bound to their request | met, November 2026 — the hash of the sign-in's attempt is kept beside each emailed or texted code (`store/codeattempt.go`); see below |
-| **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per user by construction |
+| **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per person by construction |
 
 ### V6.8.1, and the reason it is the strongest item here
 
@@ -678,8 +678,8 @@ would arrive into a report already containing a G407 nobody reads.
 | Rule | CWE | Count | Assessment |
 |---|---|---|---|
 | `G101` | 798 | 37 | Name-pattern false positives. The rule matches identifiers containing "token", "secret", "credential" — ours hold protocol constants: `at+jwt`, `urn:ietf:params:oauth:token-type:access_token`, SAML URNs, provider endpoint URLs, `/oauth2/token` |
-| `G304` | 22 | 29 | File reads with a non-constant path; every one is an operator-supplied CLI flag (certificate bundles, the GeoIP database) |
-| `G703` | 22 | 8 | The same class under taint analysis. An operator who can set `--ldap-ca` can already read the file |
+| `G304` | 22 | 29 | File reads with a non-constant path; every one is an administrator-supplied CLI flag (certificate bundles, the GeoIP database) |
+| `G703` | 22 | 8 | The same class under taint analysis. An administrator who can set `--ldap-ca` can already read the file |
 | `G710` | — | 13 | Style-level |
 | `G114`, `G203`, `G204`, `G117`, `G306`, `G706` | various | 9 | Low-severity, reviewed, none attacker-reachable |
 
@@ -783,10 +783,10 @@ for applications. That would be scoring a checklist rather than securing anythin
 
 | Section | Verdict |
 |---|---|
-| V3.1.1 documentation of expected browser features | **met, November 2026** — [security-inventories.md](security-inventories.md), with what happens without each |
+| V3.1.1 documentation of expected browser features | **met, November 2026** — [the security inventories](security-inventories.md), with what happens without each |
 | V3.2.1 / V3.2.2 content interpretation | met — `nosniff` now, and all rendering goes through `html/template`, which escapes by context |
 | V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
-| V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
+| V3.4.2 Cross-Origin Resource Sharing (CORS) allowlist | met — a fixed allowlist, checked earlier under V10 |
 | V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
 | V3.4.7 CSP report location | **met, November 2026** — every policy carries `report-uri /csp-report`, from the one helper that sets a policy. A report is counted by directive and nothing from it is logged or kept, since it can name a URL carrying a code. Proved in Chrome 156: an injected script was refused and its report arrived at the counter |
 | V3.5.1 / V3.5.3 origin separation, CSRF, safe methods | met — per-session CSRF tokens, `POST` for every sensitive operation |
@@ -900,8 +900,8 @@ now written down rather than assumed.
 | V16.2.4 readable by the log processor | met — logfmt; **and now true for panics, which it was not** |
 | V16.2.5 sensitive data not logged | met — verified by inspection, including the two call sites that look like exceptions and are not |
 | V16.3.1 all authentication attempts | met — `login.succeeded` **and** `login.failed`; the second is the half usually missing |
-| V16.3.2 failed authorization logged | met — consent denials, impersonation refusals, UMA denials, admin scope refusals |
-| V16.3.3 bypass attempts | met — passkey counter regression, breached password, CIBA unknown subject, federation refusal |
+| V16.3.2 failed authorization logged | met — consent denials, impersonation refusals, User-Managed Access (UMA) denials, Admin API scope refusals |
+| V16.3.3 bypass attempts | met — passkey counter regression, breached password, Client-Initiated Backchannel Authentication (CIBA) unknown subject, federation refusal |
 | V16.3.4 unexpected errors | met, and this is what V16.5.4 fixed |
 | V16.4.1 log injection | met — structured key/values throughout, **zero** `fmt.Sprintf` inside a log call |
 | V16.4.2 protected from modification | met as *detectable*: hash chain over ciphertext, and migration 0043 removed the foreign keys that silently rewrote history. Stated precisely because it is not a trigger refusing `UPDATE` |
@@ -987,10 +987,10 @@ it.
 | Requirement | Verdict |
 |---|---|
 | V4.1.1 Content-Type matches, with charset | **one gap, fixed** — HTML and JavaScript already stated it; JSON needs none (RFC 8259 defines no charset parameter) |
-| V4.1.2 transparent HTTP→HTTPS only for user-facing | n/a — the engine does not redirect http to https; TLS terminates ahead of it |
-| V4.1.3 intermediary headers not user-overridable | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
+| V4.1.2 transparent HTTP→HTTPS only for endpoints people use | n/a — the engine does not redirect http to https; Transport Layer Security (TLS) terminates ahead of it |
+| V4.1.3 intermediary headers a request cannot override | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
-| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JARM, which is not built) |
+| V4.1.5 per-message signatures | met beyond the requirement — Back-Channel Logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JWT-Secured Authorization Response Mode (JARM) before it was built; it has been since, and its responses are signed too: see [signed authorization responses](jarm.md)) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
 | V4.2.5 over-long outbound URIs and headers | **met, November 2026** — every client `safedial` builds refuses a URI or a header field over 8,000 octets before it is sent, RFC 9110 §4.1's figure for a URI (`specs/rfc9110.txt:1059-1060`), and says which and to where without repeating a value that may be a credential |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |
@@ -1128,14 +1128,14 @@ and nothing had ever sent one.
 
 | Requirement | Verdict |
 |---|---|
-| V14.1.1 / V14.1.2 data classified, protection documented | partial — [security-inventories.md](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
+| V14.1.1 / V14.1.2 data classified, protection documented | partial — [the security inventories](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
 | V14.2.1 no sensitive data in URLs | **partial, and deliberately** — invitation and password-reset links carry a token in the query string, which is how an emailed link works. Mitigated by single use, short expiry, and the `Referrer-Policy: no-referrer` added in the V3 pass |
 | V14.2.2 not cached in server components | met — `no-store` now on every HTML response and every token response |
-| V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
+| V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an administrator configured, and only when one is on the page |
 | V14.2.5 web cache deception | met — no static-file handler that could serve a different valid file for a non-existent path |
 | V14.2.6 minimum data returned | met — userinfo returns only granted scopes' claims |
 | V14.2.7 retention classification | partial — classified, not time-expired |
-| V14.2.8 file metadata | n/a — no user file upload |
+| V14.2.8 file metadata | n/a — nobody can upload a file |
 | V14.3.1 client storage cleared | met by construction — `localStorage`, `sessionStorage` and `IndexedDB` appear **zero** times in anything this server serves |
 | V14.3.2 anti-caching headers | **six gaps, fixed** |
 | V14.3.3 no sensitive data in browser storage | met — nothing is stored client-side but the session cookie |
@@ -1171,8 +1171,8 @@ the SAML reviews, SSRF in `internal/safedial`, output encoding by using
 | V1.2.2 safe URL protocols | met — brand logo and support URLs must begin `https://`, enforced in `Brand.Validate`, called from `SaveBrand`, which is the only write path. `html/template` would neutralise `javascript:` in an `href` regardless, so this is two gates |
 | V1.2.3 JSON/JavaScript encoding | met — `encoding/json` throughout, never string-built |
 | V1.2.4 SQL injection | met — every query is parameterized. A scan for `Query`/`Exec`/`QueryRow` combined with `Sprintf` or string concatenation returns **one** hit, and it is a URL being built, not SQL |
-| V1.2.5 OS command injection | met — exactly one `exec.CommandContext` in the engine (kadmin, for Kerberos principal sync). Arguments are a slice, so no shell is involved, and every value in it is operator configuration: realm, principal, keytab path, and the literal query `list_principals`. No end-user input reaches it |
-| V1.2.6 LDAP injection | met — and this one was worth checking properly, because the engine both serves LDAP and consumes it. The sync filter is either an operator-configured string or one of three constants, and the base DN is configuration. **No end-user value is interpolated into a filter or a DN anywhere**, which is why there is no `EscapeFilter` call to find |
+| V1.2.5 OS command injection | met — exactly one `exec.CommandContext` in the engine (kadmin, for Kerberos principal sync). Arguments are a slice, so no shell is involved, and every value in it is an administrator's configuration: the Kerberos realm, principal, keytab path, and the literal query `list_principals`. No input from a person signing in reaches it |
+| V1.2.6 LDAP injection | met — and this one was worth checking properly, because the engine both serves LDAP and consumes it. The sync filter is either an administrator-configured string or one of three constants, and the base DN is configuration. **No value from a person signing in is interpolated into a filter or a DN anywhere**, which is why there is no `EscapeFilter` call to find |
 | V1.2.7 XPath injection | n/a — no XPath |
 | V1.2.8 LaTeX | n/a |
 | V1.2.9 regex metacharacters | met vacuously and verifiably: **zero** regular expressions are compiled from a variable. Every `regexp.MustCompile` in the engine takes a literal |
@@ -1239,13 +1239,13 @@ for one.
 | V12.1.2 recommended suites, forward secrecy at L3 | **met, and the right action was to change nothing** — see below |
 | V12.1.3 mTLS client certificates validated before use | met — `SetClientCAs`, and a nil pool means `tls_client_auth` is refused rather than accepted unverified |
 | V12.1.4 OCSP stapling | L3, deployment concern; not configured by the engine |
-| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([encrypted-client-hello.md](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
+| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([Encrypted Client Hello](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
 | V12.2.1 TLS to external services, no fallback | met — see SMTP below |
 | V12.2.2 publicly trusted certificates | deployment |
 | V12.3.1 encrypted in and out, no insecure fallback | met |
 | V12.3.2 TLS clients validate certificates | met — **one** `InsecureSkipVerify` in the entire tree, in the `proxycheck` diagnostic, opt-in via a flag, and when it is on the report's first line reads "DISABLED by -insecure; nothing below says anything about TLS" |
 | V12.3.3 / V12.3.4 internal service TLS | met where applicable; `directory/ldapsource` pins `RootCAs` and its comment records that `InsecureSkipVerify` is deliberately absent |
-| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the admin listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the DSN. Webhooks and outbound calls to third parties are authenticated at the application layer |
+| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the Admin API listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the data source name (DSN). Webhooks and outbound calls to third parties are authenticated at the application layer |
 
 **V12.1.2 is the one worth writing down.** The L3 requirement is "must only
 support cipher suites which provide forward secrecy", and no `tls.Config` here
@@ -1290,15 +1290,15 @@ refuses:
 | Requirement | Verdict |
 |---|---|
 | V13.1.1 communication needs documented | **was not — now `docs/egress-inventory.md`** |
-| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [security-inventories.md](security-inventories.md), the pools among them |
+| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [the security inventories](security-inventories.md), the pools among them |
 | V13.1.4 secret rotation schedule documented | partial — key rotation is implemented and documented; there is no written rotation schedule for the root key or admin tokens |
-| V13.2.1 backend auth: individual, short-term, not shared | met for the admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
+| V13.2.1 backend auth: individual, short-term, not shared | met for the Admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
 | V13.2.2 least privilege | met — `signari_admin` holds no grants on `core`, reading 15 views in `core_v1` |
 | V13.2.3 no default credentials | met — no default admin token exists; `SIGNARI_ROOT_KEY` is required rather than generated, because "a generated-on-boot root key would silently" produce a different one per instance |
 | V13.2.4 / V13.2.5 outbound allowlist | **partial, stated plainly** — `safedial` is an address-level *denylist*; the effective allowlist is registration. See the egress inventory |
-| V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, not from a vault or HSM. An operator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
+| V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, or in the file `SIGNARI_ROOT_KEY_FILE` names, not from a vault or hardware security module (HSM). An administrator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
 | V13.3.2 least privilege on secrets | met |
-| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing-keys-in-a-module.md](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
+| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing keys in a hardware module](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
 | V13.3.4 rotation schedule | L3, not done |
 | V13.4.1 no source-control metadata served | met by construction — **no `http.FileServer`, no `http.Dir`, nothing serves a filesystem path**. The single static asset is `//go:embed`-ed and served by name |
 | V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
@@ -1389,7 +1389,7 @@ line. V5.3.2 addresses only names that a *person using the application* submits.
 | V2.3.2 documented business limits | met — device-code attempts, signup rate, registration rate, call-chain length, resource-indicator count |
 | V2.3.3 transactional | met — `pgx.Tx` around the code-to-token exchange; a partial redemption cannot leave a code spent and no token issued |
 | V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race. WebAuthn challenges are spent with `INSERT ... ON CONFLICT DO NOTHING RETURNING` on the first attempt to finish their ceremony. **Until October 2026 they were not**: the challenge travels in a signed cookie, the handler cleared that cookie, and the same cookie and assertion presented again opened a second session. The end-to-end passkey test found it (migration 0141) |
-| V2.3.5 multi-user approval for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([approvals.md](approvals.md)) |
+| V2.3.5 approval by more than one person for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([two-person approvals](approvals.md)) |
 | V2.4.1 anti-automation | met — per-address and per-account limits, adaptive CAPTCHA, token buckets per endpoint with separate buckets so tuning one does not silently widen another |
 | V2.4.2 realistic human timing | L3, not implemented |
 

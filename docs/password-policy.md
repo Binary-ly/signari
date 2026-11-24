@@ -169,7 +169,7 @@ password. Three things set it:
 |---|---|
 | Re-checking | The password turned up in a corpus after it was chosen |
 | Migration | A password brought from the old IdP is in a corpus |
-| An administrator | `{"require_password_change": true}` on the user endpoint |
+| An administrator | `{"require_password_change": true}` on `PATCH /admin/users/{userID}` |
 
 The gate lives in `completeSignIn`, beside the prompt check, for the same reason
 that one does. There are eight ways to sign in, and a gate written at each of

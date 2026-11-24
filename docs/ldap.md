@@ -394,7 +394,7 @@ account.
 | `sn` | **MUST** (RFC 4519 `person`) | writable |
 | `givenName`, `displayName`, `mail` | | writable |
 | `userPassword` | write-only | never returned by a search, at any value |
-| `memberOf` | derived | NO-USER-MODIFICATION — it is a view of group membership |
+| `memberOf` | derived | `NO-USER-MODIFICATION` — it is a view of group membership |
 | `objectClass` | structural | fixed — `objectClassModsProhibited(69)` |
 
 **Three columns had to be added to make this honest**: `display_name` for `cn`,

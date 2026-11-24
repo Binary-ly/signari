@@ -29,7 +29,7 @@ User Service (RADIUS) listeners write.
 | Written by | `slog` | `core.audit_events` |
 | Destination | stderr | PostgreSQL |
 | Format | logfmt or JSON (`SIGNARI_LOG_FORMAT`), level `Info` unless `SIGNARI_LOG_LEVEL` says otherwise | table rows |
-| Purpose | operating the server | evidencing what happened to an account |
+| Purpose | operating the engine | evidencing what happened to an account |
 | Survives a crash | only if collected | yes |
 | Tamper-evident | no | yes — hash chained |
 | Personal data | subject ids where a line must say whose request it was; no username, email address or certificate subject, which a test enforces. LDAP and RADIUS lines carry the client's address, an application or access point rather than a person | subject ids only, nothing encrypted; this row said avoided, and encrypted per subject |

@@ -155,7 +155,7 @@ what Signari did:
 
 | | |
 |---|---|
-| valid assertion | user created, linked, session issued, `amr: ["fed"]` |
+| valid assertion | account created, linked, session issued, `amr: ["fed"]` |
 | the same assertion again | refused — no sign-in in progress |
 | replayed against a fresh request | refused — answers a different request |
 | same assertion ID, fresh request, re-signed | refused — **already used** |

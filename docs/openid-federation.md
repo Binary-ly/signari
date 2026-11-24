@@ -539,7 +539,7 @@ Each of these deliberate faults was caught by a test:
 | `subset_of` merges to a union | `TestASubordinateCannotWidenWhatASuperiorForbade` |
 | `essential` no longer runs last | `TestEssentialIsJudgedAfterDefaultHasFilledTheParameter` |
 | `scope` not treated as an array | `TestScopeIsProcessedAsAnArrayAndRejoined` |
-| A critical unknown operator is ignored | `TestACriticalOperatorWeDoNotImplementInvalidatesTheChain` |
+| A critical unknown policy operator is ignored | `TestACriticalOperatorWeDoNotImplementInvalidatesTheChain` |
 | Superior metadata applied after the policy | `TestTheSuperiorsMetadataIsJudgedByItsOwnPolicy` |
 | Admit an RP with no published keys | `TestAnRPWithNoKeysIsRefused` |
 
@@ -594,8 +594,8 @@ publishes them in its `federation_entity` metadata, as §5.1.1 requires:
 | | |
 |---|---|
 | `GET /federation/fetch?sub=` | §8.1: a Subordinate Statement, signed with the Federation Entity Key and made at each request, so that a removal or a change of keys holds from the next one. `not_found` for an entity it does not speak for, `invalid_request` for itself. A statement already fetched lasts until it expires, which is the lifetime of this entity's own configuration |
-| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters, and so do `?trust_marked=true` and `?trust_mark_type=`, from the Trust Marks this entity issued, live ones only: revoked or past their `exp` they count for nothing. Several filters together keep what all of them keep. `entity_type` is refused with `unsupported_parameter`: an operator gives a subordinate's keys and policy, not its types, so this entity does not know them, and a list ignoring the filter would look filtered and be wrong |
-| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. For chains ending at this entity or at a Trust Anchor an operator listed with `federation add-anchor`, verified with the keys it was given with, the first of several `trust_anchor` values it can stand behind; any other is `invalid_trust_anchor`, since it could be taken only on the word of whoever answers at that address. The chain ends with the anchor's own configuration, verified with those keys. `trust_marks` carries the subject's marks that hold under §7.3 against that anchor, as a registering client is held to them, and none that do not; the response lasts no longer than the first of them to expire |
+| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters, and so do `?trust_marked=true` and `?trust_mark_type=`, from the Trust Marks this entity issued, live ones only: revoked or past their `exp` they count for nothing. Several filters together keep what all of them keep. `entity_type` is refused with `unsupported_parameter`: an administrator gives a subordinate's keys and policy, not its types, so this entity does not know them, and a list ignoring the filter would look filtered and be wrong |
+| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. For chains ending at this entity or at a Trust Anchor an administrator listed with `federation add-anchor`, verified with the keys it was given with, the first of several `trust_anchor` values it can stand behind; any other is `invalid_trust_anchor`, since it could be taken only on the word of whoever answers at that address. The chain ends with the anchor's own configuration, verified with those keys. `trust_marks` carries the subject's marks that hold under §7.3 against that anchor, as a registering client is held to them, and none that do not; the response lasts no longer than the first of them to expire |
 
 Not built: client authentication at these endpoints (§8.8). It is off by default,
 and a choice each federation makes per endpoint. None here has asked for it.

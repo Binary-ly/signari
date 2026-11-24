@@ -27,13 +27,13 @@ reaches everything:
 
 | mechanism | reaches | reliability |
 |---|---|---|
-| **back-channel** (OIDC) | server-side sessions at relying parties | retried, parked failures surfaced |
-| **front-channel** (OIDC) | state the browser holds — cookies the RP's server never sees, local storage, service workers | best effort, no completion signal |
-| **SAML front-channel chain** | SAML service providers | sequential, per-provider result recorded |
-| **SAML SOAP** | SAML service providers with a SOAP address, however the session ended | retried, parked failures surfaced |
+| **back-channel** (OIDC) | server-side sessions at applications | retried, parked failures surfaced |
+| **front-channel** (OIDC) | state the browser holds — cookies the application's server never sees, local storage, service workers | best effort, no completion signal |
+| **SAML front-channel chain** | SAML applications | sequential, per-provider result recorded |
+| **SAML SOAP** | SAML applications with a SOAP address, however the session ended | retried, parked failures surfaced |
 
-In this table, a "relying party" (RP) is OpenID Connect's word for an
-application, and SAML calls an application a "service provider".
+OpenID Connect calls an application a "relying party" (RP), and SAML calls it a
+"service provider", so the specifications use those words.
 
 Each mechanism is reported separately rather than summed into a single "signed
 out", because they succeed and fail independently.
@@ -73,7 +73,7 @@ signari client set-logout -client-id wiki \
 ```
 
 `-post-logout-redirects` lists where the browser may go after a sign-out that the
-application started. OpenID Connect calls that "RP-initiated logout". A
+application started. OpenID Connect calls that "RP-Initiated Logout". A
 `post_logout_redirect_uri` is honoured only when this application registered it.
 The same rules as for a redirect URI apply: https, or a loopback address for
 development, and no wildcard.
@@ -92,7 +92,7 @@ signari client set-logout -client-id wiki \
   -backchannel-uri https://wiki.example.com/oidc/backchannel-logout
 ```
 
-`-backchannel-uri` is where Signari posts a "logout token", a signed message
+`-backchannel-uri` is where Signari posts a `logout_token`, a signed message
 saying the session has ended, when the person signs out. It must be https, with no
 fragment, and an empty value clears it. `-backchannel-sid` (on by default) puts the
 session's `sid` in the token. Each is left alone when the command does not name

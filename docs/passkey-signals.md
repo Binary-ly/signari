@@ -215,7 +215,7 @@ These requirements were met as written:
 | `userId` is a `Base64URLString` of the user handle | dictionaries | `base64.RawURLEncoding` of `core.users.user_handle`, the same value the ceremony uses |
 | Unpadded encoding | `Base64URLString` | `RawURLEncoding` |
 | Credential ids not disclosed to an unauthenticated caller | §14.6.3 | `/account/passkeys/signal` answers 401 without a session |
-| `signalUnknownCredential` discloses nothing new | §14.6.3 | echoes back only the id the caller just presented |
+| `signalUnknownCredential` discloses nothing new | §14.6.3 | echoes back only the id the caller presented |
 | Empty credential list serialises as `[]`, not `null` | §5.1.10.3 | pinned by test — "forget everything" is a real instruction |
 
 The `userId` check is the one worth dwelling on. A wrong value there does not

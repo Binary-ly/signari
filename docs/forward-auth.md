@@ -40,7 +40,7 @@ sent to another host. Forward authentication therefore issues a second, narrower
 cookie, scoped to the parent domain. That only works if there is one, and
 `SIGNARI_PROXY_COOKIE_DOMAIN` names it for the whole deployment:
 
-| Issuer | Protected app | `SIGNARI_PROXY_COOKIE_DOMAIN` | |
+| Issuer | Protected application | `SIGNARI_PROXY_COOKIE_DOMAIN` | |
 |---|---|---|---|
 | `auth.example.com` | `n8n.example.com` | `example.com` | works |
 | `auth.example.com` | `n8n.other.com` | — | no shared parent: see [a cookie of its own](#an-application-on-another-domain) |
@@ -564,8 +564,8 @@ On every `200`, the application receives these headers:
 
 | Header | Contents |
 |---|---|
-| `X-Forwarded-User` | the user's uuid |
-| `X-Forwarded-Sub` | the same uuid, for apps expecting `sub` |
+| `X-Forwarded-User` | the person's uuid |
+| `X-Forwarded-Sub` | the same uuid, for applications expecting `sub` |
 | `X-Forwarded-Email` | the email, or **empty** when the account has none — present either way, so a client-sent copy is overwritten |
 | `X-Forwarded-Groups` | the groups released to this application that the person is in, comma-separated, or **empty** |
 | `X-Forwarded-Jwt` | a signed statement of the above, or **empty** |

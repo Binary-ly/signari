@@ -112,7 +112,7 @@ That is a PUT, PATCH or re-sent POST carrying `"active": false`, or a DELETE. A
 DELETE under `on_delete = delete` ends them too, before the row goes.
 
 Each application the person signed in to is sent a
-[back-channel logout](glossary.md#back-channel-logout) notice, with `reason`
+[Back-Channel Logout](glossary.md#back-channel-logout) notice, with `reason`
 `user_deactivated` or `user_deleted`. Receivers of the Continuous Access
 Evaluation Profile ([CAEP](glossary.md#caep)) get `session-revoked`. The refresh
 tokens issued under those sessions stop working, and a proxy cookie stops
@@ -210,10 +210,10 @@ the application.
 
 People and groups differ in two deliberate ways:
 
-| | Users | Groups |
+| | `/Users` | `/Groups` |
 |---|---|---|
 | `DELETE` | **deactivates** | **deletes** |
-| a member/user we do not know | — | **400 with the reason** |
+| a member or person we do not know | — | **400 with the reason** |
 
 Deleting a person destroys the audit trail of everything they did. That is the
 thing you most need about somebody who has recently left. A group holds no
@@ -241,17 +241,17 @@ A list takes a filter in RFC 7644's grammar: `and`, `or`, `not`, brackets, and
 every attribute comparison of its Table 3, over what the two resources return.
 `totalResults` counts what matched. These attributes can be filtered on:
 
-| Resource | Attribute | Compared | Operators |
+| Resource | Attribute | Compared | Comparisons allowed |
 |---|---|---|---|
 | Both | `id` | as an id | `eq` `ne` `pr` |
 | Both | `externalId` | as stored | all |
 | Both | `displayName` | ignoring case | all |
 | Both | `meta.created`, `meta.lastModified` | to the second | `eq` `ne` `gt` `ge` `lt` `le` `pr` |
-| User | `userName`, `emails.value` | ignoring case | all |
-| User | `active` | as a boolean | `eq` `ne` `pr` |
-| User | `emails` | | `pr` |
-| Group | `members` | | `pr` |
-| Group | `members.value` | a member's id | `eq` `pr` |
+| `User` | `userName`, `emails.value` | ignoring case | all |
+| `User` | `active` | as a boolean | `eq` `ne` `pr` |
+| `User` | `emails` | | `pr` |
+| `Group` | `members` | | `pr` |
+| `Group` | `members.value` | a member's id | `eq` `pr` |
 
 `/Schemas` says the same: `externalId` is `caseExact`, because an upstream's
 identifier is opaque, and two that differ by case are two people. An attribute
@@ -306,7 +306,7 @@ the same audit record, the same refusals.
 organisation's own [attributes for people](admin-api.md#attributes-of-people), so declare the ones you want
 with `PUT /admin/organizations/{orgID}/attributes`:
 
-| Extension attribute | User attribute |
+| Extension attribute | Signari attribute |
 |---|---|
 | `employeeNumber` | `employee_number` |
 | `costCenter` | `cost_center` |

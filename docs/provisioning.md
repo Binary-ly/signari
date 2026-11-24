@@ -59,7 +59,7 @@ Neither Google nor Entra accepts SCIM as a server.
 
 Entra is a SCIM **client**: it pushes accounts out to other systems, and does not
 accept pushes in. Google has no SCIM surface at all. Signari writes to both
-through their own APIs: the Admin SDK Directory API and Microsoft Graph.
+through their own APIs: Google's Directory API and Microsoft Graph.
 
 What sits above them is unchanged: one `Provisioner` interface with five
 methods, one reconciliation, one deactivation policy and one dry run. A second

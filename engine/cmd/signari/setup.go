@@ -1310,7 +1310,12 @@ func (r *setupRun) firstAdmin(ctx context.Context) error {
 	r.link, r.linkExpires = out.Link, out.Expires
 	if out.Link == "" {
 		r.db.peopled = true
+		return nil
 	}
+	// Now, not only in the summary: the link is stored hashed, so a step after
+	// this one failing would otherwise leave nobody with it.
+	fmt.Fprintf(r.out, "  The first administrator's link, which works once, until %s:\n    %s\n",
+		out.Expires.UTC().Format("2 Jan 2006 15:04 UTC"), out.Link)
 	return nil
 }
 

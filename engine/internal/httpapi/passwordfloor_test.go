@@ -24,10 +24,12 @@ func TestThePasswordFormsStateThePolicysMinimum(t *testing.T) {
 
 			page := newTestBrowser(t, j.h).get("/signup").Body.String()
 			// The number is a substituted value, so the hint wraps it in
-			// bidirectional isolates (i18n's isolate).
+			// bidirectional isolates (i18n's isolate): FIRST STRONG ISOLATE
+			// and POP DIRECTIONAL ISOLATE, built from their code points.
+			fsi, pdi := string(rune(0x2068)), string(rune(0x2069))
 			for _, s := range []string{
 				`minlength="` + c.want + `"`,
-				"At least ⁨" + c.want + "⁩ characters.",
+				"At least " + fsi + c.want + pdi + " characters.",
 			} {
 				if !strings.Contains(page, s) {
 					t.Errorf("the sign-up form lacks %q: %s", s, truncate(page, 600))

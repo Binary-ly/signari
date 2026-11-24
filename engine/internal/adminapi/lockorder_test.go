@@ -89,9 +89,13 @@ func TestACLIWriteAndAnAPIWriteTogetherBothCommit(t *testing.T) {
 // other wants, and PostgreSQL ends one of them a second later with 40P01. In
 // one order, the second simply waits for the first to commit, and both do.
 //
-// Nothing here is timing: every step waits until pg_blocking_pids says the one
-// before it is in place, and the API's backends are found by a name of their
-// own, never by guessing which of the suite's other connections is which.
+// Nothing here is timing: every step waits until PostgreSQL says the one before
+// it is in place, and the API's backends are found by a name of their own,
+// never by guessing which of the suite's other connections is which. The API's
+// write is in place once it waits for a lock: nothing it does before taking the
+// version's row waits for one, so it waits at that row or after it. What it
+// waits behind is not asked, because in a full run it can queue for the row
+// behind another package's writer rather than behind the CLI.
 
 // lockOrderServer is newTestServer over a pool whose connections carry a name
 // no other test's do, so the API's backend can be told apart.
@@ -192,14 +196,13 @@ func waitsOn(observer *pgxpool.Pool, waiter, blocker int) func() (bool, error) {
 	}
 }
 
-// namedWaitsOn says whether a backend of the named pool is waiting on blocker.
-func namedWaitsOn(observer *pgxpool.Pool, name string, blocker int) func() (bool, error) {
+// namedWaiting says whether a backend of the named pool is waiting for a lock.
+func namedWaiting(observer *pgxpool.Pool, name string) func() (bool, error) {
 	return func() (bool, error) {
 		var yes bool
 		err := observer.QueryRow(context.Background(), `
 			SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			                WHERE application_name = $1 AND $2::int = ANY(pg_blocking_pids(pid)))`,
-			name, blocker).Scan(&yes)
+			                WHERE application_name = $1 AND wait_event_type = 'Lock')`, name).Scan(&yes)
 		return yes, err
 	}
 }
@@ -257,7 +260,7 @@ func TestACLIWriteAndAnAPIWriteToOneClientBothCommit(t *testing.T) {
 		routes.ServeHTTP(rec, req)
 		apiDone <- rec
 	}()
-	waitFor(t, "the API's write to wait behind the CLI's", namedWaitsOn(observer, name, cliPID))
+	waitFor(t, "the API's write to wait for a lock", namedWaiting(observer, name))
 	release()
 
 	if err := within(t, "the CLI's write", cliDone); err != nil {
@@ -315,7 +318,7 @@ func TestACLIPersonAndAnAPIPersonInOneOrganisationBothCommit(t *testing.T) {
 		routes.ServeHTTP(rec, req)
 		apiDone <- rec
 	}()
-	waitFor(t, "the API's person to wait behind the CLI's", namedWaitsOn(observer, name, cliPID))
+	waitFor(t, "the API's person to wait for a lock", namedWaiting(observer, name))
 	release()
 
 	if err := within(t, "the CLI's person", cliDone); err != nil {
@@ -337,7 +340,7 @@ func TestACLITransactionThatRecordsFirstAndAnAPIWriteBothCommit(t *testing.T) {
 	ctx := context.Background()
 	org := newDriftMigrationOrg(t, s, false)
 
-	cli, cliPID := cliSession(t)
+	cli, _ := cliSession(t)
 	tx, err := cli.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +359,7 @@ func TestACLITransactionThatRecordsFirstAndAnAPIWriteBothCommit(t *testing.T) {
 		})
 		apiDone <- err
 	}()
-	waitFor(t, "the API's write to wait behind the CLI's transaction", namedWaitsOn(observer, name, cliPID))
+	waitFor(t, "the API's write to wait for a lock", namedWaiting(observer, name))
 
 	if _, err := tx.Exec(ctx, `UPDATE core.organizations SET display_name = display_name WHERE id = $1::uuid`,
 		org); err != nil {

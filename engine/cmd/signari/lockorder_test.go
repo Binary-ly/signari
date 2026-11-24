@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 // 40P01. In one order, the second waits for the first to commit.
 //
 // The commands are run as an operator runs them, through run. Every step waits
-// until pg_blocking_pids says the one before it is in place; the apply's
-// backend is found by a name its pool alone carries.
+// until PostgreSQL says the one before it is in place, and the command's and the
+// apply's backends are found by names they alone carry.
 
 // lockStage is the test database's address, a pool that holds and watches, and
 // a pool for the apply whose connections carry name.
@@ -94,28 +95,47 @@ func pollUntil(t *testing.T, what string, cond func() (bool, error)) {
 	}
 }
 
-// waiterOn finds the backend waiting on holder, which holds a row nothing but
-// the test touches.
-func waiterOn(observer *pgxpool.Pool, holder int, pid *int) func() (bool, error) {
-	return func() (bool, error) {
-		err := observer.QueryRow(context.Background(), `
-			SELECT pid FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)) LIMIT 1`,
-			holder).Scan(pid)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return err == nil, err
+// namedDSN is dsn with its connections called name, as the command run with it
+// is: connectDB takes the DSN's run-time parameters. Its backend is then found by
+// that name, never as whichever backend waits on the holder: in a full run some
+// other package's statement can wait on the holder's table lock too.
+func namedDSN(t *testing.T, dsn, name string) string {
+	t.Helper()
+	if !strings.Contains(dsn, "://") {
+		return dsn + " application_name=" + name
 	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("application_name", name)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
-// namedWaiterOn says whether a backend of the named pool waits on blocker.
-func namedWaiterOn(observer *pgxpool.Pool, name string, blocker int) func() (bool, error) {
+// namedWaitsOn says whether the backend of the named connection waits on holder.
+func namedWaitsOn(observer *pgxpool.Pool, name string, holder int) func() (bool, error) {
 	return func() (bool, error) {
 		var yes bool
 		err := observer.QueryRow(context.Background(), `
 			SELECT EXISTS (SELECT 1 FROM pg_stat_activity
 			                WHERE application_name = $1 AND $2::int = ANY(pg_blocking_pids(pid)))`,
-			name, blocker).Scan(&yes)
+			name, holder).Scan(&yes)
+		return yes, err
+	}
+}
+
+// namedWaiting says whether a backend of the named pool waits for a lock. The
+// apply waits for none before it takes the version's row, so it is then at that
+// row or past it; what it waits behind is not asked, since in a full run it can
+// queue for the row behind another package's writer rather than the command.
+func namedWaiting(observer *pgxpool.Pool, name string) func() (bool, error) {
+	return func() (bool, error) {
+		var yes bool
+		err := observer.QueryRow(context.Background(), `
+			SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			                WHERE application_name = $1 AND wait_event_type = 'Lock')`, name).Scan(&yes)
 		return yes, err
 	}
 }
@@ -173,16 +193,17 @@ func TestAPruningApplyAndACommandOnTheProviderItSwitchesOffBothCommit(t *testing
 
 	release, holder := holdRow(t, observer,
 		`SELECT 1 FROM core.identity_providers WHERE slug = $1 FOR UPDATE`, slug)
+	cli := name + "-command"
 	cliDone := make(chan error, 1)
 	go func() {
-		cliDone <- run([]string{"idp", "trust-mfa", "-dsn", dsn, "-slug", slug, "-upstream-amr", "mfa"})
+		cliDone <- run([]string{"idp", "trust-mfa", "-dsn", namedDSN(t, dsn, cli), "-slug", slug,
+			"-upstream-amr", "mfa"})
 	}()
-	var cliPID int
-	pollUntil(t, "`idp trust-mfa` to wait for the held provider", waiterOn(observer, holder, &cliPID))
+	pollUntil(t, "`idp trust-mfa` to wait for the held provider", namedWaitsOn(observer, cli, holder))
 
 	applyDone := make(chan error, 1)
 	go func() { applyDone <- applyIn(applier, org, &config.File{}, true) }()
-	pollUntil(t, "the pruning apply to wait behind the command", namedWaiterOn(observer, name, cliPID))
+	pollUntil(t, "the pruning apply to wait for a lock", namedWaiting(observer, name))
 	release()
 
 	if err := arrivedWithin(t, "`idp trust-mfa`", cliDone); err != nil {
@@ -222,17 +243,18 @@ func TestAnOrganisationStatusChangeAndAnApplyIntoItBothCommit(t *testing.T) {
 
 	release, holder := holdRow(t, observer,
 		`SELECT 1 FROM core.organizations WHERE id = $1::uuid FOR UPDATE`, org)
+	cli := name + "-command"
 	cliDone := make(chan error, 1)
 	go func() {
-		cliDone <- run([]string{"instance", "org-status", "-dsn", dsn, "-org", org, "-status", "suspended"})
+		cliDone <- run([]string{"instance", "org-status", "-dsn", namedDSN(t, dsn, cli), "-org", org,
+			"-status", "suspended"})
 	}()
-	var cliPID int
-	pollUntil(t, "`instance org-status` to wait for the held organisation", waiterOn(observer, holder, &cliPID))
+	pollUntil(t, "`instance org-status` to wait for the held organisation", namedWaitsOn(observer, cli, holder))
 
 	group := &config.File{Groups: []config.Group{{Name: fmt.Sprintf("lockorder-%d", time.Now().UnixNano())}}}
 	applyDone := make(chan error, 1)
 	go func() { applyDone <- applyIn(applier, org, group, false) }()
-	pollUntil(t, "the apply to wait behind the command", namedWaiterOn(observer, name, cliPID))
+	pollUntil(t, "the apply to wait for a lock", namedWaiting(observer, name))
 	release()
 
 	if err := arrivedWithin(t, "`instance org-status`", cliDone); err != nil {

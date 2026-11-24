@@ -346,6 +346,35 @@ func TestTheEnvFileIsWhatServeReads(t *testing.T) {
 	if err != nil || len(added) != 1 || added[0] != "SIGNARI_ADDR" || !strings.Contains(filled, "SIGNARI_SMTP_HOST=") {
 		t.Errorf("filling one missing setting: %v, added %v:\n%s", err, added, filled)
 	}
+	// A setting left blank, such as a SIGNARI_DSN= somebody emptied, is
+	// missing, and its line is written again in place with the value: one line
+	// for it, and the rest of the file as it was.
+	blank := back
+	blank.values = map[string]string{}
+	for k, v := range back.values {
+		blank.values[k] = v
+	}
+	blank.values["SIGNARI_DSN"] = ""
+	blank.lines = nil
+	for _, l := range back.lines {
+		if strings.HasPrefix(l, "SIGNARI_DSN=") {
+			l = "SIGNARI_DSN="
+		}
+		blank.lines = append(blank.lines, l)
+	}
+	refilled, added, err := blank.render(want)
+	if err != nil || len(added) != 1 || added[0] != "SIGNARI_DSN" ||
+		strings.Count(refilled, "SIGNARI_DSN=") != 1 || !strings.Contains(refilled, "SIGNARI_DSN='"+want["SIGNARI_DSN"]+"'\n") {
+		t.Errorf("filling a blanked SIGNARI_DSN: %v, added %v:\n%s", err, added, refilled)
+	}
+	if strings.Index(refilled, "SIGNARI_DSN=") > strings.Index(refilled, "SIGNARI_ROOT_KEY_FILE=") {
+		t.Errorf("the blanked line was not written again where it stood:\n%s", refilled)
+	}
+	r := &setupRun{prior: blank, engineDSN: want["SIGNARI_DSN"], a: setupAnswers{rootKeyFile: want["SIGNARI_ROOT_KEY_FILE"],
+		issuer: want["SIGNARI_ISSUER"], addr: want["SIGNARI_ADDR"]}}
+	if r.envComplete() {
+		t.Error("an env file with SIGNARI_DSN blank reads as complete, so the step that writes it would be skipped")
+	}
 	conflict := map[string]string{}
 	for k, v := range want {
 		conflict[k] = v

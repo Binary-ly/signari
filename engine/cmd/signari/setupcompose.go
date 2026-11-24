@@ -308,13 +308,14 @@ func (r *setupRun) composeRun(ctx context.Context, dir string) error {
 	return nil
 }
 
-// envHolds says whether the env file holds every one of want.
+// envHolds says whether the env file holds every one of want, each with a
+// value.
 func (r *setupRun) envHolds(want map[string]string) bool {
 	if !r.prior.exists {
 		return false
 	}
 	for k := range want {
-		if _, ok := r.prior.values[k]; !ok {
+		if r.prior.values[k] == "" {
 			return false
 		}
 	}

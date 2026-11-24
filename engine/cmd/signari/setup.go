@@ -1000,13 +1000,14 @@ func when(cond bool, why string) string {
 	return ""
 }
 
-// envComplete says whether the env file holds every setting setup writes.
+// envComplete says whether the env file holds every setting setup writes,
+// each with a value: a blanked one is missing, as serve reads it.
 func (r *setupRun) envComplete() bool {
 	if !r.prior.exists {
 		return false
 	}
 	for k := range r.envValues() {
-		if _, ok := r.prior.values[k]; !ok {
+		if r.prior.values[k] == "" {
 			return false
 		}
 	}

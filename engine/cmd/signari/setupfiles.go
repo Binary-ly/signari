@@ -300,21 +300,20 @@ func (e envFile) render(want map[string]string) (content string, added []string,
 
 // renderKeys is render for a file of other settings, in order, opened by
 // header when it is new: the compose project's .env (setupcompose.go).
+//
+// A setting the file names with no value, such as a SIGNARI_DSN= somebody
+// blanked, is missing, as serve reads it: its line is written again in place,
+// with the value, rather than kept beside a second line that a reader of the
+// file could take either way. Treated as present, it kept setup from writing
+// the password it had just given signari_engine anywhere.
 func (e envFile) renderKeys(order []string, header string, want map[string]string) (content string, added []string, err error) {
-	var b strings.Builder
-	if e.exists {
-		for _, l := range e.lines {
-			b.WriteString(l + "\n")
-		}
-	} else {
-		b.WriteString(header)
-	}
+	fill := map[string]bool{}
 	for _, k := range order {
 		v, ok := want[k]
 		if !ok {
 			continue
 		}
-		if have, ok := e.values[k]; ok {
+		if have := e.values[k]; have != "" {
 			if have != v {
 				return "", nil, fmt.Errorf("%s says %s=%s, and setup would write %s", e.path, k, have, v)
 			}
@@ -323,8 +322,26 @@ func (e envFile) renderKeys(order []string, header string, want map[string]strin
 		if !envSafe(v) {
 			return "", nil, fmt.Errorf("%s=%s cannot be written to an env file: it holds a quote or a line break", k, v)
 		}
-		fmt.Fprintf(&b, "%s='%s'\n", k, v)
+		fill[k] = true
 		added = append(added, k)
+	}
+	var b strings.Builder
+	if e.exists {
+		for _, l := range e.lines {
+			if m := envLine.FindStringSubmatch(strings.TrimSpace(l)); m != nil && fill[m[1]] {
+				fmt.Fprintf(&b, "%s='%s'\n", m[1], want[m[1]])
+				delete(fill, m[1])
+				continue
+			}
+			b.WriteString(l + "\n")
+		}
+	} else {
+		b.WriteString(header)
+	}
+	for _, k := range order {
+		if fill[k] {
+			fmt.Fprintf(&b, "%s='%s'\n", k, want[k])
+		}
 	}
 	return b.String(), added, nil
 }

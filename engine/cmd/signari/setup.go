@@ -716,16 +716,18 @@ func (r *setupRun) inspect(ctx context.Context) error {
 }
 
 // settleFirstAdmin finds whom the first administrator is, now the database
-// has been read: the address given, else the one the earlier link was for,
-// else the person at the terminal, and their account once they have one. It is
-// needed only while nobody can sign in yet or nobody owns the organisation.
+// has been read: the address given, else the one the organisation's first
+// invitation was for, bootstrap's, else the person at the terminal, and their
+// account once they have one. Never a later invitation's: whoever was invited
+// after the first administrator is not who setup makes the owner. It is needed
+// only while nobody can sign in yet or nobody owns the organisation.
 func (r *setupRun) settleFirstAdmin(ctx context.Context) error {
 	d := r.db
 	if d.firstAdminDone(r.h.now()) && d.owners > 0 {
 		return nil
 	}
-	if r.a.email == "" && d.lastEmail != "" {
-		r.a.email, r.a.from["email"] = d.lastEmail, "the earlier link"
+	if r.a.email == "" && d.firstEmail != "" {
+		r.a.email, r.a.from["email"] = d.firstEmail, "the first administrator's link"
 	}
 	if r.a.email == "" {
 		switch q := setupQuestions["email"]; {

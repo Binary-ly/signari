@@ -410,10 +410,13 @@ type dbFacts struct {
 	orgID   string
 	peopled bool
 	// linkUntil is when the latest open one-time link expires, and linkEmail
-	// whom it is for; lastEmail is whom the latest link was for, open or not.
-	linkUntil time.Time
-	linkEmail string
-	lastEmail string
+	// whom it is for. firstEmail is whom the organisation's first invitation
+	// was for: bootstrap's own, made with the organisation, before anybody
+	// could invite anyone else, and the one setup reissues to the same address.
+	// It, and never a later invitation's, says who the first administrator is.
+	linkUntil  time.Time
+	linkEmail  string
+	firstEmail string
 	// owners counts the organisation's org-owner bindings: the role that is
 	// every administrative permission in it, which the console and the Admin
 	// API read a person's rights from (adminapi.Roles).
@@ -505,8 +508,11 @@ func readDBFacts(ctx context.Context, conn *pgx.Conn, issuer string) (dbFacts, e
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return d, err
 		}
+		// The first, by when it was made: a later invitation, from the Admin API
+		// or the console, is somebody else's, and making its holder the
+		// organisation's owner would hand them every right in it.
 		err = conn.QueryRow(ctx, `SELECT coalesce(email, '') FROM core.invitations WHERE org_id = $1::uuid
-			ORDER BY created_at DESC LIMIT 1`, d.orgID).Scan(&d.lastEmail)
+			ORDER BY created_at, id LIMIT 1`, d.orgID).Scan(&d.firstEmail)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return d, err
 		}

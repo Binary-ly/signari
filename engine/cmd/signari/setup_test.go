@@ -770,10 +770,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	h := testHost(t)
 	pgPassword := "pgpassword-" + hex.EncodeToString(tail)
 	h.getenv = func(k string) string { return map[string]string{"PGPASSWORD": pgPassword}[k] }
-	run := func() setupResult {
+	runWith := func(f setupFlags) setupResult {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if err := setupCmd(ctx, &stdout, &stderr, h, flags); err != nil {
+		if err := setupCmd(ctx, &stdout, &stderr, h, f); err != nil {
 			t.Fatalf("setup: %v\n%s", err, stderr.String())
 		}
 		var res setupResult
@@ -782,6 +782,7 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 		}
 		return res
 	}
+	run := func() setupResult { t.Helper(); return runWith(flags) }
 	states := func(res setupResult) map[string]string {
 		m := map[string]string{}
 		for _, s := range res.Steps {
@@ -886,6 +887,35 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 		WHERE i.issuer = $1`, issuer).Scan(&org); err != nil {
 		t.Fatal(err)
 	}
+	// Before that, somebody invited later, through the Admin API, signs up
+	// first. A run that names nobody makes nobody the owner: the
+	// organisation's first invitation, bootstrap's, says who the first
+	// administrator is, and the later one's holder is not them.
+	if _, err := db.Exec(ctx, `INSERT INTO core.invitations (org_id, token_hash, email, created_at, expires_at)
+		VALUES ($1::uuid, sha256(gen_random_uuid()::text::bytea), 'later@example.test', now() + interval '1 second',
+		        now() + interval '1 day')`, org); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO core.users (org_id, email, user_handle)
+		VALUES ($1::uuid, 'later@example.test', sha256('l'::bytea) || sha256($1::text::bytea))`, org); err != nil {
+		t.Fatal(err)
+	}
+	unnamed := flags
+	unnamed.email, unnamed.given, unnamed.args = "", map[string]bool{}, map[string]string{}
+	for k, v := range flags.given {
+		if k != "email" {
+			unnamed.given[k], unnamed.args[k] = v, flags.args[k]
+		}
+	}
+	if got := states(runWith(unnamed))["owner"]; got != "waiting" {
+		t.Errorf("with a later invitee signed up and the first administrator not, the owner's step is %s", got)
+	}
+	var anyOwner int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM core.admin_role_bindings WHERE org_id = $1::uuid
+		AND role = 'org-owner'`, org).Scan(&anyOwner); err != nil || anyOwner != 0 {
+		t.Fatalf("%d org-owner bindings after a run that named nobody, with only a later invitee signed up (%v)",
+			anyOwner, err)
+	}
 	if _, err := db.Exec(ctx, `INSERT INTO core.users (org_id, email, user_handle)
 		VALUES ($1::uuid, 'first@example.test', sha256('h'::bytea) || sha256($1::text::bytea))`, org); err != nil {
 		t.Fatal(err)
@@ -901,6 +931,10 @@ func TestASecondSetupChangesNothing(t *testing.T) {
 	}
 	if owners != 1 {
 		t.Errorf("%d org-owner bindings for the first person, want 1", owners)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM core.admin_role_bindings WHERE org_id = $1::uuid
+		AND role = 'org-owner'`, org).Scan(&anyOwner); err != nil || anyOwner != 1 {
+		t.Errorf("%d org-owner bindings in the organisation, want the first person's alone (%v)", anyOwner, err)
 	}
 	discard.Reset()
 	if err := setupCmd(ctx, &discard, &discard, h, check); err != nil {

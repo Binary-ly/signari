@@ -69,7 +69,7 @@ deadline. Choosing one does.
 Only an account this browser holds can be chosen, whatever the form posts.
 
 An impersonation session is never kept or offered. An administrator leaves one
-through its own end ([impersonation](impersonation.md)), not by switching.
+through its own end, not by switching (see [support access](impersonation.md)).
 
 ## Signing out
 

@@ -141,7 +141,8 @@ Signari then tells the person by mail that they can sign in.
 
 Accounts made by invitation or by an administrator are never pending, because
 somebody already chose them. `user.created` records `pending`, so a
-subscription to it ([events](events.md)) can tell whoever approves. Until
+subscription to it can tell whoever approves (see
+[event subscriptions](events.md)). Until
 October 2026, an organisation that wanted to look first could only turn
 self-signup off.
 

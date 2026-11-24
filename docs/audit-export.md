@@ -37,9 +37,9 @@ carries the chain with it:
 - `entry_hash` is a column, not a footnote.
 - The summary states the first and last hash of the range.
 
-Until October 2026 they were two snapshots. With six administrator commands writing
-to the trail in a loop during an export, seven runs in eight wrote more rows than
-the verification had read. Each wrote up to three more, under "Chain verified over
+Until October 2026 they were two snapshots. Six administrator commands were
+run in a loop, writing to the trail during the exports. Seven runs in eight then
+wrote more rows than the verification had read. Each wrote up to three more, under "Chain verified over
 all" entries.
 
 Together, those let a reviewer confirm that the file they hold is the trail the

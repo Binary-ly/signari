@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"signari.dev/engine/internal/store"
 )
@@ -152,6 +153,9 @@ func TestAnEmailedSignInCodeIsOnlyForTheBrowserThatAsked(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("%d codes queued, want 1", len(notices))
 	}
+	// The requests below come moments after this one, and the pace's windows are
+	// the clock's minutes: across an edge they land in a fresh one (fillNextWindow).
+	fillNextWindow(t, f.pool, "emailsignin:user:min:"+f.userID, time.Minute, 1)
 	if err := f.srv.DeliverAccountNotice(ctx, notices[0]); err != nil {
 		t.Fatal(err)
 	}

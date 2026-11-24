@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -83,7 +84,7 @@ func (s *Server) handleSSFVerify(w http.ResponseWriter, r *http.Request) {
 			"the stream is disabled, so nothing can be sent over it")
 		return
 	case errors.Is(err, store.ErrVerificationTooSoon):
-		w.Header().Set("Retry-After", strconv.Itoa(int(store.MinVerificationInterval.Seconds())))
+		w.Header().Set("Retry-After", strconv.Itoa(verificationRetryAfter(err)))
 		writeError(w, http.StatusTooManyRequests, "slow_down", "a verification was asked for too recently")
 		return
 	case err != nil:
@@ -97,4 +98,16 @@ func (s *Server) handleSSFVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// verificationRetryAfter is the whole seconds left in the window that refused a
+// verification, when asking again is answered: at least one, since a zero
+// invites a retry now that is refused, and at most the interval.
+func verificationRetryAfter(err error) int {
+	most := int(store.MinVerificationInterval.Seconds())
+	var soon *store.VerificationTooSoon
+	if !errors.As(err, &soon) {
+		return most
+	}
+	return min(max(int(math.Ceil(soon.RetryAfter.Seconds())), 1), most)
 }

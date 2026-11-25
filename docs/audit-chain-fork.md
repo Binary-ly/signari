@@ -1,16 +1,24 @@
 # The audit chain forked under concurrency
 
-A tamper-evident log is a **line**: each entry hashes its predecessor, so
-removing or editing one breaks every entry after it. Two entries claiming the
-same predecessor is a fork, and a fork is indistinguishable from a deletion when
-the chain is verified.
+## Introduction
 
-The chain forked whenever two audit events were written at the same time.
+This page is the record of a defect in Signari's audit trail, and of how it was
+fixed. It also says what a deployment can do with a trail the defect already broke.
+
+A tamper-evident log is a **line**: each entry hashes its predecessor, so removing
+or editing one breaks every entry after it. Two entries claiming the same
+predecessor is a fork. A fork is indistinguishable from a deletion when the chain is
+verified.
+
+The chain forked whenever two audit events were written at the same time. A
+deployment that ran that version can [declare a
+checkpoint](#living-with-a-chain-that-is-already-broken) with
+`signari audit checkpoint`.
 
 ## How it was found
 
-Running two instances against one database, to test high availability. The audit
-tests started failing on data nobody had touched:
+It was found by running two instances against one database, to test high
+availability. The audit tests started failing on data nobody had touched:
 
 ```
 audit_test.go:64: chain reported broken at id 136 on untouched data
@@ -27,17 +35,19 @@ The data says it plainly:
 
 **This was never specific to running two instances.** Two concurrent sign-ins on
 a single instance do exactly the same thing. Two instances only made it frequent
-enough to notice — which is the argument for testing the deployment shape you
-intend to run.
+enough to notice. That is the argument for testing the deployment shape you intend
+to run.
 
 ## The guard that did not guard
+
+Each append read the chain's tail with a row lock:
 
 ```go
 SELECT entry_hash FROM core.audit_events ORDER BY id DESC LIMIT 1 FOR UPDATE
 ```
 
 The comment above it said this serialises concurrent appenders. It does not, and
-the reason is a property of `READ COMMITTED` that is easy to miss:
+the reason is a property of `READ COMMITTED` that is often missed:
 
 ```
 T1 and T2 both find row 134 as the tail. T1 locks it.
@@ -60,35 +70,43 @@ SELECT pg_advisory_xact_lock($1)   // then read the tail, then insert
 ```
 
 Correct by construction rather than by an isolation-level subtlety. It is
-transaction-scoped, so a commit or rollback releases it and a process that dies
-mid-append cannot wedge the log. The key is a constant because the chain is
-global — it is verified in id order across every organisation, so a
-per-organisation lock would permit exactly the interleaving this prevents.
+transaction-scoped, so a commit or rollback releases it, and a process that dies
+mid-append cannot wedge the log. The key is a constant because the chain is global.
+It is verified in ID order across every organisation, so a per-organisation lock
+would permit exactly the interleaving this prevents.
 
-Those three steps are one statement now, `core.audit_append` (migration 0239).
-The lock is held to the commit and every audited transaction waits behind it, so
-what it lets through is one over the round trips made while holding it: 146
-audited transactions a second through a 1.5 ms round trip when they were three
-statements and a read of the subscriptions after them, and 490 as one. The
-function is volatile, which is what keeps it correct: a volatile function takes a
-new snapshot for each statement inside it, so the read of the tail sees what
+Those three steps are one statement now, `core.audit_append` (migration 0239). The
+lock is held to the commit, and every audited transaction waits behind it. So what
+it lets through is one over the round trips made while holding it.
+
+The steps used to be three statements, with a read of the subscriptions after them.
+Through a 1.5 ms round trip, that let 146 audited transactions a second through. As
+one statement, 490 got through.
+
+The function is volatile, which is what keeps it correct. A volatile function takes
+a new snapshot for each statement inside it. So the read of the tail sees what
 committed while it waited for the lock.
 
 On loopback that was still one commit's worth of records at a time, however many
-wrote them: 2,223 a second from one writer and 2,152 from sixteen, on a machine
-whose plain inserts reached 17,670. So a record written in a transaction of its
-own (a revocation's, a token exchange's, a backchannel request's) is now appended
-with the others that arrive while one is being written, by
-`core.audit_append_many` (migration 0305): the lock taken once, the tail read
-once, each record hashed after the one before it, one commit for all of them.
+wrote them. One writer reached 2,223 a second and sixteen reached 2,152, on a
+machine whose plain inserts reached 17,670.
+
+So a record written in a transaction of its own is now appended with the others that
+arrive while one is being written. Examples are a revocation's, a token exchange's
+and a backchannel request's. `core.audit_append_many` (migration 0305) does it. It
+takes the lock once and reads the tail once. It hashes each record after the one
+before it, and makes one commit for all of them.
+
 Sixteen records a statement let 14,157 a second through, where sixteen calls of
-`core.audit_append` in one round trip let 8,029. Nothing about the chain changes:
-the same bytes are hashed under the same lock, a binary from before appends to
-the same chain, and each record is committed before the request it belongs to is
-answered. A record whose group cannot be appended is written again on its own,
-so the one that fails takes no other request's record with it. A record that
-joins another transaction, as a sign-in's does, still appends in that
-transaction.
+`core.audit_append` in one round trip let 8,029.
+
+Nothing about the chain changes. The same bytes are hashed under the same lock, and
+a binary from before appends to the same chain. Each record is committed before the
+request it belongs to is answered.
+
+A record whose group cannot be appended is written again on its own. So the one that
+fails takes no other request's record with it. A record that joins another
+transaction, as a sign-in's does, still appends in that transaction.
 
 ## Proven both ways
 
@@ -105,8 +123,8 @@ also catches a fork created by any other path.
 ## Why this mattered more than it looks
 
 Verification reported tampering where there was none. A log that cries wolf is a
-log nobody checks — and this one is the record you reach for when you need to
-know what an attacker did.
+log nobody checks. And this one is the record you reach for when you need to know
+what an attacker did.
 
 It also means the chain proved nothing while it was forked: "broken" was the
 normal state under load, so a real deletion would have looked like Tuesday.
@@ -114,28 +132,29 @@ normal state under load, so a real deletion would have looked like Tuesday.
 ## Living with a chain that is already broken
 
 A deployment that ran the buggy version can never produce a verified export
-again — of any period, including entries written correctly long afterwards. The
-log stops being evidence, which is a serious problem for a log kept as evidence.
+again, of any period, including entries written correctly long afterwards. The log
+stops being evidence, which is a serious problem for a log kept as evidence.
+
+Such a deployment can declare a "checkpoint", with the reason for it:
 
 ```sh
 signari audit checkpoint -by "you@example.com" \
   -reason "chain forked before the advisory-lock fix; see docs/audit-chain-fork.md"
 ```
 
-A checkpoint **repairs nothing.** Nothing is rewritten, re-linked or removed,
-because rewriting entries to close a break is exactly the operation the chain
-exists to make detectable — a tool that did that would be a tool for laundering
-a deletion.
+A checkpoint **repairs nothing.** Nothing is rewritten, re-linked or removed.
+Rewriting entries to close a break is exactly the operation the chain exists to make
+detectable. A tool that did that would be a tool for laundering a deletion.
 
-It is a *declaration*, recorded in the chain itself, that everything before it
-is not asserted and verification restarts here. The export then says so, at
-least as loudly as it says "verified":
+It is a *declaration*, recorded in the chain itself, that everything before it is
+not asserted and verification restarts here. The export then says so, at least as
+loudly as it says "verified":
 
 ```
 Chain verified over 235 entries SINCE A CHECKPOINT.
 
 The 5465 entries before it are NOT asserted by this export.
-A checkpoint was declared on 2026-08-16 by suliman@binary.ly:
+A checkpoint was declared on 2026-08-16 by ada@example.com:
   chain forked before the advisory-lock fix; see docs/audit-chain-fork.md
 
 A checkpoint repairs nothing. It records that the earlier chain was
@@ -147,8 +166,8 @@ already broken and that verification restarts here.
 That is the question to ask of any feature like this, and there are four
 answers:
 
-- **It is refused on a sound chain.** On an intact log a checkpoint can only
-  narrow what a later verification covers, so there is no legitimate reason to
+- **It is refused on a sound chain.** On an intact log, a checkpoint can only
+  narrow what a later verification covers. So there is no legitimate reason to
   declare one.
 - **It is itself an audit entry**, written through the ordinary path and linked
   like any other. Declaring one cannot be done without leaving a mark in the
@@ -157,8 +176,8 @@ answers:
 - **It covers only what precedes it.** A break *after* the checkpoint still
   fails the export. Tested by deleting an entry after one and confirming the
   refusal.
-- **The reason is mandatory** and is carried into every export that crosses it,
-  so "we upgraded past a known bug" and a blank line are visibly different
+- **The reason is mandatory**, and is carried into every export that crosses it.
+  So "we upgraded past a known bug" and a blank line are visibly different
   documents.
 
 Only the *link* from the starting entry to its predecessor is disclaimed. The
@@ -172,34 +191,36 @@ visible while letting the honest case carry on.
 ### The report has to point at the right break
 
 The first version reported the *old, disclaimed* fork at entry 136 when the
-actual problem was a row deleted at 5635. An operator who knew about 136 would
-have recognised it and moved on — the worst possible outcome for a report that a
-row has gone missing. It now names the break after the checkpoint and says
+actual problem was a row deleted at 5635. An administrator who knew about 136 would
+have recognised it and moved on. That is the worst possible outcome for a report
+that a row has gone missing. It now names the break after the checkpoint and says
 explicitly that the declaration does not cover it.
 
 ## Existing chains cannot be repaired
 
 By design. Rewriting entries to close a fork is exactly the operation the chain
-exists to make detectable, so there is no repair tool and there will not be one.
+exists to make detectable. So there is no repair tool, and there will not be one.
 A database that was written to concurrently before this fix has forks in its
 history, and `signari export audit` will report them at those points.
 
-The honest position for such a deployment: the chain is trustworthy from the
-first entry written after the upgrade, and the forks before it are a known
-artefact of this bug rather than evidence of tampering. That is worth recording
+The honest position for such a deployment is this. The chain is trustworthy from
+the first entry written after the upgrade. The forks before it are a known artefact
+of this bug, rather than evidence of tampering. That is worth recording
 somewhere an auditor will see, because "we know why those are there" is not
 something to reconstruct later from memory.
 
 ## A respelled id read as tampering
 
-A second, unrelated way to break the chain without touching it. PostgreSQL
-accepts a uuid in several spellings: upper case, in braces, without hyphens, or
-with a hyphen after every four digits. Whatever the spelling, it stores the
-canonical form. The entry hash was computed over the id **as the caller passed
-it**. So an Admin API request to `/admin/users/d578-90c1-c9ae-…` produced an
-entry whose hash covered `d578-90c1-c9ae-…` while its `subject_id` column held
-`d57890c1-c9ae-…`. Verification recomputes from the column, so the chain broke
-at that entry, permanently.
+This was a second, unrelated way to break the chain without touching it.
+PostgreSQL accepts a universally unique identifier (UUID) in several spellings:
+upper case, in braces, without hyphens, or with a hyphen after every four digits.
+Whatever the spelling, it stores the canonical form.
+
+The entry hash was computed over the ID **as the caller passed it**. So an Admin
+API request to `/admin/users/d578-90c1-c9ae-…` produced an entry whose hash covered
+`d578-90c1-c9ae-…`, while its `subject_id` column held `d57890c1-c9ae-…`.
+Verification recomputes from the column, so the chain broke at that entry,
+permanently.
 
 The detail column already went through PostgreSQL before hashing, because jsonb
 also normalises. The ids now take the same round trip, so the hash covers
@@ -212,11 +233,11 @@ checkpoint declared after them, with that reason, is the honest record.
 
 ## A note on testing this
 
-The tests that prove a break is detected have to *create* one — deleting and
-altering audit rows — which breaks that database's chain permanently.
+The tests that prove a break is detected have to *create* one, by deleting and
+altering audit rows. That breaks the database's chain permanently.
 
-The first version ran them against the shared test database and left it broken
-at id 688, failing three unrelated audit tests on data they had not touched.
+The first version ran them against the shared test database, and left it broken
+at ID 688. Three unrelated audit tests then failed on data they had not touched.
 That is precisely the "cries wolf" outcome this whole area is about, produced by
 the tests written to prevent it.
 

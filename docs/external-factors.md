@@ -1,11 +1,24 @@
 # External factors
 
-An `external_factor` stage sends the browser to a service you run and believes
-the answer it signs. Use it for what no built-in factor does: a push to your own
-app, a check against a card system, a device your organisation already trusts.
+## Introduction
 
-The service is not given a shared secret and holds nothing of Signari's. It
-registers public keys, and an answer is believed because one of them signed it.
+Sometimes a sign-in needs a step that no built-in factor provides. It might be a
+push to your own mobile application, a check against a card system, or a device
+your organisation already trusts.
+
+An `external_factor` stage sends the browser to a service you run, and believes
+the answer that service signs. A "stage" is one step of a
+[sign-in flow](flows.md). The service is not given a shared secret, and holds
+nothing of Signari's. It registers public keys, and an answer is believed
+because one of them signed it.
+
+You register the service with `signari external-factor add`, then name it in a
+sign-in flow.
+
+## Using it in a flow
+
+This flow asks for a passkey or a password, then sends the person to the service
+registered as `push`:
 
 ```yaml
 version: 1
@@ -26,6 +39,9 @@ flows:
 
 ## Registering a service
 
+Register the service with its address, its issuer, its public keys, and the
+most it may claim:
+
 ```sh
 signari external-factor add -org "$ORG" -name push \
   -url https://push.example.com/ask \
@@ -34,6 +50,8 @@ signari external-factor add -org "$ORG" -name push \
   -amr otp,mfa
 ```
 
+Each flag sets one thing:
+
 | | |
 |---|---|
 | `url` | Where the browser goes, https, with `challenge` added to its query. |
@@ -41,23 +59,28 @@ signari external-factor add -org "$ORG" -name push \
 | `jwks` | The service's public keys, held by value. A private key or a shared key is refused. |
 | `amr` | The most it may claim to have proved. |
 
-Or `PUT /admin/organizations/{orgID}/external-factors/{name}`, or
+You can also register it with
+`PUT /admin/organizations/{orgID}/external-factors/{name}`, or with
 `external_factors:` in a [configuration file](config-as-code.md). A key changes
-when you change it here: nothing is fetched, so an answer is never believed
+when you change it here. Nothing is fetched, so an answer is never believed
 because of a key that arrived on its own.
 
-`amr` may not hold `pwd`, `fed`, `krb` or `user`. Those say how somebody arrived,
-which flows read to tell one route from another, so a service claiming one could
-turn a password sign-in into a federated one.
+`amr` lists the ways a person proved who they are. `amr` may not hold `pwd`,
+`fed`, `krb` or `user`. Those values say how somebody arrived, and flows read
+them to tell one route from another. So a service claiming one could turn a
+password sign-in into a federated one.
 
-A flow that names a service nobody registered is refused when it is applied, and
-a service a flow names cannot be removed until that flow is replaced.
+A flow that names a service nobody registered is refused when it is applied. A
+service a flow names cannot be removed until that flow is replaced.
 
 ## What goes out
 
-The browser arrives at `url` with `challenge`, a JWT this server signed, with
-header `typ: factor-challenge+jwt`. Check it against this issuer's JWKS before
-acting on it.
+The browser arrives at `url` with `challenge`, a
+[JSON Web Token (JWT)](glossary.md#jwt) that Signari signed, with the header
+`typ: factor-challenge+jwt`. Check it against Signari's published keys, its
+[JSON Web Key Set (JWKS)](glossary.md#jwks), before acting on it.
+
+The challenge carries these claims:
 
 | Claim | |
 |---|---|
@@ -71,8 +94,8 @@ acting on it.
 
 ## What comes back
 
-Send the browser to `return_to` with `response`, a JWS the service signed, with
-header `typ: factor-response+jwt`:
+Send the browser to `return_to` with `response`, a JSON Web Signature (JWS) that
+the service signed, with the header `typ: factor-response+jwt`:
 
 ```json
 {
@@ -86,9 +109,11 @@ header `typ: factor-response+jwt`:
 }
 ```
 
-Every claim is required. `aud` is this server's issuer, a string or a list
-holding it. `amr` is what was proved this time, and must hold at least one value,
-all of them registered.
+Every claim is required. `aud` is Signari's issuer, as a string or a list
+holding it. `amr` is what was proved this time. It must hold at least one value,
+and all of them must be registered.
+
+Signari refuses an answer in each of these cases:
 
 | Refused | Why |
 |---|---|
@@ -101,36 +126,42 @@ all of them registered.
 | A nonce already spent, expired, or issued to another sign-in | Each is good once, for one person at one service. |
 | Two `response` parameters | What was verified and what was recorded must describe the same request. |
 
-The callback is a `GET`, so a redirect is all a service needs, and it has to come
-back to the browser that left: the sign-in in progress is held in a cookie sent
-only on a top-level navigation. A refused answer ends the sign-in, and the person
-starts again. A service that wants to say no sends the browser back with no
-`response`.
+The callback is a `GET`, so a redirect is all a service needs. It has to come
+back to the browser that left. The sign-in in progress is held in a cookie,
+which is sent only on a top-level navigation.
+
+A refused answer ends the sign-in, and the person starts again. A service that
+wants to say no sends the browser back with no `response`.
 
 ## What a pass means
 
 The `amr` the service reported joins the session's, reaches the ID token, and
-counts toward `acr` as any second factor does. So `amr: [otp]` after a password
-is multi-factor, and an `mfa` stage after it has nothing left to ask.
+counts toward `acr` as any second factor does. `acr` says how strongly someone
+signed in (see the [glossary](glossary.md#acr)). So `amr: [otp]` after a
+password is multi-factor, and an `mfa` stage after it has nothing left to ask.
 
 The stage does not establish who somebody is. It is asked of a person something
-else has already proved, which is how the challenge can name them, so a flow must
-put a proving stage before it, and `{stage: external_factor}` cannot stand in for
-one. Only a sign-in runs it: `on: authentication`.
+else has already proved, which is how the challenge can name them. So a flow
+must put a proving stage before it, and `{stage: external_factor}` cannot stand
+in for one. Only a sign-in runs it: `on: authentication`.
 
-A later stage does not ask again, in the same sign-in. A new sign-in does.
+A later stage does not ask again in the same sign-in. A new sign-in does.
 
 ## If the service is down
 
 The browser leaves and does not come back, and the person sees whatever the
 service's address shows. There is no health check and no fail-open: a flow that
-names a service requires it. If it should be optional, say so in the flow with
-`when:`, or give the person another branch of a `one_of`.
+names a service requires it.
 
-Each sign-in records `mfa.external_factor_passed` or `mfa.external_factor_failed`
-([events](events.md)). A refusal's reason goes to the log, never to the person.
+If the service should be optional, say so in the flow with `when:`, or give the
+person another branch of a `one_of`.
+
+Each sign-in records `mfa.external_factor_passed` or
+`mfa.external_factor_failed` (see [event subscriptions](events.md)). A
+refusal's reason goes to the log, never to the person.
 
 ## See also
 
 - [Sign-in flows](flows.md)
-- [Extensibility](extensibility.md), for hooks that decide rather than prove
+- [Extending Signari with your own service](extensibility.md), for hooks that
+  decide rather than prove

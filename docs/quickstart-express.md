@@ -1,11 +1,24 @@
 # Quickstart: an Express application
 
-[examples/express-quickstart](../examples/express-quickstart/server.js) signs people in
-with Signari from an [Express](https://expressjs.com) application, using
-[openid-client](https://github.com/panva/openid-client) for the protocol. It is about
-eighty lines.
+## Introduction
+
+This guide connects an [Express](https://expressjs.com) application to Signari, so
+that people sign in to it with their Signari account. The example,
+[examples/express-quickstart](../examples/express-quickstart/server.js), uses
+[openid-client](https://github.com/panva/openid-client) for the protocol. It is
+about eighty lines.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -16,6 +29,9 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly:
 scheme, host, port and path.
 
 ## 2. Run it
+
+Install the example's dependencies, then run it with Signari's address and the
+values from step 1:
 
 ```sh
 cd examples/express-quickstart
@@ -37,8 +53,9 @@ checking off.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/express-quickstart/Dockerfile) as `demo-express`, the public
 client `demo-express` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), at
-`http://localhost:8091/login`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8091/login`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d
@@ -50,15 +67,16 @@ It trusts the development CA under `deploy/tls` through `NODE_EXTRA_CA_CERTS`.
 
 1. **Discovery.** `client.discovery` reads `/.well-known/openid-configuration` and
    refuses an issuer there that is not the one configured.
-2. **The redirect out.** `/login` makes a fresh `state`, `nonce` and PKCE verifier
-   for this one sign-in and sends `code_challenge_method=S256`. Signari requires
+2. **The redirect out.** `/login` makes a fresh `state`, `nonce` and Proof Key for
+   Code Exchange (PKCE) verifier for this one sign-in and sends `code_challenge_method=S256`. Signari requires
    PKCE of every client by default, confidential ones included.
 3. **The callback.** It takes the `state` back once and refuses one it does not
    hold. `authorizationCodeGrant` sends the code and the verifier, authenticating
    with `client_secret_basic`, and checks the ID token's issuer, audience, expiry
    and nonce.
 4. **The signature too.** openid-client does not check an ID token's signature by
-   default. OpenID Connect lets a client trust the TLS connection to the token
+   default. OpenID Connect lets a client trust the Transport Layer Security (TLS)
+   connection to the token
    endpoint instead (Core, section 3.1.3.7). This example turns on
    `enableNonRepudiationChecks`, so the signature is checked against `jwks_uri` as
    well.
@@ -67,8 +85,8 @@ A public client has no secret: leave `CLIENT_SECRET` unset, register it with
 `-public`, and the example authenticates with its `client_id` alone. PKCE is then its
 only proof.
 
-When something is refused, the message is the server's own. What each one means is in
-[troubleshooting.md](troubleshooting.md).
+When something is refused, the message is Signari's own. What each one means is in
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 

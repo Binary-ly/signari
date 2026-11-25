@@ -138,6 +138,11 @@ func usage() error {
 // help <command>` finds the command's one-line description.
 const usageText = `usage: signari <command> [flags]
 
+first run:
+  setup                take a machine with PostgreSQL to a deployment a person can sign in to
+  uninstall            remove what the installer and setup made here; the root key and database on request
+  healthcheck          exit 0 when the engine on this machine answers /readyz with 200, for a container
+
 schema:
   migrate bootstrap    apply 0001 (roles, schemas, grants) -- needs a superuser DSN
   migrate up           apply 0002+ (tables, policies, views) as signari_engine
@@ -492,6 +497,7 @@ testing:
 env:
   SIGNARI_ROOT_KEY        base64 of 32 random bytes; wraps stored private key material
   SIGNARI_ROOT_KEY_FILE   or a file holding it, readable by this user alone
+  SIGNARI_ADDR            where serve listens when -addr is not given (default :8080)
 
 help:
   signari help <command>    what one command does and the flags it takes
@@ -536,9 +542,11 @@ func run(args []string) (err error) {
 	ifMatch := fs.String("if-match", "", "`signari api`: the configuration version the change must be made against")
 	issuer := fs.String("issuer", "", "issuer URL, e.g. https://id.example.com")
 	name := fs.String("name", "", "instance display name")
-	addr := fs.String("addr", ":8080", "listen address for `serve`")
-	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS")
-	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key")
+	addr := fs.String("addr", ":8080", "listen address for `serve`, or SIGNARI_ADDR; `setup`: the one it writes "+
+		"to the env file, 127.0.0.1:8080 unless given")
+	tlsCert := fs.String("tls-cert", os.Getenv("SIGNARI_TLS_CERT"), "PEM certificate chain; enables HTTPS. "+
+		"`setup`: the one it writes to the env file, checked against the issuer's host")
+	tlsKey := fs.String("tls-key", os.Getenv("SIGNARI_TLS_KEY"), "PEM private key; `setup`: the certificate's")
 	adminAddr := fs.String("admin-addr", os.Getenv("SIGNARI_ADMIN_ADDR"), "listen address for the admin API (empty = disabled)")
 	// The admin API served plaintext until this existed, which put a bearer token
 	// carrying every write privilege on the wire in clear. TLS is now the default
@@ -550,6 +558,14 @@ func run(args []string) (err error) {
 	// should not be what somebody gets by forgetting.
 	adminInsecure := fs.Bool("admin-insecure", os.Getenv("SIGNARI_ADMIN_INSECURE") == "1",
 		"serve the admin API over plaintext HTTP (requires no -tls-cert; only safe on loopback behind a trusted terminator)")
+	// Refused unless asked for by name, as -admin-insecure is: a superuser or a
+	// BYPASSRLS role hands a compromised engine powers over the database server
+	// it never needs, and serving as one is what every quick start here did
+	// until November 2026.
+	allowRLSBypass := fs.Bool("allow-rls-bypass", os.Getenv("SIGNARI_ALLOW_RLS_BYPASS") == "1",
+		"`serve`: start even when the database role (SIGNARI_DSN's, or SIGNARI_READ_DSN's) is a superuser, has "+
+			"BYPASSRLS or may SET ROLE to one, powers over the database server the engine never needs (or "+
+			"SIGNARI_ALLOW_RLS_BYPASS=1); serve as signari_engine instead")
 	email := fs.String("email", "", "user email")
 	password := fs.String("password", "", "user password")
 	clientID := fs.String("client-id", "", "OAuth client_id (settable verbatim, for migration)")
@@ -571,7 +587,7 @@ func run(args []string) (err error) {
 		"registered here that is that service itself; every person is linked to it by their identifier there")
 	auditHead := fs.String("head", "", "a signed audit head kept outside the database, or @file holding one (audit verify)")
 	orgID := fs.String("org", "", "organisation uuid to import into")
-	dryRun := fs.Bool("dry-run", false, "report what would be imported or retired and change nothing")
+	dryRun := fs.Bool("dry-run", false, "report what would be imported, retired, set up or removed, and change nothing")
 	alg := fs.String("alg", "", "restrict `keys rotate` to one algorithm, publishing its first key if it has none "+
 		"(default: all in use); `client set-alg`: what signs the client's tokens, one the instance holds a key for")
 	rsaBits := fs.Int("rsa-bits", 0, "`keys rotate -alg`: the size of the RSA key published, 2048, 3072 or 4096 "+
@@ -601,7 +617,9 @@ func run(args []string) (err error) {
 	eraseConfirm := fs.String("confirm", "",
 		"`erase subject`: repeat the subject uuid to confirm; erasure cannot be undone. "+
 			"`restore finalize`: repeat the database's name; it signs everybody out. "+
-			"`instance org-delete`: the code its first run printed")
+			"`instance org-delete`: the code its first run printed. "+
+			"`uninstall`: the code its first run printed, or the sentence it gave for deleting the root key "+
+			"and keeping the database")
 	eraseDeactivate := fs.Bool("deactivate", false,
 		"`erase subject`: also deactivate the account, required when it is still active")
 	appURL := fs.String("app", "", "protected application URL, as the browser reaches it (proxy check)")
@@ -667,7 +685,45 @@ func run(args []string) (err error) {
 	echPublicName := fs.String("public-name", "",
 		"`ech new`: the DNS name sent in the clear in place of the one asked for; the server needs a certificate for it")
 	echConfigID := fs.Int("config-id", -1, "`ech new`: 0 to 255, the id clients name this key by; random when not given")
-	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script")
+	doctorJSON := fs.Bool("json", false, "`doctor`: print the report as JSON, for a script; `setup`, `uninstall`: "+
+		"one JSON result line on stdout, the progress on stderr, and no questions")
+	// `signari setup` (setup.go). Its database connection is a superuser's,
+	// once, never -dsn's: that is the engine's own, which setup makes.
+	superuserDSN := fs.String("superuser-dsn", "", "`setup`, `uninstall`: a URL for a PostgreSQL superuser, "+
+		"used once and never stored, with no password in it (PGPASSWORD, or -superuser-dsn-file); found on "+
+		"this machine when not given")
+	superuserDSNFile := fs.String("superuser-dsn-file", "", "`setup`: a file holding that URL, which may carry "+
+		"the password, so it is in no process list or shell history")
+	setupDatabase := fs.String("database", "", "`setup`: the database to set up, made when missing (default signari)")
+	setupRootKeyFile := fs.String("root-key-file", "", "`setup`: where the root key is, or is generated, never "+
+		"overwritten (default /etc/signari/root.key for root, else root.key under $XDG_CONFIG_HOME/signari/, "+
+		"failing that ~/.config/signari/)")
+	setupEnvFile := fs.String("env-file", "", "`setup`: the env file serve starts from, written 0600 (default "+
+		"signari.env beside the root key's default)")
+	setupYes := fs.Bool("yes", false, "`setup`: ask nothing and take the defaults; a needed answer with none is "+
+		"an error naming its flag. Also when there is no terminal, or CI is set. `uninstall`: remove what it "+
+		"lists without asking; the root key and the database still need -confirm")
+	setupCheckOnly := fs.Bool("check", false, "`setup`: say what is set up and what is missing, and change "+
+		"nothing; exits 0 when complete, 2 when not, 1 when it cannot tell")
+	printRootKey := fs.Bool("print-root-key", false, "`setup`: print the root key in the summary, to copy "+
+		"it off this machine; never printed otherwise")
+	setupTLS := fs.String("tls", "", "`setup`, for an https:// issuer: who ends TLS, proxy (one in front, Signari "+
+		"on loopback), files (Signari serves HTTPS itself, with -tls-cert and -tls-key) or none; worked out "+
+		"from what listens on 443 and 80 and from Let's Encrypt's certificates when not given")
+	setupTrustedProxies := fs.String("trusted-proxies", "", "`setup -tls proxy`: the proxies whose "+
+		"X-Forwarded-For it believes, written as SIGNARI_TRUSTED_PROXIES (default 127.0.0.1,::1)")
+	setupCompose := fs.String("compose", "", "`setup`: write a compose project that runs Signari and its own "+
+		"PostgreSQL in containers to this directory, instead of setting up this machine; with -check, check "+
+		"one. `uninstall`: the project to remove, by the manifest in it")
+	setupImage := fs.String("image", "", "`setup -compose`: the engine image the project runs (default the "+
+		"one install.sh --docker builds, signari:<release>)")
+	uninstallDeleteKey := fs.Bool("delete-root-key", false, "`uninstall`: delete the root key setup made too, confirmed; "+
+		"without it nothing sealed in the database opens again")
+	uninstallDropDB := fs.Bool("drop-database", false, "`uninstall`: drop the database setup made too, confirmed, "+
+		"and the roles migration 0001 made once no other database uses them")
+	setupLogFile := fs.String("log-file", "", "`setup`: the log each run appends to, 0600 and holding no secret "+
+		"(default /var/log/signari/setup.log for root, else setup.log under $XDG_STATE_HOME/signari/, failing "+
+		"that ~/.local/state/signari/)")
 	fromDay := fs.String("from", "", "export from this date, YYYY-MM-DD (inclusive)")
 	toDay := fs.String("until", "", "export up to this date, YYYY-MM-DD (exclusive)")
 	regOpen := fs.Bool("open", false, "allow registration with no initial access token")
@@ -1311,6 +1367,37 @@ func run(args []string) (err error) {
 		return i18nStatus(*themeDir)
 	case "i18n keys":
 		return i18nKeys(*themeDir)
+	// `setup` makes the engine's connection rather than being given one: it
+	// reaches PostgreSQL as a superuser, once, and writes signari_engine's DSN
+	// to the env file (setup.go).
+	case "setup":
+		given, args := map[string]bool{}, map[string]string{}
+		fs.Visit(func(f *flag.Flag) { given[f.Name], args[f.Name] = true, f.Value.String() })
+		sctx, scancel := commandContext(runFor)
+		defer scancel()
+		return setupCmd(sctx, os.Stdout, os.Stderr, thisHost(), setupFlags{issuer: *issuer, email: *email,
+			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, database: *setupDatabase,
+			addr: *addr, rootKeyFile: *setupRootKeyFile, envFile: *setupEnvFile, yes: *setupYes,
+			dryRun: *dryRun, check: *setupCheckOnly, json: *doctorJSON, printRootKey: *printRootKey,
+			logFile: *setupLogFile, tls: *setupTLS, tlsCert: *tlsCert, tlsKey: *tlsKey,
+			trustedProxies: *setupTrustedProxies, compose: *setupCompose, image: *setupImage, given: given,
+			args: args})
+	// For a container's healthcheck: the engine's image has no shell or curl.
+	case "healthcheck":
+		addrGiven := false
+		fs.Visit(func(f *flag.Flag) { addrGiven = addrGiven || f.Name == "addr" })
+		hctx, hcancel := commandContext(runFor)
+		defer hcancel()
+		return healthcheck(hctx, os.Stdout, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert)
+	// `uninstall` removes what the installer and setup recorded making
+	// (uninstall.go), reaching PostgreSQL as setup does only to drop the
+	// database it was asked to.
+	case "uninstall":
+		uctx, ucancel := commandContext(runFor)
+		defer ucancel()
+		return uninstallCmd(uctx, os.Stdout, os.Stderr, thisHost(), uninstallFlags{dryRun: *dryRun, yes: *setupYes,
+			json: *doctorJSON, deleteRootKey: *uninstallDeleteKey, dropDatabase: *uninstallDropDB, confirm: *eraseConfirm,
+			superuserDSN: *superuserDSN, superuserDSNFile: *superuserDSNFile, compose: *setupCompose})
 	}
 
 	// `outpost run` is the whole point of an outpost: it holds NO database
@@ -1703,7 +1790,10 @@ func run(args []string) (err error) {
 	case "bootstrap":
 		return bootstrap(ctx, conn, *issuer, *name, *slug, *email)
 	case "serve":
-		return serve(conn, *addr, *tlsCert, *tlsKey, *adminAddr, *adminInsecure)
+		addrGiven := false
+		fs.Visit(func(f *flag.Flag) { addrGiven = addrGiven || f.Name == "addr" })
+		return serve(conn, serveAddr(*addr, addrGiven, os.Getenv), *tlsCert, *tlsKey, *adminAddr, *adminInsecure,
+			*allowRLSBypass)
 	case "janitor once":
 		return janitorOnce(ctx, conn)
 	case "import authentik":
@@ -2559,7 +2649,8 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 	case stopped && current.Accepted() != nil:
 		return fmt.Errorf("SIGNARI_NEW_ROOT_KEY and SIGNARI_ACCEPTED_ROOT_KEY are both set. The " +
 			"first rotates a stopped deployment to a new key; the second finishes an online " +
-			"rotation the nodes are already part of (docs/key-rotation.md). Set one")
+			"rotation the nodes are already part of (\"Rotating the root key\" in docs/configuration.md " +
+			"has both). Set one")
 	case stopped:
 		old = current
 		next, err = keys.LoadRootKey(os.Getenv,
@@ -2589,7 +2680,7 @@ func keysRewrapRoot(ctx context.Context, conn *pgx.Conn, dryRun bool) error {
 		return fmt.Errorf("nothing to rotate to. With the deployment running: restart every node " +
 			"with SIGNARI_ROOT_KEY set to the new key and SIGNARI_ACCEPTED_ROOT_KEY to the old one, " +
 			"then run this with the same. Stopped: set SIGNARI_NEW_ROOT_KEY to the new key. " +
-			"docs/key-rotation.md has both")
+			"\"Rotating the root key\" in docs/configuration.md has both")
 	}
 
 	// Every sealed row is read FOR UPDATE before it is written (beginEdit).
@@ -2729,23 +2820,28 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 	if issuer == "" {
 		return fmt.Errorf("-issuer is required")
 	}
-	if name == "" {
-		name = issuer
-	}
 	root, err := rootKey()
 	if err != nil {
 		return err
 	}
+	return instanceCreateWith(ctx, conn, root, os.Stdout, issuer, name)
+}
 
+// instanceCreateWith is instanceCreate under the root key given, reporting to
+// w, for bootstrap and setup.
+func instanceCreateWith(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, w io.Writer, issuer, name string) error {
+	if name == "" {
+		name = issuer
+	}
 	var id string
-	err = conn.QueryRow(ctx, `
+	err := conn.QueryRow(ctx, `
 		INSERT INTO core.instances (issuer, display_name) VALUES ($1, $2)
 		ON CONFLICT (issuer) DO UPDATE SET display_name = EXCLUDED.display_name
 		RETURNING id::text`, issuer, name).Scan(&id)
 	if err != nil {
 		return fmt.Errorf("creating instance: %w", err)
 	}
-	fmt.Printf("instance %s\n  issuer %s\n", id, issuer)
+	fmt.Fprintf(w, "instance %s\n  issuer %s\n", id, issuer)
 
 	// ES256 as the default for new clients, RS256 always available as the
 	// universal floor that every relying-party library can verify.
@@ -2754,15 +2850,79 @@ func instanceCreate(ctx context.Context, conn *pgx.Conn, issuer, name string) er
 		return fmt.Errorf("ensuring signing keys: %w", err)
 	}
 	for _, k := range created {
-		fmt.Printf("  generated %s key %s (%s)\n", k.Algorithm(), k.KID(), k.State())
+		fmt.Fprintf(w, "  generated %s key %s (%s)\n", k.Algorithm(), k.KID(), k.State())
 	}
 	if len(created) == 0 {
-		fmt.Println("  signing keys already present")
+		fmt.Fprintln(w, "  signing keys already present")
 	}
 	return nil
 }
 
-func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure bool) error {
+// serveAddr is where serve listens: -addr when it was given, else SIGNARI_ADDR
+// when that is set, else -addr's default. The variable is what lets the env
+// file `signari setup` writes hold everything serve needs, so that the unit and
+// the shell start it the same way; given, the flag still wins, as the image's
+// own `serve -addr 0.0.0.0:8080` relies on.
+func serveAddr(flagValue string, given bool, getenv func(string) string) string {
+	if v := getenv("SIGNARI_ADDR"); v != "" && !given {
+		return v
+	}
+	return flagValue
+}
+
+// rlsBypassGate refuses to serve as a privileged database role, unless
+// allowed by name, and then says so once, loudly. The same answer as `signari
+// doctor`'s database finding, from the same query. Its name is the flag's.
+//
+// Not because row-level security would bind the engine otherwise: it reads
+// every organisation by design (core.is_engine(), migration 0018). Because a
+// superuser, a BYPASSRLS role, or a role that may SET ROLE to either hands a
+// compromised engine, or one SQL injection, powers the engine never needs:
+// running programs and reading files on the database server (COPY ... PROGRAM,
+// pg_read_server_files), changing its configuration (ALTER SYSTEM), every
+// database on the cluster and the console's admin schema. setting names the
+// connection for the message: SIGNARI_DSN, or SIGNARI_READ_DSN's pool.
+func rlsBypassGate(ctx context.Context, conn *pgx.Conn, setting string, allow bool, log *slog.Logger) error {
+	session, current, err := doctor.ConnectionRoles(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("reading which role %s signs in as: %w", setting, err)
+	}
+	role, privileged := doctor.PrivilegedRole(session, current)
+	switch {
+	case !privileged:
+		return nil
+	case allow:
+		log.Warn("SERVING AS A PRIVILEGED DATABASE ROLE: "+setting+" signs in as, acts as or may become "+
+			role.Name+", "+role.Kind()+", which hands a compromised engine powers it never needs over the "+
+			"database server. -allow-rls-bypass or SIGNARI_ALLOW_RLS_BYPASS=1 asked for this; serve as "+
+			"signari_engine instead.", "role", role.Name, "setting", setting)
+		return nil
+	}
+	return fmt.Errorf("not serving: %s signs in as, acts as or may become %s, %s, which would hand a "+
+		"compromised engine, or one SQL injection, powers it never needs: running programs and reading files on "+
+		"the database server, changing its configuration, and reaching every database on the cluster. Serve as "+
+		"signari_engine, with no role it may SET ROLE to: `signari setup` arranges it against this database and "+
+		"writes SIGNARI_DSN for it, and docs/upgrading.md says how by hand. To serve this way regardless, give "+
+		"-allow-rls-bypass or set SIGNARI_ALLOW_RLS_BYPASS=1", setting, role.Name, role.Kind())
+}
+
+// readPoolGate holds SIGNARI_READ_DSN, the Admin API's read replica, to what
+// rlsBypassGate holds SIGNARI_DSN to: it is a second way into the same data,
+// and a superuser there is as much a superuser as on the primary.
+func readPoolGate(ctx context.Context, readDSN string, allow bool, log *slog.Logger) error {
+	cfg, err := pgx.ParseConfig(readDSN)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_READ_DSN: %w", err)
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("SIGNARI_READ_DSN: %w", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return rlsBypassGate(ctx, conn, "SIGNARI_READ_DSN", allow, log)
+}
+
+func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecure, allowRLSBypass bool) error {
 	// Cancelled on SIGINT or SIGTERM, which is what an orchestrator sends before
 	// it eventually kills the process. Everything started below hangs off this
 	// context, so the signal reaches the background workers as well as the
@@ -2788,6 +2948,17 @@ func serve(conn *pgx.Conn, addr, tlsCert, tlsKey, adminAddr string, adminInsecur
 	// boot, with a clear message -- not at 3am inside a query.
 	if err := migrate.Verify(ctx, conn); err != nil {
 		return err
+	}
+	// And as a role with no power over the database server it does not need,
+	// on both of its connections: the Admin API's read replica, when it has
+	// one, is checked here, before anything else is started, as the primary is.
+	if err := rlsBypassGate(ctx, conn, "SIGNARI_DSN", allowRLSBypass, log); err != nil {
+		return err
+	}
+	if readDSN := os.Getenv("SIGNARI_READ_DSN"); readDSN != "" && adminAddr != "" {
+		if err := readPoolGate(ctx, readDSN, allowRLSBypass, log); err != nil {
+			return err
+		}
 	}
 	// And under GODEBUG=fips140=only, nothing configured that the module would
 	// refuse by panicking a request (3.11).

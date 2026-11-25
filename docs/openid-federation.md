@@ -1,52 +1,82 @@
 # OpenID Federation
 
-Signari publishes an **Entity Configuration** — the self-signed Entity Statement
-that makes it a member of an OpenID Federation.
+## Introduction
 
-Specification: OpenID Federation 1.0, **Final, 17 February 2026**.
+In an [OpenID Federation](glossary.md#openid-federation), organisations trust
+each other's servers through a shared authority, instead of registering each one
+by hand. Each member publishes a signed description of itself. Authorities above
+it vouch for its keys, and the statements from a member up to an authority both
+sides trust form a "Trust Chain".
+
+Signari publishes an **Entity Configuration**, the self-signed Entity Statement
+that makes it a member of an OpenID Federation. It can also build and check other
+members' Trust Chains, and let a federation's applications sign in with no
+registration step. Specification: OpenID Federation 1.0, **Final, 17 February
+2026**.
+
+You turn federation on with the command line or the Admin API, and restart
+Signari.
+
+> [!NOTE]
+> Trust Marks, which say that a member has passed an assessment, have a page of
+> their own: [Trust marks](trust-marks.md).
 
 ## What is implemented, and what is not
 
-**Implemented.** The Entity Configuration (§9): the statement an entity publishes
-about itself at `/.well-known/openid-federation`. It is the leaf of every Trust
-Chain and the prerequisite for everything else in the specification. Trust-chain
-building and validation (§10), metadata policy (§6) and constraints (§6.2). And
-**Trust Marks** (§7): issuing, delegation, validation, and the three Trust Mark
-Issuer endpoints of §8.4–§8.6 — see [trust-marks.md](trust-marks.md).
+**Implemented.** These parts of the specification are built:
 
-Signari can be a **Leaf Entity**, a **Trust Mark Issuer**, an **Intermediate** and a
-**Trust Anchor**. Fetch, subordinate listing and resolve are in
+- The Entity Configuration (§9): the statement an entity publishes about itself at
+  `/.well-known/openid-federation`. It is the leaf of every Trust Chain, and the
+  prerequisite for everything else in the specification.
+- Trust-chain building and validation (§10), metadata policy (§6) and constraints
+  (§6.2).
+- **Trust Marks** (§7): issuing, delegation, validation, and the three Trust Mark
+  Issuer endpoints of §8.4–§8.6. See [Trust marks](trust-marks.md).
+
+Signari can be a **Leaf Entity**, a **Trust Mark Issuer**, an **Intermediate** and
+a **Trust Anchor**. A Leaf Entity is a member at the bottom of the tree. An
+Intermediate vouches for members below it. A Trust Anchor is the authority at the
+top, which the members trust. Fetch, subordinate listing and resolve are in
 [Speaking for other entities](#speaking-for-other-entities).
 
-Nothing advertises what does not apply. A Leaf Entity's `federation_entity` metadata
-contains no `federation_fetch_endpoint`, which §5.1.1 forbids it. The three trust-mark endpoints are
-advertised only once this entity has actually issued a Trust Mark.
+Nothing advertises what does not apply. A Leaf Entity's `federation_entity`
+metadata contains no `federation_fetch_endpoint`, which §5.1.1 forbids it. The
+three trust-mark endpoints are advertised only once this entity has actually
+issued a Trust Mark.
 
 ## Enabling it
 
-    signari federation enable \
-      -authority-hints https://anchor.example \
-      -organization-name "Example University"
+To enable federation, name the authority above this entity and the
+organisation's name:
 
-Then restart `signari serve`; the endpoint is registered at startup only when a
-federation key exists.
+```sh
+signari federation enable \
+  -authority-hints https://anchor.example \
+  -organization-name "Example University"
+```
 
-`-authority-hints` names this entity's **Immediate Superiors**. §3.1.2 makes the
-claim REQUIRED for any entity with a superior above it, forbids the empty array,
-and forbids the claim entirely for a Trust Anchor with no superiors, so leaving it
-out makes this entity a **Trust Anchor** (see below). `trust-mark issuers` and
-`trust-mark owners` set claims only a Trust Anchor publishes.
+Then restart `signari serve`. The endpoint is registered at startup, and only when
+a federation key exists.
 
-Three more settings go into the Entity Configuration, and each is kept when its
-flag is not given, so a re-run to change the name does not wipe them:
+`-authority-hints` names this entity's **Immediate Superiors**, the authorities
+directly above it. §3.1.2 makes the claim REQUIRED for any entity with a superior
+above it, and forbids the empty array. It also forbids the claim entirely for a
+Trust Anchor with no superiors. So leaving it out makes this entity a **Trust
+Anchor** (see below). `trust-mark issuers` and `trust-mark owners` set claims only
+a Trust Anchor publishes.
 
-    signari federation enable -authority-hints https://anchor.example \
-      -trust-anchor-hints https://anchor.example,https://edugain.example \
-      -federation-contacts security@example.edu \
-      -entity-lifetime 12h
+Three more settings go into the Entity Configuration. Each is kept when its flag
+is not given, so a re-run to change the name does not wipe them:
+
+```sh
+signari federation enable -authority-hints https://anchor.example \
+  -trust-anchor-hints https://anchor.example,https://edugain.example \
+  -federation-contacts security@example.edu \
+  -entity-lifetime 12h
+```
 
 - `-trust-anchor-hints` is published as `trust_anchor_hints`, the Trust Anchors
-  this entity trusts. Each must be an Entity Identifier; empty clears it, and the
+  this entity trusts. Each must be an Entity Identifier. Empty clears it, and the
   claim is then absent, because §3.1.2 forbids the empty array.
 - `-federation-contacts` goes into the `federation_entity` metadata as
   `contacts`, which may hold names, addresses or phone numbers.
@@ -54,13 +84,13 @@ flag is not given, so a re-run to change the name does not wipe them:
   168h, 24h by default. A long one is a statement a federation keeps trusting
   after you have changed your mind.
 
-`federation show` prints all three. Until October 2026 they were read and
-published and nothing could set them.
+`federation show` prints all three. Until October 2026, they were read and
+published, and nothing could set them.
 
-The Admin API enables federation and changes these settings the same way at
+The Admin API enables federation and changes these settings the same way, at
 `/admin/instances/{instanceID}/federation`, with a deployment-wide token. Its
 answer says `restart_required` when it generated the federation key, since the
-endpoint is registered when `serve` starts. See [admin-api.md](admin-api.md).
+endpoint is registered when `serve` starts. See [the Admin API](admin-api.md).
 
 ## The federation key is separate, and that is the point
 
@@ -70,38 +100,40 @@ endpoint is registered when `serve` starts. See [admin-api.md](admin-api.md).
 > to be used in other protocols, such as OpenID Connect, are conveyed in the
 > metadata elements for the protocol's Entity Type Identifiers...)
 
-The easy implementation reuses the OIDC signing key: it is already loaded,
-already wrapped, already published. It is also wrong. The two keys answer
-different questions — a relying party trusts our OIDC key to assert *who a user
-is*; a federation trusts our federation key to assert *what this entity is and
-who vouches for it*. Rotating one should not rotate the other, and compromising
-one should not forge the other.
+The tempting implementation reuses the OpenID Connect ([OIDC](glossary.md#oidc))
+signing key. It is already loaded, already wrapped and already published. It is
+also wrong.
 
-So `core.signing_keys` gained a `purpose` column rather than federation keys
-getting their own table: the rotation states, the root-key wrapping and the
-retirement sweep are already correct there, and a second table would be a second
-copy of them that eventually drifts.
+The two keys answer different questions. An application trusts Signari's OIDC key
+to assert *who a person is*. A federation trusts its federation key to assert
+*what this entity is and who vouches for it*. Rotating one should not rotate the
+other, and compromising one should not forge the other.
+
+So `core.signing_keys` gained a `purpose` column, instead of federation keys
+getting their own table. The rotation states, the root-key wrapping and the
+retirement sweep are already correct there. A second table would be a second copy
+of them that eventually drifts.
 
 Two things had to follow from that column, and only one was obvious:
 
 - `LoadSet` now filters `purpose = 'oidc'`. Without it, generating a federation
-  key would have silently published it at `/oauth2/jwks` — the exact conflation
-  the separation exists to prevent, arriving as an accident rather than a
-  decision.
+  key would have silently published it at `/oauth2/jwks`. That is the exact
+  conflation the separation exists to prevent, arriving as an accident rather
+  than a decision.
 - The `signing_keys_one_active` unique index had to become
-  `(instance_id, purpose, algorithm)`. It was `(instance_id, algorithm)`, which
-  is right for a table holding one kind of key; with two, an active ES256
-  federation key collides with the active ES256 protocol key.
+  `(instance_id, purpose, algorithm)`. It was `(instance_id, algorithm)`, which is
+  right for a table holding one kind of key. With two, an active ES256 federation
+  key collides with the active ES256 protocol key.
 
 The second was **found by running the command**, not by reading the migration.
 `signari federation enable` failed with a constraint violation on any instance
-that already had OIDC keys — which is every instance. Migration 0075 fixes it,
-and its comment says how it was found.
+that already had OIDC keys, which is every instance. Migration 0075 fixes it, and
+its comment says how it was found.
 
 ## Verified end to end
 
-A fresh instance, federation enabled, `serve` restarted, then the endpoint
-fetched and its signature checked against the key in its own `jwks`:
+A fresh instance, federation enabled, `serve` restarted, then the endpoint fetched
+and its signature checked against the key in its own `jwks`:
 
 | Requirement | Spec | Observed |
 |---|---|---|
@@ -115,20 +147,20 @@ fetched and its signature checked against the key in its own `jwks`:
 | Content-Type | §15.1 | `application/entity-statement+jwt` |
 | Signature | §3 | **verifies against the key in its own `jwks`** |
 
-And the separation held: the OIDC JWKS served two kids, neither of them the
-federation key's.
+And the separation held. The OIDC JSON Web Key Set ([JWKS](glossary.md#jwks))
+served two kids, the key IDs, and neither of them was the federation key's.
 
 ## Trust Chain validation
 
-`oidfed.ValidateChain` implements §10.2's nine steps. A chain is an ordered list
-of Entity Statements from the subject up to a Trust Anchor; validating it is what
+`oidfed.ValidateChain` implements §10.2's nine steps. A chain is an ordered list of
+Entity Statements, from the subject up to a Trust Anchor. Validating it is what
 turns "this server published a statement about itself" into "an authority I
 already trust vouches for this server".
 
-### The step that is easy to get backwards
+### The step that is often done backwards
 
-§10.2 verifies ES[0] — the subject's own Entity Configuration — **twice**, and
-the two checks do entirely different work:
+§10.2 verifies ES[0], the subject's own Entity Configuration, **twice**. The two
+checks do entirely different work:
 
 > For ES[0] ... verify that its signature validates with a public key in
 > ES[0]["jwks"].
@@ -136,20 +168,20 @@ the two checks do entirely different work:
 > For each j = 0,...,i-1, verify that the signature of ES[j] validates with a
 > public key in ES[j+1]["jwks"].
 
-The first is a **self-signature**. It proves internal consistency and proves
+The first is a **self-signature**. It proves internal consistency, and proves
 nothing about trust, because anybody can sign a statement with a key they also
 published inside it. An implementation that does only this has built a validator
 that accepts every entity.
 
 The second is where trust actually flows. ES[1] is the Subordinate Statement
-issued by the superior *about* this entity, and its `jwks` is the key set the
-superior attests the subordinate has. So checking ES[0]'s signature against
-ES[1]'s `jwks` asks the only question that matters: **does the key this entity
-signed with match the key its superior says it has?**
+issued by the superior *about* this entity. Its `jwks` is the key set the superior
+attests the subordinate has. So checking ES[0]'s signature against ES[1]'s `jwks`
+asks the only question that matters: **does the key this entity signed with match
+the key its superior says it has?**
 
 `TestALeafSignedWithAKeyItsSuperiorDoesNotAttestIsRefused` is that scenario
-directly — a leaf rotates to a key its intermediate has never seen and re-signs
-its own configuration. Self-consistent, unvouched-for, and refused.
+directly. A leaf rotates to a key its intermediate has never seen, and re-signs its
+own configuration. It is self-consistent, unvouched-for, and refused.
 
 ### Two things the caller must supply out of band
 
@@ -157,8 +189,8 @@ its own configuration. Self-consistent, unvouched-for, and refused.
 identifier *and* its keys from the caller, never from the chain. §10.2's last two
 steps are "verify that the issuer matches the Entity Identifier of the Trust
 Anchor" and "verify that its signature validates with a public key of the Trust
-Anchor" — and reading either from the chain makes the step verify the chain
-against itself. A chain that names its own anchor validates for anybody.
+Anchor". Reading either from the chain makes the step verify the chain against
+itself. A chain that names its own anchor validates for anybody.
 
 ### Chain expiry
 
@@ -169,17 +201,23 @@ gone stale.
 
 ### Mutation-tested
 
+Each of these deliberate faults was caught by a test:
+
 | Mutation | Test that caught it |
 |---|---|
 | Drop step 7 — verify only the self-signature | `TestALeafSignedWithAKeyItsSuperiorDoesNotAttestIsRefused` |
 | Take the anchor's keys from the chain | `TestAValidChainValidates` |
 | Chain expiry from the last member rather than the minimum | `TestTheChainExpiresWhenItsEarliestMemberDoes` |
 
-Also refused: a broken link (`ES[j].iss != ES[j+1].sub`), an expired member, a
-chain of one, a statement with no `kid` header (§3 makes it a MUST — without it a
-verifier must try every key, which turns "signed by the attested key" into
-"signed by any key in a set we were handed"), and any symmetric signing
-algorithm.
+Also refused:
+
+- a broken link (`ES[j].iss != ES[j+1].sub`);
+- an expired member;
+- a chain of one;
+- a statement with no `kid` header. §3 makes it a MUST. Without it a verifier must
+  try every key, which turns "signed by the attested key" into "signed by any key
+  in a set we were handed";
+- any symmetric signing algorithm.
 
 ## Fetching
 
@@ -188,25 +226,28 @@ algorithm.
 
 ### It walks a graph an attacker partly controls
 
-This is the part worth being careful about. We fetch an entity's configuration,
-read `authority_hints` **out of it**, and fetch those — so every URL after the
-first is one the previous document chose. `authority_hints` is a list of
-addresses somebody else writes, and following it is a server-side request forgery
-primitive by construction.
+This is the part worth being careful about. Signari fetches an entity's
+configuration, reads `authority_hints` **out of it**, and fetches those. So every
+URL after the first is one the previous document chose. `authority_hints` is a
+list of addresses somebody else writes. Following it is a server-side request
+forgery primitive by construction: a way to make Signari call addresses that
+somebody else chose.
 
-So the fetcher uses `safedial`, which checks at **dial** time rather than at
-parse time. A hostname that resolves publicly when validated and to
-`169.254.169.254` when connected is DNS rebinding, and no amount of URL
-inspection catches it. `TestTheDefaultFetcherRefusesPrivateAddresses` pins the
-default: loopback, link-local and RFC 1918 are refused by a `Fetcher{}` with no
-options set.
+So the fetcher uses `safedial`, which checks at **dial** time, not at parse time.
+A hostname that resolves publicly when validated, and to `169.254.169.254` when
+connected, is Domain Name System (DNS) rebinding. No amount of URL inspection
+catches it. `TestTheDefaultFetcherRefusesPrivateAddresses` pins the default:
+loopback, link-local and RFC 1918 are refused by a `Fetcher{}` with no options
+set.
 
 The escape hatch for tests is called `AllowLoopbackForTesting`, and the length of
-that name is deliberate — a field called `Insecure` or `SkipVerify` gets set in a
+that name is deliberate. A field called `Insecure` or `SkipVerify` gets set in a
 config file by somebody solving a different problem. A test asserts the name has
 not been shortened.
 
 ### What it refuses beyond addresses
+
+It also refuses these:
 
 | Refusal | Why |
 |---|---|
@@ -218,39 +259,41 @@ not been shortened.
 | `authority_hints: []` | §3.1.2 forbids the empty array, and reading it as "no superiors" silently accepts a document saying something it may not say |
 
 `MaxChainDepth` bounds the walk at 10. §6.2.1 lets a Trust Anchor impose a
-`max_path_length` on its subtree; this is the local ceiling for when nobody has,
+`max_path_length` on its subtree. This is the local ceiling for when nobody has,
 because a cycle of entities naming each other as superiors is otherwise walked
 forever.
 
 ### ParseStatement verifies nothing, and says so
 
-Parsing and verifying are necessarily separate here: a statement's signing key is
+Parsing and verifying are necessarily separate here. A statement's signing key is
 only known once the chain is assembled, so the fetcher cannot verify what it
-retrieves. `ParseStatement` is named to make that unmistakable, and
+retrieves. `ParseStatement` is named to make that unmistakable.
 `TestParseStatementVerifiesNothing` asserts that a corrupted signature still
-*parses* — so that if somebody later adds verification there, the test tells them
+*parses*. So if somebody later adds verification there, the test tells them that
 callers may have started trusting its output.
 
 ## Chain building
 
-`oidfed.Resolver` joins the two halves: it walks up from an entity using
+`oidfed.Resolver` joins the two halves. It walks up from an entity using
 `authority_hints`, fetching each superior's Entity Configuration and its
-Subordinate Statement about the entity below, then hands the assembled chain to
+Subordinate Statement about the entity below. Then it hands the assembled chain to
 `ValidateChain`.
 
 ### Why building and validating are separate passes
 
-It is tempting to verify each statement as it arrives and fail fast. That cannot
+It is tempting to verify each statement as it arrives, and fail fast. That cannot
 work. §10.2 verifies ES[j] against **ES[j+1]**'s key set, so no statement can be
 checked until the one *above* it has been fetched. A resolver that validates
 incrementally is either doing it wrong, or checking each statement against its own
-keys — which is the self-signature that proves nothing.
+keys. That is the self-signature that proves nothing.
 
 So the whole candidate chain is fetched, then validated. The cost is fetching
-statements a later failure discards; the alternative is a validator that accepts
-anybody.
+statements that a later failure discards. The alternative is a validator that
+accepts anybody.
 
 ### What it refuses
+
+The resolver refuses these:
 
 | Refusal | Why |
 |---|---|
@@ -259,41 +302,46 @@ anybody.
 | More than `MaxChainDepth` hops | the ceiling for when no Trust Anchor has imposed a `max_path_length` (§6.2.1) |
 | A superior publishing no `federation_fetch_endpoint` | it cannot be asked about its subordinates, and the error says so rather than surfacing a transport failure |
 
-§10.3's rule — *"prefer a shorter chain over a longer one"* — is implemented, and
-shorter is preferred for a reason worth stating: each additional Intermediate is
-another party who can vouch for something, so the shortest chain is the one with
-the fewest entities able to change the answer.
+§10.3's rule, *"prefer a shorter chain over a longer one"*, is implemented. Shorter
+is preferred for a reason worth stating. Each additional Intermediate is another
+party who can vouch for something. So the shortest chain is the one with the
+fewest entities able to change the answer.
 
 ### A mutation that survived, and what it revealed
 
-Inverting the shortest-chain comparison to prefer the **longest** passed every
-test in the package. The end-to-end federation has one anchor and one path, so
-there was never a choice to make and the rule was never exercised.
+Inverting the shortest-chain comparison to prefer the **longest** passed every test
+in the package. The end-to-end federation has one anchor and one path. So there
+was never a choice to make, and the rule was never exercised.
 
-`TestTheShortestValidChainIsPreferred` builds a topology with an actual choice: a
-leaf naming two superiors, reaching anchor A in three statements and anchor B in
-two. Both are trusted, both validate. The longer anchor is listed **first** in
-the configuration, so an implementation that takes the first match rather than
-the shortest fails.
+`TestTheShortestValidChainIsPreferred` builds a topology with an actual choice. A
+leaf names two superiors, reaching anchor A in three statements and anchor B in
+two. Both are trusted, and both validate. The longer anchor is listed **first** in
+the configuration, so an implementation that takes the first match, not the
+shortest, fails.
 
-Recorded because the lesson generalises: a rule about choosing between
-alternatives cannot be tested by a fixture that offers one alternative, and a
-test suite full of passing tests said nothing about it.
+It is recorded because the lesson generalises. A rule about choosing between
+alternatives cannot be tested by a fixture that offers one alternative. A test
+suite full of passing tests said nothing about it.
 
 ## Automatic Registration (§12.1)
 
-An RP in a federation can use this OP with no registration step: its Entity Identifier
-is its `client_id`, and everything the OP needs — redirect URIs, keys, scopes — comes
-from metadata resolved through a Trust Chain rather than from a registration request.
+An application in a federation, which the specification calls a "relying party",
+can use Signari with no registration step. Its Entity Identifier is its
+`client_id`. Everything Signari needs, such as redirect URIs, keys and scopes,
+comes from metadata resolved through a Trust Chain, not from a registration
+request.
 
 This is the feature that makes the rest of the federation work pay off for an
 OpenID Provider.
 
 ### Whose word to take
 
-**Nobody is admitted until an operator writes down whose word to take.** Being in a
-federation is not enough: a federation is somebody else's opinion, and with an empty list
-this server does not so much as fetch anything for a stranger.
+**Nobody is admitted until an administrator writes down whose word to take.**
+Being in a federation is not enough. A federation is somebody else's opinion, and
+with an empty list this server does not so much as fetch anything for a stranger.
+
+These commands add a Trust Anchor whose word Signari takes, list the anchors, and
+remove one:
 
 ```sh
 signari federation add-anchor -entity-id https://anchor.example \
@@ -303,22 +351,26 @@ signari federation anchors
 signari federation remove-anchor -entity-id https://anchor.example
 ```
 
-The keys are the anchor's Federation Entity Keys, and they come from the operator, not
-from the anchor's address: fetched, the anchor would be whoever answers there. `-org` is
-where the RPs it vouches for are registered. `-trust-marks` are types an RP has to hold
-besides, each valid under §7.3: issued to it, by an issuer the anchor allows for that
-type where it says, signed by keys established through a chain of its own.
+The keys are the anchor's Federation Entity Keys, and they come from the
+administrator, not from the anchor's address. Fetched, the anchor would be whoever
+answers there. `-org` is where the applications it vouches for are registered.
 
-The same list is `/admin/instances/{instanceID}/federation/anchors` on the Admin API.
+`-trust-marks` are types an application has to hold besides. Each must be valid
+under §7.3: issued to it, by an issuer the anchor allows for that type where it
+says, and signed by keys established through a chain of its own.
 
-**Removing an anchor deletes the clients it admitted**, with their sessions and tokens.
-They had no other standing here. One the federation still vouches for through another
-listed anchor is registered again by its next request.
+The same list is `/admin/instances/{instanceID}/federation/anchors` on the Admin
+API.
+
+**Removing an anchor deletes the clients it admitted**, with their sessions and
+tokens. They had no other standing here. One the federation still vouches for,
+through another listed anchor, is registered again by its next request.
 
 ### What a first request does
 
-An `https` `client_id` nobody has registered, with a signed `request` at the authorization
-endpoint or the pushed authorization endpoint, is taken to be an RP:
+An `https` `client_id` nobody has registered, with a signed `request` at the
+authorization endpoint or the pushed authorization endpoint, is taken to be a
+federation application:
 
 1. The chain is resolved to a listed anchor, with the metadata policy along it applied.
 2. Any Trust Marks the anchor asks for are checked.
@@ -326,44 +378,50 @@ endpoint or the pushed authorization endpoint, is taken to be an RP:
 4. It becomes a client: confidential, `private_key_jwt`, no secret, and required to sign
    every request. Its consent screen is shown like any other.
 
-Failing any of these leaves it unknown, and nothing is written. §12.1.3 is why that is
-shown to the person and not sent to the redirect URI: *"it MUST treat the redirection URI
-as invalid and not perform redirection"*. One address can make the server walk 30 chains
-a minute.
+Failing any of these leaves it unknown, and nothing is written. §12.1.3 is why that
+is shown to the person, and not sent to the redirect URI: *"it MUST treat the
+redirection URI as invalid and not perform redirection"*. One address can make
+Signari walk 30 chains a minute.
 
-Its requests are held to §12.1.1.1 from then on: `aud` this server and nobody else, `exp`
-and `jti` required, no `sub`, and each one good once. The registration lasts as long as
-the chain, and the first request after that resolves it again. If it no longer resolves,
-the client stops signing people in. Tokens already issued go on working until they end.
+Its requests are held to §12.1.1.1 from then on: `aud` this server and nobody else,
+`exp` and `jti` required, no `sub`, and each one good once. The registration lasts
+as long as the chain, and the first request after that resolves it again. If it no
+longer resolves, the client stops signing people in. Tokens already issued go on
+working until they end.
 
-A client an operator made is never touched, whatever a chain says about the same name.
+A client an administrator made is never touched, whatever a chain says about the
+same name.
 
 ### Explicit Registration (§12.2)
 
-An RP can also register first. It POSTs its Entity Configuration, addressed to this OP in
-`aud`, to `/federation/register`, as `application/entity-statement+jwt`, or a Trust Chain
-as `application/trust-chain+json`, of which the first statement is read. The anchor list
-governs this just as it does the other: with nothing on it the endpoint answers `404`, and
-neither registration is advertised.
+An application can also register first. It POSTs its Entity Configuration,
+addressed to Signari in `aud`, to `/federation/register`, as
+`application/entity-statement+jwt`. Or it posts a Trust Chain as
+`application/trust-chain+json`, of which the first statement is read.
 
-What it sent is what counts, so it can tailor its metadata for this OP. A configuration is
-only as good as its signature, and anybody can sign one naming an RP, so the keys in it
-have to be the keys its superior attests to.
+The anchor list governs this as it does the other. With nothing on it, the
+endpoint answers `404`, and neither registration is advertised.
 
-It keeps its Entity Identifier as its `client_id` and gets no secret, as an automatic one
-does, and the answer is a signed `application/explicit-registration-response+jwt`, whose
-`exp` is the registration's and never later than the chain's. Unlike an automatic client
-it is not held to signed requests, having proved who it is by registering. To renew, it
+What it sent is what counts, so it can tailor its metadata for Signari. A
+configuration is only as good as its signature, and anybody can sign one naming an
+application. So the keys in it have to be the keys its superior attests to.
+
+It keeps its Entity Identifier as its `client_id`, and gets no secret, as an
+automatic one does. The answer is a signed
+`application/explicit-registration-response+jwt`, whose `exp` is the
+registration's and never later than the chain's. Unlike an automatic client, it is
+not held to signed requests, having proved who it is by registering. To renew, it
 registers again before `exp`.
 
-Not here: an RP proving itself at a push with `private_key_jwt` alone, with no Request
-Object, which §12.1.1.2 also allows, and the `trust_chain` header, which is a hint.
+Two things are not here. One is an application proving itself at a push with
+`private_key_jwt` alone, with no Request Object, which §12.1.1.2 also allows. The
+other is the `trust_chain` header, which is a hint.
 
 ### The chain is not the whole story
 
 A resolved chain establishes **who** an entity is. It does not establish that the
-party sending this particular request **is** that entity — anybody can read a
-public Entity Configuration and put its identifier in a `client_id`.
+party sending this particular request **is** that entity. Anybody can read a public
+Entity Configuration and put its identifier in a `client_id`.
 
 §12.1 is explicit about the missing half:
 
@@ -375,35 +433,38 @@ public Entity Configuration and put its identifier in a `client_id`.
 > the Entity's RP keys... Attempted authentication requests that do not do so
 > MUST be rejected.
 
-So `RegisteredClient` carries the RP's published `jwks` out, and there is no path
-that produces a client without them. An RP publishing no keys is **refused**
-rather than admitted as a client anybody could impersonate by knowing its public
-identifier.
+So `RegisteredClient` carries the application's published `jwks` out, and there is
+no path that produces a client without them. An application publishing no keys is
+**refused**, rather than admitted as a client anybody could impersonate by knowing
+its public identifier.
 
 ### Metadata policy
 
-A superior constrains a subordinate's metadata with `metadata_policy` — which
-redirect URIs are permitted, which scopes, which algorithms. §6.1.4:
+A superior constrains a subordinate's metadata with `metadata_policy`: which
+redirect URIs are permitted, which scopes, which algorithms. Each rule in a policy
+is an "operator", such as `subset_of`. §6.1.4:
 
 > If a policy error or another error is encountered during the metadata policy
 > resolution or its application, the Trust Chain MUST be considered invalid.
 
-This was previously **refused** — a chain carrying any policy was rejected,
-because resolving it and using the leaf's own metadata anyway does not produce a
-slightly-wrong client, it produces *the client the RP asked for rather than the
-one its federation permits*. That was the right failure while the operators were
-unimplemented, and it also meant Signari could not join any federation that uses
-policy, which is most of them.
+This was previously **refused**: a chain carrying any policy was rejected.
+Resolving it and using the leaf's own metadata anyway does not produce a
+slightly-wrong client. It produces *the client the application asked for rather
+than the one its federation permits*.
 
-All seven standard operators of §6.1.3.1 are now implemented, along with §6.1.4.1
-resolution and §6.1.4.2 application.
+That was the right failure while the policy operators were unimplemented. It also
+meant Signari could not join any federation that uses policy, which is most of
+them.
 
-#### What the operators actually do
+All seven standard policy operators of §6.1.3.1 are now implemented, along with
+§6.1.4.1 resolution and §6.1.4.2 application.
 
-The recurring surprise is that the names suggest checks and several of them are
+#### What the policy operators actually do
+
+The recurring surprise is that the names suggest checks, and several of them are
 transformations:
 
-| Operator | Action | Merge of two superiors' values |
+| Policy operator | Action | Merge of two superiors' values |
 |---|---|---|
 | `value` | Assigns. `null` **removes** the parameter | Must be **equal**, else a policy error |
 | `add` | Union into the parameter; initialises it if absent | Union |
@@ -413,36 +474,38 @@ transformations:
 | `superset_of` | Checks containment | Union |
 | `essential` | Requires presence | Logical **OR** |
 
-`subset_of` being a modifier is what lets one policy serve a whole federation:
-an RP asking for more than it may have is *trimmed* rather than rejected. And
-the merge rules are §6.1.1's Hierarchy principle in arithmetic — intersection
-where a value is permitted, union where one is demanded, OR for essential — so a
-subordinate can always narrow what a superior allowed and never widen it.
+`subset_of` being a modifier is what lets one policy serve a whole federation. An
+application asking for more than it may have is *trimmed*, rather than rejected.
 
-Two more details that are easy to get wrong and silent when you do:
+And the merge rules are §6.1.1's Hierarchy principle in arithmetic: intersection
+where a value is permitted, union where one is demanded, OR for essential. So a
+subordinate can always narrow what a superior allowed, and never widen it.
+
+Two more details are often got wrong, and silently:
 
 - **`one_of` may not be combined with `add`, `subset_of` or `superset_of`.** It
-  constrains a single value; they operate on arrays. The combination is a policy
-  error, not a no-op.
-- **`scope` is processed as an array** (§6.1.3.1.8) and re-joined with spaces.
+  constrains a single value, and they operate on arrays. The combination is a
+  policy error, not a no-op.
+- **`scope` is processed as an array** (§6.1.3.1.8), and re-joined with spaces.
   Without this, a `subset_of` on scope compares the whole string
-  `"openid profile email"` against individual scope values, matches none, and
+  `"openid profile email"` against individual scope values. It matches none, and
   quietly narrows every client in the federation to no scopes at all.
 
 #### Order is load-bearing
 
-Operators run `value` → `add` → `default` → `one_of` → `subset_of` →
-`superset_of` → `essential`, which each operator's own definition fixes.
+The policy operators run `value` → `add` → `default` → `one_of` → `subset_of` →
+`superset_of` → `essential`, which each policy operator's own definition fixes.
 
-Two positions carry real weight. `superset_of` runs **after** `subset_of`, so a
-policy demanding a value its own `subset_of` has just removed fails — that is the
-intended outcome for a policy describing a set nothing can satisfy. And
-`essential` runs **last**, so it judges the parameter as `default` left it rather
-than as the entity published it; moving it earlier refuses entities whose
-omission the policy was about to fix.
+Two positions carry real weight. `superset_of` runs **after** `subset_of`. So a
+policy demanding a value its own `subset_of` has already removed fails, which is the
+intended outcome for a policy describing a set nothing can satisfy.
 
-Both were found by mutation rather than by reading: a mutant moving `essential`
-to the front passed every operator test in the file, because nothing else there
+And `essential` runs **last**, so it judges the parameter as `default` left it, not
+as the entity published it. Moving it earlier refuses entities whose omission the
+policy was about to fix.
+
+Both were found by mutation, not by reading. A mutant moving `essential` to the
+front passed every policy operator test in the file, because nothing else there
 distinguishes its position.
 
 #### Ordering against the superior's own metadata
@@ -452,19 +515,21 @@ Statement, then the stated `metadata` MUST be applied before the
 `metadata_policy`."*
 
 So a superior's assigned values are judged by that same superior's policy. The
-other order also "works" on any policy the assignment happens to satisfy, which
-is why it needs a test that specifically contradicts it.
+other order also "works" on any policy the assignment happens to satisfy. That is
+why it needs a test that specifically contradicts it.
 
-#### Unknown operators
+#### Unknown policy operators
 
 §6.1.3.2 splits these two ways, and both halves matter:
 
-- An operator we do not understand is **ignored**. Refusing would make every
-  federation using any extension operator unusable, whether or not the
-  constraint was relevant.
+- A policy operator Signari does not understand is **ignored**. Refusing would
+  make every federation using any extension policy operator unusable, whether or
+  not the constraint was relevant.
 - Unless its name appears in `metadata_policy_crit`, in which case the chain is
   **invalid**. Ignoring it there would admit an entity under a constraint its
   federation believes is in force.
+
+Each of these deliberate faults was caught by a test:
 
 | Mutation | Test that caught it |
 |---|---|
@@ -474,29 +539,36 @@ is why it needs a test that specifically contradicts it.
 | `subset_of` merges to a union | `TestASubordinateCannotWidenWhatASuperiorForbade` |
 | `essential` no longer runs last | `TestEssentialIsJudgedAfterDefaultHasFilledTheParameter` |
 | `scope` not treated as an array | `TestScopeIsProcessedAsAnArrayAndRejoined` |
-| A critical unknown operator is ignored | `TestACriticalOperatorWeDoNotImplementInvalidatesTheChain` |
+| A critical unknown policy operator is ignored | `TestACriticalOperatorWeDoNotImplementInvalidatesTheChain` |
 | Superior metadata applied after the policy | `TestTheSuperiorsMetadataIsJudgedByItsOwnPolicy` |
 | Admit an RP with no published keys | `TestAnRPWithNoKeysIsRefused` |
 
-Also refused: an entity that resolves but publishes no `openid_relying_party`
-metadata (being in the federation is not the same as being a relying party), an
-RP with no `redirect_uris` (inventing one builds an open redirector), and a
-`client_id` that resolves to nothing.
+Also refused:
+
+- an entity that resolves but publishes no `openid_relying_party` metadata, since
+  being in the federation is not the same as being an application that signs
+  people in;
+- an application with no `redirect_uris`, since inventing one builds an open
+  redirector;
+- a `client_id` that resolves to nothing.
 
 #### One thing deliberately not claimed
 
-§6.1.4.1 calls the merge direction — most superior first — *crucial*, and it is
-implemented that way. But with only the standard operators the resolved policy is
-the **same read from either end**, because every standard merge is commutative:
-union, intersection, equality, OR. A mutation reversing the direction survives
-every test here, and that is a property of the operator set rather than a gap in
-the tests. The direction still matters for the additional operators §6.1.3.2
-permits, whose merges need not be commutative.
+§6.1.4.1 calls the merge direction, most superior first, *crucial*, and it is
+implemented that way. But with only the standard policy operators, the resolved
+policy is the **same read from either end**. Every standard merge is commutative:
+union, intersection, equality, OR.
+
+A mutation reversing the direction survives every test here. That is a property of
+the set of policy operators, not a gap in the tests. The direction still matters
+for the additional policy operators §6.1.3.2 permits, whose merges need not be
+commutative.
 
 ## Speaking for other entities
 
-An entity with no superior is a Trust Anchor, and one with a superior becomes an
-Intermediate by speaking for somebody:
+An entity with no superior is a Trust Anchor. One with a superior becomes an
+Intermediate by speaking for somebody. These commands set that up, list the
+entities it speaks for, and remove one:
 
 ```sh
 signari federation enable                 # no -authority-hints: a Trust Anchor
@@ -510,23 +582,25 @@ signari federation remove-subordinate -entity-id https://rp.example
 **Take the keys from the entity by some way other than its own address.** A
 Subordinate Statement says "these are that entity's keys", and it is worth what you
 checked to say so. Asking the entity at the moment of adding it would vouch for
-whoever answered, so the keys are a file. A private key is refused, since the keys
-are published to everybody who asks, and so is a policy no resolver could apply,
-which would break the chain of everybody below.
+whoever answered, so the keys are a file.
 
-Three endpoints serve it, and are published in the `federation_entity` metadata only
-by a Trust Anchor or an entity with subordinates, as §5.1.1 requires:
+A private key is refused, since the keys are published to everybody who asks. So
+is a policy no resolver could apply, which would break the chain of everybody
+below.
+
+Three endpoints serve it. Only a Trust Anchor, or an entity with subordinates,
+publishes them in its `federation_entity` metadata, as §5.1.1 requires:
 
 | | |
 |---|---|
 | `GET /federation/fetch?sub=` | §8.1: a Subordinate Statement, signed with the Federation Entity Key and made at each request, so that a removal or a change of keys holds from the next one. `not_found` for an entity it does not speak for, `invalid_request` for itself. A statement already fetched lasts until it expires, which is the lifetime of this entity's own configuration |
-| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters, and so do `?trust_marked=true` and `?trust_mark_type=`, from the Trust Marks this entity issued, live ones only: revoked or past their `exp` they count for nothing. Several filters together keep what all of them keep. `entity_type` is refused with `unsupported_parameter`: an operator gives a subordinate's keys and policy, not its types, so this entity does not know them, and a list ignoring the filter would look filtered and be wrong |
-| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. For chains ending at this entity or at a Trust Anchor an operator listed with `federation add-anchor`, verified with the keys it was given with, the first of several `trust_anchor` values it can stand behind; any other is `invalid_trust_anchor`, since it could be taken only on the word of whoever answers at that address. The chain ends with the anchor's own configuration, verified with those keys. `trust_marks` carries the subject's marks that hold under §7.3 against that anchor, as a registering client is held to them, and none that do not; the response lasts no longer than the first of them to expire |
+| `GET /federation/list` | §8.2: who it speaks for. `?intermediate=true` filters, and so do `?trust_marked=true` and `?trust_mark_type=`, from the Trust Marks this entity issued, live ones only: revoked or past their `exp` they count for nothing. Several filters together keep what all of them keep. `entity_type` is refused with `unsupported_parameter`: an administrator gives a subordinate's keys and policy, not its types, so this entity does not know them, and a list ignoring the filter would look filtered and be wrong |
+| `GET /federation/resolve?sub=&trust_anchor=` | §8.3: the subject's Resolved Metadata and Trust Chain, in a `resolve-response+jwt`, optionally for `entity_type`. For chains ending at this entity or at a Trust Anchor an administrator listed with `federation add-anchor`, verified with the keys it was given with, the first of several `trust_anchor` values it can stand behind; any other is `invalid_trust_anchor`, since it could be taken only on the word of whoever answers at that address. The chain ends with the anchor's own configuration, verified with those keys. `trust_marks` carries the subject's marks that hold under §7.3 against that anchor, as a registering client is held to them, and none that do not; the response lasts no longer than the first of them to expire |
 
-Not built: client authentication at these endpoints (§8.8). It is off by default and a
-choice each federation makes per endpoint, and none here has asked for it.
+Not built: client authentication at these endpoints (§8.8). It is off by default,
+and a choice each federation makes per endpoint. None here has asked for it.
 
 ## Where it stands
 
-The resolution side — publish, fetch, build, validate, register, resolve — is complete
-and tested end to end against multi-entity federations over HTTP.
+The resolution side is complete: publish, fetch, build, validate, register and
+resolve. It is tested end to end, against multi-entity federations over HTTP.

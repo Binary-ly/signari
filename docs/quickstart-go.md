@@ -1,12 +1,27 @@
 # Quickstart: a Go application
 
-[examples/go-quickstart](../examples/go-quickstart/main.go) is an application
-that signs people in with Signari using nothing outside Go's standard library.
-It is about two hundred lines, and checks everything an application has to
-check itself: the authorization code flow with PKCE, then the ID token's
-signature against the published keys, its issuer, audience, expiry and nonce.
+## Introduction
+
+This guide connects a Go application to Signari, so that people sign in to it
+with their Signari account. The example,
+[examples/go-quickstart](../examples/go-quickstart/main.go), uses nothing outside
+Go's standard library. It is about two hundred lines.
+
+Because it uses no library, it shows everything an application has to check
+itself: the authorization code flow with Proof Key for Code Exchange (PKCE), then the ID token's signature
+against the published keys, its issuer, audience, expiry and nonce.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with the address it listens on as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -17,6 +32,8 @@ It prints the client secret once. Keep it. A redirect URI is matched exactly:
 scheme, host, port and path.
 
 ## 2. Run it
+
+Run the example with Signari's address and the values from step 1:
 
 ```sh
 cd examples/go-quickstart
@@ -31,7 +48,7 @@ Open `http://127.0.0.1:8080/login`, sign in, and the page says who signed in.
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/go-quickstart/Dockerfile) as `demo`, the public client `demo` of
 [deploy/demo/client.yaml](../deploy/demo/client.yaml), at `http://localhost:8097/login`.
-The [README](../README.md#quick-start) gives the commands. It trusts the development CA
+[Your first application](first-application.md) gives the commands. It trusts the development CA
 under `deploy/tls` through `SSL_CERT_FILE`. The same profile runs the Express, Next.js,
 Django, Spring Boot and Laravel quickstarts beside it, on ports 8091 to 8095.
 
@@ -48,7 +65,7 @@ Django, Spring Boot and Laravel quickstarts beside it, on ports 8091 to 8095.
 3. **The callback.** It takes the `state` back once and refuses one it does not
    hold. It sends the code, the same `redirect_uri` and the verifier to the token
    endpoint, authenticating with `client_secret_basic`, each half form-encoded
-   first, as the server decodes them.
+   first, as Signari decodes them.
 4. **The ID token.** It checks the signature with the key the token's `kid`
    names, from `jwks_uri` (ES256 by default; RS256 for a client set to it), then
    `iss`, `aud`, `exp` and `nonce`. Only then does it believe who signed in.
@@ -57,8 +74,8 @@ A public client, such as a single-page or native application, has no secret.
 Leave `CLIENT_SECRET` unset and register it with `-public`, and it sends its
 `client_id` with the code instead. PKCE is then its only proof.
 
-When something is refused, the message is the server's own. What each one means
-is in [troubleshooting.md](troubleshooting.md).
+When something is refused, the message is Signari's own. What each one means
+is in [Troubleshooting](troubleshooting.md).
 
 ## Verified
 

@@ -162,7 +162,11 @@
   "signup.title": "Create your account",
   "signup.invitefixed": "This invitation is for this address.",
   "signup.domains": "Addresses at: {Domains}",
-  "signup.passwordhint": "At least 8 characters. You can add a passkey once you are in.",
+  "signup.passwordmin": {
+    "one": "At least {n} character.",
+    "other": "At least {n} characters."
+  },
+  "signup.passwordhint": "You can add a passkey once you are in.",
   "signup.submit": "Create account",
   "signup.invitationonly": "Accounts here are created by invitation. Open the link in the invitation you were sent.",
   "signup.suspended": "Accounts cannot be created here at the moment. Please contact the organisation.",

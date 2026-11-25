@@ -1,30 +1,43 @@
 # Third-party dependencies
 
+## Introduction
+
+This page lists every module the engine requires directly, at the version
+`engine/go.mod` pins, with what it does and why it is trusted. It also says how a
+module's origin is verified, how quickly a finding against one is fixed, and which
+components carry the most risk.
+
 OWASP ASVS 5.0.0 **V15.1.2** asks for "an inventory catalog, such as a software
 bill of materials (SBOM)... including verifying that components come from
 pre-defined, trusted, and continually maintained repositories", and **V15.1.1**
 for "risk based remediation time frames".
 
-`docs/security-scanning.md` covers the scanners. This covers what is being
-scanned, and why each thing is here at all.
+It is for an auditor who asks for that inventory, and for a contributor who is
+about to add a dependency. `docs/security-scanning.md` covers the scanners. This
+page covers what is being scanned, and why each thing is here at all.
 
 ## The number is the point
 
-**23 direct dependencies. 75 modules in the whole graph, as `go list -m all`
+**24 direct dependencies. 75 modules in the whole graph, as `go list -m all`
 counted them on 2026-11-03.**
 
 That is small for an identity provider, and it is the result of decisions rather
-than luck: the QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec,
-the SD-JWT implementation, the RADIUS server, the flow language and the OTLP
-exporter are all written here rather than pulled in. Every dependency is a party
-that can change what this binary does.
+than luck. The QR encoder, the ASN.1/LDAP server, the Guacamole protocol codec
+and the JSON Web Token (JWT) code for Selective Disclosure JWT (SD-JWT) are all
+written here, not pulled in. So are the Remote Authentication Dial-In User Service (RADIUS) server,
+the flow language and the OpenTelemetry Protocol (OTLP) exporter. Every dependency is a party that can
+change what this binary does.
 
 The table below is every direct requirement in `engine/go.mod`, at the version
-pinned there. `TestEveryDirectDependencyIsListed` holds it to that, both ways,
-and holds the count above to the table. This page said thirteen while `go.mod`
+pinned there. `TestEveryDirectDependencyIsListed` holds it to that, both ways, and
+holds the count above to the table. This page once said thirteen, while `go.mod`
 named eighteen.
 
 ## Direct dependencies
+
+The table uses three more abbreviations: Security Assertion Markup Language
+(SAML), Lightweight Directory Access Protocol (LDAP), and Simple and Protected
+GSS-API Negotiation Mechanism (SPNEGO).
 
 | Module | Version | What it does | Why it is trusted |
 |---|---|---|---|
@@ -43,31 +56,32 @@ named eighteen.
 | `github.com/jcmturner/gofork` | v1.7.6 | ASN.1 for Kerberos messages | required by gokrb5; named directly only by a Kerberos test |
 | `github.com/google/uuid` | v1.6.0 | UUID parsing | checks that an imported subject or an organisation id is a canonical UUID |
 | `github.com/openwall/yescrypt-go` | v1.0.0 | yescrypt (`$y$`) verification | the scheme author's own Go module, held to libxcrypt's output by `yescrypt_test.go`; verifies hashes imported from `/etc/shadow`, which are rehashed on a successful sign-in |
-| `github.com/oschwald/maxminddb-golang/v2` | v2.9.1 | GeoIP database reader | reads an operator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
+| `github.com/oschwald/maxminddb-golang/v2` | v2.9.1 | GeoIP database reader | reads an administrator-supplied MaxMind DB file, to place a sign-in's address for risk signals |
 | `go.opentelemetry.io/otel` | v1.47.0 | OpenTelemetry API: attributes, propagation, semantic conventions | the OpenTelemetry project; imported by `internal/tracing` alone, which a test holds |
 | `go.opentelemetry.io/otel/trace` | v1.47.0 | OpenTelemetry tracing API | as above |
 | `go.opentelemetry.io/otel/sdk` | v1.47.0 | span processing, sampling, batching | as above. Its OTLP exporter module is not used: it brings grpc, grpc-gateway and genproto to send one message over HTTP, so `internal/tracing/otlp.go` writes the message here |
 | `golang.org/x/crypto` | v0.59.0 | Argon2id, HKDF, bcrypt | Go project |
 | `golang.org/x/sync` | v0.25.0 | a weighted semaphore | Go project; bounds the memory Argon2id hashing may hold at once |
+| `golang.org/x/term` | v0.48.0 | whether stdin and stdout are a terminal, and reading a line without echo | Go project, already in the graph at an older version and needing nothing beyond `golang.org/x/sys`, which it was; `signari setup` asks only at a terminal, which a check of the file mode cannot tell from `/dev/null`, and reads a superuser's password without echoing it |
 | `golang.org/x/text` | v0.44.0 | Unicode normalisation | Go project; NFKC on passwords per NIST |
-| `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | operator-supplied input only, never a request |
+| `gopkg.in/yaml.v3` | v3.0.1 | configuration and flow files | administrator-supplied input only, never a request |
 
 ## How provenance is verified (V15.2.4, dependency confusion)
 
-Every module resolves through the public Go module proxy and is checked against
+Every module resolves through the public Go module proxy, and is checked against
 the public checksum database. `go.sum` pins a cryptographic hash for **every**
-module in the graph, direct and transitive, and a mismatch fails the build rather
-than warning.
+module in the graph, direct and transitive. A mismatch fails the build, instead of
+warning.
 
 There is **no `GOPRIVATE` and no `replace` directive**, so nothing resolves from
-a private or substitutable source — which is the condition a dependency-confusion
-attack needs. This is the rare requirement where Go's toolchain does the work and
+a private or substitutable source. That is the condition a dependency-confusion
+attack needs. This is the rare requirement where Go's toolchain does the work, and
 the correct action is to not undermine it.
 
 ## Remediation time frames (V15.1.1)
 
-Stated here because ASVS asks for them and because "we patch when we notice" is
-not a policy:
+They are stated here because ASVS asks for them, and because "we patch when we
+notice" is not a policy:
 
 | Severity of a finding against a dependency we use | Act within |
 |---|---|
@@ -77,37 +91,38 @@ not a policy:
 | Medium or low | next routine update |
 | No finding | review the graph quarterly regardless |
 
-**Reachability is the discriminator, and `govulncheck` supplies it** — it reports
+**Reachability is the discriminator, and `govulncheck` supplies it.** It reports
 whether a vulnerable *symbol* is actually called, not merely whether a vulnerable
-module is present. The distinction is what keeps the first row from becoming
-every row.
+module is present. The distinction is what keeps the first row from becoming every
+row.
 
 ## Risky components (V15.1.4) and dangerous functionality (V15.1.5)
 
-Named rather than left implicit. These are the places where a dependency failure
-or our own code has the widest blast radius:
+They are named here, not left implicit. These are the places where a dependency
+failure, or Signari's own code, has the widest blast radius:
 
-- **`go-jose`** — every token this server issues and verifies. A flaw here is a
+- **`go-jose`** — every token Signari issues and verifies. A flaw here is a
   full authentication bypass. It is also the dependency most likely to have one,
   because JOSE is the part of this stack with the worst historical record.
 - **`etree` + `goxmldsig`** — SAML. The attack classes (wrapping, XXE, key
   confusion) are the reason `internal/saml/decode.go` refuses constructs *before*
   either library sees the document rather than trusting their configuration.
 - **`gokrb5`** — parses attacker-supplied tickets from the network.
-- **`crypto11` + `miekg/pkcs11`**, in the `pkcs11` build — they load the HSM
-  vendor's module into this process. It is C, it runs with the engine's
+- **`crypto11` + `miekg/pkcs11`**, in the `pkcs11` build — they load the hardware
+  security module (HSM) vendor's module into this process. It is C, it runs with the engine's
   privileges, and nothing here can check it; choosing a module is choosing to
   trust its vendor that far.
 - **`internal/radius`** — parses UDP packets from the network, written here.
 - **`internal/ldapd`** — parses BER from the network, written here.
 
-The last two are ours, which is the point of listing them beside the others: the
-risk is the parsing of hostile input, not who wrote it.
+The last two are Signari's own, which is the point of listing them beside the
+others. The risk is the parsing of hostile input, not who wrote it.
 
 ## Regenerating an SBOM
 
 This document is the inventory. A machine-readable SBOM is generated rather than
-checked in, because one that is checked in is one that is stale:
+checked in, because one that is checked in is one that is stale. To generate one
+with CycloneDX:
 
 ```sh
 go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest

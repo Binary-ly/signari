@@ -18,11 +18,20 @@ func Markdown(raw []byte) ([]byte, error) {
 	defineComponents(m, doc)
 
 	var b strings.Builder
+	// The page follows the house style's shape (docs/writing-docs.md): an
+	// Introduction first, and links whose text is the page's title, never its
+	// file name. The house-style test skips this page because it is generated,
+	// so this is where its words are kept right.
 	b.WriteString("# Admin API reference\n\n" +
-		"Generated from [admin-openapi.json](admin-openapi.json), which the router draws, by\n" +
-		"`engine/internal/sdkgen`; do not edit it by hand. What each operation is for, and the\n" +
-		"rules around it, are in [admin-api.md](admin-api.md). Every write takes `If-Match` and is\n" +
-		"refused with `412` when the configuration moved since the version it names.\n\n")
+		"## Introduction\n\n" +
+		"This page lists every operation of the Admin API, with the scope it needs, the\n" +
+		"fields it takes and the fields it answers. It is generated from [the published\n" +
+		"OpenAPI document](admin-openapi.json), which the router draws, by\n" +
+		"`engine/internal/sdkgen`, so do not edit it by hand.\n\n" +
+		"What each operation is for, and the rules around it, are in [the Admin\n" +
+		"API](admin-api.md). Every write takes `If-Match` and is refused with `412` when the\n" +
+		"configuration moved since the version it names.\n\n" +
+		"## Sections\n\n")
 
 	groups := map[string][]*operation{}
 	var order []string

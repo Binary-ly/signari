@@ -1,20 +1,30 @@
 # DPoP — sender-constrained tokens
 
-RFC 9449. A client that sends a `DPoP` proof at the token endpoint gets a token
-bound to its key. Every later request must carry a fresh signature from that
-key.
+## Introduction
 
-Nothing changes for clients that do not use it: send no proof, get an ordinary
-bearer token.
+An ordinary access token is a "bearer token": whoever holds it can use it. If one
+leaks, the thief can use it as well as the application it was issued to.
+Demonstrating Proof of Possession (DPoP), defined in RFC 9449, ties a token to a
+key the application holds (see the [glossary](glossary.md#dpop)).
+
+An application that sends a `DPoP` proof at the token endpoint gets a token bound
+to its key. A "proof" is a short signed token the application makes for each
+request. Every later request must carry a fresh signature from that key.
+
+Nothing changes for applications that do not use it: send no proof, get an
+ordinary bearer token. You can pin one application to DPoP with
+`signari client set-dpop`, and make Signari issue nonces with
+`SIGNARI_DPOP_NONCE=1`.
 
 ## What it changes
 
-A bearer token is a bearer credential — whoever holds it, uses it. Every defence
+A bearer token is a bearer credential: whoever holds it, uses it. Every defence
 around one is about stopping it being *obtained*, because once obtained there is
 nothing left to check. Tokens leak through referrer headers, proxy logs, browser
 history, crash reports and copy-paste into support tickets.
 
-DPoP makes a stolen token inert. Demonstrated against the running server:
+DPoP makes a stolen token inert. Here it is demonstrated against a running
+Signari:
 
 ```
 1. token_type -> DPoP
@@ -25,16 +35,18 @@ DPoP makes a stolen token inert. Demonstrated against the running server:
 5. REPLAY of the valid proof    -> 401
 ```
 
-Line 4 is the one that matters. The thief's proof is **completely valid** — fresh
-`iat`, correct `htm` and `htu`, correct `ath` for the token they hold, signed
-properly with a key they generated. Every check passes except the binding. That
-comparison is the entire feature; without it the proof demonstrates possession
-of *a* key rather than *the* key the token was issued to.
+Line 4 is the one that matters. The thief's proof is **completely valid**. It has
+a fresh `iat`, the correct `htm` and `htu`, and the correct `ath` for the token
+they hold. It is signed properly, with a key they generated.
+
+Every check passes except the binding. That comparison is the entire feature.
+Without it, the proof demonstrates possession of *a* key rather than *the* key the
+token was issued to.
 
 ## What is refused, and why each matters
 
-The proof is a JWT supplied by the caller, so every field is attacker-chosen
-until checked:
+The proof is a JSON Web Token (JWT) supplied by the caller, so every field is
+attacker-chosen until checked:
 
 | refused | otherwise |
 |---|---|
@@ -49,78 +61,91 @@ until checked:
 | missing or mismatched `ath` | a proof made while using one token would authorise another |
 | two proofs in one header | which one was checked would be up to the parser |
 
-21 tests, each an entry in that table.
+There are 21 tests, each an entry in that table.
 
 ## Decisions worth naming
 
 **The request URI is rebuilt from the configured issuer**, not from the `Host`
 header. Taking the host from a header would let a caller choose what their proof
-authorises by lying about where they sent it.
+authorises, by lying about where they sent it.
 
 **Replay detection fails closed.** If the database cannot record a `jti`, the
 proof cannot be shown to be fresh, and the request is refused. Failing open would
 silently drop the protection exactly when the database is unhappy.
 
-**The replay key is `(jkt, jti)`, not `jti` alone.** Two clients may legitimately
-choose the same identifier, and a shared namespace lets either deny service to
-the other by burning identifiers.
+**The replay key is `(jkt, jti)`, not `jti` alone.** Two applications can
+legitimately choose the same identifier. A shared namespace would let either deny
+service to the other by burning identifiers.
 
 **Proof records live in their own table**, separate from `revoked_jtis`. Those
-are identifiers *we* issued; these are chosen by clients. A shared namespace
-would let a client revoke somebody else's token by picking its `jti`.
+are identifiers *Signari* issued, and these are chosen by applications. A shared
+namespace would let an application revoke somebody else's token by picking its
+`jti`.
 
 **`token_type` is `DPoP`, not `Bearer`**, when the token is constrained (§5).
-Not cosmetic: a client told "Bearer" sends no proof and every request it makes is
-refused.
+That is not cosmetic. An application told "Bearer" sends no proof, and every
+request it makes is refused.
 
 **`Authorization: DPoP <token>` is accepted** as well as `Bearer` (§7.1).
 Accepting only Bearer would make every bound token unusable at the very endpoint
-that enforces the binding — working at issuance and failing at use, which is the
+that enforces the binding. It would work at issuance and fail at use, which is the
 most confusing possible split.
 
 **Query and fragment are ignored in `htu`** (§4.3), which is what the RFC
-specifies. Comparing them would fail against clients that include them, and that
-interoperability failure looks like an attack in the logs.
+specifies. Comparing them would fail against applications that include them, and
+that interoperability failure looks like an attack in the logs.
 
 ## Coverage
 
-Enforced at `/oauth2/userinfo`. The binding is carried in the token's `cnf`
-claim, so any resource server that reads it can enforce the same thing.
+The binding is enforced at `/oauth2/userinfo`. It is carried in the token's `cnf`
+claim, so any resource server that reads it can enforce the same thing. A
+"resource server" is the protocol's word for an API that accepts tokens.
 
 `dpop_signing_alg_values_supported` is advertised in discovery because it works
-end to end — bound at issuance, enforced at the resource. Binding without
-enforcement would be worse than plain bearer tokens: a relying party reading
-`cnf` would believe a claim nothing checks.
+end to end: bound at issuance, enforced at the resource. Binding without
+enforcement would be worse than plain bearer tokens. A service reading `cnf` would
+believe a claim nothing checks.
 
 ## Server nonces
 
-`SIGNARI_DPOP_NONCE=1` makes every DPoP proof carry a nonce this server issued. A proof
-otherwise proves possession of the key at whatever time it was written, so whoever
-held the key for a moment could prepare proofs for later. Off by default: RFC 9449 §8
-makes it a MAY, and a client that cannot retry stops working.
+A "nonce" here is a value Signari issues, which a proof must then carry.
+`SIGNARI_DPOP_NONCE=1` makes every DPoP proof carry a nonce Signari issued.
+Otherwise a proof proves possession of the key at whatever time it was written. So
+whoever held the key for a moment could prepare proofs for later.
 
-A proof with no nonce, or an old one, is answered at the token and pushed-authorization
-endpoints with `400 use_dpop_nonce` and a `DPoP-Nonce` header, and at a protected
-resource with `401` and the same header. A client retries with the value it was given.
-Each is good for five to ten minutes, and when it lapses the same refusal gives the
-next, so a long-running client takes one extra round trip now and then. Nonces are
-derived from the root key rather than stored, so any node accepts what another issued.
-Rotating the root key turns away every nonce out at the moment, which corrects itself
-the same way.
+It is off by default. RFC 9449 §8 makes it a MAY, and an application that cannot
+retry stops working.
 
-`DPoP-Nonce` is exposed to browser clients through CORS. A proof that is also a client
-attestation's proof of possession keeps the attestation challenge in its `nonce`, which
-that path issues and checks, so it is not asked for a second one.
+A proof with no nonce, or an old one, is answered with a refusal and a
+`DPoP-Nonce` header:
+
+- at the token and pushed-authorization endpoints, with `400 use_dpop_nonce`;
+- at a protected resource, with `401`.
+
+An application retries with the value it was given. Each nonce is good for five
+to ten minutes. When it lapses, the same refusal gives the next one, so a
+long-running application takes one extra round trip now and then.
+
+Nonces are derived from the root key rather than stored, so any node accepts what
+another issued. Rotating the root key turns away every nonce out at the moment,
+which corrects itself the same way.
+
+`DPoP-Nonce` is exposed to browser applications through Cross-Origin Resource
+Sharing (CORS, see [CORS](cors.md)). Some proofs are also a client attestation's
+proof of possession (see [client attestation](attestation-based-client-auth.md)).
+Such a proof keeps the attestation challenge in its `nonce`, which that path
+issues and checks, so it is not asked for a second one.
 
 ## Pinning a client to DPoP
 
 By default, whether a token comes out sender-constrained is decided per request,
-by whether a proof was attached. That is what RFC 9449 §5 intends — an
+by whether a proof was attached. That is what RFC 9449 §5 intends: an
 authorization server "MAY elect to issue access tokens that are not DPoP bound",
-signalled by `token_type: Bearer` — but it leaves a client no way to say *I
-always use DPoP*, and one request that omits the header quietly yields an
-ordinary bearer token. The downgrade needs no attack on DPoP itself, only the
-absence of a proof.
+signalled by `token_type: Bearer`.
+
+But it leaves an application no way to say *I always use DPoP*. One request that
+omits the header quietly yields an ordinary bearer token. The downgrade needs no
+attack on DPoP itself, only the absence of a proof.
 
 §5.2 defines the client registration metadata that closes it:
 
@@ -129,17 +154,21 @@ absence of a proof.
 > If the value is true, the authorization server **MUST reject token requests
 > from the client that do not contain the DPoP header**.
 
+To pin an application called `payments` to DPoP, run:
+
 ```sh
 signari client set-dpop -client-id payments -dpop-bound
 ```
 
-Every token request from `payments` that carries no DPoP proof is then refused
-with `invalid_dpop_proof` and HTTP 400 — including through the OID4VCI
-pre-authorized code grant, which resolves its client from the offer rather than
-from the request and so needs the check applied separately.
+Every token request from `payments` that carries no DPoP proof is then refused,
+with `invalid_dpop_proof` and HTTP 400. That includes requests through the
+pre-authorized code grant of OpenID for Verifiable Credential Issuance (OID4VCI,
+see [OID4VCI](oid4vci.md)). That grant resolves its client from the offer rather
+than from the request, and so needs the check applied separately.
 
-A dynamically registered client pins itself at registration, which is where
-§5.2 puts the field — a DCR client has no operator to run a CLI command for it:
+A dynamically registered application pins itself at registration, which is where
+§5.2 puts the field. An application registered that way, through Dynamic Client
+Registration (DCR), has no administrator to run a command for it:
 
 ```json
 POST /oauth2/register
@@ -152,15 +181,15 @@ POST /oauth2/register
 
 The response echoes `dpop_bound_access_tokens`, per RFC 7591 §3.2.1 ("The
 authorization server MUST return all registered metadata about this client").
-That echo is load-bearing rather than decorative: a client that asked to be
-pinned and was silently not would believe it was sender-constrained while
-issuing bearer tokens, and the belief is what it acts on.
+That echo is load-bearing rather than decorative. An application that asked to be
+pinned, and silently was not, would believe it was sender-constrained while being
+issued bearer tokens. The belief is what it acts on.
 
-To unpin:
+To unpin the application again, run:
 
 ```sh
 signari client set-dpop -client-id payments
 ```
 
-The default is `false` because §5.2 says it is, and because any other default
-would refuse every existing client's next token request.
+The default is `false` because §5.2 says it is. Any other default would refuse
+every existing application's next token request.

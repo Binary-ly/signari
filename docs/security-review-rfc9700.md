@@ -1,23 +1,34 @@
 # Security review: RFC 9700, requirement by requirement
 
+## Introduction
+
 RFC 9700 — *OAuth 2.0 Security Best Current Practice*, BCP 240 — is the current
 security standard for this stack as of August 2026. It is a BCP, not an
 informational note: its §2 carries MUST-level requirements on authorization
-servers.
+servers. An "authorization server" is OAuth's word for the service that issues
+tokens, which here is Signari.
 
+This page checks Signari against that standard, requirement by requirement. The
+standard's §2 covers redirects, the authorization code and Proof Key for Code Exchange (PKCE),
+token replay, and the limits on access tokens. Each table gives the
+requirement, its level (MUST, SHOULD and so on), and what Signari does.
+
+It is for a security reviewer or an auditor. The sections follow the RFC's own
+numbering, then dated passes that checked the code again. A row in bold is a
+defect this review found, and the section after its table explains it.
 
 ## §2.1 Protecting redirect-based flows
 
 | Requirement | Level | Signari |
 |---|---|---|
 | Exact string matching of redirect URIs | MUST | yes — `HasRedirectURI`, byte equality |
-| **Variable port numbers for loopback native apps** | **MUST** | **was missing — now implemented** |
+| **Variable port numbers for loopback native applications** | **MUST** | **was missing — now implemented** |
 | No open redirectors | MUST NOT | no forwarding of arbitrary query-supplied URIs |
-| Avoid forwarding user credentials on redirect (§4.12) | MUST | credentials are never placed in a redirect |
+| Avoid forwarding a person's credentials on redirect (§4.12) | MUST | credentials are never placed in a redirect |
 
-### The defect: native apps could not use Signari at all
+### The defect: native applications could not use Signari at all
 
-RFC 9700 §4.1.3, immediately after mandating exact matching:
+RFC 9700 §4.1.3 says this, immediately after it mandates exact matching:
 
 > The only exception is native apps using a localhost URI: In this case, the
 > authorization server **MUST allow variable port numbers** as described in
@@ -32,18 +43,20 @@ RFC 8252 §7.3 gives the reason:
 
 `HasRedirectURI` was pure string equality, with a test asserting that even
 `https://app.example:443/cb` must not match `https://app.example/cb`. That
-strictness is right for public hosts and wrong for the one case both RFCs carve
-out. A desktop app cannot know its port before asking the operating system for
-one: it registers `http://127.0.0.1:1234/cb`, listens on 51004, and was refused.
+strictness is right for public hosts, and wrong for the one case both RFCs carve
+out.
 
-This is the failure mode where "our implementation is simpler, therefore
-better" turns out to be wrong. Simpler was not stricter here — it made a whole
-client class impossible.
+A desktop application cannot know its port before it asks the operating system
+for one. It registers `http://127.0.0.1:1234/cb`, listens on 51004, and was
+refused.
+
+This is the failure mode where "our implementation is simpler, therefore better"
+turns out to be wrong. Simpler was not stricter here: it made a whole class of
+client impossible.
 
 `loopbackPortMatch` now allows the port, and only the port, to differ. Both sides
-must be `http`, the host must be the *same* loopback host (`127.0.0.1` and `::1`
-are different addresses), and path, query and fragment must match exactly.
-
+must be `http`, and the host must be the *same* loopback host (`127.0.0.1` and
+`::1` are different addresses). The path, query and fragment must match exactly.
 
 ## §2.1.1 Authorization code grant
 
@@ -51,13 +64,13 @@ are different addresses), and path, query and fragment must match exactly.
 |---|---|---|
 | Support PKCE | MUST | yes |
 | Enforce `code_verifier` when a challenge was sent | MUST | yes |
-| Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — see `protocol-review-oauth.md` |
+| Mitigate PKCE downgrade: verifier accepted only if a challenge was present | MUST | **fixed this session** — a `code_verifier` sent for a code whose authorization request had no `code_challenge` is refused with `invalid_request` |
 | Provide a way to detect PKCE support | MUST | `code_challenge_methods_supported` in metadata |
 | Prefer challenge methods that do not expose the verifier | SHOULD | S256 only; `plain` refused outright |
 | Detect constant PKCE challenge / nonce values | encouraged | challenges, yes; nonces, no — see below |
 
 A client sending a code challenge it sent in the last day is recorded as
-`oauth.pkce_challenge_reused`. It is a signal and not a refusal, because a person
+`oauth.pkce_challenge_reused`. It is a signal and not a refusal. A person
 reloading a page can repeat one honestly, and telling that from a hard-coded pair
 needs a human looking at how often it happens. A repeated `nonce` is not tracked.
 
@@ -65,7 +78,7 @@ needs a human looking at how often it happens. A repeated `nonce` is not tracked
 
 | Requirement | Level | Signari |
 |---|---|---|
-| Sender-constrain access tokens (mTLS or DPoP) | SHOULD | both: RFC 8705 `x5t#S256` and RFC 9449 `jkt` |
+| Sender-constrain access tokens (mTLS or Demonstrating Proof of Possession (DPoP)) | SHOULD | both: RFC 8705 `x5t#S256` and RFC 9449 `jkt` |
 | Public-client refresh tokens sender-constrained **or** rotated | MUST | rotation with reuse detection (`store/refresh.go`) |
 
 ## §2.3 Access token privilege restriction
@@ -75,33 +88,35 @@ needs a human looking at how often it happens. A repeated `nonce` is not tracked
 | Audience-restrict access tokens | SHOULD | yes — `aud` is the client, or the RFC 8707 `resource` values, each one a resource server the client's organisation registered ([resource indicators](resource-indicators.md)); until October 2026 any http(s) URI was accepted |
 | **Resource server MUST refuse a token not meant for it** | **MUST** | **was missing — now enforced** |
 
-### The second defect: we did not enforce audience against ourselves
+### The second defect: audience was not enforced at Signari's own resource
 
 `VerifyAccessTokenAny` checked signature, `typ`, `iss`, `sub`, `exp`, `iat` and
-`jti` — and never looked at `aud`. Meanwhile the mint path sets the audience to
-the RFC 8707 `resource` values whenever a client sends them.
+`jti`, and never looked at `aud`. Meanwhile the mint path sets the audience to the
+RFC 8707 `resource` values whenever a client sends them.
 
-So a client could request a token for `https://api.example`, receive one whose
-audience says exactly that, and then spend it at our own `/userinfo` to read the
-subject's profile. §2.3 is explicit about whose job that is:
+So a client could request a token for `https://api.example`, and receive one whose
+audience says exactly that. It could then spend it at Signari's own `/userinfo`,
+to read the subject's profile. §2.3 is explicit about whose job that is:
 
 > every resource server is obliged to verify, for every request, whether the
 > access token sent with that request was meant to be used for that particular
 > resource server. If it was not, the resource server **MUST refuse** to serve
 > the respective request.
 
-We are a resource server for our own endpoints. This is the "Compromised
-Resource Server" case of §4.9.2: whoever holds a token meant for one API —
-including that API, if it is compromised — should not be able to turn it on a
-different one. An audience restriction the issuer declines to enforce against
-itself is decoration.
+A "resource server" is an API that accepts access tokens, and Signari is one for
+its own endpoints. This is the "Compromised Resource Server" case of §4.9.2.
+Whoever holds a token meant for one API should not be able to turn it on a
+different one. That includes the API itself, if it is compromised. An audience restriction the
+issuer declines to enforce against itself is decoration.
 
 `tokens.AudienceAccepted` now gates `/userinfo`. It accepts the client the token
-was issued to (so ordinary OIDC is unaffected) or this issuer named explicitly as
-a resource. A client wanting one token for both asks for both, which is what RFC
-8707 §2's multiple `resource` parameters are for — rather than getting the second
-for free because nobody checked. An absent `aud` is refused rather than treated
-as a wildcard: RFC 9068 §4 requires the claim.
+was issued to, so ordinary OpenID Connect (OIDC) is unaffected. It also accepts
+this issuer, named explicitly as a resource.
+
+A client wanting one token for both asks for both, which is what RFC 8707 §2's
+multiple `resource` parameters are for. It does not get the second for free
+because nobody checked. An absent `aud` is refused rather than treated as a
+wildcard: RFC 9068 §4 requires the claim.
 
 ## §2.4 – §2.6
 
@@ -109,12 +124,11 @@ as a wildcard: RFC 9068 §4 requires the claim.
 |---|---|---|
 | Resource owner password credentials grant | MUST NOT | refused in `ValidateGrantType` |
 | Enforce client authentication where feasible | SHOULD | yes, and shared across every direct-request endpoint |
-| Asymmetric client authentication available | RECOMMENDED | `private_key_jwt` and mutual TLS |
+| Asymmetric client authentication available | RECOMMENDED | `private_key_jwt` and mutual Transport Layer Security (TLS) |
 | Publish authorization server metadata | RECOMMENDED | RFC 8414 discovery |
 | Clients must not influence `client_id` | SHOULD NOT | dynamic registration assigns it; the request cannot choose it |
 | Authorization responses never over unencrypted connections | MUST | `ValidateRedirectURI` refuses non-loopback `http` |
-| **CORS MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — no CORS anywhere |
-
+| **Cross-Origin Resource Sharing (CORS) MUST NOT be supported at the authorization endpoint** | **MUST NOT** | satisfied — CORS is served from an explicit allow-list in `cors.go`, and the authorization endpoint is not on it |
 
 ## §4 attack-specific countermeasures
 
@@ -127,7 +141,7 @@ as a wildcard: RFC 9068 §4 requires the claim.
 | §4.4 Mix-up | RFC 9207 `iss` in the authorization response | yes, on by default |
 | §4.5 Code injection | PKCE required by default | yes |
 | §4.6 Access token injection | no implicit grant; code flow only | yes |
-| §4.7 CSRF | double-submit `__Host-` cookie, constant-time compare | yes |
+| §4.7 Cross-site request forgery (CSRF) | double-submit `__Host-` cookie, constant-time compare | yes |
 | §4.8 PKCE downgrade | verifier refused without a challenge | fixed this session |
 | §4.10.1 Stolen token misuse | DPoP and mTLS sender-constraining | yes |
 | §4.10.2 Audience restriction | enforced at our own resource | fixed above |
@@ -139,96 +153,103 @@ as a wildcard: RFC 9068 §4 requires the claim.
 
 ## Verdict
 
-Two MUST-level defects found and fixed: the loopback port exception (§2.1 /
-§4.1.3), and audience enforcement at our own resource server (§2.3). Both were
-invisible to the existing tests because both were *absences* — one check that
-was too strict and one that was not there at all.
+Two MUST-level defects were found and fixed. One was the loopback port exception
+(§2.1 / §4.1.3), and the other was audience enforcement at Signari's own resource
+server (§2.3).
 
-One MUST NOT is satisfied only because the corresponding feature is unbuilt
-(CORS), and that is stated rather than counted as a win. One encouragement
-(constant-PKCE-value detection) is not implemented and is recorded as such.
+Both were invisible to the existing tests, because both were *absences*: one
+check that was too strict, and one that was not there at all.
 
-Every fix in this document is mutation-tested: the guard was removed or inverted
+When this was written, one MUST NOT was satisfied only because the corresponding
+feature was unbuilt: Cross-Origin Resource Sharing (CORS). That was stated rather
+than counted as a win. CORS has since been built as an allow-list that leaves the
+authorization endpoint out, as the [later pass](#rfc-9700-2-re-verified-against-current-code--24-august-2026)
+records. One encouragement, constant-PKCE-value detection, was not implemented
+then. A repeated code challenge is now recorded, as the [§2.1.1
+table](#211-authorization-code-grant) says, and a repeated `nonce` is not.
+
+Every fix in this document is mutation-tested: the guard was removed or inverted,
 and the naming test observed to fail.
-
 
 ## A step-up requirement nothing could satisfy (August 2026)
 
-Found by tracing the authorization journey end to end rather than by any test
+This was found by tracing the authorization journey end to end, not by any test
 failing.
 
 A client sends `acr_values=2`. The subject has no second factor enrolled. The
-authorize endpoint finds the session insufficient and renders the sign-in form;
-a correct password produces a password-only session, which honestly reports
-`acr=1`; the redirect lands back at authorize, which finds it insufficient and
+authorize endpoint finds the session insufficient, and renders the sign-in form. A
+correct password produces a password-only session, which honestly reports
+`acr=1`. The redirect lands back at authorize, which finds it insufficient and
 renders the form again.
 
-Nothing errored. Every component was individually correct — `acr` is derived
-from `amr` rather than asserted, the step-up check was right to refuse, and a
-sign-in form is the reasonable response to "authentication is needed". The
-person saw two pages alternating indefinitely, with no explanation and no action
-available to them that would end it.
+Nothing errored. Every component was individually correct. `acr` is derived from
+`amr` rather than asserted, and the step-up check was right to refuse. A sign-in
+form is the reasonable response to "authentication is needed". The person saw two
+pages alternating indefinitely, with no explanation and no action available to
+them that would end it.
 
 A loop is not an error condition, so nothing was watching for one.
 
-**Fixed** at the authorize endpoint: when the required context is
-`StepUpNeedStronger` and the subject has no second factor enrolled, the request
-is refused with `unmet_authentication_requirements` — the error OIDC defines for
-exactly this — delivered to the client's `redirect_uri` rather than to a form.
+**Fixed** at the authorize endpoint. When the required context is
+`StepUpNeedStronger` and the subject has no second factor enrolled, the request is
+refused with `unmet_authentication_requirements`. That is the error OIDC defines
+for exactly this, and it is delivered to the client's `redirect_uri`, not to a
+form.
 
-Deliberately narrow. A `max_age` or `prompt=login` step-up **is** satisfiable by
-signing in again, so those still render the form; and a failure to read the
-subject's factors fails open to the form, because a database error must not
-become a refusal. Both directions are covered by tests
-(`internal/httpapi/stepuploop_test.go`), and the fix was verified by removing it
-and watching the loop test fail.
+The fix is deliberately narrow. A `max_age` or `prompt=login` step-up **is**
+satisfiable by signing in again, so those still render the form. A failure to read
+the subject's factors fails open to the form, because a database error must not
+become a refusal.
 
-This predates the flow engine — the hardcoded `if enrolled` it replaced behaved
+Both directions are covered by tests (`internal/httpapi/stepuploop_test.go`). The
+fix was verified by removing it and watching the loop test fail.
+
+This predates the flow engine. The hard-coded `if enrolled` it replaced behaved
 identically.
-
 
 ## Mutating the JWT verifier (August 2026)
 
-`internal/tokens/verify.go` is where alg-confusion, `jku` and `typ`-confusion
-attacks land. It had thirteen tests, all passing. Every hardening property was
-deleted in turn to see whether any test noticed.
+`internal/tokens/verify.go` is where attacks on a JSON Web Token (JWT) land:
+alg-confusion, `jku` and `typ`-confusion. It had thirteen tests, all passing. Every
+hardening property was deleted in turn, to see whether any test noticed.
 
 ### A real defect: `id_token_hint` accepted tokens that were not ID tokens
 
-The hardening was implemented **three times** — in `VerifyIDTokenAudience`,
-`VerifyTyped` and `verifiedPayload` — despite a comment in the same file saying
-it "is easy to write twice and get right once" and that "the shared part lives in
-verifiedPayload and both callers use it". That was the intent, not the state.
+The hardening was implemented **three times**: in `VerifyIDTokenAudience`,
+`VerifyTyped` and `verifiedPayload`. A comment in the same file warned that this
+is the part people write twice and get right once. It also said "the shared part
+lives in verifiedPayload and both callers use it". That was the intent, not the
+state.
 
 The copies had drifted. `VerifyIDTokenAudience` checked the algorithm allow-list,
-the single signature, embedded key material and the kid/alg pinning — and **not
+the single signature, embedded key material and the kid/alg pinning, and **not
 `typ`**. Every other path checks it.
 
-That function reads an `id_token_hint` at the end-session endpoint, and its
-answer decides which client's registered post-logout URIs apply and whether the
-logout confirmation prompt is skipped — RP-Initiated Logout accepts a verified
-hint in place of asking the person. So any token this server signed whose claims
-unmarshal into `IDTokenClaims` was accepted as an ID token.
+That function reads an `id_token_hint` at the end-session endpoint. Its answer
+decides which client's registered `post_logout_redirect_uri` values apply, and whether the sign-out
+confirmation prompt is skipped. RP-Initiated Logout accepts a verified hint in
+place of asking the person. So any token Signari signed whose claims unmarshal
+into `IDTokenClaims` was accepted as an ID token.
 
 Access tokens were safe **by accident**: their `aud` is a JSON array and the
 struct wants a string, so they fail to unmarshal. Transaction tokens carry a
-string `aud` and went straight through.
+string `aud`, and went straight through.
 
-Fixed by routing all three paths through `verifiedPayload`. One implementation
-now, so a mutation to it can fail a test.
+It was fixed by routing all three paths through `verifiedPayload`. There is one
+implementation now, so a mutation to it can fail a test.
 
 ### A test that could not tell which defence had fired
 
-`TestAlgConfusionIsRejected` forged tokens with the signature `"AAAA"` — garbage.
-Every one is refused, but by the last check rather than the one under test:
-whichever header defence you delete, `tok.Verify` still fails. Deleting the
+`TestAlgConfusionIsRejected` forged tokens with the signature `"AAAA"`, which is
+garbage. Every one is refused, but by the last check rather than the one under
+test. Whichever header defence you delete, `tok.Verify` still fails. Deleting the
 algorithm allow-list broke nothing.
 
-`TestAlgConfusionWithARealSignatureIsRejected` performs the actual attack: a
-token signed **HS256 using our own published JWKS entry as the HMAC secret**,
-which is a genuinely valid signature for the algorithm claimed. It asserts not
-merely that the token is refused but that it is refused *before any key is
-consulted*.
+`TestAlgConfusionWithARealSignatureIsRejected` performs the actual attack. It
+makes a token signed **HS256 using Signari's own published JSON Web Key Set (JWKS)
+entry as the HMAC secret**. That is a genuinely valid signature for the algorithm
+claimed. The test asserts not merely that the token is refused, but that it is
+refused *before any key is consulted*.
 
 ### What single-mutant survival actually means here
 
@@ -242,25 +263,27 @@ untested defects. They are mutually redundant:
   a third layer, in the library.
 - Drop the `kid` requirement, and `ByKID("")` fails anyway.
 
-Removing any one leaves the system safe, which is the point of defence in depth
+Removing any one leaves the system safe, which is the point of defence in depth,
 and the expected result. The new test kills the case where **both** application
 layers go.
 
 ### A correction to this review's own method
 
-The first mutation run reported all six properties surviving, and that was
-wrong — Go caches test results, and the harness read a cached `ok`. Re-run with
-`-count=1` the picture changed: two died immediately. A mutation harness that
-does not defeat the test cache reports every mutant as surviving and looks like a
-damning finding.
+The first mutation run reported all six properties surviving, and that was wrong.
+Go caches test results, and the harness read a cached `ok`. Re-run with
+`-count=1`, the picture changed: two died immediately.
+
+A mutation harness that does not defeat the test cache reports every mutant as
+surviving. The result looks like a damning finding.
 
 ## Re-verified by mutation, August 2026
 
 The tables above record what the code does. This section records what happens
-when it stops doing it — each MUST was disabled in turn and the **whole** test
-suite run, not just the owning package, because a guarantee enforced through a
-caller is killed by a test in another package and a package-local run reports
-that as a survivor.
+when it stops doing it. Each MUST was disabled in turn, and the **whole** test
+suite was run, not only the owning package.
+
+A guarantee enforced through a caller is killed by a test in another package. A
+package-local run reports that as a survivor.
 
 | Requirement | Level | Mutation | Killed by |
 |---|---|---|---|
@@ -270,37 +293,41 @@ that as a survivor.
 | §2.2 refresh rotation with reuse detection | MUST | — | verified under **concurrency** this pass: 8 simultaneous rotations yield exactly one winner, and a read-then-update rewrite yields 8 |
 | §2.3 resource server refuses a token not meant for it | MUST | `AudienceAccepted` returns true unconditionally | `TestATokenForAnotherResourceIsRefused` and `TestAudienceRestrictionIsEnforcedAgainstOurselves` |
 
-Every one died. That is a different statement from "the table says yes", and it
-is the only one worth making about a MUST.
+Every one died. That is a different statement from "the table says yes", and it is
+the only one worth making about a MUST.
 
-**What is still honestly not implemented:** §2.1.1's encouragement to detect
-constant PKCE challenge or nonce values across requests. It is "encouraged"
-rather than a MUST, it needs cross-request state we do not keep, and it is
-recorded as absent rather than quietly omitted.
+**What was still honestly not implemented:** §2.1.1's encouragement to detect
+constant PKCE challenge or nonce values across requests. It is "encouraged" rather
+than a MUST. It needed cross-request state Signari did not keep then, and it was
+recorded as absent rather than quietly omitted. A repeated code challenge has since
+been recorded as `oauth.pkce_challenge_reused`. A repeated `nonce` is still not
+tracked.
 
 ---
 
 ## Three structural properties, re-confirmed — 24 August 2026
 
 Requirement sweeps find what a checklist thought to ask about. These three were
-re-derived from the code instead, because each closes off a whole family of
-published attacks by construction rather than by a check that could be forgotten.
+re-derived from the code instead. Each closes off a whole family of published
+attacks by construction, not by a check that could be forgotten.
 
 - **No request object is fetched from a URL.** `request_uri_parameter_supported`
-  is false, because we fetch no remote request object — an SSRF surface we
-  decline to open. The only `request_uri` accepted is a PAR handle, which is an
+  is false, because we fetch no remote request object — a server-side request forgery (SSRF) surface we
+  decline to open. The only `request_uri` accepted is a Pushed Authorization
+  Requests (PAR) handle, which is an
   opaque database reference and not a URL. RFC 9126 §5 confirms `false` is the
   correct advertisement for a PAR-supporting server; the metadata comment says
   so. Since November 2026 an inline `request` JWT is taken, signed by a key the
   client registered and never by a shared secret or `none`: see
-  [jar.md](jar.md).
+  [signed authorization requests](jar.md).
 - **Authorization compares relation tuples for exact identity**
   (`internal/authzen`), never URI paths by prefix. There is no path to normalize,
   so trailing-slash and matrix-parameter normalisation bypasses have nothing to
   act on. Forward auth does no path-based authorization whatsoever: it verifies a
   session-bound cookie and sets identity headers, and the protected application
   authorizes for itself.
-- **SAML source trust keys are explicit PEM configuration**
+- **Security Assertion Markup Language (SAML) source trust keys are explicit PEM
+  configuration**
   (`internal/delegated`, `internal/saml/inbound.go`), never lifted from imported
   metadata where a `use` attribute could quietly disable verification. Unsolicited
   IdP-initiated responses are refused unless `AllowUnsolicited` is set for that
@@ -310,8 +337,8 @@ published attacks by construction rather than by a check that could be forgotten
 
 ## RFC 9700 §2 re-verified against current code — 24 August 2026
 
-Point 4 asks that "every point is covered for real". Re-run this session by
-reading the code now, not trusting the earlier table:
+Point 4 asks that "every point is covered for real". This pass was run by reading
+the code as it is now, not by trusting the earlier table:
 
 | §2 requirement | code | status |
 |---|---|---|
@@ -323,6 +350,6 @@ reading the code now, not trusting the earlier table:
 | §2.6 CORS MUST NOT be at the authorization endpoint | `cors.go` is an explicit allow-list: `*` only for discovery/JWKS, origin-echo for token/userinfo/revocation/introspection/PAR/device — the authorization endpoint is absent by construction, not by a prefix rule that could drift | met |
 
 Every §2 requirement checked is met, confirmed by reading the current code rather
-than the prior review. The CORS one is the sharpest: an allow-list `switch` means
-adding a new endpoint does not silently grant it CORS, and the authorization
-endpoint can never be added to the `*` arm without someone writing the line.
+than the prior review. The CORS one is the sharpest. An allow-list `switch` means
+adding a new endpoint does not silently grant it CORS. The authorization endpoint
+can never be added to the `*` arm without someone writing the line.

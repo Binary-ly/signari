@@ -213,6 +213,9 @@ func Inspect(ctx context.Context, conn *pgx.Conn, issuer string) (*Report, error
 	if err := checkServerVersion(ctx, conn, r); err != nil {
 		return nil, err
 	}
+	if err := checkServingRole(ctx, conn, r); err != nil {
+		return nil, err
+	}
 	for _, check := range []func(context.Context, *pgx.Conn, *Report) error{
 		checkTenantIsolation, checkJanitorBacklog, checkGrowth, checkFIPS, checkPasswordHashes,
 	} {
@@ -1638,6 +1641,115 @@ func checkServerVersion(ctx context.Context, conn *pgx.Conn, r *Report) error {
 				"relying on it.")
 	}
 	return nil
+}
+
+// Role is a database role, and whether serving as it gives the engine powers
+// it never needs.
+//
+// Not row-level security: signari_engine reads every organisation by design.
+// core.is_engine() is session_user = 'signari_engine', and every
+// organisation's policy lets it through (migration 0018). What the engine
+// never needs is a superuser's reach beyond its own tables: running programs
+// and reading files on the database server (COPY ... PROGRAM,
+// pg_read_server_files), changing the server's configuration (ALTER SYSTEM),
+// and every database on the cluster, the console's admin schema among them.
+// Nor BYPASSRLS, which passes every row-level policy on every table the role
+// may read, not only the organisation policies the engine is exempt from.
+// Signed in as either, or able to become one with SET ROLE, a compromised
+// engine or one SQL injection holds all of it.
+type Role struct {
+	Name             string
+	Super, BypassRLS bool
+	// Reaches is a superuser or BYPASSRLS role this one may SET ROLE to, and
+	// ReachesSuper says it is a superuser: a session one statement away from
+	// such a role is as good as one.
+	Reaches      string
+	ReachesSuper bool
+}
+
+// Privileged says whether serving as this role gives the engine more than it
+// needs: it is a superuser, has BYPASSRLS, or may SET ROLE to one that is.
+func (r Role) Privileged() bool { return r.Super || r.BypassRLS || r.Reaches != "" }
+
+// Kind says what the role is, for a message.
+func (r Role) Kind() string {
+	switch {
+	case r.Super:
+		return "a superuser"
+	case r.BypassRLS:
+		return "a role with BYPASSRLS"
+	case r.ReachesSuper:
+		return "a role that may SET ROLE to " + r.Reaches + ", a superuser"
+	}
+	return "a role that may SET ROLE to " + r.Reaches + ", which has BYPASSRLS"
+}
+
+// ConnectionRoles are the role conn signed in as and the one it acts as,
+// which differ under SET ROLE or a role= option, with the superuser or
+// BYPASSRLS role the session may SET ROLE to, if any: PostgreSQL checks SET
+// ROLE against the session's role, by the SET option of its memberships
+// (pg_has_role's 'SET', PostgreSQL 16). `serve` refuses to start, and this
+// package reports, on the same answer.
+func ConnectionRoles(ctx context.Context, conn *pgx.Conn) (session, current Role, err error) {
+	var reaches *string
+	var reachesSuper *bool
+	err = conn.QueryRow(ctx, `
+		SELECT s.rolname, s.rolsuper, s.rolbypassrls, c.rolname, c.rolsuper, c.rolbypassrls, t.rolname, t.rolsuper
+		  FROM pg_catalog.pg_roles s CROSS JOIN pg_catalog.pg_roles c
+		  LEFT JOIN LATERAL (
+		        SELECT r.rolname, r.rolsuper FROM pg_catalog.pg_roles r
+		         WHERE (r.rolsuper OR r.rolbypassrls) AND r.oid <> s.oid
+		           AND pg_catalog.pg_has_role(s.oid, r.oid, 'SET')
+		         ORDER BY r.rolsuper DESC, r.rolname LIMIT 1) t ON true
+		 WHERE s.rolname = session_user AND c.rolname = current_user`).
+		Scan(&session.Name, &session.Super, &session.BypassRLS, &current.Name, &current.Super, &current.BypassRLS,
+			&reaches, &reachesSuper)
+	if reaches != nil {
+		session.Reaches, session.ReachesSuper = *reaches, reachesSuper != nil && *reachesSuper
+	}
+	return
+}
+
+// PrivilegedRole is the first of the two that is privileged, the one signed
+// in as before the one acted as: signed in as a superuser, a RESET ROLE is one
+// statement away whatever it acts as.
+func PrivilegedRole(session, current Role) (Role, bool) {
+	for _, r := range []Role{session, current} {
+		if r.Privileged() {
+			return r, true
+		}
+	}
+	return Role{}, false
+}
+
+// checkServingRole says when the role this connection signs in as, or acts
+// as, or may become, is privileged. It is the role `serve` signs in as, from
+// the same SIGNARI_DSN, and serve refuses it unless told by name. Every
+// documented way to start Signari served as a superuser until November 2026.
+func checkServingRole(ctx context.Context, conn *pgx.Conn, r *Report) error {
+	r.ran("database role")
+	session, current, err := ConnectionRoles(ctx, conn)
+	if err != nil {
+		return err
+	}
+	reportServingRole(r, session, current)
+	return nil
+}
+
+// reportServingRole is checkServingRole's finding.
+func reportServingRole(r *Report, session, current Role) {
+	role, privileged := PrivilegedRole(session, current)
+	if !privileged {
+		return
+	}
+	r.add(Critical, "database", fmt.Sprintf("the database connection signs in as, acts as or may become %s, %s: "+
+		"a compromised engine or one SQL injection would hold powers the engine never needs, such as running "+
+		"programs and reading files on the database server, changing its configuration, and reaching every "+
+		"database on the cluster, and serve refuses to start on it", role.Name, role.Kind()),
+		"Serve as signari_engine. `signari setup` gives it a password and writes SIGNARI_DSN for it; or "+
+			"ALTER ROLE signari_engine PASSWORD '...' and point SIGNARI_DSN at that role (docs/upgrading.md). "+
+			"Keep the superuser for `signari migrate bootstrap` alone, and grant signari_engine no role "+
+			"it could SET ROLE to.")
 }
 
 // checkAuditChain says whether the audit trail verifies, judged as an export

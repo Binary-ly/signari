@@ -1,16 +1,28 @@
 # Security inventories
 
-OWASP ASVS 5.0 asks for several things to be written down in one place: which
-cryptography is in use, every way to authenticate, the session rules, what bounds a
-deployment's resources, and what data there is. Each of these was true before this
-page, in the code and scattered across reviews, and each was recorded as partial in
-[security-review-asvs.md](security-review-asvs.md) for that reason. Nothing here is a
-new rule. It is a list, with where each entry can be checked.
+## Introduction
 
-[logging-inventory.md](logging-inventory.md) and
-[egress-inventory.md](egress-inventory.md) are the two the standard asks for by name.
+The OWASP Application Security Verification Standard (ASVS) 5.0 asks for several
+things to be written down in one place. They are which cryptography is in use,
+every way to authenticate, the session rules, what bounds a deployment's
+resources, and what data there is. This page is that list, with where each entry
+can be checked.
+
+Each of these was true before this page, in the code and scattered across reviews.
+Each was recorded as partial in the [OWASP ASVS review](security-review-asvs.md)
+for that reason. Nothing here is a new rule.
+
+The page is for an auditor checking Signari against ASVS, and for an administrator
+who wants one page that says what Signari protects and how. Each section names the
+requirement it answers, such as V11.1. [What is logged](logging-inventory.md) and
+[every outbound connection](egress-inventory.md) are the two inventories the
+standard asks for by name.
 
 ## Cryptography (V11.1)
+
+Each row names a use, the cryptography it gets, and where to check it. The seed of
+a time-based one-time password (TOTP) is among the values sealed under the root
+key.
 
 | Use | What | Where |
 |---|---|---|
@@ -21,20 +33,21 @@ new rule. It is a list, with where each entry can be checked.
 | Passwords | Argon2id, with a floor and a calibrated cost. A hash brought in by an import is verified as it is, and upgraded to Argon2id at that person's first sign-in | `engine/internal/passwords/` |
 | Secrets only ever compared: tokens, codes, invitations | SHA-256, as they are long and random and a slow hash would buy nothing | `store.HashToken` |
 | Session identifiers | 256 bits from the system's random source | `newSID` in `engine/internal/httpapi/session.go` |
-| One-time passwords | HMAC-SHA-1 by default, as RFC 6238 says and every app implements. SHA-256 and SHA-512 by choice, and FIPS 140-only mode needs one of them | `engine/internal/mfa/totp.go` |
+| One-time passwords | HMAC-SHA-1 by default, as RFC 6238 says and every authenticator app implements. SHA-256 and SHA-512 by choice, and FIPS 140-only mode needs one of them | `engine/internal/mfa/totp.go` |
 | Webhook bodies | HMAC-SHA-256 | `engine/internal/hmacsig/` |
-| MD5 | Three sites, each required by a protocol it speaks to, and why each stays is in [security-review-asvs.md](security-review-asvs.md) | V11.4.1 there |
+| MD5 | Three sites, each required by a protocol it speaks to, and why each stays is in [the OWASP ASVS review](security-review-asvs.md) | V11.4.1 there |
 
-Signing keys move from next to active to passive to retired on a schedule, and a
-passive key is retired once nothing can still be verifying against it. The root key is
-rotated with `signari keys rewrap-root`, which knows every sealed column by test
+Signing keys move from next to active to passive to retired on a schedule. A
+passive key is retired once nothing can still be verifying against it. The root key
+is rotated with `signari keys rewrap-root`, which knows every sealed column by test
 (`TestEveryEncryptedColumnIsClassified`), so that a rotation cannot orphan one.
-[fips.md](fips.md) says what changes under a validated module.
+[FIPS 140-3](fips.md) says what changes under a validated module.
 
 ## Ways to authenticate (V6.1, V6.3.4)
 
-Side by side, with what each is recorded as in a token's `amr`, which is what a policy
-can require or refuse: see [policy.md](policy.md).
+Here every way to authenticate is side by side, with what each is recorded as in a
+token's `amr` claim. That claim is what a policy can require or refuse: see
+[access policy](policy.md).
 
 | Pathway | Proves | `amr` |
 |---|---|---|
@@ -45,14 +58,15 @@ can require or refuse: see [policy.md](policy.md).
 | Text message | Possession of a number, which a SIM swap defeats with no technical exploit | `sms`, deliberately not `otp` |
 | Emailed code, first factor | Possession of a mailbox: one factor | `otp`, read as single-factor |
 | Recovery code | That it was kept. It stands in for a second factor and proves none | Adds nothing |
-| Upstream provider | What that provider says, as far as it is trusted to | `fed`, with `mfa` only where the operator trusts its claim (`idp trust-mfa`) |
-| Kerberos | A ticket from a trusted realm | `krb` |
+| Upstream provider | What that provider says, as far as it is trusted to | `fed`, with `mfa` only where an administrator trusts its claim (`idp trust-mfa`) |
+| Kerberos | A ticket from a trusted Kerberos realm | `krb` |
 | Duo | That Duo was satisfied, not how | `mfa`, added to what came before |
 | An external factor | What that service asserts | What it is registered with |
 
 No sign-in goes through the password form for `ldap`, `radius` or the `jwt-bearer`
-grant. Each has a page of its own: [ldap.md](ldap.md), [radius.md](radius.md) and
-[jwt-bearer.md](jwt-bearer.md).
+grant. Each has a page of its own: [Lightweight Directory Access Protocol
+(LDAP)](ldap.md), [Remote Authentication Dial-In User Service (RADIUS)](radius.md)
+and [the jwt-bearer grant](jwt-bearer.md).
 
 ## Sessions (V7.1)
 
@@ -65,9 +79,10 @@ grant. Each has a page of its own: [ldap.md](ldap.md), [radius.md](radius.md) an
 
 Sessions are rows, read on every request and never cached, so ending one takes effect
 at once. A person signed in through a provider has a session here whose life is this
-table's and not the provider's, unless the provider says by back-channel logout that it
-has ended: see [social-login.md](social-login.md). Every session ends through one
-function, by test (`TestEverySessionEndsThroughTerminateSessions`).
+table's, not the provider's. The exception is when the provider says, by
+OpenID Connect Back-Channel Logout, that the session has ended: see [federated sign-in
+providers](social-login.md). Every session ends through one function, by test
+(`TestEverySessionEndsThroughTerminateSessions`).
 
 ## Who may do what (V8.1)
 
@@ -75,10 +90,10 @@ The rules are enforced in four places, each with its own page.
 
 | Boundary | Enforced by | Page |
 |---|---|---|
-| One organisation from another | Row security on every organisation's table, with the database's own role as the backstop, and `requireOrg` in the Admin API | [admin-api.md](admin-api.md) |
-| What an admin token may touch | Seventeen scopes, narrowed further to named clients and groups | [admin-tokens.md](admin-tokens.md) |
-| What a person may reach | Sign-in policy, and client access by group | [policy.md](policy.md) |
-| What an application may decide | Relations, and AuthZEN | [authorization.md](authorization.md) |
+| One organisation from another | Row security on every organisation's table, with the database's own role as the backstop, and `requireOrg` in the Admin API | [the Admin API](admin-api.md) |
+| What an admin token may touch | Seventeen scopes, narrowed further to named clients and groups | [Admin API access](admin-tokens.md) |
+| What a person may reach | Sign-in policy, and client access by group | [access policy](policy.md) |
+| What an application may decide | Relations, and AuthZEN | [asking whether an action is allowed](authorization.md) |
 
 The console has no privilege on the engine's tables at all. It reads views and writes
 through the Admin API, as [the design](../README.md) sets out.
@@ -94,8 +109,9 @@ through the Admin API, as [the design](../README.md) sets out.
 | An organisation's tokens and sign-ins a minute | None until set | `signari instance org-budgets` |
 | Outbound request | 8,000 octets a URI or a header field, 5 seconds to connect and 10 to the first byte | Fixed |
 
-What the engine calls out to is in [egress-inventory.md](egress-inventory.md). What
-these numbers mean under load is in [performance.md](performance.md).
+What the engine calls out to is in [every outbound
+connection](egress-inventory.md). What these numbers mean under load is in
+[performance](performance.md).
 
 ## Data (V14.1)
 
@@ -104,13 +120,14 @@ these numbers mean under load is in [performance.md](performance.md).
 | Credentials | Passwords, seeds, passkey keys, refresh and access token records | Hashed if only ever compared, sealed if read back, and a public key as it is | As long as the person or the grant, and gone with them on erasure |
 | Identity | Names, addresses, attributes, group memberships | In the clear, with row security | Until erased |
 | Sessions and sign-in locations | Which device, roughly where, an address only as a keyed hash | In the clear, but for the address | `SIGNARI_RETENTION_SESSIONS`, `SIGNARI_RETENTION_SIGNIN_LOCATIONS` |
-| Audit trail | Who did what, in classes `security`, `operational` and `profile` | Hash-chained and append-only | As kept: see [logging-inventory.md](logging-inventory.md) |
+| Audit trail | Who did what, in classes `security`, `operational` and `profile` | Hash-chained and append-only | As kept: see [what is logged](logging-inventory.md) |
 | Configuration | Clients, policies, flows | In the clear, but for sealed secrets | Until removed |
 
-[configuration.md](configuration.md) lists every `SIGNARI_RETENTION_` setting. A person
-can export their own data at `/account/export` and delete their account at
-`/account/delete`. An operator has `GET /admin/subjects/{subjectID}/export` and
-`signari erase subject`: see [erasure.md](erasure.md).
+[Every environment variable](configuration.md) lists every `SIGNARI_RETENTION_`
+setting. A person can export their own data at `/account/export`, and delete their
+account at `/account/delete`. An administrator has
+`GET /admin/subjects/{subjectID}/export` and `signari erase subject`: see [erasing a
+subject](erasure.md).
 
 ## What a browser has to do (V3.1.1)
 

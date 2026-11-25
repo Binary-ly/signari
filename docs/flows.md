@@ -1,8 +1,18 @@
 # Sign-in flows
 
-A flow is the sequence of things somebody is asked for on the way in: a
-challenge, a password, a second factor, a notice they have to accept. Signari
-takes it as a file.
+## Introduction
+
+A "flow" is the sequence of things somebody is asked for on the way in: a
+challenge, a password, a second factor, a notice they have to accept. Signari has
+built-in flows, which `signari flow show` prints. To change what people are asked
+for, you write your own flow as a file.
+
+Because it is a file, you can review it like code and test it in CI, with no
+database. Signari also refuses to load a flow that could sign somebody in without
+proving who they are.
+
+This flow asks for a passkey or a password, then a second factor if the person has
+one. Its two tests say which steps each kind of person sees:
 
 ```yaml
 version: 1
@@ -25,6 +35,8 @@ flows:
         expect: [password, mfa, session]
 ```
 
+Test it, list every path through it, and install it:
+
 ```
 signari flow test  -flow-file flows.yaml              # in CI: no database needed
 signari flow paths -flow-file flows.yaml              # every journey it admits
@@ -34,7 +46,7 @@ signari flow show                                     # the built-in flows
 
 The Admin API reads and applies the same file at
 `/admin/organizations/{orgID}/sign-in-flow`, parsed and tested the same way
-before it is stored; see [admin-api.md](admin-api.md).
+before it is stored; see [the Admin API](admin-api.md).
 
 ## What is different here
 
@@ -47,6 +59,8 @@ by the engine before it serves anything. It is not a warning and cannot be
 waived.
 
 ### The flow this exists to refuse
+
+The simplest flow that must never load has two steps:
 
 ```yaml
 stages:
@@ -62,6 +76,8 @@ Both ask the right question. Both ask it of a configuration that has already bee
 saved, published and served, with somebody waiting on the answer.
 
 ### The subtler one
+
+This one looks safer, and is not:
 
 ```yaml
 stages:
@@ -98,12 +114,12 @@ session, and has the person type their address or username to confirm; the
 proving stage is that sign-in, each proof counting only for itself as at sign-in,
 and `done` erases the account exactly as `signari erase subject` does — the key
 their data is sealed under destroyed, every session ended with each application
-sent a back-channel logout, the account deleted, audited `account.deleted` — and
+told through Back-Channel Logout, the account deleted, audited `account.deleted` — and
 the address is sent one last message. An unenrolment's `done` is held to the
 proof rule a `session` is held to, so `[done]` is refused. The built-in flow
 accepts every way in; `stages: [deny]` closes self-service deletion, and
 `stages: [passkey, done]` lets only a passkey sign-in delete. Until October 2026
-nothing walked this designation, and deletion was an operator's act only.
+nothing walked this designation, and deletion was an administrator's act only.
 
 ### What a recovery flow governs, and what it refuses
 
@@ -158,7 +174,7 @@ journey runs `email_otp` today.
 Enrolment is exempt from the proof rule because there is nobody yet to prove. It
 pays for that by not being allowed to issue a session: sign-up decides who
 exists, and an authentication flow decides who is signed in. Collapsing the two
-is how a self-service form becomes an account-creation-and-login endpoint.
+is how a self-service form becomes an account-creation-and-sign-in endpoint.
 
 ### Stages
 
@@ -184,7 +200,7 @@ credential rather than checking one.
 **A flow may name only the stages its journey runs.** A sign-in used to walk
 past every stage it did not act on, so `password, kerberos, session` read as two
 proofs and was a password sign-in. A sign-up or recovery stopped at such a
-stage with a 501 the first time somebody tried it. Either way the operator was
+stage with a 501 the first time somebody tried it. Either way the administrator was
 the last to find out, so the file is refused when it is parsed, naming the
 stage.
 
@@ -215,6 +231,8 @@ stages:
   - {stage: redirect, to: "https://intranet.example.com/welcome"}
 ```
 
+To ask only the people with no invitation to solve a CAPTCHA, add a stage such as:
+
 ```yaml
   - {stage: captcha, when: not invited}
 ```
@@ -222,14 +240,14 @@ stages:
 `redirect` ends an enrolment or a recovery by sending the browser to `to`
 instead of the built-in page: after a sign-up, to an onboarding page; after a
 reset, back to the application. `to` is checked when the file is read. It must
-be an `https` URL with no user information, or a path on this server starting
+be an `https` URL with no credentials in it, or a path on this server starting
 with a single slash. Another scheme, `//elsewhere`, and `to` on any stage but a
 redirect are refused by name. A sign-up an application asked for with
 `prompt=create` still ends on the page that leads back to that application,
 which is owed its answer. A sign-in may not end in a redirect, since its end is
 the session the parked request resumes from. Nor may an unenrolment, whose
 `done` is where the account is erased; that `done` is also the stage that
-deletes a user, so the language has no second one.
+deletes a person, so the language has no second one.
 
 ### Requiring somebody to enrol a second factor
 
@@ -287,7 +305,8 @@ proving stage must be that route's proof: `password` for the sign-in form
 `federated` for an upstream provider, `email_otp` for a code emailed to the
 account's address. A sign-in by any other proof is refused,
 and the refusal is audited as `login.failed` with the reason
-`flow_requires_another_proof`, the stage required and the one presented.
+`flow_requires_another_proof`, the stage required and the one presented. Three
+flows show how a file chooses among the routes:
 
 ```yaml
 # Passkeys only: a password, a ticket or a provider is refused.
@@ -335,9 +354,9 @@ everybody who signs in.
 A flow a Kerberos ticket is the only way into (`kerberos, session`) skips the page the
 same way: an authorization request goes to `/login/kerberos` carrying itself, and the
 ticket comes back to it signed in. That happens only on a host with a keytab for the
-organisation, its own realm's or, on a host with none, the deployment's for its first
-organisation; anywhere else the page is shown, since the Negotiate route there answers
-`404`. See [kerberos.md](kerberos.md).
+organisation, its own Kerberos realm's or, on a host with none, the deployment's for its
+first organisation; anywhere else the page is shown, since the Negotiate route there
+answers `404`. See [Kerberos](kerberos.md).
 
 **Until October 2026 the walker passed `password` and `passkey` whatever had
 been presented.** `passkey, session` admitted a password, and the `one_of` at
@@ -352,8 +371,8 @@ provider sign-ins; add them as `one_of` alternatives to keep admitting them.
 registered and believes the answer it signs: signed challenge out, JWS back from
 a public key you registered, `amr` from a set you declared. It is asked of
 somebody already proved, so it follows a proving stage rather than replacing one,
-and `factor` is required. [external-factors.md](external-factors.md) is the
-contract.
+and `factor` is required. [Steps answered by your own service](external-factors.md)
+is the contract.
 
 ### Signing in with an emailed code
 
@@ -437,6 +456,8 @@ and `signari doctor` reports it as critical, naming the organisation.
 
 ### `one_of`
 
+A group of branches, of which exactly one runs, is written like this:
+
 ```yaml
 - one_of:
     - {stage: passkey, when: user_has_passkey}
@@ -477,6 +498,8 @@ second kind is the kind that gets somebody in.
 
 ## `flow paths`
 
+With no file given, it lists the journeys of the built-in flows:
+
 ```
 $ signari flow paths
 
@@ -501,7 +524,7 @@ two readings is where a misconfiguration hides, and enumerating removes it.
 ## Defaults
 
 A deployment that has written no flow file runs the built-in ones, which
-reproduce exactly the journey the server ran when the sequence was fixed Go:
+reproduce exactly the journey the engine ran when the sequence was fixed Go:
 
 ```
 captcha (if required) -> password, passkey, kerberos or federated (whichever was presented)
@@ -511,7 +534,7 @@ captcha (if required) -> password, passkey, kerberos or federated (whichever was
 
 `signari flow show` prints that file verbatim, to start from. It is parsed by the
 same `Parse`, so the safety analysis and its own test cases run against it in CI:
-the default journey is held to exactly the rules an operator's file is held to,
+the default journey is held to exactly the rules an administrator's file is held to,
 rather than being trusted because it shipped.
 
 ## What the flow controls today
@@ -520,15 +543,15 @@ Applied with `flow apply`, the file drives the live sign-in:
 
 - **whether a second factor is demanded** — `when: user_has_second_factor`
   reproduces the old behaviour; unconditional demands one of everybody; `when:
-  client_requires_mfa` demands one only when a relying party sends
+  client_requires_mfa` demands one only when an application sends
   `acr_values=2`, or the client requires it (below)
 - **which of the post-authentication stages run, and in what order** — the
   prompt and the forced password change
 - **refusing outright**, with `deny`
 
-It does **not** control the password check, the credential lookup, the login
+It does **not** control the password check, the credential lookup, the sign-in
 throttle, or the rate limiter. Those are not sequencing decisions, and putting
-them in a file would mean an operator could turn them off.
+them in a file would mean an administrator could turn them off.
 
 The `mfa` stage binds every way in: password, passkey, Kerberos, Duo and the
 federated sources all reach a session through the same walk. A sign-in whose
@@ -536,13 +559,14 @@ factors already add up to multi-factor passes the stage without being asked
 again. Otherwise the person is asked for a factor enrolled here, and under an
 unconditional stage somebody with none is refused. A federated sign-in counts
 as multi-factor only when the provider's ID token asserts it with a value you
-chose to trust; see [social-login.md](social-login.md#a-providers-multi-factor-authentication).
+chose to trust; see [a provider's multi-factor
+authentication](social-login.md#a-providers-multi-factor-authentication).
 
 A registered security key or passkey is one of those factors: after a password,
 the code page offers a button that asks for it, and password plus key gives a
 multi-factor session. Until October 2026 it was not. A person whose one factor
-beyond the password was a key signed in on the password alone, and a relying
-party sending `acr_values=2` was told the account had no second factor. Anybody
+beyond the password was a key signed in on the password alone, and an
+application sending `acr_values=2` was told the account had no second factor. Anybody
 who has registered a passkey and signs in with a password is now asked for the
 key as well; signing in with the passkey itself is unchanged.
 
@@ -562,9 +586,9 @@ organisation sets `-days 0`. Off unless set.
 ### Requiring multi-factor for one application
 
 `signari client set-acr -client-id payroll -minimum-acr 2` requires
-multi-factor of that client whatever its request says. A relying party can ask
+multi-factor of that client whatever its request says. An application can ask
 with `acr_values=2`; this is for the one that does not, and for a request a
-user can edit, since the parameter can be removed from the URL. The floor is
+person can edit, since the parameter can be removed from the URL. The floor is
 checked wherever a person's session here gives the client tokens:
 
 - **authorization.** A session with a single factor is not reused: the person
@@ -580,7 +604,7 @@ checked wherever a person's session here gives the client tokens:
 - **every refresh.** A refresh token from a single-factor session is refused
   with `invalid_grant`, so raising the floor reaches the tokens already issued
 
-Token exchange and the JWT bearer grant are not held to it, because neither
+Token exchange and the JSON Web Token (JWT) bearer grant are not held to it, because neither
 starts from a session here: one carries a token already issued, the other an
 assertion from an issuer you trust. Until October 2026 nothing set a floor for
 a client.
@@ -592,7 +616,7 @@ Two rungs go above `2`, as a floor (`-minimum-acr 3` or `4`) or in a request's
 
 | | |
 |---|---|
-| `3` | multi-factor that includes a WebAuthn assertion: a passkey that verified its user, or a security key after a password. The assertion is bound to this server's origin, so a page that relays the sign-in cannot obtain one. An authenticator app, a text or a federated sign-in does not reach it |
+| `3` | multi-factor that includes a WebAuthn assertion: a passkey that verified the person holding it, or a security key after a password. The assertion is bound to this server's origin, so a page that relays the sign-in cannot obtain one. An authenticator app, a text or a federated sign-in does not reach it |
 | `4` | the same with a key bound to its device. A synced passkey can be copied to another device, so it does not reach `4` |
 
 These are this engine's rungs, not values another server will recognise. A

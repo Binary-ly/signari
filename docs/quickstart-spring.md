@@ -1,10 +1,25 @@
 # Quickstart: a Spring Boot application
 
-[examples/spring-quickstart](../examples/spring-quickstart/src/main/java/dev/signari/quickstart/SecurityConfig.java)
-signs people in with Signari from a [Spring Boot](https://spring.io/projects/spring-boot)
-application, using Spring Security's OAuth 2.0 client.
+## Introduction
+
+This guide connects a [Spring Boot](https://spring.io/projects/spring-boot)
+application to Signari, so that people sign in to it with their Signari account.
+The example,
+[examples/spring-quickstart](../examples/spring-quickstart/src/main/java/dev/signari/quickstart/SecurityConfig.java),
+uses Spring Security's OAuth 2.0 client for the protocol.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does, and the two settings Signari needs that Spring
+does not assume.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, with Spring's callback address as
+its redirect URI:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -15,6 +30,8 @@ It prints the client secret once. Keep it. The redirect URI is Spring's own patt
 `/login/oauth2/code/<registration>`, matched exactly.
 
 ## 2. Run it
+
+Build the example, then run it with Signari's address and the values from step 1:
 
 ```sh
 cd examples/spring-quickstart
@@ -33,8 +50,9 @@ truststore with `keytool -importcert` and start Java with
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/spring-quickstart/Dockerfile) as `demo-spring`, the public client
 `demo-spring` of [deploy/demo/client.yaml](../deploy/demo/client.yaml), with
-`CLIENT_AUTH=none`, at `http://localhost:8094/`. With the exports the
-[README](../README.md#quick-start) gives:
+`CLIENT_AUTH=none`, at `http://localhost:8094/`. With the settings that [Your
+first application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d
@@ -53,7 +71,8 @@ document at start and refuses one naming another issuer. The registration uses
 
 `SecurityConfig` adds the two things Spring does not assume:
 
-1. **PKCE for a confidential client.** Signari requires it of every client and
+1. **Proof Key for Code Exchange (PKCE) for a confidential client.** Signari requires
+   it of every client and
    accepts only `S256`. Spring adds it by itself only for public clients, so the
    authorization request resolver is given `OAuth2AuthorizationRequestCustomizers.withPkce()`.
 2. **The ID token's algorithm.** Spring checks the ID token's signature against the
@@ -65,13 +84,14 @@ document at start and refuses one naming another issuer. The registration uses
 A public client has no secret: leave `CLIENT_SECRET` unset, set `CLIENT_AUTH=none`, and
 register it with `-public`. A refused sign-in sends the browser to Spring's
 `/login?error`; the engine's own message is in its log and in
-[troubleshooting.md](troubleshooting.md).
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 
 On 14 November 2026, with Java 17, Maven 3.9.16, Spring Boot 4.1.2 and Spring Security
-7.1.2, against a running engine over TLS. Ada signed in through the engine's pages and
-`/me` said "Signed in as ada@staff.test". The engine's access log showed `/oauth2/jwks`
-fetched for the signature. With the ES256 line taken out, the same sign-in was refused
-and the browser was sent back to Spring's login page. A callback this browser never
+7.1.2, against a running engine over Transport Layer Security (TLS). Ada signed in
+through the engine's pages and `/me` said "Signed in as ada@staff.test". The engine's
+access log showed `/oauth2/jwks` fetched for the signature. With the ES256 line taken
+out, the same sign-in was refused and the browser was sent back to Spring's sign-in
+page. A callback this browser never
 began went to `/login?error`, and `/me` signed out sent the browser to sign in.

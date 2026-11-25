@@ -1,8 +1,18 @@
 # Brands
 
-An appearance on the pages a user sees: a product name, a logo, a support link,
-and four colours. An instance has one, and each organisation on it may have its
-own over it.
+## Introduction
+
+People decide whether a sign-in page is genuine partly by how it looks. A "brand"
+gives Signari's pages your product name, your logo, a support link and four
+colours, without changing the pages themselves. An instance has one, and each
+organisation on it can have its own over it.
+
+Signari checks the colours' contrast before it accepts them, so the text stays
+readable. To change more than this, such as the layout of the page, see
+[theming](theming.md).
+
+Check a set of colours first. `signari brand check` prints the contrast of each
+pair:
 
 ```sh
 signari brand check \
@@ -14,6 +24,8 @@ signari brand check \
 
 readable (WCAG 2.1 AA needs 4.5:1 for body text)
 ```
+
+Then set the brand for the instance:
 
 ```sh
 signari brand set -issuer https://auth.example.com \
@@ -28,14 +40,13 @@ It takes effect on the next page render. No restart.
 
 ## Tokens, never CSS
 
-The obvious way to build this is a text box holding custom CSS, and that is what
-the other products offer. It is also stored cross-site scripting aimed at the
-worst page in the product.
+The obvious way to build this is a text box holding custom CSS. It is also stored
+cross-site scripting aimed at the worst page in the product.
 
 CSS can pull resources from anywhere. Attribute selectors with `url()`
 exfiltrate the page's own state a character at a time. And an administrator who
 can restyle the sign-in form can restyle it into one that looks identical and
-posts somewhere else — on the single page where users are asked to judge whether
+posts somewhere else — on the single page where people are asked to judge whether
 a site is genuine.
 
 So a brand is a fixed set of tokens. Every colour is validated as a hex literal
@@ -46,7 +57,7 @@ the emitter to prove it.
 
 ## Contrast is checked, not trusted
 
-Every deployment that offers colour customisation eventually has a tenant whose
+Every deployment that offers colour customisation eventually has an organisation whose
 sign-in page is grey on white, because whoever chose the colours was matching a
 brand guide printed on paper and never looked at the result on a phone outdoors.
 
@@ -74,6 +85,8 @@ is the most common way a page becomes unreadable, and it happens because setting
 one colour feels like a small change.
 
 ## An organisation's own
+
+Set an organisation's name and logo, show what it has, or remove it:
 
 ```sh
 signari brand set -org <uuid> -brand-name "Bravo" -brand-logo https://bravo.example/logo.svg
@@ -107,6 +120,9 @@ this changes what a page looks like, not whose address it is at.
 
 ## An organisation's words
 
+Reword one message for an organisation, list the messages it has reworded, or
+remove one:
+
 ```sh
 signari message set -org <uuid> -locale en -message-key login.heading -message-text "Sign in to Bravo"
 signari message list -org <uuid>
@@ -119,7 +135,7 @@ organisation may call it, under `messages:` in a [configuration file](config-as-
 and on the console's Messages screen. It takes effect on the next render, on the
 pages and in the mail of that organisation alone.
 
-These are a tenant's, so they are not trusted the way the catalogue is: a message
+These are an organisation's, so they are not trusted the way the catalogue is: a message
 in the catalogue may carry a link, and one of these is plain text, escaped on the
 way to the page, so whoever may set it can change what a page says and not what it
 does. It may use the placeholders the message it replaces is given, as
@@ -128,8 +144,9 @@ renders, a language with no catalogue, a placeholder the message is never given,
 a message that counts something, as it has a form for each number and this is one
 line. Reword those, and add a language, in a theme instead.
 
-The pages a browser reads rather than a person do not say them: the SAML POST form,
-`form_post`, WS-Federation and front-channel logout. Each is on the path that signs
+The pages a browser reads rather than a person do not say them: the Security
+Assertion Markup Language (SAML) POST form, `form_post`, WS-Federation and
+Front-Channel Logout. Each is on the path that signs
 somebody in to an application, and a theme can still reword them.
 
 ## An organisation's pages
@@ -149,13 +166,15 @@ theme/
       locales/de.json       a language only Bravo's readers are offered
 ```
 
+Copy out the built-in layout to start Bravo's from, and check the whole directory:
+
 ```sh
 signari theme eject -theme-dir ./theme/orgs/bravo -theme-page layout
 signari theme check -theme-dir ./theme        # checks every organisation's too
 ```
 
-It is the operator's disk rather than a tenant's token, read once at startup, and
-it follows every rule of a theme. A file that fails validation is refused for that
+It lives on the deployment's own disk, not behind an organisation's token. It is
+read once at startup, and it follows every rule of a theme. A file that fails validation is refused for that
 page, and the deployment's page is served in its place. A directory that fails
 altogether costs that organisation its theme and nobody else anything. A directory
 naming no organisation is logged at startup. Two instances served by one process
@@ -169,7 +188,8 @@ only for an organisation that has reworded something.
 
 ## What it touches
 
-Every page rendered by the engine: sign-in, consent, MFA enrolment and
+Every page rendered by the engine: sign-in, consent, multi-factor authentication
+(MFA) enrolment and
 challenge, recovery, the device flow, the account page and the application
 portal. The colours are injected into the rendered page rather than referenced
 by each template, so a page cannot be missed — a sign-in page in default colours

@@ -1,13 +1,27 @@
 # Theming
 
-Every page a person sees while signing in — the login form, the consent screen,
-the two-factor challenge, the error pages — is an HTML file you can replace
-without a compiler.
+## Introduction
+
+People see Signari's pages more than any other part of it: the sign-in form, the
+consent screen, the two-factor challenge, the error pages. Most organisations
+want those pages to look like the rest of their own sites.
+
+Every one of them is an HTML file you can replace, without a compiler. You can
+replace the shared frame around every page, which is enough for most
+organisations, or a single page. Signari checks each replacement when it starts,
+and keeps serving its own version of any page whose replacement would break
+sign-in.
 
 Until now they were Go string literals inside twenty-two source files. Changing
 a heading meant forking the repository and shipping a binary nobody had audited.
 
+> [!NOTE]
+> To change only the product name, the logo and the colours, you do not need a
+> theme. Use a [brand](brands.md) instead.
+
 ## The thirty-second version
+
+Copy Signari's own layout into a folder, change it, check it, and serve it:
 
 ```sh
 signari theme eject -theme-dir ./theme -theme-page layout   # start from the real page
@@ -26,7 +40,8 @@ deployments want.
 **`layout.html` is the chrome** — the `<head>`, the logo, the footer, the shared
 stylesheet — for all thirty-three pages at once. Every form, every hidden field
 and every button stays ours. This is the safe case, and it is safe *structurally*:
-it cannot drop a CSRF token, because it never contained one.
+it cannot drop a cross-site request forgery (CSRF) token, because it never
+contained one.
 
 **An individual page is that page's content** — the form, the buttons, the
 wording. Much more control, and the reason the validator below exists.
@@ -48,7 +63,7 @@ Two more are optional and defined for you if you leave them out: `style` (rules 
 single page needs) and `foot` (anything after the content).
 
 `.BrandLogo`, `.BrandName` and the brand colours are supplied by
-`signari brand set`, so an operator can change the logo without touching a file
+`signari brand set`, so an administrator can change the logo without touching a file
 at all. A theme that hardcodes an image is a theme that has quietly turned that
 command off.
 
@@ -89,7 +104,8 @@ without anyone remembering to write it down.
 Three things must survive:
 
 - **Every critical value the built-in renders.** The CSRF token, the
-  authorization request, the SAML request and relay state, the continuation URL,
+  authorization request, the Security Assertion Markup Language (SAML) request and
+  relay state, the continuation URL,
   the invite and reset tokens, the device user code, the record being acted on.
 - **Every form target.** A `method="post"` to `/login` cannot become a `GET`, and
   cannot go somewhere else.
@@ -134,7 +150,7 @@ the built-in is served in its place, and a warning is logged. Your other
 overrides — including the layout — stay in force.
 
 That asymmetry is deliberate. Refusing to start would hand anyone editing a theme
-the ability to lock every user out of every application by mistyping a filename
+the ability to lock everyone out of every application by mistyping a filename
 at four in the afternoon. The cost is that a refused theme's symptom is a page
 that looks *normal*, which is why `signari doctor` reports refusals, and why
 `theme check` belongs in the deploy, before the restart.
@@ -151,7 +167,7 @@ Thirty-three, plus three shared fragments (`layout`, `pagecss`, `captcha`).
 | Signing out | `logout` `backchannel` `fclogout` |
 | Devices and access | `device` `racindex` |
 | Errors | `err` `federr` `samlerr` `umaclaimserr` |
-| UMA | `umaclaims` |
+| User-Managed Access (UMA) | `umaclaims` |
 | Bridges | `saml` `formpost` `wsfed` `racview` |
 
 The four bridges are the exception to everything above, for two different
@@ -198,7 +214,7 @@ the built-in catalogue.
 **Wording goes here. Structure goes in a page override.** Overriding a whole
 page to change one sentence is a fork of that page's form — including its CSRF
 field — and this is the cheaper thing that does not have that cost. It is also
-how a language is added; [i18n.md](i18n.md) covers plurals, text direction and
+how a language is added; [Languages](i18n.md) covers plurals, text direction and
 how `ui_locales` is honoured.
 
 ## The look, and changing it without touching a page
@@ -228,7 +244,8 @@ somebody else's colours.
 ## Looking at what you changed
 
 Validation proves a page still carries its CSRF token. It cannot tell you the
-button is invisible against your new background.
+button is invisible against your new background. To see that, render every page
+from the engine's source tree:
 
 ```sh
 SIGNARI_PAGE_PREVIEW_DIR=/tmp/pages go test ./internal/pages/ -run Preview

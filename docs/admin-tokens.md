@@ -1,5 +1,28 @@
 # Admin API access
 
+## Introduction
+
+Every program that changes Signari through the [Admin API](admin-api.md) needs a
+credential. The console needs one, and so does a deployment script or a
+monitoring check. A script that reads a version number has no use for a
+credential that can delete people.
+
+Signari gives each program its own "admin token". A token's "scopes" name what it
+may do. It belongs to one organisation unless it is made without one, and it can
+be narrowed further to named applications, groups or attributes. It expires after
+ninety days unless you say otherwise, and it can be revoked at once. Every change
+made with it is recorded against it in the audit trail.
+
+You make tokens with `signari admin-token` on the command line, or over the Admin
+API itself. The console can also sign its administrators in through Signari, so
+that each acts with a role of their own instead of a shared token.
+
+## Making a token
+
+This creates a token for the console that may write people and applications and
+read the configuration version, for 90 days. It then lists the tokens, and
+revokes one by its ID:
+
 ```sh
 signari admin-token create \
   -name "laravel console (prod)" \
@@ -13,9 +36,9 @@ signari admin-token revoke -token-id <uuid>
 
 ## What this replaced
 
-One token, in an environment variable, granting everything, in every
-organisation, forever. Three separate problems, and the third is the one that
-matters:
+Admin tokens replaced one token, in an environment variable, that granted
+everything, in every organisation, forever. That had three separate problems, and
+the third is the one that matters:
 
 | | |
 | --- | --- |
@@ -25,8 +48,11 @@ matters:
 
 ## Scopes
 
-Deliberately few. A permission model nobody can hold in their head gets granted
-wholesale, which is exactly the situation being replaced.
+A scope names a set of endpoints a token may call. There are deliberately few. A
+permission model nobody can hold in their head gets granted wholesale, which is
+exactly the situation being replaced.
+
+Each scope opens these endpoints:
 
 | scope | endpoints |
 | --- | --- |
@@ -41,66 +67,78 @@ wholesale, which is exactly the situation being replaced.
 | `subjects:export` | `GET /admin/subjects/{id}/export`: everything kept about one person. **Not implied by any other scope** — see below |
 | `organizations:write` | `POST /admin/organizations`. Useless to an organisation-scoped token — see below |
 | `audit:read` | `GET /admin/audit-events`. **Not implied by any write scope** — see below |
-| `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [admin-api.md](admin-api.md#groups) |
+| `privileged-users:write` | Needed as well as the route's own scope to write on a user who may impersonate, or on a group that confers it (including its membership). See [groups in the Admin API](admin-api.md#groups) |
 | `relations:read` | `GET /admin/organizations/{orgID}/relations` |
 | `relations:write` | Grant and revoke relations, and nothing else about the organisation, for an application that keeps its own. `organizations:write` satisfies both |
 | `tokens:read` | `GET /admin/tokens` |
 | `tokens:write` | `POST /admin/tokens`, rotate and revoke, each only for a token no wider than the caller — see below |
 
 **A write scope implies the matching read scope.** `clients:write` can read a
-client without also being granted `clients:read` — a token that may change a
-thing can obviously see it, and requiring both would have silently removed access
-from every token already issued the day read endpoints appeared. The implication
-runs one way only: a read scope never grants a write.
+client without also being granted `clients:read`. A token that may change a thing
+has no reason to be blind to it. Requiring both would also have silently removed
+access from every token already issued, the day read endpoints appeared. The
+implication runs one way only: a read scope never grants a write.
 
 **Groups get their own pair rather than riding on `users:*`.** A group decides
-which applications its members reach, so granting the ability to edit membership
-is granting application access — a different decision from being able to reset a
-password.
+which applications its members reach. So granting the ability to edit membership
+is granting application access, which is a different decision from being able to
+reset a password.
 
 **`subjects:erase` is separate from `users:write`** because a token that may
-rename a user should not thereby be able to destroy one irreversibly.
+rename a person should not thereby be able to destroy one irreversibly.
 
 **`subjects:export` is separate from `users:read`** for the reason `audit:read`
-is: an export is all of one person at once, their sessions, what each application
-was given and the trail of their account, and a token that may look a person up
-should not thereby be able to take all of that. See [data-export.md](data-export.md).
+is. An export is all of one person at once: their sessions, what each application
+was given and the trail of their account. A token that may look a person up
+should not thereby be able to take all of that. See [exporting a person's
+data](data-export.md).
 
 **`privileged-users:write` is separate because the alternative is a ladder.**
-Without it, a `users:write` token could change the e-mail address of someone
-who may impersonate and then recover their account, and a `groups:write` token
-could add its own operator to a group that may impersonate. Either way the
-lesser credential becomes the greater one. Only a few tokens need this scope.
-Most do not, and they keep working on everyone else.
+Without it, a `users:write` token could change the email address of someone
+who may [impersonate](impersonation.md). It could then recover their account. A
+`groups:write` token could add the person who holds it to a group that may
+impersonate.
+Either way the lesser credential becomes the greater one. Only a few tokens need
+this scope. Most do not, and they keep working on everyone else.
 
 ## Minting, rotating and revoking over the API
 
 `POST /admin/tokens` mints a token, `POST /admin/tokens/{id}/rotate` replaces
 one's secret, and `DELETE /admin/tokens/{id}` revokes one. **A token can do this
-only for a token no wider than itself**, in every way a token can be wide. The
-scopes must be ones the caller holds. The organisation must be the caller's. The
-clients, groups and attributes must be among the caller's, so a client-narrowed
-caller cannot mint an unnarrowed token. And the token cannot outlive the caller. Rotation is
-held to the same rule, because rotating a token hands over a working secret for
-it, so a narrow token able to rotate a wide one would have become the wide one.
-Revocation is too, or a token for one client could revoke the organisation's main
-credential. Every token may rotate or revoke itself.
+only for a token no wider than itself**, in every way a token can be wide:
+
+- The scopes must be ones the caller holds.
+- The organisation must be the caller's.
+- The clients, groups and attributes must be among the caller's, so a
+  client-narrowed caller cannot mint an unnarrowed token.
+- The token cannot outlive the caller.
+
+Rotation is held to the same rule, because rotating a token hands over a working
+secret for it. A narrow token able to rotate a wide one would have become the
+wide one. Revocation is held to it too, or a token for one client could revoke the
+organisation's main credential. Every token may rotate or revoke itself.
 
 A token minted over the API **always expires**: ninety days unless
 `expires_in_s` says otherwise, at most a year. A rotation leaves the old secret
-working for `grace_s` (a day unless told, at most a week, 0 for none) so the
-replacement can be deployed first. `signari admin-token create` now gives ninety
-days too unless `-expires-in` is given; `-expires-in 0` is the deliberate way to
-make one that never expires. Until October 2026 tokens never expired by default,
-and only the CLI could make or revoke one. Each is audited:
-`admin.token_created`, `admin.token_rotated` (naming the replacement), and
-`admin.token_revoked`.
+working for `grace_s`, so the replacement can be deployed first. That is a day
+unless told, at most a week, and 0 for none.
+
+`signari admin-token create` now gives ninety days too, unless `-expires-in` is
+given. `-expires-in 0` is the deliberate way to make one that never expires. Until
+October 2026 tokens never expired by default, and only the command-line interface
+(CLI) could make or revoke one.
+
+Minting, rotating and revoking are each audited: `admin.token_created`,
+`admin.token_rotated` (naming the replacement), and `admin.token_revoked`.
 
 ## Narrowing a token to named objects
 
-A token may be restricted to particular clients, groups or user attributes, not
-just to a scope and an organisation. A CI job that deploys one application should not hold a
-credential able to disable the payroll system.
+You can restrict a token to particular clients, groups or attributes of people,
+not only to a scope and an organisation. A continuous integration (CI) job that
+deploys one application should not hold a credential able to disable the payroll
+system.
+
+Three fields narrow a token:
 
 | | |
 |---|---|
@@ -108,85 +146,89 @@ credential able to disable the payroll system.
 | `group_ids` | Groups it may act on, including their membership. `GET /admin/groups` lists only these, and the token cannot create a group |
 | `attribute_names` | User attributes, by declared name, whose values it may read, set, clear or release (`-attributes` on `signari admin-token create`). `GET /admin/users/{id}/attributes` gives only these, and says nothing of the others, not even that the person has them. A name the organisation does not declare is refused when the token is made |
 
-**Field-level access** (ASVS 5.0.0 V8.2.3). Before November 2026 `users:read`
-read every attribute value a person held, personal ones unsealed, so a help desk's
-lookup token read what a payroll integration's needed. A token narrowed to
-attributes is refused what would reach the others another way. A claim mapper
-releasing one, or deleting another's mapper, is refused. So is a person's whole
-export (`GET /admin/subjects/{id}/export`), a configuration file, an upstream's
-attribute map, and a role that reaches every attribute (`user-manager`, say).
-Rotating it keeps the narrowing.
+**Field-level access** (Application Security Verification Standard,
+[ASVS](security-review-asvs.md) 5.0.0 V8.2.3). Before November 2026 `users:read`
+read every attribute value a person held, personal ones unsealed. So a help desk's
+lookup token read what a payroll integration's needed.
 
-**A narrowed token cannot create an object of the kind it is narrowed on.**
-The new object would not be on its list, so the token could register an
-application, with credentials and redirect URIs, that it is then forbidden to
-manage. Narrowing on one kind does not affect the other: a token narrowed to
-named clients can still create a group if it holds `groups:write`.
+A token narrowed to attributes is refused what would reach the others another
+way. A claim mapper releasing one, or deleting another's mapper, is refused. So
+is a person's whole export (`GET /admin/subjects/{id}/export`), a configuration
+file, an upstream's attribute map, and a role that reaches every attribute
+(`user-manager`, say). Rotating the token keeps the narrowing.
+
+**A narrowed token cannot create an object of the kind it is narrowed on.** The
+new object would not be on its list. So the token could register an application,
+with credentials and redirect URIs, that it is then forbidden to manage.
+Narrowing on one kind does not affect the other: a token narrowed to named
+clients can still create a group if it holds `groups:write`.
 
 **Unset means every object**, which is what every token issued before this
-existed carries — the restriction is opt-in, for the same reason `If-Match` is.
+existed carries. The restriction is opt-in, for the same reason
+[`If-Match`](admin-api.md#conditional-writes) is.
 
 **An empty list means *none*, not everything.** The two are deliberately
-different: a `[]` that read as unrestricted is how a narrowing feature becomes a
-widening one, the first time somebody clears a list intending to revoke access
-and grants all of it instead.
+different. A `[]` that read as unrestricted is how a narrowing feature becomes a
+widening one. It happens the first time somebody clears a list intending to
+revoke access, and grants all of it instead.
 
 Reads are narrowed as well as writes. A read boundary that does not match the
 write boundary is one an integrator will find and use.
 
-**Client ids match exactly.** They are case-sensitive keys, so `app` and `APP`
-are two clients, and a token for one cannot touch the other. The comparison was
-once case-insensitive, and such a token could read and disable both. Group ids
-are uuids and match in their canonical form, however they are written.
+**Client IDs match exactly.** They are case-sensitive keys, so `app` and `APP` are
+two clients, and a token for one cannot touch the other. The comparison was once
+case-insensitive, and such a token could read and disable both. Group IDs are
+universally unique identifiers (UUIDs), and they match in their canonical form,
+however they are written.
 
 **`audit:read` is not implied by any write scope.** The implication rule exists
-so a token that may change a thing can see *that thing*; the audit trail is not
-that thing, it is the record of everyone who touched it. Granting `users:write`
-to a provisioning script should not hand it every person's authentication
-history.
+so that a token that may change a thing can see *that thing*. The audit trail is
+not that thing: it is the record of everyone who touched it. Granting
+`users:write` to a provisioning script should not hand it every person's
+authentication history.
 
-**A restricted token reads only the events about its own objects.** A token
-named to particular clients or groups that also holds `audit:read` sees an
+**A restricted token reads only the events about its own objects.** Take a token
+named to particular clients or groups that also holds `audit:read`. It sees an
 event when the event's client, or the group in its detail, is one the token may
 act on. An event about neither, such as a person's sign-in, is not shown to it.
-Unrestricted tokens see the whole organisation as before. A one-client token
-used to read the entire organisation's trail, every other client's events
-included.
+Unrestricted tokens see the whole organisation as before. A one-client token used
+to read the entire organisation's trail, every other client's events included.
 
-**`organizations:write` needs an unscoped token as well as the scope.** Holding
-it on a token scoped to one organisation grants nothing: creating a tenant is the
-one write with no tenant to be scoped to, and a tenant that can provision tenants
-has escaped the isolation everything else enforces — it could create a sibling
-and then act on it with a token for the new organisation. Issue it only to a
-provisioning system, and separately from the scopes that administer the people
-inside a tenant.
+**`organizations:write` needs an unscoped token as well as the scope.** Holding it
+on a token scoped to one organisation grants nothing. Creating an organisation is
+the one write with no organisation to be scoped to. An organisation that can
+provision organisations has escaped the isolation everything else enforces. It
+could create a sibling, and then act on it with a token for the new organisation.
+Issue the scope only to a provisioning system, and separately from the scopes that
+administer the people inside an organisation.
 
 A missing scope is **403 with the scope named**, not a bare "forbidden". This is
-an operator-facing API; an opaque refusal turns a one-line fix into an afternoon.
+an administrator-facing API, and an opaque refusal turns a one-line fix into an
+afternoon. The answer names the scope the token lacks:
 
 ```json
 {"error":"insufficient_scope","detail":"this token does not hold users:write"}
 ```
 
-`*` exists but **cannot be granted to a stored token** — a saved credential that
-can do everything is the thing scopes exist to replace. It belongs only to the
+`*` exists but **cannot be granted to a stored token**. A saved credential that can
+do everything is the thing scopes exist to replace. It belongs only to the
 break-glass path below.
 
 ## The organisation boundary
 
-A token created with `-org` may act on that organisation and no other. This is
-the reason the column exists, and it is enforced at **both** points an
-organisation gets decided:
+A token created with `-org` may act on that organisation and no other. This is the
+reason the column exists. It is enforced at **both** points an organisation gets
+decided:
 
-- the request body, on a create
-- the existing row, on an update — inside the same transaction that would modify it
+- the request body, on a create;
+- the existing row, on an update, inside the same transaction that would modify it.
 
 Enforcing it in only one leaves a boundary that holds for new records and not for
-edits, which is worse than none because it reads as enforced. `patchClient` had no
-organisation lookup at all before this — it changed a client without ever reading
-which tenant owned it — so one was added.
+edits. That is worse than none, because it reads as enforced. `patchClient` had no
+organisation lookup at all before this. It changed a client without ever reading
+which organisation owned it, so one was added.
 
-Proved through the real handlers, not just the helper:
+This was proved through the real handlers, not only through the helper:
 
 ```
 create in its own org        -> allowed
@@ -196,48 +238,51 @@ edit another org's client    -> 403, and the client is still enabled afterwards
 unscoped token               -> reaches both
 ```
 
-That last assertion matters: a 403 that had already committed the change would
-pass a status-code check while the damage was done.
+The assertion that the client is still enabled matters. A 403 that had already
+committed the change would pass a status-code check while the damage was done.
 
 ## Storage
 
-The table holds a **SHA-256**, never the token. A database backup, a replica, or
-a support dump would otherwise hand over live administrative credentials for
-every tenant. The secret is printed once and cannot be recovered — if it is lost,
-revoke it and mint another.
+The table holds a **SHA-256** of each token, never the token. A database backup, a
+replica, or a support dump would otherwise hand over live administrative
+credentials for every organisation. The secret is printed once and cannot be
+recovered. If it is lost, revoke it and mint another.
 
-SHA-256 is right here where Argon2 is right for passwords: this is a 256-bit
-random value, not a human-chosen one, so there is nothing to brute force and
-stretching would only add cost to the hottest path.
+SHA-256 is right here, where Argon2 is right for passwords. A token is a 256-bit
+random value, not one a person chose, so there is nothing to brute force.
+"Stretching", the deliberate slowness of a password hash, would only add cost to
+the hottest path.
 
-Tokens carry a `sgnadm_` prefix so a secret scanner can spot one in a commit or a
-log, and so whoever finds a loose string knows what they are holding.
+Tokens carry a `sgnadm_` prefix, so a secret scanner can spot one in a commit or a
+log. Whoever finds a loose string also knows what they are holding.
 
 ## Break-glass
 
-`SIGNARI_ADMIN_TOKEN` still works, still grants everything, and still needs **no
-database**. That is the point of keeping it: if the database is the thing that is
-broken, a credential stored in it cannot help you.
+The environment token, `SIGNARI_ADMIN_TOKEN`, is kept as a "break-glass"
+credential: the one for an emergency, when nothing else works. It still works,
+still grants everything, and still needs **no database**. That is the point of
+keeping it. If the database is the thing that is broken, a credential stored in it
+cannot help you.
 
 It is treated as exceptional rather than equivalent:
 
-- every request using it is logged at `WARN`
-- `signari doctor` warns when it is the *only* way in
-- it is the only holder of `*`
+- every request using it is logged at `WARN`;
+- `signari doctor` warns when it is the *only* way in;
+- it is the only holder of `*`.
 
 A deployment can set no environment token at all and run entirely on scoped
 tokens. That is the better configuration, and it is what the live test used.
 
 ## Why authentication now reads the database
 
-The old check was a constant-time comparison against one environment variable,
-on the reasoning that a database lookup turns a guessing attempt into a query.
-Sound about load, wrong about risk: it also meant no revocation, no expiry, no
-attribution and no organisation boundary.
+The old check was a constant-time comparison against one environment variable.
+The reasoning was that a database lookup turns a guessing attempt into a query.
+That was sound about load, and wrong about risk: it also meant no revocation, no
+expiry, no attribution and no organisation boundary.
 
-The lookup is one indexed probe on a SHA-256. Guessing is not the threat against
-a 256-bit random token — leaking is, and leaking is what the old design had no
-answer to. Revocation takes effect on the **next request**, with no restart:
+The lookup is one indexed probe on a SHA-256. Guessing is not the threat against a
+256-bit random token. Leaking is, and leaking is what the old design had no answer
+to. Revocation takes effect on the **next request**, with no restart:
 
 ```
 valid token          -> 200
@@ -250,37 +295,40 @@ tells an attacker which of their guesses was once real.
 
 ## Attribution in the audit trail
 
-`core.audit_events.admin_token_id` names the credential behind each change, so
-the trail points at something somebody can revoke rather than a role everybody
-shares. Adding it surfaced that **`PATCH /admin/clients/{id}` wrote no audit
-event at all** — disabling a client is the emergency lever for cutting a
-compromised integration off from every user at once, and there was no record of
-who pulled it. There is now.
+`core.audit_events.admin_token_id` names the credential behind each change. The
+trail then points at something somebody can revoke, rather than a role everybody
+shares.
+
+Adding it surfaced that **`PATCH /admin/clients/{id}` wrote no audit event at
+all**. Disabling a client is the emergency lever for cutting a compromised
+integration off from every person at once. There was no record of who pulled it.
+There is now.
 
 ### The hash-chain trap
 
-The attribution is inside the chain hash: attribution the chain does not cover
-can be rewritten without breaking it, leaving a record that looks intact while
-naming the wrong credential.
+Each audit entry is hashed together with the one before it, so the entries form a
+"chain" that shows any edit. The attribution is inside the chain hash. Attribution
+the chain does not cover can be rewritten without breaking it, which leaves a
+record that looks intact while naming the wrong credential.
 
 But it is hashed **only when set**. Appending an empty string plus its separator
-still changes the digest, so hashing it unconditionally invalidated every row
+still changes the digest. So hashing it unconditionally invalidated every row
 written before the field existed. The table is append-only and those rows cannot
-be rehashed, so the entire history read as tampered — indistinguishable from a
-real attack, which is the most useless possible failure for an integrity
+be rehashed, so the entire history read as tampered. That is indistinguishable
+from a real attack, which is the most useless possible failure for an integrity
 mechanism.
 
-That is not hypothetical: the first version did exactly this, and it was caught
+That is not hypothetical. The first version did exactly this, and it was caught
 by the existing chain-verification tests failing on rows they had always passed.
 `TestExistingChainSurvivesTheAttributionField` now pins the rule by computing the
 pre-field formula independently, so the trap cannot be walked back into.
 
-
 ## Moving the Laravel console onto a scoped token
 
 No code change is needed. The console sends whatever is in its own
-`SIGNARI_ADMIN_TOKEN`, and the engine resolves an `sgnadm_` value from the
-database rather than matching its own environment variable:
+`SIGNARI_ADMIN_TOKEN`. The engine resolves an `sgnadm_` value from the database,
+rather than matching its own environment variable. Create a token, and
+put its value in the console's setting:
 
 ```sh
 signari admin-token create -name "laravel console (prod)" -org <org-uuid> \
@@ -289,7 +337,7 @@ signari admin-token create -name "laravel console (prod)" -org <org-uuid> \
 # engine's own if nothing else needs break-glass
 ```
 
-The console reports a refusal in words rather than a status code — the engine
+The console reports a refusal in words rather than a status code. The engine
 names the missing scope on purpose, and burying that in a JSON dump wastes it:
 
 | engine answers | operator sees |
@@ -301,10 +349,10 @@ names the missing scope on purpose, and burying that in a JSON dump wastes it:
 
 ## Signing in to the console through Signari
 
-The console can sign its operators in through Signari itself, and each then acts
-with their own [administrative role](admin-api.md#administrative-roles) instead of
-a token every operator shares. Once it is configured, a password admits only the
-break-glass account.
+The console can sign its administrators in through Signari itself. Each then acts
+with their own [administrative role](admin-api.md#administrative-roles), instead of
+a token every administrator shares. Once it is configured, a password admits only
+the break-glass account.
 
 Set it up with the engine's CLI and the console's environment:
 
@@ -320,38 +368,47 @@ signari role grant -org <org-uuid> -email owner@example.com -role org-owner
 php artisan signari:operator-create glass@example.com --break-glass
 ```
 
+The console reads these settings:
+
 | console setting | |
 |---|---|
 | `SIGNARI_ISSUER` | The issuer operators sign in at, as its discovery document names it |
 | `SIGNARI_CONSOLE_CLIENT_ID`, `SIGNARI_CONSOLE_CLIENT_SECRET` | The console's client. Both unset, the console signs in with its local accounts as before |
 | `SIGNARI_CONSOLE_REDIRECT_URI` | Where Signari returns to; `<console>/signari/callback` unless set |
 
-The sign-in is the authorization code flow with PKCE, asking for a second factor
-(`acr_values=2`) and the Admin API's audience (`resource=<issuer>/admin`). The
-console then asks the engine who signed in (`GET /admin/me`) rather than reading a
-token itself, and makes the operator's console account from the answer, found by
-their id in Signari and never by address. It asks again on **every** console
-request, Livewire's included, and the engine reads the session, the person, the
-client's designation and the roles each time, so revoking the person's session in
-Signari, deactivating them or taking their role away signs them out of the console
-on their next click. The console's organisation is the one the engine names.
-Signari unreachable, the request is refused rather than served on a sign-in
-nothing can confirm.
+The sign-in is the authorization code flow with Proof Key for Code Exchange
+([PKCE](glossary.md#pkce)). It asks for a second factor (`acr_values=2`) and for
+the Admin API's audience (`resource=<issuer>/admin`).
 
-What they see follows their roles, as the engine names them on that request: a
-screen needs the read scope for what it shows (`users:read` for people,
+The console then asks the engine who signed in (`GET /admin/me`), rather than
+reading a token itself. It makes the administrator's console account from the
+answer, found by their ID in Signari and never by address.
+
+It asks again on **every** console request, Livewire's included. Each time, the
+engine reads the session, the person, the client's designation and the roles. So
+revoking the person's session in Signari, deactivating them or taking their role
+away signs them out of the console on their next click. The console's
+organisation is the one the engine names. If Signari is unreachable, the request
+is refused rather than served on a sign-in nothing can confirm.
+
+What they see follows their roles, as the engine names them on that request. A
+screen needs the read scope for what it shows: `users:read` for people,
 `clients:read` for applications, `groups:read`, `tokens:read`, and `config:read`
-for the configuration screens), and a person who holds no role is not an
-operator at all. The console reads its screens from the database views under its
-own role, so this is what keeps an app manager out of the people screen; every
-write is the engine's to refuse besides. A user manager delegated over a group sees
-that group's members on the people screen and nobody else, and the Admin API holds
-what they change to the group.
+for the configuration screens. A person who holds no role is not an administrator
+at all.
 
-An operator signed in this way is not asked to enrol a console TOTP as well:
-Signari required the second factor, and the engine refuses their token unless the
-session proved one. The break-glass account signs in with its password and the
-console's own second factor, writes with the console's `SIGNARI_ADMIN_TOKEN`, and
-every change it makes is recorded as break-glass. A local account made before
-Signari sign-in was configured is refused the panel (403); give the person a role
-and they sign in through Signari instead.
+The console reads its screens from the database views under its own role, so
+this is what keeps an `app-manager` out of the people screen. Every write is the
+engine's to refuse besides. A `user-manager` delegated over a group sees that
+group's members on the people screen, and nobody else. The Admin API holds what
+they change to the group.
+
+An administrator signed in this way is not asked to enrol a console time-based
+one-time password ([TOTP](glossary.md#totp)) as well. Signari required the second
+factor, and the engine refuses their token unless the session proved one.
+
+The break-glass account signs in with its password and the console's own second
+factor, and writes with the console's `SIGNARI_ADMIN_TOKEN`. Every change it makes
+is recorded as break-glass. A local account made before Signari sign-in was
+configured is refused the panel (403). Give the person a role, and they sign in
+through Signari instead.

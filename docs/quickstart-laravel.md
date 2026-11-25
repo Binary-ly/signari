@@ -1,11 +1,25 @@
 # Quickstart: a Laravel application
 
-[examples/laravel-quickstart](../examples/laravel-quickstart/routes/web.php) signs people
-in with Signari from a [Laravel](https://laravel.com) application, using
-[jumbojett/openid-connect-php](https://github.com/jumbojett/OpenID-Connect-PHP). It is a
-few files to lay over a fresh Laravel application, not an application of its own.
+## Introduction
+
+This guide connects a [Laravel](https://laravel.com) application to Signari, so
+that people sign in to it with their Signari account. The example,
+[examples/laravel-quickstart](../examples/laravel-quickstart/routes/web.php), uses
+[jumbojett/openid-connect-php](https://github.com/jumbojett/OpenID-Connect-PHP) for
+the protocol. It is a few files to lay over a fresh Laravel application, not an
+application of its own.
+
+You register the application, run the example, and sign in. The last sections
+explain what the example does at each step, and why.
+
+> [!NOTE]
+> New to Signari? [Your first application](first-application.md) runs this
+> example and five others on your own computer, with nothing to register by hand.
 
 ## 1. Register the application
+
+Register the example as a confidential client, and set it to the signature
+algorithm its library can check:
 
 ```sh
 signari client create -org <org-id> -client-id quickstart -name Quickstart \
@@ -19,6 +33,9 @@ signs with by default. Without it every sign-in is refused with "No support for
 signature type: ES256".
 
 ## 2. Run it
+
+Make a fresh Laravel application, add the library, and copy the example's files
+over it:
 
 ```sh
 composer create-project laravel/laravel:13.11.0 myapp && cd myapp
@@ -45,8 +62,9 @@ says who signed in. For a certificate your machine does not trust, set
 
 The `demo` profile of `deploy/docker-compose.yml` runs this example from its
 [Dockerfile](../examples/laravel-quickstart/Dockerfile) as `demo-laravel`, at
-`http://localhost:8095/login`. With the exports the [README](../README.md#quick-start)
-gives:
+`http://localhost:8095/login`. With the settings that [Your first
+application](first-application.md#1-start-signari-and-the-example-applications)
+writes to `deploy/.env`, start it:
 
 ```sh
 cd deploy && docker compose --profile first-run --profile demo up -d
@@ -58,7 +76,8 @@ It makes an `APP_KEY` each time it starts unless it is given one, so none is bui
 it, and runs `php artisan serve`. Its client, `demo-laravel` in
 [deploy/demo/client.yaml](../deploy/demo/client.yaml), is public and set to RS256 there,
 for the reason step 1 gives. The library authenticates a client with no secret by its
-`client_id` and the PKCE verifier alone. It trusts the development CA under
+`client_id` and the Proof Key for Code Exchange (PKCE) verifier alone. It trusts the
+development CA under
 `deploy/tls` through `SIGNARI_CA_FILE`.
 
 ## What it does, and why each step is there
@@ -73,19 +92,19 @@ for the reason step 1 gives. The library authenticates a client with no secret b
    after it has spent the code at the token endpoint. The route compares it before,
    so a code nobody here asked for is never redeemed.
 3. **Then the library** exchanges the code with the verifier over
-   `client_secret_basic`, each half form-encoded as the server decodes them. It checks
+   `client_secret_basic`, each half form-encoded as Signari decodes them. It checks
    the ID token's signature against `jwks_uri`, then its issuer, audience, expiry and
    nonce.
 
 A public client has no secret: leave `SIGNARI_CLIENT_SECRET` empty and register it with
-`-public`. The messages a refusal shows are the server's own; see
-[troubleshooting.md](troubleshooting.md).
+`-public`. The messages a refusal shows are Signari's own; see
+[Troubleshooting](troubleshooting.md).
 
 ## Verified
 
 On 14 November 2026, with PHP 8.4, Laravel 13.11.0 (framework 13.42.0) and
 jumbojett/openid-connect-php 1.0.2, served by `php artisan serve` against a running
-engine over TLS. With the client at ES256 the library refused the ID token, as above.
+engine over Transport Layer Security (TLS). With the client at ES256 the library refused the ID token, as above.
 With `client set-alg ... RS256`, Ada signed in through the engine's pages and the
 application said "Signed in as ada@staff.test". The engine's access log showed
 `/oauth2/jwks` fetched for the signature. A callback this browser never began was

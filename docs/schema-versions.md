@@ -1,11 +1,13 @@
 # Schema versions
 
+## Introduction
+
 Each release's binary expects one schema version and refuses to start against another, unless
 the migrations between them were each declared compatible with the release before. This page
 is what each version did, in its own words: the first paragraph of each migration's header.
 It is generated from the migrations the binary embeds, by `engine/internal/migrate`'s
 `TestTheSchemaVersionNotesAreCurrent`; do not edit it by hand. How to upgrade, and what
-"compatible" lets you do during one, is in [upgrading.md](upgrading.md).
+"compatible" lets you do during one, is in [Upgrading](upgrading.md).
 
 ## 0307 cli_writes_take_the_version_first
 

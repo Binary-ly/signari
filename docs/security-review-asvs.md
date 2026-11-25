@@ -1,19 +1,32 @@
 # OWASP ASVS 5.0 — the OAuth, OIDC and token chapters, requirement by requirement
 
-**OWASP Application Security Verification Standard 5.0.0**, released 30 May 2025,
-confirmed current from the project's own release list (the `latest` tag is a
-bleeding-edge build, not a release). Requirements taken from the published CSV,
-not from a summary.
+## Introduction
 
-ASVS 5.0 introduced a **new chapter, V10 "OAuth and OIDC"** — 36 requirements —
+The Open Worldwide Application Security Project (OWASP) publishes the Application
+Security Verification Standard (ASVS). It defines security requirements for web
+applications and services, in three levels, L1 to L3. Level 1 is the minimum to
+consider when securing an application.
+
+This review reads **OWASP Application Security Verification Standard 5.0.0**,
+released 30 May 2025. It was confirmed current from the project's own release
+list (the `latest` tag is a bleeding-edge build, not a release). Requirements were
+taken from the published CSV, not from a summary.
+
+OpenID Connect (OIDC) is the layer on OAuth 2.0 that says who signed in. ASVS 5.0
+introduced a **new chapter, V10 "OAuth and OIDC"** — 36 requirements —
 which is the first time this standard has covered an authorization server
 directly. Together with V9 "Self-contained Tokens" (7) that is 43 requirements
 aimed squarely at what this product is.
 
-This file walks every one of them. Signari is an **authorization server and
-OpenID Provider**, and is also an **OIDC client** for social login and inbound
+This page walks every one of them. Signari is an **authorization server and
+OpenID Provider**, and is also an **OIDC client** for social sign-in and inbound
 federation, so both sides apply. The OAuth-client sections apply only to that
-inbound path.
+inbound path. Later sections, dated from 21 August 2026, sweep the other chapters until all
+345 requirements are covered.
+
+It is for an auditor or a security reviewer who needs the evidence behind each
+verdict. A row's verdict is ✅ for met or ❌ for not met, followed by where the
+check is. A verdict that names a file and line can be checked by opening it.
 
 ## The finding
 
@@ -32,35 +45,37 @@ it rather than take a tick on trust.
 | V9.1.1 | Validate signature before accepting contents | ✅ `verifiedPayload` returns the payload only after `tok.Verify`; every caller unmarshals from that return value, so no path reads claims first |
 | V9.1.2 | Algorithm allowlist, no `none`, no symmetric/asymmetric confusion | ✅ the list is `RS256, ES256, PS256, EdDSA` — asymmetric only, `none` absent. The check that matters is the next one: `if string(key.Algorithm()) != h.Algorithm` pins the algorithm to the **key's** declared one rather than the header's, which is what actually defeats alg confusion; an allow-list alone does not |
 | V9.1.3 | Key material from pre-configured sources; reject `jku`, `x5u`, `jwk` | ✅ refused explicitly, and tested (`TestATokenCannotSupplyItsOwnKey`) |
-| V9.2.1 | Honour `nbf`/`exp` | ✅ **`exp` fail-closed** — `c.Expiry == 0` is treated as expired, not as absent. **`nbf` is checked exactly where externally-minted JWTs arrive**: `private_key_jwt` client assertions (`privatekeyjwt.go:204`, bounded by `MaxClockSkew`). Our own access tokens carry no `nbf`, so there is nothing to honour there. On the SSF receive path `exp` is not merely checked but **forbidden**, per SSF §4.1.7 |
+| V9.2.1 | Honour `nbf`/`exp` | ✅ **`exp` fail-closed** — `c.Expiry == 0` is treated as expired, not as absent. **`nbf` is checked exactly where an externally-minted JSON Web Token (JWT) arrives**: `private_key_jwt` client assertions (`privatekeyjwt.go:204`, bounded by `MaxClockSkew`). Our own access tokens carry no `nbf`, so there is nothing to honour there. On the SSF receive path `exp` is not merely checked but **forbidden**, per SSF §4.1.7 |
 | V9.2.2 | Validate token **type** and purpose | ✅ checked inside the shared verifier against a value the caller names, so a single-purpose token cannot be presented elsewhere — `at+jwt`, `secevent+jwt`, `logout+jwt` |
 | V9.2.3 | Accept only tokens whose audience is this service | ✅, and the **issuer** check beside it is now tested too — it had survived mutation against the whole suite, and on this server aliased issuers share a key set, so `iss` is the only thing separating them |
 | V9.2.4 | Audience restriction when one key serves several audiences | ✅ `audience := []string{c.ClientID}; if len(resources) > 0 { audience = resources }` — RFC 8707 resources become the audience, the client id the fallback only when none were requested |
 
 ## V10.1 / V10.2 / V10.5 — client-side
 
-V10.2 (OAuth Client) and V10.5 (OIDC Client) apply to inbound social login and
-federation, where Signari is the relying party.
+V10.2 (OAuth Client) and V10.5 (OIDC Client) apply to inbound social sign-in and
+federation. There, Signari is the application that relies on another identity
+provider, which OIDC calls the "relying party".
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.2.1 | CSRF defence on the code flow (PKCE or `state`) | ✅ both, and the `state` half is **now tested** — nothing referenced `ConsumeFederatedLogin` or `core.federated_logins` before. Single-use (`DELETE … RETURNING`), bound to the originating browser by a cookie hash compared in constant time, and — the subtle part — the comparison happens **after** the row is destroyed, so a wrong binding still burns the state rather than leaving it to be ground against. All three tested; dropping the binding comparison fails the second |
+| V10.2.1 | Cross-site request forgery (CSRF) defence on the code flow (Proof Key for Code Exchange (PKCE) or `state`) | ✅ both, and the `state` half is **now tested** — nothing referenced `ConsumeFederatedLogin` or `core.federated_logins` before. Single-use (`DELETE … RETURNING`), bound to the originating browser by a cookie hash compared in constant time, and — the subtle part — the comparison happens **after** the row is destroyed, so a wrong binding still burns the state rather than leaving it to be ground against. All three tested; dropping the binding comparison fails the second |
 | V10.2.2 | Mix-up defence across several authorization servers | ✅ `discovery.go:60` — `strings.TrimSuffix(d.Issuer,"/") != strings.TrimSuffix(issuer,"/")` refuses a discovery document that declares an issuer other than the one asked for (RFC 8414 §3.3), and the id_token's `iss` is compared to the configured issuer again at `client.go:252` |
-| V10.5.1 | ID Token replay — `nonce` | ✅ generated per login with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers **"nonce from a different login (replay)"** and **"no nonce at all"** |
-| V10.5.2 | Identify the user by a claim that cannot be reassigned | ✅ the external identity is keyed `UNIQUE (provider_id, subject)` (migration 0022), so it is the issuer-and-subject pair rather than an address. An email is reassignable — a departed employee's address handed to their replacement would otherwise take over the account |
-| V10.5.3 | Reject metadata whose issuer does not match | ✅ `discovery.go:60`, the same check OID4VCI §12.2.3 and OpenID Federation §9 both state |
+| V10.5.1 | ID Token replay — `nonce` | ✅ generated per sign-in with `randomToken()` and stored on the pending record, so the empty-nonce path in `verifyIDToken` is unreachable from the live flow. Both directions tested: `TestIDTokenAttacks` covers `nonce from a different login (replay)` and `no nonce at all` |
+| V10.5.2 | Identify the person by a claim that cannot be reassigned | ✅ the external identity is keyed `UNIQUE (provider_id, subject)` (migration 0022), so it is the issuer-and-subject pair rather than an address. An email is reassignable — a departed employee's address handed to their replacement would otherwise take over the account |
+| V10.5.3 | Reject metadata whose issuer does not match | ✅ `discovery.go:60`, the same check OpenID for Verifiable Credential Issuance (OID4VCI) §12.2.3 and OpenID Federation §9 both state |
 | V10.5.4 | ID Token `aud` equals our client id | ✅ `audienceContains` handles both the string and array forms, and `TestAudienceArrayIsHandled` plus the "audience is a different application" attack case cover it |
-| V10.5.5 | Back-channel logout: `typ`, and DoS through forced logout | **provider side yes; client side not implemented.** We *send* logout tokens explicitly typed `logout+jwt` (asserted in `outbox/logouttoken_test.go`) and the forced-logout DoS is handled at V10.6.2. We do **not** receive OIDC back-channel logout from upstream federation providers — there is no such route. The equivalent need is met by a different mechanism: `/ssf/receive` accepts CAEP `session-revoked`, which ends the local session. Recorded as a boundary rather than a tick, because a ✅ here would claim a receiver we do not have |
+| V10.5.5 | Back-Channel Logout: `typ`, and denial of service through a forced sign-out | **provider side yes; client side since October 2026.** We *send* each `logout_token` explicitly typed `logout+jwt` (asserted in `outbox/logouttoken_test.go`), and the forced sign-out is handled at V10.6.2. When this was written, Signari did not receive OIDC Back-Channel Logout from upstream federation providers, and `/ssf/receive`, which accepts Continuous Access Evaluation Profile (CAEP) `session-revoked`, met the need instead. Since October 2026 an upstream provider's `logout_token` is received at `/login/callback/{slug}/backchannel-logout`: its signature is checked against the provider's keys, and it must carry the `http://schemas.openid.net/event/backchannel-logout` event, a `jti` used once, no `nonce` and a recent `iat`. Its `typ` is not required (see [signing in through another provider](social-login.md)) |
 
 ## V10.3 — resource server
 
-Our userinfo and introspection endpoints are the resource server.
+Signari's userinfo and introspection endpoints are the "resource server": the API
+that accepts access tokens.
 
 | | Requirement | Verdict |
 |---|---|---|
 | V10.3.1 | Accept only tokens whose audience is this service | ✅ `AudienceAccepted` gates `/userinfo` and the credential endpoint. Verified by mutation against the **whole** suite: making it return true unconditionally fails `TestATokenForAnotherResourceIsRefused` and `TestAudienceRestrictionIsEnforcedAgainstOurselves` |
 | V10.3.2 | Enforce `sub`, `scope`, `authorization_details` in the decision | ✅ all three. The **scope** half is now tested at `/oauth2/userinfo`, and it needed to be: the handler gates `email`, `profile` and `groups` individually, and no test varied the scope — so nothing established that a claim is actually **withheld**. A test asking for everything and receiving everything passes identically against a handler that ignores scope; only asking for less proves the difference. Releasing `email` unconditionally now fails `TestUserinfoWithholdsClaimsTheScopeDidNotGrant` |
-| V10.3.3 | Identify the user by a non-reassignable claim | ✅ `sub` is `core.users.id`, a `uuid NOT NULL DEFAULT gen_random_uuid()` — verified in the schema, not inferred from the code that reads it |
+| V10.3.3 | Identify the person by a non-reassignable claim | ✅ `sub` is `core.users.id`, a `uuid NOT NULL DEFAULT gen_random_uuid()` — verified in the schema, not inferred from the code that reads it |
 | V10.3.4 | Enforce `acr`, `amr`, `auth_time` when required | ✅ `ACRFromAMR` derives the context from the factors **actually used**, and `FlowDemandsMFA` is consulted per authorization request rather than frozen at sign-in — a live password-only session is stepped up when `acr_values` demands it |
 | V10.3.5 (L3) | Sender-constrained tokens | ✅ both, with 7 tests across `dpoprefresh_test.go` and `mtlsrefresh_test.go` covering the bound key refusing a different key, refusing no proof at all, and still working with the right one |
 
@@ -79,17 +94,17 @@ sequential "redeem twice" passes even against an implementation that reads the
 row, decides it is unspent, and updates it afterwards, because the window between
 the two is never open.
 
-Rewriting `ConsumeCode` from
+`ConsumeCode` spends a code in one statement:
 
 ```sql
 UPDATE core.authorization_codes SET consumed_at = now()
 WHERE code_hash = $1 AND consumed_at IS NULL RETURNING ...
 ```
 
-into a `SELECT` followed by an `UPDATE` makes
+Rewriting it into a `SELECT` followed by an `UPDATE` makes
 `TestConcurrentRedemptionOfOneAuthorizationCodeYieldsOneTokenSet` report **8 of 8
-simultaneous redemptions received tokens** — while every pre-existing test,
-including the revocation one above, still passes. A racy implementation would
+simultaneous redemptions received tokens**. Every pre-existing test, including
+the revocation one above, still passes. A racy implementation would
 have shipped through the suite unnoticed.
 
 Two tests now pin it: eight goroutines released together against one code over
@@ -132,7 +147,7 @@ and the clause no longer has the branch.
 | | Requirement | Verdict |
 |---|---|---|
 | V10.6.1 | Only `code`, `ciba`, `id_token`, `id_token code`; never `token` | ✅ `response_types_supported` is `["code"]` alone, and the authorize endpoint refuses anything containing `token` outright — an access token must never cross the front channel |
-| V10.6.2 | **Mitigate denial of service through forced logout** | ❌ → fixed, and tested. The distinction that carries it is *verified* versus *present*: `logoutconfirm_test.go` asserts an **unverified** `id_token_hint` does not skip the confirmation, which is the case that would otherwise reintroduce the attack through the parameter meant to prevent it |
+| V10.6.2 | **Mitigate denial of service through a forced sign-out** | ❌ → fixed, and tested. The distinction that carries it is *verified* versus *present*: `logoutconfirm_test.go` asserts an **unverified** `id_token_hint` does not skip the confirmation, which is the case that would otherwise reintroduce the attack through the parameter meant to prevent it |
 
 V10.6.2, verbatim:
 
@@ -145,27 +160,31 @@ OIDC RP-Initiated Logout 1.0 §2 says the same from the other side: the OP
 *"SHOULD ask the End-User whether to log out"* unless the request carries a valid
 `id_token_hint`.
 
-**We did neither.** `GET /oauth2/logout` terminated the session in the caller's
-cookie unconditionally. `id_token_hint` was parsed, but only to resolve which
-client's `post_logout_redirect_uri` list to check — a request with no redirect
-never looked at it.
+**Signari did neither.** `GET /oauth2/logout` terminated the session in the
+caller's cookie unconditionally. `id_token_hint` was parsed, but only to resolve
+which client's `post_logout_redirect_uri` list to check. A request with no
+redirect never looked at it.
 
-The attack is one HTML tag:
+The attack is one HTML tag, on any page the victim visits:
 
 ```html
 <img src="https://id.example.com/oauth2/logout">
 ```
 
-on any page the victim visits. They are signed out, as often as the page loads,
-from anywhere. Nothing is stolen; the product simply stops staying signed in, and
-a user cannot tell that from a bug.
+The victim is signed out, as often as the page loads, from anywhere. Nothing is
+stolen. The product stops staying signed in, and a person cannot tell that from a
+bug.
 
-**Fixed.** A logout now proceeds without asking only when one of three things is
-true: the request is a `POST` carrying a valid CSRF token (the person confirmed),
-or it carries an `id_token_hint` that **verifies** (a relying party asked, which
-is what the specification accepts in place of asking), or there is no session
-cookie at all (nothing to end). Otherwise a confirmation page is rendered and
-nothing is terminated.
+**Fixed.** A sign-out now proceeds without asking only when one of three things
+is true:
+
+- The request is a `POST` carrying a valid cross-site request forgery (CSRF)
+  token, so the person confirmed.
+- It carries an `id_token_hint` that **verifies**. An application asked, which is
+  what the specification accepts in place of asking.
+- There is no session cookie at all, so there is nothing to end.
+
+Otherwise a confirmation page is rendered, and nothing is terminated.
 
 The form POSTs back to the request URI, so `post_logout_redirect_uri`, `state`
 and `client_id` survive the round trip and are validated exactly as before.
@@ -179,17 +198,18 @@ would reintroduce the attack through the parameter meant to prevent it.
 
 | | Requirement | Verdict |
 |---|---|---|
-| V10.7.1 | Consent to each authorization request | ✅ and the hard case is covered: `authorization_details` **always** prompt, which neither stored consent nor the first-party exemption can bypass — a user who approved the scope `payments` approved a capability, never a payment. `TestAuthorizationDetailsAlwaysPromptEvenForAFirstPartyClient` |
+| V10.7.1 | Consent to each authorization request | ✅ and the hard case is covered: `authorization_details` **always** prompt, which neither stored consent nor the first-party exemption can bypass — a person who approved the scope `payments` approved a capability, never a payment. `TestAuthorizationDetailsAlwaysPromptEvenForAFirstPartyClient` |
 | V10.7.2 | Clear information about what is being consented to | ✅ `scopeDescriptions` maps each scope to a human sentence and the screen renders `{Name, Description}` pairs, so a person is not asked to approve the string `groups` |
-| V10.7.3 | User can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
+| V10.7.3 | A person can review, modify and revoke granted consents | ✅ the connected-applications screen, which revokes the tokens with the consent — **now tested**, and it needed to be. `WithdrawConsent` deliberately does *not* touch tokens; only `DisconnectApp` does both, in one transaction. So the requirement is met by one caller choosing the right function, and a future handler reaching for the obvious-sounding `WithdrawConsent` would keep the screen working and lose the property silently |
 
 ## What this sweep leaves open
 
 - ~~**`authorization_details` (RFC 9396)** is not implemented~~ — **done**, which
   closed V10.3.2 and V10.4.15. See
-  [rich-authorization-requests.md](rich-authorization-requests.md).
+  [rich authorization requests](rich-authorization-requests.md).
 - **V10.4.13 and V10.4.14** are L3 requirements met as capabilities rather than
-  as mandates. Making PAR and sender-constrained tokens compulsory for every
+  as mandates. Making Pushed Authorization Requests (PAR) and sender-constrained
+tokens compulsory for every
   client is a deployment decision, not a code change, and forcing it would break
   every client that does not do them yet.
 
@@ -199,13 +219,13 @@ identically in a table that does not say which.
 
 ---
 
-# Currency check, August 2026
+## Currency check, August 2026
 
 ASVS 5.0.0 (30 May 2025) is still the **current stable release**. Verified rather
 than assumed: the OWASP/ASVS repository carries a release tagged `latest`
-published **28 July 2026**, which is newer than 5.0.0 and easy to mistake for a
-successor. It is not one — it is an automatically regenerated *bleeding edge*
-build from `master`, and its own release notes say so:
+published **28 July 2026**, which is newer than 5.0.0 and looks like a successor.
+It is not one. It is an automatically regenerated *bleeding edge* build from
+`master`, and its own release notes say so:
 
 > "This bleeding-edge version represents the most current state of the ASVS
 > documentation and should be used for testing and preview purposes only. For
@@ -216,9 +236,9 @@ Downloading its CSV and diffing against the 5.0.0 CSV this review was written
 against gives **zero differing lines**. V10 "OAuth and OIDC" still has exactly 36
 requirements, unchanged.
 
-So this review is current, and the check cost one download. Worth repeating
-before trusting it again — the failure mode being guarded against is a review
-that was accurate when written and quietly stops being so.
+So this review is current, and the check cost one download. It is worth repeating
+before you trust the review again. The failure mode it guards against is a review
+that was accurate when written, and quietly stops being so.
 
 ## V9 Self-contained Tokens: all seven, swept completely (21 August 2026)
 
@@ -239,8 +259,8 @@ has to mean.
 
 ### V9.1.2, turned from a review into a standing check
 
-This engine parses signed tokens in eight places: access tokens, ID tokens, DPoP
-proofs, SSF events, federation trust chains, upstream OIDC, Apple client secrets,
+This engine parses signed tokens in eight places: access tokens, ID tokens,
+Demonstrating Proof of Possession (DPoP) proofs, SSF events, federation trust chains, upstream OIDC, Apple client secrets,
 `private_key_jwt`, ABCA attestations. Each passes its own allowlist to
 `jose.ParseSigned`, which is the right shape — the library makes the list
 mandatory, so it cannot be forgotten.
@@ -279,7 +299,7 @@ upstream ID token — and not `nbf`.
 
 An upstream that said "not valid before T" was honoured before T.
 
-**It hid because we never emit `nbf`.** Every token this code was written against
+**It hid because Signari never emits `nbf`.** Every token this code was written against
 and tested with lacked one, so nothing exercised the missing branch and nothing
 looked absent. The claim only arrives from somebody else's issuer — which is
 precisely the direction this file faces.
@@ -306,13 +326,13 @@ than claimed.
 | **V7.2.3** CSPRNG, ≥128 bits | **exceeded** — `newSID` is 32 bytes from `crypto/rand`, 256 bits, and the sid and cookie token are two independent values |
 | **V7.2.4** new token on authentication **and the current one terminated** | **was half met** — fixed, below |
 | **V7.4.1** termination disallows further use | met — every lookup filters `revoked_at IS NULL` |
-| **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a user kills every session *instantly*, with no sweep and no window |
+| **V7.4.2** all sessions terminated when an account is disabled | **exceeded** — session lookups join `u.status = 'active'`, so disabling a person's account kills every session *instantly*, with no sweep and no window |
 | **V7.4.3** option to end other sessions after a factor changes | **met** — a password change ends every session, this one included (`httpapi/passwordselfservice.go:180-187`), and `/account/sessions` ends any or all of them after any other change |
 | **V7.4.5** administrators can terminate sessions | met — `ReasonAdminRevoke` |
-| **V7.3.1** inactivity timeout | **not met** — item 9f, unchanged |
+| **V7.3.1** inactivity timeout | **not met** when this was written; an idle limit has since been built, `signari instance session-lifetime -idle`, off until it is set |
 | **V7.3.2** absolute maximum lifetime | met — `not_after`, enforced in every lookup as well as by the sweep |
-| **V7.5.2** users can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
-| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [security-inventories.md](security-inventories.md) |
+| **V7.5.2** people can view and terminate their sessions | **met** — `/account/sessions` lists them (device, how each signed in, when) and ends one or all (`ReasonUserRevoke`) |
+| **V7.1.1–7.1.3** documentation of timeouts, concurrency, federation | **met, November 2026** — [the security inventories](security-inventories.md) |
 
 ### V7.2.4: the half that was missing
 
@@ -334,33 +354,34 @@ an attacker is most likely to be holding.
 Now terminated in the same transaction that creates the replacement, so the old
 session dies exactly when the new one is born and a crash between the two cannot
 leave both live. It goes through `TerminateSessions` rather than an `UPDATE`,
-which means the CAEP `session-revoked` notices are queued too: relying parties
-holding tokens from the old session learn it ended instead of discovering it at
+which means the CAEP `session-revoked` notices are queued too. Applications
+holding tokens from the old session learn it ended, instead of discovering it at
 expiry.
 
-**Scoped to the session this browser presented**, not to the user. Someone signed
+**Scoped to the session this browser presented**, not to the person. Someone signed
 in on a phone and a laptop who re-authenticates on the laptop has not asked to be
 signed out of the phone — that would be a defensible product decision and a
 different one, and it would turn every step-up into a global sign-out. There is a
 test for each direction.
 
-A new `reauthenticated` termination reason rather than reusing `logout`: an
-operator reading the audit trail should be able to tell a session that ended
-because somebody left from one that ended because it was superseded, and the
-value travels to relying parties in the CAEP event.
+There is a new `reauthenticated` termination reason, instead of reusing
+`logout`. An administrator reading the audit trail should be able to tell a
+session that ended because somebody left from one that ended because it was
+superseded. The value also travels to applications in the CAEP event.
 
 ### What V7 leaves open
 
-V7.3.1 (inactivity timeout) is item **9f** and unchanged. V7.4.3 and V7.5.2 both
+V7.3.1 (inactivity timeout) was open when this was written. An idle limit was
+added in October 2026, and is off until an administrator sets it. V7.4.3 and V7.5.2 both
 describe a *page*, and when this was written the mechanism existed without one.
 The page has since shipped as `/account/sessions`, and both are met.
 
-## V8 Authorization: the tenant boundary, audited by enumeration (21 August 2026)
+## V8 Authorization: the organisation boundary, audited by enumeration (21 August 2026)
 
 V8.4.1 — "multi-tenant applications use cross-tenant controls to ensure consumer
 operations will never affect tenants with which they do not have permissions to
 interact" — is checkable by enumeration rather than reading, because the boundary
-is in the schema.
+is in the schema. ASVS says "tenant" where Signari says organisation.
 
 Querying `pg_class` for every `core` table carrying `org_id` found **58 tables**,
 of which **18 did not enforce isolation**:
@@ -379,28 +400,29 @@ The FORCE half is the subtle one. Core tables are owned by `signari_engine`, and
 So those seven carried a policy that read as protection and did nothing for the
 engine — not by decision, but by a database default.
 
-### A claim I made and had to withdraw
+### A claim that had to be withdrawn
 
-The first version of this finding said the console could reach other tenants'
-rows in the eleven unprotected tables. **That was wrong.** Checking the roles
+The first version of this finding said the console could reach other
+organisations' rows in the eleven unprotected tables. **That was wrong.** Checking the roles
 instead of assuming them shows why:
 
-| Role | Reaches `core` | BYPASSRLS | Login |
+| Role | Reaches `core` | BYPASSRLS | `LOGIN` |
 |---|---|---|---|
 | `signari_admin` (the Laravel console) | **no grants at all** — 15 views in `core_v1` | no | yes |
 | `signari_maintenance` | full DML | **yes**, deliberately | **no** — `SET ROLE` only |
 | `signari_engine` | owner | no | yes |
 
-The console cannot touch a core table with or without RLS. `signari_maintenance`
+The console cannot touch a core table with or without row-level security. `signari_maintenance`
 is exempt on purpose, and migration 0003 says so in as many words: "Cross-org
 maintenance (key rotation, expiry sweeps, the bootstrap CLI) runs as
 signari_maintenance." It is `NOLOGIN`, so it is reachable only by an explicit
 `SET ROLE`.
 
-So **no role that connects today was crossing tenants, and none could have.** The
-finding is real and its severity is not what I first wrote. It is worth recording
-the correction rather than quietly restating the smaller claim, because the
-error was the same one this session has caught three times elsewhere — asserting
+So **no role that connects today was crossing organisations, and none could
+have.** The finding is real, and its severity is not what was first written.
+
+The correction is recorded instead of quietly restating the smaller claim. The
+error was the same one this session has caught three times elsewhere: asserting
 what a component does without reading the component.
 
 ### What the fix is actually worth
@@ -428,14 +450,14 @@ succeed by querying the wrong schema.
 
 | Requirement | Status |
 |---|---|
-| **V8.2.1** function-level access restricted to explicit permissions | met — `Principal.Can`, and every admin route checks a scope |
+| **V8.2.1** function-level access restricted to explicit permissions | met — `Principal.Can`, and every Admin API route checks a scope |
 | **V8.2.2** data-specific access, IDOR/BOLA | met — `MayActOn` on both the create path and the update path, which the comment there notes is the whole point: "a boundary that holds for creates and not for edits is worse than no boundary" |
 | **V8.3.1** enforced at a trusted service layer | met |
 | **V8.3.3** decisions use the originating subject's permissions | met — RFC 8693 `act` chains the actor rather than replacing the subject |
-| **V8.4.1** cross-tenant controls | met, and now uniform |
-| **V8.1.x** documentation of the rules | **met, November 2026** — [security-inventories.md](security-inventories.md) says where each boundary is enforced and which page holds its rules |
-| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get a user attribute only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [admin-tokens.md](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound SCIM sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
-| **V8.2.4 / V8.4.2** adaptive controls, layered admin access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the admin interface specifically |
+| **V8.4.1** cross-organisation controls | met, and now uniform |
+| **V8.1.x** documentation of the rules | **met, November 2026** — [the security inventories](security-inventories.md) says where each boundary is enforced and which page holds its rules |
+| **V8.2.3** field-level (BOPLA) | **met, November 2026** — applications get an attribute of a person only through a claim mapper naming it, its client and its scope; an Admin API token may be narrowed to named attributes (`attribute_names`, [Admin API access](admin-tokens.md#narrowing-a-token-to-named-objects)) and is then refused every other attribute's value, directly or through a mapper, an export, a configuration file or a role. Outbound System for Cross-domain Identity Management (SCIM) sends a fixed minimal set (`userName`, `externalId`, `active`, `name`, `emails`, `displayName`), never an attribute |
+| **V8.2.4 / V8.4.2** adaptive controls, layered administrative access | partial — the policy engine evaluates device posture and impossible travel; it is not applied to the administrative interfaces specifically |
 
 ## V11 Cryptography: twenty-four requirements (21 August 2026)
 
@@ -444,7 +466,7 @@ succeed by querying the wrong schema.
 | **V11.2.1** industry-validated implementations | met — Go's standard library and `x/crypto`; no hand-rolled primitives |
 | **V11.2.3** minimum 128 bits of security | **was not met for generated RSA keys** — fixed, below |
 | **V11.2.4** constant-time comparison | met — `subtle.ConstantTimeCompare` on every secret comparison, and `hmac.Equal` where a MAC is compared |
-| **V11.3.1** no insecure block modes or weak padding | met for encryption — AES-GCM everywhere, RSA-OAEP for SAML key transport. See the RS256 note below |
+| **V11.3.1** no insecure block modes or weak padding | met for encryption — AES-GCM everywhere, RSA-OAEP for Security Assertion Markup Language (SAML) key transport. See the RS256 note below |
 | **V11.3.2** approved ciphers such as AES-GCM | met — `cipher.NewGCM` in `keys/store.go`, `keys/subject.go`, `saml/encrypt.go` |
 | **V11.3.3** encrypted data protected against modification | met — GCM is authenticated encryption, so this is the same fact as V11.3.2 |
 | **V11.4.1** approved hash functions; no MD5 | met, with three protocol-mandated exceptions, below |
@@ -452,10 +474,10 @@ succeed by querying the wrong schema.
 | **V11.4.3** collision-resistant hashes ≥256 bits for signatures | met — SHA-256 and above throughout; SHA-1 refused on inbound SAML |
 | **V11.5.1** CSPRNG, ≥128 bits of entropy | **exceeded** — `crypto/rand`, 256 bits for session and device codes |
 | **V11.6.1** approved algorithms for key generation and signatures | met — P-256, Ed25519, RSA |
-| **V11.1.x** documented key policy and inventory | **met, November 2026** — [security-inventories.md](security-inventories.md) |
+| **V11.1.x** documented key policy and inventory | **met, November 2026** — [the security inventories](security-inventories.md) |
 | **V11.7.x** in-use memory encryption | not met, and out of scope for a server process |
 
-### V11.2.3: we were generating the weaker key
+### V11.2.3: Signari was generating the weaker key
 
 > "Verify that all cryptographic primitives utilize a minimum of 128-bits of
 > security based on the algorithm, key size, and configuration. For example, a
@@ -467,30 +489,32 @@ That is the NIST floor for "acceptable until 2030", not the 128-bit floor ASVS
 asks for.
 
 P-256 is the default algorithm here and already clears it, which is why this was
-easy to miss: almost every deployment signs with ES256. RS256 exists for clients
-whose libraries do only RSA — and those clients were being handed the weaker key,
-which is exactly backwards.
+hard to see: almost every deployment signs with ES256. RS256 exists for clients
+whose libraries do only RSA. Those clients were being handed the weaker key, which
+is exactly backwards.
 
 Now 3072.
 
 **Raising this is free; raising the other RSA floor is not.** They are two
 different numbers pulled in opposite directions by two standards:
 
-- **What we generate** is entirely our choice. Clients fetch the modulus from our
-  JWKS and verify with whatever we publish. RSA verification is size-agnostic in
-  every mainstream library, and the extra cost lands on a path that is not hot.
-- **What we accept** from a client stays at 2048 (`clientauth.MinRSABits`),
+- **What Signari generates** is entirely its own choice. Clients fetch the
+  modulus from its JSON Web Key Set (JWKS), and verify with whatever it publishes.
+  RSA verification is size-agnostic in every mainstream library, and the extra
+  cost lands on a path that is not hot.
+- **What Signari accepts** from a client stays at 2048 (`clientauth.MinRSABits`),
   because FAPI 2.0 §5.4.1 sets that floor and most clients hold 2048-bit keys.
   Raising it would refuse working integrations to gain sixteen bits of security
-  in somebody else's key — and the client is the party bearing that risk.
+  in somebody else's key, and the client is the party bearing that risk.
 
-Strict about our own key, conventional about theirs. The asymmetry is the point.
+Strict about Signari's own key, conventional about a client's. The asymmetry is
+the point.
 
 ### V11.4.1: three MD5 sites, and why each stays
 
 MD5 appears in three places, each annotated at the call site:
 
-- **`radius/packet.go`** — RFC 2865 §5.2 specifies MD5 for the User-Password
+- **`radius/packet.go`** — RFC 2865 §5.2 specifies MD5 for the `User-Password`
   keystream and RFC 3579 §3.2 specifies HMAC-MD5 for Message-Authenticator.
   Neither is optional: an access point that expects RFC 2865 will not interoperate
   with anything else. HMAC-MD5 is also not affected by the collision attacks that
@@ -498,12 +522,13 @@ MD5 appears in three places, each annotated at the call site:
   the HMAC-MD5 attribute.
 - **`radius/eapserver.go`** — RFC 2548 MS-MPPE key derivation, same argument.
 - **`passwords/foreign.go`** — verifying somebody **else's** stored hash during a
-  migration. We never produce these; we read them once, check the password, and
-  write an Argon2id hash in their place. Refusing to verify them would mean
-  refusing to migrate the deployments this feature exists for.
+  migration. Signari never produces these. It reads them once, checks the
+  password, and writes an Argon2id hash in their place. Refusing to verify them
+  would mean refusing to migrate the deployments this feature exists for.
 
 The first two are the case ASVS's "for any cryptographic purpose" has to bend
-around when a protocol predates the guidance. The third is not our hash at all.
+around when a protocol predates the guidance. The third is not Signari's hash at
+all.
 
 ### RS256 and PKCS#1 v1.5
 
@@ -511,15 +536,15 @@ V11.3.1 names "weak padding schemes (e.g., PKCS#1 v1.5)". RS256 is
 RSASSA-PKCS1-v1_5, and a strict reading catches it.
 
 The requirement's concern is RSAES-PKCS1-v1_5 — the *encryption* padding that
-Bleichenbacher's attack breaks. We do not use it: SAML key transport is RSA-OAEP.
-RSASSA-PKCS1-v1_5 for signatures remains approved in NIST FIPS 186-5 and is the
-`RS256` every OIDC client library implements.
+Bleichenbacher's attack breaks. Signari does not use it: SAML key transport is
+RSA-OAEP. RSASSA-PKCS1-v1_5 for signatures remains approved in NIST FIPS 186-5,
+and is the `RS256` every OIDC client library implements.
 
-It is still the weakest thing we offer, and it is already recorded as a FAPI
+It is still the weakest thing Signari offers, and it is already recorded as a FAPI
 deviation: FAPI 2.0 §5.4.1's list is `PS256, ES256, EdDSA`, and RS256 is not on
-it. The decision to keep or drop it is the same decision in both standards, and
-it is not mine to make alone — it would refuse every client that implements only
-RS256.
+it. The decision to keep or drop it is the same decision in both standards. It is
+not one for a single reviewer to make alone, because dropping it would refuse
+every client that implements only RS256.
 
 ## V6 Authentication: forty-seven requirements (21 August 2026)
 
@@ -536,13 +561,13 @@ worth recording as carefully as a finding.
 | **V6.2.8** verified exactly as received | met — `argon2.IDKey([]byte(password), ...)` takes it verbatim; the only `ToLower` is inside the guessability *estimator* and never reaches the hash |
 | **V6.2.5** no composition rules | met |
 | **V6.2.12** checked against breached passwords | met — `internal/passwords/breached.go` |
-| **V6.3.2** no default accounts | met — no migration seeds a user |
+| **V6.3.2** no default accounts | met — no migration seeds an account |
 | **V6.4.2** no password hints or secret questions | met — nothing of the kind exists |
-| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. TOTP carries `lastUsed`, the highest counter already accepted, which is the replay check TOTP implementations most often skip |
+| **V6.5.1** OTPs usable only once | met — the code hash is nulled on success, under `FOR UPDATE` so two concurrent attempts cannot both spend it. A time-based one-time password (TOTP) carries `lastUsed`, the highest counter already accepted, which is the replay check a TOTP code needs |
 | **V6.5.3** CSPRNG for codes | met — `rand.Int` rather than modulo over a byte, with the reason written down: "a six-digit code has only a million of them, so the distribution IS the entropy" |
 | **V6.5.8** TOTP time from a trusted source | met — the counter is computed server-side and never read from the request |
 | **V6.6.2** OOB codes bound to their request | met, November 2026 — the hash of the sign-in's attempt is kept beside each emailed or texted code (`store/codeattempt.go`); see below |
-| **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per user by construction |
+| **V6.6.3** OOB codes rate limited | met — a per-credential `attempts` counter, and one live code per person by construction |
 
 ### V6.8.1, and the reason it is the strongest item here
 
@@ -562,8 +587,8 @@ address.
 
 - ~~**V6.6.2** — codes bound to the *original authentication request*~~ —
   **met, November 2026** (`specs/asvs-5.0.0.txt:2528-2530`). Codes were bound to
-  the **user**, so one issued during one sign-in could be spent in another, and an
-  LDAP bind or the desktop sign-in took a texted or emailed code sent for a
+  the **person**, so one issued during one sign-in could be spent in another, and a
+  Lightweight Directory Access Protocol (LDAP) bind or the desktop sign-in took a texted or emailed code sent for a
   browser's sign-in. Now the sign-in's pending token names an attempt, and the
   hash of that attempt is kept beside the emailed or texted code. A password reset
   uses its link as the attempt, and an emailed first-factor code uses the request
@@ -573,14 +598,16 @@ address.
   [email codes](email-otp.md#one-live-code-never-a-queue-of-them).
 - ~~**V6.1.x, V6.3.4** — documentation of every authentication pathway and its
   strength~~ — **met, November 2026**: all of them side by side, with what each
-  records, in [security-inventories.md](security-inventories.md).
-- **V6.4.4** — identity proofing at enrolment level when a factor is lost. We
-  have recovery codes and delay-and-notify recovery; we do not do identity
-  proofing, which is an IAL question rather than an AAL one.
+  records, in [the security inventories](security-inventories.md).
+- **V6.4.4** — identity proofing at enrolment level when a factor is lost.
+  Signari has recovery codes and delay-and-notify recovery. It does not do
+  identity proofing, which is an IAL question rather than an authenticator assurance level (AAL) one.
 - **V6.3.5, V6.3.7** — notification of suspicious attempts and of credential
   changes. Passkey bind and removal now notify (NIST §4.1.2 and §4.5). Password
-  changes and unusual-location sign-ins do not. This is the same missing piece as
-  item **9l**: one notification address per account, so the channel is thin.
+  changes and unusual-location sign-ins did not, when this was written, and an
+  account had one notification address, so the channel was thin. Since then a
+  password change sends a notice, and a verified SMS number gives an account a
+  second channel that every security notice also goes to.
 
 ## ASVS status after this pass
 
@@ -606,7 +633,7 @@ to it, and not where this engine's risk concentrates.
 
 ## CWE coverage, via a tool rather than a recital (21 August 2026)
 
-Point 4 names the CWE Top 25. I could not retrieve it: both
+The Common Weakness Enumeration (CWE) Top 25 was to be checked too. It could not be retrieved at the time: both
 `cwe.mitre.org/top25/archive/2024/` and the 2025 page render their tables in
 JavaScript, and the served HTML contains **no CWE identifiers at all** — a scrape
 returns zero. The CWE REST API resolves an ID to a name but does not publish the
@@ -651,12 +678,12 @@ would arrive into a report already containing a G407 nobody reads.
 | Rule | CWE | Count | Assessment |
 |---|---|---|---|
 | `G101` | 798 | 37 | Name-pattern false positives. The rule matches identifiers containing "token", "secret", "credential" — ours hold protocol constants: `at+jwt`, `urn:ietf:params:oauth:token-type:access_token`, SAML URNs, provider endpoint URLs, `/oauth2/token` |
-| `G304` | 22 | 29 | File reads with a non-constant path; every one is an operator-supplied CLI flag (certificate bundles, the GeoIP database) |
-| `G703` | 22 | 8 | The same class under taint analysis. An operator who can set `--ldap-ca` can already read the file |
+| `G304` | 22 | 29 | File reads with a non-constant path; every one is an administrator-supplied CLI flag (certificate bundles, the GeoIP database) |
+| `G703` | 22 | 8 | The same class under taint analysis. An administrator who can set `--ldap-ca` can already read the file |
 | `G710` | — | 13 | Style-level |
 | `G114`, `G203`, `G204`, `G117`, `G306`, `G706` | various | 9 | Low-severity, reviewed, none attacker-reachable |
 
-The G101 and G304/G703 groups are the tool telling us what it cannot know:
+The G101 and G304/G703 groups are the tool saying what it cannot know:
 whether a string is a credential, and whether a path is attacker-controlled. In a
 server whose entire vocabulary is token type URNs, the first is guaranteed noise.
 
@@ -707,19 +734,19 @@ zero occurrences across `internal/`:
 | V3.4.3 `base-uri 'none'` in CSP | L2 | absent | appended to all ten policies |
 | V3.4.8 `Cross-Origin-Opener-Policy` | L3 | absent | **deliberately still absent — see below** |
 
-**V3.4.4 is the one that mattered.** This server answers JSON on nearly every
-endpoint and several of those responses echo caller-supplied values back inside
+**V3.4.4 is the one that mattered.** Signari answers JSON on nearly every
+endpoint, and several of those responses echo caller-supplied values back inside
 an `error_description`. Without `nosniff`, a browser may decide a JSON body is
 HTML and render it — turning an echoed request parameter into script execution on
 the issuer's own origin, which is the origin holding the session cookie. It is a
 Level 1 requirement, the baseline, and it was missing from every response the
 engine has ever sent.
 
-**V3.4.3 and the directive that has no fallback.** Our policies opened with
+**V3.4.3 and the directive that has no fallback.** Signari's policies opened with
 `default-src 'none'`, which covers `object-src` — that directive falls back to
 `default-src`. **`base-uri` does not.** It is deliberately outside the
 `default-src` chain, which is precisely why V3.4.3 names both explicitly rather
-than one. So every page this server rendered left `<base>` unrestricted,
+than one. So every page Signari rendered left `<base>` unrestricted,
 including the sign-in page, where `script-src` is relaxed to `'self'` and widened
 further to a provider's origins when a CAPTCHA is configured.
 
@@ -737,28 +764,29 @@ place a test points at.
 
 ### V3.4.8 Cross-Origin-Opener-Policy: not set, and why
 
-`COOP: same-origin` severs `window.opener` when a cross-origin document opens
-ours in a popup. Popup-mode OIDC is a real and common relying-party pattern: the
-RP opens `/oauth2/authorize` in a popup and its own callback page messages the
-opener when the flow completes. Setting COOP on the authorization, login or
-consent pages breaks that chain — the popup lands back on the RP's origin with
-`window.opener` already null.
+`COOP: same-origin` severs `window.opener` when a cross-origin document opens one
+of Signari's pages in a popup. Popup-mode OIDC is a real and common pattern for
+applications. The application opens `/oauth2/authorize` in a popup, and its own
+callback page messages the opener when the flow completes.
 
-`same-origin-allow-popups` does not help; it governs popups *we* open, not the
-opener relationship of a popup we are inside.
+Setting COOP on the authorization, sign-in or consent pages breaks that chain. The
+popup lands back on the application's origin with `window.opener` already null.
+
+`same-origin-allow-popups` does not help. It governs popups *Signari* opens, not
+the opener relationship of a popup Signari is inside.
 
 So this L3 requirement is not met, deliberately, with the reason recorded. The
-alternative — meeting an L3 header by breaking a documented integration pattern
-for relying parties — would be scoring a checklist rather than securing anything.
+alternative would meet an L3 header by breaking a documented integration pattern
+for applications. That would be scoring a checklist rather than securing anything.
 
 ### The rest of V3
 
 | Section | Verdict |
 |---|---|
-| V3.1.1 documentation of expected browser features | **met, November 2026** — [security-inventories.md](security-inventories.md), with what happens without each |
+| V3.1.1 documentation of expected browser features | **met, November 2026** — [the security inventories](security-inventories.md), with what happens without each |
 | V3.2.1 / V3.2.2 content interpretation | met — `nosniff` now, and all rendering goes through `html/template`, which escapes by context |
 | V3.2.3 DOM clobbering | not applicable — the sign-in form needs no JavaScript at all, proven by a standing test |
-| V3.4.2 CORS allowlist | met — a fixed allowlist, checked earlier under V10 |
+| V3.4.2 Cross-Origin Resource Sharing (CORS) allowlist | met — a fixed allowlist, checked earlier under V10 |
 | V3.4.6 `frame-ancestors` | met — every page sets it to `'none'`; note ASVS considers `X-Frame-Options` obsolete, and we send both |
 | V3.4.7 CSP report location | **met, November 2026** — every policy carries `report-uri /csp-report`, from the one helper that sets a policy. A report is counted by directive and nothing from it is logged or kept, since it can name a URL carrying a code. Proved in Chrome 156: an injected script was refused and its report arrived at the counter |
 | V3.5.1 / V3.5.3 origin separation, CSRF, safe methods | met — per-session CSRF tokens, `POST` for every sensitive operation |
@@ -770,6 +798,8 @@ for relying parties — would be scoring a checklist rather than securing anythi
 | V3.7.4 HSTS preload | not done; a deployment decision for whoever owns the domain, not the engine |
 
 ### Mutation results
+
+Each fix was reverted in turn, and a test caught every one:
 
 ```
 CAUGHT   middleware not wired into Routes()      (no nosniff on any response)
@@ -806,13 +836,13 @@ nothing complained.
 
 What was lost is everything around the panic:
 
-- It was written by Go's `log` package to stderr in Go's own format, while this
-  server logs through `slog`. **The one event an operator most needs to find was
-  the one entry their log processor could not parse** — V16.2.4.
+- It was written by Go's `log` package to stderr in Go's own format, while the
+  engine logs through `slog`. **The one event an administrator most needs to find
+  was the one entry their log processor could not parse** — V16.2.4.
 - No correlation id, so it could not be tied to the request that caused it, nor
   to the audit rows for that request — V16.2.1.
-- The client got a dropped connection rather than a response. A relying party
-  sees a transport error and starts debugging the network.
+- The client got a dropped connection rather than a response. An application
+  sees a transport error, and starts debugging the network.
 
 `withRecovery` now catches, logs `err`/`method`/`path`/`correlation_id`/`stack`
 through the configured handler, and answers a generic 500 carrying a reference
@@ -870,8 +900,8 @@ now written down rather than assumed.
 | V16.2.4 readable by the log processor | met — logfmt; **and now true for panics, which it was not** |
 | V16.2.5 sensitive data not logged | met — verified by inspection, including the two call sites that look like exceptions and are not |
 | V16.3.1 all authentication attempts | met — `login.succeeded` **and** `login.failed`; the second is the half usually missing |
-| V16.3.2 failed authorization logged | met — consent denials, impersonation refusals, UMA denials, admin scope refusals |
-| V16.3.3 bypass attempts | met — passkey counter regression, breached password, CIBA unknown subject, federation refusal |
+| V16.3.2 failed authorization logged | met — consent denials, impersonation refusals, User-Managed Access (UMA) denials, Admin API scope refusals |
+| V16.3.3 bypass attempts | met — passkey counter regression, breached password, Client-Initiated Backchannel Authentication (CIBA) unknown subject, federation refusal |
 | V16.3.4 unexpected errors | met, and this is what V16.5.4 fixed |
 | V16.4.1 log injection | met — structured key/values throughout, **zero** `fmt.Sprintf` inside a log call |
 | V16.4.2 protected from modification | met as *detectable*: hash chain over ciphertext, and migration 0043 removed the foreign keys that silently rewrote history. Stated precisely because it is not a trigger refusing `UPDATE` |
@@ -957,10 +987,10 @@ it.
 | Requirement | Verdict |
 |---|---|
 | V4.1.1 Content-Type matches, with charset | **one gap, fixed** — HTML and JavaScript already stated it; JSON needs none (RFC 8259 defines no charset parameter) |
-| V4.1.2 transparent HTTP→HTTPS only for user-facing | n/a — the engine does not redirect http to https; TLS terminates ahead of it |
-| V4.1.3 intermediary headers not user-overridable | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
+| V4.1.2 transparent HTTP→HTTPS only for endpoints people use | n/a — the engine does not redirect http to https; Transport Layer Security (TLS) terminates ahead of it |
+| V4.1.3 intermediary headers a request cannot override | met, and deliberately: `clientIP` reads `r.RemoteAddr` only, never `X-Forwarded-For`. Forward-auth does read `X-Forwarded-Proto/Host/Uri`, but `firstHeader` takes only the first value — the comment names the `good, evil` injection it exists to stop — and the result only builds a redirect back to our own `/proxy/start`, whose target is validated |
 | V4.1.4 unused HTTP methods blocked | met by construction — every route is registered with a method pattern, so anything else is 405 |
-| V4.1.5 per-message signatures | met beyond the requirement — logout tokens, SSF SETs and webhook bodies are all signed or MACed (this listed JARM, which is not built) |
+| V4.1.5 per-message signatures | met beyond the requirement — Back-Channel Logout tokens, Shared Signals Security Event Tokens (SETs) and webhook bodies are all signed or MACed (this listed JWT-Secured Authorization Response Mode (JARM) before it was built; it has been since, and its responses are signed too: see [signed authorization responses](jarm.md)) |
 | V4.2.1–V4.2.4 request smuggling, header injection | met by the runtime: Go's `net/http` rejects conflicting `Content-Length`/`Transfer-Encoding`, and rejects CR/LF in header values |
 | V4.2.5 over-long outbound URIs and headers | **met, November 2026** — every client `safedial` builds refuses a URI or a header field over 8,000 octets before it is sent, RFC 9110 §4.1's figure for a URI (`specs/rfc9110.txt:1059-1060`), and says which and to where without repeating a value that may be a credential |
 | V4.3.1–V4.3.2 GraphQL | n/a — none |
@@ -1002,8 +1032,8 @@ V4.4 applied and V17 does not.
 
 V14.3.2 asks for `Cache-Control: no-store` so sensitive data is not cached by
 browsers, and V3.4 asks for a Content-Security-Policy on every response. Both are
-satisfied by `renderPage` and `renderLogin`, which is how most HTML leaves this
-server.
+satisfied by `renderPage` and `renderLogin`, which is how most HTML leaves
+Signari.
 
 Six responses did not go through either. A scan of every site setting a
 `text/html` Content-Type found:
@@ -1035,7 +1065,7 @@ All six now call `htmlPageHeaders`.
 ### The pages that must NOT use the helper, and why that is written down
 
 Four pages exist to leave this origin: the SAML POST binding, `form_post`,
-WS-Federation and front-channel logout. `htmlPageHeaders` sets `form-action 'self'`
+WS-Federation and Front-Channel Logout. `htmlPageHeaders` sets `form-action 'self'`
 and no `script-src`, which would stop each from doing the one thing it is for.
 
 So they do not use it, and `renderBare` takes their policy as a parameter. It used
@@ -1046,8 +1076,8 @@ every test read the markup. The SAML page had also lost its auto-submit when it
 moved into a template, and `<noscript>` hid its button from anybody with scripting
 on. A parameter leaves nothing to overwrite.
 
-The three that post carry no `form-action` at all. Naming the relying party's
-origin would be stopped the moment its callback redirected anywhere else of its own.
+The three that post carry no `form-action` at all. Naming the application's origin
+would be stopped the moment its callback redirected anywhere else of its own.
 `TestABridgePageIsAllowedToDoItsOneJob` reads each page as a browser does: its
 script has to be one its policy lets run.
 
@@ -1057,7 +1087,7 @@ script has to be one its policy lets run.
 password somewhere else. Chrome applies that directive to every redirect in the
 navigation a form starts, not only to the form's own target, so the walk from a
 password to an application (`POST /login`, `303` to the authorization endpoint,
-`303` to the relying party) was stopped at its last hop. The person stayed on the
+`303` to the application) was stopped at its last hop. The person stayed on the
 sign-in page with the right password and no error. Chrome 156 does this; an HTTP
 client does not, which is why no test here saw it.
 
@@ -1070,7 +1100,7 @@ there the browser is on an ordinary navigation, which the directive has no say i
 The page's own policy lets nothing run.
 
 It is recognised by `Sec-Fetch-Site: same-origin` with `Sec-Fetch-Dest: document`,
-which a page cannot set. A form on a relying party's page, an API client and a
+which a page cannot set. A form on an application's page, an API client and a
 script's `fetch` keep their redirects. So a reverse proxy in front of the engine
 must pass `Sec-Fetch-*` through: strip them and sign-in stops at the same place.
 
@@ -1082,7 +1112,8 @@ stays behind on a form posted from another site, and a person with a live sessio
 read as nobody and was asked to sign in again. `/saml/sso` and the authorization
 endpoint answer such a POST, recognised by `Sec-Fetch-Site: cross-site` with
 `Sec-Fetch-Dest: document`, with a `303` to the same request as a `GET`, which
-brings the cookie. `/wsfed` does the same for any POST without a form token of ours.
+brings the cookie. `/wsfed` does the same for any POST without a form token of
+Signari's.
 
 ### Pinned structurally
 
@@ -1097,14 +1128,14 @@ and nothing had ever sent one.
 
 | Requirement | Verdict |
 |---|---|
-| V14.1.1 / V14.1.2 data classified, protection documented | partial — [security-inventories.md](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
+| V14.1.1 / V14.1.2 data classified, protection documented | partial — [the security inventories](security-inventories.md) classifies the data and says how each class is kept, and every sealed column is classified by test, but it lists classes and not every field, which is what the requirement says |
 | V14.2.1 no sensitive data in URLs | **partial, and deliberately** — invitation and password-reset links carry a token in the query string, which is how an emailed link works. Mitigated by single use, short expiry, and the `Referrer-Policy: no-referrer` added in the V3 pass |
 | V14.2.2 not cached in server components | met — `no-store` now on every HTML response and every token response |
-| V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an operator configured, and only when one is on the page |
+| V14.2.3 not sent to untrusted parties | met — no analytics, trackers or third-party scripts; the only external script permitted is a CAPTCHA provider an administrator configured, and only when one is on the page |
 | V14.2.5 web cache deception | met — no static-file handler that could serve a different valid file for a non-existent path |
 | V14.2.6 minimum data returned | met — userinfo returns only granted scopes' claims |
-| V14.2.7 retention classification | partial — classified, not time-expired; see 9p |
-| V14.2.8 file metadata | n/a — no user file upload |
+| V14.2.7 retention classification | partial — classified, not time-expired |
+| V14.2.8 file metadata | n/a — nobody can upload a file |
 | V14.3.1 client storage cleared | met by construction — `localStorage`, `sessionStorage` and `IndexedDB` appear **zero** times in anything this server serves |
 | V14.3.2 anti-caching headers | **six gaps, fixed** |
 | V14.3.3 no sensitive data in browser storage | met — nothing is stored client-side but the session cookie |
@@ -1127,7 +1158,7 @@ had started to feel like a rule rather than a sample.
 
 The reason it is clean is not luck. V1 is the injection chapter, and the injection
 classes here were each addressed where they arise: SQL in the store layer, XML in
-the SAML reviews, SSRF in `internal/safedial`, output encoding by using
+the SAML reviews, server-side request forgery (SSRF) in `internal/safedial`, output encoding by using
 `html/template` everywhere instead of building HTML.
 
 ### Checked, with the evidence
@@ -1140,8 +1171,8 @@ the SAML reviews, SSRF in `internal/safedial`, output encoding by using
 | V1.2.2 safe URL protocols | met — brand logo and support URLs must begin `https://`, enforced in `Brand.Validate`, called from `SaveBrand`, which is the only write path. `html/template` would neutralise `javascript:` in an `href` regardless, so this is two gates |
 | V1.2.3 JSON/JavaScript encoding | met — `encoding/json` throughout, never string-built |
 | V1.2.4 SQL injection | met — every query is parameterized. A scan for `Query`/`Exec`/`QueryRow` combined with `Sprintf` or string concatenation returns **one** hit, and it is a URL being built, not SQL |
-| V1.2.5 OS command injection | met — exactly one `exec.CommandContext` in the engine (kadmin, for Kerberos principal sync). Arguments are a slice, so no shell is involved, and every value in it is operator configuration: realm, principal, keytab path, and the literal query `list_principals`. No end-user input reaches it |
-| V1.2.6 LDAP injection | met — and this one was worth checking properly, because the engine both serves LDAP and consumes it. The sync filter is either an operator-configured string or one of three constants, and the base DN is configuration. **No end-user value is interpolated into a filter or a DN anywhere**, which is why there is no `EscapeFilter` call to find |
+| V1.2.5 OS command injection | met — exactly one `exec.CommandContext` in the engine (kadmin, for Kerberos principal sync). Arguments are a slice, so no shell is involved, and every value in it is an administrator's configuration: the Kerberos realm, principal, keytab path, and the literal query `list_principals`. No input from a person signing in reaches it |
+| V1.2.6 LDAP injection | met — and this one was worth checking properly, because the engine both serves LDAP and consumes it. The sync filter is either an administrator-configured string or one of three constants, and the base DN is configuration. **No value from a person signing in is interpolated into a filter or a DN anywhere**, which is why there is no `EscapeFilter` call to find |
 | V1.2.7 XPath injection | n/a — no XPath |
 | V1.2.8 LaTeX | n/a |
 | V1.2.9 regex metacharacters | met vacuously and verifiably: **zero** regular expressions are compiled from a variable. Every `regexp.MustCompile` in the engine takes a literal |
@@ -1168,7 +1199,7 @@ the SAML reviews, SSRF in `internal/safedial`, output encoding by using
 `internal/httpapi/enrol.go` is the only file that constructs pre-trusted markup:
 
 **`template.HTML(qrSVG)`** — the TOTP enrolment QR code. The obvious worry is that
-the code encodes an `otpauth://` URI containing the user's own email address, so an
+the code encodes an `otpauth://` URI containing the person's own email address, so an
 address like `</svg><script>` would be attacker-controlled content going into the
 page unescaped.
 
@@ -1181,7 +1212,7 @@ two.
 **`template.URL(uri)`** — the same `otpauth://` URI as a link. This bypasses
 `html/template`'s URL *protocol* filtering, which is the point (`otpauth:` is not
 on its safe list), but the value is still HTML-attribute escaped, so it cannot
-break out of the attribute. The scheme is a constant in our own code.
+break out of the attribute. The scheme is a constant in Signari's own code.
 
 ### Chapter coverage after this pass
 
@@ -1208,19 +1239,19 @@ for one.
 | V12.1.2 recommended suites, forward secrecy at L3 | **met, and the right action was to change nothing** — see below |
 | V12.1.3 mTLS client certificates validated before use | met — `SetClientCAs`, and a nil pool means `tls_client_auth` is refused rather than accepted unverified |
 | V12.1.4 OCSP stapling | L3, deployment concern; not configured by the engine |
-| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([encrypted-client-hello.md](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
+| V12.1.5 Encrypted Client Hello | met when keys are given, November 2026 — `SIGNARI_TLS_ECH_KEYS` and `signari ech new` ([Encrypted Client Hello](encrypted-client-hello.md)); the listener is then TLS 1.3 only. Publishing the configuration in DNS is the deployment's |
 | V12.2.1 TLS to external services, no fallback | met — see SMTP below |
 | V12.2.2 publicly trusted certificates | deployment |
 | V12.3.1 encrypted in and out, no insecure fallback | met |
 | V12.3.2 TLS clients validate certificates | met — **one** `InsecureSkipVerify` in the entire tree, in the `proxycheck` diagnostic, opt-in via a flag, and when it is on the report's first line reads "DISABLED by -insecure; nothing below says anything about TLS" |
 | V12.3.3 / V12.3.4 internal service TLS | met where applicable; `directory/ldapsource` pins `RootCAs` and its comment records that `InsecureSkipVerify` is deliberately absent |
-| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the admin listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the DSN. Webhooks and outbound calls to third parties are authenticated at the application layer |
+| V12.3.5 mutual authentication between services | **met for the Admin API, November 2026, on request** — `SIGNARI_ADMIN_CLIENT_CA` has the Admin API listener ask for a certificate in the handshake, and the console, the CLI and the Terraform provider present one with `SIGNARI_ADMIN_CLIENT_CERT`. Off by default, as it needs an authority to issue them. The database connection has `sslmode` and client certificates of its own, through the data source name (DSN). Webhooks and outbound calls to third parties are authenticated at the application layer |
 
 **V12.1.2 is the one worth writing down.** The L3 requirement is "must only
 support cipher suites which provide forward secrecy", and no `tls.Config` here
-sets `CipherSuites` at all. The obvious conclusion — that we therefore inherit
-whatever Go offers, including RSA key exchange — is wrong, and checking rather
-than assuming is what settled it.
+sets `CipherSuites` at all. The obvious conclusion is that Signari therefore
+inherits whatever Go offers, including RSA key exchange. That is wrong, and
+checking rather than assuming is what settled it.
 
 `crypto/tls/defaults.go` in Go 1.26.6:
 
@@ -1243,12 +1274,13 @@ whatever Go removes next. The correct implementation of this requirement is the
 absence of code, which is not a conclusion available to anyone who did not read
 the standard library.
 
-One caveat recorded for the operator: `GODEBUG=tlsrsakex=1` re-enables RSA key
+One caveat recorded for the administrator: `GODEBUG=tlsrsakex=1` re-enables RSA key
 exchange process-wide and would undo this.
 
 **SMTP does not fall back.** The classic downgrade is a client that checks
 whether STARTTLS is advertised, finds it stripped by an active attacker, and
-continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
+continues in cleartext, sending `AUTH PLAIN` over the wire. Signari's client
+refuses:
 
 > "does not offer STARTTLS; refusing to send credentials or account links over
 > an unencrypted connection"
@@ -1258,15 +1290,15 @@ continues in cleartext — sending `AUTH PLAIN` over the wire. Ours refuses:
 | Requirement | Verdict |
 |---|---|
 | V13.1.1 communication needs documented | **was not — now `docs/egress-inventory.md`** |
-| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [security-inventories.md](security-inventories.md), the pools among them |
+| V13.1.2 / V13.1.3 connection limits and resource strategy documented | **met, November 2026** — [the security inventories](security-inventories.md), the pools among them |
 | V13.1.4 secret rotation schedule documented | partial — key rotation is implemented and documented; there is no written rotation schedule for the root key or admin tokens |
-| V13.2.1 backend auth: individual, short-term, not shared | met for the admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
+| V13.2.1 backend auth: individual, short-term, not shared | met for the Admin API — tokens are per-name rows, SHA-256 hashed, scoped, expiring, revocable, with `last_used_at`. The **break-glass environment token** is the exception the requirement warns about, and it is handled as one: constant-time compared, `ScopeAll`, and **logged at Warn on every single use** with the reason written beside it |
 | V13.2.2 least privilege | met — `signari_admin` holds no grants on `core`, reading 15 views in `core_v1` |
 | V13.2.3 no default credentials | met — no default admin token exists; `SIGNARI_ROOT_KEY` is required rather than generated, because "a generated-on-boot root key would silently" produce a different one per instance |
 | V13.2.4 / V13.2.5 outbound allowlist | **partial, stated plainly** — `safedial` is an address-level *denylist*; the effective allowlist is registration. See the egress inventory |
-| V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, not from a vault or HSM. An operator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
+| V13.3.1 secrets management solution | **partial** — the root key arrives base64 in `SIGNARI_ROOT_KEY`, or in the file `SIGNARI_ROOT_KEY_FILE` names, not from a vault or hardware security module (HSM). An administrator can inject it from one, which is the usual pattern, but the engine has no direct integration. `doctor` flags a short admin token as Critical |
 | V13.3.2 least privilege on secrets | met |
-| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing-keys-in-a-module.md](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
+| V13.3.3 "all cryptographic operations are performed using an isolated security module" (specs/asvs-5.0.0.txt:4051) | L3, **partial, November 2026** — signing keys can be made and kept in a PKCS#11 module and sign there ([signing keys in a hardware module](signing-keys-in-a-module.md)). "All" is not met: the root key's sealing, the credential-request decryption key and every hash are done in this process |
 | V13.3.4 rotation schedule | L3, not done |
 | V13.4.1 no source-control metadata served | met by construction — **no `http.FileServer`, no `http.Dir`, nothing serves a filesystem path**. The single static asset is `//go:embed`-ed and served by name |
 | V13.4.2 debug modes disabled | met — no pprof, no debug flag in the serving path |
@@ -1316,13 +1348,13 @@ The mutation shows it plainly. With the guard removed, a request carrying
 Location: https://rp.test/cb?error=invalid_request&...&iss=https://token-test.example
 ```
 
-The server took the **first** value and redirected to it. A proxy that read the
+Signari took the **first** value and redirected to it. A proxy that read the
 last would have seen `evil.test`, and that disagreement is the whole attack.
 
 ### The same guard had the opposite flaw
 
 PAR refused **every** repeat — including `resource`, which RFC 8707 §2 explicitly
-permits more than once and which this server reads as a list everywhere else
+permits more than once and which Signari reads as a list everywhere else
 (`q["resource"]`, capped at eight). So a conformant client using two resource
 indicators through PAR was refused.
 
@@ -1341,9 +1373,9 @@ multi-valued end to end.
 
 Verified rather than assumed: `multipart`, `FormFile` and `ParseMultipartForm`
 appear **zero** times outside tests. There is no upload surface, so V5.2 through
-V5.4 have nothing to attach to. The files this engine reads — certificate
-bundles, the GeoIP database — are operator-supplied CLI paths, which V5.3.2
-addresses only for *user*-submitted names.
+V5.4 have nothing to attach to. The files the engine reads, such as certificate
+bundles and the GeoIP database, are paths an administrator gives on the command
+line. V5.3.2 addresses only names that a *person using the application* submits.
 
 ### V2 Validation and Business Logic
 
@@ -1357,7 +1389,7 @@ addresses only for *user*-submitted names.
 | V2.3.2 documented business limits | met — device-code attempts, signup rate, registration rate, call-chain length, resource-indicator count |
 | V2.3.3 transactional | met — `pgx.Tx` around the code-to-token exchange; a partial redemption cannot leave a code spent and no token issued |
 | V2.3.4 locking on limited resources | met — single-use codes, `c_nonce`, invitations and `request_uri` handles are all claimed with `UPDATE ... WHERE used_at IS NULL RETURNING`, which is atomic. A concurrency test asserts exactly one credential is minted under a nonce race. WebAuthn challenges are spent with `INSERT ... ON CONFLICT DO NOTHING RETURNING` on the first attempt to finish their ceremony. **Until October 2026 they were not**: the challenge travels in a signed cookie, the handler cleared that cookie, and the same cookie and assertion presented again opened a second session. The end-to-end passkey test found it (migration 0141) |
-| V2.3.5 multi-user approval for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([approvals.md](approvals.md)) |
+| V2.3.5 approval by more than one person for high-value flows | met, November 2026 — an organisation's `approvals_required` makes an erasure or an `org-owner` grant wait for somebody else, who approves it by having it replayed as theirs; relaxing the rule waits too ([two-person approvals](approvals.md)) |
 | V2.4.1 anti-automation | met — per-address and per-account limits, adaptive CAPTCHA, token buckets per endpoint with separate buckets so tuning one does not silently widen another |
 | V2.4.2 realistic human timing | L3, not implemented |
 
@@ -1426,7 +1458,8 @@ Three mechanisms were standing in for the token, and two of them are sound:
 - **`SameSite=Lax`** — the session cookie is not sent on a cross-site POST at
   all, so such a request arrives unauthenticated.
 - **WebAuthn's own origin binding** — a page on another origin cannot produce a
-  credential or an assertion for this relying party's ID; the browser enforces it.
+  credential or an assertion for Signari's relying party ID; the browser enforces
+  it.
 - **`corsNone` for these paths** — a cross-origin `fetch` gets no
   `Access-Control-Allow-Origin` and is refused at preflight.
 
@@ -1444,13 +1477,13 @@ handler and is answered `401 login_required` rather than being refused earlier.
 That is the defence holding, and it is *one* mechanism deep where the rest of this
 package is two or three.
 
-**Fixed**: `requireJSONContentType` on all four. Our own `passkey.js` already
-sends `application/json`, so nothing legitimate changes.
+**Fixed**: `requireJSONContentType` on all four. Signari's own `/passkey.js`
+already sends `application/json`, so nothing legitimate changes.
 
 **Why a CSRF token was not added instead.** It would require the client script to
 carry one, and the ceremony is already origin-bound by the browser in a way a
 token cannot improve on — an attacker who could somehow submit the form still
-cannot produce an assertion for our RP ID. Making the preflight non-bypassable
+cannot produce an assertion for Signari's RP ID. Making the preflight non-bypassable
 restores the layer that was actually missing rather than adding a fourth.
 
 **What this says about the earlier verdict.** "CSRF tokens on every
@@ -1466,7 +1499,7 @@ ASVS 5.0.0 was swept end to end (345/345) in a prior session. This pass did the
 thing that sweep could not: re-verify the highest-risk controls **against current
 code, after the theming/i18n rework that landed later** — because a control that
 was present when swept can be dropped by a subsequent refactor of the pages and
-the server wiring. Read fresh, not trusted from the prior tally.
+the engine's wiring. Read fresh, not trusted from the prior tally.
 
 ### The controls most at risk from the page/server rework — all held
 
@@ -1480,7 +1513,7 @@ the server wiring. Read fresh, not trusted from the prior tally.
   to every policy, and `htmlPageHeaders` gives every directly-written HTML response
   a CSP + `Cache-Control: no-store` + framing refusal. The `form_post` bridge keeps
   its per-response nonce. Intact.
-- **V6/login CSRF.** `POST /login` is `rateLimitedLogin`, which calls `checkCSRF(r)`
+- **V6/sign-in CSRF.** `POST /login` is `rateLimitedLogin`, which calls `checkCSRF(r)`
   **before** the rate limiter (so a forged cross-site post cannot spend a victim's
   rate budget), and `renderLoginStatus` mints the token into the form. The gate is
   in the caller, not `handleLoginPost` — verified after a false alarm from reading
@@ -1497,10 +1530,10 @@ the server wiring. Read fresh, not trusted from the prior tally.
 - **FAPI 2.0** (prior turn): `codeTTL = 60s`, 10s clock-skew bounds, key-strength
   floors, sender-constraining via `cnf`.
 - **The 2026 crop of published identity-provider vulnerabilities**, replayed
-  against our code as adversarial tests rather than read as a list. None applies,
-  and in every case the reason is structural — a mechanism we do not have, or one
-  whose unsafe shape is unrepresentable — rather than a patch we happened to
-  carry. The specific findings are in the local-only review notes.
+  against Signari's code as adversarial tests rather than read as a list. None
+  applies, and in every case the reason is structural — a mechanism Signari does
+  not have, or one whose unsafe shape is unrepresentable — rather than a patch it
+  happened to carry.
 
 **Verdict:** the ASVS controls most exposed to the recent rework are confirmed
 present in current code, and the four Aug-2026 security standards (ASVS 5.0.0,

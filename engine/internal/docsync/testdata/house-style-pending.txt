@@ -1,0 +1,38 @@
+# The house-style rules each page still breaks, one line per page and rule.
+#
+# TestTheDocsFollowTheHouseStyle (housestyle_test.go) holds every published
+# page to docs/writing-docs.md's "Rules a test could check". A fault on a page
+# and rule listed here is allowed for now. A fault that is not listed fails the
+# test, and so does a line whose page now passes its rule.
+#
+# So this list only shrinks. When you fix a page, delete its lines. Never add
+# one: a new fault is fixed in the page.
+#
+# Written on 24 November 2026 from the pages as they were then, and cut to these
+# on 24 November 2026 after the docs integration pass. Several lines stay for a
+# reason that is not a fault to fix: a verbatim quotation of a specification or
+# of code (security-review-asvs, -fapi2, -nist-800-63b, security-scanning,
+# passkey-signals), or a real name ("user handle" in WebAuthn, Apple's "App ID",
+# CWE-639's title).
+docs/README.md: Introduction first
+docs/README.md: One word per idea
+docs/README.md: Abbreviations
+docs/admin-tokens.md: One word per idea
+docs/data-export.md: One word per idea
+docs/directory-sync.md: One word per idea
+docs/migrate-from-authentik.md: One word per idea
+docs/migrate-from-keycloak.md: One word per idea
+docs/migrate-from-okta.md: One word per idea
+docs/migrate-from-zitadel.md: One word per idea
+docs/passkey-signals.md: One word per idea
+docs/performance.md: One word per idea
+docs/remote-access.md: One word per idea
+docs/saml-metadata.md: One word per idea
+docs/scim.md: One word per idea
+docs/security-review-asvs.md: One word per idea
+docs/security-review-cwe-top25.md: One word per idea
+docs/security-review-fapi2.md: One word per idea
+docs/security-review-nist-800-63b.md: One word per idea
+docs/security-scanning.md: One word per idea
+docs/social-login.md: One word per idea
+docs/tracing.md: One word per idea

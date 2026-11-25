@@ -1,6 +1,21 @@
 # The application portal
 
-`/apps` — what a signed-in user can reach, and why not the rest.
+## Introduction
+
+An organisation often has many applications, and a person may not know which
+ones they can use. A "portal" is one page that lists them, so the person can
+open each one from there.
+
+Signari's portal is at `/apps`. It shows a signed-in person what they can
+reach, and why they cannot reach the rest.
+
+Your [access policy](policy.md) decides what each person can reach. Flags on
+`signari client create` decide how each application appears on the portal, or
+whether it appears at all.
+
+## What a person sees
+
+A person signed in at Acme might see a portal like this:
 
 ```
 Your applications
@@ -19,33 +34,38 @@ Not available to you
 
 ## Access is decided live, not assigned
 
-Every other product in this field stores application access as an assignment:
-a table saying Alice may use Payroll. Signari does not have that table, and the
-absence is deliberate.
+Signari does not store application access as an "assignment", a table saying Ada
+may use Payroll. It has no such table, and the absence is deliberate.
 
-The portal is rendered through the **access policy**, the same file that governs
-every other authorization decision. That means a tile can depend on things an
-assignment table cannot express — which network the request came from, whether
-the device is managed, whether the session used a passkey, the time of day. The
-list a user sees is the list they can actually open at that moment, not a list
-of things they are nominally entitled to and may still be refused.
+The portal is rendered through the **access policy**, the same file that
+governs every other authorization decision. So a tile can depend on things an
+assignment table cannot express:
+
+- which network the request came from;
+- whether the device is managed;
+- whether the session used a passkey;
+- the time of day.
+
+The list a person sees is the list they can actually open at that moment. It is
+not a list of things they are nominally entitled to, and may still be refused.
 
 It also means there is one place to look. An assignment table and a policy
-engine will eventually disagree, and when they do, nobody can tell you which one
-is in force.
+engine will eventually disagree. When they do, nobody can tell you which one is
+in force.
 
 ## Why blocked applications are shown
 
-Because the alternative is a support ticket.
+Signari shows them because the alternative is a support ticket.
 
-Silently omitting an application a user cannot reach turns *"why can't I get
-into Payroll?"* into a question an administrator has to answer by hand — and the
-answer is something the system already knows and has just declined to say. That
-is the most common identity support burden there is, and it exists only because
-the product chose not to speak.
+Suppose the portal silently left out an application a person cannot reach.
+*"How do I get into Payroll?"* would become a question an administrator answers
+by hand. Yet the system already knows the answer, and would only have declined to
+say it. That is the most common identity support burden there is, and it exists
+only because the product chose not to speak.
 
-So a blocked application is listed with the reason, taken from the policy's own
-`message` field, which is written for the person being refused:
+So a blocked application is listed with the reason. The reason is taken from
+the policy's own `message` field, which is written for the person being
+refused:
 
 ```yaml
 - name: payroll-needs-the-finance-group
@@ -54,26 +74,29 @@ So a blocked application is listed with the reason, taken from the policy's own
   message: Payroll is limited to the finance group. Ask your manager to be added.
 ```
 
-Write that message for the user, not for yourself. It is the entire user-facing
-surface of your access policy.
+Write that message for the person who reads it, not for yourself. It is all
+that person ever sees of your access policy.
 
 ## The trade this makes, stated plainly
 
-Listing a blocked application tells the user that application exists.
+Listing a blocked application tells the person that the application exists.
 
-For most estates that is not a secret — people know their employer runs a
+For most organisations, that is not a secret. People know their employer runs a
 payroll system, and knowing its name gets nobody any closer to it. Where it *is*
-a secret, keep the client off the portal entirely:
+a secret, keep the application off the portal entirely:
 
 ```sh
 signari client create -client-id skunkworks … -portal-hidden
 ```
 
-This is a real trade rather than an obviously correct default, which is why it
-is configurable and why the reasoning is written down here instead of being
+This is a real trade, not a default that is right for everyone. That is why it
+is configurable, and why the reasoning is written down here instead of being
 assumed.
 
 ## Registering an application for the portal
+
+To give an application a tile, register it with a launch address and,
+optionally, a logo. Signari's commands call an application a "client":
 
 ```sh
 signari client create \
@@ -84,38 +107,45 @@ signari client create \
   -logo-url https://wiki.example.com/logo.svg
 ```
 
+The portal reads three flags:
+
 | Flag | |
 |---|---|
-| `-launch-url` | Where the portal sends the user. Must be https |
+| `-launch-url` | Where the portal sends the person. Must be https |
 | `-logo-url` | Optional, https only |
 | `-portal-hidden` | Keep this client off the portal entirely |
 
-**`-launch-url` is the application's own address, not ours.** It maps to the
-OpenID Connect `initiate_login_uri` registration field, which exists for exactly
-this: login begins at the *application* so the application's own state survives.
-Pointing a tile at our authorize endpoint instead produces a link that signs the
-user in and drops them on a blank dashboard rather than the page they wanted.
+**`-launch-url` is the application's own address, not Signari's.** It maps to
+the OpenID Connect registration field `initiate_login_uri`, which exists for
+exactly this. Sign-in begins at the *application*, so the application's own
+state survives. Suppose a tile pointed at Signari's authorization endpoint
+instead. Its link would sign the person in, then drop them on a blank dashboard
+instead of the page they wanted.
 
-An application with no launch URL is still listed, marked as unlaunchable.
-Hiding it would hide the mistake; the person best placed to notice is the
-administrator, and they will not see it if the portal quietly omits it.
+An application with no launch address is still listed, marked as unlaunchable.
+Hiding it would hide the mistake. The person best placed to notice is the
+administrator, and they will not see it if the portal quietly leaves it out.
 
-A SAML service provider has a tile once `signari saml idp-initiated` opts it in. It
-is asked of the policy by its entity ID, and it starts the sign-in here, because that
-is what a provider with no sign-in page of its own needs; see
-[saml.md](saml.md#a-sign-in-that-starts-here).
+[Security Assertion Markup Language (SAML)](saml.md) calls an application a
+"service provider". A SAML application has a tile once
+`signari saml idp-initiated` opts it in. The portal asks the policy about it by
+its entity ID. Its tile starts the sign-in here, because that is what a
+provider with no sign-in page of its own needs. See
+[a sign-in that starts here](saml.md#a-sign-in-that-starts-here).
 
 ## What never appears
 
-- disabled clients — a tile that refuses whoever clicks it
-- clients marked `-portal-hidden`
-- clients that cannot start a browser flow
+Three kinds of application never appear on the portal:
 
-That last one matters more than it looks. Machine-to-machine clients are service
-accounts, and a portal listing them publishes the organisation's internal
-service inventory to every employee. Existing clients without the authorization
-code grant were hidden by the migration that introduced this, so upgrading does
-not suddenly disclose anything.
+- disabled applications, since their tile would refuse whoever clicks it;
+- applications marked `-portal-hidden`;
+- applications that cannot start a browser flow.
 
-Each of those exclusions has a test that was checked by removing the condition
-and confirming the test noticed.
+That last one matters more than it looks. Machine-to-machine applications are
+service accounts. A portal that listed them would publish the organisation's
+internal service inventory to every employee. Existing applications without
+the authorization code grant were hidden by the migration that introduced this,
+so upgrading does not suddenly disclose anything.
+
+Each of those exclusions has a test. Each test was checked by removing the
+condition and confirming that the test noticed.

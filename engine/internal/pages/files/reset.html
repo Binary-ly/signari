@@ -28,7 +28,8 @@
 <input type="hidden" name="token" value="{{.Token}}">
 <input type="hidden" name="{{.CSRFField}}" value="{{.CSRF}}">
 <label for="p">{{T "common.newpassword"}}</label>
-<input id="p" name="password" type="password" autocomplete="new-password" autofocus required minlength="8">
+<input id="p" name="password" type="password" autocomplete="new-password" autofocus required
+  {{- with .PasswordMinLength}} minlength="{{.}}"{{end}}>
 <button type="submit">{{T "reset.submit"}}</button>
 </form>
 {{end}}

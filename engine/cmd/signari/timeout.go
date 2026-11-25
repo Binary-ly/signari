@@ -19,6 +19,8 @@ var defaultCommandTimeout = 60 * time.Second
 // turn behind another, partway through. Each entry says what grows.
 var unboundedCommands = map[string]string{
 	"serve":             "runs until it is stopped",
+	"setup":             "waits at the terminal for answers, and applies every migration",
+	"uninstall":         "waits at the terminal for its confirmations, and drops a database of any size",
 	"migrate bootstrap": "waits for another migrate to finish; its statements are bounded by -lock-timeout and -statement-timeout",
 	"migrate up":        "builds indexes on tables of any size and waits for another migrate to finish",
 	"migrate all":       "both of the above",

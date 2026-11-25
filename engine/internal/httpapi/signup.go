@@ -45,10 +45,6 @@ import (
 // password is too short -- releases it again, so a typo does not cost somebody
 // their invitation.
 
-// signupMinPassword matches the recovery reset path. Two different minimums for
-// the same field is the kind of inconsistency users discover by being refused.
-const signupMinPassword = 8
-
 // How many accounts one address may create in an hour.
 //
 // This endpoint writes rows and, in a deployment with mail configured, sends

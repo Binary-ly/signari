@@ -6,6 +6,65 @@ and its entry says how.
 
 ## Unreleased
 
+- **`serve` refuses a privileged database role.** When `SIGNARI_DSN`, or
+  `SIGNARI_READ_DSN` with the Admin API on, signs in as, acts as or may `SET ROLE`
+  to a superuser or a `BYPASSRLS` role, `serve` now stops at startup, saying so.
+  The engine's own role reads every organisation by design; what such a role adds
+  is power over the database server the engine never needs: running programs and
+  reading files on it, changing its configuration, every database on the cluster,
+  and every row-level policy. v0.1.0's README and its compose file both served as
+  a superuser, so **a
+  deployment that followed either stops after this upgrade** until it serves as
+  `signari_engine`: `docs/upgrading.md` ("Serving as signari_engine") says how,
+  with `signari setup` against the existing database or two commands by hand.
+  `-allow-rls-bypass` or `SIGNARI_ALLOW_RLS_BYPASS=1` starts it as before, with a
+  warning, and `signari doctor` reports such a role as critical either way.
+- **`signari setup`** takes a machine with PostgreSQL 16 or newer to a deployment
+  its first administrator can sign in to, serving as `signari_engine` with a
+  generated password, and asks at a terminal only what it cannot work out. A
+  second run changes nothing; `-dry-run` prints the plan, `-check` exits 0 when
+  everything is there and 2 when not, and `-json` prints one line for a script.
+  See `docs/cli.md`.
+- **A one-line installer**, `scripts/install.sh`, fetched from the repository
+  (`https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh`)
+  until signari.dev serves it: it installs a release only once its SHA-256, and
+  with cosign its signature, match, makes the systemd service as root, and runs
+  `signari setup` on a release that has it. v0.1.0 does not, so until the next
+  release the script installs v0.1.0 and points to its manual steps.
+- `signari setup` appends each run to a log, `/var/log/signari/setup.log` for root,
+  with every secret in it replaced, and a failed run prints the log's last 15 lines.
+- For an `https://` issuer, `signari setup` settles who ends TLS, `-tls`: a proxy in
+  front, certificate files, or nobody yet. It offers Let's Encrypt's certificate for
+  the issuer's host when there is one, and copies each renewal with a certbot hook.
+- `signari setup -compose <dir>` writes a compose project instead of setting up the
+  machine: PostgreSQL 17, a one-shot setup service and the engine, with the passwords
+  and the root key written only when they are missing.
+- **`signari uninstall`** removes what the installer and `signari setup` made, exactly
+  as their manifest lists it. The root key and the database stay unless
+  `-delete-root-key` or `-drop-database` is given, and each is confirmed.
+- `signari healthcheck` exits 0 when the engine answers `/readyz`, for a container's
+  healthcheck in an image with no shell or `curl`.
+- The installer refuses a release older than the one installed unless given
+  `--allow-downgrade`, and says to restart a running service once it replaces the
+  binary.
+- **The sign-up and reset forms ask for the password policy's real minimum.** v0.1.0's
+  forms said 8 characters, in their hint and their `minlength`, while the policy
+  refused anything shorter than 15, so a password that followed the form was refused.
+  They now say and enforce the policy's minimum: 15, or what
+  `SIGNARI_PASSWORD_MIN_LENGTH` raises it to.
+- **Erasure and backups.** v0.1.0's docs said an erased person's ciphertext was
+  unreadable in backups too. A backup taken before the erasure still holds their key,
+  wrapped under the root key, and their account in the clear, until that backup is
+  deleted. `docs/erasure.md` and `docs/cli.md` now say so.
+- **New documentation**, for someone who has never run an identity provider: an
+  introduction, installation, a first application that ends in a real sign-in, how
+  Signari works, the protocols explained and a glossary. Troubleshooting is arranged
+  by the exact error message, and the reference pages are rewritten in the same plain
+  style.
+- `serve` takes its listen address from `SIGNARI_ADDR` when `-addr` is not given.
+- The compose stack's engine serves as `signari_engine`, with a password an init
+  script gives it on a fresh volume; a volume made before needs it set once, as
+  `deploy/postgres-init/20-engine-role.sh` says.
 - **pgx 5.13.0**, past two advisories against the PostgreSQL driver: SQL injection in
   simple-protocol batches (GHSA-j38q-h3ph-jjpq, before 5.12.0) and `require_auth` /
   `channel_binding` enforcement skipped by a server that omits AuthenticationOk

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -50,84 +52,105 @@ func bootstrap(ctx context.Context, conn *pgx.Conn, issuer, name, slug, email st
 		return fmt.Errorf("-slug %q is not a slug: lowercase letters, digits and hyphens, "+
 			"neither first nor last", slug)
 	}
+	root, err := rootKey()
+	if err != nil {
+		return err
+	}
+	out, err := bootstrapWith(ctx, conn, root, os.Stdout, issuer, name, slug, email)
+	if err != nil || out.Link == "" {
+		return err
+	}
+	fmt.Printf("\nThe first person, %s, finishes setting up here, once, within %s:\n\n  %s\n\n",
+		email, bootstrapLinkLife, out.Link)
+	fmt.Println("The link is stored hashed, so it cannot be shown again. Run this again for a new one.")
+	return nil
+}
 
-	var instanceID string
-	err := conn.QueryRow(ctx, `SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&instanceID)
+// bootstrapOutcome is what a bootstrap did, for `signari setup` to report in
+// its own words.
+type bootstrapOutcome struct {
+	InstanceID, OrgID string
+	// Link is the first person's one-time link, empty once anybody is here.
+	Link    string
+	Expires time.Time
+}
+
+// bootstrapWith is bootstrap's work under the root key given, reporting each
+// step to w. Its arguments are checked already: setup and bootstrap check them
+// in their own words, for their own flags.
+func bootstrapWith(ctx context.Context, conn *pgx.Conn, root *keys.RootKey, w io.Writer,
+	issuer, name, slug, email string) (bootstrapOutcome, error) {
+	var out bootstrapOutcome
+	err := conn.QueryRow(ctx, `SELECT id::text FROM core.instances WHERE issuer = $1`, issuer).Scan(&out.InstanceID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		if err := instanceCreate(ctx, conn, issuer, ""); err != nil {
-			return err
+		if err := instanceCreateWith(ctx, conn, root, w, issuer, ""); err != nil {
+			return out, err
 		}
 		if err := conn.QueryRow(ctx, `SELECT id::text FROM core.instances WHERE issuer = $1`,
-			issuer).Scan(&instanceID); err != nil {
-			return err
+			issuer).Scan(&out.InstanceID); err != nil {
+			return out, err
 		}
 	case err != nil:
-		return err
+		return out, err
 	default:
-		root, err := rootKey()
-		if err != nil {
-			return err
-		}
 		// A run stopped between the instance and its keys has to be able to finish.
-		if _, err := keys.Ensure(ctx, conn, instanceID, root, keys.ES256, keys.RS256); err != nil {
-			return fmt.Errorf("ensuring signing keys: %w", err)
+		if _, err := keys.Ensure(ctx, conn, out.InstanceID, root, keys.ES256, keys.RS256); err != nil {
+			return out, fmt.Errorf("ensuring signing keys: %w", err)
 		}
-		fmt.Printf("instance %s already here\n", instanceID)
+		fmt.Fprintf(w, "instance %s already here\n", out.InstanceID)
 	}
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return err
+		return out, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var orgID string
 	err = tx.QueryRow(ctx, `SELECT id::text FROM core.organizations WHERE instance_id = $1::uuid
-		ORDER BY created_at, id LIMIT 1`, instanceID).Scan(&orgID)
+		ORDER BY created_at, id LIMIT 1`, out.InstanceID).Scan(&out.OrgID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		if err := tx.QueryRow(ctx, `INSERT INTO core.organizations (instance_id, slug, display_name)
-			VALUES ($1::uuid, $2, $3) RETURNING id::text`, instanceID, slug, name).Scan(&orgID); err != nil {
-			return err
+			VALUES ($1::uuid, $2, $3) RETURNING id::text`, out.InstanceID, slug, name).Scan(&out.OrgID); err != nil {
+			return out, err
 		}
 		// As the Admin API records one: filed under the new organisation, so that it
 		// has a record of its own beginning.
-		if err := audit.Write(ctx, tx, audit.Event{Type: "admin.organization_created", OrgID: orgID,
-			Detail: map[string]any{"slug": slug, "instance_id": instanceID}}); err != nil {
-			return err
+		if err := audit.Write(ctx, tx, audit.Event{Type: "admin.organization_created", OrgID: out.OrgID,
+			Detail: map[string]any{"slug": slug, "instance_id": out.InstanceID}}); err != nil {
+			return out, err
 		}
-		fmt.Printf("organisation %s\n  slug %s\n", orgID, slug)
+		fmt.Fprintf(w, "organisation %s\n  slug %s\n", out.OrgID, slug)
 	case err != nil:
-		return err
+		return out, err
 	default:
-		fmt.Printf("organisation %s already here\n", orgID)
+		fmt.Fprintf(w, "organisation %s already here\n", out.OrgID)
 	}
 
 	var peopled bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM core.users WHERE org_id = $1::uuid)`,
-		orgID).Scan(&peopled); err != nil {
-		return err
+		out.OrgID).Scan(&peopled); err != nil {
+		return out, err
 	}
 	if peopled {
-		fmt.Println("people are already signing in here, so there is no link to print")
-		return tx.Commit(ctx)
+		fmt.Fprintln(w, "people are already signing in here, so there is no link to print")
+		return out, tx.Commit(ctx)
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE core.invitations SET revoked_at = now()
-		WHERE org_id = $1::uuid AND used_at IS NULL AND revoked_at IS NULL`, orgID); err != nil {
-		return err
+		WHERE org_id = $1::uuid AND used_at IS NULL AND revoked_at IS NULL`, out.OrgID); err != nil {
+		return out, err
 	}
-	_, token, _, err := store.NewInvitation(ctx, tx, store.InvitationSpec{
-		OrgID: orgID, Email: email, TTL: bootstrapLinkLife})
+	_, token, expires, err := store.NewInvitation(ctx, tx, store.InvitationSpec{
+		OrgID: out.OrgID, Email: email, TTL: bootstrapLinkLife})
 	if err != nil {
-		return err
+		return out, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return out, err
 	}
-	fmt.Printf("\nThe first person, %s, finishes setting up here, once, within %s:\n\n  %s/signup?invite=%s\n\n",
-		email, bootstrapLinkLife, strings.TrimRight(issuer, "/"), token)
-	fmt.Println("The link is stored hashed, so it cannot be shown again. Run this again for a new one.")
-	return nil
+	out.Link = strings.TrimRight(issuer, "/") + "/signup?invite=" + token
+	out.Expires = expires
+	return out, nil
 }

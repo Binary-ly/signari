@@ -1,5 +1,16 @@
 # Upgrading and rolling back
 
+## Introduction
+
+A new release of Signari usually brings changes to the database's structure, as
+numbered "migrations". Upgrading means applying those migrations with the new
+release, then replacing the running servers with it. This page gives the order,
+and explains what happens when something goes wrong partway through.
+
+Three commands do the work. The first says where the database is, the second
+applies the new release's migrations, and the third says whether a given release
+may serve the database:
+
 ```sh
 signari migrate status        # where the database is, and the oldest binary that may serve it
 signari migrate up            # the upgrade: as signari_engine, before the new binary serves
@@ -13,12 +24,12 @@ allowed to keep running against it, and everything else is rolled back by
 restoring the backup taken before the upgrade.
 
 What each schema version changed, and whether the release before may keep
-serving it, is in [schema-versions.md](schema-versions.md). Read the versions
+serving it, is in [Schema versions](schema-versions.md). Read the versions
 between the one `migrate status` reports and the one the new binary expects.
 
 ## The order
 
-1. Back up: [runbook-backup-restore.md](runbook-backup-restore.md). That backup
+1. Back up: [Backup and restore](runbook-backup-restore.md). That backup
    is the rollback for any migration that is not compatible.
 2. Run `signari migrate up` with the **new** binary, once. Two at once take
    turns.
@@ -44,6 +55,9 @@ oldest binary    : 161 -- the migrations since are compatible with it, so it may
 $ signari-161 verify
 schema ok
 ```
+
+Against a database whose newer migrations are not compatible, it refuses, and
+says what to do:
 
 ```
 $ signari-161 verify
@@ -108,6 +122,123 @@ The check reads the SQL and does not run it, so it is a floor. A new column the
 previous release would read wrongly, or a new row it would misread, is the
 author's to rule out.
 
+## Serving as signari_engine
+
+From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN`, or
+`SIGNARI_READ_DSN` when the Admin API has a read replica, signs in as, acts as or
+may `SET ROLE` to a superuser or a role with `BYPASSRLS`. The reason is not
+row-level security: the engine's own role, `signari_engine`, reads every
+organisation by design. It is that a superuser can run programs and read files on
+the database server (`COPY ... PROGRAM`, `pg_read_server_files`), change that
+database server's configuration (`ALTER SYSTEM`) and reach every database on the
+cluster, the console's `admin` schema among them, and a `BYPASSRLS` role passes every
+row-level policy on every table it may read. The engine needs none of that, so
+serving as either hands a compromised engine, or one SQL injection, powers it
+never uses. v0.1.0's README and its compose file both served as a superuser.
+
+v0.1.0's `signari doctor` cannot see this, so check before you upgrade with the
+connection the engine serves with now:
+
+```sh
+psql "$SIGNARI_DSN" -Atc "SELECT rolname FROM pg_roles WHERE (rolsuper OR rolbypassrls)
+  AND (rolname IN (session_user, current_user) OR pg_has_role(session_user, oid, 'SET'))"
+```
+
+In this example, nothing printed means the upgrade does not affect you. Any role
+it prints is one `serve` would refuse, and this section is for that deployment.
+From the release after v0.1.0, `signari doctor` reports the same thing as
+critical.
+
+Move it to `signari_engine`, which migration 0001 made, in either of two ways.
+Either way, keep the superuser for `signari migrate bootstrap` alone, and grant
+`signari_engine` no role it could `SET ROLE` to.
+
+**With `signari setup`**, against the database you have, on the machine that
+runs it. It reaches PostgreSQL as you over the local socket, or, run as root, as
+the `postgres` system account; elsewhere, give `-superuser-dsn-file` a file holding a
+superuser's URL. It needs the root key you serve with now in a file, since a new
+key would open none of the signing keys already sealed. For the v0.1.0 quick
+start's database:
+
+```sh
+mkdir -p -m 0700 ~/.config/signari
+( umask 077; printf '%s\n' "$SIGNARI_ROOT_KEY" > ~/.config/signari/root.key )
+signari setup -database signari_dev -issuer http://localhost:8080 -email you@example.com \
+  -root-key-file ~/.config/signari/root.key
+```
+
+As root, the files go under `/etc/signari` instead. Setup skips what is there:
+the database, migration 0001, the migrations after it, the instance, its
+organisation, and the link when people already sign in. It refuses a root key
+that does not open the signing keys. It gives `signari_engine` a password, checks
+that `pg_hba.conf` lets it sign in over TCP, and writes the env file,
+`~/.config/signari/signari.env` here, with `SIGNARI_DSN` for it. If the
+organisation has no owner yet, it makes the person `-email` names its
+`org-owner`, once they have an account. Then serve from that file, with
+`SIGNARI_ROOT_KEY` no longer set, since the file names the key:
+
+```sh
+unset SIGNARI_ROOT_KEY
+set -a; . ~/.config/signari/signari.env; set +a; signari serve
+```
+
+**By hand**, as a superuser, give the role a password, then point `SIGNARI_DSN`
+at it:
+
+```sh
+psql -d signari_dev -c '\password signari_engine'      # asks twice, and sends only its hash
+export SIGNARI_DSN='postgres://signari_engine:<that password>@127.0.0.1:5432/signari_dev?sslmode=disable'
+```
+
+`pg_hba.conf` must let `signari_engine` sign in over TCP with a password, which
+Debian's and Ubuntu's own `host all all 127.0.0.1/32 scram-sha-256` line does.
+`signari doctor` then reports no database finding.
+
+For the compose stack, a data volume made before the engine served as
+`signari_engine` needs the role's password set once. The header of
+`deploy/postgres-init/20-engine-role.sh` gives the command.
+
+### With the Helm chart
+
+A release whose `SIGNARI_DSN` is a superuser's, as the chart's migrations needed
+before `migrations.superuserDsnSecretKey`, moves in three steps. First, as that
+superuser, give `signari_engine` a password:
+
+```sh
+psql 'postgres://postgres@db:5432/signari' -c '\password signari_engine'
+```
+
+Then put the superuser's data source name (DSN) in the Secret under its own key, `BOOTSTRAP_DSN`,
+and `SIGNARI_DSN` as `signari_engine`, keeping the root key you serve with now:
+
+```sh
+kubectl create secret generic signari-secrets --dry-run=client -o yaml \
+  --from-literal=SIGNARI_DSN='postgres://signari_engine:<that password>@db:5432/signari?sslmode=require' \
+  --from-literal=BOOTSTRAP_DSN='postgres://postgres:<its password>@db:5432/signari?sslmode=require' \
+  --from-literal=SIGNARI_ROOT_KEY='<the root key you serve with now>' \
+  --from-literal=SIGNARI_ROOT_KEY_REF=k8s | kubectl apply -f -
+```
+
+Last, upgrade with the migration Job reading the superuser's DSN from that key:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values \
+  --set secret.existingSecret=signari-secrets --set migrations.superuserDsnSecretKey=BOOTSTRAP_DSN
+```
+
+In this example, the Secret is one you manage. A release that kept its DSN inline
+moves to a Secret of its own the same way, since the Secret the chart makes from
+inline values has no key for the superuser's DSN. Until you can move it, the
+override starts the engine as before, with a warning:
+
+```sh
+helm upgrade signari ./deploy/helm/signari --reuse-values --set-string extraEnv.SIGNARI_ALLOW_RLS_BYPASS=1
+```
+
+Until you have moved it, `SIGNARI_ALLOW_RLS_BYPASS=1`, or `serve -allow-rls-bypass`,
+starts the engine as before, with a warning at startup, and `signari doctor`
+goes on reporting it.
+
 ## Which PostgreSQL
 
 | | |
@@ -125,4 +256,4 @@ The fingerprint a migration recorded is compared only under the PostgreSQL
 major version that computed it, because a catalogue may render the same schema
 differently in another. After a major upgrade, `migrate status` says the ledger
 is not compared, and the comparison resumes with the next migration. See
-[schema-pinning.md](schema-pinning.md).
+[Pinning a build to its schema](schema-pinning.md).

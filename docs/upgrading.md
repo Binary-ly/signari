@@ -124,7 +124,7 @@ author's to rule out.
 
 ## Serving as signari_engine
 
-From the release after v0.1.0, `serve` refuses to start when `SIGNARI_DSN`, or
+From v0.2.0, `serve` refuses to start when `SIGNARI_DSN`, or
 `SIGNARI_READ_DSN` when the Admin API has a read replica, signs in as, acts as or
 may `SET ROLE` to a superuser or a role with `BYPASSRLS`. The reason is not
 row-level security: the engine's own role, `signari_engine`, reads every
@@ -146,8 +146,7 @@ psql "$SIGNARI_DSN" -Atc "SELECT rolname FROM pg_roles WHERE (rolsuper OR rolbyp
 
 In this example, nothing printed means the upgrade does not affect you. Any role
 it prints is one `serve` would refuse, and this section is for that deployment.
-From the release after v0.1.0, `signari doctor` reports the same thing as
-critical.
+From v0.2.0, `signari doctor` reports the same thing as critical.
 
 Move it to `signari_engine`, which migration 0001 made, in either of two ways.
 Either way, keep the superuser for `signari migrate bootstrap` alone, and grant

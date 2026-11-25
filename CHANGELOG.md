@@ -4,7 +4,7 @@ Each release, what it changes and what an operator should know before upgrading 
 Versions are `vMAJOR.MINOR.PATCH`; before 1.0, a minor version may change behaviour,
 and its entry says how.
 
-## Unreleased
+## v0.2.0 — 2026-11-25
 
 - **`serve` refuses a privileged database role.** When `SIGNARI_DSN`, or
   `SIGNARI_READ_DSN` with the Admin API on, signs in as, acts as or may `SET ROLE`
@@ -29,8 +29,9 @@ and its entry says how.
   (`https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh`)
   until signari.dev serves it: it installs a release only once its SHA-256, and
   with cosign its signature, match, makes the systemd service as root, and runs
-  `signari setup` on a release that has it. v0.1.0 does not, so until the next
-  release the script installs v0.1.0 and points to its manual steps.
+  `signari setup` on a release that has it, as this one does. Given
+  `--version v0.1.0`, which has no setup, it installs that release and points to
+  its manual steps.
 - `signari setup` appends each run to a log, `/var/log/signari/setup.log` for root,
   with every secret in it replaced, and a failed run prints the log's last 15 lines.
 - For an `https://` issuer, `signari setup` settles who ends TLS, `-tls`: a proxy in

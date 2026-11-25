@@ -7,7 +7,7 @@ A self-hosted identity provider. One binary and one PostgreSQL database serve
 OpenID Connect, OAuth 2.0, SAML 2.0, LDAP, RADIUS and SCIM, with a web console
 beside it.
 
-> **Status: v0.1.0, the first release.** It runs, it is tested, and it is neither
+> **Status: v0.2.0.** It runs, it is tested, and it is neither
 > certified nor independently audited yet. The OpenID Foundation's conformance plans
 > run whole in CI (`.github/workflows/conformance.yml`) and the suite has a runbook
 > here ([exposing a deployment for conformance](docs/runbook-public-conformance.md)),
@@ -82,11 +82,6 @@ front and be asked nothing:
 curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh | sh -s -- --yes --issuer https://login.example.com --email you@example.com
 ```
 
-> [!NOTE]
-> `signari setup` comes in the release after v0.1.0. Until that release is out,
-> the script installs v0.1.0 and points you at that release's own setup steps. To
-> use `signari setup` today, build `main` [from source](docs/installation.md#from-source).
-
 To read the script first, download it with
 `curl -fsSL https://raw.githubusercontent.com/Binary-ly/signari/main/scripts/install.sh -o install.sh`,
 and `sh install.sh --dry-run` prints every command it would run. Its second line
@@ -98,7 +93,7 @@ whose powers over the database server the engine never needs.
 
 ### With Docker
 
-v0.1.0 ships a binary for Linux on amd64 alone. Elsewhere, or with Docker to
+Each release ships a binary for Linux on amd64 alone. Elsewhere, or with Docker to
 hand, the compose stack runs the engine, its database and an application to sign
 in to:
 
